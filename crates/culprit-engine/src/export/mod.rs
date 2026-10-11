@@ -118,8 +118,18 @@ pub(crate) fn sql_text(text: &str, engine: Engine, options: &ExportOptions) -> S
     if options.redact { redact_sql(text.trim(), engine) } else { text.trim().to_string() }
 }
 
-pub(crate) fn engine_label(engine: Engine) -> &'static str {
-    engine.label()
+/// The server a plan came from, MariaDB included (its plans carry `flavor`; the engine is MySQL's for both).
+pub(crate) fn plan_engine_label(plan: &Plan) -> &str {
+    plan.props.get("flavor").map(String::as_str).unwrap_or_else(|| plan.engine.label())
+}
+
+/// The server a report came from, MariaDB included.
+pub(crate) fn report_engine_label(report: &Report) -> &'static str {
+    if report.snapshot.server.product.to_ascii_lowercase().contains("mariadb") {
+        "MariaDB"
+    } else {
+        report.snapshot.server.engine.label()
+    }
 }
 
 pub(crate) fn environment_label(environment: Environment) -> String {

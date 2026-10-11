@@ -18,6 +18,7 @@ import {
   setMode,
   setSide,
   swapSides,
+  SAMPLES,
   trySample,
   usePlans,
   type LoadedPlan,
@@ -28,7 +29,6 @@ import { planEngineName } from "../lib/engines";
 import { keys } from "../lib/keys";
 import { copyAndTell } from "../lib/clipboard";
 
-const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
 function cost(value: number): string {
   if (value < 10) return value.toFixed(3);
@@ -174,9 +174,9 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
         {import.meta.env.DEV && (
           <div className="welcome-samples">
             <span className="muted">See it with a sample comparison:</span>
-            {(["mssql", "postgres", "mysql"] as const).map((e) => (
-              <button key={e} className="btn ghost small" onClick={() => trySample(e)}>
-                {ENGINE[e]}
+            {SAMPLES.map((e) => (
+              <button key={e.key} className="btn ghost small" onClick={() => trySample(e.key)}>
+                {e.label}
               </button>
             ))}
           </div>

@@ -9,8 +9,8 @@ use culprit_core::{ChangeKind, Finding, Plan, PlanDiff, PlanKind, PlanNode, Repo
 use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
 use super::{
-    ExportNote, ExportOptions, engine_label, environment_label, exported_at, kind_label, node_label, prepared,
-    rows_phrase, rows_text, share, sql_text, top_costs, where_,
+    ExportNote, ExportOptions, environment_label, exported_at, kind_label, node_label, plan_engine_label, prepared,
+    report_engine_label, rows_phrase, rows_text, share, sql_text, top_costs, where_,
 };
 
 const STYLE: &str = r#"
@@ -271,7 +271,7 @@ pub fn plan_html(plan: &Plan, title: &str, options: &ExportOptions) -> String {
     let plan = prepared(plan, options);
     let mut body = String::new();
     let _ = write!(body, "<h1>{}</h1>", escape(title));
-    let _ = write!(body, r#"<p class="sub">{} · {}</p>"#, engine_label(plan.engine), kind_label(plan.kind));
+    let _ = write!(body, r#"<p class="sub">{} · {}</p>"#, plan_engine_label(&plan), kind_label(plan.kind));
     body.push_str(&plan_figures(&plan));
     let _ = write!(body, "<h2>Where the cost goes</h2>{}", strip(&plan));
     let _ =
@@ -279,7 +279,7 @@ pub fn plan_html(plan: &Plan, title: &str, options: &ExportOptions) -> String {
     let _ = write!(body, "<h2>Steps</h2>{}", steps(&plan));
     body.push_str(&notes_html(&options.notes, &plan));
     body.push_str(&statement(&plan));
-    page(title, &[engine_label(plan.engine).to_string(), kind_label(plan.kind).to_string()], &body, options)
+    page(title, &[plan_engine_label(&plan).to_string(), kind_label(plan.kind).to_string()], &body, options)
 }
 
 fn change_tag(kind: ChangeKind) -> (&'static str, &'static str) {
@@ -444,7 +444,7 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
             body,
             r#"<div class="side"><div class="side-head"><span class="badge">{badge}</span><b>{}</b><span>{} · {} · cost {}</span></div><div class="wrap">{}</div></div>"#,
             escape(name),
-            engine_label(plan.engine),
+            plan_engine_label(plan),
             kind_label(plan.kind).to_lowercase(),
             cost(plan.total_cost),
             diagram(plan, marks, None, name, id)
@@ -454,7 +454,7 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
     if let Some(s) = b.statement.as_deref().or(a.statement.as_deref()) {
         let _ = write!(body, "<h2>Statement</h2><pre>{}</pre>", escape(s.trim()));
     }
-    page(&format!("Plan comparison: {title}"), &[engine_label(b.engine).to_string()], &body, options)
+    page(&format!("Plan comparison: {title}"), &[plan_engine_label(&b).to_string()], &body, options)
 }
 
 fn severity(f: &Finding) -> &'static str {
@@ -571,12 +571,7 @@ fn finding_body(
 pub fn finding_html(report: &Report, finding: &Finding, options: &ExportOptions) -> String {
     let mut body = String::new();
     finding_body(&mut body, report, finding, options, "h1", 0);
-    page(
-        &finding.title,
-        &[engine_label(report.snapshot.server.engine).to_string(), format!("finding {}", finding.id)],
-        &body,
-        options,
-    )
+    page(&finding.title, &[report_engine_label(report).to_string(), format!("finding {}", finding.id)], &body, options)
 }
 
 /// Every finding of a scan on one page, highest impact first.
@@ -607,5 +602,5 @@ pub fn report_html(report: &Report, options: &ExportOptions) -> String {
             finding_body(&mut body, report, f, options, "h1", i + 1);
         }
     }
-    page("Culprit report", &[engine_label(report.snapshot.server.engine).to_string()], &body, options)
+    page("Culprit report", &[report_engine_label(report).to_string()], &body, options)
 }

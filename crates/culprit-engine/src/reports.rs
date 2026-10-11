@@ -23,6 +23,9 @@ pub struct ReportSummary {
     /// The server as the scan saw it ("MariaDB 11.8.9"), so a list of connections can tell MariaDB from MySQL.
     #[serde(default)]
     pub product: Option<String>,
+    /// Why the scan has no query history ("Query Store is OFF on this database."); `None` when it has one.
+    #[serde(default)]
+    pub no_workload: Option<String>,
 }
 
 fn summary_path(dir: &Path, window_days: Option<u32>) -> PathBuf {
@@ -40,6 +43,7 @@ fn summary_of(report: &Report) -> ReportSummary {
         headline: report.summary.headline.clone(),
         window_days: report.snapshot.options.as_ref().map(|o| o.window_days),
         product: Some(report.snapshot.server.product.clone()),
+        no_workload: report.snapshot.no_workload_reason(),
     }
 }
 

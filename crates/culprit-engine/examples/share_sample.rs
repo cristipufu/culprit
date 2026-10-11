@@ -1,5 +1,5 @@
 //! Writes `fixtures/share.sample.json` for the browser demo: plan comparisons and exports made by the same code the
-//! desktop app runs, from plans captured on the three demo databases and the demo reports. The demo can't run Rust, so
+//! desktop app runs, from plans captured on the demo databases and the demo reports. The demo can't run Rust, so
 //! it replays these.
 //!
 //!     cargo run -p culprit-engine --example share_sample
@@ -23,6 +23,7 @@ fn main() {
         ("mssql", "mssql-seek.sqlplan", "mssql-scan.sqlplan", "Plan 68", "Plan 69"),
         ("postgres", "pg-index.json", "pg-seqscan.json", "Plan 12", "Plan 13"),
         ("mysql", "mysql-index.json", "mysql-scan.json", "Plan 4", "Plan 5"),
+        ("mariadb", "mariadb-index.json", "mariadb-scan.json", "Plan 7", "Plan 8"),
     ] {
         let (pa, pb) = (plan(a), plan(b));
         let forward = plan_diff_named(&pa, name_a, &pb, name_b);
@@ -40,7 +41,13 @@ fn main() {
         }));
     }
     let mut findings = serde_json::Map::new();
-    for file in ["mssql-demo.report.json", "pg-demo.report.json", "mysql-demo.report.json"] {
+    for file in [
+        "mssql-demo.report.json",
+        "mssql-demo-staging.report.json",
+        "pg-demo.report.json",
+        "mysql-demo.report.json",
+        "mariadb-demo.report.json",
+    ] {
         let report: Report =
             serde_json::from_str(&std::fs::read_to_string(format!("{root}/fixtures/{file}")).unwrap()).unwrap();
         for (i, f) in report.findings.iter().enumerate() {

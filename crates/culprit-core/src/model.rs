@@ -623,6 +623,27 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Why this scan has no query statistics ("Query Store is OFF on this database."), or `None` when it has them.
+    pub fn no_workload_reason(&self) -> Option<String> {
+        if self.workload.is_some() {
+            return None;
+        }
+        const WORKLOAD: [Capability; 4] = [
+            Capability::QueryStore,
+            Capability::PgStatStatements,
+            Capability::PerformanceSchema,
+            Capability::PlanCache,
+        ];
+        Some(
+            self.server
+                .missing
+                .iter()
+                .find(|m| WORKLOAD.contains(&m.capability))
+                .map(|m| m.reason.clone())
+                .unwrap_or_else(|| "This scan has no query statistics.".into()),
+        )
+    }
+
     pub fn table(&self, schema: &str, name: &str) -> Option<&TableStat> {
         self.tables.iter().find(|t| t.schema.eq_ignore_ascii_case(schema) && t.name.eq_ignore_ascii_case(name))
     }
@@ -714,6 +735,22 @@ pub type Properties = BTreeMap<String, String>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_scan_without_query_history_says_why() {
+        let mut snapshot: super::Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.json")).unwrap();
+        assert_eq!(snapshot.no_workload_reason(), None);
+        snapshot.workload = None;
+        snapshot.server.missing.retain(|m| m.capability != super::Capability::QueryStore);
+        assert_eq!(snapshot.no_workload_reason().as_deref(), Some("This scan has no query statistics."));
+        snapshot.server.missing.push(super::MissingCapability {
+            capability: super::Capability::QueryStore,
+            reason: "Query Store is OFF on this database.".into(),
+            fix: None,
+        });
+        assert_eq!(snapshot.no_workload_reason().as_deref(), Some("Query Store is OFF on this database."));
+    }
+
     #[test]
     fn percentiles_never_pass_the_slowest_run() {
         let mut s = super::Spread { p50_ms: Some(10.0), p95_ms: Some(40.0), p99_ms: Some(43.7), ..Default::default() };

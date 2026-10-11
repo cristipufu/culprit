@@ -8,8 +8,8 @@ use culprit_core::{
 };
 
 use super::{
-    ExportNote, ExportOptions, engine_label, exported_at, kind_label, prepared, rows_phrase, rows_text, server_line,
-    share, sql_text, top_costs, where_,
+    ExportNote, ExportOptions, exported_at, kind_label, plan_engine_label, prepared, rows_phrase, rows_text,
+    server_line, share, sql_text, top_costs, where_,
 };
 
 const MAX_STEPS: usize = 40;
@@ -70,7 +70,7 @@ pub fn plan_markdown(plan: &Plan, title: &str, options: &ExportOptions) -> Strin
     let _ = writeln!(
         out,
         "{} · {} · {count} operator{} · estimated cost {}\n",
-        engine_label(plan.engine),
+        plan_engine_label(&plan),
         kind_label(plan.kind).to_lowercase(),
         if count == 1 { "" } else { "s" },
         cost(plan.total_cost)
@@ -225,7 +225,7 @@ pub fn diff_markdown(
         }
     }
     let _ = writeln!(out, "| | {} | {} |\n|---|---:|---:|", cell(name_a), cell(name_b));
-    let _ = writeln!(out, "| Engine | {} | {} |", engine_label(a.engine), engine_label(b.engine));
+    let _ = writeln!(out, "| Engine | {} | {} |", plan_engine_label(&a), plan_engine_label(&b));
     let _ = writeln!(out, "| Plan | {} | {} |", kind_label(a.kind).to_lowercase(), kind_label(b.kind).to_lowercase());
     let _ = writeln!(out, "| Estimated cost | {} | {} |", cost(diff.cost_a), cost(diff.cost_b));
     if let (Some(ta), Some(tb)) = (diff.time_a_ms, diff.time_b_ms) {

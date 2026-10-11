@@ -198,7 +198,11 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
         {serverName(c.engine, c.last_report?.product)} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
         {c.display}
       </span>
-      {c.last_report && <span className="conn-headline">{takeaway(c.last_report.headline) ?? NO_TAKEAWAY}</span>}
+      {c.last_report && (
+        <span className="conn-headline">
+          {c.last_report.no_workload ? `No query history: ${c.last_report.no_workload}` : (takeaway(c.last_report.headline) ?? NO_TAKEAWAY)}
+        </span>
+      )}
       <span className="conn-tools">
         {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
         <AgentAccessMenu connection={c} />

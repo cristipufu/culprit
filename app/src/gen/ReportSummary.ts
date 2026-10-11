@@ -4,4 +4,8 @@ export type ReportSummary = { id: string, taken_at: string, opportunities: numbe
 /**
  * The server as the scan saw it ("MariaDB 11.8.9"), so a list of connections can tell MariaDB from MySQL.
  */
-product: string | null, };
+product: string | null, 
+/**
+ * Why the scan has no query history ("Query Store is OFF on this database."); `None` when it has one.
+ */
+no_workload: string | null, };

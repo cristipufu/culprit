@@ -1,0 +1,42 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost": 5.69010444,
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "range",
+          "possible_keys": [
+            "ix_orders_status",
+            "ix_orders_status_created",
+            "fk_orders_customer"
+          ],
+          "key": "ix_orders_status_created",
+          "key_length": "71",
+          "used_key_parts": ["status", "created_at"],
+          "loops": 1,
+          "rows": 1785,
+          "cost": 3.22763464,
+          "filtered": 100,
+          "index_condition": "o.`status` = 'pending' and o.created_at >= '2026-10-01'"
+        }
+      },
+      {
+        "table": {
+          "table_name": "c",
+          "access_type": "eq_ref",
+          "possible_keys": ["PRIMARY"],
+          "key": "PRIMARY",
+          "key_length": "4",
+          "used_key_parts": ["id"],
+          "ref": ["shop.o.customer_id"],
+          "loops": 1785,
+          "rows": 1,
+          "cost": 2.4624698,
+          "filtered": 100
+        }
+      }
+    ]
+  }
+}

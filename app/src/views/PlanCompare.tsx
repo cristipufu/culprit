@@ -29,11 +29,10 @@ import type { ScenarioKind } from "../gen/ScenarioKind";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib/plans";
+import { SAMPLES, setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
 import { planEngineName } from "../lib/engines";
 
-const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
 const LOOK_KEY = "culprit.plan.look";
 const SYNC_KEY = "culprit.compare.sync";
@@ -302,9 +301,9 @@ export function PlanCompare() {
               <div className="muted">{diff.error.hint}</div>
               <div className="cmp-samples">
                 Try a sample:{" "}
-                {(["mssql", "postgres", "mysql"] as const).map((e) => (
-                  <button key={e} className="link" onClick={() => trySample(e)}>
-                    {ENGINE[e]}
+                {SAMPLES.map((e) => (
+                  <button key={e.key} className="link" onClick={() => trySample(e.key)}>
+                    {e.label}
                   </button>
                 ))}
               </div>

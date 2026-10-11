@@ -14,15 +14,24 @@ const SHOWPLAN_COLUMN_MARKER: &str = "Showplan";
 /// SHOWPLAN compiles the text as it is: an application's parameters (`@P1`) aren't declared there, and SQL Server
 /// can't plan a statement whose values it can't see the type of.
 pub(crate) fn parameter_error(e: culprit_core::Error) -> culprit_core::Error {
+    // Query Store keeps an application's text with its parameter list in front: `(@P1 int)SELECT …`.
+    if e.message.contains("only allowed for parameterized queries") {
+        return culprit_core::Error::invalid(
+            "This text starts with a parameter list ((@P1 int)…), which SQL Server only accepts from an application",
+        )
+        .with_hint(
+            "Delete the leading parameter list and replace each parameter with a sample value of its type. Queries \
+             Culprit captured open from Queries with the plan SQL Server actually used.",
+        );
+    }
     if !e.message.contains("Must declare the scalar variable") {
         return e;
     }
     let name = e.message.split('"').nth(1).unwrap_or("parameters").to_string();
-    culprit_core::Error::invalid(format!("This statement uses {name}, which SQL Server needs a value for to plan it"))
-        .with_hint(
-            "Replace each parameter with a sample value of its type (a quoted string for text, a number for an id) and \
-             explain again. Queries Culprit captured open from Queries with the plan SQL Server actually used.",
-        )
+    culprit_core::Error::invalid(format!("This statement uses {name}, which SQL Server needs a value for")).with_hint(
+        "Replace each parameter with a sample value of its type (a quoted string for text, a number for an id) and \
+             try again. Queries Culprit captured open from Queries with the plan SQL Server actually used.",
+    )
 }
 
 pub(crate) async fn estimated_plan(client: &mut MsClient, sql: &str) -> Result<Plan> {
@@ -223,8 +232,13 @@ mod parameter_tests {
     fn undeclared_parameters_get_a_plain_hint() {
         let raw = Error::new(ErrorCode::QueryFailed, "Must declare the scalar variable \"@P1\".");
         let mapped = parameter_error(raw);
-        assert_eq!(mapped.message, "This statement uses @P1, which SQL Server needs a value for to plan it");
+        assert_eq!(mapped.message, "This statement uses @P1, which SQL Server needs a value for");
         assert!(mapped.hint.as_deref().is_some_and(|h| h.contains("sample value")));
+        let prefixed = parameter_error(Error::new(
+            ErrorCode::QueryFailed,
+            "The batch could not be analyzed because of compile errors. This syntax is only allowed for parameterized queries.",
+        ));
+        assert!(prefixed.message.starts_with("This text starts with a parameter list"), "{}", prefixed.message);
         let other = parameter_error(Error::new(ErrorCode::QueryFailed, "Invalid object name 'x'."));
         assert_eq!(other.message, "Invalid object name 'x'.");
     }

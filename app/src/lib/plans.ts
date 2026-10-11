@@ -194,16 +194,23 @@ export async function savePlan(item: LoadedPlan, asJson: boolean): Promise<void>
   }
 }
 
-const ENGINE_NAME: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
+/** The sample comparisons the browser demo ships: one per engine, MariaDB's own EXPLAIN dialect included. */
+export const SAMPLES = [
+  { key: "mssql", label: "SQL Server" },
+  { key: "postgres", label: "PostgreSQL" },
+  { key: "mysql", label: "MySQL" },
+  { key: "mariadb", label: "MariaDB" },
+] as const;
+export type SampleKey = (typeof SAMPLES)[number]["key"];
 
 /** Compare two sample plans captured on the demo databases (a seek that became a scan), to see what Plans does. */
-export async function trySample(engine: Plan["engine"] = "mssql"): Promise<void> {
+export async function trySample(key: SampleKey = "mssql"): Promise<void> {
   const { shareSample } = await import("./demo-api");
-  const sample = (await shareSample())?.compares.find((c) => c.engine === engine);
+  const sample = (await shareSample())?.compares.find((c) => c.engine === key);
   if (!sample) {
     toast("The sample plans ship with the browser demo; paste or open a plan instead");
     return;
   }
-  const origin = `Sample · ${ENGINE_NAME[engine]}`;
+  const origin = `Sample · ${SAMPLES.find((s) => s.key === key)?.label ?? key}`;
   compare({ plan: sample.a, name: sample.names[0], origin }, { plan: sample.b, name: sample.names[1], origin });
 }

@@ -30,6 +30,9 @@ import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
 
+/** The capabilities query history comes from (mirrors `Snapshot::no_workload_reason`). */
+const WORKLOAD_SOURCES = ["query-store", "pg-stat-statements", "performance-schema", "plan-cache"];
+
 const reports: Record<string, () => Promise<Report>> = import.meta.env.DEV
   ? import.meta.glob<Report>("../../../fixtures/*.report.json", { import: "default" })
   : {};
@@ -110,7 +113,7 @@ function withSpread(report: Report, sample: SpreadSample[string] | undefined): R
 
 /** Comparisons and exports the desktop app's Rust code made from plans captured on the demo databases. */
 export type ShareSample = {
-  compares: { engine: Plan["engine"]; names: [string, string]; a: Plan; b: Plan; diff: PlanDiff; reverse: PlanDiff; markdown: string; html: string; plan_markdown: [string, string] }[];
+  compares: { engine: Plan["engine"] | "mariadb"; names: [string, string]; a: Plan; b: Plan; diff: PlanDiff; reverse: PlanDiff; markdown: string; html: string; plan_markdown: [string, string] }[];
   findings: Record<string, { markdown: string; html?: string }>;
 };
 
@@ -272,6 +275,9 @@ export async function demoApi(): Promise<Api> {
         headline: r.summary.headline,
         window_days: r.snapshot.options?.window_days ?? null,
         product: r.snapshot.server.product,
+        no_workload: r.snapshot.workload
+          ? null
+          : (r.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability))?.reason ?? "This scan has no query statistics."),
       },
     }));
   let demoApproval: ApprovalRequest | null =

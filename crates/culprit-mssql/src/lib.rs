@@ -532,7 +532,7 @@ impl Provider for MssqlProvider {
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let mut client = self.user_session().await?;
-        statement::run(&mut client, sql, limit).await
+        statement::run(&mut client, sql, limit).await.map_err(statement::parameter_error)
     }
 
     async fn statement_types(&self, sql: &str) -> Result<Option<Vec<String>>> {
@@ -541,7 +541,7 @@ impl Provider for MssqlProvider {
             Ok(types) => Ok(Some(types)),
             // A login without SHOWPLAN permission can't ask; Culprit's own classifier has already passed the text.
             Err(e) if e.message.to_ascii_lowercase().contains("showplan permission") => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(statement::parameter_error(e)),
         }
     }
 
@@ -550,10 +550,11 @@ impl Provider for MssqlProvider {
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let mut client = self.user_session().await?;
         let mut result = if statement::returns_rows(sql) {
-            statement::run(&mut client, sql, limit).await?
+            statement::run(&mut client, sql, limit).await
         } else {
-            statement::run_changes(&mut client, sql).await?
-        };
+            statement::run_changes(&mut client, sql).await
+        }
+        .map_err(statement::parameter_error)?;
         // "2 rows changed, committed." — the same words MySQL and PostgreSQL use.
         match result.messages.last_mut() {
             Some(last) if last.ends_with("changed") => last.push_str(", committed."),
