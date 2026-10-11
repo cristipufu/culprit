@@ -174,6 +174,25 @@ fn most_common<T: Clone + Ord>(items: impl Iterator<Item = T>) -> Option<T> {
     counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|(k, _)| k)
 }
 
+/// The kind of statement a session runs ("SELECT", "UPDATE"): SQL Server's command says it; MySQL's says only "Query",
+/// so the statement's first keyword does.
+fn statement_verb(session: &Session) -> Option<String> {
+    const VERBS: [&str; 12] = [
+        "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "CREATE", "ALTER", "DROP", "TRUNCATE", "CALL",
+        "WITH",
+    ];
+    let verb = |word: &str| {
+        let upper = word.trim_start_matches('(').to_ascii_uppercase();
+        VERBS.contains(&upper.as_str()).then(|| if upper == "WITH" { "SELECT".to_string() } else { upper })
+    };
+    session
+        .command
+        .as_deref()
+        .and_then(|c| c.split_whitespace().next())
+        .and_then(verb)
+        .or_else(|| session.sql.as_deref().and_then(|t| t.split_whitespace().next()).and_then(verb))
+}
+
 fn head_kind(session: Option<&Session>) -> HeadKind {
     let Some(s) = session else { return HeadKind::Unknown };
     let state = s.state.to_ascii_lowercase();
@@ -316,14 +335,17 @@ fn chain(
             None => format!("Session {head} is idle in an open transaction; {behind}."),
         },
         HeadKind::Running => {
-            let verb =
-                session.and_then(|s| s.command.clone()).map(|c| format!("{} ", c.to_uppercase())).unwrap_or_default();
+            let what = match session.and_then(statement_verb) {
+                Some(v) if v.starts_with(['A', 'E', 'I', 'O', 'U']) => format!("an {v} statement"),
+                Some(v) => format!("a {v} statement"),
+                None => "a statement".to_string(),
+            };
             match head_ms {
                 Some(ms) => format!(
-                    "Session {head} has been running a {verb}statement for {} while holding locks; {behind}.",
+                    "Session {head} has been running {what} for {} while holding locks; {behind}.",
                     format::duration(ms)
                 ),
-                None => format!("Session {head} is running a {verb}statement while holding locks; {behind}."),
+                None => format!("Session {head} is running {what} while holding locks; {behind}."),
             }
         }
         HeadKind::Idle => format!("Session {head} holds locks without running anything; {behind}."),
@@ -414,6 +436,22 @@ mod tests {
             object: Some("shop.orders".into()),
             index: Some("PK_orders".into()),
         }
+    }
+
+    #[test]
+    fn a_running_head_is_named_by_its_statement() {
+        // MySQL's process list says "Query" for every statement; the statement's first keyword says what it is.
+        let mut head = session("114", "running", None);
+        head.command = Some("Query".into());
+        head.sql = Some("select sleep(40)".into());
+        let waiter = session("115", "suspended", Some("114"));
+        let b = analyze(Engine::Mysql, &[head.clone(), waiter.clone()], &[lock("115")]).unwrap();
+        assert!(b.chains[0].headline.contains("running a SELECT statement"), "{}", b.chains[0].headline);
+        // SQL Server's command is already the verb.
+        head.command = Some("UPDATE".into());
+        head.sql = None;
+        let b = analyze(Engine::Mssql, &[head, waiter], &[lock("115")]).unwrap();
+        assert!(b.chains[0].headline.contains("running an UPDATE statement"), "{}", b.chains[0].headline);
     }
 
     #[test]

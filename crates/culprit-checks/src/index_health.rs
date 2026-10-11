@@ -142,6 +142,10 @@ pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
             format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
         }
         Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+        // Invisible indexes arrived in MySQL 8.0; 5.7 can only drop (keep the definition).
+        Engine::Mysql if !culprit_core::version_at_least(&server.version, [8, 0, 0]) => {
+            drop_index_sql(engine, &i.schema, &i.table, &i.name)
+        }
         Engine::Mysql => format!(
             "ALTER TABLE {} ALTER INDEX {} INVISIBLE;",
             qualified(engine, &i.schema, &i.table),

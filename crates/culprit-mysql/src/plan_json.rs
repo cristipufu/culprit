@@ -20,7 +20,8 @@ const OPERATIONS: [&str; 7] = [
 /// Parse EXPLAIN JSON. `schema` is the session's default database, used for unqualified tables; `statement` lets table
 /// aliases resolve back to table names.
 pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option<&str>) -> Result<Plan> {
-    let value: Value = serde_json::from_str(json)
+    // MariaDB before 11 repeats `table` members for a join; read them all (MySQL's JSON is unaffected).
+    let value: Value = crate::json_members::parse(json)
         .map_err(|e| Error::internal(format!("The server returned a plan Culprit cannot read: {e}")))?;
     if crate::plan_maria::is_mariadb(&value) {
         return crate::plan_maria::parse(&value, json, kind, statement, schema);

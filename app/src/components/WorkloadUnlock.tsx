@@ -3,6 +3,7 @@ import type { MissingCapability } from "../gen/MissingCapability";
 import type { Report } from "../gen/Report";
 import { copyText } from "../lib/api";
 import { scan, setState, toast } from "../lib/store";
+import { keys } from "../lib/keys";
 
 /** The capabilities that hold query statistics, per engine. Without one, findings come from tables and indexes only. */
 const WORKLOAD = ["pg-stat-statements", "query-store", "plan-cache", "performance-schema"];
@@ -66,7 +67,7 @@ export function WorkloadUnlock({ report }: { report: Report }) {
         <span className="muted">
           {SOURCE[missing.capability] ? `Culprit reads ${SOURCE[missing.capability]} only; it never changes the database for you.` : ""}
         </span>
-        <button className="btn small" onClick={() => scan(report.snapshot.connection)} title="Scan again once it's on (⌘R)">
+        <button className="btn small" onClick={() => scan(report.snapshot.connection)} title={keys("Scan again once it's on (⌘R)")}>
           <RefreshCw size={12} /> Done, re-scan
         </button>
       </div>

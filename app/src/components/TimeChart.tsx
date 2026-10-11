@@ -266,7 +266,11 @@ export function TimeChart({ buckets, max, format, height, children, readout, pea
           ) : null,
         )}
         {peak && peakBucket && hover == null && !shownSelection && (
-          <div className={`tc-peak ${x(peakAt) > VW * 0.7 ? "left" : ""}`} style={{ left: pct(peakAt), top: `${(y(peak.value) / VH) * 100}%` }}>
+          <div
+            // Near the top, the label goes under the point so it never covers the chart's header actions.
+            className={`tc-peak ${x(peakAt) > VW * 0.7 ? "left" : ""} ${y(peak.value) / VH < 0.3 ? "below" : ""}`}
+            style={{ left: pct(peakAt), top: `${(y(peak.value) / VH) * 100}%` }}
+          >
             <i />
             <span>peak {format(peak.value)}</span>
           </div>

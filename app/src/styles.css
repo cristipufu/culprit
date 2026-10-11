@@ -223,6 +223,11 @@ textarea {
   flex-shrink: 0;
 }
 
+/* Only macOS draws window buttons over the sidebar; elsewhere the title bar sits above the window. */
+:root:not([data-platform="mac"]) .sidebar-drag {
+  height: 10px;
+}
+
 .conn-switch {
   display: flex;
   align-items: center;
@@ -11628,4 +11633,776 @@ button.as-callout:hover {
   .beyond-note {
     grid-column: 3;
   }
+}
+
+/* ═══════════ Design system: tokens, focus, motion, contrast, shell, palette, connections, editor, dialogs ═══════════
+ * Last in this file on purpose: these rules refine the ones above. */
+
+/* ───────── tokens ───────── */
+
+:root {
+  /* Type scale: seven steps instead of seventeen ad-hoc sizes. */
+  --fs-micro: 11px;
+  --fs-meta: 12px;
+  --fs-body: 13px;
+  --fs-strong: 14px;
+  --fs-title: 17px;
+  --fs-metric: 20px;
+  --fs-display: 22px;
+
+  /* Radii and a 4px spacing scale. */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+
+  /* Motion. */
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+
+  /* Semantic colors: accent for focus and selection, danger only for destructive actions, darker amber for text. */
+  --accent: var(--focus);
+  --danger: #c93b40;
+  --warn-text: #8f5600;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 12px rgba(0, 0, 0, 0.06);
+
+  /* Small grey text at 11–12px needs 4.5:1 on the page background. */
+  --text-3: #76736d;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --text-3: #8f8c86;
+    --warn-text: #f0b45a;
+    --danger: #e5585d;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.35);
+  }
+}
+
+:root[data-theme="dark"] {
+  --text-3: #8f8c86;
+  --warn-text: #f0b45a;
+  --danger: #e5585d;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+/* ───────── focus and motion ───────── */
+
+:where(button, [role="tab"], [role="option"], [role="button"], a, input, select, textarea, summary, .frow, .plan-card):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:where(input, select, textarea):focus-visible {
+  outline-offset: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ───────── dialogs ───────── */
+
+.modal-backdrop,
+.overlay {
+  background: rgba(10, 10, 9, 0.48);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.modal,
+.palette {
+  border-radius: var(--r-lg);
+  animation: pop-in var(--dur) var(--ease);
+}
+
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
+}
+
+/* ───────── shell ───────── */
+
+/* The active view gets a brand indicator, like the selected row it leads to. */
+.nav-item {
+  position: relative;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.nav > .nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--brand);
+}
+
+/* Search lives at the top of the sidebar, where people look for it. */
+.side-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+  padding: 0 8px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  width: 100%;
+  text-align: left;
+}
+
+.side-search:hover {
+  border-color: var(--border-strong);
+  color: var(--text-2);
+}
+
+.side-search .kbd {
+  margin-left: auto;
+}
+
+.theme-seg {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  gap: 2px;
+  border-radius: var(--r-sm);
+  background: var(--hover);
+}
+
+.theme-seg button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--text-3);
+}
+
+.theme-seg button.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+/* Production is unmistakable: a red rule over the workspace and a chip in the top bar. */
+.main.is-production {
+  box-shadow: inset 0 2px 0 var(--env-production);
+}
+
+.env-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: var(--fs-micro);
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--env-color);
+  background: color-mix(in srgb, var(--env-color) 12%, transparent);
+}
+
+.env-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--env-color);
+}
+
+.env-chip.env-production {
+  --env-color: var(--env-production);
+}
+
+.env-chip.env-staging {
+  --env-color: var(--env-staging);
+}
+
+.env-chip.env-development {
+  --env-color: var(--env-development);
+}
+
+.env-chip.env-local {
+  --env-color: var(--env-local);
+}
+
+/* Inline warnings read as text with a marker, not alarm paragraphs. */
+.warn-text {
+  color: var(--warn-text);
+}
+
+/* ───────── command palette ───────── */
+
+.palette .item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.palette .item .p-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  background: var(--hover);
+}
+
+.palette .item.on .p-icon {
+  color: var(--text);
+  background: var(--active);
+}
+
+.palette-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.palette-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ───────── editor ───────── */
+
+.editor-empty {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-8);
+  padding: var(--s-6) var(--s-6);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+}
+
+.editor-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--s-2);
+}
+
+.editor-keys li {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.editor-keys .kbd {
+  min-width: 34px;
+}
+
+.editor-recent {
+  display: grid;
+  gap: var(--s-1);
+  align-content: start;
+  min-width: 200px;
+}
+
+.editor-recent .eyebrow {
+  margin-bottom: var(--s-1);
+}
+
+.editor-recent-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 5px 8px;
+  border-radius: var(--r-sm);
+  color: var(--text);
+  text-align: left;
+}
+
+.editor-recent-item:hover {
+  background: var(--hover);
+}
+
+.editor-recent-item svg {
+  color: var(--medium);
+}
+
+.saved-title {
+  white-space: nowrap;
+}
+
+.saved-head {
+  gap: var(--s-2);
+}
+
+.saved-scope {
+  flex: none;
+  padding: 2px;
+}
+
+.saved-scope button {
+  font-size: var(--fs-micro);
+  padding: 1px 6px;
+  height: 20px;
+}
+
+.env-note {
+  font-size: var(--fs-meta);
+}
+
+/* ───────── connections ───────── */
+
+.conn-filter {
+  margin-bottom: var(--s-4);
+}
+
+.conn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+
+.conn-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 3px 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.conn-card:hover {
+  box-shadow: var(--shadow-1);
+}
+
+.conn-card > .engine-badge {
+  grid-row: 1 / 3;
+  align-self: start;
+  margin-top: 1px;
+}
+
+.conn-card .last {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.conn-count {
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.conn-count b {
+  font-size: var(--fs-strong);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.conn-when {
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.conn-when.stale {
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--medium) 14%, transparent);
+}
+
+.conn-scan {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-weight: 550;
+}
+
+.conn-headline {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.conn-tools {
+  grid-column: 3;
+  grid-row: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+
+.conn-card:not(:has(.conn-headline)) .conn-tools {
+  grid-column: 2 / 4;
+  justify-content: flex-start;
+}
+
+/* Agent access: a quiet chip, a small menu on demand. */
+.agent-access {
+  position: relative;
+  display: inline-flex;
+}
+
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-micro);
+  white-space: nowrap;
+}
+
+.agent-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.agent-chip.access-off {
+  color: var(--text-3);
+}
+
+.agent-chip.access-query {
+  color: var(--warn-text);
+  border-color: color-mix(in srgb, var(--medium) 40%, var(--border));
+}
+
+.agent-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  width: 320px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  box-shadow: var(--shadow-pop);
+  animation: pop-in var(--dur) var(--ease);
+  cursor: default;
+}
+
+.agent-menu-head {
+  padding: 6px 10px 8px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.agent-option {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  text-align: left;
+  font-size: var(--fs-meta);
+}
+
+.agent-option:hover,
+.agent-option:focus-visible {
+  background: var(--hover);
+}
+
+.agent-option > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-option .muted {
+  font-size: var(--fs-micro);
+  line-height: 1.4;
+}
+
+.agent-check {
+  color: var(--accent);
+  padding-top: 1px;
+}
+
+/* Menu items show focus as a selected row, not a ring. */
+.agent-option:focus-visible,
+.share-item:focus-visible {
+  outline: none;
+  background: var(--active);
+}
+
+/* ───────── approval ───────── */
+
+.approval {
+  position: relative;
+  overflow: hidden;
+  animation: pop-in var(--dur) var(--ease);
+}
+
+.approval-timer {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--hover);
+}
+
+.approval-timer span {
+  display: block;
+  height: 100%;
+  background: var(--medium);
+  transform-origin: left center;
+  transition: transform 250ms linear;
+}
+
+.approval-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.approval-facts li {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  line-height: 1.4;
+}
+
+.approval-facts svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--good);
+}
+
+.approval-prod {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--r-md);
+  font-size: var(--fs-meta);
+  color: var(--env-production);
+  background: color-mix(in srgb, var(--env-production) 9%, transparent);
+}
+
+@media (max-width: 560px) {
+  .approval-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Runtime spread: the legend sits right-aligned under the values column. */
+.rs-legend {
+  text-align: right;
+}
+
+/* The peak label sits on a chip so a gridline value under it never reads through. */
+.tc-peak span {
+  padding: 0 4px;
+  border-radius: var(--r-xs);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+/* ───────── first run ───────── */
+
+.first-run {
+  display: grid;
+  gap: var(--s-4);
+  margin: var(--s-2) 0 var(--s-2);
+}
+
+.first-tiles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+}
+
+.first-tile {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: 4px 12px;
+  align-items: start;
+  align-content: start;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--raised);
+  text-align: left;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.first-tile:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-1);
+  transform: translateY(-1px);
+}
+
+.first-tile.on {
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--border-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.first-icon {
+  grid-row: 1 / 3;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  color: var(--text);
+  background: color-mix(in srgb, var(--brand) 24%, var(--surface));
+}
+
+.first-tile b {
+  font-size: var(--fs-strong);
+  font-weight: 650;
+}
+
+.first-tile > span:last-child {
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.first-promises {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+.first-promises li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.first-promises svg {
+  color: var(--good);
+}
+
+@media (max-width: 640px) {
+  .first-tiles {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Long expressions inside prose wrap as whole chips, line by line. */
+p code,
+li code,
+.prose code {
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  overflow-wrap: anywhere;
+}
+
+.editor-tabs.is-production {
+  box-shadow: inset 0 -2px 0 var(--env-production);
+}
+
+/* Window picker: windows past the kept history say so. */
+.menu-item .menu-sub {
+  display: block;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.menu-item.same > span:first-child {
+  color: var(--text-2);
+}
+
+.menu-item:has(.menu-sub) {
+  height: auto;
+  min-height: 30px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.menu-item .menu-sub {
+  font-weight: 400;
+  margin-top: 1px;
+}
+
+.side-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.side-add {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-right: 2px;
+  border-radius: var(--r-xs);
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.side-connections:hover .side-add,
+.side-add:focus-visible {
+  opacity: 1;
+}
+
+.side-add:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.tc-peak.below span {
+  top: 6px;
 }

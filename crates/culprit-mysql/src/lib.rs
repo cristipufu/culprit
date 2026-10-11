@@ -5,6 +5,7 @@ mod collect;
 mod connect;
 pub mod deadlocks;
 pub mod fingerprint;
+mod json_members;
 pub mod plan_json;
 pub mod plan_maria;
 pub mod plan_tree;
@@ -46,6 +47,14 @@ impl MysqlProvider {
         }
         Ok(MysqlProvider { connector: Connector::new(spec)?, spec: spec.clone() })
     }
+
+    /// The plan, tagged with the server's version so its notes can say what this version can and can't measure.
+    fn versioned(&self, mut plan: Plan) -> Plan {
+        if let Some(version) = self.connector.version() {
+            plan.props.insert("server_version".into(), version.to_string());
+        }
+        plan
+    }
 }
 
 #[async_trait]
@@ -79,9 +88,18 @@ impl Provider for MysqlProvider {
                     .await?
                     .ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
                 let json = row.text("explain").ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
-                plan_json::parse(&json, PlanKind::Estimated, Some(statement), schema)
+                plan_json::parse(&json, PlanKind::Estimated, Some(statement), schema).map(|plan| self.versioned(plan))
             }
             ExplainMode::Analyze => {
+                if !self.connector.measures_runs() {
+                    let version = self.connector.version().unwrap_or_default();
+                    let short = version.split('-').next().unwrap_or(version);
+                    return Err(Error::new(
+                        culprit_core::ErrorCode::Unsupported,
+                        format!("MySQL {short} can't measure a run: EXPLAIN ANALYZE arrived in MySQL 8.0.18"),
+                    )
+                    .with_hint("Explain shows the estimated plan; the scan's statement statistics show each query's measured times."));
+                }
                 if !reads_only(statement) {
                     return Err(Error::invalid(
                         "Explain Analyze runs the statement, so Culprit only allows it for SELECT",
@@ -136,8 +154,10 @@ impl Provider for MysqlProvider {
     }
 
     async fn recorded_changes(&self, since: &str) -> Result<Vec<culprit_core::ChangeEvent>> {
-        let mut conn = self.connector.connect(Scope::Database).await?;
-        let out = recorded::changes(&mut conn, since).await;
+        let Some(database) = self.connector.database.clone() else { return Ok(Vec::new()) };
+        // No default database: these catalog reads must not count as the application's statements.
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let out = recorded::changes(&mut conn, &database, since).await;
         let _ = conn.disconnect().await;
         out
     }
@@ -300,7 +320,11 @@ impl Provider for MysqlProvider {
         let _ = conn.disconnect().await;
         let mut result = result?;
         result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        result.messages.push("Committed.".to_string());
+        // "3 rows changed, committed." for a write; a statement that returned rows just says it committed.
+        match result.messages.last_mut().filter(|_| result.columns.is_empty()) {
+            Some(last) => last.push_str(" changed, committed."),
+            None => result.messages.push("Committed.".to_string()),
+        }
         Ok(result)
     }
 }

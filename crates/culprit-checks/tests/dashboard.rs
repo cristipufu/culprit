@@ -222,3 +222,25 @@ fn mariadb_is_called_mariadb() {
     assert_eq!(stats.status, TileStatus::Bad);
     assert!(stats.takeaway.contains("performance_schema is OFF"), "{}", stats.takeaway);
 }
+
+#[test]
+fn slow_log_lock_time_is_not_called_where_time_goes() {
+    // MariaDB without performance_schema: the slow query log keeps only each statement's lock time.
+    let mut r = report("mysql-demo");
+    r.snapshot.server.product = "MariaDB 10.5.29".into();
+    r.snapshot.server.capabilities.retain(|c| *c != culprit_core::Capability::PerformanceSchema);
+    let workload = r.snapshot.workload.as_mut().expect("workload");
+    workload.source = "slow query log".into();
+    workload.windowed = true;
+    r.snapshot.waits = vec![culprit_core::WaitStat {
+        category: "Lock".into(),
+        wait_type: Some("lock time".into()),
+        wait_ms: 9.0,
+        tasks: None,
+    }];
+    let d = dashboard(&r);
+    let waits = tile(&d, TileKey::Waits);
+    assert!(waits.takeaway.starts_with("MariaDB times no waits without performance_schema"), "{}", waits.takeaway);
+    assert!(!waits.takeaway.contains("Most time goes to"), "{}", waits.takeaway);
+    assert_eq!(waits.status, TileStatus::Info, "9 ms of lock time is a sliver of database time");
+}

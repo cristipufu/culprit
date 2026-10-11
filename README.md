@@ -36,7 +36,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.png">
-  <img alt="Culprit's dashboard for a SQL Server database: database time over five hours with a plan change flagged, 14 findings ranked by severity, the top queries, where time goes, a blocked session right now, health, deadlocks, index advice and plan insights" src="docs/images/dashboard-light.png">
+  <img alt="Culprit's dashboard for a SQL Server database: database time over five hours with a plan change, a deploy mark and a throttling period on its timeline, 24 findings ranked by severity, the top queries, where time goes, a blocked session right now, health, deadlocks, index advice and plan insights" src="docs/images/dashboard-light.png">
 </picture>
 
 <br>

@@ -135,6 +135,12 @@ pub fn coverage_note(plan: &Plan) -> Option<String> {
         (Engine::Postgres, true) => Some(
             "Postgres plans carry no index suggestions or memory grants; index advice comes from the filters.".into(),
         ),
+        // EXPLAIN ANALYZE arrived in MySQL 8.0.18: older servers can't add actual rows at all.
+        (Engine::Mysql, false)
+            if plan.props.get("server_version").is_some_and(|v| !crate::version_at_least(v, [8, 0, 18])) =>
+        {
+            Some("MySQL's EXPLAIN has no actual rows, spills, memory or threads, and this version can't measure a run (EXPLAIN ANALYZE arrived in MySQL 8.0.18).".into())
+        }
         (Engine::Mysql, false) => Some(
             "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.".into(),
         ),
@@ -2247,8 +2253,12 @@ mod tests {
 
     #[test]
     fn coverage_is_said_plainly_per_engine() {
-        let p = plan(Engine::Mysql, node(0, "Table scan", NodeKind::Scan));
-        assert!(coverage_note(&p).unwrap().contains("EXPLAIN ANALYZE"));
+        let mut p = plan(Engine::Mysql, node(0, "Table scan", NodeKind::Scan));
+        assert!(coverage_note(&p).unwrap().contains("EXPLAIN ANALYZE adds actual rows"));
+        p.props.insert("server_version".into(), "5.7.44-log".into());
+        assert!(coverage_note(&p).unwrap().contains("can't measure a run"), "5.7 has no EXPLAIN ANALYZE");
+        p.props.insert("server_version".into(), "8.0.36".into());
+        assert!(coverage_note(&p).unwrap().contains("EXPLAIN ANALYZE adds actual rows"));
         let mut actual = plan(Engine::Mssql, node(0, "Sort", NodeKind::Sort));
         actual.kind = PlanKind::Actual;
         assert!(coverage_note(&actual).is_none());

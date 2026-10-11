@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use culprit_core::insights::{coverage_note, insights};
 use culprit_core::{
     Capability, Dashboard, Engine, Finding, ItemKind, LiveState, QueryStat, Report, ServerInfo, Severity, Signal,
-    SignalStatus, SignalUnit, Snapshot, Tile, TileItem, TileKey, TileMetric, TileStatus, Workload, format,
+    SignalStatus, SignalUnit, Snapshot, Tile, TileItem, TileKey, TileMetric, TileStatus, WaitScope, Workload, format,
 };
 
 use crate::support::{app_queries, query_handle, statement_handle, window_phrase};
@@ -486,6 +486,34 @@ fn waits(s: &Snapshot) -> Tile {
     let Some(r) = report else { return waits_missing(s) };
     let top = &r.categories[0];
     let named = r.categories.iter().find(|c| c.key != "other");
+    // Without performance_schema, MySQL and MariaDB time no waits: the slow query log keeps only each statement's lock
+    // time, so "100% locks" would be 100% of the little that was measured. Say what is known, against database time.
+    if r.scope == WaitScope::Statements && s.server.engine == Engine::Mysql {
+        let database_ms = s.workload.as_ref().map(|w| w.total_time_ms).unwrap_or(0.0);
+        let share = if database_ms > 0.0 { r.total_ms / database_ms } else { 0.0 };
+        let takeaway = format!(
+            "{} times no waits without performance_schema; logged statements waited {} on locks ({} of their time).",
+            family(&s.server),
+            format::duration(r.total_ms),
+            format::percent(share)
+        );
+        let mut tile =
+            Tile::new(TileKey::Waits, if share >= 0.25 { TileStatus::Watch } else { TileStatus::Info }, takeaway);
+        tile.detail = top.detail.clone();
+        tile.metrics = vec![TileMetric::new("total", "Lock time", Some(r.total_ms), format::duration(r.total_ms))];
+        tile.items = r
+            .categories
+            .iter()
+            .take(6)
+            .map(|c| {
+                let mut item = TileItem::new(ItemKind::Wait, c.key.clone(), c.label.clone());
+                item.value = Some(format::duration(c.wait_ms));
+                item.query_id = c.queries.first().map(|q| q.id.clone());
+                item
+            })
+            .collect();
+        return tile;
+    }
     let takeaway = if top.key == "other" {
         // "Everything else" leading says nothing; say what is known and how much isn't.
         match named {

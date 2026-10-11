@@ -191,19 +191,28 @@ fn nested_loop(value: &Value, cx: &Context, id: &mut u32, costed: bool) -> Vec<P
             (None, None) => children.extend(operations(item, cx, id, costed)),
         }
     }
-    // Before MariaDB 11 there is no `loops`: each table runs once per row the tables before it produce.
+    // Before MariaDB 11 there is no `loops`: each table runs once per row the tables before it produce, except a table
+    // behind a join buffer, which is read once per buffer fill (the plan doesn't say how many fills; count one).
     let mut prefix: f64 = 1.0;
+    let mut joined_rows = None;
     for child in children.iter_mut() {
         if let Some(rows) = child.props.get("rows").and_then(|r| r.parse::<f64>().ok())
             && !child.props.contains_key("loops")
         {
-            child.est_executions = prefix.max(1.0);
+            let buffered = child.props.contains_key("join_buffer_join_type");
+            let per_row = prefix.max(1.0);
+            child.est_executions = if buffered { 1.0 } else { per_row };
             if !costed {
                 let inner: f64 = child.children.iter().map(|c| c.subtree_cost).sum();
                 child.subtree_cost = rows * child.est_executions + inner;
             }
+            // What the join has produced after this table, buffered or not.
+            prefix = per_row * child.est_rows_total() / child.est_executions.max(1.0);
+            joined_rows = Some(prefix);
+        } else {
+            prefix = child.est_rows_total();
+            joined_rows = None;
         }
-        prefix = child.est_rows_total();
     }
     // One table needs no join around it.
     if children.len() <= 1 {
@@ -212,7 +221,7 @@ fn nested_loop(value: &Value, cx: &Context, id: &mut u32, costed: bool) -> Vec<P
     let mut join = new_node(id, "Nested loop", NodeKind::Join);
     join.children = children;
     finish_wrapper(&mut join);
-    join.est_rows = join.children.last().map(|c| c.est_rows_total()).unwrap_or(0.0);
+    join.est_rows = joined_rows.unwrap_or_else(|| join.children.last().map(|c| c.est_rows_total()).unwrap_or(0.0));
     join.act_rows = join.children.last().and_then(|c| c.act_rows);
     vec![join]
 }
@@ -583,5 +592,37 @@ mod tests {
         let temp = &plan.root.children[0].children[0];
         assert_eq!(temp.op, "Temporary table");
         assert_eq!(temp.children[0].object.as_deref(), Some("shop.orders"));
+    }
+
+    /// MariaDB 10.5's EXPLAIN for a three-table join, as the server wrote it: one `table` member per table, repeated,
+    /// with a join buffer between them.
+    const JOIN_10_5: &str = r#"{
+  "query_block": {
+    "select_id": 1,
+    "table": {"table_name": "o", "access_type": "range", "possible_keys": ["PRIMARY"], "key": "PRIMARY",
+              "key_length": "4", "used_key_parts": ["id"], "rows": 4, "filtered": 100, "attached_condition": "o.`id` < 5"},
+    "block-nl-join": {
+      "table": {"table_name": "p", "access_type": "ALL", "rows": 19658, "filtered": 100},
+      "buffer_type": "flat", "buffer_size": "1Kb", "join_type": "BNL", "attached_condition": "p.category = o.`status`"
+    },
+    "table": {"table_name": "c", "access_type": "ref", "possible_keys": ["ix_customers_region"],
+              "key": "ix_customers_region", "key_length": "66", "used_key_parts": ["region"], "ref": ["shop.o.channel"],
+              "rows": 24870, "filtered": 100}
+  }
+}"#;
+
+    #[test]
+    fn mariadb_10_joins_keep_every_table() {
+        let sql = "SELECT o.id FROM orders o JOIN customers c ON c.region = o.channel JOIN products p ON p.category = o.status";
+        let plan = crate::plan_json::parse(JOIN_10_5, PlanKind::Estimated, Some(sql), Some("shop")).unwrap();
+        let join = &plan.root.children[0];
+        assert_eq!(join.op, "Nested loop");
+        let tables: Vec<&str> = join.children.iter().filter_map(|c| c.object.as_deref()).collect();
+        assert_eq!(tables, ["shop.orders", "shop.products", "shop.customers"]);
+        // The buffered table is read once per buffer fill, not once per order; the lookup after it runs once per row
+        // the join has produced so far.
+        assert_eq!(join.children[1].est_executions, 1.0);
+        assert_eq!(join.children[2].est_executions, 4.0 * 19_658.0);
+        assert_eq!(join.est_rows, 4.0 * 19_658.0 * 24_870.0);
     }
 }

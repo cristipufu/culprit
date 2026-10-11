@@ -19,11 +19,16 @@ const LOCK_WAITS_SQL: &str = "SELECT t.PROCESSLIST_ID AS session, b.PROCESSLIST_
   JOIN performance_schema.threads b ON b.THREAD_ID = w.BLOCKING_THREAD_ID";
 
 /// MariaDB (and MySQL 5.7): InnoDB's own lock views in information_schema, which need PROCESS.
+///
+/// A transaction that hasn't written yet has no id of its own: MariaDB reports it as trx 0 in INNODB_LOCK_WAITS (and in
+/// INNODB_TRX on 10.6+, while 10.5 shows a different internal number there). So the waiter is found by the lock it
+/// asked for, which is unique; a blocker reported as trx 0 can't be told apart from other readers and is left out
+/// rather than pinned on the wrong session.
 const INNODB_LOCK_WAITS_SQL: &str = "SELECT r.trx_mysql_thread_id AS session, b.trx_mysql_thread_id AS blocking,
        l.lock_mode AS mode, l.lock_type AS resource, REPLACE(l.lock_table, '`', '') AS object, l.lock_index AS index_name
   FROM information_schema.INNODB_LOCK_WAITS w
-  JOIN information_schema.INNODB_TRX r ON r.trx_id = w.requesting_trx_id
-  JOIN information_schema.INNODB_TRX b ON b.trx_id = w.blocking_trx_id
+  JOIN information_schema.INNODB_TRX r ON r.trx_requested_lock_id = w.requested_lock_id
+  JOIN information_schema.INNODB_TRX b ON b.trx_id = w.blocking_trx_id AND w.blocking_trx_id <> 0
   LEFT JOIN information_schema.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id";
 
 /// Every (waiting, blocking) pair with what the waiter asked for, from whichever lock views this server has.

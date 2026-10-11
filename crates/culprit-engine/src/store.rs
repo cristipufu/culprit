@@ -95,18 +95,43 @@ fn xdg(var: &str, unix_default: &str, fallback: fn() -> Option<PathBuf>) -> Resu
 }
 
 pub fn safe_file_name(name: &str) -> String {
-    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect()
+    let mut safe: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    // `.` and `..` are the directory itself and its parent; a leading dot also hides the folder. Never produce either.
+    if safe.starts_with('.') || safe.is_empty() {
+        safe.insert(0, '_');
+    }
+    if cfg!(windows) { windows_safe(safe) } else { safe }
+}
+
+/// Windows reserves device names (CON, NUL, COM1…) whatever the extension, and drops a trailing dot. Only applied on
+/// Windows, so existing report folders elsewhere keep their names.
+fn windows_safe(mut name: String) -> String {
+    let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
+    let numbered =
+        stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit();
+    if numbered || ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str()) {
+        name.insert(0, '_');
+    }
+    if name.ends_with('.') {
+        name.push('_');
+    }
+    name
 }
 
 pub fn validate_name(name: &str) -> Result<()> {
+    // No leading dot: names become folder names, and `.`/`..` would point at the reports folder itself or its parent.
     let ok = !name.is_empty()
         && name.len() <= 64
+        && !name.starts_with('.')
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
     if ok {
         return Ok(());
     }
     Err(Error::invalid(format!("'{name}' is not a valid connection name"))
-        .with_hint("Use letters, digits, '-', '_' or '.', up to 64 characters, e.g. shop-staging"))
+        .with_hint("Use letters, digits, '-', '_' or '.' (not first), up to 64 characters, e.g. shop-staging"))
 }
 
 pub struct Store {
@@ -175,4 +200,44 @@ impl Store {
 
 fn io_error(path: &Path, error: std::io::Error) -> Error {
     Error::internal(format!("{}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{safe_file_name, validate_name};
+
+    #[test]
+    fn names_never_leave_the_reports_folder() {
+        for bad in [".", "..", ".hidden", "", "a/b", "a\\b"] {
+            assert!(validate_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_name("shop-staging.eu").is_ok());
+        // Whatever the platform's extra rules, a folder name is never empty and never starts with a dot.
+        for name in ["..", ".", "", "../x", ".hidden"] {
+            let safe = safe_file_name(name);
+            assert!(!safe.is_empty() && !safe.starts_with('.') && !safe.contains('/'), "{name:?} -> {safe:?}");
+        }
+        assert_eq!(safe_file_name("shop-staging"), "shop-staging");
+    }
+}
+
+#[cfg(test)]
+mod windows_names {
+    use super::windows_safe;
+
+    #[test]
+    fn device_names_and_trailing_dots_get_a_safe_spelling() {
+        for (name, safe) in [
+            ("con", "_con"),
+            ("NUL.json", "_NUL.json"),
+            ("com1", "_com1"),
+            ("lpt9.x", "_lpt9.x"),
+            ("console", "console"),
+            ("com10", "com10"),
+            ("shop.", "shop._"),
+            ("shop-staging", "shop-staging"),
+        ] {
+            assert_eq!(windows_safe(name.to_string()), safe, "{name}");
+        }
+    }
 }

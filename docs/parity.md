@@ -67,4 +67,28 @@ to the plan the scan captured when the normalized text (`WHERE id = ?`) can't be
 
 SQL Server 2022 (`dev/mssql`), PostgreSQL (`dev/postgres`), MySQL 8.4 (`dev/mysql`), MariaDB 11.8 with
 performance_schema and 10.11 with defaults plus the slow log table and userstat (the `mariadb-demo` and `mariadb10-demo`
-containers, seeded with `dev/mysql/seed.sql` and its workload).
+containers, seeded with `dev/mysql/seed.sql` and its workload). Older versions: see [Versions](#versions).
+
+## Versions
+
+Older servers keep less, and Culprit says what each one can't do instead of failing on it. Verified live on MySQL 5.7.44
+(performance_schema on), MariaDB 10.5.29 (defaults: performance_schema off, then the no-restart unlock: userstat, the
+slow log to the table at 100 ms) and MariaDB 10.6.28 (performance_schema on), each seeded with `dev/mysql/seed.sql` and
+its workload, with a planted blocking chain and a planted deadlock: connect, scan, dashboard, top, explain, analyze,
+live, progress, blocking, deadlocks, waits and waits --now, indexes, changes, events, catalog, run and execute, saved
+queries, doctor, and every MCP tool.
+
+| Version | What it lacks | What Culprit does |
+|---|---|---|
+| MySQL 5.7 | TLS with ECDHE (builds on OpenSSL 1.0 negotiate only DHE suites, which rustls doesn't offer) | `ssl-mode=PREFERRED` (the default for local hosts) falls back to plaintext like the mysql client; stricter modes say the server and Culprit share no cipher suite and how to fix it |
+| MySQL 5.7 | A sample statement per digest (8.0.3) | Plans come from the statement history; with its consumers off the scan names the `setup_consumers` update that turns them on |
+| MySQL 5.7 | EXPLAIN ANALYZE (8.0.18) | Analyze says this version can't measure a run; plan notes say so too |
+| MySQL 5.7 | Invisible indexes (8.0) | Unused-index fixes save the definition and drop |
+| MySQL 5.7 | `performance_schema.data_lock_waits` (8.0) | Blocking reads `INNODB_LOCK_WAITS` |
+| MariaDB 10.5 | Ignored indexes (10.6) | Unused-index fixes save the definition and drop |
+| MariaDB 10.5, 10.6 | `SHOW ANALYZE` (10.9) | Progress shows elapsed time and rows examined where the server counts them as it goes |
+| MariaDB before 11 | A `nested_loop` array in EXPLAIN JSON (each joined table is another `table` member of one object) | Read member by member, so every table of a join is in the plan; buffered tables count one read per buffer fill |
+| MariaDB 10.x | An id for transactions that haven't written (reported as trx 0) | Blocked sessions are matched by the lock they requested, so plain reads are never shown as waiting |
+| MariaDB without performance_schema | Wait timing | The dashboard reports the slow log's lock time against database time, not as "where time goes" |
+
+Not verified: MySQL 5.6 and earlier, MariaDB 10.4 and earlier, Percona Server, and MySQL 5.7 with performance_schema off.

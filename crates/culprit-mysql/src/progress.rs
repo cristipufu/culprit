@@ -11,7 +11,8 @@ use crate::rows::{explain_one, query_one};
 use crate::{plan_json, plan_maria};
 
 pub(crate) const NO_OPERATOR_PROGRESS: &str = "MySQL doesn't report how far a running query has got, operator by \
-operator. Culprit shows the plan MySQL is executing, how long it has run and how many rows it has examined so far. \
+operator. Culprit shows the plan MySQL is executing, how long it has run and, for plans MySQL counts as it goes, how \
+many rows it has examined so far. \
 ALTER TABLE and other long statements report stage progress when performance_schema stage events are on.";
 
 /// TIMER_* columns are picoseconds; for a statement still running, TIMER_WAIT is the time so far.
@@ -36,7 +37,8 @@ const MARIADB_SQL: &str =
   FROM information_schema.PROCESSLIST WHERE ID = {id}";
 
 const MARIADB_NO_ANALYZE: &str = "MariaDB reports a running statement's operators through SHOW ANALYZE, which needs \
-MariaDB 10.9 or newer. Culprit shows how long it has run and how many rows it has examined so far.";
+MariaDB 10.9 or newer. Culprit shows how long it has run and, for plans MariaDB counts as it goes, how many rows it \
+has examined so far.";
 
 pub(crate) async fn query_progress(connector: &Connector, session: &str, with_plan: bool) -> Result<QueryProgress> {
     let id = session_number(session)?;
@@ -73,7 +75,12 @@ pub(crate) async fn query_progress(connector: &Connector, session: &str, with_pl
     progress.elapsed_ms = row.number("elapsed_ms");
     // MySQL fills ROWS_EXAMINED in as the statement goes for some plans and only at the end for others: 0 means unknown.
     progress.rows_examined = row.number("rows_examined").filter(|r| *r > 0.0);
-    progress.wait = row.number("lock_ms").filter(|ms| *ms >= 1.0).map(|ms| format!("Waited {ms:.0} ms for locks"));
+    // The thread state names a lock it is waiting for ("Waiting for table metadata lock"); LOCK_TIME is how long the
+    // statement has waited for locks so far.
+    if let Some(state) = progress.state.as_deref().filter(|s| s.to_ascii_lowercase().contains("lock")) {
+        progress.wait = Some(state.to_string());
+        progress.wait_ms = row.number("lock_ms").filter(|ms| *ms >= 1.0);
+    }
     if let Some(stage) = row.text("stage") {
         let name = stage.trim_start_matches("stage/").replace('/', ": ");
         progress.phase = Some(name);

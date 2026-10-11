@@ -4,9 +4,9 @@
 
 use culprit_core::changes::epoch;
 use culprit_core::{ChangeEvent, EventAction, EventKind, EventSource, Result};
-use mysql_async::Conn;
+use mysql_async::{Conn, Value};
 
-use crate::rows::query;
+use crate::rows::{query, query_with};
 
 const MAX_ROWS: usize = 300;
 
@@ -14,17 +14,21 @@ fn utc(column: &str) -> String {
     format!("DATE_FORMAT({column}, '%Y-%m-%dT%H:%i:%sZ')")
 }
 
-pub async fn changes(conn: &mut Conn, since: &str) -> Result<Vec<ChangeEvent>> {
+/// Changes to `database` since `since`. The session has no default database, so these reads never count as the
+/// application's workload where the server keeps no statement text to tell them apart (MySQL 5.7, MariaDB).
+pub async fn changes(conn: &mut Conn, database: &str, since: &str) -> Result<Vec<ChangeEvent>> {
     // The session runs in UTC, so TIMESTAMP columns compare and print in UTC.
     let Some(since) = culprit_core::changes::sql_timestamp(since) else { return Ok(Vec::new()) };
+    let schema = || vec![Value::from(database)];
     let mut out = Vec::new();
-    let tables = query(
+    let tables = query_with(
         conn,
         &format!(
             "SELECT TABLE_SCHEMA AS s, TABLE_NAME AS n, TABLE_TYPE AS kind, {} AS at FROM information_schema.TABLES
-             WHERE TABLE_SCHEMA = DATABASE() AND CREATE_TIME > '{since}' ORDER BY CREATE_TIME DESC LIMIT {MAX_ROWS}",
+             WHERE TABLE_SCHEMA = ? AND CREATE_TIME > '{since}' ORDER BY CREATE_TIME DESC LIMIT {MAX_ROWS}",
             utc("CREATE_TIME")
         ),
+        schema(),
     )
     .await?;
     for r in tables {
@@ -51,15 +55,16 @@ pub async fn changes(conn: &mut Conn, since: &str) -> Result<Vec<ChangeEvent>> {
         };
         out.push(event.action(EventAction::Changed));
     }
-    let routines = query(
+    let routines = query_with(
         conn,
         &format!(
             "SELECT ROUTINE_SCHEMA AS s, ROUTINE_NAME AS n, ROUTINE_TYPE AS kind, {} AS created, {} AS altered
-             FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() AND LAST_ALTERED > '{since}'
+             FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND LAST_ALTERED > '{since}'
              ORDER BY LAST_ALTERED DESC LIMIT {MAX_ROWS}",
             utc("CREATED"),
             utc("LAST_ALTERED")
         ),
+        schema(),
     )
     .await
     .unwrap_or_default();
@@ -85,13 +90,14 @@ pub async fn changes(conn: &mut Conn, since: &str) -> Result<Vec<ChangeEvent>> {
                 .object(name),
         );
     }
-    let triggers = query(
+    let triggers = query_with(
         conn,
         &format!(
             "SELECT TRIGGER_NAME AS n, EVENT_OBJECT_SCHEMA AS s, EVENT_OBJECT_TABLE AS t, {} AS at
-             FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() AND CREATED > '{since}' LIMIT {MAX_ROWS}",
+             FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND CREATED > '{since}' LIMIT {MAX_ROWS}",
             utc("CREATED")
         ),
+        schema(),
     )
     .await
     .unwrap_or_default();

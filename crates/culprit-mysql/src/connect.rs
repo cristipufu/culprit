@@ -99,6 +99,8 @@ pub enum Scope {
 pub struct Connector {
     base: OptsBuilder,
     flavor: OnceLock<Flavor>,
+    /// `VERSION()` as the server reports it, read with the flavor on the first session.
+    version: OnceLock<String>,
     tls: Tls,
     root_cert: Option<PathBuf>,
     pub host: String,
@@ -172,6 +174,7 @@ impl Connector {
         Ok(Connector {
             base,
             flavor: OnceLock::new(),
+            version: OnceLock::new(),
             tls,
             root_cert,
             host,
@@ -200,8 +203,10 @@ impl Connector {
     pub async fn connect(&self, scope: Scope) -> Result<Conn> {
         let attempt = self.open(self.tls).await;
         let mut conn = match attempt {
-            // PREFERRED: the server doesn't do TLS at all, so continue in plaintext like the mysql client does.
-            Err(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer)) if self.tls == Tls::Preferred => {
+            // PREFERRED: the server doesn't do TLS at all, or no encrypted session can be agreed (MySQL 5.7 builds on
+            // OpenSSL 1.0 only negotiate DHE suites, which rustls doesn't offer). Continue in plaintext like the mysql
+            // client does; PREFERRED never verified the certificate, so nothing that was protected is given up.
+            Err(e) if self.tls == Tls::Preferred && (no_server_tls(&e) || is_tls_handshake_error(&e)) => {
                 self.open(Tls::Disabled).await.map_err(|e| self.connect_error(e))?
             }
             other => other.map_err(|e| self.connect_error(e))?,
@@ -211,7 +216,10 @@ impl Connector {
             None => {
                 let version: Option<String> =
                     conn.query_first(format!("SELECT VERSION() {TAG}")).await.map_err(map_error)?;
-                *self.flavor.get_or_init(|| Flavor::of_version(&version.unwrap_or_default()))
+                let version = version.unwrap_or_default();
+                let flavor = *self.flavor.get_or_init(|| Flavor::of_version(&version));
+                let _ = self.version.set(version);
+                flavor
             }
         };
         for (statement, required) in SESSION_SETUP.into_iter().chain([(flavor.timeout(), false)]) {
@@ -229,6 +237,16 @@ impl Connector {
     /// Which server this is, once a session has been opened (MySQL until then).
     pub fn flavor(&self) -> Flavor {
         self.flavor.get().copied().unwrap_or(Flavor::Mysql)
+    }
+
+    /// The server's `VERSION()`, once a session has been opened.
+    pub fn version(&self) -> Option<&str> {
+        self.version.get().map(String::as_str)
+    }
+
+    /// Whether the server can measure a run. MySQL added EXPLAIN ANALYZE in 8.0.18; MariaDB has had ANALYZE since 10.1.
+    pub fn measures_runs(&self) -> bool {
+        self.flavor() == Flavor::Mariadb || self.version().is_none_or(|v| culprit_core::version_at_least(v, [8, 0, 18]))
     }
 
     async fn open(&self, tls: Tls) -> std::result::Result<Conn, mysql_async::Error> {
@@ -263,12 +281,30 @@ impl Connector {
             return Error::new(ErrorCode::ConnectionFailed, format!("Cannot resolve host `{host}`"))
                 .with_hint("Check the host name.");
         }
-        if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+        // A specific TLS diagnosis (certificate, cipher suites) already carries its own advice.
+        if mapped.hint.is_none() && (lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl")) {
             return Error::new(ErrorCode::ConnectionFailed, mapped.message).with_hint(
                 "TLS failed. Check `ssl-mode` (DISABLED, PREFERRED, REQUIRED, VERIFY_CA, VERIFY_IDENTITY) and `ssl-ca`.",
             );
         }
         mapped
+    }
+}
+
+fn no_server_tls(error: &mysql_async::Error) -> bool {
+    matches!(error, mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))
+}
+
+/// The TLS layer failed (no shared cipher suite, protocol version, a bad record), as opposed to the network or the
+/// server refusing the login.
+fn is_tls_handshake_error(error: &mysql_async::Error) -> bool {
+    match error {
+        mysql_async::Error::Io(IoError::Tls(_)) => true,
+        mysql_async::Error::Io(IoError::Io(io)) => {
+            io.get_ref().is_some_and(|inner| inner.downcast_ref::<rustls::Error>().is_some())
+                || io.to_string().contains("received fatal alert")
+        }
+        _ => false,
     }
 }
 
@@ -308,6 +344,13 @@ pub fn map_error(error: mysql_async::Error) -> Error {
             if lower.contains("certificate") {
                 return Error::new(ErrorCode::ConnectionFailed, format!("The server's TLS certificate didn't verify: {message}"))
                     .with_hint("Point ssl-ca at the server's CA bundle (ssl-ca=rds for Amazon RDS), or add ssl-mode=REQUIRED to encrypt without verifying the certificate.");
+            }
+            if lower.contains("handshakefailure") || lower.contains("handshake_failure") {
+                return Error::new(
+                    ErrorCode::ConnectionFailed,
+                    "The server and Culprit share no TLS cipher suite, so no encrypted session could be set up",
+                )
+                .with_hint("Culprit needs TLS 1.2+ with ECDHE and AES-GCM or ChaCha20. MySQL 5.7 built on OpenSSL 1.0 only negotiates DHE suites: enable ECDHE on the server (OpenSSL 1.1+, ssl_cipher), or use ssl-mode=PREFERRED or DISABLED on a trusted network.");
             }
             Error::new(ErrorCode::ConnectionFailed, message)
         }
@@ -406,5 +449,23 @@ mod tests {
         assert_eq!(map_error(server(1142)).code, ErrorCode::PermissionDenied);
         assert_eq!(map_error(server(3024)).code, ErrorCode::Timeout);
         assert_eq!(map_error(server(1049)).code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn a_failed_tls_handshake_is_told_apart_from_the_network() {
+        // MySQL 5.7 on OpenSSL 1.0 offers only DHE suites; rustls answers with a handshake_failure alert.
+        let alert = rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure);
+        let tls = mysql_async::Error::Io(IoError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, alert)));
+        assert!(is_tls_handshake_error(&tls));
+        let mapped = map_error(tls);
+        assert!(mapped.message.contains("share no TLS cipher suite"), "{}", mapped.message);
+        assert!(mapped.hint.as_deref().is_some_and(|h| h.contains("ECDHE")));
+
+        let refused = mysql_async::Error::Io(IoError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        )));
+        assert!(!is_tls_handshake_error(&refused));
+        assert!(!no_server_tls(&refused));
     }
 }

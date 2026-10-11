@@ -10,6 +10,7 @@ import type { Engine } from "../gen/Engine";
 import { api, copyText, errorMessage, type ApiError } from "../lib/api";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, setState, toast, useStore } from "../lib/store";
+import { keys } from "../lib/keys";
 
 const PATTERN: Record<DeadlockPattern, string> = {
   "key-lookup": "Key lookup",
@@ -144,7 +145,7 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
         <span className="muted dl-source">{sourceLine(engine)}</span>
         <span className="spacer" />
         <span className="muted dl-paste-hint">
-          <ClipboardPaste size={12} /> Paste <span className="kbd">⌘V</span> or drop a deadlock to explain it
+          <ClipboardPaste size={12} /> Paste <span className="kbd">{keys("⌘V")}</span> or drop a deadlock to explain it
         </span>
       </div>
 
@@ -298,7 +299,7 @@ function DropZone({ onText }: { onText: (text: string) => Promise<void> }) {
         <p className="muted">Paste a SQL Server deadlock graph (.xdl), the LATEST DETECTED DEADLOCK section from MySQL or MariaDB, or Postgres log lines from “deadlock detected”. Culprit names the pattern and the fix.</p>
         <textarea
           aria-label="Paste a deadlock"
-          placeholder="Paste here, or press ⌘V anywhere on this page"
+          placeholder={keys("Paste here, or press ⌘V anywhere on this page")}
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={3}

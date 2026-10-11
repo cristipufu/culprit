@@ -22,6 +22,7 @@ import { catalogFromReport, completionConfig } from "../lib/completion";
 import { duration } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
 import { isMariadb } from "../lib/engines";
+import { keys } from "../lib/keys";
 
 type Output =
   | { kind: "none" }
@@ -37,7 +38,7 @@ const TABS_KEY = "culprit.editor.tabs";
 const SPLIT_KEY = "culprit.editor.split";
 const RAIL_KEY = "culprit.editor.rail";
 const ROW_LIMIT = 1000;
-const PLACEHOLDER = "-- Write a query. ⌘↵ runs it (or the selection), ⌘E shows its plan without running it, ⌘S saves it.\n";
+const PLACEHOLDER = keys("-- Write a query. ⌘↵ runs it (or the selection), ⌘E shows its plan without running it, ⌘S saves it.\n");
 
 /** SQL colors from the same tokens as every other code block, so they follow light and dark mode. */
 const sqlColors = syntaxHighlighting(
@@ -441,12 +442,12 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
               {tab.saved && <Bookmark size={11} className="tab-saved" />}
               <span className="tab-title">{tab.title}</span>
               {dirty(tab) && <span className="tab-dirty" title="Changed since it was saved" />}
-              <button className="tab-close" title="Close tab (⌘⇧W)" onClick={(e) => (e.stopPropagation(), closeTab(tab.id))}>
+              <button className="tab-close" title={keys("Close tab (⌘⇧W)")} onClick={(e) => (e.stopPropagation(), closeTab(tab.id))}>
                 <X size={11} />
               </button>
             </div>
           ))}
-          <button className="icon-btn" title="New tab (⌘T)" onClick={() => newTab()}>
+          <button className="icon-btn" title={keys("New tab (⌘T)")} onClick={() => newTab()}>
             <Plus size={14} />
           </button>
         </div>
@@ -456,17 +457,17 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
         <div className="editor-work">
           <div className="toolbar">
             <button className="btn primary" onClick={() => run(target())} title="Run the selection, or the whole tab">
-              <Play size={13} /> Run <span className="kbd">⌘↵</span>
+              <Play size={13} /> Run <span className="kbd">{keys("⌘↵")}</span>
             </button>
             <button className="btn" onClick={() => explain("estimated")} title="Show the plan without running the statement">
-              <ScanSearch size={14} /> Explain <span className="kbd">⌘E</span>
+              <ScanSearch size={14} /> Explain <span className="kbd">{keys("⌘E")}</span>
             </button>
             <button className="btn" onClick={() => explain("analyze")} title="Run the statement and measure each step">
-              <Zap size={13} /> Analyze <span className="kbd">⌘⇧E</span>
+              <Zap size={13} /> Analyze <span className="kbd">{keys("⌘⇧E")}</span>
             </button>
             {naming === null ? (
               <button className="btn" onClick={() => save()} title={activeTab.saved ? `Update “${activeTab.saved}”` : "Save as a named query"}>
-                <Save size={13} /> {activeTab.saved ? "Save" : "Save as…"} <span className="kbd">⌘S</span>
+                <Save size={13} /> {activeTab.saved ? "Save" : "Save as…"} <span className="kbd">{keys("⌘S")}</span>
               </button>
             ) : (
               <form
@@ -539,16 +540,16 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
 /** Before anything ran: the shortcuts, and this connection's saved queries one click away. */
 function EmptyOutput({ saved, onOpen }: { saved: SavedQuery[]; onOpen: (q: SavedQuery) => void }) {
-  const keys: [string, string][] = [
-    ["⌘↵", "Run the selection, or the whole tab"],
-    ["⌘E", "Plan without running"],
-    ["⌘⇧E", "Run and measure each step"],
-    ["⌘S", "Save as a named query"],
+  const shortcuts: [string, string][] = [
+    [keys("⌘↵"), "Run the selection, or the whole tab"],
+    [keys("⌘E"), "Plan without running"],
+    [keys("⌘⇧E"), "Run and measure each step"],
+    [keys("⌘S"), "Save as a named query"],
   ];
   return (
     <div className="editor-empty">
       <ul className="editor-keys">
-        {keys.map(([key, label]) => (
+        {shortcuts.map(([key, label]) => (
           <li key={key}>
             <span className="kbd">{key}</span> {label}
           </li>

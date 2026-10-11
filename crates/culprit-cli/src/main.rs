@@ -745,7 +745,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
         }
         ConnCommand::Rename { old, new } => {
             let info = ws.rename_connection(&old, &new)?;
-            out.connection_added(&info);
+            out.connection_added(&info, None);
             Ok(0)
         }
         ConnCommand::Discover(args) => {
@@ -852,24 +852,26 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                     AuthArg::None => AuthKind::None,
                 }),
             };
-            if !args.no_test {
+            let server = if args.no_test {
+                None
+            } else {
                 out.progress(&format!("Testing {}…", args.name));
-                ws.provider_for(&new).await?.probe().await?;
-            }
+                Some(ws.provider_for(&new).await?.probe().await?)
+            };
             let info = ws.add_connection(new)?;
-            out.connection_added(&info);
+            out.connection_added(&info, server.as_ref());
             Ok(0)
         }
     }
 }
 
-/// One line from stdin. When stdin is a terminal the typed characters are hidden (Unix) and a prompt goes to stderr.
+/// One line from stdin. When stdin is a terminal the typed characters are hidden and a prompt goes to stderr.
 fn read_password(prompt: &str) -> culprit_core::Result<String> {
     use std::io::{BufRead, Write};
     let interactive = std::io::stdin().is_terminal();
     let hide = |on: bool| {
-        if cfg!(unix) && interactive {
-            let _ = std::process::Command::new("stty").arg(if on { "-echo" } else { "echo" }).status();
+        if interactive {
+            echo_input(!on);
         }
     };
     if interactive {
@@ -886,3 +888,29 @@ fn read_password(prompt: &str) -> culprit_core::Result<String> {
     read.map_err(|e| Error::invalid(e.to_string()))?;
     Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }
+
+/// Turn the terminal's echo of typed characters on or off.
+#[cfg(unix)]
+fn echo_input(on: bool) {
+    let _ = std::process::Command::new("stty").arg(if on { "echo" } else { "-echo" }).status();
+}
+
+/// Turn the console's echo of typed characters on or off.
+#[cfg(windows)]
+fn echo_input(on: bool) {
+    use windows_sys::Win32::System::Console::{
+        CONSOLE_MODE, ENABLE_ECHO_INPUT, GetConsoleMode, GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode,
+    };
+    // SAFETY: GetStdHandle returns this process's console input handle (or an invalid one, which GetConsoleMode then
+    // rejects), and the mode is only written back to the same handle.
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        let mut mode: CONSOLE_MODE = 0;
+        if GetConsoleMode(input, &mut mode) != 0 {
+            SetConsoleMode(input, if on { mode | ENABLE_ECHO_INPUT } else { mode & !ENABLE_ECHO_INPUT });
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn echo_input(_on: bool) {}

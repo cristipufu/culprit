@@ -6,6 +6,7 @@ import { ENVIRONMENT_LABEL } from "../lib/environments";
 import { useStore } from "../lib/store";
 import { EngineBadge } from "./EngineBadge";
 import { Sql } from "./Sql";
+import { keys } from "../lib/keys";
 
 const POLL_MS = 1000;
 
@@ -139,7 +140,7 @@ export default function ApprovalDialog() {
             Deny <span className="kbd">Esc</span>
           </button>
           <button className={`btn ${production ? "danger" : "primary"}`} onClick={() => decide(true)}>
-            Run once <span className="kbd">⌘↵</span>
+            Run once <span className="kbd">{keys("⌘↵")}</span>
           </button>
         </div>
       </div>

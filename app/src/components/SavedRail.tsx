@@ -6,6 +6,7 @@ import { api, errorMessage } from "../lib/api";
 import { serverName } from "../lib/engines";
 import { loadSaved, toast, useStore } from "../lib/store";
 import { EngineBadge } from "./EngineBadge";
+import { keys } from "../lib/keys";
 
 type Props = {
   current: ConnectionInfo;
@@ -97,7 +98,7 @@ export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted
         {saved === null && <div className="muted saved-empty">Loading…</div>}
         {saved?.length === 0 && (
           <div className="saved-empty">
-            Save the query in a tab with <span className="kbd">⌘S</span> to keep it here and rerun it in one click.
+            Save the query in a tab with <span className="kbd">{keys("⌘S")}</span> to keep it here and rerun it in one click.
           </div>
         )}
         {list.map((q) => (

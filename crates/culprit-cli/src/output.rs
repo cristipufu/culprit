@@ -146,11 +146,13 @@ impl Out {
         }
     }
 
-    pub fn connection_added(&self, info: &ConnectionInfo) {
+    /// `server`: what the connection test found, so a MariaDB server is named as itself.
+    pub fn connection_added(&self, info: &ConnectionInfo, server: Option<&ServerInfo>) {
         if self.format == Format::Json {
             return self.json(&json!(info));
         }
-        println!("Saved {} ({}, {}).", self.paint(BOLD, &info.name), info.engine.label(), info.display);
+        let engine = server.map(|s| s.name()).unwrap_or(info.engine.label());
+        println!("Saved {} ({engine}, {}).", self.paint(BOLD, &info.name), info.display);
         println!("Next: culprit scan {}", info.name);
     }
 
@@ -272,10 +274,10 @@ impl Out {
         }
         println!();
         for cap in &server.capabilities {
-            println!("  {} {}", self.paint(GREEN, "✓"), cap.label());
+            println!("  {} {}", self.paint(GREEN, "✓"), cap.label_for(server.engine));
         }
         for m in &server.missing {
-            println!("  {} {} — {}", self.paint(RED, "✗"), m.capability.label(), m.reason);
+            println!("  {} {} — {}", self.paint(RED, "✗"), m.capability.label_for(server.engine), m.reason);
             if let Some(fix) = &m.fix {
                 println!("    {}", self.paint(DIM, &fix.replace('\n', "\n    ")));
             }
@@ -284,7 +286,7 @@ impl Out {
             println!();
             println!("{}", self.paint(BOLD, "Locked checks"));
             for l in locked {
-                let needs: Vec<String> = l.missing.iter().map(|c| c.label().to_string()).collect();
+                let needs: Vec<String> = l.missing.iter().map(|c| c.label_for(server.engine).to_string()).collect();
                 println!("  {} needs {}", l.check.title, format::list(&needs));
             }
         }
@@ -310,17 +312,21 @@ impl Out {
             format::duration(s.duration_ms)
         );
         if let Some(w) = &s.workload {
+            // Under 20 hours of history a per-day figure would be an extrapolation: say what was measured, and over what.
+            let time = if w.window_hours < 20.0 {
+                let span = format::duration(w.window_hours * 3_600_000.0);
+                let since = if w.windowed {
+                    format!("the last {span}")
+                } else {
+                    format!("the {span} since statistics were reset")
+                };
+                format!("{} of database time over {since}", format::duration(w.total_time_ms))
+            } else {
+                format!("{} of database time per day", format::duration(w.per_day(w.total_time_ms)))
+            };
             println!(
                 "{}",
-                self.paint(
-                    DIM,
-                    &format!(
-                        "{} · {} queries · {} of database time per day",
-                        w.source,
-                        format::count(w.query_count),
-                        format::duration(w.per_day(w.total_time_ms))
-                    )
-                )
+                self.paint(DIM, &format!("{} · {} queries · {time}", w.source, format::count(w.query_count)))
             );
         }
         println!();
@@ -417,17 +423,24 @@ impl Out {
             let list: Vec<Value> = queries.iter().map(|q| query_json(report, q)).collect();
             return self.json(&json!({ "source": w.source, "window_hours": w.window_hours, "queries": list }));
         }
-        println!(
-            "{}",
-            self.paint(DIM, &format!("{} · {:.0} hours · share of DB time · runs/day · avg", w.source, w.window_hours))
-        );
+        // Under 20 hours of history, runs per day would be an extrapolation: show the runs counted, and over what.
+        let short_window = w.window_hours < 20.0;
+        let span = format::duration(w.window_hours * 3_600_000.0);
+        let header = if short_window {
+            let over =
+                if w.windowed { format!("the last {span}") } else { format!("{span} since statistics were reset") };
+            format!("{} · {over} · share of DB time · runs · avg", w.source)
+        } else {
+            format!("{} · {span} · share of DB time · runs/day · avg", w.source)
+        };
+        println!("{}", self.paint(DIM, &header));
         for q in queries {
             let text = q.text.split_whitespace().collect::<Vec<_>>().join(" ");
             let short: String = text.chars().take(90).collect();
             println!(
                 "{:>5}  {:>8}  {:>9}  {}  {}",
                 format::percent(w.share(q.total_time_ms)),
-                format::count(w.per_day(q.executions)),
+                format::count(if short_window { q.executions } else { w.per_day(q.executions) }),
                 format::duration(q.mean_time_ms),
                 self.paint(DIM, &format!("{:<8}", q.id)),
                 short
@@ -769,7 +782,8 @@ impl Out {
         let tail = if rs.columns.is_empty() {
             rs.messages.join(" ")
         } else {
-            format!("{} rows{}", rs.rows.len(), if rs.truncated { " (truncated)" } else { "" })
+            let n = rs.rows.len();
+            format!("{n} row{}{}", if n == 1 { "" } else { "s" }, if rs.truncated { " (truncated)" } else { "" })
         };
         println!("{}", self.paint(DIM, &format!("{tail} · {}", format::duration(rs.elapsed_ms))));
     }

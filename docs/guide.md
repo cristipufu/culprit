@@ -152,6 +152,14 @@ cd app && bun run dev                         # UI in a browser, backed by fixtu
 
 `cargo test --workspace` runs the unit tests. `dev/postgres` and `dev/mssql` contain reproducible demo databases with planted problems.
 
+### Platforms
+
+- **macOS.** `dev/build-local.sh` builds the app and the CLI and signs both with your Developer ID, so the keychain's "Always Allow" sticks across rebuilds.
+- **Linux.** The desktop app needs WebKitGTK; on Debian and Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev libxdo-dev`. `bunx tauri build --bundles deb` makes a `.deb`. Passwords go to the Secret Service (GNOME Keyring, KWallet); on servers, containers and CI, which have none, pass passwords with `--password-env NAME` and set `CULPRIT_KEYCHAIN=off`. Configuration and reports follow the XDG directories (`~/.config/culprit`, `~/.local/share/culprit`).
+- **Windows.** Passwords go to Windows Credential Manager, and configuration and reports to `%APPDATA%\culprit`. The Azure and AWS CLIs are run as `az.cmd` and `aws.exe`. `bunx tauri build --bundles msi` makes an installer. Shortcut labels read Ctrl where macOS shows ⌘.
+
+CI (`.github/workflows/ci.yml`) checks formatting, runs clippy and the tests on Linux, macOS and Windows, and builds the desktop app on all three, keeping the unsigned bundles as build artifacts.
+
 ## Layout
 
 ```

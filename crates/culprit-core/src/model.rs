@@ -73,6 +73,14 @@ pub enum Capability {
 }
 
 impl Capability {
+    /// The label in `engine`'s own words: estimated plans are SHOWPLAN on SQL Server and EXPLAIN elsewhere.
+    pub fn label_for(self, engine: Engine) -> &'static str {
+        match (self, engine) {
+            (Capability::Showplan, Engine::Postgres | Engine::Mysql) => "Estimated plans (EXPLAIN)",
+            _ => self.label(),
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Capability::QueryStore => "Query Store",
@@ -116,6 +124,23 @@ pub struct ServerInfo {
     pub read_only_session: bool,
     pub capabilities: Vec<Capability>,
     pub missing: Vec<MissingCapability>,
+}
+
+/// Whether a server version string ("5.7.44-log", "10.5.29-MariaDB-ubu2004", "8.0.36") is at least `wanted`. Text
+/// that doesn't start with a version counts as new enough, so an unknown build is never refused for its age.
+pub fn version_at_least(version: &str, wanted: [u32; 3]) -> bool {
+    let numbers: Vec<u32> = version
+        .split(|c: char| !c.is_ascii_digit() && c != '.')
+        .next()
+        .unwrap_or_default()
+        .split('.')
+        .map_while(|p| p.parse().ok())
+        .collect();
+    if numbers.is_empty() {
+        return true;
+    }
+    let have = [0, 1, 2].map(|i| numbers.get(i).copied().unwrap_or(0));
+    have >= wanted
 }
 
 impl ServerInfo {
@@ -631,3 +656,22 @@ pub struct ResultSet {
 }
 
 pub type Properties = BTreeMap<String, String>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn server_versions_compare_by_number() {
+        assert!(!version_at_least("5.7.44", [8, 0, 18]));
+        assert!(!version_at_least("8.0.17-log", [8, 0, 18]));
+        assert!(version_at_least("8.0.18", [8, 0, 18]));
+        assert!(version_at_least("8.4.3", [8, 0, 18]));
+        assert!(version_at_least("10.5.29-MariaDB-ubu2004", [10, 5, 0]));
+        assert!(!version_at_least("10.5.29-MariaDB-ubu2004", [10, 6, 0]));
+        assert!(version_at_least("8.0", [8, 0, 0]));
+        // Unknown builds are never refused for their age.
+        assert!(version_at_least("", [8, 0, 18]));
+        assert!(version_at_least("unknown", [8, 0, 18]));
+    }
+}

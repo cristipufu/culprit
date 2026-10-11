@@ -16,6 +16,14 @@ pub const RDS_CA: &str = "rds";
 
 pub const SIGN_IN_HINT: &str = "Sign in with `aws login` (or `aws configure sso` / `aws configure`), then search again";
 
+const INSTALL_HINT: &str = if cfg!(target_os = "macos") {
+    "Install the AWS CLI (`brew install awscli`), sign in with `aws login`, then try again"
+} else if cfg!(windows) {
+    "Install the AWS CLI (`winget install Amazon.AWSCLI`), sign in with `aws login`, then try again"
+} else {
+    "Install the AWS CLI (https://aws.amazon.com/cli/), sign in with `aws login`, then try again"
+};
+
 fn aws_binary() -> &'static str {
     if cfg!(windows) { "aws.exe" } else { "aws" }
 }
@@ -23,8 +31,7 @@ fn aws_binary() -> &'static str {
 /// Run the AWS CLI and return stdout, turning "not installed" and "not signed in" into actionable errors.
 pub(crate) async fn run(args: &[&str]) -> Result<Vec<u8>> {
     let output = Command::new(aws_binary()).args(args).output().await.map_err(|e| {
-        Error::new(ErrorCode::AuthFailed, format!("Could not run the AWS CLI: {e}"))
-            .with_hint("Install the AWS CLI (`brew install awscli`), sign in with `aws login`, then try again")
+        Error::new(ErrorCode::AuthFailed, format!("Could not run the AWS CLI: {e}")).with_hint(INSTALL_HINT)
     })?;
     if output.status.success() {
         return Ok(output.stdout);

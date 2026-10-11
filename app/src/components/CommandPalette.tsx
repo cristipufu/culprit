@@ -4,6 +4,7 @@ import { useTheme } from "../lib/theme";
 import { EngineBadge } from "./EngineBadge";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, loadSaved, openConnection, scan, setState, useStore, type View } from "../lib/store";
+import { keys } from "../lib/keys";
 
 type Item = { id: string; section: string; title: string; hint?: string; icon?: ReactNode; run: () => void };
 
@@ -56,8 +57,8 @@ export function CommandPalette() {
     const close = () => setState({ palette: false });
     const list: Item[] = [];
     if (active) {
-      list.push({ id: "rescan", section: "Actions", title: "Scan now", hint: "⌘R", icon: icon(<RefreshCw size={13} />), run: () => (close(), scan(active)) });
-      list.push({ id: "new-tab", section: "Actions", title: "New query tab", hint: "⌘T", icon: icon(<Plus size={13} />), run: () => setState({ view: "editor", editorSql: " ", palette: false }) });
+      list.push({ id: "rescan", section: "Actions", title: "Scan now", hint: keys("⌘R"), icon: icon(<RefreshCw size={13} />), run: () => (close(), scan(active)) });
+      list.push({ id: "new-tab", section: "Actions", title: "New query tab", hint: keys("⌘T"), icon: icon(<Plus size={13} />), run: () => setState({ view: "editor", editorSql: " ", palette: false }) });
     }
     list.push({ id: "paste-plan", section: "Actions", title: "Open or compare a plan", icon: icon(<GitCompareArrows size={13} />), run: () => setState({ view: "plans", palette: false }) });
     const dark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);

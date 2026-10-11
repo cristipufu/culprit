@@ -5,6 +5,7 @@ import { EngineBadge } from "./EngineBadge";
 import { groupByEnvironment } from "../lib/environments";
 import { currentReport, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { useTheme } from "../lib/theme";
+import { keys } from "../lib/keys";
 
 function ConnectionList() {
   const connections = useStore((s) => s.connections);
@@ -71,8 +72,8 @@ export function Sidebar() {
         </span>
         <ChevronsUpDown size={14} className="chev" />
       </button>
-      <button className="side-search" onClick={() => setState({ palette: true })} aria-label="Search or jump to (⌘K)">
-        <Search size={13} /> Search or jump to… <span className="kbd">⌘K</span>
+      <button className="side-search" onClick={() => setState({ palette: true })} aria-label={keys("Search or jump to (⌘K)")}>
+        <Search size={13} /> Search or jump to… <span className="kbd">{keys("⌘K")}</span>
       </button>
       {(
         <nav className="nav">
@@ -89,7 +90,7 @@ export function Sidebar() {
       <ConnectionList />
       <div className="sidebar-foot">
         {active && (
-          <button className="scan-status" onClick={() => scan(active)} title="Re-scan (⌘R)">
+          <button className="scan-status" onClick={() => scan(active)} title={keys("Re-scan (⌘R)")}>
             {scanning ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <RefreshCw size={13} />}
             {scanning ? "Scanning…" : report ? `Scanned ${ago(report.snapshot.taken_at)}` : "Scan"}
           </button>

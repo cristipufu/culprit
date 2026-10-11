@@ -32,8 +32,22 @@ impl Keychain {
     }
 }
 
+/// What to do when there is no keychain to talk to (a headless server, a container, CI) or it refused access.
+const UNAVAILABLE_HINT: &str = if cfg!(target_os = "macos") {
+    "Unlock the login keychain, or pass the password with --password-env NAME (and set CULPRIT_KEYCHAIN=off to skip the keychain)"
+} else if cfg!(windows) {
+    "Culprit keeps passwords in Windows Credential Manager; pass the password with --password-env NAME instead (and set CULPRIT_KEYCHAIN=off to skip it)"
+} else {
+    "Culprit keeps passwords in the Secret Service (GNOME Keyring, KWallet). Without one, as on servers, containers and CI, pass the password with --password-env NAME and set CULPRIT_KEYCHAIN=off"
+};
+
 fn keychain_error(error: keyring::Error) -> Error {
-    Error::new(ErrorCode::Internal, format!("OS keychain: {error}"))
+    let unavailable = matches!(
+        error,
+        keyring::Error::NoDefaultStore | keyring::Error::NoStorageAccess(_) | keyring::Error::PlatformFailure(_)
+    );
+    let e = Error::new(ErrorCode::Internal, format!("OS keychain: {error}"));
+    if unavailable { e.with_hint(UNAVAILABLE_HINT) } else { e }
 }
 
 impl SecretStore for Keychain {

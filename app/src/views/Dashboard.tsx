@@ -24,6 +24,7 @@ import { changeRequest, scan, setState, toast, useStore } from "../lib/store";
 import { waitColor } from "../lib/waits";
 import { openLive } from "./Live";
 import { compareSince } from "./Overview";
+import { keys } from "../lib/keys";
 
 const WaitsPanel = lazy(() => import("../components/WaitsPanel"));
 
@@ -784,7 +785,7 @@ function StatisticsTile({ tile, report }: { tile: Tile; report: Report }) {
         )}
         <div className="dash-actions">
           <span className="muted">Culprit only reads statistics; it never changes the database for you.</span>
-          <button className="btn small" onClick={() => scan(report.snapshot.connection)} title="Scan again once it's on (⌘R)">
+          <button className="btn small" onClick={() => scan(report.snapshot.connection)} title={keys("Scan again once it's on (⌘R)")}>
             <RefreshCw size={12} /> Done, re-scan
           </button>
         </div>

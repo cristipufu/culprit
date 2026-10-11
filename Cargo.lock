@@ -953,6 +953,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1030,6 +1031,7 @@ dependencies = [
  "culprit-core",
  "mysql_async",
  "rustls",
+ "serde",
  "serde_json",
  "tokio",
 ]

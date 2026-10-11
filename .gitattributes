@@ -1,0 +1,7 @@
+# LF everywhere, including Windows checkouts: tests parse fixture text (plans, EXPLAIN output, deadlock graphs).
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.icns binary
+*.sqlplan text eol=lf

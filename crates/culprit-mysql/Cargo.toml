@@ -10,5 +10,6 @@ culprit-core.workspace = true
 async-trait.workspace = true
 mysql_async.workspace = true
 rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

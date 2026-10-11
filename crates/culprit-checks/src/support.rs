@@ -290,6 +290,14 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
     }
     match counter_days(snapshot) {
         Some(days) if days >= 2.0 => format!("in the {} days since the server last restarted", days.round()),
+        Some(days) if days * 24.0 < 1.0 => {
+            let minutes = (days * 24.0 * 60.0).round().max(1.0);
+            if minutes == 1.0 {
+                "in the minute since the server last restarted".to_string()
+            } else {
+                format!("in the {minutes} minutes since the server last restarted")
+            }
+        }
         Some(days) if days * 24.0 < 1.5 => "in the hour since the server last restarted".to_string(),
         Some(days) => format!("in the {} hours since the server last restarted", (days * 24.0).round()),
         None => "since the server last restarted".to_string(),
@@ -380,6 +388,20 @@ pub fn lower_set(items: &[String]) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn usage_windows_say_how_long_the_server_has_been_up() {
+        let mut s = crate::waits::snapshot_with(Engine::Mssql);
+        s.taken_at = "2026-10-11T17:05:00Z".into();
+        let mut at = |started: &str| {
+            s.server.started_at = Some(started.into());
+            since_phrase(&s)
+        };
+        assert_eq!(at("2026-10-11T16:49:00Z"), "in the 16 minutes since the server last restarted");
+        assert_eq!(at("2026-10-11T16:05:00Z"), "in the hour since the server last restarted");
+        assert_eq!(at("2026-10-11T12:05:00Z"), "in the 5 hours since the server last restarted");
+        assert_eq!(at("2026-10-01T17:05:00Z"), "in the 10 days since the server last restarted");
+    }
 
     #[test]
     fn epoch_parsing_handles_offsets() {

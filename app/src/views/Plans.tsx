@@ -25,6 +25,7 @@ import {
 import { deliver, exportOptions } from "../lib/share";
 import { toast } from "../lib/store";
 import { planEngineName } from "../lib/engines";
+import { keys } from "../lib/keys";
 
 const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
@@ -57,7 +58,7 @@ export function Plans() {
       if (text.trim()) await importText(text, `Pasted plan ${items.length + 1}`, "Pasted");
       else toast("The clipboard is empty");
     } catch {
-      toast("Press ⌘V to paste the plan");
+      toast(keys("Press ⌘V to paste the plan"));
     }
   };
   useHotkeys({ "mod+o": openFile });
@@ -104,10 +105,10 @@ export function Plans() {
         <>
           <aside className="plans-list">
             <div className="plans-actions">
-              <button className="btn" onClick={openFile} title="Open a plan file (⌘O)">
+              <button className="btn" onClick={openFile} title={keys("Open a plan file (⌘O)")}>
                 <FileUp size={13} /> Open
               </button>
-              <button className="btn" onClick={pasteFromClipboard} title="Paste a plan (⌘V)">
+              <button className="btn" onClick={pasteFromClipboard} title={keys("Paste a plan (⌘V)")}>
                 <ClipboardPaste size={13} /> Paste
               </button>
             </div>
@@ -153,7 +154,7 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
             <FileUp size={14} /> Open a file…
           </button>
           <button className="btn" onClick={onPaste}>
-            <ClipboardPaste size={14} /> Paste <span className="kbd">⌘V</span>
+            <ClipboardPaste size={14} /> Paste <span className="kbd">{keys("⌘V")}</span>
           </button>
         </div>
         {busy && (

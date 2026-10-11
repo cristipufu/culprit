@@ -81,6 +81,8 @@ pub fn bytes(value: f64) -> String {
 }
 
 pub fn count(value: f64) -> String {
+    // An empty f64 sum is -0.0; it reads as nothing, not as a negative.
+    let value = if value == 0.0 { 0.0 } else { value };
     let v = value.abs();
     if v >= 1e9 {
         return format!("{:.1}B", value / 1e9);
@@ -196,6 +198,8 @@ mod tests {
         assert_eq!(bytes(6.1 * 1024.0 * 1024.0 * 1024.0), "6.1 GB");
         assert_eq!(count(18_200_000.0), "18.2M");
         assert_eq!(count(1_234.0), "1.2K");
+        // An empty sum of f64 is -0.0.
+        assert_eq!(count(std::iter::empty::<f64>().sum()), "0");
         assert_eq!(percent(0.314), "31%");
         assert_eq!(list(&["a".into(), "b".into(), "c".into()]), "a, b and c");
     }

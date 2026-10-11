@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use culprit_core::{
     Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Error, ForeignKey, IndexStat, MissingCapability,
-    PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread, TableStat,
-    WaitStat, Workload,
+    Plan, PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
+    TableStat, WaitStat, Workload,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
@@ -558,7 +558,7 @@ async fn collect_workload(
             notes.push(("plans", message));
         }
         if outcome.planned == 0 {
-            no_plans = Some(no_plans_reason(conn, probe).await);
+            no_plans = Some(no_plans_reason(conn, probe, has("QUERY_SAMPLE_TEXT")).await);
         }
     }
     let queries = kept.into_iter().map(|d| d.stat).collect();
@@ -856,9 +856,11 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
         match explain_one(&mut conn, &sql).await {
             Ok(Some(row)) => {
                 let json = row.text("explain").or_else(|| row.first_text()).unwrap_or_default();
-                match plan_json::parse(&json, PlanKind::Estimated, Some(sample), Some(database)) {
+                match sample_plan(&json, sample, database, &digest.stat.text) {
                     Ok(mut plan) => {
-                        plan.statement = Some(digest.stat.text.clone());
+                        if let Some(version) = connector.version() {
+                            plan.props.insert("server_version".into(), version.to_string());
+                        }
                         digest.stat.plan = Some(plan);
                         outcome.planned += 1;
                     }
@@ -870,6 +872,18 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
     }
     let _ = conn.disconnect().await;
     outcome
+}
+
+/// The plan of a captured sample, kept without the sample's values. A sample is someone else's real statement (an
+/// email, a token, an id in a WHERE clause) and MySQL copies its literals into the plan's conditions and JSON; the
+/// report, the UI and coding agents get the digest's text and a plan whose literals are placeholders. LIKE patterns
+/// keep their wildcard shape (`'%?'`), so a leading wildcard is still visible.
+fn sample_plan(json: &str, sample: &str, database: &str, digest_text: &str) -> Result<Plan> {
+    let plan = plan_json::parse(json, PlanKind::Estimated, Some(sample), Some(database))?;
+    let mut clean = culprit_core::redact::redact_plan(&plan);
+    clean.raw = plan.raw.as_deref().map(|raw| culprit_core::redact::redact_native(raw, Engine::Mysql));
+    clean.statement = Some(digest_text.to_string());
+    Ok(clean)
 }
 
 /// Statement text to plan each digest by. MySQL 8 keeps a sample per digest; MariaDB (and older MySQL) only keep the
@@ -919,8 +933,9 @@ async fn attach_samples(conn: &mut Conn, probe: &Probe, options: &SnapshotOption
     }
 }
 
-/// Why nothing could be planned, and the change that would let Culprit plan statements.
-async fn no_plans_reason(conn: &mut Conn, probe: &Probe) -> (String, Option<String>) {
+/// Why nothing could be planned, and the change that would let Culprit plan statements. `sample_text`: the digest
+/// table keeps a sample statement per digest (MySQL 8.0.3+); without it the statement history is the only text.
+async fn no_plans_reason(conn: &mut Conn, probe: &Probe, sample_text: bool) -> (String, Option<String>) {
     // The history tables fill only under the current-statement consumer.
     let off: Vec<String> = query(
         conn,
@@ -932,12 +947,18 @@ async fn no_plans_reason(conn: &mut Conn, probe: &Probe) -> (String, Option<Stri
     .into_iter()
     .map(|r| r.string("name"))
     .collect();
-    if probe.flavor == Flavor::Mariadb && !off.is_empty() {
+    if !sample_text && !off.is_empty() {
         let names = ["events_statements_current", "events_statements_history_long"];
         let config =
             names.iter().map(|n| format!("performance_schema_consumer_{n} = ON")).collect::<Vec<_>>().join(" and ");
+        let why = match probe.flavor {
+            Flavor::Mariadb => "MariaDB keeps statement digests but not the statements themselves",
+            Flavor::Mysql => {
+                "This MySQL keeps statement digests but no sample statement for each (MySQL 8.0 added one)"
+            }
+        };
         return (
-            "MariaDB keeps statement digests but not the statements themselves, so there is no text to plan.".into(),
+            format!("{why}, so there is no text to plan."),
             Some(format!(
                 "Run UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('events_statements_current', 'events_statements_history_long'); \
                  to keep the latest statements (no restart needed; add {config} to the server configuration to keep them after a restart). \
@@ -947,10 +968,12 @@ async fn no_plans_reason(conn: &mut Conn, probe: &Probe) -> (String, Option<Stri
     }
     (
         "None of the recorded statements could be planned: their text was truncated, prepared with placeholders, or no longer in the statement history.".into(),
-        probe.flavor.eq(&Flavor::Mariadb).then(|| {
-            "MariaDB's statement history keeps only the latest statements (performance_schema_events_statements_history_long_size). \
-             Logging slow statements to the mysql.slow_log table gives Culprit lasting samples: SET GLOBAL slow_query_log = ON, GLOBAL log_output = 'FILE,TABLE';"
-                .to_string()
+        (!sample_text).then(|| {
+            format!(
+                "{}'s statement history keeps only the latest statements (performance_schema_events_statements_history_long_size). \
+                 Logging slow statements to the mysql.slow_log table gives Culprit lasting samples: SET GLOBAL slow_query_log = ON, GLOBAL log_output = 'FILE,TABLE';",
+                probe.flavor.name()
+            )
         }),
     )
 }
@@ -1477,6 +1500,20 @@ mod tests {
         assert_eq!(kept.len(), 8);
         assert!(ids.contains(&"chatty") && ids.contains(&"scanner") && ids.contains(&"t0"));
         assert_eq!(ids[0], "t0", "kept digests are ordered by time");
+    }
+
+    #[test]
+    fn sample_plans_keep_no_literal_values() {
+        let json = r#"{"query_block":{"select_id":1,"cost_info":{"query_cost":"1.20"},"table":{"table_name":"customers","access_type":"ALL","rows_examined_per_scan":100,"rows_produced_per_join":10,"filtered":"10.00","cost_info":{"read_cost":"1.00","eval_cost":"0.20","prefix_cost":"1.20","data_read_per_join":"1K"},"used_columns":["id","email"],"attached_condition":"((`shop`.`customers`.`email` = 'alice@example.com') and (`shop`.`customers`.`note` like '%vip%'))"}}}"#;
+        let sample = "SELECT id FROM customers WHERE email = 'alice@example.com' AND note LIKE '%vip%'";
+        let plan =
+            sample_plan(json, sample, "shop", "SELECT `id` FROM `customers` WHERE `email` = ? AND `note` LIKE ?")
+                .unwrap();
+        let text = serde_json::to_string(&plan).unwrap();
+        assert!(!text.contains("alice"), "{text}");
+        assert!(!text.contains("vip"), "{text}");
+        assert!(text.contains("'%?%'"), "the LIKE pattern keeps its shape: {text}");
+        assert_eq!(plan.statement.as_deref(), Some("SELECT `id` FROM `customers` WHERE `email` = ? AND `note` LIKE ?"));
     }
 
     #[test]

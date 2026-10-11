@@ -73,8 +73,20 @@ fn redact(text: &str, engine: Engine, numbers: bool) -> String {
             }
             '\'' => {
                 let escapes = engine == Engine::Mysql || last_word.eq_ignore_ascii_case("e");
-                i = skip_quoted(&chars, i, '\'', escapes);
-                out.push_str("'?'");
+                let end = skip_quoted(&chars, i, '\'', escapes);
+                // A pattern keeps where its wildcards are (`'%?%'`): that's its shape, not data, and a leading % is
+                // what stops an index from being used.
+                let body = &chars[(i + 1).min(end)..end.saturating_sub(1).max(i + 1).min(chars.len())];
+                out.push('\'');
+                if body.first() == Some(&'%') {
+                    out.push('%');
+                }
+                out.push('?');
+                if body.len() > 1 && body.last() == Some(&'%') {
+                    out.push('%');
+                }
+                out.push('\'');
+                i = end;
                 last_word.clear();
             }
             '"' if engine == Engine::Mysql => {
@@ -496,6 +508,12 @@ mod tests {
             "[db].[shop].[customers].[email]=CONVERT_IMPLICIT(nvarchar(200),[@P1],?) AND [x]=(?)"
         );
         assert_eq!(redact_sql("WHERE [it's] = 'it''s' AND b = 0x1F", Engine::Mssql), "WHERE [it's] = '?' AND b = ?");
+        // A LIKE pattern keeps its wildcard shape, never its text.
+        assert_eq!(
+            redact_sql("email LIKE '%@example.com' AND name LIKE 'Al%' AND note LIKE '%x%' AND c = '%'", Engine::Mysql),
+            "email LIKE '%?' AND name LIKE '?%' AND note LIKE '%?%' AND c = '%?'"
+        );
+        assert_eq!(redact_sql("WHERE n LIKE N'%smith'", Engine::Mssql), "WHERE n LIKE N'%?'");
         assert_eq!(
             redact_sql("CAST(a AS decimal(12,2)) /* customer 42 */", Engine::Mssql),
             "CAST(a AS decimal(12,2)) /* … */"
