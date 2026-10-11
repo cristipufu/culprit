@@ -6,16 +6,17 @@ pub mod registry;
 pub mod reports;
 pub mod store;
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, Engine, Environment, Error, ErrorCode, ExplainMode, LiveState, Plan, Provider, Report,
-    Result, ResultSet, ServerInfo, SnapshotOptions,
+    AuthKind, Check, CheckInfo, ConnectionSpec, Engine, Environment, Error, ErrorCode, ExplainMode, LiveState,
+    LockedCheck, Plan, Provider, Report, Result, ResultSet, ServerInfo, SnapshotOptions,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use culprit_checks::{agent_brief, infos as checks, locked as locked_checks};
+pub use culprit_checks::agent_brief;
 pub use discover::DiscoveredDatabase;
 pub use reports::ReportSummary;
 use store::{Paths, Store, StoredConnection};
@@ -69,13 +70,39 @@ pub struct ParsedConnection {
 pub struct Workspace {
     paths: Paths,
     store: Store,
+    extra_checks: Vec<Arc<dyn Check>>,
 }
 
 impl Workspace {
     pub fn open() -> Result<Workspace> {
         let paths = Paths::resolve()?;
         let store = Store::new(&paths);
-        Ok(Workspace { paths, store })
+        Ok(Workspace { paths, store, extra_checks: Vec::new() })
+    }
+
+    /// Plug in a check from outside Culprit. It runs, ranks and locks exactly like a built-in check.
+    pub fn with_check(mut self, check: Arc<dyn Check>) -> Workspace {
+        self.extra_checks.push(check);
+        self
+    }
+
+    pub fn checks(&self) -> Vec<CheckInfo> {
+        culprit_checks::infos_with(&self.extra_checks)
+    }
+
+    pub fn locked_checks(&self, server: &ServerInfo) -> Vec<LockedCheck> {
+        culprit_checks::locked_with(server, &self.extra_checks)
+    }
+
+    /// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
+    pub fn analyze_file(&self, path: &std::path::Path) -> Result<Report> {
+        let bytes = std::fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+        let snapshot = value.get("snapshot").cloned().unwrap_or(value);
+        let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
+            .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
+        Ok(culprit_checks::analyze_with(snapshot, &self.extra_checks))
     }
 
     pub fn paths(&self) -> &Paths {
@@ -209,7 +236,7 @@ impl Workspace {
         snapshot.taken_at = taken_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         snapshot.connection = name.to_string();
         snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let report = culprit_checks::analyze(snapshot);
+        let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&self.paths.reports_dir(name), &report)?;
         Ok(report)
     }
@@ -294,17 +321,6 @@ fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
     }
     spec.environment = new.environment;
     Ok(spec)
-}
-
-/// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
-pub fn analyze_file(path: &std::path::Path) -> Result<Report> {
-    let bytes = std::fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-    let snapshot = value.get("snapshot").cloned().unwrap_or(value);
-    let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
-        .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
-    Ok(culprit_checks::analyze(snapshot))
 }
 
 pub fn parse_connection(input: &str) -> Result<ParsedConnection> {

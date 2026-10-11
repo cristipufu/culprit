@@ -270,7 +270,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         Command::Doctor { connection } => {
             let info = ws.connection(&connection)?;
             let server = ws.probe(&connection).await?;
-            let locked = culprit_engine::locked_checks(&server);
+            let locked = ws.locked_checks(&server);
             out.doctor(&info, &server, &locked);
             Ok(0)
         }
@@ -319,11 +319,11 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             Ok(0)
         }
         Command::Checks => {
-            out.checks(&culprit_engine::checks());
+            out.checks(&ws.checks());
             Ok(0)
         }
         Command::Analyze { file, connection } => {
-            let mut report = culprit_engine::analyze_file(&file)?;
+            let mut report = ws.analyze_file(&file)?;
             if let Some(name) = connection {
                 report.snapshot.connection = name;
             }

@@ -6,6 +6,7 @@ mod queries;
 pub(crate) mod support;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use culprit_core::{
     Capability, Category, CategoryCount, Check, CheckInfo, Finding, LockedCheck, QueryStat, Report, ServerInfo,
@@ -52,7 +53,25 @@ pub fn all() -> Vec<Box<dyn Check>> {
 }
 
 pub fn infos() -> Vec<CheckInfo> {
-    all().iter().map(|c| c.info()).collect()
+    infos_with(&[])
+}
+
+/// Built-in checks plus checks plugged in by an embedding application, in run order.
+fn with_extra(extra: &[Arc<dyn Check>]) -> Vec<Arc<dyn Check>> {
+    let mut checks: Vec<Arc<dyn Check>> = all().into_iter().map(Arc::from).collect();
+    for check in extra {
+        let id = check.info().id;
+        if checks.iter().any(|c| c.info().id == id) {
+            continue;
+        }
+        checks.push(check.clone());
+    }
+    checks
+}
+
+/// Every check's metadata, including plugged-in ones. A plugged-in check whose id is already taken is ignored.
+pub fn infos_with(extra: &[Arc<dyn Check>]) -> Vec<CheckInfo> {
+    with_extra(extra).iter().map(|c| c.info()).collect()
 }
 
 fn missing_for(info: &CheckInfo, server: &ServerInfo) -> Vec<Capability> {
@@ -61,7 +80,11 @@ fn missing_for(info: &CheckInfo, server: &ServerInfo) -> Vec<Capability> {
 
 /// Checks that apply to this engine but can't run with what this login can see.
 pub fn locked(server: &ServerInfo) -> Vec<LockedCheck> {
-    infos()
+    locked_with(server, &[])
+}
+
+pub fn locked_with(server: &ServerInfo, extra: &[Arc<dyn Check>]) -> Vec<LockedCheck> {
+    infos_with(extra)
         .into_iter()
         .filter(|info| info.engines.contains(&server.engine))
         .filter_map(|info| {
@@ -71,11 +94,17 @@ pub fn locked(server: &ServerInfo) -> Vec<LockedCheck> {
         .collect()
 }
 
-/// Run every applicable check, drop findings another finding already explains, rank, and summarize.
+/// Run every applicable built-in check, drop findings another finding already explains, rank, and summarize.
 pub fn analyze(snapshot: Snapshot) -> Report {
+    analyze_with(snapshot, &[])
+}
+
+/// [`analyze`] with extra checks plugged in by an embedding application. Plugged-in findings are ranked, de-duplicated and
+/// summarized exactly like built-in ones; a plugged-in check whose id is already taken is ignored.
+pub fn analyze_with(snapshot: Snapshot, extra: &[Arc<dyn Check>]) -> Report {
     let mut findings = Vec::new();
     let mut locked = Vec::new();
-    for check in all() {
+    for check in with_extra(extra) {
         let info = check.info();
         if !info.engines.contains(&snapshot.server.engine) {
             continue;
