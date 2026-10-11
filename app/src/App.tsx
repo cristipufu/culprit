@@ -3,6 +3,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WindowPicker } from "./components/WindowPicker";
+import { when } from "./lib/format";
 import { useHotkeys } from "./lib/hotkeys";
 import { installPlanPaste } from "./lib/plans";
 import { getState, lastConnection, loadConnections, openConnection, scan, setState, useStore, type View } from "./lib/store";
@@ -12,14 +13,18 @@ import { Overview } from "./views/Overview";
 import { Queries } from "./views/Queries";
 import { Schema } from "./views/Schema";
 import { PasswordNeeded } from "./components/PasswordNeeded";
+import { DashboardSkeleton } from "./components/DashboardSkeleton";
 
 const Editor = lazy(() => import("./views/Editor"));
+// Where a connection opens; its skeleton (and stylesheet) are in the main bundle so the grid never jumps.
+const Dashboard = lazy(() => import("./views/Dashboard"));
 // Statements coding agents want to run; loaded after first paint, polls only in the desktop app.
 const ApprovalDialog = lazy(() => import("./components/ApprovalDialog"));
 const Plans = lazy(() => import("./views/Plans").then((m) => ({ default: m.Plans })));
 
 const TITLES: Record<View, string> = {
-  overview: "Overview",
+  dashboard: "Dashboard",
+  overview: "Findings",
   queries: "Queries",
   live: "Live",
   schema: "Schema",
@@ -28,7 +33,7 @@ const TITLES: Record<View, string> = {
   connections: "Connections",
 };
 
-const VIEW_KEYS: View[] = ["overview", "queries", "live", "schema", "editor", "plans"];
+const VIEW_KEYS: View[] = ["dashboard", "overview", "queries", "live", "schema", "editor", "plans"];
 
 export function App() {
   const view = useStore((s) => s.view);
@@ -42,7 +47,11 @@ export function App() {
   useEffect(() => {
     loadConnections().then((connections) => {
       const last = lastConnection();
-      if (last && connections.some((c) => c.name === last)) openConnection(last);
+      if (last && connections.some((c) => c.name === last)) {
+        // The dashboard is where it opens: fetch its code alongside the cached report, not after it.
+        void import("./views/Dashboard");
+        openConnection(last);
+      }
     });
   }, []);
 
@@ -99,7 +108,7 @@ function TopBar() {
   const engine = useStore((s) => s.connections.find((c) => c.name === s.active)?.engine);
   const w = report?.report.snapshot.workload;
   const windowed = w ? w.windowed : engine === "mssql";
-  const showsWorkload = view === "overview" || view === "queries" || view === "schema";
+  const showsWorkload = view === "dashboard" || view === "overview" || view === "queries" || view === "schema";
   if (view === "plans") {
     return (
       <header className="topbar" data-tauri-drag-region>
@@ -113,8 +122,8 @@ function TopBar() {
       <h1>{TITLES[view]}</h1>
       {showsWorkload && windowed && <WindowPicker coveredHours={w?.window_hours ?? null} />}
       {showsWorkload && !windowed && w && (
-        <span className="context" title="Cumulative statistics since they were last reset; this source keeps no time windows.">
-          {w.source} · since {w.window_start ? new Date(w.window_start).toLocaleDateString() : "the last reset"}
+        <span className="context" title={`Cumulative statistics since they were last reset${w.window_start ? ` (${when(w.window_start).full})` : ""}; this source keeps no time windows.`}>
+          {w.source} · since {w.window_start ? when(w.window_start).short : "the last reset"}
         </span>
       )}
       {environment && (
@@ -146,7 +155,7 @@ function Workspace({ view, name }: { view: View; name: string }) {
       </Suspense>
     );
   }
-  if (state.status === "loading" || state.status === "none") return <Loading />;
+  if (state.status === "loading" || state.status === "none") return view === "dashboard" ? <DashboardSkeleton /> : <Loading />;
   if (state.status === "error") {
     if (connection?.auth === "password" && (state.error.code === "auth_failed" || !connection.has_secret)) {
       return <PasswordNeeded connection={connection} message={state.error.message} />;
@@ -163,6 +172,13 @@ function Workspace({ view, name }: { view: View; name: string }) {
     );
   }
   const report = state.report;
+  if (view === "dashboard" && connection) {
+    return (
+      <Suspense fallback={<DashboardSkeleton />}>
+        <Dashboard key={name} report={report} connection={connection} />
+      </Suspense>
+    );
+  }
   if (view === "queries") return <Queries report={report} />;
   if (view === "schema") return <Schema report={report} />;
   return <Overview report={report} />;

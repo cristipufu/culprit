@@ -1,6 +1,6 @@
 //! Compact JSON for the `waits` tool: categories with their meaning and top queries, and the pressure signals.
 
-use culprit_core::{Report, Signal, WaitSample, format};
+use culprit_core::{FileIo, Report, Signal, WaitSample, format};
 use serde_json::{Value, json};
 
 fn signal(s: &Signal) -> Value {
@@ -12,6 +12,24 @@ fn signal(s: &Signal) -> Value {
         "scope": s.scope,
         "status": s.status,
         "healthy": s.healthy,
+    })
+}
+
+/// One file's average latency since startup, in words an agent can quote.
+fn file(f: &FileIo) -> Value {
+    let avg = |ms: Option<f64>, n: f64| {
+        ms.filter(|_| n > 0.0)
+            .map(|ms| ms / n)
+            .map(|ms| if ms < 0.1 { format!("{:.0} µs", ms * 1000.0) } else { format::duration(ms) })
+    };
+    json!({
+        "file": f.name,
+        "kind": f.kind,
+        "database": f.database,
+        "reads": f.reads,
+        "avg_read": avg(f.read_ms, f.reads),
+        "writes": f.writes,
+        "avg_write": avg(f.write_ms, f.writes),
     })
 }
 
@@ -50,6 +68,8 @@ pub fn report(report: &Report) -> Value {
         "categories": categories,
         "notes": waits.map(|w| w.notes).unwrap_or_else(|| vec!["The latest scan recorded no waits. Call waits with now=true to sample them.".into()]),
         "signals": snapshot.pressure.as_ref().map(|p| p.signals.iter().map(signal).collect::<Vec<_>>()).unwrap_or_default(),
+        "storage": snapshot.pressure.as_ref().map(|p| p.files.iter().take(12).map(file).collect::<Vec<_>>()).unwrap_or_default(),
+        "replication": snapshot.pressure.as_ref().map(|p| p.replicas.clone()).unwrap_or_default(),
         "oldest_open_transaction": snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref()).map(|t| json!({
             "session": t.session, "open_for": format::duration(t.seconds * 1000.0), "state": t.state, "program": t.program,
         })),

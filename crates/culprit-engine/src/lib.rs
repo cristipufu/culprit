@@ -2,13 +2,16 @@ pub mod agent;
 pub mod aws;
 pub mod catalog;
 pub mod changes;
+pub mod cloud;
 pub mod connstr;
 pub mod deadlocks;
 pub mod discover;
 pub mod entra;
 pub mod export;
+pub mod history;
 mod http;
 pub mod import;
+pub mod marks;
 pub mod plans;
 mod private_fs;
 pub mod registry;
@@ -34,6 +37,7 @@ pub use agent::{AgentAccess, ApprovalOutcome, ApprovalRequest, AuditEntry, Audit
 pub use culprit_checks::agent_brief;
 pub use discover::{Cloud, DiscoveredDatabase};
 pub use import::{ImportCandidate, ImportSource};
+pub use marks::Mark;
 pub use plans::{PlanFormat, parse_plan};
 pub use reports::ReportSummary;
 use secrets::SecretStore;
@@ -57,6 +61,65 @@ pub struct ConnectionInfo {
     pub last_report: Option<ReportSummary>,
     /// What coding agents may do with this connection through `culprit mcp`.
     pub agent_access: AgentAccess,
+}
+
+/// A period on a connection's timeline. Everything is optional: by default the last 7 days.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct EventsRequest {
+    #[serde(default)]
+    pub start: Option<String>,
+    #[serde(default)]
+    pub end: Option<String>,
+    /// The last N hours, instead of `start`.
+    #[serde(default)]
+    pub hours: Option<f64>,
+    /// Read cloud metrics too (default: yes, for Amazon RDS and Azure databases).
+    #[serde(default)]
+    pub cloud: Option<bool>,
+    /// Fetch cloud metrics again instead of using the last few minutes' answer.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+impl EventsRequest {
+    /// `(start, end)` in epoch seconds.
+    pub fn range(&self) -> Result<(f64, f64)> {
+        let parse = |field: &str, value: &Option<String>| -> Result<Option<f64>> {
+            value
+                .as_deref()
+                .map(|v| {
+                    culprit_core::changes::epoch(v).ok_or_else(|| {
+                        Error::invalid(format!("`{field}` isn't a timestamp: {v}"))
+                            .with_hint("Use ISO 8601 with a time zone, e.g. 2026-10-11T14:05:00Z")
+                    })
+                })
+                .transpose()
+        };
+        let now = chrono::Utc::now().timestamp() as f64;
+        let end = parse("end", &self.end)?.unwrap_or(now).min(now);
+        let start = match (parse("start", &self.start)?, self.hours.filter(|h| *h > 0.0)) {
+            (Some(start), _) => start,
+            (None, Some(hours)) => end - hours * 3600.0,
+            (None, None) => end - 7.0 * 86_400.0,
+        };
+        if start >= end {
+            return Err(Error::invalid("The period is empty: its start must come before its end"));
+        }
+        Ok((start, end))
+    }
+}
+
+/// What changed around a connection over a period.
+#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct EventLog {
+    pub connection: String,
+    pub start: String,
+    pub end: String,
+    pub events: Vec<culprit_core::ChangeEvent>,
+    /// Why something is missing (cloud metrics unavailable, not signed in).
+    pub notes: Vec<String>,
 }
 
 /// What the UI and CLI send to save a connection. `input` is anything `connstr::parse` understands; explicit fields win over it.
@@ -513,19 +576,35 @@ impl Workspace {
         snapshot.taken_at = taken_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         snapshot.connection = name.to_string();
         snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
-        // A day of deadlocks: graphs where the engine keeps them, Postgres's counter. Never fails the scan.
-        match provider.deadlocks(24.0).await {
+        let dir = self.paths.reports_dir(name);
+        // What the database dated itself since the previous scan (schema, settings), for the change timeline.
+        let previous = reports::latest_summary(&dir, None);
+        let since = previous
+            .as_ref()
+            .map(|p| p.taken_at.clone())
+            .unwrap_or_else(|| (taken_at - chrono::Duration::days(trends::HISTORY_DAYS as i64)).to_rfc3339());
+        // A day of deadlocks: graphs where the engine keeps them, Postgres's counter. Neither fails the scan.
+        let (deadlocks, recorded) = tokio::join!(provider.deadlocks(24.0), provider.recorded_changes(&since));
+        match deadlocks {
             Ok(found) => snapshot.deadlocks = Some(found),
             Err(e) if e.code == ErrorCode::Unsupported => {}
             Err(e) => snapshot.notes.push(CollectorNote { collector: "deadlocks".into(), message: e.message }),
         }
-        let dir = self.paths.reports_dir(name);
+        let recorded = match recorded {
+            Ok(found) => found,
+            Err(e) if e.code == ErrorCode::Unsupported => Vec::new(),
+            Err(e) => {
+                snapshot.notes.push(CollectorNote { collector: "changes".into(), message: e.message });
+                Vec::new()
+            }
+        };
         if let Some(workload) = snapshot.workload.as_mut().filter(|w| !w.windowed && w.timeline.is_none()) {
             let history = reports::counters_history(&dir, &snapshot.taken_at);
             trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, &history);
         }
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
+        history::record(&dir, &report, previous.as_ref().map(|p| p.id.as_str()), recorded);
         Ok(report)
     }
 
@@ -552,6 +631,23 @@ impl Workspace {
     pub fn index_advice_for(&self, report: Report) -> culprit_core::IndexAdvice {
         let fresh = culprit_checks::analyze_with(report.snapshot, &self.extra_checks);
         culprit_checks::index_advice(&fresh)
+    }
+
+    /// The dashboard for a connection's latest report (the one scanned with `window_days`, when given). With `live`,
+    /// sessions are read once too; if that fails, the "right now" tile says why and the rest still comes back.
+    pub async fn dashboard(&self, name: &str, window_days: Option<u32>, live: bool) -> Result<culprit_core::Dashboard> {
+        let report = self.latest_report(name, window_days)?.ok_or_else(|| {
+            Error::not_found(format!("No saved report for '{name}'"))
+                .with_hint(format!("Run `culprit scan {name}` first"))
+        })?;
+        let mut dashboard = culprit_checks::dashboard(&report);
+        if live {
+            match self.live(name).await {
+                Ok(state) => culprit_checks::dashboard::with_now(&mut dashboard, &state),
+                Err(e) => culprit_checks::dashboard::without_now(&mut dashboard, &e.message),
+            }
+        }
+        Ok(dashboard)
     }
 
     /// What differs between the latest scans of two connections: tables, columns, indexes, settings, version.
@@ -625,11 +721,15 @@ impl Workspace {
         {
             return Ok(plan);
         }
-        provider.explain(&query.text, ExplainMode::Estimated).await.map_err(|e| {
-            let hint =
-                "The statement text may need parameter values; open it in the editor to explain it with real values";
-            Error { hint: Some(e.hint.clone().unwrap_or_else(|| hint.into())), ..e }
-        })
+        match (provider.explain(&query.text, ExplainMode::Estimated).await, &query.plan) {
+            (Ok(plan), _) => Ok(plan),
+            // Normalized text (`WHERE id = ?`) can't be planned again; the scan planned a real sample of it.
+            (Err(e), Some(captured)) if e.code != ErrorCode::AuthFailed => Ok(captured.clone()),
+            (Err(e), _) => {
+                let hint = "The statement text may need parameter values; open it in the editor to explain it with real values";
+                Err(Error { hint: Some(e.hint.clone().unwrap_or_else(|| hint.into())), ..e })
+            }
+        }
     }
 
     /// Sessions, blocking and waits, plus what Live may do to other sessions here (nothing on production).
@@ -693,6 +793,11 @@ impl Workspace {
             if let Some(data) = self.forget_rejected(name, provider.period_stats(&baseline, &recent).await)? {
                 let mut out = culprit_core::changes::compare(name, info.engine, data, &options);
                 changes::describe_switches(&mut out, provider.as_ref(), 5).await;
+                // Query Store periods run up to now; what the database dated since the last scan isn't saved yet.
+                let last_scan =
+                    latest.as_ref().map(|r| r.snapshot.taken_at.clone()).unwrap_or_else(|| recent.start.clone());
+                let live = provider.recorded_changes(&last_scan).await.unwrap_or_default();
+                self.add_context(&info, &mut out, request.cloud, live).await;
                 return Ok(out);
             }
         }
@@ -713,7 +818,87 @@ impl Workspace {
             None => changes::resolve(request, (first, last))?,
         };
         let data = changes::from_scans(&history, &baseline, &recent);
-        Ok(culprit_core::changes::compare(name, info.engine, data, &options))
+        let mut out = culprit_core::changes::compare(name, info.engine, data, &options);
+        self.add_context(&info, &mut out, request.cloud, Vec::new()).await;
+        Ok(out)
+    }
+
+    /// Line the comparison up with what changed around it: marks, schema and settings changes, restarts, throttling.
+    async fn add_context(
+        &self,
+        info: &ConnectionInfo,
+        out: &mut culprit_core::Changes,
+        cloud: Option<bool>,
+        live: Vec<culprit_core::ChangeEvent>,
+    ) {
+        let (Some(start), Some(end)) =
+            (culprit_core::changes::epoch(&out.baseline.start), culprit_core::changes::epoch(&out.recent.end))
+        else {
+            return;
+        };
+        let mut notes = Vec::new();
+        let mut events = self.events_in(info, start, end, cloud, &mut notes).await;
+        events.extend(live);
+        out.notes.extend(notes);
+        culprit_core::events::correlate(out, events);
+    }
+
+    /// Marks, what Culprit's scans noticed and, for cloud databases, throttling episodes between `start` and `end`.
+    async fn events_in(
+        &self,
+        info: &ConnectionInfo,
+        start: f64,
+        end: f64,
+        cloud: Option<bool>,
+        notes: &mut Vec<String>,
+    ) -> Vec<culprit_core::ChangeEvent> {
+        let dir = self.paths.reports_dir(&info.name);
+        let mut events: Vec<culprit_core::ChangeEvent> = marks::list(&dir).iter().map(marks::Mark::event).collect();
+        events.extend(history::events(&dir, start, end));
+        if cloud != Some(false) && cloud::target(info).is_some() {
+            match cloud::signals(&dir, info, start, end, false).await {
+                Ok(signals) => events.extend(signals.events()),
+                Err(e) => notes.push(match e.hint {
+                    Some(hint) => format!("Cloud metrics unavailable: {} ({hint}).", e.message.trim_end_matches('.')),
+                    None => format!("Cloud metrics unavailable: {}.", e.message.trim_end_matches('.')),
+                }),
+            }
+        }
+        culprit_core::events::in_range(events, start, end)
+    }
+
+    /// What changed around a connection over a period, oldest first: marks, schema, index and settings changes,
+    /// restarts, upgrades and, for cloud databases, throttling. Reads saved scans and the cloud CLI; never the database.
+    pub async fn events(&self, name: &str, request: &EventsRequest) -> Result<EventLog> {
+        let info = self.connection(name)?;
+        let (start, end) = request.range()?;
+        let mut notes = Vec::new();
+        let events = self.events_in(&info, start, end, request.cloud, &mut notes).await;
+        Ok(EventLog { connection: info.name, start: changes::iso(start), end: changes::iso(end), events, notes })
+    }
+
+    /// Put a moment on a connection's timeline (a deploy, a migration) so charts and What changed line queries up with it.
+    pub fn mark(&self, name: &str, text: &str, at: Option<&str>, by: &str) -> Result<marks::Mark> {
+        self.connection(name)?;
+        marks::add(&self.paths.reports_dir(name), text, at, by)
+    }
+
+    pub fn marks(&self, name: &str) -> Result<Vec<marks::Mark>> {
+        self.connection(name)?;
+        Ok(marks::list(&self.paths.reports_dir(name)))
+    }
+
+    pub fn unmark(&self, name: &str, id: &str) -> Result<marks::Mark> {
+        self.connection(name)?;
+        marks::remove(&self.paths.reports_dir(name), id)
+    }
+
+    /// What the cloud measured for a connection's server (CloudWatch, Azure Monitor) and when it held the server back,
+    /// through the person's own `aws` / `az` sign-in. Cached for a few minutes.
+    pub async fn cloud(&self, name: &str, request: &EventsRequest) -> Result<culprit_core::CloudSignals> {
+        let info = self.connection(name)?;
+        let (start, end) = request.range()?;
+        cloud::signals(&self.paths.reports_dir(name), &info, start, end, request.refresh).await
     }
 
     /// Cancel another session's statement or end the session. Refused on production connections, whatever the caller says.
@@ -854,6 +1039,11 @@ pub fn drift_reports(a: &Report, b: &Report) -> Result<Drift> {
         )));
     }
     Ok(culprit_checks::drift(a, b))
+}
+
+/// The dashboard for a report already in hand (a saved file, a fixture), without a live read.
+pub fn dashboard_report(report: &Report) -> culprit_core::Dashboard {
+    culprit_checks::dashboard(report)
 }
 
 /// Where a snapshot's database time went, by wait category with the queries behind each (saved files, fixtures).

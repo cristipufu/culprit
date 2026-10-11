@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use clap::Args;
 use culprit_core::{
-    Error, Pressure, Report, Result, Signal, SignalScope, SignalStatus, SignalUnit, Snapshot, WaitSample, WaitsReport,
-    format,
+    Error, FileIo, Pressure, Replica, ReplicaRole, Report, Result, Signal, SignalScope, SignalStatus, SignalUnit,
+    Snapshot, WaitSample, WaitsReport, format,
 };
 use culprit_engine::Workspace;
 use serde_json::json;
@@ -123,6 +123,8 @@ fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
     }
     if let Some(p) = &snapshot.pressure {
         print_signals("Health", p, &p.signals);
+        print_storage(&p.files);
+        print_replicas(&p.replicas);
     }
 }
 
@@ -184,12 +186,70 @@ fn print_signals(title: &str, p: &Pressure, signals: &[Signal]) {
 pub fn value(s: &Signal) -> String {
     match s.unit {
         SignalUnit::Percent => format!("{:.1}%", s.value),
+        // Under one every ten seconds, a per-minute rate says more than "0.0/s".
+        SignalUnit::PerSecond if s.value > 0.0 && s.value < 0.1 => format!("{}/min", format::count(s.value * 60.0)),
         SignalUnit::PerSecond => format!("{}/s", format::count(s.value)),
         SignalUnit::PerHour => format!("{}/h", format::count(s.value)),
         SignalUnit::Count => format::count(s.value),
         SignalUnit::Bytes => format::bytes(s.value),
         SignalUnit::Milliseconds => format::duration(s.value),
         SignalUnit::Seconds => format::duration(s.value * 1000.0),
+    }
+}
+
+/// Latency per file, slowest first: what reads and writes took on average since startup.
+fn print_storage(files: &[FileIo]) {
+    if files.is_empty() {
+        return;
+    }
+    println!();
+    println!("Storage (average per operation, since start)");
+    let avg = |ms: Option<f64>, n: f64| match ms {
+        Some(ms) if n > 0.0 => format!("{:>9} × {:<6}", latency(ms / n), format::count(n)),
+        _ if n > 0.0 => format!("{:>9} × {:<6}", "untimed", format::count(n)),
+        _ => format!("{:>18}", ""),
+    };
+    for f in files.iter().take(12) {
+        let name = match &f.database {
+            Some(db) if !f.name.starts_with(db.as_str()) => format!("{db} · {}", f.name),
+            _ => f.name.clone(),
+        };
+        println!("  {:<34} reads {}  writes {}", short(&name, 34), avg(f.read_ms, f.reads), avg(f.write_ms, f.writes));
+    }
+}
+
+/// Storage latency reads best in microseconds below a tenth of a millisecond (cache hits, fast SSDs).
+fn latency(ms: f64) -> String {
+    if ms < 0.1 { format!("{:.0} µs", ms * 1000.0) } else { format::duration(ms) }
+}
+
+fn print_replicas(replicas: &[Replica]) {
+    if replicas.is_empty() {
+        return;
+    }
+    println!();
+    println!("Replication");
+    for r in replicas {
+        let role = match r.role {
+            ReplicaRole::Replica => "replica",
+            ReplicaRole::ThisServer => "this server",
+            ReplicaRole::Slot => "slot",
+        };
+        let mut parts: Vec<String> = Vec::new();
+        parts.extend(r.state.clone());
+        parts.extend(r.sync.clone());
+        if let Some(s) = r.lag_seconds {
+            parts.push(format!("{} behind", format::duration(s * 1000.0)));
+        }
+        if let Some(b) = r.lag_bytes {
+            parts.push(format!(
+                "{} {}",
+                format::bytes(b),
+                if r.role == ReplicaRole::Slot { "kept" } else { "not applied" }
+            ));
+        }
+        parts.extend(r.error.clone());
+        println!("  {:<11} {:<28} {}", role, short(&r.name, 28), parts.join(" · "));
     }
 }
 

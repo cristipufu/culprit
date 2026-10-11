@@ -9,12 +9,12 @@ use culprit_core::{
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
 
-use crate::connect::{Connector, Scope, TAG};
-use crate::plan_json;
+use crate::connect::{Connector, Flavor, Scope, TAG};
+use crate::fingerprint::{fingerprint, matches_digest};
 use crate::rows::{Rec, explain_one, query, query_one, query_with, tagged};
+use crate::{plan_json, slowlog, vars};
 
 const PS_GRANT: &str = "GRANT SELECT ON performance_schema.* TO";
-const PS_ENABLE: &str = "Set performance_schema = ON in the server configuration and restart MySQL.";
 
 /// What the probe learned about the server, shared by every collector.
 pub struct Probe {
@@ -27,15 +27,19 @@ pub struct Probe {
     pub user: String,
     pub cloud: Option<String>,
     pub performance_schema: bool,
+    pub flavor: Flavor,
+    /// Where the slow query log goes (`FILE`, `TABLE`, `FILE,TABLE`, `NONE`), whether it is on, and its threshold.
+    pub log_output: String,
+    pub slow_query_log: bool,
+    pub long_query_time: Option<f64>,
+    /// MariaDB's (and Percona's) per-table and per-index read counters; `None` where the server has no such setting.
+    pub userstat: Option<bool>,
 }
 
 impl Probe {
     pub fn product(&self) -> String {
         let short = self.version.split('-').next().unwrap_or(&self.version);
-        if self.version.to_ascii_lowercase().contains("mariadb") {
-            return format!("MariaDB {short}");
-        }
-        format!("MySQL {short}")
+        format!("{} {short}", self.flavor.name())
     }
 
     fn grant_target(&self) -> String {
@@ -45,17 +49,99 @@ impl Probe {
         }
     }
 
+    /// The slow query log is written to `mysql.slow_log`, where Culprit can read it.
+    pub fn slow_log_table(&self) -> bool {
+        self.log_output.to_ascii_uppercase().split(',').any(|o| o.trim() == "TABLE")
+    }
+
+    /// The one statement that starts recording statements without a restart: the slow query log, into the table, at
+    /// 100 ms (and, on MariaDB, per-index counters). `None` when everything it would set is already set.
+    fn unlock_statement(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if self.userstat == Some(false) {
+            parts.push("GLOBAL userstat = ON".into());
+        }
+        if !self.slow_query_log {
+            parts.push("GLOBAL slow_query_log = ON".into());
+        }
+        if !self.slow_log_table() {
+            let current = self.log_output.trim().to_ascii_uppercase();
+            let output =
+                if current.is_empty() || current == "NONE" { "TABLE".to_string() } else { format!("{current},TABLE") };
+            parts.push(format!("GLOBAL log_output = '{output}'"));
+        }
+        if self.long_query_time.is_none_or(|t| t > 1.0) {
+            parts.push("GLOBAL long_query_time = 0.1".into());
+        }
+        (!parts.is_empty()).then(|| format!("SET {};", parts.join(", ")))
+    }
+
+    fn performance_schema_restart(&self) -> String {
+        format!(
+            "For statistics on every statement (not only slow ones) and waits, set performance_schema = ON in the server configuration and restart {}.",
+            self.flavor.name()
+        )
+    }
+
+    /// How to get statement statistics when performance_schema is off: the no-restart path first.
+    fn statements_fix(&self) -> String {
+        match self.unlock_statement() {
+            Some(sql) => format!(
+                "Run {sql} {} then logs statements slower than long_query_time to mysql.slow_log, which Culprit reads: no restart needed. \
+                 Connections opened earlier keep the old threshold until they reconnect, and the settings last until the next restart unless \
+                 they are also added to the server configuration. {}",
+                self.flavor.name(),
+                self.performance_schema_restart()
+            ),
+            None => self.performance_schema_restart(),
+        }
+    }
+
     pub fn server_info(&self) -> ServerInfo {
         let mut capabilities = vec![Capability::TableStats, Capability::Sessions, Capability::Showplan];
         let mut missing = Vec::new();
         if self.performance_schema {
             capabilities.extend([Capability::PerformanceSchema, Capability::IndexUsage, Capability::QueryPlans]);
         } else {
-            let reason =
-                "performance_schema is off, so MySQL keeps no statement or index usage statistics.".to_string();
-            for capability in [Capability::PerformanceSchema, Capability::IndexUsage, Capability::QueryPlans] {
-                missing.push(MissingCapability { capability, reason: reason.clone(), fix: Some(PS_ENABLE.into()) });
+            let reason = match self.flavor {
+                Flavor::Mariadb => {
+                    "performance_schema is off (MariaDB's default), so the server keeps no statement statistics."
+                }
+                Flavor::Mysql => "performance_schema is off, so MySQL keeps no statement statistics.",
+            };
+            missing.push(MissingCapability {
+                capability: Capability::PerformanceSchema,
+                reason: reason.into(),
+                fix: Some(self.statements_fix()),
+            });
+            if self.userstat == Some(true) {
+                capabilities.push(Capability::IndexUsage);
+            } else {
+                let (reason, fix) = match self.flavor {
+                    Flavor::Mariadb => (
+                        "MariaDB counts index reads only with performance_schema or userstat on.".to_string(),
+                        "Run SET GLOBAL userstat = ON; to start counting (no restart needed), then scan again once the application has run for a while.".to_string(),
+                    ),
+                    Flavor::Mysql => (
+                        "performance_schema is off, so MySQL counts no index use.".to_string(),
+                        "Set performance_schema = ON in the server configuration and restart MySQL.".to_string(),
+                    ),
+                };
+                missing.push(MissingCapability { capability: Capability::IndexUsage, reason, fix: Some(fix) });
             }
+            if self.slow_query_log && self.slow_log_table() {
+                capabilities.push(Capability::QueryPlans);
+            } else {
+                missing.push(MissingCapability {
+                    capability: Capability::QueryPlans,
+                    reason: "Plans come from the statements the server recorded, and it records none.".into(),
+                    fix: None,
+                });
+            }
+        }
+        // Logged statements are a workload of their own without performance_schema, and samples to plan with it.
+        if self.slow_query_log && self.slow_log_table() {
+            capabilities.push(Capability::SlowLog);
         }
         ServerInfo {
             engine: Engine::Mysql,
@@ -75,7 +161,7 @@ impl Probe {
 
 fn database_of(connector: &Connector) -> Result<String> {
     connector.database.clone().ok_or_else(|| {
-        Error::invalid("A MySQL connection needs a database (schema) to analyze")
+        Error::invalid("A MySQL or MariaDB connection needs a database (schema) to analyze")
             .with_hint("Add it to the connection string, e.g. mysql://user@host:3306/shop")
     })
 }
@@ -85,10 +171,11 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
     let row = query_one(
         conn,
         "SELECT VERSION() AS version, @@version_comment AS comment, @@basedir AS basedir, CURRENT_USER() AS user_name,
-                @@performance_schema AS ps, DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now",
+                @@performance_schema AS ps, DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now,
+                @@log_output AS log_output, @@slow_query_log AS slow_log, @@long_query_time AS long_query_time",
     )
     .await?
-    .ok_or_else(|| Error::internal("MySQL returned no server information"))?;
+    .ok_or_else(|| Error::internal("The server returned no information about itself"))?;
     let size = query_with(
         conn,
         "SELECT SUM(DATA_LENGTH + INDEX_LENGTH) AS size, COUNT(*) AS tables FROM information_schema.TABLES WHERE TABLE_SCHEMA = ?",
@@ -110,14 +197,7 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
             )));
         }
     }
-    let uptime = query_one(
-        conn,
-        "SELECT VARIABLE_VALUE AS uptime FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime'",
-    )
-    .await
-    .ok()
-    .flatten()
-    .and_then(|r| r.number("uptime"));
+    let uptime = vars::status(conn, &["Uptime"]).await.ok().and_then(|s| s.get("Uptime").copied());
     let started_at = match uptime {
         Some(seconds) => query_one(
             conn,
@@ -132,8 +212,20 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
     };
     let version = row.string("version");
     let comment = row.string("comment");
-    let cloud = detect_cloud(conn, &connector.host, &row.string("basedir"), &comment).await;
+    let flavor = Flavor::of_version(&version);
+    let cloud = detect_cloud(conn, &connector.host, &row.string("basedir"), &comment, flavor).await;
+    let userstat = match flavor {
+        Flavor::Mariadb => {
+            query_one(conn, "SELECT @@userstat AS userstat").await.ok().flatten().map(|r| r.flag("userstat"))
+        }
+        Flavor::Mysql => None,
+    };
     Ok(Probe {
+        flavor,
+        log_output: row.string("log_output"),
+        slow_query_log: row.flag("slow_log"),
+        long_query_time: row.number("long_query_time"),
+        userstat,
         version,
         comment,
         database,
@@ -146,12 +238,19 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
     })
 }
 
-async fn detect_cloud(conn: &mut Conn, host: &str, basedir: &str, comment: &str) -> Option<String> {
+async fn detect_cloud(conn: &mut Conn, host: &str, basedir: &str, comment: &str, flavor: Flavor) -> Option<String> {
     let host = host.to_ascii_lowercase();
     if host.ends_with(".mysql.database.azure.com") {
         return Some("Azure Database for MySQL".into());
     }
-    let aurora = query_one(conn, "SELECT AURORA_VERSION() AS v").await.ok().flatten().is_some();
+    if host.ends_with(".mariadb.database.azure.com") {
+        return Some("Azure Database for MariaDB".into());
+    }
+    if host.contains(".skysql.") || host.ends_with(".mariadb.com") {
+        return Some("MariaDB Cloud".into());
+    }
+    let aurora =
+        flavor == Flavor::Mysql && query_one(conn, "SELECT AURORA_VERSION() AS v").await.ok().flatten().is_some();
     if aurora {
         return Some("Amazon Aurora".into());
     }
@@ -191,7 +290,7 @@ pub async fn snapshot(
         },
         async {
             let mut conn = connector.connect(Scope::Server).await?;
-            let settings = settings(&mut conn).await;
+            let settings = settings(&mut conn, probe.flavor).await;
             let waits = crate::pressure::waits(&mut conn).await;
             let pressure = crate::pressure::collect(&mut conn).await;
             Ok::<_, Error>((settings, waits, pressure))
@@ -203,12 +302,26 @@ pub async fn snapshot(
     let mut note =
         |collector: &str, message: String| notes.push(CollectorNote { collector: collector.into(), message });
 
+    let mut source_waits = Vec::new();
     let workload = match workload {
         Ok(Some(collected)) => {
-            if let Some(message) = collected.plan_note {
-                note("plans", message);
+            source_waits = collected.waits;
+            for (collector, message) in collected.notes {
+                note(collector, message);
             }
-            if collected.workload.queries.iter().all(|q| q.plan.is_none()) {
+            if collected.workload.source == slowlog::SOURCE && !server.has(Capability::SlowLog) {
+                server.capabilities.push(Capability::SlowLog);
+            }
+            let planned = collected.workload.queries.iter().any(|q| q.plan.is_some());
+            if planned {
+                server.missing.retain(|m| m.capability != Capability::QueryPlans);
+                if !server.has(Capability::QueryPlans) {
+                    server.capabilities.push(Capability::QueryPlans);
+                }
+            } else if let Some((reason, fix)) = collected.no_plans {
+                server.missing.retain(|m| m.capability != Capability::QueryPlans);
+                mark_missing(&mut server, Capability::QueryPlans, reason, fix);
+            } else {
                 server.capabilities.retain(|c| *c != Capability::QueryPlans);
             }
             Some(collected.workload)
@@ -301,11 +414,14 @@ pub async fn snapshot(
                 Ok(_) => {}
                 Err(e) => note("waits", e.message),
             }
+            if waits_out.is_empty() {
+                waits_out = std::mem::take(&mut source_waits);
+            }
         }
         Err(e) => note("settings", e.message),
     }
 
-    Ok(Snapshot {
+    let mut snapshot = Snapshot {
         format: SNAPSHOT_FORMAT,
         id: probe.now.replace(['-', ':'], ""),
         connection: connection.to_string(),
@@ -330,7 +446,12 @@ pub async fn snapshot(
         plan_cache: None,
         tuning: None,
         deadlocks: None,
-    })
+        constraints: Vec::new(),
+        histograms: None,
+    };
+    crate::signals::collect(connector, &probe, &mut snapshot).await;
+    snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(snapshot)
 }
 
 fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String, fix: Option<String>) {
@@ -343,7 +464,11 @@ fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String,
 
 struct CollectedWorkload {
     workload: Workload,
-    plan_note: Option<String>,
+    /// Waits the workload source measured itself (the slow query log's lock time), for servers without wait totals.
+    waits: Vec<WaitStat>,
+    notes: Vec<(&'static str, String)>,
+    /// Why no statement could be planned and what would change that, when none was.
+    no_plans: Option<(String, Option<String>)>,
 }
 
 struct Digest {
@@ -373,13 +498,16 @@ async fn collect_workload(
     options: &SnapshotOptions,
 ) -> Result<Option<CollectedWorkload>> {
     if !probe.performance_schema {
-        return Ok(None);
+        return match probe.slow_log_table() {
+            true => slow_log_workload(conn, connector, probe, options).await,
+            false => Ok(None),
+        };
     }
     let available = digest_columns(conn).await?;
     let has = |c: &str| available.iter().any(|a| a == c);
     let optional = |c: &str| if has(c) { c.to_string() } else { format!("NULL AS {c}") };
     // Rows examined stands in for "logical reads": MySQL counts rows the storage engine handed to the server, not pages.
-    // EXPLAINs are Culprit's own planning; `SELECT @@…` digests are driver handshakes (Culprit's included), never actionable.
+    // EXPLAINs and ANALYZEs are Culprit's own planning; `SELECT @@…` digests are driver handshakes, never actionable.
     let sql = format!(
         "SELECT DIGEST AS digest, DIGEST_TEXT AS digest_text, COUNT_STAR AS calls, SUM_TIMER_WAIT AS total_ps,
                 MAX_TIMER_WAIT AS max_ps, MIN_TIMER_WAIT AS min_ps, SUM_ROWS_SENT AS rows_sent, SUM_ROWS_EXAMINED AS rows_examined,
@@ -389,7 +517,8 @@ async fn collect_workload(
                 DATE_FORMAT(LAST_SEEN, '%Y-%m-%dT%H:%i:%sZ') AS last_seen
            FROM performance_schema.events_statements_summary_by_digest
           WHERE SCHEMA_NAME = ? AND DIGEST IS NOT NULL AND DIGEST_TEXT NOT LIKE 'EXPLAIN %'
-            AND DIGEST_TEXT NOT LIKE 'SELECT @@%'",
+            AND DIGEST_TEXT NOT LIKE 'ANALYZE FORMAT%' AND DIGEST_TEXT NOT LIKE 'SHOW ANALYZE%'
+            AND DIGEST_TEXT NOT LIKE 'SHOW EXPLAIN%' AND DIGEST_TEXT NOT LIKE 'SELECT @@%'",
         cpu = optional("SUM_CPU_TIME"),
         sample = optional("QUERY_SAMPLE_TEXT"),
         p95 = optional("QUANTILE_95"),
@@ -418,12 +547,23 @@ async fn collect_workload(
 
     let mut kept = select_top(all, options.top_queries as usize);
     attach_histograms(conn, &probe.database, &mut kept).await;
-    let mut plan_note = None;
+    let mut notes = Vec::new();
+    let mut no_plans = None;
     if !kept.is_empty() && options.plans > 0 {
-        plan_note = attach_plans(connector, &probe.database, &mut kept, options.plans as usize).await;
+        let limit = options.plans as usize;
+        let planned_part = limit.min(kept.len());
+        attach_samples(conn, probe, options, &mut kept[..planned_part]).await;
+        let outcome = attach_plans(connector, &probe.database, &mut kept, limit).await;
+        if let Some(message) = outcome.note() {
+            notes.push(("plans", message));
+        }
+        if outcome.planned == 0 {
+            no_plans = Some(no_plans_reason(conn, probe).await);
+        }
     }
     let queries = kept.into_iter().map(|d| d.stat).collect();
     Ok(Some(CollectedWorkload {
+        waits: Vec::new(),
         workload: Workload {
             source: "performance_schema".into(),
             windowed: false,
@@ -437,8 +577,55 @@ async fn collect_workload(
             queries,
             timeline: None,
         },
-        plan_note,
+        notes,
+        no_plans,
     }))
+}
+
+/// Statements recorded in the slow query log table over the scan window, grouped by shape.
+async fn slow_log_workload(
+    conn: &mut Conn,
+    connector: &Connector,
+    probe: &Probe,
+    options: &SnapshotOptions,
+) -> Result<Option<CollectedWorkload>> {
+    let now = culprit_core::changes::epoch(&probe.now).unwrap_or(0.0);
+    let since = slowlog::iso(now - f64::from(options.window_days.max(1)) * 86_400.0);
+    let runs = slowlog::read(conn, &probe.database, &slowlog::sql_time(&since), None).await?;
+    if runs.is_empty() {
+        return Ok(None);
+    }
+    let collected = slowlog::workload(&runs, &since, &probe.now, probe.long_query_time, options.top_queries as usize);
+    let samples: HashMap<String, String> = collected.samples.into_iter().collect();
+    let mut kept: Vec<Digest> = collected
+        .workload
+        .queries
+        .iter()
+        .map(|q| Digest { sample: samples.get(&q.id).cloned(), rows_examined: 0.0, stat: q.clone() })
+        .collect();
+    let mut notes = vec![("workload", collected.threshold_note)];
+    let mut no_plans = None;
+    if options.plans > 0 {
+        let outcome = attach_plans(connector, &probe.database, &mut kept, options.plans as usize).await;
+        if let Some(message) = outcome.note() {
+            notes.push(("plans", message));
+        }
+        if outcome.planned == 0 {
+            no_plans = Some(("No logged statement could be planned.".to_string(), None));
+        }
+    }
+    let mut workload = collected.workload;
+    workload.queries = kept.into_iter().map(|d| d.stat).collect();
+    let waits = (collected.lock_ms > 0.0)
+        .then(|| WaitStat {
+            category: "Lock".into(),
+            wait_type: Some("lock time (slow query log)".into()),
+            wait_ms: collected.lock_ms,
+            tasks: None,
+        })
+        .into_iter()
+        .collect();
+    Ok(Some(CollectedWorkload { workload, waits, notes, no_plans }))
 }
 
 fn digest(r: &Rec, has_cpu: bool) -> Digest {
@@ -490,6 +677,7 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
                 lock_ms: ms("lock_ps"),
                 ..Default::default()
             }),
+            costs: None,
         },
         sample: r.text("query_sample_text"),
         rows_examined: r.number("rows_examined").unwrap_or(0.0),
@@ -598,44 +786,173 @@ fn plannable(sample: &str) -> bool {
     starts && !trimmed.ends_with("...") && !trimmed.contains(" ?") && !trimmed.contains("=?")
 }
 
-async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Digest], limit: usize) -> Option<String> {
+#[derive(Default)]
+struct PlanOutcome {
+    planned: usize,
+    /// Reads the server kept no text for.
+    no_text: usize,
+    /// Reads whose text was cut short or prepared with placeholders.
+    unusable: usize,
+    /// Statements that change data (or aren't queries): Culprit plans reads only.
+    not_reads: usize,
+    failed: usize,
+    error: Option<String>,
+}
+
+impl PlanOutcome {
+    fn note(&self) -> Option<String> {
+        if let Some(error) = &self.error {
+            return Some(format!("Could not open a session to plan statements: {error}"));
+        }
+        if self.no_text + self.unusable + self.failed == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.no_text > 0 {
+            parts.push(format!("{} had no recorded statement text", self.no_text));
+        }
+        if self.unusable > 0 {
+            parts.push(format!("{} had only truncated or server-side prepared text", self.unusable));
+        }
+        if self.failed > 0 {
+            parts.push(format!("{} could not be explained", self.failed));
+        }
+        let queries = if self.planned == 1 { "query" } else { "queries" };
+        Some(format!("Planned {} {queries}; {}.", self.planned, parts.join(", ")))
+    }
+}
+
+/// Whether a statement is a query Culprit would plan (by its digest text or a sample).
+fn reads_shape(text: &str) -> bool {
+    let lower = text.trim_start().trim_start_matches('(').trim_start().to_ascii_lowercase();
+    ["select", "with", "table "].iter().any(|k| lower.starts_with(k))
+}
+
+async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Digest], limit: usize) -> PlanOutcome {
+    let mut outcome = PlanOutcome::default();
     let mut conn = match connector.connect(Scope::Database).await {
         Ok(conn) => conn,
-        Err(e) => return Some(format!("Could not open a session to plan statements: {}", e.message)),
+        Err(e) => {
+            outcome.error = Some(e.message);
+            return outcome;
+        }
     };
-    let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
-    let (mut planned, mut skipped, mut failed) = (0, 0, 0);
+    if connector.flavor() == Flavor::Mysql {
+        let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
+    }
     for digest in queries.iter_mut().take(limit) {
         // Sample text was written by whoever ran the statement: it must lex as exactly one statement, and EXPLAIN goes
         // through a prepared statement, which can't hold a second one.
         let sample = digest.sample.as_deref().filter(|s| plannable(s));
         let Some(sample) = sample.and_then(|s| culprit_core::sql::single_statement(s, Engine::Mysql).ok()) else {
-            skipped += 1;
+            match (&digest.sample, reads_shape(&digest.stat.text)) {
+                (_, false) => outcome.not_reads += 1,
+                (None, true) => outcome.no_text += 1,
+                (Some(_), true) => outcome.unusable += 1,
+            }
             continue;
         };
         let sql = format!("EXPLAIN FORMAT=JSON {sample}");
         match explain_one(&mut conn, &sql).await {
             Ok(Some(row)) => {
-                let json = row.text("explain").or_else(|| row.text("EXPLAIN")).unwrap_or_default();
+                let json = row.text("explain").or_else(|| row.first_text()).unwrap_or_default();
                 match plan_json::parse(&json, PlanKind::Estimated, Some(sample), Some(database)) {
                     Ok(mut plan) => {
                         plan.statement = Some(digest.stat.text.clone());
                         digest.stat.plan = Some(plan);
-                        planned += 1;
+                        outcome.planned += 1;
                     }
-                    Err(_) => failed += 1,
+                    Err(_) => outcome.failed += 1,
                 }
             }
-            _ => failed += 1,
+            _ => outcome.failed += 1,
         }
     }
     let _ = conn.disconnect().await;
-    (skipped + failed > 0).then(|| {
-        format!(
-            "Planned {planned} statement{}; {skipped} had no usable sample text (truncated or server-side prepared) and {failed} could not be explained.",
-            if planned == 1 { "" } else { "s" }
-        )
-    })
+    outcome
+}
+
+/// Statement text to plan each digest by. MySQL 8 keeps a sample per digest; MariaDB (and older MySQL) only keep the
+/// statements in the history tables, and the slow query log table has real statements of the same shape.
+async fn attach_samples(conn: &mut Conn, probe: &Probe, options: &SnapshotOptions, kept: &mut [Digest]) {
+    let wanted = |d: &Digest| reads_shape(&d.stat.text) && !d.sample.as_deref().is_some_and(plannable);
+    let digests: Vec<String> = kept.iter().filter(|d| wanted(d)).filter_map(|d| d.stat.query_hash.clone()).collect();
+    if !digests.is_empty() {
+        let marks = vec!["?"; digests.len()].join(", ");
+        let mut found: HashMap<String, String> = HashMap::new();
+        for table in ["events_statements_history_long", "events_statements_history", "events_statements_current"] {
+            let sql = format!(
+                "SELECT DIGEST AS digest, SQL_TEXT AS sql_text FROM performance_schema.{table}
+                  WHERE CURRENT_SCHEMA = ? AND DIGEST IN ({marks}) AND SQL_TEXT IS NOT NULL
+                  ORDER BY TIMER_START DESC"
+            );
+            let mut params = vec![Value::from(probe.database.clone())];
+            params.extend(digests.iter().cloned().map(Value::from));
+            for r in query_with(conn, &sql, params).await.unwrap_or_default() {
+                if let (Some(digest), Some(text)) = (r.text("digest"), r.text("sql_text"))
+                    && !text.contains(TAG)
+                    && plannable(&text)
+                {
+                    found.entry(digest).or_insert(text);
+                }
+            }
+        }
+        for d in kept.iter_mut().filter(|d| wanted(d)) {
+            if let Some(text) = d.stat.query_hash.as_ref().and_then(|h| found.remove(h)) {
+                d.sample = Some(text);
+            }
+        }
+    }
+    if probe.slow_log_table() && kept.iter().any(&wanted) {
+        let now = culprit_core::changes::epoch(&probe.now).unwrap_or(0.0);
+        let since = slowlog::iso(now - f64::from(options.window_days.max(1)) * 86_400.0);
+        if let Ok(runs) = slowlog::read(conn, &probe.database, &slowlog::sql_time(&since), None).await {
+            let keyed: Vec<(String, &str)> = runs.iter().map(|r| (fingerprint(&r.sql).key, r.sql.as_str())).collect();
+            for d in kept.iter_mut().filter(|d| wanted(d)) {
+                if let Some((_, text)) =
+                    keyed.iter().find(|(key, text)| plannable(text) && matches_digest(key, &d.stat.text))
+                {
+                    d.sample = Some(text.to_string());
+                }
+            }
+        }
+    }
+}
+
+/// Why nothing could be planned, and the change that would let Culprit plan statements.
+async fn no_plans_reason(conn: &mut Conn, probe: &Probe) -> (String, Option<String>) {
+    // The history tables fill only under the current-statement consumer.
+    let off: Vec<String> = query(
+        conn,
+        "SELECT NAME AS name FROM performance_schema.setup_consumers
+          WHERE NAME IN ('events_statements_current', 'events_statements_history_long') AND ENABLED = 'NO'",
+    )
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|r| r.string("name"))
+    .collect();
+    if probe.flavor == Flavor::Mariadb && !off.is_empty() {
+        let names = ["events_statements_current", "events_statements_history_long"];
+        let config =
+            names.iter().map(|n| format!("performance_schema_consumer_{n} = ON")).collect::<Vec<_>>().join(" and ");
+        return (
+            "MariaDB keeps statement digests but not the statements themselves, so there is no text to plan.".into(),
+            Some(format!(
+                "Run UPDATE performance_schema.setup_consumers SET ENABLED = 'YES' WHERE NAME IN ('events_statements_current', 'events_statements_history_long'); \
+                 to keep the latest statements (no restart needed; add {config} to the server configuration to keep them after a restart). \
+                 Or open a statement in the editor and Explain it there."
+            )),
+        );
+    }
+    (
+        "None of the recorded statements could be planned: their text was truncated, prepared with placeholders, or no longer in the statement history.".into(),
+        probe.flavor.eq(&Flavor::Mariadb).then(|| {
+            "MariaDB's statement history keeps only the latest statements (performance_schema_events_statements_history_long_size). \
+             Logging slow statements to the mysql.slow_log table gives Culprit lasting samples: SET GLOBAL slow_query_log = ON, GLOBAL log_output = 'FILE,TABLE';"
+                .to_string()
+        }),
+    )
 }
 
 /// Hours between two RFC 3339 UTC timestamps.
@@ -736,6 +1053,7 @@ async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> {
                 forwarded_fetches: None,
                 xid_age: None,
                 name,
+                storage: None,
             }
         })
         .collect())
@@ -823,11 +1141,19 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
         {
             Ok(rows) => (
                 rows.into_iter()
-                    .map(|r| ((r.string("t").to_ascii_lowercase(), r.string("i").to_ascii_lowercase()), r))
+                    .map(|r| {
+                        let key = (r.string("t").to_ascii_lowercase(), r.string("i").to_ascii_lowercase());
+                        (key, (r.number("read_count"), r.number("write_count")))
+                    })
                     .collect::<HashMap<_, _>>(),
                 None,
             ),
             Err(e) => (HashMap::new(), Some(format!("Reading index usage failed: {}", e.message))),
+        }
+    } else if probe.userstat == Some(true) {
+        match userstat_usage(conn, db, &rows).await {
+            Ok(usage) => (usage, None),
+            Err(e) => (HashMap::new(), Some(format!("Reading userstat index statistics failed: {}", e.message))),
         }
     } else {
         (HashMap::new(), None)
@@ -884,8 +1210,8 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             is_disabled: first.text("visible").is_some_and(|v| v.eq_ignore_ascii_case("NO")),
             size_bytes: sizes.get(&key).copied(),
             // No row means the table hasn't been opened since the server started: usage is unknown, not zero.
-            reads: used.and_then(|r| r.number("read_count")),
-            writes: used.and_then(|r| r.number("write_count")),
+            reads: used.and_then(|u| u.0),
+            writes: used.and_then(|u| u.1),
             seeks: None,
             scans: None,
             lookups: None,
@@ -894,9 +1220,45 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             table,
             name,
             columns,
+            contention: None,
         });
     }
     Ok((out, usage_note))
+}
+
+/// Index reads from MariaDB's userstat counters (since `userstat` was turned on or last flushed). An index missing from
+/// INDEX_STATISTICS on a table that has been read was not used; on a table nobody has touched, usage is unknown.
+async fn userstat_usage(
+    conn: &mut Conn,
+    db: &str,
+    statistics: &[Rec],
+) -> Result<HashMap<(String, String), (Option<f64>, Option<f64>)>> {
+    let tables: HashMap<String, f64> = query_with(
+        conn,
+        "SELECT TABLE_NAME AS t, ROWS_CHANGED AS changed FROM information_schema.TABLE_STATISTICS WHERE TABLE_SCHEMA = ?",
+        vec![Value::from(db)],
+    )
+    .await?
+    .into_iter()
+    .map(|r| (r.string("t").to_ascii_lowercase(), r.number("changed").unwrap_or(0.0)))
+    .collect();
+    let read: HashMap<(String, String), f64> = query_with(
+        conn,
+        "SELECT TABLE_NAME AS t, INDEX_NAME AS i, ROWS_READ AS rows_read FROM information_schema.INDEX_STATISTICS WHERE TABLE_SCHEMA = ?",
+        vec![Value::from(db)],
+    )
+    .await?
+    .into_iter()
+    .map(|r| ((r.string("t").to_ascii_lowercase(), r.string("i").to_ascii_lowercase()), r.number("rows_read").unwrap_or(0.0)))
+    .collect();
+    let mut out = HashMap::new();
+    for r in statistics {
+        let key = (r.string("table_name").to_ascii_lowercase(), r.string("index_name").to_ascii_lowercase());
+        let Some(changed) = tables.get(&key.0) else { continue };
+        let reads = read.get(&key).copied().unwrap_or(0.0);
+        out.insert(key, (Some(reads), Some(*changed)));
+    }
+    Ok(out)
 }
 
 async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<ForeignKey>> {
@@ -932,39 +1294,46 @@ async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<ForeignKey>> {
     Ok(out)
 }
 
-/// Server variables the checks and the UI read, with their compiled-in defaults (MySQL 8.0/8.4).
-const SETTINGS: [(&str, &str); 16] = [
-    ("performance_schema_digests_size", "10000"),
-    ("performance_schema_max_digest_length", "1024"),
-    ("performance_schema_max_sql_text_length", "1024"),
-    ("max_digest_length", "1024"),
-    ("innodb_buffer_pool_size", "134217728"),
-    ("innodb_page_size", "16384"),
-    ("tmp_table_size", "16777216"),
-    ("max_heap_table_size", "16777216"),
-    ("sort_buffer_size", "262144"),
-    ("join_buffer_size", "262144"),
-    ("long_query_time", "10.000000"),
-    ("slow_query_log", "OFF"),
-    ("performance_schema", "ON"),
-    ("max_connections", "151"),
-    ("innodb_flush_log_at_trx_commit", "1"),
-    ("transaction_isolation", "REPEATABLE-READ"),
+/// Server variables the checks and the UI read, with their compiled-in defaults: MySQL 8.0/8.4, then MariaDB 10.11/11.x
+/// (`None` where that server has no such variable).
+const SETTINGS: [(&str, Option<&str>, Option<&str>); 21] = [
+    ("performance_schema_digests_size", Some("10000"), Some("-1")),
+    ("performance_schema_max_digest_length", Some("1024"), Some("1024")),
+    ("performance_schema_max_sql_text_length", Some("1024"), Some("1024")),
+    ("max_digest_length", Some("1024"), Some("1024")),
+    ("innodb_buffer_pool_size", Some("134217728"), Some("134217728")),
+    ("innodb_page_size", Some("16384"), Some("16384")),
+    ("tmp_table_size", Some("16777216"), Some("16777216")),
+    ("max_heap_table_size", Some("16777216"), Some("16777216")),
+    ("sort_buffer_size", Some("262144"), Some("2097152")),
+    ("join_buffer_size", Some("262144"), Some("262144")),
+    ("long_query_time", Some("10.000000"), Some("10.000000")),
+    ("slow_query_log", Some("OFF"), Some("OFF")),
+    ("log_output", Some("FILE"), Some("FILE")),
+    ("performance_schema", Some("ON"), Some("OFF")),
+    ("max_connections", Some("151"), Some("151")),
+    ("innodb_flush_log_at_trx_commit", Some("1"), Some("1")),
+    ("transaction_isolation", Some("REPEATABLE-READ"), Some("REPEATABLE-READ")),
+    ("tx_isolation", None, Some("REPEATABLE-READ")),
+    ("max_execution_time", Some("0"), None),
+    ("max_statement_time", None, Some("0.000000")),
+    ("userstat", None, Some("OFF")),
 ];
 
-async fn settings(conn: &mut Conn) -> Result<Vec<Setting>> {
-    let names = SETTINGS.iter().map(|(n, _)| format!("'{n}'")).collect::<Vec<_>>().join(", ");
-    let rows = query(
-        conn,
-        &format!("SELECT VARIABLE_NAME AS name, VARIABLE_VALUE AS value FROM performance_schema.global_variables WHERE VARIABLE_NAME IN ({names})"),
-    )
-    .await?;
+async fn settings(conn: &mut Conn, flavor: Flavor) -> Result<Vec<Setting>> {
+    let default_of = |name: &str| {
+        SETTINGS.iter().find(|(n, _, _)| *n == name).and_then(|(_, mysql, maria)| match flavor {
+            Flavor::Mysql => *mysql,
+            Flavor::Mariadb => *maria,
+        })
+    };
+    let names: Vec<&str> = SETTINGS.iter().filter(|(n, _, _)| default_of(n).is_some()).map(|(n, _, _)| *n).collect();
+    let rows = vars::variables(conn, &names).await?;
     Ok(rows
-        .iter()
-        .map(|r| {
-            let name = r.string("name").to_ascii_lowercase();
-            let default = SETTINGS.iter().find(|(n, _)| *n == name).map(|(_, d)| d.to_string());
-            Setting { name, value: r.string("value"), default_value: default, scope: "server".into() }
+        .into_iter()
+        .map(|(name, value)| {
+            let default = default_of(&name).map(str::to_string);
+            Setting { name, value, default_value: default, scope: "server".into() }
         })
         .chain(statement_status(conn).await)
         .collect())
@@ -976,13 +1345,10 @@ async fn statement_status(conn: &mut Conn) -> Vec<Setting> {
     let mut out = Vec::new();
     let status =
         |name: &str, value: String| Setting { name: name.into(), value, default_value: None, scope: "status".into() };
-    if let Ok(Some(r)) = query_one(
-        conn,
-        "SELECT VARIABLE_VALUE AS lost FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Performance_schema_digest_lost'",
-    )
-    .await
+    if let Ok(found) = vars::status(conn, &["Performance_schema_digest_lost"]).await
+        && let Some(lost) = found.get("Performance_schema_digest_lost")
     {
-        out.push(status("performance_schema_digest_lost", r.string("lost")));
+        out.push(status("performance_schema_digest_lost", lost.to_string()));
     }
     if let Ok(Some(r)) = query_one(
         conn,
@@ -1037,10 +1403,68 @@ mod tests {
                 waits: Vec::new(),
                 trend: None,
                 spread: None,
+                costs: None,
             },
             sample: None,
             rows_examined: examined,
         }
+    }
+
+    fn probe(flavor: Flavor, performance_schema: bool) -> Probe {
+        Probe {
+            version: "10.11.6-MariaDB".into(),
+            comment: String::new(),
+            database: "shop".into(),
+            size_bytes: None,
+            started_at: None,
+            now: "2026-10-11T12:00:00Z".into(),
+            user: "app@%".into(),
+            cloud: None,
+            performance_schema,
+            flavor,
+            log_output: "FILE".into(),
+            slow_query_log: false,
+            long_query_time: Some(10.0),
+            userstat: (flavor == Flavor::Mariadb).then_some(false),
+        }
+    }
+
+    #[test]
+    fn without_performance_schema_the_no_restart_path_comes_first() {
+        let p = probe(Flavor::Mariadb, false);
+        assert_eq!(
+            p.unlock_statement().as_deref(),
+            Some(
+                "SET GLOBAL userstat = ON, GLOBAL slow_query_log = ON, GLOBAL log_output = 'FILE,TABLE', GLOBAL long_query_time = 0.1;"
+            )
+        );
+        let info = p.server_info();
+        assert_eq!(info.product, "MariaDB 10.11.6");
+        let ps = info.missing.iter().find(|m| m.capability == Capability::PerformanceSchema).unwrap();
+        let fix = ps.fix.as_deref().unwrap();
+        assert!(fix.starts_with("Run SET GLOBAL userstat = ON"), "{fix}");
+        assert!(fix.contains("no restart needed") && fix.ends_with("restart MariaDB."), "{fix}");
+        // Once the log goes to the table, only the restart remains.
+        let logging = Probe {
+            slow_query_log: true,
+            log_output: "FILE,TABLE".into(),
+            long_query_time: Some(0.1),
+            userstat: Some(true),
+            ..p
+        };
+        assert_eq!(logging.unlock_statement(), None);
+        let info = logging.server_info();
+        assert!(info.has(Capability::SlowLog) && info.has(Capability::QueryPlans) && info.has(Capability::IndexUsage));
+        let mysql = probe(Flavor::Mysql, false);
+        assert!(!mysql.unlock_statement().unwrap().contains("userstat"), "MySQL has no userstat");
+    }
+
+    #[test]
+    fn plan_notes_tell_missing_text_from_writes() {
+        let outcome = PlanOutcome { planned: 2, no_text: 3, not_reads: 4, ..Default::default() };
+        assert_eq!(outcome.note().as_deref(), Some("Planned 2 queries; 3 had no recorded statement text."));
+        assert_eq!(PlanOutcome { planned: 5, not_reads: 2, ..Default::default() }.note(), None);
+        assert!(reads_shape(" (SELECT 1)") && !reads_shape("UPDATE t SET a = 1"));
     }
 
     #[test]

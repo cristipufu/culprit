@@ -117,7 +117,14 @@ pub fn annotate(plan: &mut Plan) {
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
     let actual = has_actuals(plan);
+    let mariadb = plan.props.get("flavor").is_some_and(|f| f == "MariaDB");
     match (plan.engine, actual) {
+        (Engine::Mysql, false) if mariadb => Some(
+            "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.".into(),
+        ),
+        (Engine::Mysql, true) if mariadb => {
+            Some("MariaDB plans don't record memory grants or parallel threads, so those checks don't apply.".into())
+        }
         (Engine::Mssql, false) => Some(
             "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.".into(),
         ),

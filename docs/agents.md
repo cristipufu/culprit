@@ -19,6 +19,7 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 |---|---|
 | `list_connections` | Connections the agent may use: name, engine, environment, agent access, latest scan |
 | `scan` | Fresh snapshot (statistics views only) and ranked findings |
+| `dashboard` | The database at a glance: ten tiles (database time, findings, top queries, waits, right now, health, deadlocks, indexes, plans, query statistics), each with a status, one takeaway, the rows behind it and the tool to call next; `attention` ranks what needs a look |
 | `findings` | Findings from the latest scan, filtered by category or severity |
 | `finding` | One finding as a markdown brief: evidence, queries, fix, verification |
 | `top_queries` | Heaviest queries by time, CPU, reads or executions |
@@ -37,6 +38,18 @@ Results are compact JSON. Text that comes from the database (query text, object 
 **Approvals.** `run_query` checks the statement is a single read-only statement, then waits up to 60 seconds for the person to approve that exact text in the desktop app. A decision is bound to a SHA-256 of the connection and the SQL, so it can't approve different text. If the app isn't open, the request is denied at once with a hint to open it. Approved statements run in a transaction that is never committed (read-only on Postgres and MySQL), with a 30-second limit.
 
 **Audit.** Every call (tool, client, connection, outcome, duration, and SQL for `explain` and `run_query`) is appended to `audit.jsonl` in the data directory. `culprit audit --json` reads it.
+
+## Dashboard
+
+`culprit dashboard <connection> --json` (MCP: `dashboard`) is the best first call: one database at a glance, the same tiles the app opens with.
+
+```sh
+culprit dashboard shop-staging --json | jq '{headline, attention}'
+culprit dashboard shop-staging --json | jq '.tiles[] | {key, status, takeaway, next}'
+culprit dashboard shop-staging --scan          # scan first; --no-live skips reading sessions; a report file works offline
+```
+
+Each tile: `key` (`db-time`, `findings`, `top-queries`, `waits`, `now`, `health`, `deadlocks`, `indexes`, `plans`, `statistics`), `status` (`good`, `info`, `watch`, `bad`, `unavailable`), `takeaway` (one sentence), `detail`, `metrics` (`key`, `label`, `value`, `text`), `items` (the rows behind it, with `query_id` / `finding_id` to follow), `fix_sql` (copy-only, when one statement unlocks the tile) and `next` (the command, or MCP tool, that shows more). `attention` lists the tiles at `watch` or `bad`, most urgent first, and `headline` is the first one's takeaway. An `unavailable` tile says why this engine, login or scan can't show it (Postgres keeps no wait history; Query Store is off) instead of looking empty. The `now` tile reads sessions once; `--no-live` (MCP `live: false`) skips it.
 
 ## Plan insights
 
@@ -130,6 +143,10 @@ culprit waits --file report.json --json   # offline, from a saved report
 
 New findings come from these signals: `memory-grant`, `memory-queue`, `compile-pressure`, `worker-pressure`, `held-cleanup`, `network-wait`, `tier-limit`, `checkpoint-pressure`, `row-lock-waits`.
 
+`pressure` also carries `files[]` (`name`, `kind` data/log/temp/other, `database`, `reads`, `read_ms`, `writes`, `write_ms`, bytes; times are totals since startup, `null` where the engine doesn't time them) and `replicas[]` (`name`, `role` replica/this-server/slot, `state`, `sync`, `lag_seconds`, `lag_bytes`, `unsent_bytes`, `error` as a code and fixed name). New signal keys: `new-connections`, `pooled-reuse` (SQL Server), `session-length` and `sessions-abandoned` (Postgres 14+), `thread-cache-misses`, `aborted-connects`, `aborted-clients` (MySQL/MariaDB). The MCP `waits` tool returns `storage` (average read and write per file in words) and `replication`.
+
+Query JSON (`top`, MCP `query`) carries `costs`: `failed`, `aborted`, `aborted_mean_ms`, `warnings`, `top_error`, `plan_ms`, `plans`, `jit_ms`, `jit_functions`, `log_bytes`, `log_share`, `log_full_pages`, `row_bytes` — `null` where the engine doesn't keep it (PostgreSQL has no per-statement error count, MySQL no planning time or redo bytes). Snapshots carry `constraints[]` (untrusted or not validated), `histograms` (MySQL 8 / MariaDB; `null` where there are none to read), `tables[].storage` (Postgres `hot_updates`, `new_page_updates`, `fillfactor`, estimated `bloat_bytes`) and `indexes[].contention` (SQL Server lock and latch waits, `sequential_key`). Findings from them: `failing-query`, `planning-time`, `jit-overhead`, `log-volume`, `lock-time`, `big-result`, `slow-storage`, `connection-churn`, `hot-rows`, `last-page-insert`, `untrusted-constraint`, `missing-histogram`, `hot-updates`, `table-bloat`, `replica-lag`.
+
 ## Actual plans and running statements
 
 ```sh
@@ -154,6 +171,16 @@ culprit changes shop --recent 6h --min-runs 20 --threshold 2
 `changes` returns `{ connection, engine, source, baseline, recent, baseline_total, recent_total, baseline_coverage, min_executions, threshold, summary, queries, unchanged, notes }`. Each `queries[]` entry has `query_id`, `status` (`regressed`, `new`, `improved`, `stopped`, `not-comparable`, `low-sample`, `unchanged`), `headline` (one sentence, UTC), `baseline` / `recent` (`executions`, `total_ms`, `mean_ms`, `min_ms`, `max_ms`), `ratio`, `impact_ms`, `recent_share`, `plan_switch` (`from`, `to`, `at`, `what`) and `reason` for `not-comparable`. SQL Server answers from Query Store's intervals; Postgres and MySQL from Culprit's saved scans (at least three; scan again to add a point). A query without data in one period is never treated as zero. MCP: `what_changed` (`since`, `recent_hours`, `min_runs`).
 
 Query JSON (`top`, `query`) also carries `runs`, `spread` (`min_ms`; MySQL adds `p50_ms`/`p95_ms`/`p99_ms`, `histogram` as `[low_ms, high_ms, runs]` and `lock_ms`) and, with several plans, `plan_spread[]` (`plan_id`, `runs`, `mean_ms`, `min_ms`, `max_ms`, `stddev_ms`, `compiled`, `variant_query` for SQL Server 2022 parameter-sensitive variants). The `parameter-sensitive` finding names the fast and slow plan and gives a copy-only fix ladder.
+
+## MariaDB
+
+Connections with `engine = "mysql"` may be MariaDB: `latest_scan.product` / `server.product` says which ("MariaDB 11.8.9"), and plan JSON carries `props.flavor = "MariaDB"`. Differences an agent should expect:
+
+- `workload.source` is `"performance_schema"` or `"slow query log"`. The slow log is windowed (`windowed: true`), counts only runs slower than `long_query_time` (a collector note says the threshold), and its query ids are fingerprint hashes, stable across scans. `timeline.source` and `changes.source` are `"slow-log"`; `changes` then compares any two periods straight from the log.
+- When nothing is recorded, `server.missing[]` for `performance-schema` carries the no-restart `SET GLOBAL …;` as the first statement of `fix`. Culprit never runs it; show it to the person.
+- `explain --analyze` runs `ANALYZE FORMAT=JSON` in a read-only transaction; actual plans carry per-operator `act_time_ms`, `runtime.logical_reads` (pages) and spills. `live --progress` returns `nodes` per operator (rows so far against the estimate) on 10.9+.
+- `explain --query-id` (MCP `query_plan`) returns the plan the scan captured when the normalized text can't be planned again.
+- Capabilities add `slow-log` (the table is readable) next to the usual ones; see [parity.md](parity.md) for what each engine can and can't tell.
 
 ## Offline and CI
 

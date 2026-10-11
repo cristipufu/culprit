@@ -11,7 +11,7 @@ const SOURCE: Record<string, string> = {
   "pg-stat-statements": "pg_stat_statements",
   "query-store": "Query Store",
   "plan-cache": "the plan cache",
-  "performance-schema": "performance_schema statement digests",
+  "performance-schema": "performance_schema statement digests or the slow query log table",
 };
 
 /** The first SQL statement in a fix sentence ("Run CREATE EXTENSION pg_stat_statements; in this database…"). */
@@ -25,7 +25,7 @@ function fixText(fix: string, sql: string | null): string {
   if (!sql) return fix;
   return fix
     .replace(sql, "")
-    .replace(/^\s*Run\s+in this database\.?\s*/i, "")
+    .replace(/^\s*Run\s+(in this database\.?\s*)?/i, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }

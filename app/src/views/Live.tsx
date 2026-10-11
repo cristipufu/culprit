@@ -7,7 +7,7 @@ import type { SessionAction } from "../gen/SessionAction";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, oneLine } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { currentReport, toast, useStore } from "../lib/store";
+import { currentReport, setState, toast, useStore } from "../lib/store";
 
 const Deadlocks = lazy(() => import("./Deadlocks"));
 
@@ -25,6 +25,14 @@ function rememberedTab(): Tab {
   } catch {
     return "sessions";
   }
+}
+
+/** Open Live on a tab, e.g. from the dashboard's Right now and Deadlocks tiles. */
+export function openLive(tab: Tab): void {
+  try {
+    localStorage.setItem(TAB_KEY, tab);
+  } catch {}
+  setState({ view: "live" });
 }
 
 // Per-operator progress of a running statement; loaded when a session is opened.

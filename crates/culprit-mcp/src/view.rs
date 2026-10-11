@@ -59,6 +59,22 @@ fn scan_header(report: &Report) -> Value {
     })
 }
 
+/// The tool that shows more of what a dashboard tile is about.
+pub fn next_tool(key: culprit_core::TileKey) -> &'static str {
+    use culprit_core::TileKey;
+    match key {
+        TileKey::DbTime => "what_changed",
+        TileKey::Findings => "findings",
+        TileKey::TopQueries => "top_queries",
+        TileKey::Waits | TileKey::Health => "waits",
+        TileKey::Now => "blocking",
+        TileKey::Deadlocks => "deadlocks",
+        TileKey::Indexes => "index_advice",
+        TileKey::Plans => "plan_insights",
+        TileKey::Statistics => "scan",
+    }
+}
+
 pub fn findings(report: &Report, category: Option<Category>, min: Severity, limit: usize) -> Value {
     let matching: Vec<&Finding> =
         report.findings.iter().filter(|f| category.is_none_or(|c| f.category == c) && f.severity >= min).collect();
@@ -153,6 +169,8 @@ pub fn query(report: &Report, id: &str) -> Result<Value> {
     row["last_seen"] = json!(q.last_seen);
     // Fastest run and, where the engine keeps them (MySQL), percentiles, a run-time histogram and lock time.
     row["spread"] = json!(q.spread);
+    // Failed and cancelled runs, planning and JIT time, log bytes and estimated row width, where the engine keeps them.
+    row["costs"] = json!(q.costs);
     let ms = |v: Option<f64>| v.map(|v| round(v, 3));
     row["plan_variants"] = json!(
         q.plans
@@ -585,9 +603,92 @@ pub fn changes(c: &Changes) -> Value {
                 "recent": side(&q.recent),
                 "plan_switch": q.plan_switch,
                 "reason": q.reason,
+                "may_be_explained_by": q.context,
                 "text": clip(&q.text, 400),
             }))
             .collect::<Vec<_>>(),
+        "events": c.events.iter().map(event).collect::<Vec<_>>(),
+    })
+}
+
+/// One timeline event, compact: exact `at`, or `after`..`at` when Culprit noticed it between two scans.
+fn event(e: &culprit_core::ChangeEvent) -> Value {
+    let mut v = json!({
+        "id": e.id,
+        "kind": e.kind,
+        "title": clip(&e.title, 300),
+        "at": e.at,
+        "source": e.source,
+    });
+    let map = v.as_object_mut().expect("object");
+    for (key, value) in
+        [("after", &e.after), ("until", &e.until), ("table", &e.table), ("object", &e.object), ("by", &e.by)]
+    {
+        if let Some(value) = value {
+            map.insert(key.into(), json!(clip(value, 200)));
+        }
+    }
+    if let Some(detail) = &e.detail {
+        map.insert("detail".into(), json!(clip(detail, 400)));
+    }
+    if e.action.is_some() {
+        map.insert("action".into(), json!(e.action));
+    }
+    if e.minor {
+        map.insert("minor".into(), json!(true));
+    }
+    v
+}
+
+pub fn events(log: &culprit_engine::EventLog) -> Value {
+    json!({
+        "connection": log.connection,
+        "start": log.start,
+        "end": log.end,
+        "events": log.events.iter().map(event).collect::<Vec<_>>(),
+        "notes": log.notes,
+    })
+}
+
+/// Each metric as average, worst and limit rather than every point; the episodes carry the times.
+pub fn cloud(s: &culprit_core::CloudSignals) -> Value {
+    let metrics: Vec<Value> = s
+        .series
+        .iter()
+        .filter(|m| !m.points.is_empty())
+        .map(|m| {
+            let values: Vec<f64> = m.points.iter().map(|p| p.value).collect();
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let worst = if m.floor {
+                values.iter().copied().fold(f64::INFINITY, f64::min)
+            } else {
+                values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            };
+            let latest = m.points.last().map(|p| round(p.value, 2));
+            json!({
+                "metric": m.metric,
+                "label": m.label,
+                "unit": m.unit,
+                "avg": round(mean, 2),
+                if m.floor { "min" } else { "max" }: round(worst, 2),
+                "latest": latest,
+                "limit": m.limit.map(|l| round(l, 2)),
+                "limit_label": m.limit_label,
+            })
+        })
+        .collect();
+    json!({
+        "provider": s.provider,
+        "service": s.service,
+        "resource": s.resource,
+        "tier": s.tier,
+        "start": s.start,
+        "end": s.end,
+        "period_seconds": s.period_seconds,
+        "summary": s.summary,
+        "episodes": s.episodes,
+        "metrics": metrics,
+        "notes": s.notes,
     })
 }
 

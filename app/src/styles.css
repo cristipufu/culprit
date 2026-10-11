@@ -6704,6 +6704,11 @@ table.rg {
   background: #00758f;
 }
 
+/* MariaDB's seal copper, so it never reads as MySQL's teal. */
+.engine-mariadb {
+  background: #a0583f;
+}
+
 :root[data-theme="dark"] .engine-mssql {
   background: #d9474b;
 }
@@ -6714,6 +6719,10 @@ table.rg {
 
 :root[data-theme="dark"] .engine-mysql {
   background: #1a8fa8;
+}
+
+:root[data-theme="dark"] .engine-mariadb {
+  background: #b86f52;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -6727,6 +6736,10 @@ table.rg {
 
   :root:not([data-theme="light"]) .engine-mysql {
     background: #1a8fa8;
+  }
+
+  :root:not([data-theme="light"]) .engine-mariadb {
+    background: #b86f52;
   }
 }
 
@@ -11417,4 +11430,202 @@ button.as-callout:hover {
 
 .seg button {
   white-space: nowrap;
+}
+
+/* ───────── beyond run time: query costs, storage, replication ───────── */
+
+.beyond-lead {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.beyond-lead.bad,
+.beyond-lead.watch {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.beyond-lead.bad::before,
+.beyond-lead.watch::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 8px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--medium);
+}
+
+.beyond-lead.bad::before {
+  background: var(--high);
+}
+
+.beyond-rows {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.beyond-row {
+  display: grid;
+  grid-template-columns: 7px 108px minmax(120px, 168px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 8px 14px 8px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.beyond-row:first-child {
+  border-top: none;
+}
+
+.beyond-label {
+  color: var(--text-2);
+}
+
+.beyond-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.beyond-note {
+  color: var(--text-3);
+  min-width: 0;
+}
+
+.beyond-foot {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.io-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.io-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.io-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.io-head .muted {
+  font-size: 12px;
+}
+
+.io-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.io-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.io-row:first-child {
+  border-top: none;
+}
+
+.io-row.io-th {
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--hover) 60%, transparent);
+}
+
+.io-row.four {
+  grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr));
+}
+
+.io-row.quiet {
+  color: var(--text-3);
+}
+
+.io-row.repl {
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1.4fr);
+}
+
+.io-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.io-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.io-kind {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 17px;
+  color: var(--text-3);
+  background: var(--hover);
+}
+
+.io-kind.log {
+  color: var(--wait-log, var(--text-2));
+}
+
+.io-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.io-cell b {
+  font-weight: 600;
+}
+
+@container (max-width: 560px) {
+  .beyond-row {
+    grid-template-columns: 7px 108px minmax(0, 1fr);
+    row-gap: 2px;
+  }
+  .beyond-note {
+    grid-column: 3;
+  }
 }

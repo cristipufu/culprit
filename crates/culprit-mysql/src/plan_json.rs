@@ -1,4 +1,5 @@
-//! `EXPLAIN FORMAT=JSON` (version 1) into Culprit's plan model.
+//! `EXPLAIN FORMAT=JSON` (version 1) into Culprit's plan model. MariaDB's JSON, which differs in shape, goes to
+//! [`crate::plan_maria`].
 
 use std::collections::HashMap;
 
@@ -20,12 +21,15 @@ const OPERATIONS: [&str; 7] = [
 /// aliases resolve back to table names.
 pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option<&str>) -> Result<Plan> {
     let value: Value = serde_json::from_str(json)
-        .map_err(|e| Error::internal(format!("MySQL returned a plan Culprit cannot read: {e}")))?;
+        .map_err(|e| Error::internal(format!("The server returned a plan Culprit cannot read: {e}")))?;
+    if crate::plan_maria::is_mariadb(&value) {
+        return crate::plan_maria::parse(&value, json, kind, statement, schema);
+    }
     let block = value
         .get("query_block")
         .and_then(Value::as_object)
         .ok_or_else(|| Error::internal("MySQL plan has no query_block"))?;
-    let context = Context { aliases: statement.map(aliases).unwrap_or_default(), schema: schema.map(str::to_string) };
+    let context = Context::new(statement, schema);
     let mut next_id = 0;
     let root = query_block(block, &context, &mut next_id);
 
@@ -52,14 +56,18 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option
     Ok(plan)
 }
 
-struct Context {
-    aliases: HashMap<String, (Option<String>, String)>,
-    schema: Option<String>,
+pub(crate) struct Context {
+    pub aliases: HashMap<String, (Option<String>, String)>,
+    pub schema: Option<String>,
 }
 
 impl Context {
+    pub fn new(statement: Option<&str>, schema: Option<&str>) -> Context {
+        Context { aliases: statement.map(aliases).unwrap_or_default(), schema: schema.map(str::to_string) }
+    }
+
     /// `o` → `shop.orders`, `orders` → `shop.orders`; internal tables (`<derived2>`, `<temporary>`) have no object.
-    fn object(&self, table_name: &str) -> Option<String> {
+    pub fn object(&self, table_name: &str) -> Option<String> {
         if table_name.starts_with('<') {
             return None;
         }
@@ -74,7 +82,7 @@ impl Context {
     }
 }
 
-fn new_node(id: &mut u32, op: &str, kind: NodeKind) -> PlanNode {
+pub(crate) fn new_node(id: &mut u32, op: &str, kind: NodeKind) -> PlanNode {
     let node = PlanNode {
         id: *id,
         op: op.to_string(),
@@ -297,7 +305,7 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     node
 }
 
-fn access_op(access: &str, table: &Map<String, Value>) -> (&'static str, NodeKind) {
+pub(crate) fn access_op(access: &str, table: &Map<String, Value>) -> (&'static str, NodeKind) {
     match access {
         "all" => ("Table scan", NodeKind::Scan),
         "index" => ("Index scan", NodeKind::Scan),
@@ -318,7 +326,7 @@ pub fn unquote(condition: &str) -> String {
     condition.replace('`', "")
 }
 
-fn copy_scalars(map: &Map<String, Value>, props: &mut Properties) {
+pub(crate) fn copy_scalars(map: &Map<String, Value>, props: &mut Properties) {
     for (key, value) in map {
         if matches!(key.as_str(), "table_name" | "access_type" | "key" | "attached_condition" | "cost_info") {
             continue;
@@ -336,15 +344,15 @@ fn copy_scalars(map: &Map<String, Value>, props: &mut Properties) {
     }
 }
 
-fn text(map: &Map<String, Value>, key: &str) -> Option<String> {
+pub(crate) fn text(map: &Map<String, Value>, key: &str) -> Option<String> {
     map.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn flag(map: &Map<String, Value>, key: &str) -> bool {
+pub(crate) fn flag(map: &Map<String, Value>, key: &str) -> bool {
     map.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
-fn strings(map: &Map<String, Value>, key: &str) -> Vec<String> {
+pub(crate) fn strings(map: &Map<String, Value>, key: &str) -> Vec<String> {
     map.get(key)
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).map(unquote).collect())
@@ -356,11 +364,11 @@ fn number(value: &Value, key: &str) -> Option<f64> {
     value.get(key).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
 }
 
-fn number_field(map: &Map<String, Value>, key: &str) -> Option<f64> {
+pub(crate) fn number_field(map: &Map<String, Value>, key: &str) -> Option<f64> {
     map.get(key).and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
 }
 
-fn scalar_text(value: &Value) -> String {
+pub(crate) fn scalar_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         other => other.to_string(),

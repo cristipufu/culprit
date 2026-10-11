@@ -31,6 +31,7 @@ import { count, duration, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
+import { planEngineName } from "../lib/engines";
 
 const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
@@ -530,7 +531,7 @@ function Side({ label, item, innerRef, children }: { label: string; item: Loaded
         <span className="side-badge">{label}</span>
         <b>{item.name}</b>
         <span className="muted">
-          {ENGINE[item.plan.engine]} · {KIND[item.plan.kind]}
+          {planEngineName(item.plan)} · {KIND[item.plan.kind]}
         </span>
       </div>
       {children}

@@ -1,0 +1,96 @@
+{
+ "mssql-demo": [
+  {
+   "id": "setting:maxdop:2026-10-11T09:00:00Z",
+   "kind": "setting",
+   "source": "scans",
+   "action": "changed",
+   "at": "2026-10-11T09:00:00Z",
+   "after": "2026-10-11T08:30:00Z",
+   "until": null,
+   "title": "MAXDOP changed from 0 to 4",
+   "detail": null,
+   "table": null,
+   "object": "MAXDOP",
+   "minor": false,
+   "by": null
+  },
+  {
+   "id": "table:culprit_lab.events:2026-10-11T10:02:00Z",
+   "kind": "table",
+   "source": "database",
+   "action": "changed",
+   "at": "2026-10-11T10:02:00Z",
+   "after": null,
+   "until": null,
+   "title": "Table culprit_lab.events was altered (its columns, constraints or indexes)",
+   "detail": null,
+   "table": "culprit_lab.events",
+   "object": null,
+   "minor": false,
+   "by": null
+  },
+  {
+   "id": "mark:m1:2026-10-11T10:05:00Z",
+   "kind": "mark",
+   "source": "mark",
+   "action": null,
+   "at": "2026-10-11T10:05:00Z",
+   "after": null,
+   "until": null,
+   "title": "deploy v2.3.0",
+   "detail": null,
+   "table": null,
+   "object": null,
+   "minor": false,
+   "by": "ci"
+  }
+ ],
+ "pg-demo": [
+  {
+   "id": "setting:work_mem:2026-10-11T08:12:00Z",
+   "kind": "setting",
+   "source": "database",
+   "action": "changed",
+   "at": "2026-10-11T08:12:00Z",
+   "after": null,
+   "until": null,
+   "title": "work_mem changed from 4MB to 16MB",
+   "detail": null,
+   "table": null,
+   "object": "work_mem",
+   "minor": false,
+   "by": null
+  },
+  {
+   "id": "mark:m2:2026-10-11T09:40:00Z",
+   "kind": "mark",
+   "source": "mark",
+   "action": null,
+   "at": "2026-10-11T09:40:00Z",
+   "after": null,
+   "until": null,
+   "title": "migration 0042 applied",
+   "detail": null,
+   "table": null,
+   "object": null,
+   "minor": false,
+   "by": "claude-code"
+  },
+  {
+   "id": "index:culprit_lab.items.ix_items_grp:2026-10-11T10:10:00Z",
+   "kind": "index",
+   "source": "scans",
+   "action": "dropped",
+   "at": "2026-10-11T10:10:00Z",
+   "after": "2026-10-11T09:30:00Z",
+   "until": null,
+   "title": "Index ix_items_grp was dropped from culprit_lab.items",
+   "detail": "CREATE INDEX ix_items_grp ON culprit_lab.items USING btree (grp)",
+   "table": "culprit_lab.items",
+   "object": "ix_items_grp",
+   "minor": false,
+   "by": null
+  }
+ ]
+}

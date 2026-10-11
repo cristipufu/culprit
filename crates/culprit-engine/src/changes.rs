@@ -36,6 +36,9 @@ pub struct ChangeRequest {
     /// How many times slower or faster counts as a change (default 1.5).
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Read cloud metrics (CloudWatch, Azure Monitor) to spot throttling (default: yes, for cloud databases).
+    #[serde(default)]
+    pub cloud: Option<bool>,
 }
 
 impl ChangeRequest {
@@ -50,7 +53,7 @@ impl ChangeRequest {
     }
 }
 
-fn iso(seconds: f64) -> String {
+pub fn iso(seconds: f64) -> String {
     chrono::DateTime::from_timestamp(seconds.floor() as i64, 0)
         .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
         .unwrap_or_default()

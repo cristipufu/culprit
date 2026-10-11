@@ -4,6 +4,7 @@ import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } 
 import { LastActualRun, PlanSourceToggle, type PlanSource } from "../components/ActualRun";
 import { QueryTrend, Sparkline } from "../components/Trends";
 import { RuntimeSpread } from "../components/RuntimeSpread";
+import { QueryCostsPanel } from "../components/BeyondTime";
 import { Sql } from "../components/Sql";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
@@ -93,7 +94,7 @@ export function Queries({ report }: { report: Report }) {
     return (
       <div className="empty">
         <h3>No workload statistics</h3>
-        <p>{report.snapshot.server.missing.find((m) => ["query-store", "plan-cache", "pg-stat-statements"].includes(m.capability))?.reason ?? "This login can't read query statistics."}</p>
+        <p>{report.snapshot.server.missing.find((m) => ["query-store", "plan-cache", "pg-stat-statements", "performance-schema"].includes(m.capability))?.reason ?? "This login can't read query statistics."}</p>
       </div>
     );
   }
@@ -247,7 +248,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
                 <Metric value={duration(query.mean_time_ms)} label="average" />
                 <Metric value={duration(query.max_time_ms)} label="slowest" />
                 {query.rows != null && <Metric value={count(query.rows / Math.max(1, query.executions))} label="rows per run" />}
-                {query.logical_reads != null && <Metric value={count(query.logical_reads / Math.max(1, query.executions))} label="pages read per run" />}
+                {query.logical_reads != null && <Metric value={count(query.logical_reads / Math.max(1, query.executions))} label={report.snapshot.server.engine === "mysql" ? "rows examined per run" : "pages read per run"} />}
               </div>
             </section>
             {insights.length > 0 && (
@@ -261,7 +262,8 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
               </button>
             )}
             {w.timeline && query.trend && <QueryTrend query={query} timeline={w.timeline} onSince={compareSince} />}
-            <RuntimeSpread query={query} engine={report.snapshot.server.engine} windowed={w.windowed} />
+            <RuntimeSpread query={query} engine={report.snapshot.server.engine} windowed={w.windowed} product={report.snapshot.server.product} source={w.source} />
+            <QueryCostsPanel report={report} query={query} />
             {related.length > 0 && (
               <section>
                 <h3>Findings</h3>

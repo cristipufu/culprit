@@ -82,17 +82,44 @@ fn fold(items: impl IntoIterator<Item = (String, f64, f64)>) -> Vec<WaitStat> {
 }
 
 async fn status(conn: &mut Conn) -> Result<HashMap<String, f64>> {
-    Ok(query(
+    crate::vars::status(
         conn,
-        "SELECT VARIABLE_NAME AS name, VARIABLE_VALUE AS value FROM performance_schema.global_status
-          WHERE VARIABLE_NAME IN ('Uptime', 'Innodb_buffer_pool_reads', 'Innodb_buffer_pool_read_requests',
-            'Created_tmp_disk_tables', 'Created_tmp_tables', 'Questions', 'Threads_running', 'Threads_connected',
-            'Max_used_connections', 'Innodb_row_lock_waits', 'Innodb_row_lock_time_avg')",
+        &[
+            "Uptime",
+            "Innodb_buffer_pool_reads",
+            "Innodb_buffer_pool_read_requests",
+            "Created_tmp_disk_tables",
+            "Created_tmp_tables",
+            "Questions",
+            "Threads_running",
+            "Threads_connected",
+            "Max_used_connections",
+            "Innodb_row_lock_waits",
+            "Innodb_row_lock_time_avg",
+        ],
     )
-    .await?
-    .iter()
-    .filter_map(|r| Some((r.string("name"), r.text("value")?.parse::<f64>().ok()?)))
-    .collect())
+    .await
+}
+
+/// The oldest open transaction, with the connecting program's name when performance_schema has it.
+fn oldest_sql(with_program: bool) -> String {
+    let (column, join) = match with_program {
+        true => (
+            "a.ATTR_VALUE AS program",
+            "LEFT JOIN performance_schema.session_connect_attrs a
+                    ON a.PROCESSLIST_ID = t.trx_mysql_thread_id AND a.ATTR_NAME = 'program_name'",
+        ),
+        false => ("NULL AS program", ""),
+    };
+    format!(
+        "SELECT CAST(t.trx_mysql_thread_id AS CHAR) AS session, TIMESTAMPDIFF(SECOND, t.trx_started, NOW()) AS seconds,
+                p.COMMAND AS command, {column}
+           FROM information_schema.INNODB_TRX t
+           LEFT JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
+           {join}
+          WHERE t.trx_mysql_thread_id <> CONNECTION_ID()
+          ORDER BY t.trx_started LIMIT 1"
+    )
 }
 
 pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
@@ -219,19 +246,12 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
             true,
         ));
     }
-    match query_one(
-        conn,
-        "SELECT CAST(t.trx_mysql_thread_id AS CHAR) AS session, TIMESTAMPDIFF(SECOND, t.trx_started, NOW()) AS seconds,
-                p.COMMAND AS command, a.ATTR_VALUE AS program
-           FROM information_schema.INNODB_TRX t
-           LEFT JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
-           LEFT JOIN performance_schema.session_connect_attrs a
-                  ON a.PROCESSLIST_ID = t.trx_mysql_thread_id AND a.ATTR_NAME = 'program_name'
-          WHERE t.trx_mysql_thread_id <> CONNECTION_ID()
-          ORDER BY t.trx_started LIMIT 1",
-    )
-    .await
-    {
+    // The program name comes from performance_schema's connection attributes, which a server without it lacks.
+    let oldest = match query_one(conn, &oldest_sql(true)).await {
+        Ok(found) => Ok(found),
+        Err(_) => query_one(conn, &oldest_sql(false)).await,
+    };
+    match oldest {
         Ok(Some(r)) => {
             let seconds = r.number("seconds").unwrap_or(0.0);
             p.oldest_transaction = Some(OpenTransaction {
@@ -263,25 +283,114 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
     (p, notes)
 }
 
-/// Two readings of performance_schema's wait totals `seconds` apart.
+/// What each busy session is doing, from the process list: the state text and whether InnoDB has it waiting for a lock.
+const SESSIONS_SQL: &str = "SELECT p.STATE AS state, t.trx_state AS trx_state
+   FROM information_schema.PROCESSLIST p
+   LEFT JOIN information_schema.INNODB_TRX t ON t.trx_mysql_thread_id = p.ID
+  WHERE p.ID <> CONNECTION_ID() AND p.COMMAND NOT IN ('Sleep', 'Daemon', 'Binlog Dump', 'Binlog Dump GTID')
+    AND p.USER <> 'system user' AND (p.INFO IS NULL OR p.INFO NOT LIKE '%/* culprit */%')";
+
+/// The shared category for a process-list state (`Waiting for table metadata lock`, `Sending to client`, …).
+pub fn state_category(state: &str, lock_wait: bool) -> &'static str {
+    let s = state.to_ascii_lowercase();
+    if lock_wait || s.contains("lock") {
+        "Lock"
+    } else if s.contains("commit") || s.contains("binlog") || s.contains("semi-sync") {
+        "Log"
+    } else if s.contains(" net") || s.contains("to client") {
+        "Network"
+    } else if s.contains("on disk") || s.contains("ondisk") || s.contains("opening tables") || s.contains("flushing") {
+        "IO"
+    } else if s.contains("sleep") {
+        "Other"
+    } else {
+        "Running"
+    }
+}
+
+/// Readings of performance_schema's wait totals `seconds` apart, with the process list sampled once a second in
+/// between. The instruments time waits precisely but most are off by default (and all of them are without
+/// performance_schema, MariaDB's default); the samples show what busy sessions were doing either way.
 pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
     let started = Instant::now();
     let taken_at = query_one(conn, "SELECT DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now")
         .await?
         .and_then(|r| r.text("now"))
         .unwrap_or_default();
-    let first = wait_totals(conn).await?;
+    let instruments_on =
+        query_one(conn, "SELECT @@performance_schema AS ps").await.ok().flatten().is_some_and(|r| r.flag("ps"));
+    let first = if instruments_on { wait_totals(conn).await.ok() } else { None };
     let status_before = status(conn).await.unwrap_or_default();
-    tokio::time::sleep(Duration::from_secs(u64::from(seconds))).await;
-    let second = wait_totals(conn).await?;
+    let mut observed: BTreeMap<(&'static str, String), f64> = BTreeMap::new();
+    let ticks = seconds.max(1) + 1;
+    for tick in 0..ticks {
+        for r in query(conn, SESSIONS_SQL).await.unwrap_or_default() {
+            let state = r.text("state").filter(|s| !s.is_empty()).unwrap_or_else(|| "executing".into());
+            let lock_wait = r.text("trx_state").is_some_and(|t| t.eq_ignore_ascii_case("LOCK WAIT"));
+            let label = if lock_wait && !state.to_ascii_lowercase().contains("lock") {
+                format!("row lock wait ({state})")
+            } else {
+                state.clone()
+            };
+            *observed.entry((state_category(&state, lock_wait), label)).or_default() += 1.0;
+        }
+        if tick + 1 < ticks {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+    let second = if instruments_on { wait_totals(conn).await.ok() } else { None };
     let status_after = status(conn).await.unwrap_or_default();
     let elapsed = started.elapsed().as_secs_f64().max(1.0);
-    let deltas = second.iter().filter_map(|(event, (ms, n))| {
-        let (ms0, n0) = first.get(event).copied().unwrap_or((0.0, 0.0));
-        let delta = ms - ms0;
-        (delta > 0.0).then(|| (event.clone(), delta, (n - n0).max(0.0)))
-    });
-    let categories = fold(deltas);
+    let instrumented = match (&first, &second) {
+        (Some(first), Some(second)) => fold(second.iter().filter_map(|(event, (ms, n))| {
+            let (ms0, n0) = first.get(event).copied().unwrap_or((0.0, 0.0));
+            let delta = ms - ms0;
+            (delta > 0.0).then(|| (event.clone(), delta, (n - n0).max(0.0)))
+        })),
+        _ => Vec::new(),
+    };
+    let samples = f64::from(ticks);
+    let busy: f64 = observed.values().sum();
+    let mut notes = Vec::new();
+    let (categories, method) = if instrumented.iter().map(|c| c.wait_ms).sum::<f64>() > 0.0 {
+        (
+            instrumented,
+            format!(
+                "Difference of two readings of performance_schema.events_waits_summary_global_by_event_name {seconds} s apart"
+            ),
+        )
+    } else {
+        // Each observation stands for one second of one session's time.
+        let mut by_category: BTreeMap<&'static str, (f64, String, f64)> = BTreeMap::new();
+        for ((category, label), n) in &observed {
+            let entry = by_category.entry(category).or_default();
+            entry.0 += n;
+            if *n > entry.2 {
+                entry.1 = label.clone();
+                entry.2 = *n;
+            }
+        }
+        let mut sampled: Vec<WaitStat> = by_category
+            .into_iter()
+            .map(|(category, (n, top, _))| WaitStat {
+                category: category.into(),
+                wait_type: Some(top),
+                wait_ms: n * 1000.0,
+                tasks: Some(n),
+            })
+            .collect();
+        sampled.sort_by(|a, b| b.wait_ms.total_cmp(&a.wait_ms));
+        notes.push(match first {
+            Some(_) => "No enabled performance_schema wait instrument recorded anything, so these come from sampling what each busy session was doing once a second.".to_string(),
+            None => "performance_schema is off, so the server times no waits; these come from sampling what each busy session was doing once a second.".to_string(),
+        });
+        (
+            sampled,
+            format!(
+                "The process list sampled once a second for {seconds} s: each observation is one second of one session's time"
+            ),
+        )
+    };
     let total_ms: f64 = categories.iter().map(|c| c.wait_ms).sum();
     let rate = |k: &str| Some(((status_after.get(k)? - status_before.get(k)?) / elapsed).max(0.0));
     let mut signals = Vec::new();
@@ -297,25 +406,18 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
             SignalScope::Sampled,
         ));
     }
-    let running = match (status_before.get("Threads_running"), status_after.get("Threads_running")) {
-        (Some(a), Some(b)) => Some(((a + b) / 2.0 - 1.0).max(0.0)),
-        _ => None,
-    };
-    let mut notes = Vec::new();
-    if total_ms == 0.0 {
-        notes.push("No enabled wait instrument recorded anything. Many are off by default; enable them in performance_schema.setup_instruments to see more.".into());
+    if total_ms == 0.0 && notes.is_empty() {
+        notes.push("No enabled wait instrument recorded anything and no session was busy. Many instruments are off by default; enable them in performance_schema.setup_instruments to see more.".into());
     }
     Ok(WaitSample {
         engine: Engine::Mysql,
         taken_at,
         seconds: elapsed,
-        method: format!(
-            "Difference of two readings of performance_schema.events_waits_summary_global_by_event_name {seconds} s apart"
-        ),
+        method,
         total_ms,
         categories,
         signals,
-        active_sessions: running,
+        active_sessions: Some(busy / samples),
         notes,
     })
 }
@@ -323,6 +425,17 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_list_states_fold_into_categories() {
+        assert_eq!(state_category("Waiting for table metadata lock", false), "Lock");
+        assert_eq!(state_category("Updating", true), "Lock");
+        assert_eq!(state_category("Sending to client", false), "Network");
+        assert_eq!(state_category("waiting for handler commit", false), "Log");
+        assert_eq!(state_category("Copying to tmp table on disk", false), "IO");
+        assert_eq!(state_category("User sleep", false), "Other");
+        assert_eq!(state_category("Sending data", false), "Running");
+    }
 
     #[test]
     fn events_fold_into_categories_with_their_biggest_event() {

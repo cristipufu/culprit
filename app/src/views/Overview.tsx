@@ -8,6 +8,9 @@ import { ago, bytes, count, duration, percent, windowLabel } from "../lib/format
 import { useHotkeys } from "../lib/hotkeys";
 import { changeRequest, setState, useStore } from "../lib/store";
 import { planFlags, trendNote, WorkloadTrend } from "../components/Trends";
+import { chartEvents } from "../components/ChangeTimeline";
+import { MarkButton } from "../components/MarkButton";
+import { useEvents } from "../lib/events";
 import type { Flag, Range } from "../components/TimeChart";
 import { CheckedFine } from "../components/CheckedFine";
 import { WorkloadUnlock } from "../components/WorkloadUnlock";
@@ -174,6 +177,20 @@ function Header({
   const w = snapshot.workload;
   const compare = () => setState({ changes: changeRequest() });
   const end = w?.timeline ? Date.parse(w.timeline.end) : Date.now();
+  const start = w?.timeline?.starts[0] ? Date.parse(w.timeline.starts[0]) : NaN;
+  // Marks, schema and settings changes, restarts and cloud throttling on a lane under the chart.
+  const log = useEvents(w?.timeline ? snapshot.connection : null, start, end);
+  const events = useMemo(
+    () =>
+      chartEvents(log?.events ?? [], (r) =>
+        setState({
+          changes: r.to
+            ? changeRequest({ recent_start: new Date(r.from).toISOString(), recent_end: new Date(r.to).toISOString() })
+            : changeRequest({ since: new Date(r.from).toISOString() }),
+        }),
+      ),
+    [log],
+  );
   const flags: Flag[] = w ? planFlags(w, compareSince) : [];
   if (changes?.since) flags.push({ at: Date.parse(changes.since), label: "Since", tone: "anchor" });
   // Under 20 hours of history a "per day" figure would be an extrapolation: show what was measured, and over how long.
@@ -213,6 +230,8 @@ function Header({
           }
           selection={requestedRange(changes, end)}
           onCompare={compare}
+          events={events}
+          actions={<MarkButton connection={snapshot.connection} />}
         />
       ) : w && trendNote(w) ? (
         <p className="trend-note">

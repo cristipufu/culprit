@@ -6,10 +6,12 @@ import type { WaitSample } from "../gen/WaitSample";
 import type { WaitsReport } from "../gen/WaitsReport";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, percent } from "../lib/format";
-import { setState, useStore } from "../lib/store";
+import { changeRequest, setState, useStore } from "../lib/store";
 import { WAIT_LABEL, foldWaits, startSample, useSample, waitColor } from "../lib/waits";
+import { CloudLimits } from "./CloudLimits";
 import { HealthTab, SignalTile } from "./Health";
 import type { WaitsTab } from "./Waits";
+import { serverName } from "../lib/engines";
 
 type Loaded = { status: "loading" } | { status: "ready"; report: WaitsReport | null } | { status: "error"; error: ApiError };
 
@@ -39,7 +41,7 @@ export default function WaitsPanel({
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [selected, setSelected] = useState<string | undefined>(initialCategory);
   const sheet = useRef<HTMLDivElement>(null);
-  const engine = ENGINE[report.snapshot.server.engine] ?? report.snapshot.server.engine;
+  const engine = report.snapshot.server.engine === "mysql" ? serverName("mysql", report.snapshot.server.product) : (ENGINE[report.snapshot.server.engine] ?? report.snapshot.server.engine);
 
   useEffect(() => {
     let live = true;
@@ -117,7 +119,18 @@ export default function WaitsPanel({
               <WaitsView report={loaded.report} current={current} onSelect={setSelected} onClose={onClose} onSample={() => setTab("now")} />
             ))}
           {tab === "now" && <RightNow connection={connection} history={loaded.status === "ready" ? loaded.report : null} engine={engine} />}
-          {tab === "health" && <HealthTab pressure={report.snapshot.pressure ?? null} resources={report.snapshot.resources} engineLabel={engine} />}
+          {tab === "health" && (
+            <>
+              <HealthTab pressure={report.snapshot.pressure ?? null} resources={report.snapshot.resources} engineLabel={engine} engine={report.snapshot.server.engine} />
+              <CloudLimits
+                connection={connection}
+                onCompare={(from, to) => {
+                  onClose();
+                  setState({ changes: changeRequest({ recent_start: new Date(from).toISOString(), recent_end: new Date(to).toISOString() }) });
+                }}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -377,7 +390,7 @@ function SampleView({ sample, history }: { sample: WaitSample; history: WaitsRep
   return (
     <div className="sample-view">
       <div className="sample-meta">
-        {Math.round(sample.seconds)} s ending {Number.isNaN(taken.getTime()) ? "" : taken.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+        {Math.round(sample.seconds)} s ending {Number.isNaN(taken.getTime()) ? "" : taken.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}
         {sample.active_sessions != null ? ` · ${count(sample.active_sessions)} busy sessions on average` : ""}
       </div>
       {history && history.categories.length > 0 && folded.length > 0 && (

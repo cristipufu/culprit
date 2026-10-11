@@ -7,8 +7,10 @@ mod generic;
 pub mod plan_json;
 mod pressure;
 mod progress;
+mod recorded;
 mod rows;
 mod sessions;
+mod signals;
 
 use std::time::Instant;
 
@@ -125,6 +127,11 @@ impl Provider for PostgresProvider {
     async fn deadlocks(&self, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
         let client = self.connector.connect(INTERACTIVE).await?;
         deadlocks::recent(&client, since_hours).await
+    }
+
+    async fn recorded_changes(&self, since: &str) -> Result<Vec<culprit_core::ChangeEvent>> {
+        let client = self.connector.connect(INTERACTIVE).await?;
+        recorded::changes(&client, since).await
     }
 
     async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {

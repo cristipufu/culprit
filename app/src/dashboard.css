@@ -1,0 +1,897 @@
+/*
+ * The per-database dashboard: a calm grid of tiles. Twelve columns when there's room (from ~900px of content, so a
+ * 1180px window already gets the full layout), two below that, one on narrow panes. Container queries, so the grid
+ * follows the content area, not the window.
+ */
+
+.dash {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-5) var(--s-6) var(--s-8);
+  background: var(--bg);
+  container-type: inline-size;
+  container-name: dash;
+}
+
+/* ───────── header ───────── */
+
+.dash-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0 auto var(--s-4);
+  max-width: 1480px;
+}
+
+.dash-headline {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  min-height: 26px;
+}
+
+.dash-headline h2 {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  text-wrap: balance;
+}
+
+.dash-pulse {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--good);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 18%, transparent);
+}
+
+.dash-pulse.watch {
+  background: var(--medium);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--medium) 20%, transparent);
+}
+
+.dash-pulse.bad {
+  background: var(--high);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--high) 20%, transparent);
+}
+
+.dash-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  padding-left: 22px;
+}
+
+.dash-attn {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dash-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--fs-meta);
+  font-weight: 550;
+}
+
+.dash-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.dash-chip i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--medium);
+}
+
+.dash-chip.bad i {
+  background: var(--high);
+}
+
+.dash-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+/* ───────── grid ───────── */
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--s-3);
+  max-width: 1480px;
+  margin: 0 auto;
+}
+
+.dash-tile {
+  grid-column: span 12;
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 13px 15px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  outline-offset: 2px;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+/* Needs a look: a thin rule along the top, nothing louder. */
+.dash-tile.bad {
+  box-shadow: inset 0 2px 0 var(--high);
+}
+
+.dash-tile.watch {
+  box-shadow: inset 0 2px 0 var(--medium);
+}
+
+.dash-tile.openable {
+  cursor: pointer;
+}
+
+.dash-tile.openable:hover {
+  border-color: var(--border-strong);
+}
+
+.dash-tile:focus-visible {
+  outline: 2px solid var(--accent);
+}
+
+.dash-tile.unavailable .dash-takeaway {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.dash-tile.loading {
+  min-height: 150px;
+  gap: 0;
+}
+
+.dash-sk-viz {
+  display: block;
+  height: 44px;
+  margin-top: auto;
+}
+
+/* Full layout: from about 900px of content. */
+@container dash (min-width: 880px) {
+  .t-db-time {
+    grid-column: span 8;
+  }
+
+  .t-findings {
+    grid-column: span 4;
+  }
+
+  .t-top-queries {
+    grid-column: span 5;
+  }
+
+  .t-waits {
+    grid-column: span 4;
+  }
+
+  .t-now {
+    grid-column: span 3;
+  }
+
+  .t-health,
+  .t-deadlocks,
+  .t-indexes,
+  .t-plans {
+    grid-column: span 3;
+  }
+
+  /* Without query statistics, turning them on comes first; what still works follows, what can't sinks to the end. */
+  .no-workload .t-statistics {
+    order: -1;
+  }
+
+  .no-workload .dash-tile.unavailable {
+    order: 1;
+  }
+
+  .no-workload .t-db-time,
+  .no-workload .t-findings,
+  .no-workload .t-top-queries,
+  .no-workload .t-waits,
+  .no-workload .t-now,
+  .no-workload .t-health,
+  .no-workload .t-deadlocks,
+  .no-workload .t-indexes,
+  .no-workload .t-plans {
+    grid-column: span 4;
+  }
+}
+
+/* Two columns. */
+@container dash (min-width: 560px) and (max-width: 879.98px) {
+  .dash-tile {
+    grid-column: span 6;
+  }
+
+  .t-db-time,
+  .t-statistics {
+    grid-column: span 12;
+  }
+
+  .no-workload .t-statistics {
+    order: -1;
+  }
+
+  .no-workload .dash-tile.unavailable {
+    order: 1;
+  }
+}
+
+/* ───────── tile frame ───────── */
+
+.dash-tile-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 18px;
+}
+
+.dash-tile-head h3 {
+  margin: 0;
+  font-size: var(--fs-micro);
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.dash-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+}
+
+.dash-dot.good {
+  background: var(--good);
+}
+
+.dash-dot.watch {
+  background: var(--medium);
+}
+
+.dash-dot.bad {
+  background: var(--high);
+}
+
+.dash-dot.info {
+  background: var(--low);
+}
+
+.dash-dot.unavailable {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-3);
+}
+
+.dash-open {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+.dash-tile:hover .dash-open,
+.dash-tile:focus-visible .dash-open {
+  opacity: 1;
+}
+
+.dash-open:hover {
+  color: var(--accent);
+}
+
+.dash-takeaway {
+  margin: 7px 0 0;
+  font-size: var(--fs-strong);
+  font-weight: 560;
+  line-height: 1.4;
+  color: var(--text);
+  text-wrap: pretty;
+}
+
+.dash-detail,
+.dash-note {
+  margin: 10px 0 0;
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+/* The detail sits at the bottom of the tile, so tiles in a row line up. */
+.dash-detail {
+  margin-top: auto;
+  padding-top: 10px;
+}
+
+/* ───────── numbers ───────── */
+
+.dash-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-6);
+  margin-top: 12px;
+}
+
+.dash-stat,
+.dash-count,
+.dash-big {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.dash-stat b,
+.dash-count b,
+.dash-big b {
+  font-size: var(--fs-metric);
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.dash-stat span,
+.dash-count span,
+.dash-big span {
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.dash-big.zero b {
+  color: var(--text-3);
+}
+
+.dash-count.bad b {
+  color: var(--high);
+}
+
+.dash-count.watch b {
+  color: var(--warn-text);
+}
+
+.dash-counts,
+.dash-pair {
+  display: flex;
+  gap: var(--s-5);
+  margin-top: 12px;
+}
+
+.dash-big {
+  margin-top: 12px;
+}
+
+.dash-pair .dash-big {
+  margin-top: 0;
+}
+
+.dash-chart {
+  margin-top: 4px;
+}
+
+.dash-chart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 8px;
+  min-height: 112px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+.dash-chart-empty p {
+  margin: 0;
+  max-width: 60ch;
+  line-height: 1.45;
+}
+
+.dash-chart .trend {
+  margin-top: 10px;
+}
+
+/* ───────── rows ───────── */
+
+.dash-rows {
+  list-style: none;
+  margin: 10px -6px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dash-rows.compact {
+  margin-top: 8px;
+}
+
+.dash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-body);
+  color: var(--text);
+}
+
+.dash-row:hover {
+  background: var(--hover);
+}
+
+.dash-row.two-line {
+  align-items: flex-start;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.dash-row.two-line .sev {
+  margin-top: 5px;
+}
+
+.dash-row-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-row-label.clamp {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+}
+
+.dash-row-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.dash-row-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-row-label.mono {
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+}
+
+.dash-row-value {
+  flex: none;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-verb {
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.dash-pred {
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+}
+
+.dash-row.query .spark {
+  flex: none;
+  width: 54px;
+  height: 18px;
+}
+
+.dash-row.query .spark-empty {
+  flex: none;
+  width: 54px;
+  text-align: center;
+  color: var(--text-3);
+}
+
+.dash-share {
+  flex: none;
+  width: 54px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.dash-share span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.75;
+}
+
+.dash-row.query .dash-row-value {
+  width: 38px;
+  text-align: right;
+}
+
+.dash-flag {
+  flex: none;
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background: #8b5cf6;
+}
+
+.dash-plus {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--good);
+}
+
+/* ───────── findings ───────── */
+
+.dash-sevbar {
+  margin-top: 12px;
+}
+
+.dash-sevbar-track {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+}
+
+.dash-sevbar-track span {
+  border-radius: 3px;
+  min-width: 6px;
+}
+
+.dash-sevbar-track .high {
+  background: var(--high);
+}
+
+.dash-sevbar-track .medium {
+  background: var(--medium);
+}
+
+.dash-sevbar-track .low {
+  background: var(--low);
+}
+
+.dash-sevbar-legend {
+  display: flex;
+  gap: var(--s-3);
+  margin-top: 6px;
+  font-size: var(--fs-meta);
+  color: var(--text-2);
+}
+
+.dash-sevbar-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dash-sevbar-legend .zero {
+  color: var(--text-3);
+}
+
+.dash-sevbar-legend .sev {
+  width: 7px;
+  height: 7px;
+}
+
+/* ───────── waits ───────── */
+
+.dash-stack {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  margin-top: 12px;
+}
+
+.dash-stack span {
+  border-radius: 3px;
+  min-width: 3px;
+  cursor: pointer;
+}
+
+.dash-stack span:hover {
+  filter: brightness(1.1);
+}
+
+.dash-legend {
+  list-style: none;
+  margin: 8px -6px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--s-2);
+}
+
+.dash-legend button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 3px 6px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-meta);
+  color: var(--text);
+  text-align: left;
+}
+
+.dash-legend button:hover {
+  background: var(--hover);
+}
+
+.dash-legend i {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+/* Narrow tiles: one legend column, no sparklines; the share bar and the number carry it. */
+@container (max-width: 340px) {
+  .dash-legend {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 420px) {
+  .dash-row.query .spark,
+  .dash-row.query .spark-empty {
+    display: none;
+  }
+}
+
+.dash-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ───────── right now ───────── */
+
+.dash-activity {
+  display: block;
+  width: 100%;
+  height: 34px;
+  margin-top: 12px;
+}
+
+.dash-activity.empty {
+  border-bottom: 1px dashed var(--border);
+}
+
+.dash-activity .area {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.dash-activity .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.dash-activity .blocked {
+  fill: none;
+  stroke: var(--high);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.dash-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: auto 0 0;
+  padding-top: 10px;
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.dash-live.paused .live-dot {
+  animation: none;
+  background: var(--text-3);
+}
+
+/* ───────── health ───────── */
+
+.dash-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.dash-signal {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-3) 22%, transparent);
+}
+
+.dash-signal.good {
+  background: color-mix(in srgb, var(--good) 70%, transparent);
+}
+
+.dash-signal.watch {
+  background: var(--medium);
+}
+
+.dash-signal.bad {
+  background: var(--high);
+}
+
+/* ───────── deadlocks ───────── */
+
+.dash-ticks {
+  position: relative;
+  height: 30px;
+  margin-top: 12px;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.dash-ticks span {
+  position: absolute;
+  bottom: 0;
+  width: 3px;
+  height: 18px;
+  margin-left: -1.5px;
+  border-radius: 2px 2px 0 0;
+  background: var(--high);
+}
+
+.dash-ticks em {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  padding-top: 3px;
+  font-style: normal;
+  font-size: 10px;
+  color: var(--text-3);
+}
+
+.dash-ticks em.end {
+  left: auto;
+  right: 0;
+}
+
+.dash-ticks + .dash-rows {
+  margin-top: 18px;
+}
+
+/* ───────── plans ───────── */
+
+.dash-meter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 12px;
+}
+
+.dash-meter span {
+  width: 9px;
+  height: 14px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--good) 45%, transparent);
+}
+
+.dash-meter span.on {
+  background: var(--medium);
+}
+
+/* ───────── query statistics ───────── */
+
+.dash-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--s-4);
+  margin-top: 10px;
+  font-size: var(--fs-meta);
+  color: var(--text-3);
+}
+
+.dash-chips b {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-chips .warn b {
+  color: var(--warn-text);
+}
+
+.dash-source {
+  font-family: var(--mono);
+  font-size: var(--fs-micro);
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  background: var(--sunken);
+  color: var(--text-2);
+}
+
+.dash-fix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 7px 8px 7px 10px;
+  border-radius: var(--r-sm);
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+}
+
+.dash-fix code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.dash-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-top: 10px;
+  font-size: var(--fs-meta);
+}
+
+.dash-actions .btn:last-child {
+  margin-left: auto;
+}
+

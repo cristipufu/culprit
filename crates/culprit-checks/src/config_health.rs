@@ -290,19 +290,68 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     out
 }
 
+/// `SET GLOBAL …` that has the server log slow statements to the table Culprit reads (and, on MariaDB, count index
+/// reads), without a restart. `None` when it already does.
+fn slow_log_statement(snapshot: &Snapshot) -> Option<String> {
+    let mut parts = Vec::new();
+    if value(snapshot, &["userstat"]).is_some_and(|v| !is_on(v)) {
+        parts.push("GLOBAL userstat = ON".to_string());
+    }
+    if value(snapshot, &["slow_query_log"]).is_some_and(|v| !is_on(v)) {
+        parts.push("GLOBAL slow_query_log = ON".to_string());
+    }
+    let output = value(snapshot, &["log_output"]).unwrap_or("FILE").trim().to_ascii_uppercase();
+    if !output.split(',').any(|o| o.trim() == "TABLE") {
+        let output =
+            if output.is_empty() || output == "NONE" { "TABLE".to_string() } else { format!("{output},TABLE") };
+        parts.push(format!("GLOBAL log_output = '{output}'"));
+    }
+    if number(snapshot, "long_query_time").is_none_or(|t| t > 1.0) {
+        parts.push("GLOBAL long_query_time = 0.1".to_string());
+    }
+    (!parts.is_empty()).then(|| format!("SET {};", parts.join(", ")))
+}
+
 pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();
+    let name = snapshot.server.name();
     if value(snapshot, &["performance_schema"]).is_some_and(|v| !is_on(v)) {
+        let logged = snapshot.workload.as_ref().is_some_and(|w| w.source == "slow query log");
+        let (severity, summary) = if logged {
+            (
+                Severity::Medium,
+                format!(
+                    "Culprit reads the slow query log, so statements slower than long_query_time are covered. Without \
+                     performance_schema, {name} keeps no statistics for faster statements and no wait statistics."
+                ),
+            )
+        } else {
+            (
+                Severity::High,
+                format!(
+                    "Without it {name} keeps no statement digests, index usage or wait statistics: there is nothing to \
+                     tell which queries are slow or which indexes are used."
+                ),
+            )
+        };
+        let restart = "-- In the server configuration (my.cnf), then restart:\n[mysqld]\nperformance_schema = ON";
+        let (fix_summary, sql) = match slow_log_statement(snapshot).filter(|_| !logged) {
+            Some(now) => (
+                "Start with the slow query log, which needs no restart: Culprit reads it from the mysql.slow_log table. \
+                 Turn performance_schema on at the next restart for statistics on every statement."
+                    .to_string(),
+                format!("-- Now, no restart (connections opened earlier keep the old threshold):\n{now}\n\n{restart}"),
+            ),
+            None => ("Turn it on in the server configuration (it can't be changed at runtime).".to_string(), restart.to_string()),
+        };
         let mut f = setting_finding(
             "performance_schema",
-            Severity::High,
+            severity,
             "performance_schema is off".into(),
-            "Without it MySQL keeps no statement digests, index usage or wait statistics: there is nothing to tell which \
-             queries are slow or which indexes are used."
-                .into(),
+            summary,
             Fix {
-                summary: "Turn it on in the server configuration (it can't be changed at runtime).".into(),
-                sql: Some("-- my.cnf, then restart:\n[mysqld]\nperformance_schema = ON".into()),
+                summary: fix_summary,
+                sql: Some(sql),
                 cost: Some("A few hundred MB of memory and a small CPU overhead.".into()),
             },
         );

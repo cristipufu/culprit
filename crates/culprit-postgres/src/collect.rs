@@ -408,7 +408,7 @@ pub async fn snapshot(
         })
         .collect();
 
-    Ok(Snapshot {
+    let mut snapshot = Snapshot {
         format: SNAPSHOT_FORMAT,
         id: probe.now.replace(['-', ':'], ""),
         connection: connection.to_string(),
@@ -433,7 +433,12 @@ pub async fn snapshot(
         plan_cache: None,
         tuning: None,
         deadlocks: None,
-    })
+        constraints: Vec::new(),
+        histograms: None,
+    };
+    crate::signals::collect(&primary, &probe, &mut snapshot).await;
+    snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+    Ok(snapshot)
 }
 
 fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String, fix: Option<String>) {
@@ -561,6 +566,7 @@ async fn collect_with_base(
                 .unwrap_or_default(),
             trend: None,
             spread: r.number("min_ms").map(|min_ms| Spread { min_ms: Some(min_ms), ..Default::default() }),
+            costs: None,
         })
         .collect();
 
@@ -832,6 +838,7 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
             forwarded_records: None,
             forwarded_fetches: None,
             xid_age: r.number("xid_age"),
+            storage: None,
         })
         .collect())
 }
@@ -891,6 +898,7 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
             lookups: None,
             last_read: r.text("last_read"),
             definition: r.text("definition"),
+            contention: None,
         })
         .collect();
 
@@ -971,6 +979,7 @@ async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
 const SETTINGS: &[&str] = &[
     "pg_stat_statements.max",
     "pg_stat_statements.track",
+    "pg_stat_statements.track_planning",
     "shared_buffers",
     "work_mem",
     "maintenance_work_mem",
@@ -983,7 +992,9 @@ const SETTINGS: &[&str] = &[
     "autovacuum_vacuum_scale_factor",
     "autovacuum_analyze_scale_factor",
     "jit",
+    "jit_above_cost",
     "track_io_timing",
+    "track_wal_io_timing",
     "default_statistics_target",
 ];
 

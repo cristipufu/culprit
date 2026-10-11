@@ -24,6 +24,7 @@ import {
 } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
 import { toast } from "../lib/store";
+import { planEngineName } from "../lib/engines";
 
 const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
@@ -165,6 +166,7 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
           <Format engine="SQL Server" what=".sqlplan or showplan XML (SSMS, Query Store)" />
           <Format engine="Postgres" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
           <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
+          <Format engine="MariaDB" what="EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON" />
         </div>
         <div className="welcome-samples">
           <span className="muted">See it with a sample comparison:</span>
@@ -223,7 +225,7 @@ function PlanRow({ item, active }: { item: LoadedPlan; active: boolean }) {
           {item.name}
         </span>
         <span className="plan-row-meta">
-          {ENGINE[item.plan.engine]} · {KIND[item.plan.kind]} · cost {cost(item.plan.total_cost)}
+          {planEngineName(item.plan)} · {KIND[item.plan.kind]} · cost {cost(item.plan.total_cost)}
         </span>
         {item.origin !== item.name && <span className="plan-row-origin">{item.origin}</span>}
       </button>
@@ -249,7 +251,7 @@ function Single({ item }: { item: LoadedPlan }) {
         <div style={{ minWidth: 0 }}>
           <h2 title={item.name}>{item.name}</h2>
           <div className="muted plans-sub">
-            {ENGINE[plan.engine]} · {KIND[plan.kind]} plan · {nodeCount(plan) === 1 ? "1 operator" : `${nodeCount(plan)} operators`}
+            {planEngineName(plan)} · {KIND[plan.kind]} plan · {nodeCount(plan) === 1 ? "1 operator" : `${nodeCount(plan)} operators`}
             {item.origin !== item.name && ` · ${item.origin}`}
           </div>
         </div>

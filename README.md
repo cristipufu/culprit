@@ -79,7 +79,7 @@ An MCP server, JSON output everywhere and per-connection permissions let Claude 
 
 **⚡ Fast and light**
 
-A 13 MB app that opens in under a second and shows the last report instantly while a fresh scan runs in the background.
+A 14 MB app that opens in under a second and shows the last report instantly while a fresh scan runs in the background.
 
 </td>
 <td valign="top">
@@ -103,7 +103,7 @@ Add your own checks or database engines without forking. The app, the CLI and th
 
 ### Findings you can act on
 
-35 checks look for what actually costs time: type mismatches that block indexes, missing and unused indexes, N+1 query loops, plan regressions, parameter-sensitive plans, spills to disk, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+50 checks look for what actually costs time: type mismatches that block indexes, missing and unused indexes, N+1 query loops, plan regressions, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
@@ -121,7 +121,7 @@ Every captured plan comes with insights in plain words ("a type mismatch stops S
 
 ### "What changed?" in one drag
 
-Drag across the database-time chart to compare two periods. Culprit lists what got slower, what's new and what improved, and says why: "Got 293× slower at 5:00 PM, when SQL Server switched from plan 163 to plan 198."
+Drag across the database-time chart to compare two periods. Culprit lists what got slower, what's new and what improved, and says why: "Got 293× slower at 5:00 PM, when SQL Server switched from plan 163 to plan 198." It also lines regressions up with everything else that changed around them: a dropped index, a new setting, a restart, a deploy your pipeline marked with `culprit mark`, or the cloud throttling the server (Amazon RDS CPU credits running out, Azure tier limits), read with your own `aws` or `az` sign-in.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/what-changed-dark.png">
@@ -152,7 +152,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 |---|---|
 | **Index advisor** | Indexes to add, ranked by the database time of the queries that need them, plus duplicate, overlapping and unused indexes to clean up, with what each costs on writes |
 | **Where time goes** | Wait statistics in plain words, traced back to the queries behind them, with a live sample to compare against the usual mix |
-| **Health signals** | Memory, compiles, connections, row locks, version store and cloud tier limits, each graded with a one-line takeaway |
+| **Health signals** | Memory, compiles, connections, row locks, storage latency per file, replication lag and cloud limits, each graded with a one-line takeaway |
 | **SQL editor** | Tabs, autocomplete for schemas, tables and columns, saved queries, estimated and measured plans. Reads run read-only; production changes ask first |
 | **Schema explorer** | Tables, sizes, indexes and how each index is used, plus drift between two environments with the SQL to close the gap |
 | **Connections** | Paste any connection string, discover Azure and AWS databases with your existing CLI login, or import from Azure Data Studio, VS Code, DBeaver and DataGrip. Passwords stay in your OS keychain |
@@ -160,7 +160,7 @@ Live sessions turn a wall of lock waits into one sentence and a tree: which sess
 
 ## Built for coding agents
 
-Culprit is designed to be driven by an agent as comfortably as by a person. `culprit mcp` serves 22 tools over the Model Context Protocol (dashboard, findings, plans, insights, what changed, blocking, waits, index advice, verify and more), every CLI command prints JSON when piped, and finding ids are stable, so an agent can find a problem, fix the code and prove the fix worked.
+Culprit is designed to be driven by an agent as comfortably as by a person. `culprit mcp` serves 25 tools over the Model Context Protocol (dashboard, findings, plans, insights, what changed, blocking, waits, index advice, verify and more), every CLI command prints JSON when piped, and finding ids are stable, so an agent can find a problem, fix the code and prove the fix worked.
 
 ```sh
 claude mcp add culprit -- culprit mcp   # Claude Code; Cursor and Codex take the same command
@@ -191,7 +191,7 @@ You decide what agents may do, per connection: nothing, read statistics and plan
 | **SQL Server** | SQL Server 2022, Azure SQL Database | Query Store, plan cache, DMVs, the deadlock history in extended events |
 | **PostgreSQL** | PostgreSQL 15 and 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12) |
 | **MySQL** | MySQL 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
-| **MariaDB** | MariaDB 10.11 and 11.8 | `performance_schema`, user statistics, `ANALYZE FORMAT=JSON` |
+| **MariaDB** | MariaDB 10.11 and 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
 
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
 
@@ -224,6 +224,7 @@ Or open the desktop app, paste a connection string, and the first report appears
 - **[Guide](docs/guide.md):** every check and command, the agent setup, measured speed, safety details and how to extend Culprit
 - **[Design](docs/DESIGN.md):** how the product behaves and why
 - **[Coding agents](docs/agents.md):** MCP tools, permissions, approvals and the audit log
+- **[Engine parity](docs/parity.md):** every feature on SQL Server, PostgreSQL, MySQL and MariaDB, and where each answer comes from
 
 Culprit is open source under the [MIT license](LICENSE).
 

@@ -1,5 +1,6 @@
 import { ArrowRight, ChevronRight, Copy, KeyRound, Link2, Play, SquarePen } from "lucide-react";
 import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { TableSignalFacts } from "../components/BeyondTime";
 import { ResultGrid } from "../components/ResultGrid";
 import { Sql } from "../components/Sql";
 import type { IndexStat } from "../gen/IndexStat";
@@ -7,7 +8,7 @@ import type { Report } from "../gen/Report";
 import type { ResultSet } from "../gen/ResultSet";
 import type { TableStat } from "../gen/TableStat";
 import { api, errorMessage, type ApiError } from "../lib/api";
-import { ago, bytes, count, oneLine } from "../lib/format";
+import { ago, bytes, count, oneLine, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
 import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
@@ -211,12 +212,13 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
         {writes != null && writes > 0 && (
           <Fact label="Writes" value={count(writes)} detail={`${count(table.inserts)} ins · ${count(table.updates)} upd · ${count(table.deletes)} del`} />
         )}
+        <TableSignalFacts report={report} table={table} />
       </div>
       {findings.length > 0 && (
         <div className="td-findings">
           {shown.map((f, n) => (
             <div key={f.id} className="td-finding-row">
-              <button className="td-finding" onClick={() => setState({ view: "overview", finding: f.id })} title="Open in Overview">
+              <button className="td-finding" onClick={() => setState({ view: "overview", finding: f.id })} title="Open in Findings">
                 <span className={`sev ${f.severity}`} />
                 <span className="t">{f.title}</span>
                 <ChevronRight size={13} className="muted" />
@@ -354,7 +356,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
   const [open, setOpen] = useState<string | null>(null);
   const planned = plannedQueryCount(report);
   const since = report.snapshot.server.started_at;
-  const sinceText = since ? `since ${new Date(since).toLocaleDateString()}` : "since the last restart";
+  const sinceText = since ? `since ${when(since).short}` : "since the last restart";
   const biggest = Math.max(1, ...indexes.map((i) => i.size_bytes ?? 0));
   const name = tableKey(table).toLowerCase();
   const finding = (index: string, check: string) =>
@@ -407,7 +409,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                   tone: "low",
                   text:
                     engine === "mysql"
-                      ? `Never read ${sinceText}, but it backs foreign key ${serves.name}: MySQL requires it`
+                      ? `Never read ${sinceText}, but it backs foreign key ${serves.name}: InnoDB requires it`
                       : `Never read ${sinceText}, but it backs foreign key ${serves.name}: without it, deleting a ${serves.ref_table} row scans ${table.name}`,
                 });
               else if (neverRead && !i.is_unique)

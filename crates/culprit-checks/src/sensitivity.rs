@@ -179,8 +179,13 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             f.impact.label = format!("{} slower for some runs", times(p99_ms / typical_ms.max(0.001)));
             let locks = q.spread.as_ref().and_then(|s| s.lock_ms).filter(|l| *l > 0.0);
             let lock_share = locks.map(|l| (l / q.total_time_ms.max(0.001)).clamp(0.0, 1.0)).unwrap_or(0.0);
+            let name = snapshot.server.name();
+            let source = match snapshot.workload.as_ref().map(|w| w.source.as_str()) {
+                Some("slow query log") => "The slow query log's runs of this statement".to_string(),
+                _ => format!("{name}'s run-time histogram for this statement"),
+            };
             f.summary = format!(
-                "MySQL's run-time histogram for this statement: half the runs finish within {}, 99 in 100 within {}, the slowest took {}. MySQL plans every call afresh, so slow calls usually touch far more rows for some values (skewed data) or wait for locks.{}",
+                "{source}: half the runs finish within {}, 99 in 100 within {}, the slowest took {}. {name} plans every call afresh, so slow calls usually touch far more rows for some values (skewed data) or wait for locks.{}",
                 run(*typical_ms),
                 run(*p99_ms),
                 q.max_time_ms.map(run).unwrap_or_else(|| "longer".into()),
@@ -199,7 +204,7 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
                 f.metrics.push(Metric::new("Slow runs", *s, Unit::Ratio));
             }
             f.confidence = Confidence::High;
-            f.fix = Some(mysql_fix(lock_share));
+            f.fix = Some(mysql_fix(lock_share, snapshot.server.name() == "MariaDB"));
         }
     }
     f.queries = query_refs(&[q]);
@@ -244,11 +249,18 @@ pub(crate) fn postgres_fix() -> Fix {
     }
 }
 
-pub(crate) fn mysql_fix(lock_share: f64) -> Fix {
+pub(crate) fn mysql_fix(lock_share: f64, mariadb: bool) -> Fix {
     if lock_share >= 0.2 {
         return Fix {
             summary: "The slow runs mostly wait for row locks. Find the sessions holding them (Live shows blockers) and keep the transactions that touch these rows short.".into(),
             sql: None,
+            cost: None,
+        };
+    }
+    if mariadb {
+        return Fix {
+            summary: "Compare a slow and a fast value with ANALYZE (outside production). If some values match far more rows, an index that narrows them, or a histogram on the uneven column, lets MariaDB choose a better plan for each.".into(),
+            sql: Some("-- Collect a histogram for an uneven column (used with the default use_stat_tables):\nANALYZE TABLE <table> PERSISTENT FOR COLUMNS (<column>) INDEXES ();".into()),
             cost: None,
         };
     }

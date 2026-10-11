@@ -20,4 +20,8 @@ min_executions: number | null,
 /**
  * How many times slower or faster counts as a change (default 1.5).
  */
-threshold: number | null, };
+threshold: number | null, 
+/**
+ * Read cloud metrics (CloudWatch, Azure Monitor) to spot throttling (default: yes, for cloud databases).
+ */
+cloud: boolean | null, };

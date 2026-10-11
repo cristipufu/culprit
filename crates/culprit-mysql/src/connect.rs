@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use std::time::Duration;
 
 use culprit_core::{
@@ -13,15 +13,53 @@ pub const DEFAULT_PORT: u16 = 3306;
 pub const TAG: &str = "/* culprit */";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Every session is read-only, gives up on locks after two seconds and never runs a SELECT for more than ten seconds.
-/// Settings a server doesn't know (MariaDB has no `max_execution_time`) are skipped; read-only is required.
-const SESSION_SETUP: [(&str, bool); 5] = [
+/// Every session is read-only, gives up on locks after two seconds and never runs a statement for more than ten
+/// seconds. Settings a server refuses are skipped; read-only and UTC are required.
+const SESSION_SETUP: [(&str, bool); 4] = [
     ("SET SESSION TRANSACTION READ ONLY", true),
     ("SET SESSION time_zone = '+00:00'", true),
-    ("SET SESSION max_execution_time = 10000", false),
     ("SET SESSION lock_wait_timeout = 2", false),
     ("SET SESSION innodb_lock_wait_timeout = 2", false),
 ];
+
+/// MySQL and MariaDB share the protocol, information_schema and InnoDB, and differ in performance_schema, EXPLAIN,
+/// timeouts and lock views. Every collector that cares asks the connector which one it is talking to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flavor {
+    Mysql,
+    Mariadb,
+}
+
+impl Flavor {
+    /// From `VERSION()`: MariaDB says so (`11.8.9-MariaDB-ubu2404`, `10.11.6-MariaDB-log`).
+    pub fn of_version(version: &str) -> Flavor {
+        if version.to_ascii_lowercase().contains("mariadb") { Flavor::Mariadb } else { Flavor::Mysql }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Flavor::Mysql => "MySQL",
+            Flavor::Mariadb => "MariaDB",
+        }
+    }
+
+    /// The statement timeout: `max_execution_time` (milliseconds, SELECT only) on MySQL, `max_statement_time`
+    /// (seconds, every statement) on MariaDB.
+    fn timeout(self) -> &'static str {
+        match self {
+            Flavor::Mysql => "SET SESSION max_execution_time = 10000",
+            Flavor::Mariadb => "SET SESSION max_statement_time = 10",
+        }
+    }
+
+    /// Lifts the timeout for a statement the person chose to run as a change: MySQL never limited it.
+    pub fn no_timeout(self) -> Option<&'static str> {
+        match self {
+            Flavor::Mysql => None,
+            Flavor::Mariadb => Some("SET SESSION max_statement_time = 0"),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tls {
@@ -60,6 +98,7 @@ pub enum Scope {
 
 pub struct Connector {
     base: OptsBuilder,
+    flavor: OnceLock<Flavor>,
     tls: Tls,
     root_cert: Option<PathBuf>,
     pub host: String,
@@ -130,7 +169,15 @@ impl Connector {
             .find_map(|k| spec.option(k))
             .filter(|p| !p.is_empty())
             .map(PathBuf::from);
-        Ok(Connector { base, tls, root_cert, host, port, database: spec.database.clone().filter(|d| !d.is_empty()) })
+        Ok(Connector {
+            base,
+            flavor: OnceLock::new(),
+            tls,
+            root_cert,
+            host,
+            port,
+            database: spec.database.clone().filter(|d| !d.is_empty()),
+        })
     }
 
     fn ssl_opts(&self, tls: Tls) -> Option<SslOpts> {
@@ -148,31 +195,45 @@ impl Connector {
         }
     }
 
-    /// Open a session in `scope`, prepared with the read-only settings.
+    /// Open a session in `scope`, prepared with the read-only settings. The session is set up before it enters the
+    /// application's database, so the setup statements are never counted as the application's workload.
     pub async fn connect(&self, scope: Scope) -> Result<Conn> {
-        let db = match scope {
-            Scope::Server => None,
-            Scope::Database => self.database.clone(),
-        };
-        let attempt = self.open(db.clone(), self.tls).await;
+        let attempt = self.open(self.tls).await;
         let mut conn = match attempt {
             // PREFERRED: the server doesn't do TLS at all, so continue in plaintext like the mysql client does.
             Err(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer)) if self.tls == Tls::Preferred => {
-                self.open(db, Tls::Disabled).await.map_err(|e| self.connect_error(e))?
+                self.open(Tls::Disabled).await.map_err(|e| self.connect_error(e))?
             }
             other => other.map_err(|e| self.connect_error(e))?,
         };
-        for (statement, required) in SESSION_SETUP {
+        let flavor = match self.flavor.get() {
+            Some(flavor) => *flavor,
+            None => {
+                let version: Option<String> =
+                    conn.query_first(format!("SELECT VERSION() {TAG}")).await.map_err(map_error)?;
+                *self.flavor.get_or_init(|| Flavor::of_version(&version.unwrap_or_default()))
+            }
+        };
+        for (statement, required) in SESSION_SETUP.into_iter().chain([(flavor.timeout(), false)]) {
             let result = conn.query_drop(format!("{statement} {TAG}")).await;
             if required {
                 result.map_err(map_error)?;
             }
         }
+        if let (Scope::Database, Some(db)) = (scope, &self.database) {
+            conn.query_drop(format!("USE `{}` {TAG}", db.replace('`', "``"))).await.map_err(map_error)?;
+        }
         Ok(conn)
     }
 
-    async fn open(&self, db: Option<String>, tls: Tls) -> std::result::Result<Conn, mysql_async::Error> {
-        let opts = self.base.clone().db_name(db).ssl_opts(self.ssl_opts(tls));
+    /// Which server this is, once a session has been opened (MySQL until then).
+    pub fn flavor(&self) -> Flavor {
+        self.flavor.get().copied().unwrap_or(Flavor::Mysql)
+    }
+
+    async fn open(&self, tls: Tls) -> std::result::Result<Conn, mysql_async::Error> {
+        // Sessions always open without a database; `connect` enters it once the session is set up.
+        let opts = self.base.clone().db_name(None::<String>).ssl_opts(self.ssl_opts(tls));
         match tokio::time::timeout(CONNECT_TIMEOUT, Conn::new(opts)).await {
             Ok(result) => result,
             Err(_) => Err(mysql_async::Error::Io(IoError::Io(std::io::Error::new(
@@ -195,7 +256,7 @@ impl Connector {
         }
         if lower.contains("refused") {
             return Error::new(ErrorCode::ConnectionFailed, format!("Nothing is listening on {host}:{port}"))
-                .with_hint("Check the host and port, and that MySQL is running.");
+                .with_hint("Check the host and port, and that the MySQL or MariaDB server is running.");
         }
         if lower.contains("failed to lookup") || lower.contains("nodename nor servname") || lower.contains("not known")
         {
@@ -235,7 +296,7 @@ pub fn map_error(error: mysql_async::Error) -> Error {
                 1205 | 3024 | 1969 => Error::new(ErrorCode::Timeout, message)
                     .with_hint("The statement hit Culprit's lock or execution timeout and was stopped."),
                 1064 => Error::new(ErrorCode::QueryFailed, message).with_hint("Check the statement's syntax."),
-                _ => Error::new(ErrorCode::QueryFailed, format!("{message} (MySQL error {})", server.code)),
+                _ => Error::new(ErrorCode::QueryFailed, format!("{message} (error {})", server.code)),
             }
         }
         mysql_async::Error::Io(io) => {
@@ -251,7 +312,7 @@ pub fn map_error(error: mysql_async::Error) -> Error {
             Error::new(ErrorCode::ConnectionFailed, message)
         }
         mysql_async::Error::Driver(DriverError::ConnectionClosed) => {
-            Error::new(ErrorCode::ConnectionFailed, "The connection to MySQL was closed")
+            Error::new(ErrorCode::ConnectionFailed, "The server closed the connection")
         }
         mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer) => {
             Error::new(ErrorCode::ConnectionFailed, "The server does not support TLS")
@@ -318,6 +379,15 @@ mod tests {
         assert_eq!(connector.root_cert.as_deref(), Some(std::path::Path::new("/tmp/rds-bundle.pem")));
         s.token = None;
         assert_eq!(Connector::new(&s).err().unwrap().code, ErrorCode::AuthFailed);
+    }
+
+    #[test]
+    fn flavor_comes_from_the_version() {
+        assert_eq!(Flavor::of_version("11.8.9-MariaDB-ubu2404"), Flavor::Mariadb);
+        assert_eq!(Flavor::of_version("5.5.5-10.11.6-MariaDB-log"), Flavor::Mariadb);
+        assert_eq!(Flavor::of_version("8.4.3"), Flavor::Mysql);
+        assert_eq!(Flavor::Mariadb.no_timeout(), Some("SET SESSION max_statement_time = 0"));
+        assert_eq!(Flavor::Mysql.no_timeout(), None);
     }
 
     #[test]

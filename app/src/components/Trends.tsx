@@ -1,9 +1,9 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Timeline } from "../gen/Timeline";
 import type { Workload } from "../gen/Workload";
 import { count, duration } from "../lib/format";
-import { isPartial, TimeChart, VH, VW, when, type Bucket, type Flag, type Range } from "./TimeChart";
+import { isPartial, TimeChart, VH, VW, when, type Bucket, type ChartEvent, type Flag, type Range } from "./TimeChart";
 
 /** Colors that tell plans apart, the same in chips, flags and lanes. */
 export const PLAN_COLORS = ["var(--focus)", "#8b5cf6", "#0f9f95", "#d97706", "#db2777", "#64748b"];
@@ -66,10 +66,14 @@ type WorkloadTrendProps = {
   onSelect?: (range: Range) => void;
   selection?: Range | null;
   onCompare?: () => void;
+  /** What changed around the database, on a lane under the chart. */
+  events?: ChartEvent[];
+  /** More buttons in the chart's head (Mark…). */
+  actions?: ReactNode;
 };
 
 /** Database time across the window as steps, each bucket exactly as wide as the time it covers. */
-export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selection, onCompare }: WorkloadTrendProps) {
+export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selection, onCompare, events, actions }: WorkloadTrendProps) {
   const b = useMemo(() => bucketsOf(timeline, windowStart), [timeline, windowStart]);
   const unit = useMemo(() => rateUnit(b), [b]);
   const rate = useMemo(() => b.map((x, i) => ((timeline.time_ms[i] ?? 0) / Math.max(coveredMs(x), 1000)) * unit.ms), [b, timeline, unit]);
@@ -87,12 +91,15 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
     <div className="trend">
       <div className="trend-head">
         <span className="label">Database time per {unit.label}</span>
-        {onCompare && (
+        {(onCompare || actions) && (
           <span className="trend-actions">
-            <span className="muted trend-hint">drag to compare</span>
-            <button className="btn small" onClick={onCompare} title="Compare two periods (V)">
-              What changed?
-            </button>
+            {onCompare && <span className="muted trend-hint">drag to compare</span>}
+            {actions}
+            {onCompare && (
+              <button className="btn small" onClick={onCompare} title="Compare two periods (V)">
+                What changed?
+              </button>
+            )}
           </span>
         )}
       </div>
@@ -103,10 +110,17 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
         height={92}
         peak={{ index: peakIndex, value: max }}
         flags={flags}
+        events={events}
         onSelect={onSelect}
         selection={selection}
         ariaLabel={`Database time per ${unit.label}; use arrow keys to move, Shift+arrows to select a period, Enter to compare it`}
-        footnote={timeline.source === "scans" ? `Between ${buckets.length + 1} of Culprit's scans: each step covers the time between two scans.` : undefined}
+        footnote={
+          timeline.source === "scans"
+            ? `Between ${buckets.length + 1} of Culprit's scans: each step covers the time between two scans.`
+            : timeline.source === "slow-log"
+              ? "From the slow query log: statements faster than long_query_time aren't in it."
+              : undefined
+        }
         readout={(i) => (
           <>
             <b>{duration(rate[i] ?? 0)}</b> per {unit.label}
@@ -255,7 +269,13 @@ export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; tim
           format={(v) => count(v)}
           height={40}
           ariaLabel="Runs per bucket over the window"
-          footnote={timeline.source === "scans" ? "From Culprit's scans: each bar covers the time between two scans." : "From Query Store."}
+          footnote={
+            timeline.source === "scans"
+              ? "From Culprit's scans: each bar covers the time between two scans."
+              : timeline.source === "slow-log"
+                ? "From the slow query log: each run as it was logged."
+                : "From Query Store."
+          }
           readout={(i) => (
             <>
               <b>{runs[i] != null ? count(runs[i]!) : "—"}</b> runs

@@ -2,8 +2,8 @@
 //! read in full over and over. Every engine where the statistics exist.
 
 use culprit_core::{
-    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, IndexStat, Metric, QueryStat, Severity,
-    Snapshot, SubjectKind, Unit, format,
+    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, IndexStat, Metric, QueryStat, ServerInfo,
+    Severity, Snapshot, SubjectKind, Unit, format,
 };
 
 use crate::indexes::{backs_foreign_key, is_unused, redundant_indexes, same_keys, scan_groups, writes_per_day};
@@ -51,7 +51,6 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
 }
 
 pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
-    let engine = snapshot.server.engine;
     overlapping_pairs(snapshot)
         .into_iter()
         .map(|(a, b)| {
@@ -95,7 +94,7 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
                      hide {} first and drop it after a business cycle.",
                     a.name, b.name, a.name
                 ),
-                sql: Some(hide_index_sql(engine, a)),
+                sql: Some(hide_index_sql(&snapshot.server, a)),
                 cost: Some(format!("Frees {} and one index's worth of work on every write.", format::bytes(size))),
             });
             f.verify = vec![format!(
@@ -117,8 +116,27 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
         .collect()
 }
 
-/// Reversible first step: SQL Server disables, MySQL makes invisible, Postgres can only drop (keep the definition).
-pub(crate) fn hide_index_sql(engine: Engine, i: &IndexStat) -> String {
+/// MariaDB 10.6+ can tell the optimizer to ignore an index (its INVISIBLE).
+pub(crate) fn mariadb_can_ignore(server: &ServerInfo) -> bool {
+    let mut parts = server.version.split(['.', '-']).map(|p| p.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (major, minor) >= (10, 6)
+}
+
+/// Reversible first step: SQL Server disables, MySQL makes invisible, MariaDB ignores (10.6+), Postgres can only drop
+/// (keep the definition).
+pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
+    let engine = server.engine;
+    if server.name() == "MariaDB" {
+        return match mariadb_can_ignore(server) {
+            true => format!(
+                "ALTER TABLE {} ALTER INDEX {} IGNORED;",
+                qualified(engine, &i.schema, &i.table),
+                quote(engine, &i.name)
+            ),
+            false => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+        };
+    }
     match engine {
         Engine::Mssql => {
             format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
@@ -189,7 +207,6 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         f.metrics.push(Metric::new("Secondary indexes", secondary.len() as f64, Unit::Count));
         f.metrics.push(Metric::new("Writes per day", writes, Unit::Count));
         f.metrics.push(Metric::new("Never read or duplicated", idle.len() as f64, Unit::Count));
-        let engine = snapshot.server.engine;
         f.fix = Some(Fix {
             summary: if idle.is_empty() {
                 "Review which queries need each index; fold indexes that share a leading column into one.".into()
@@ -197,7 +214,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
                 "Hide the indexes nothing reads first (reversible), then drop them after a business cycle.".into()
             },
             sql: (!idle.is_empty())
-                .then(|| idle.iter().map(|i| hide_index_sql(engine, i)).collect::<Vec<_>>().join("\n")),
+                .then(|| idle.iter().map(|i| hide_index_sql(&snapshot.server, i)).collect::<Vec<_>>().join("\n")),
             cost: None,
         });
         f.verify =

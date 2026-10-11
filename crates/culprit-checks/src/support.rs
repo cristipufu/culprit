@@ -1,6 +1,6 @@
 use culprit_core::{
-    Category, Confidence, Engine, Finding, Impact, QueryRef, QueryStat, Severity, Snapshot, Subject, SubjectKind,
-    format,
+    Capability, Category, Confidence, Engine, Finding, Impact, QueryRef, QueryStat, Severity, Snapshot, Subject,
+    SubjectKind, format,
 };
 
 pub fn finding(check: &str, key: &str, category: Category, subject: Subject) -> Finding {
@@ -281,6 +281,13 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 pub fn since_phrase(snapshot: &Snapshot) -> String {
+    // MariaDB's userstat counters run from when userstat was turned on (or flushed), which the server doesn't say.
+    if snapshot.server.engine == Engine::Mysql
+        && !snapshot.server.has(Capability::PerformanceSchema)
+        && snapshot.server.has(Capability::IndexUsage)
+    {
+        return "since userstat was turned on or its statistics last flushed".to_string();
+    }
     match counter_days(snapshot) {
         Some(days) if days >= 2.0 => format!("in the {} days since the server last restarted", days.round()),
         Some(days) if days * 24.0 < 1.5 => "in the hour since the server last restarted".to_string(),
@@ -421,6 +428,7 @@ pub(crate) mod tests {
             waits: Vec::new(),
             trend: None,
             spread: None,
+            costs: None,
         }
     }
 }

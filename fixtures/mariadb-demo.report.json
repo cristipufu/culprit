@@ -1,0 +1,2422 @@
+{
+  "findings": [
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "temp-spill",
+      "confidence": "high",
+      "fix": {
+        "cost": "The limit is per temporary table per connection; size it with your connection count in mind.",
+        "sql": "SET GLOBAL tmp_table_size = 64 * 1024 * 1024;\nSET GLOBAL max_heap_table_size = 64 * 1024 * 1024;",
+        "summary": "Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit (both variables; the smaller one wins)."
+      },
+      "id": "temp-spill:375c64398248650e",
+      "impact": {
+        "db_time_share": 0.8855883790586936,
+        "label": "89% of DB time",
+        "score": 94.10570540932646,
+        "time_ms_per_day": 71948075.63472001
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:05:36Z",
+      "metrics": [
+        {
+          "label": "Runs that spilled",
+          "text": null,
+          "unit": "ratio",
+          "value": 1.0
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 2498.19707065
+        }
+      ],
+      "queries": [
+        {
+          "id": "375c64398248650e",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "high",
+      "subject": {
+        "kind": "query",
+        "name": "375c64398248650e"
+      },
+      "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB) and moves to disk, which is many times slower.",
+      "title": "A read from orders builds an on-disk temporary table on 100% of its runs",
+      "verify": []
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:a92bb0be330ac53a",
+      "impact": {
+        "db_time_share": 0.010408117938943744,
+        "label": "75% of executions",
+        "score": 40.142138158298046,
+        "time_ms_per_day": 845589.2990400001
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:50Z",
+      "metrics": [
+        {
+          "label": "Runs per day",
+          "text": null,
+          "unit": "count",
+          "value": 43200000.0
+        },
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.7485029940119761
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.019573826366666665
+        }
+      ],
+      "queries": [
+        {
+          "id": "a92bb0be330ac53a",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "a92bb0be330ac53a"
+      },
+      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small (1%), but each call costs a network round trip and a connection.",
+      "title": "A read from products runs 30K times in 1 minute, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "heavy-query",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Each run is fast; the cost is in how often it runs. Cache the result or batch the calls in the application."
+      },
+      "id": "heavy-query:decf59629e790076",
+      "impact": {
+        "db_time_share": 0.05613893923861639,
+        "label": "6% of DB time",
+        "score": 23.693657218465955,
+        "time_ms_per_day": 4560909.72048
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:51Z",
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.05613893923861639
+        },
+        {
+          "label": "Runs per day",
+          "text": null,
+          "unit": "count",
+          "value": 2880000.0
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 1.5836492085
+        },
+        {
+          "label": "Rows examined per run",
+          "text": null,
+          "unit": "pages",
+          "value": 10715.355
+        },
+        {
+          "label": "Rows returned per run",
+          "text": null,
+          "unit": "rows",
+          "value": 1.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "decf59629e790076",
+          "note": null,
+          "plan_node": 1
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "decf59629e790076"
+      },
+      "summary": "It ran 2.0K times in 1 minute at 2 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is a index range scan of shop.orders that reads 14K rows.",
+      "title": "A read from orders examines 11K rows for every row it returns",
+      "verify": [
+        "After the change ships, re-scan and compare this query's share of database time and reads per run."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "filtered-scan",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE, LOCK=NONE;",
+        "summary": "Create an index on promo_code so these queries seek instead of scanning."
+      },
+      "id": "filtered-scan:shop.orders(promo_code)",
+      "impact": {
+        "db_time_share": 0.03995229630841756,
+        "label": "4% of DB time",
+        "score": 19.98807051929164,
+        "time_ms_per_day": 3245854.28688
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:49Z",
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.03995229630841756
+        },
+        {
+          "label": "DB time per day",
+          "text": null,
+          "unit": "ms",
+          "value": 3245854.28688
+        },
+        {
+          "label": "Rows scanned per run",
+          "text": null,
+          "unit": "rows",
+          "value": 498573.0
+        },
+        {
+          "label": "Queries",
+          "text": null,
+          "unit": "count",
+          "value": 1.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "258e3c9b580f1ecc",
+          "note": null,
+          "plan_node": 2
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "table",
+        "name": "shop.orders"
+      },
+      "summary": "One query plans to read every row of shop.orders (499K rows) and keep only those matching `o.promo_code = 'SPRING9'`. No index starts with promo_code, so the database has no faster way in. Together they account for 4% of database time.",
+      "title": "orders is read in full to find rows by promo_code",
+      "verify": [
+        "Explain one of the queries again: the scan of orders should become an index seek/scan on the new index.",
+        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:d1f45c9664edccf9",
+      "impact": {
+        "db_time_share": 0.0037714044083739665,
+        "label": "10% of executions",
+        "score": 10.133192083739083,
+        "time_ms_per_day": 306401.14080000005
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:51Z",
+      "metrics": [
+        {
+          "label": "Runs per day",
+          "text": null,
+          "unit": "count",
+          "value": 5760000.0
+        },
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.0998003992015968
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.0531946425
+        }
+      ],
+      "queries": [
+        {
+          "id": "d1f45c9664edccf9",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "d1f45c9664edccf9"
+      },
+      "summary": "This statement is 10% of every statement the database executes, and each run returns about 1.6 rows. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small (<1%), but each call costs a network round trip and a connection.",
+      "title": "A read from order_items runs 4.0K times in 1 minute, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log."
+      ],
+      "check": "deadlocks",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking."
+      },
+      "id": "deadlocks:opposite-order:shop.customers+shop.orders",
+      "impact": {
+        "db_time_share": null,
+        "label": "1 deadlock",
+        "score": 9.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:05:39Z",
+      "metrics": [
+        {
+          "label": "Deadlocks",
+          "text": null,
+          "unit": "count",
+          "value": 1.0
+        },
+        {
+          "label": "Pattern",
+          "text": "opposite access order",
+          "unit": "text",
+          "value": 0.0
+        },
+        {
+          "label": "Rolled back",
+          "text": "root",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.customers"
+      },
+      "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.",
+      "title": "Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)",
+      "verify": [
+        "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
+        "Live › Deadlocks shows the graph of each one, with both statements."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
+      ],
+      "check": "duplicate-index",
+      "confidence": "medium",
+      "fix": {
+        "cost": "Frees 9.5 MB.",
+        "sql": "DROP INDEX `ix_orders_status` ON `shop`.`orders` ALGORITHM=INPLACE, LOCK=NONE;",
+        "summary": "Drop ix_orders_status and keep ix_orders_status_created."
+      },
+      "id": "duplicate-index:shop.orders.ix_orders_status",
+      "impact": {
+        "db_time_share": null,
+        "label": "9.5 MB redundant",
+        "score": 8.009292602539062,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 9977856.0
+        },
+        {
+          "label": "Reads of ix_orders_status",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "shop.orders.ix_orders_status"
+      },
+      "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
+      "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
+      "verify": []
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
+        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
+        "Definitions, to recreate if needed:\nCREATE INDEX `ix_customers_region` ON `shop`.`customers` (region);"
+      ],
+      "check": "unused-index",
+      "confidence": "low",
+      "fix": {
+        "cost": "Frees 4.5 MB and makes writes to shop.customers cheaper.",
+        "sql": "ALTER TABLE `shop`.`customers` ALTER INDEX `ix_customers_region` IGNORED;",
+        "summary": "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints."
+      },
+      "id": "unused-index:shop.customers",
+      "impact": {
+        "db_time_share": null,
+        "label": "4.5 MB unused",
+        "score": 8.004409790039062,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 4734976.0
+        },
+        {
+          "label": "Writes to the table",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "label": "Counting for",
+          "text": null,
+          "unit": "days",
+          "value": 0.04819444444444444
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.customers"
+      },
+      "summary": "No query has read ix_customers_region in the hour since the server last restarted, while shop.customers was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 4.5 MB of storage and buffer memory.",
+      "title": "ix_customers_region on customers is never read",
+      "verify": [
+        "Watch the queries on this table for a week after disabling; none should get slower."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "duplicate-index",
+      "confidence": "high",
+      "fix": {
+        "cost": "Frees 432 KB.",
+        "sql": "DROP INDEX `ix_products_sku` ON `shop`.`products` ALGORITHM=INPLACE, LOCK=NONE;",
+        "summary": "Drop ix_products_sku and keep uq_products_sku."
+      },
+      "id": "duplicate-index:shop.products.ix_products_sku",
+      "impact": {
+        "db_time_share": null,
+        "label": "432 KB redundant",
+        "score": 8.000411987304688,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 442368.0
+        },
+        {
+          "label": "Reads of ix_products_sku",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "shop.products.ix_products_sku"
+      },
+      "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
+      "title": "ix_products_sku duplicates uq_products_sku on products",
+      "verify": []
+    }
+  ],
+  "locked": [],
+  "snapshot": {
+    "columns": [
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "varchar(120)",
+        "default": null,
+        "generated": false,
+        "name": "email",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "varchar(80)",
+        "default": null,
+        "generated": false,
+        "name": "name",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "varchar(16)",
+        "default": null,
+        "generated": false,
+        "name": "region",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "datetime",
+        "default": null,
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": false,
+        "name": "customer_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "varchar(16)",
+        "default": null,
+        "generated": false,
+        "name": "status",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "varchar(16)",
+        "default": null,
+        "generated": false,
+        "name": "channel",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "varchar(16)",
+        "default": "NULL",
+        "generated": false,
+        "name": "promo_code",
+        "nullable": true,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "decimal(12,2)",
+        "default": null,
+        "generated": false,
+        "name": "total",
+        "nullable": false,
+        "ordinal": 6,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "datetime",
+        "default": null,
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "ordinal": 7,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "datetime",
+        "default": "NULL",
+        "generated": false,
+        "name": "shipped_at",
+        "nullable": true,
+        "ordinal": 8,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": false,
+        "name": "order_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": false,
+        "name": "product_id",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": false,
+        "name": "quantity",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "decimal(10,2)",
+        "default": null,
+        "generated": false,
+        "name": "price",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int(11)",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "varchar(32)",
+        "default": null,
+        "generated": false,
+        "name": "sku",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "varchar(80)",
+        "default": null,
+        "generated": false,
+        "name": "name",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "varchar(32)",
+        "default": null,
+        "generated": false,
+        "name": "category",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "decimal(10,2)",
+        "default": null,
+        "generated": false,
+        "name": "price",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "products"
+      }
+    ],
+    "connection": "mariadb-demo",
+    "deadlocks": {
+      "counted": null,
+      "counted_since": null,
+      "deadlocks": [
+        {
+          "at": "2026-10-11T16:05:39Z",
+          "explanation": "Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.",
+          "fixes": [
+            {
+              "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
+              "finding": null,
+              "sql": null,
+              "title": "Touch tables and rows in the same order everywhere"
+            },
+            {
+              "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
+              "finding": null,
+              "sql": null,
+              "title": "Keep transactions short"
+            },
+            {
+              "detail": "A deadlock victim can be retried safely; the application should catch error 1213 and run the transaction again.",
+              "finding": null,
+              "sql": null,
+              "title": "Retry the victim"
+            }
+          ],
+          "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back.",
+          "id": "9540028af0a4c7d5",
+          "objects": [
+            "shop.customers",
+            "shop.orders"
+          ],
+          "pattern": "opposite-order",
+          "processes": [
+            {
+              "application": null,
+              "database": null,
+              "host": "localhost",
+              "id": "(1)",
+              "isolation": null,
+              "log_used": null,
+              "login": "root",
+              "procedure": null,
+              "session": "202",
+              "statement": "UPDATE shop.customers SET name = name WHERE id = 1",
+              "victim": true,
+              "wait_mode": null
+            },
+            {
+              "application": null,
+              "database": null,
+              "host": "localhost",
+              "id": "(2)",
+              "isolation": null,
+              "log_used": null,
+              "login": "root",
+              "procedure": null,
+              "session": "201",
+              "statement": "UPDATE shop.orders SET status = status WHERE id = 1",
+              "victim": false,
+              "wait_mode": null
+            }
+          ],
+          "resources": [
+            {
+              "holders": [
+                {
+                  "mode": "X (row)",
+                  "process": "(1)"
+                }
+              ],
+              "id": "shop.customers/PRIMARY/10:5/2",
+              "index": "PRIMARY",
+              "kind": "RECORD",
+              "object": "shop.customers",
+              "waiters": [
+                {
+                  "mode": "X (row)",
+                  "process": "(1)"
+                }
+              ]
+            },
+            {
+              "holders": [
+                {
+                  "mode": "X (row)",
+                  "process": "(1)"
+                }
+              ],
+              "id": "shop.orders/PRIMARY/12:7/2",
+              "index": "PRIMARY",
+              "kind": "RECORD",
+              "object": "shop.orders",
+              "waiters": [
+                {
+                  "mode": "X (row)",
+                  "process": "(2)"
+                }
+              ]
+            }
+          ],
+          "source": "InnoDB status"
+        }
+      ],
+      "note": "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
+      "since_hours": 24.0,
+      "source": "InnoDB status"
+    },
+    "duration_ms": 64.63325,
+    "environment": "development",
+    "foreign_keys": [
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "name": "fk_orders_customer",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "customers",
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "columns": [
+          "order_id"
+        ],
+        "name": "fk_items_order",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "orders",
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "columns": [
+          "product_id"
+        ],
+        "name": "fk_items_product",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "products",
+        "schema": "shop",
+        "table": "order_items"
+      }
+    ],
+    "format": 1,
+    "id": "20261011T160540.394Z",
+    "indexes": [
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "ALTER TABLE `shop`.`customers` ADD PRIMARY KEY (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "PRIMARY",
+        "reads": 2.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 17317888.0,
+        "table": "customers",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "region"
+        ],
+        "definition": "CREATE INDEX `ix_customers_region` ON `shop`.`customers` (region)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "ix_customers_region",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 4734976.0,
+        "table": "customers",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "ALTER TABLE `shop`.`order_items` ADD PRIMARY KEY (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "PRIMARY",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 34144256.0,
+        "table": "order_items",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "order_id"
+        ],
+        "definition": "CREATE INDEX `fk_items_order` ON `shop`.`order_items` (order_id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "fk_items_order",
+        "reads": 10398.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 22593536.0,
+        "table": "order_items",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "product_id"
+        ],
+        "definition": "CREATE INDEX `fk_items_product` ON `shop`.`order_items` (product_id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "fk_items_product",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 19447808.0,
+        "table": "order_items",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "ALTER TABLE `shop`.`orders` ADD PRIMARY KEY (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "PRIMARY",
+        "reads": 2.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 28901376.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "definition": "CREATE INDEX `fk_orders_customer` ON `shop`.`orders` (customer_id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "fk_orders_customer",
+        "reads": 19982.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 9977856.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "status"
+        ],
+        "definition": "CREATE INDEX `ix_orders_status` ON `shop`.`orders` (status)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "ix_orders_status",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 9977856.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "status",
+          "created_at"
+        ],
+        "definition": "CREATE INDEX `ix_orders_status_created` ON `shop`.`orders` (status, created_at)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "ix_orders_status_created",
+        "reads": 21430710.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 19447808.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "ALTER TABLE `shop`.`products` ADD PRIMARY KEY (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "PRIMARY",
+        "reads": 34000.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 1589248.0,
+        "table": "products",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": "CREATE INDEX `ix_products_sku` ON `shop`.`products` (sku)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "ix_products_sku",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 442368.0,
+        "table": "products",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": "CREATE UNIQUE INDEX `uq_products_sku` ON `shop`.`products` (sku)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "uq_products_sku",
+        "reads": 0.0,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 442368.0,
+        "table": "products",
+        "writes": 0.0
+      }
+    ],
+    "missing_indexes": [],
+    "notes": [
+      {
+        "collector": "plans",
+        "message": "Planned 5 queries; 1 had no recorded statement text."
+      }
+    ],
+    "options": {
+      "plans": 25,
+      "top_queries": 60,
+      "window_days": 7
+    },
+    "plan_cache": null,
+    "pressure": {
+      "grants": [],
+      "oldest_transaction": null,
+      "signals": [
+        {
+          "healthy": "above 99% is healthy for most workloads",
+          "key": "buffer-pool-hit",
+          "label": "Reads served from memory",
+          "scope": "since-startup",
+          "status": "good",
+          "unit": "percent",
+          "value": 99.95581781413362
+        },
+        {
+          "healthy": "under 10% of temporary tables is healthy",
+          "key": "tmp-disk-tables",
+          "label": "Temporary tables on disk",
+          "scope": "since-startup",
+          "status": "watch",
+          "unit": "percent",
+          "value": 17.161769454310623
+        },
+        {
+          "healthy": null,
+          "key": "questions",
+          "label": "Statements",
+          "scope": "since-startup",
+          "status": "info",
+          "unit": "per-second",
+          "value": 58.19716618635927
+        },
+        {
+          "healthy": null,
+          "key": "threads-running",
+          "label": "Statements running now",
+          "scope": "now",
+          "status": "info",
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "healthy": null,
+          "key": "row-lock-waits",
+          "label": "Row-lock waits",
+          "scope": "since-startup",
+          "status": "info",
+          "unit": "per-hour",
+          "value": 17.291066282420747
+        },
+        {
+          "healthy": "under 50 ms is healthy",
+          "key": "row-lock-avg",
+          "label": "Average row-lock wait",
+          "scope": "since-startup",
+          "status": "bad",
+          "unit": "milliseconds",
+          "value": 7601.0
+        },
+        {
+          "healthy": "under 80% of max_connections is healthy",
+          "key": "connections",
+          "label": "Connections in use",
+          "scope": "now",
+          "status": "good",
+          "unit": "percent",
+          "value": 2.6490066225165565
+        },
+        {
+          "healthy": "under 90% of max_connections is healthy",
+          "key": "max-used-connections",
+          "label": "Busiest moment",
+          "scope": "since-startup",
+          "status": "good",
+          "unit": "percent",
+          "value": 3.9735099337748343
+        },
+        {
+          "healthy": "under 100K old row versions is healthy",
+          "key": "history-length",
+          "label": "Undo history",
+          "scope": "now",
+          "status": "good",
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "uptime_hours": 1.1566666666666667
+    },
+    "query_families": [],
+    "resources": [],
+    "server": {
+      "capabilities": [
+        "table-stats",
+        "sessions",
+        "showplan",
+        "performance-schema",
+        "index-usage",
+        "query-plans",
+        "wait-stats"
+      ],
+      "cloud": null,
+      "database": "shop",
+      "database_size_bytes": 169017344.0,
+      "edition": "mariadb.org binary distribution",
+      "engine": "mysql",
+      "missing": [],
+      "product": "MariaDB 11.8.9",
+      "read_only_session": true,
+      "started_at": "2026-10-11T14:56:16Z",
+      "version": "11.8.9-MariaDB-ubu2404"
+    },
+    "settings": [
+      {
+        "default_value": "134217728",
+        "name": "innodb_buffer_pool_size",
+        "scope": "server",
+        "value": "134217728"
+      },
+      {
+        "default_value": "1",
+        "name": "innodb_flush_log_at_trx_commit",
+        "scope": "server",
+        "value": "1"
+      },
+      {
+        "default_value": "16384",
+        "name": "innodb_page_size",
+        "scope": "server",
+        "value": "16384"
+      },
+      {
+        "default_value": "262144",
+        "name": "join_buffer_size",
+        "scope": "server",
+        "value": "262144"
+      },
+      {
+        "default_value": "FILE",
+        "name": "log_output",
+        "scope": "server",
+        "value": "FILE,TABLE"
+      },
+      {
+        "default_value": "10.000000",
+        "name": "long_query_time",
+        "scope": "server",
+        "value": "0.020000"
+      },
+      {
+        "default_value": "151",
+        "name": "max_connections",
+        "scope": "server",
+        "value": "151"
+      },
+      {
+        "default_value": "1024",
+        "name": "max_digest_length",
+        "scope": "server",
+        "value": "1024"
+      },
+      {
+        "default_value": "16777216",
+        "name": "max_heap_table_size",
+        "scope": "server",
+        "value": "16777216"
+      },
+      {
+        "default_value": "0.000000",
+        "name": "max_statement_time",
+        "scope": "server",
+        "value": "0.000000"
+      },
+      {
+        "default_value": "OFF",
+        "name": "performance_schema",
+        "scope": "server",
+        "value": "ON"
+      },
+      {
+        "default_value": "-1",
+        "name": "performance_schema_digests_size",
+        "scope": "server",
+        "value": "5000"
+      },
+      {
+        "default_value": "1024",
+        "name": "performance_schema_max_digest_length",
+        "scope": "server",
+        "value": "1024"
+      },
+      {
+        "default_value": "1024",
+        "name": "performance_schema_max_sql_text_length",
+        "scope": "server",
+        "value": "1024"
+      },
+      {
+        "default_value": "OFF",
+        "name": "slow_query_log",
+        "scope": "server",
+        "value": "ON"
+      },
+      {
+        "default_value": "2097152",
+        "name": "sort_buffer_size",
+        "scope": "server",
+        "value": "2097152"
+      },
+      {
+        "default_value": "16777216",
+        "name": "tmp_table_size",
+        "scope": "server",
+        "value": "16777216"
+      },
+      {
+        "default_value": "REPEATABLE-READ",
+        "name": "transaction_isolation",
+        "scope": "server",
+        "value": "REPEATABLE-READ"
+      },
+      {
+        "default_value": "REPEATABLE-READ",
+        "name": "tx_isolation",
+        "scope": "server",
+        "value": "REPEATABLE-READ"
+      },
+      {
+        "default_value": "OFF",
+        "name": "userstat",
+        "scope": "server",
+        "value": "OFF"
+      },
+      {
+        "default_value": null,
+        "name": "performance_schema_digest_lost",
+        "scope": "status",
+        "value": "0"
+      },
+      {
+        "default_value": null,
+        "name": "performance_schema.consumer.events_statements_current",
+        "scope": "status",
+        "value": "YES"
+      },
+      {
+        "default_value": null,
+        "name": "performance_schema.consumer.global_instrumentation",
+        "scope": "status",
+        "value": "YES"
+      },
+      {
+        "default_value": null,
+        "name": "performance_schema.consumer.statements_digest",
+        "scope": "status",
+        "value": "YES"
+      }
+    ],
+    "statistics": [],
+    "tables": [
+      {
+        "data_bytes": 17317888.0,
+        "dead_rows": null,
+        "deletes": 0.0,
+        "forwarded_fetches": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 4734976.0,
+        "index_scans": null,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": "2026-10-11T14:56:58Z",
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "customers",
+        "rows": 199116.0,
+        "schema": "shop",
+        "seq_rows_read": 0.0,
+        "seq_scans": null,
+        "total_bytes": 22052864.0,
+        "updates": 0.0,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 1589248.0,
+        "dead_rows": null,
+        "deletes": 0.0,
+        "forwarded_fetches": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 884736.0,
+        "index_scans": null,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": "2026-10-11T14:56:58Z",
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "products",
+        "rows": 20174.0,
+        "schema": "shop",
+        "seq_rows_read": 0.0,
+        "seq_scans": null,
+        "total_bytes": 2473984.0,
+        "updates": 0.0,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 28901376.0,
+        "dead_rows": null,
+        "deletes": 0.0,
+        "forwarded_fetches": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 39403520.0,
+        "index_scans": null,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": "2026-10-11T16:01:10Z",
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "orders",
+        "rows": 498573.0,
+        "schema": "shop",
+        "seq_rows_read": 40000300.0,
+        "seq_scans": null,
+        "total_bytes": 68304896.0,
+        "updates": 0.0,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 34144256.0,
+        "dead_rows": null,
+        "deletes": 0.0,
+        "forwarded_fetches": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 42041344.0,
+        "index_scans": null,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": "2026-10-11T14:56:58Z",
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "order_items",
+        "rows": 798336.0,
+        "schema": "shop",
+        "seq_rows_read": 0.0,
+        "seq_scans": null,
+        "total_bytes": 76185600.0,
+        "updates": 0.0,
+        "xid_age": null
+      }
+    ],
+    "taken_at": "2026-10-11T16:05:40Z",
+    "tuning": null,
+    "waits": [
+      {
+        "category": "Table IO",
+        "tasks": 373065458.0,
+        "wait_ms": 461172.709408455,
+        "wait_type": "wait/io/table/sql/handler"
+      },
+      {
+        "category": "IO",
+        "tasks": 187720.0,
+        "wait_ms": 2478.81208872,
+        "wait_type": "wait/io/file/innodb/innodb_data_file"
+      },
+      {
+        "category": "Lock",
+        "tasks": 264642.0,
+        "wait_ms": 18.68522898,
+        "wait_type": "wait/lock/table/sql/handler"
+      }
+    ],
+    "workload": {
+      "queries": [
+        {
+          "cpu_time_ms": null,
+          "executions": 20.0,
+          "first_seen": "2026-10-11T16:04:49Z",
+          "id": "375c64398248650e",
+          "last_seen": "2026-10-11T16:05:36Z",
+          "logical_reads": 20000400.0,
+          "max_time_ms": 3412.595976,
+          "mean_time_ms": 2498.19707065,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "mysql",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "flavor": "MariaDB"
+            },
+            "raw": "{\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 83.0178672,\n    \"filesort\": {\n      \"sort_key\": \"sum(orders.total) desc\",\n      \"temporary_table\": {\n        \"nested_loop\": [\n          {\n            \"table\": {\n              \"table_name\": \"orders\",\n              \"access_type\": \"ALL\",\n              \"loops\": 1,\n              \"rows\": 500000,\n              \"cost\": 83.0178672,\n              \"filtered\": 100\n            }\n          }\n        ]\n      }\n    }\n  }\n}",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [
+                        {
+                          "act_executions": null,
+                          "act_rows": null,
+                          "act_time_ms": null,
+                          "children": [],
+                          "detail": null,
+                          "est_executions": 1.0,
+                          "est_rows": 500000.0,
+                          "id": 3,
+                          "index": null,
+                          "kind": "scan",
+                          "object": "shop.orders",
+                          "op": "Table scan",
+                          "predicate": null,
+                          "props": {
+                            "cost": "83.0178672",
+                            "filtered": "100",
+                            "loops": "1",
+                            "rows": "500000"
+                          },
+                          "rows_read": 500000.0,
+                          "runtime": null,
+                          "seek_predicate": null,
+                          "self_cost": 83.0178672,
+                          "subtree_cost": 83.0178672,
+                          "table_rows": null,
+                          "warnings": []
+                        }
+                      ],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 500000.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "other",
+                      "object": null,
+                      "op": "Temporary table",
+                      "predicate": null,
+                      "props": {},
+                      "rows_read": null,
+                      "runtime": null,
+                      "seek_predicate": null,
+                      "self_cost": 0.0,
+                      "subtree_cost": 83.0178672,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "sum(orders.total) desc",
+                  "est_executions": 1.0,
+                  "est_rows": 500000.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "sort_key": "sum(orders.total) desc"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 83.0178672,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 500000.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Query block",
+              "predicate": null,
+              "props": {
+                "select_id": "1"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 83.0178672,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ? ",
+            "total_cost": 83.0178672,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": "375c64398248650e848f6c600d7e2143",
+          "rows": 400.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 49963.346,
+            "min_ms": 2106.280311,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 20.0,
+          "text": "SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ? ",
+          "total_time_ms": 49963.941413,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              40.0,
+              60.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              87963.01,
+              142911.23
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 49963.346,
+              "wait_type": "lock time"
+            }
+          ]
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 2000.0,
+          "first_seen": "2026-10-11T16:04:46Z",
+          "id": "decf59629e790076",
+          "last_seen": "2026-10-11T16:04:51Z",
+          "logical_reads": 21430710.0,
+          "max_time_ms": 6.471161,
+          "mean_time_ms": 1.5836492085,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "mysql",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "flavor": "MariaDB"
+            },
+            "raw": "{\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 2.15041973,\n    \"nested_loop\": [\n      {\n        \"table\": {\n          \"table_name\": \"orders\",\n          \"access_type\": \"range\",\n          \"possible_keys\": [\"ix_orders_status\", \"ix_orders_status_created\"],\n          \"key\": \"ix_orders_status_created\",\n          \"key_length\": \"71\",\n          \"used_key_parts\": [\"status\", \"created_at\"],\n          \"loops\": 1,\n          \"rows\": 14154,\n          \"cost\": 2.15041973,\n          \"filtered\": 100,\n          \"attached_condition\": \"orders.`status` = 'shipped' and orders.created_at >= '2026-09-23'\",\n          \"using_index\": true\n        }\n      }\n    ]\n  }\n}",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "covering index",
+                  "est_executions": 1.0,
+                  "est_rows": 14154.0,
+                  "id": 1,
+                  "index": "ix_orders_status_created",
+                  "kind": "seek",
+                  "object": "shop.orders",
+                  "op": "Index range scan",
+                  "predicate": "orders.status = 'shipped' and orders.created_at >= '2026-09-23'",
+                  "props": {
+                    "cost": "2.15041973",
+                    "filtered": "100",
+                    "key_length": "71",
+                    "loops": "1",
+                    "possible_keys": "ix_orders_status, ix_orders_status_created",
+                    "rows": "14154",
+                    "used_key_parts": "status, created_at",
+                    "using_index": "true"
+                  },
+                  "rows_read": 14154.0,
+                  "runtime": null,
+                  "seek_predicate": "range on status, created_at",
+                  "self_cost": 2.15041973,
+                  "subtree_cost": 2.15041973,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 14154.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Query block",
+              "predicate": null,
+              "props": {
+                "select_id": "1"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 2.15041973,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT COUNT ( * ) FROM `orders` WHERE STATUS = ? AND `created_at` >= ? ",
+            "total_cost": 2.15041973,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": "decf59629e790076bee034e582b5053a",
+          "rows": 2000.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 21.033,
+            "min_ms": 0.520413,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 0.0,
+          "text": "SELECT COUNT ( * ) FROM `orders` WHERE STATUS = ? AND `created_at` >= ? ",
+          "total_time_ms": 3167.298417,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              4000.0,
+              6000.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              6843.33,
+              9621.76
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 21.033,
+              "wait_type": "lock time"
+            }
+          ]
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 60.0,
+          "first_seen": "2026-10-11T16:04:46Z",
+          "id": "258e3c9b580f1ecc",
+          "last_seen": "2026-10-11T16:04:49Z",
+          "logical_reads": 30000300.0,
+          "max_time_ms": 53.403773,
+          "mean_time_ms": 37.56775795,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "mysql",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "flavor": "MariaDB"
+            },
+            "raw": "{\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 83.0178672,\n    \"nested_loop\": [\n      {\n        \"read_sorted_file\": {\n          \"filesort\": {\n            \"sort_key\": \"o.total desc\",\n            \"table\": {\n              \"table_name\": \"o\",\n              \"access_type\": \"ALL\",\n              \"loops\": 1,\n              \"rows\": 500000,\n              \"cost\": 83.0178672,\n              \"filtered\": 100,\n              \"attached_condition\": \"o.promo_code = 'SPRING9'\"\n            }\n          }\n        }\n      }\n    ]\n  }\n}",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 500000.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "scan",
+                      "object": "shop.orders",
+                      "op": "Table scan",
+                      "predicate": "o.promo_code = 'SPRING9'",
+                      "props": {
+                        "cost": "83.0178672",
+                        "filtered": "100",
+                        "loops": "1",
+                        "rows": "500000"
+                      },
+                      "rows_read": 500000.0,
+                      "runtime": null,
+                      "seek_predicate": null,
+                      "self_cost": 83.0178672,
+                      "subtree_cost": 83.0178672,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "o.total desc",
+                  "est_executions": 1.0,
+                  "est_rows": 500000.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "sort_key": "o.total desc"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 83.0178672,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 500000.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Query block",
+              "predicate": null,
+              "props": {
+                "select_id": "1"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 83.0178672,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ? ",
+            "total_cost": 83.0178672,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": "258e3c9b580f1ecccd48f76c4f83acb1",
+          "rows": 300.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 2251.482,
+            "min_ms": 32.453053,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 0.0,
+          "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ? ",
+          "total_time_ms": 2254.065477,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              120.0,
+              180.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              4654.71,
+              6810.19
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 2251.482,
+              "wait_type": "lock time"
+            }
+          ]
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 30000.0,
+          "first_seen": "2026-10-11T16:04:46Z",
+          "id": "a92bb0be330ac53a",
+          "last_seen": "2026-10-11T16:04:50Z",
+          "logical_reads": 30000.0,
+          "max_time_ms": 2.13136,
+          "mean_time_ms": 0.019573826366666665,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": null,
+          "plans": [],
+          "query_hash": "a92bb0be330ac53ad0b54014b3f02efa",
+          "rows": 30000.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 177.46,
+            "min_ms": 0.011083,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 0.0,
+          "text": "SELECT ID , NAME , `price` FROM `products` WHERE ID = ? ",
+          "total_time_ms": 587.214791,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              60000.0,
+              90000.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              2164.9,
+              1804.12
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 177.46,
+              "wait_type": "lock time"
+            }
+          ]
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 4000.0,
+          "first_seen": "2026-10-11T16:04:46Z",
+          "id": "46db559fdff712fd",
+          "last_seen": "2026-10-11T16:04:51Z",
+          "logical_reads": 19982.0,
+          "max_time_ms": 0.205915,
+          "mean_time_ms": 0.058405757,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "mysql",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "flavor": "MariaDB"
+            },
+            "raw": "{\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 0.00708384,\n    \"nested_loop\": [\n      {\n        \"read_sorted_file\": {\n          \"filesort\": {\n            \"sort_key\": \"orders.created_at desc\",\n            \"table\": {\n              \"table_name\": \"orders\",\n              \"access_type\": \"ref\",\n              \"possible_keys\": [\"fk_orders_customer\"],\n              \"key\": \"fk_orders_customer\",\n              \"key_length\": \"4\",\n              \"used_key_parts\": [\"customer_id\"],\n              \"ref\": [\"const\"],\n              \"loops\": 1,\n              \"rows\": 3,\n              \"cost\": 0.00708384,\n              \"filtered\": 100,\n              \"attached_condition\": \"orders.customer_id <=> 11272\"\n            }\n          }\n        }\n      }\n    ]\n  }\n}",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 3.0,
+                      "id": 2,
+                      "index": "fk_orders_customer",
+                      "kind": "seek",
+                      "object": "shop.orders",
+                      "op": "Index lookup",
+                      "predicate": "orders.customer_id <=> 11272",
+                      "props": {
+                        "cost": "0.00708384",
+                        "filtered": "100",
+                        "key_length": "4",
+                        "loops": "1",
+                        "possible_keys": "fk_orders_customer",
+                        "ref": "const",
+                        "rows": "3",
+                        "used_key_parts": "customer_id"
+                      },
+                      "rows_read": 3.0,
+                      "runtime": null,
+                      "seek_predicate": "customer_id = const",
+                      "self_cost": 0.00708384,
+                      "subtree_cost": 0.00708384,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "orders.created_at desc",
+                  "est_executions": 1.0,
+                  "est_rows": 3.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "sort_key": "orders.created_at desc"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.00708384,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 3.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Query block",
+              "predicate": null,
+              "props": {
+                "select_id": "1"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.00708384,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT ID , STATUS , `total` , `created_at` FROM `orders` WHERE `customer_id` = ? ORDER BY `created_at` DESC LIMIT ? ",
+            "total_cost": 0.00708384,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": "46db559fdff712fd13e0107d6e1cd6f2",
+          "rows": 9991.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 44.303,
+            "min_ms": 0.027,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 0.0,
+          "text": "SELECT ID , STATUS , `total` , `created_at` FROM `orders` WHERE `customer_id` = ? ORDER BY `created_at` DESC LIMIT ? ",
+          "total_time_ms": 233.623028,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              8000.0,
+              12000.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              885.21,
+              764.57
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 44.303,
+              "wait_type": "lock time"
+            }
+          ]
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 4000.0,
+          "first_seen": "2026-10-11T16:04:46Z",
+          "id": "d1f45c9664edccf9",
+          "last_seen": "2026-10-11T16:04:51Z",
+          "logical_reads": 12796.0,
+          "max_time_ms": 2.223608,
+          "mean_time_ms": 0.0531946425,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "mysql",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "flavor": "MariaDB"
+            },
+            "raw": "{\n  \"query_block\": {\n    \"select_id\": 1,\n    \"cost\": 0.0051722,\n    \"nested_loop\": [\n      {\n        \"table\": {\n          \"table_name\": \"oi\",\n          \"access_type\": \"ref\",\n          \"possible_keys\": [\"fk_items_order\", \"fk_items_product\"],\n          \"key\": \"fk_items_order\",\n          \"key_length\": \"4\",\n          \"used_key_parts\": [\"order_id\"],\n          \"ref\": [\"const\"],\n          \"loops\": 1,\n          \"rows\": 1,\n          \"cost\": 0.00345856,\n          \"filtered\": 100\n        }\n      },\n      {\n        \"table\": {\n          \"table_name\": \"p\",\n          \"access_type\": \"eq_ref\",\n          \"possible_keys\": [\"PRIMARY\"],\n          \"key\": \"PRIMARY\",\n          \"key_length\": \"4\",\n          \"used_key_parts\": [\"id\"],\n          \"ref\": [\"shop.oi.product_id\"],\n          \"loops\": 1,\n          \"rows\": 1,\n          \"cost\": 0.00171364,\n          \"filtered\": 100\n        }\n      }\n    ]\n  }\n}",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 1.0,
+                      "id": 1,
+                      "index": "fk_items_order",
+                      "kind": "seek",
+                      "object": "shop.order_items",
+                      "op": "Index lookup",
+                      "predicate": null,
+                      "props": {
+                        "cost": "0.00345856",
+                        "filtered": "100",
+                        "key_length": "4",
+                        "loops": "1",
+                        "possible_keys": "fk_items_order, fk_items_product",
+                        "ref": "const",
+                        "rows": "1",
+                        "used_key_parts": "order_id"
+                      },
+                      "rows_read": 1.0,
+                      "runtime": null,
+                      "seek_predicate": "order_id = const",
+                      "self_cost": 0.00345856,
+                      "subtree_cost": 0.00345856,
+                      "table_rows": null,
+                      "warnings": []
+                    },
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 1.0,
+                      "id": 2,
+                      "index": "PRIMARY",
+                      "kind": "seek",
+                      "object": "shop.products",
+                      "op": "Unique index lookup",
+                      "predicate": null,
+                      "props": {
+                        "cost": "0.00171364",
+                        "filtered": "100",
+                        "key_length": "4",
+                        "loops": "1",
+                        "possible_keys": "PRIMARY",
+                        "ref": "shop.oi.product_id",
+                        "rows": "1",
+                        "used_key_parts": "id"
+                      },
+                      "rows_read": 1.0,
+                      "runtime": null,
+                      "seek_predicate": "id = shop.oi.product_id",
+                      "self_cost": 0.00171364,
+                      "subtree_cost": 0.00171364,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": null,
+                  "est_executions": 1.0,
+                  "est_rows": 1.0,
+                  "id": 3,
+                  "index": null,
+                  "kind": "join",
+                  "object": null,
+                  "op": "Nested loop",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0051722,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Query block",
+              "predicate": null,
+              "props": {
+                "select_id": "1"
+              },
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0051722,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT `oi` . `quantity` , `oi` . `price` , `p` . `name` FROM `order_items` `oi` JOIN `products` `p` ON `p` . `id` = `oi` . `product_id` WHERE `oi` . `order_id` = ? ",
+            "total_cost": 0.0051722,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": "d1f45c9664edccf9dc77a3076d1ad0b7",
+          "rows": 6398.0,
+          "spread": {
+            "histogram": [],
+            "lock_ms": 52.766,
+            "min_ms": 0.024417,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null
+          },
+          "stddev_time_ms": null,
+          "temp_writes": 0.0,
+          "text": "SELECT `oi` . `quantity` , `oi` . `price` , `p` . `name` FROM `order_items` `oi` JOIN `products` `p` ON `p` . `id` = `oi` . `product_id` WHERE `oi` . `order_id` = ? ",
+          "total_time_ms": 212.77857,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              8000.0,
+              12000.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              685.64,
+              686.69
+            ]
+          },
+          "waits": [
+            {
+              "category": "Lock",
+              "tasks": null,
+              "wait_ms": 52.766,
+              "wait_type": "lock time"
+            }
+          ]
+        }
+      ],
+      "query_count": 6.0,
+      "source": "performance_schema",
+      "timeline": {
+        "end": "2026-10-11T16:05:40Z",
+        "executions": [
+          55.0,
+          49.0,
+          80170.0,
+          120256.0
+        ],
+        "source": "scans",
+        "starts": [
+          "2026-10-11T14:59:37Z",
+          "2026-10-11T15:23:26Z",
+          "2026-10-11T15:44:06Z",
+          "2026-10-11T15:49:48Z"
+        ],
+        "time_ms": [
+          34.31,
+          103814.91,
+          103200.46,
+          168149.38
+        ]
+      },
+      "total_cpu_ms": null,
+      "total_executions": 40080.0,
+      "total_time_ms": 56418.921696,
+      "window_end": "2026-10-11T16:05:40Z",
+      "window_hours": 0.016666666666666666,
+      "window_start": "2026-10-11T16:04:46Z",
+      "windowed": false
+    }
+  },
+  "summary": {
+    "by_category": [
+      {
+        "category": "indexes",
+        "count": 4
+      },
+      {
+        "category": "queries",
+        "count": 5
+      }
+    ],
+    "by_severity": [
+      {
+        "count": 1,
+        "severity": "high"
+      },
+      {
+        "count": 3,
+        "severity": "medium"
+      },
+      {
+        "count": 5,
+        "severity": "low"
+      }
+    ],
+    "headline": "9 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.",
+    "opportunities": 9,
+    "top_share": 0.9521354362362537
+  }
+}

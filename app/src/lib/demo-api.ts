@@ -1,12 +1,15 @@
 import type { ApprovalRequest } from "../gen/ApprovalRequest";
+import type { ChangeEvent } from "../gen/ChangeEvent";
 import type { Changes } from "../gen/Changes";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
+import type { Dashboard } from "../gen/Dashboard";
 import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
 import type { IndexAdvice } from "../gen/IndexAdvice";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { LiveState } from "../gen/LiveState";
+import type { Mark } from "../gen/Mark";
 import type { Session } from "../gen/Session";
 import type { Plan } from "../gen/Plan";
 import type { PlanVariant } from "../gen/PlanVariant";
@@ -23,7 +26,9 @@ import type { ResourceSample } from "../gen/ResourceSample";
 import type { WaitSample } from "../gen/WaitSample";
 import type { WaitsReport } from "../gen/WaitsReport";
 import type { Api } from "./api";
+import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
+import { signalsSample, withSignals } from "./demo-signals";
 
 const reports: Record<string, () => Promise<Report>> = import.meta.env.DEV
   ? import.meta.glob<Report>("../../../fixtures/*.report.json", { import: "default" })
@@ -36,6 +41,14 @@ const discoverSample: () => Promise<DiscoveredDatabase[]> = import.meta.env.DEV
 /** The advisor's output for each demo connection, made with `culprit indexes fixtures/<name>.report.json --json`. */
 const adviceSample: () => Promise<Record<string, IndexAdvice>> = import.meta.env.DEV
   ? () => import("../../../fixtures/index-advice.sample.json").then((m) => m.default as unknown as Record<string, IndexAdvice>)
+  : async () => ({});
+
+/**
+ * The dashboard for each demo connection, made with `culprit dashboard <report> --no-live --json` from the fixture
+ * reports merged with the sidecars below (pressure, waits, deadlocks), exactly as this demo serves them.
+ */
+const dashboardSample: () => Promise<Record<string, Dashboard>> = import.meta.env.DEV
+  ? () => import("../../../fixtures/dashboard.sample.json").then((m) => m.default as unknown as Record<string, Dashboard>)
   : async () => ({});
 
 /** Sessions and blocking chains captured from the demo databases with a planted chain, per engine. */
@@ -51,6 +64,11 @@ const deadlockSample: () => Promise<Record<string, DeadlockReport> | null> = imp
 /** "What changed" as the desktop app computed it on the demo databases (Query Store, and scans for Postgres/MySQL). */
 const changesSample: () => Promise<Record<string, Changes> | null> = import.meta.env.DEV
   ? () => import("../../../fixtures/changes.sample.json").then((m) => m.default as unknown as Record<string, Changes>)
+  : async () => null;
+
+/** Marks and schema/settings changes around the demo reports' timelines (synthetic). */
+const eventsSample: () => Promise<Record<string, ChangeEvent[]> | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/events.sample.json").then((m) => m.default as unknown as Record<string, ChangeEvent[]>)
   : async () => null;
 
 /** Runtime spread captured from the demo databases: fixture reports predate it. `extra` adds a planted
@@ -215,6 +233,8 @@ export async function demoApi(): Promise<Api> {
   // Fixture reports predate pressure signals; the waits sidecar fills them in.
   const waits = await waitsSample();
   const spread = await spreadSample();
+  const recordedDeadlocks = await deadlockSample();
+  const signals = await signalsSample();
   const all = loaded.map((loadedReport) => {
     const r = loadedReport && spread ? withSpread(loadedReport, spread[loadedReport.snapshot.connection]) : loadedReport;
     if (!r || !waits) return r;
@@ -225,15 +245,19 @@ export async function demoApi(): Promise<Api> {
     const recorded = r.snapshot.waits.length
       ? r.snapshot.waits
       : (report?.categories ?? []).map((c) => ({ category: c.key, wait_type: c.top_wait, wait_ms: c.wait_ms, tasks: null }));
-    return { ...r, snapshot: { ...r.snapshot, waits: recorded, pressure: r.snapshot.pressure ?? waits.pressure[name] ?? null, resources } };
-  });
+    // Every scan records a day of deadlocks; the fixtures predate that, so the captured sample stands in.
+    const deadlocks = r.snapshot.deadlocks ?? recordedDeadlocks?.[r.snapshot.server.engine] ?? null;
+    return { ...r, snapshot: { ...r.snapshot, waits: recorded, pressure: r.snapshot.pressure ?? waits.pressure[name] ?? null, resources, deadlocks } };
+  }).map((r) => (r && signals ? withSignals(r, signals[r.snapshot.connection]) : r));
+  // `?first-run` in the dev demo starts with no saved connections, to see the first-run screen.
+  const firstRun = import.meta.env.DEV && typeof location !== "undefined" && location.search.includes("first-run");
   let connections: ConnectionInfo[] = all
-    .filter((r): r is Report => r !== null)
+    .filter((r): r is Report => r !== null && !firstRun)
     .map((r) => ({
       name: r.snapshot.connection,
       engine: r.snapshot.server.engine,
       environment: r.snapshot.environment,
-      host: r.snapshot.server.engine === "mssql" ? "localhost,1433" : "localhost:5432",
+      host: r.snapshot.server.engine === "mssql" ? "localhost,1433" : r.snapshot.server.engine === "mysql" ? "localhost:3306" : "localhost:5432",
       port: null,
       database: r.snapshot.server.database,
       user: null,
@@ -247,6 +271,7 @@ export async function demoApi(): Promise<Api> {
         opportunities: r.summary.opportunities,
         headline: r.summary.headline,
         window_days: r.snapshot.options?.window_days ?? null,
+        product: r.snapshot.server.product,
       },
     }));
   let demoApproval: ApprovalRequest | null =
@@ -265,6 +290,7 @@ export async function demoApi(): Promise<Api> {
       : null;
   const aliases = new Map<string, string>();
   const endedSessions = new Map<string, Set<string>>();
+  const demoMarks = new Map<string, Mark[]>();
   const reportName = (name: string) => aliases.get(name) ?? name;
   const byConnection = (name: string) => all.find((r) => r?.snapshot.connection === reportName(name)) ?? null;
   const sampleFor = async (cloud: "azure" | "aws", terms: string[]) => {
@@ -428,6 +454,11 @@ export async function demoApi(): Promise<Api> {
       const plan = byConnection(name)?.snapshot.workload?.queries.find((q) => q.id === queryId)?.plan;
       return plan ?? unsupported();
     },
+    dashboard: async (name) => {
+      const sample = (await dashboardSample())[reportName(name)];
+      if (sample) return { ...sample, connection: name };
+      return Promise.reject({ code: "not_found", message: `No saved report for '${name}'`, hint: "Scan it first." });
+    },
     indexAdvice: async (name) => {
       const sample = (await adviceSample())[reportName(name)];
       if (sample) return { ...sample, connection: name };
@@ -517,6 +548,65 @@ export async function demoApi(): Promise<Api> {
       await new Promise((r) => setTimeout(r, 350));
       const sample = (await changesSample())?.[reportName(name)];
       return sample ?? unsupported();
+    },
+    events: async (name, request) => {
+      const end = request.end ? Date.parse(request.end) : Date.now();
+      const start = request.start ? Date.parse(request.start) : end - (request.hours ?? 168) * 3_600_000;
+      if (request.cloud) await new Promise((r) => setTimeout(r, 700));
+      const fixture = (await eventsSample())?.[reportName(name)] ?? [];
+      const marks: ChangeEvent[] = (demoMarks.get(name) ?? []).map((m) => ({
+        id: `mark:${m.id}:${m.at}`,
+        kind: "mark",
+        source: "mark",
+        action: null,
+        at: m.at,
+        after: null,
+        until: null,
+        title: m.text,
+        detail: null,
+        table: null,
+        object: null,
+        minor: false,
+        by: m.by,
+      }));
+      const cloud = request.cloud ? demoCloud(reportName(name), start, end) : null;
+      const throttles: ChangeEvent[] = (cloud?.episodes ?? []).map((e) => ({
+        id: `throttle:${e.kind}:${e.start}`,
+        kind: "throttle",
+        source: "cloud",
+        action: null,
+        at: e.start,
+        after: null,
+        until: e.end,
+        title: e.title,
+        detail: e.detail,
+        table: null,
+        object: cloud?.resource ?? null,
+        minor: false,
+        by: null,
+      }));
+      const events = [...fixture, ...marks, ...throttles]
+        .filter((e) => Date.parse(e.until ?? e.at) >= start && Date.parse(e.after ?? e.at) <= end)
+        .sort((a, b) => Date.parse(a.after ?? a.at) - Date.parse(b.after ?? b.at));
+      return { connection: name, start: new Date(start).toISOString(), end: new Date(end).toISOString(), events, notes: [] };
+    },
+    cloud: async (name, request) => {
+      await new Promise((r) => setTimeout(r, 500));
+      const end = request.end ? Date.parse(request.end) : Date.now();
+      const start = request.start ? Date.parse(request.start) : end - (request.hours ?? 24) * 3_600_000;
+      return demoCloud(reportName(name), start, end) ?? Promise.reject({ code: "unsupported", message: "Not a cloud database", hint: null });
+    },
+    mark: async (name, text, at) => {
+      const mark: Mark = { id: `m${Date.now()}`, at: at ?? new Date().toISOString().replace(/\.\d+Z$/, "Z"), text: text.trim(), by: "app", created_at: new Date().toISOString() };
+      demoMarks.set(name, [...(demoMarks.get(name) ?? []), mark]);
+      return mark;
+    },
+    unmark: async (name, id) => {
+      const list = demoMarks.get(name) ?? [];
+      const mark = list.find((m) => m.id === id);
+      if (!mark) return Promise.reject({ code: "not_found", message: `No mark '${id}'`, hint: null });
+      demoMarks.set(name, list.filter((m) => m.id !== id));
+      return mark;
     },
     deadlocks: async (name, sinceHours) => {
       const c = connections.find((x) => x.name === name);

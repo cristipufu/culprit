@@ -21,7 +21,7 @@ fn signal(snapshot: &Snapshot, key: &str) -> Option<f64> {
 }
 
 fn uptime_phrase(snapshot: &Snapshot) -> String {
-    let engine = snapshot.server.engine.label();
+    let engine = snapshot.server.name();
     match pressure(snapshot).and_then(|p| p.uptime_hours) {
         Some(h) if h >= 47.0 => format!("since {engine} started {} days ago", (h / 24.0).round()),
         Some(h) if h >= 1.5 => format!("since {engine} started {} hours ago", h.round()),
@@ -332,7 +332,7 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             f.title = if used >= 85.0 {
                 format!("Connections are at {:.0}% of max_connections", used)
             } else {
-                format!("{} hit its connection limit {}", snapshot.server.engine.label(), uptime_phrase(snapshot))
+                format!("{} hit its connection limit {}", snapshot.server.name(), uptime_phrase(snapshot))
             };
             f.summary = format!(
                 "When every connection slot is taken, new connections are refused and the application errors out. {} \
@@ -747,7 +747,13 @@ mod tests {
 
     fn with_signals(engine: Engine, signals: Vec<Signal>) -> Snapshot {
         let mut s = snapshot_with(engine);
-        s.pressure = Some(Pressure { uptime_hours: Some(72.0), signals, grants: vec![], oldest_transaction: None });
+        s.pressure = Some(Pressure {
+            uptime_hours: Some(72.0),
+            signals,
+            grants: vec![],
+            oldest_transaction: None,
+            ..Pressure::default()
+        });
         s
     }
 

@@ -33,6 +33,9 @@ export function WindowPicker({ coveredHours }: { coveredHours: number | null }) 
   useHotkeys({ w: cycle, Escape: () => setOpen(false) });
 
   const short = coveredHours != null && coveredHours < days * 24 * 0.9;
+  const held = coveredHours != null ? windowLabel(coveredHours).replace("last ", "") : "";
+  // A window longer than the history shows nothing a shorter one doesn't, once the shortest such window covers it all.
+  const same = (d: WindowDays) => coveredHours != null && WINDOW_OPTIONS.some((o) => o < d && coveredHours < o * 24 * 0.9);
 
   return (
     <div className="menu-anchor" ref={anchor}>
@@ -41,12 +44,19 @@ export function WindowPicker({ coveredHours }: { coveredHours: number | null }) 
         {LABEL[days]}
         <ChevronDown size={13} className="muted" />
       </button>
-      {short && <span className="picker-note">Query Store holds {windowLabel(coveredHours!).replace("last ", "")}</span>}
+      {short && (
+        <span className="picker-note" title={`Query Store has kept history for ${held}; a longer window shows the same data until it has more.`}>
+          all {held} Query Store has
+        </span>
+      )}
       {open && (
         <div className="menu" role="listbox" aria-label="Workload window">
           {WINDOW_OPTIONS.map((d) => (
-            <button key={d} role="option" aria-selected={d === days} className={`menu-item ${d === days ? "on" : ""}`} onClick={() => choose(d)}>
-              <span>{LABEL[d]}</span>
+            <button key={d} role="option" aria-selected={d === days} className={`menu-item ${d === days ? "on" : ""} ${same(d) ? "same" : ""}`} onClick={() => choose(d)}>
+              <span>
+                {LABEL[d]}
+                {same(d) && <span className="menu-sub">same data: {held} kept</span>}
+              </span>
               <span className="menu-key">{d === days ? <Check size={13} /> : SHORT[d]}</span>
             </button>
           ))}

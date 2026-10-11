@@ -385,11 +385,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                         qualified(engine, &i.schema, &i.table)
                     ),
                     Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
-                    Engine::Mysql => format!(
-                        "ALTER TABLE {} ALTER INDEX {} INVISIBLE;",
-                        qualified(engine, &i.schema, &i.table),
-                        quote(engine, &i.name)
-                    ),
+                    Engine::Mysql => crate::index_health::hide_index_sql(&snapshot.server, i),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -397,6 +393,8 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 summary: match engine {
                     Engine::Mssql => "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints.".into(),
                     Engine::Postgres => "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it.".into(),
+                    Engine::Mysql if snapshot.server.name() == "MariaDB" && crate::index_health::mariadb_can_ignore(&snapshot.server) => "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
+                    Engine::Mysql if snapshot.server.name() == "MariaDB" => "Save its definition, then drop it: this MariaDB version can't hide an index (ignored indexes arrived in 10.6).".into(),
                     Engine::Mysql => "Make it invisible first: the optimizer stops using it but it stays maintained, and `ALTER INDEX … VISIBLE` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
                 },
                 sql: Some(sql),
@@ -652,7 +650,8 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             let (Some(object), Some(predicate)) = (&node.object, &node.predicate) else { continue };
             let Some((schema, table)) = split_object(object) else { continue };
             let rows = node.table_rows.or_else(|| snapshot.table(&schema, &table).and_then(|t| t.rows)).unwrap_or(0.0);
-            if rows < 10_000.0 || node.est_rows_total() * 10.0 > rows * node.est_executions.max(1.0) {
+            let estimate_keeps_few = node.est_rows_total() * 10.0 <= rows * node.est_executions.max(1.0);
+            if rows < 10_000.0 || !(estimate_keeps_few || measured_keeps_few(snapshot, q, rows)) {
                 continue;
             }
             let cols = predicate_columns(predicate);
@@ -682,6 +681,18 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
         }
     }
     groups
+}
+
+/// MySQL and MariaDB count rows examined and rows returned per statement. A statement that examines most of the
+/// table on every run and returns under a tenth of it filters after reading, whatever the optimizer estimated (MariaDB
+/// assumes a condition keeps every row when the column has no statistics).
+fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows: f64) -> bool {
+    if snapshot.server.engine != Engine::Mysql || q.executions <= 0.0 {
+        return false;
+    }
+    let examined = q.logical_reads.map(|r| r / q.executions).unwrap_or(0.0);
+    let returned = q.rows.map(|r| r / q.executions);
+    examined >= table_rows * 0.5 && returned.is_some_and(|r| r * 10.0 <= table_rows)
 }
 
 fn split_object(object: &str) -> Option<(String, String)> {

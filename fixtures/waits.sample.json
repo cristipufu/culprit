@@ -1,5 +1,5 @@
 {
- "note": "Browser-demo data for the Waits panel. Reports and pressure come from scans of the three demo databases, samples from 30-second runs under a small read load; the staging connection's resource samples are synthetic, to show the tier-limit chart.",
+ "note": "Browser-demo data for the Waits panel. Reports and pressure come from scans of the demo databases, samples from 30-second runs under a small read load; the staging connection's resource samples are synthetic, to show the tier-limit chart.",
  "reports": {
   "mssql-demo": {
    "categories": [
@@ -293,6 +293,69 @@
    "scope": "since-startup",
    "source": "performance_schema totals since MySQL started 80 minutes ago",
    "total_ms": 161651.860757563
+  },
+  "mariadb-demo": {
+   "categories": [
+    {
+     "attribution": "MariaDB doesn't attribute this wait to statements; it is a server-wide total.",
+     "detail": null,
+     "key": "rows",
+     "label": "Row access",
+     "meaning": "Time inside InnoDB fetching and changing rows. MySQL's table I/O instrument counts rows served from memory too, so this is storage-engine work, not only disk.",
+     "queries": [],
+     "share": 0.9946136342566969,
+     "top_wait": "wait/io/table/sql/handler",
+     "wait_ms": 461172.709408455
+    },
+    {
+     "attribution": "MariaDB doesn't attribute this wait to statements; it is a server-wide total.",
+     "detail": null,
+     "key": "io",
+     "label": "Disk reads",
+     "meaning": "Waiting for data to come from disk because it wasn't in memory. Usually scans of large tables, or memory too small for the data the workload keeps touching.",
+     "queries": [],
+     "share": 0.005346067210619796,
+     "top_wait": "wait/io/file/innodb/innodb_data_file",
+     "wait_ms": 2478.81208872
+    },
+    {
+     "attribution": null,
+     "detail": "A read from orders accounts for 95% of it. Live shows who blocks whom right now.",
+     "key": "lock",
+     "label": "Locks",
+     "meaning": "Waiting for another transaction to release a row or table lock. Long transactions, and missing indexes on the columns updates filter by, make it worse.",
+     "queries": [
+      {
+       "executions": 20.0,
+       "id": "375c64398248650e",
+       "rows_per_run": 20.0,
+       "share_of_category": 0.9514944756647208,
+       "share_of_query": 0.9999880831459015,
+       "text": "SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMI…",
+       "wait_ms": 49963.346
+      },
+      {
+       "executions": 60.0,
+       "id": "258e3c9b580f1ecc",
+       "rows_per_run": 5.0,
+       "share_of_category": 0.04287688588867841,
+       "share_of_query": 0.9988538589378342,
+       "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?",
+       "wait_ms": 2251.482
+      }
+     ],
+     "share": 4.0298532683243014e-05,
+     "top_wait": "wait/lock/table/sql/handler",
+     "wait_ms": 18.68522898
+    }
+   ],
+   "engine": "mysql",
+   "notes": [
+    "MariaDB counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total."
+   ],
+   "scope": "since-startup",
+   "source": "performance_schema totals since MariaDB started 69 minutes ago",
+   "total_ms": 463670.206726155
   }
  },
  "pressure": {
@@ -784,6 +847,94 @@
     }
    ],
    "uptime_hours": 1.3297222222222222
+  },
+  "mariadb-demo": {
+   "grants": [],
+   "oldest_transaction": null,
+   "signals": [
+    {
+     "healthy": "above 99% is healthy for most workloads",
+     "key": "buffer-pool-hit",
+     "label": "Reads served from memory",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "percent",
+     "value": 99.95581781413362
+    },
+    {
+     "healthy": "under 10% of temporary tables is healthy",
+     "key": "tmp-disk-tables",
+     "label": "Temporary tables on disk",
+     "scope": "since-startup",
+     "status": "watch",
+     "unit": "percent",
+     "value": 17.161769454310623
+    },
+    {
+     "healthy": null,
+     "key": "questions",
+     "label": "Statements",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-second",
+     "value": 58.19716618635927
+    },
+    {
+     "healthy": null,
+     "key": "threads-running",
+     "label": "Statements running now",
+     "scope": "now",
+     "status": "info",
+     "unit": "count",
+     "value": 0.0
+    },
+    {
+     "healthy": null,
+     "key": "row-lock-waits",
+     "label": "Row-lock waits",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-hour",
+     "value": 17.291066282420747
+    },
+    {
+     "healthy": "under 50 ms is healthy",
+     "key": "row-lock-avg",
+     "label": "Average row-lock wait",
+     "scope": "since-startup",
+     "status": "bad",
+     "unit": "milliseconds",
+     "value": 7601.0
+    },
+    {
+     "healthy": "under 80% of max_connections is healthy",
+     "key": "connections",
+     "label": "Connections in use",
+     "scope": "now",
+     "status": "good",
+     "unit": "percent",
+     "value": 2.6490066225165565
+    },
+    {
+     "healthy": "under 90% of max_connections is healthy",
+     "key": "max-used-connections",
+     "label": "Busiest moment",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "percent",
+     "value": 3.9735099337748343
+    },
+    {
+     "healthy": "under 100K old row versions is healthy",
+     "key": "history-length",
+     "label": "Undo history",
+     "scope": "now",
+     "status": "good",
+     "unit": "count",
+     "value": 0.0
+    }
+   ],
+   "uptime_hours": 1.1566666666666667
   }
  },
  "samples": {
@@ -942,6 +1093,55 @@
    ],
    "taken_at": "2026-10-11T14:05:00Z",
    "total_ms": 13685.673877348016
+  },
+  "mariadb-demo": {
+   "active_sessions": 1.0,
+   "categories": [
+    {
+     "category": "Table IO",
+     "tasks": 15772169.0,
+     "wait_ms": 31506.93083917501,
+     "wait_type": "wait/io/table/sql/handler"
+    },
+    {
+     "category": "IO",
+     "tasks": 15488.0,
+     "wait_ms": 53.203919010000035,
+     "wait_type": "wait/io/file/aria/MAD"
+    },
+    {
+     "category": "Lock",
+     "tasks": 13779.0,
+     "wait_ms": 1.0430405699999987,
+     "wait_type": "wait/lock/table/sql/handler"
+    }
+   ],
+   "engine": "mysql",
+   "method": "Difference of two readings of performance_schema.events_waits_summary_global_by_event_name 30 s apart",
+   "notes": [],
+   "seconds": 30.10058975,
+   "signals": [
+    {
+     "healthy": null,
+     "key": "questions",
+     "label": "Statements",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-second",
+     "value": 404.61001266594786
+    },
+    {
+     "healthy": null,
+     "key": "row-lock-waits",
+     "label": "Row-lock waits",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-hour",
+     "value": 0.0
+    }
+   ],
+   "taken_at": "2026-10-11T16:07:35Z",
+   "total_ms": 31561.17779875501
   }
  },
  "resources": {

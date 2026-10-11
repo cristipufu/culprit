@@ -14,6 +14,38 @@
   },
   "connection": "mssql-demo",
   "engine": "mssql",
+  "events": [
+   {
+    "action": null,
+    "after": null,
+    "at": "2026-10-11T13:57:00Z",
+    "by": "ci",
+    "detail": null,
+    "id": "mark:m3:2026-10-11T13:57:00Z",
+    "kind": "mark",
+    "minor": false,
+    "object": null,
+    "source": "mark",
+    "table": null,
+    "title": "deploy v2.3.0",
+    "until": null
+   },
+   {
+    "action": null,
+    "after": null,
+    "at": "2026-10-11T13:59:00Z",
+    "by": null,
+    "detail": null,
+    "id": "statistics:culprit_lab.events:2026-10-11T13:59:00Z",
+    "kind": "statistics",
+    "minor": true,
+    "object": null,
+    "source": "database",
+    "table": "culprit_lab.events",
+    "title": "Statistics on culprit_lab.events were updated",
+    "until": null
+   }
+  ],
   "min_executions": 10.0,
   "notes": [
    "Query Store has data for 75% of the baseline period; queries missing from it may not have been recorded."
@@ -27,7 +59,19 @@
      "min_ms": 0.014,
      "total_ms": 9.505
     },
-    "headline": "Got 293\u00d7 slower (0.02 ms \u2192 7.0 ms per run) on Sun 14:00 UTC, when SQL Server switched from plan 163 to plan 198 (events: Key Lookup (primary key) \u2192 Clustered Index Scan (primary key)).",
+    "context": [
+     {
+      "event": "statistics:culprit_lab.events:2026-10-11T13:59:00Z",
+      "strong": true,
+      "why": "statistics on culprit_lab.events feed this query's plan, which changed"
+     },
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "marked on the timeline"
+     }
+    ],
+    "headline": "Got 293\u00d7 slower (0.02 ms \u2192 7.0 ms per run) on Sun 14:00 UTC, when SQL Server switched from plan 163 to plan 198 (events: Key Lookup (primary key) \u2192 Clustered Index Scan (primary key)). Around then: Statistics on culprit_lab.events were updated at Sun 13:59 UTC (statistics on culprit_lab.events feed this query's plan, which changed).",
     "impact_ms": 2572.7321125,
     "object_name": null,
     "plan_switch": {
@@ -55,7 +99,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 600 runs averaging 19 ms, 10% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 600 runs averaging 19 ms, 10% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 11262.406,
     "object_name": null,
     "plan_switch": null,
@@ -76,7 +127,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 300 runs averaging 11 ms, 3% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 300 runs averaging 11 ms, 3% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 3266.931,
     "object_name": null,
     "plan_switch": null,
@@ -97,7 +155,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 2.0K runs averaging 1.4 ms, 3% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 2.0K runs averaging 1.4 ms, 3% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 2861.132,
     "object_name": null,
     "plan_switch": null,
@@ -118,7 +183,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 150 runs averaging 15 ms, 2% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 150 runs averaging 15 ms, 2% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 2263.114,
     "object_name": null,
     "plan_switch": null,
@@ -139,7 +211,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 255 runs averaging 6.2 ms, 1% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 255 runs averaging 6.2 ms, 1% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 1592.676,
     "object_name": null,
     "plan_switch": null,
@@ -160,7 +239,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 30K runs averaging 0.01 ms, <1% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 30K runs averaging 0.01 ms, <1% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 414.516,
     "object_name": null,
     "plan_switch": null,
@@ -181,7 +267,14 @@
    },
    {
     "baseline": null,
-    "headline": "Started running: 2.0K runs averaging 0.04 ms, <1% of recent database time.",
+    "context": [
+     {
+      "event": "mark:m3:2026-10-11T13:57:00Z",
+      "strong": true,
+      "why": "queries that start or stop usually ship with a deploy"
+     }
+    ],
+    "headline": "Started running: 2.0K runs averaging 0.04 ms, <1% of recent database time. Around then: deploy v2.3.0 at Sun 13:57 UTC (queries that start or stop usually ship with a deploy).",
     "impact_ms": 80.409,
     "object_name": null,
     "plan_switch": null,
@@ -208,6 +301,7 @@
      "min_ms": 0.473,
      "total_ms": 43270.322
     },
+    "context": [],
     "headline": "Too few runs to compare: 2 before and 1 after (Culprit needs 10 in each).",
     "impact_ms": 43351.597,
     "object_name": null,
@@ -235,6 +329,7 @@
      "min_ms": 0.239,
      "total_ms": 0.239
     },
+    "context": [],
     "headline": "Too few runs to compare: 1 before and 1 after (Culprit needs 10 in each).",
     "impact_ms": 43348.858,
     "object_name": null,
@@ -262,6 +357,7 @@
      "min_ms": 0.202,
      "total_ms": 2404.146
     },
+    "context": [],
     "headline": "Too few runs to compare: 2 before and 1 after (Culprit needs 10 in each).",
     "impact_ms": 0.193,
     "object_name": null,
@@ -294,7 +390,124 @@
    "total_ms": 111201.495
   },
   "source": "query-store",
-  "summary": "Database time rose 1.9\u00d7 for the time covered: 1 min over 20 min before, 2 min over 15 min since. 1 query got slower and 7 queries are new.",
+  "summary": "Database time rose 1.9\u00d7 for the time covered: 1 min over 20 min before, 2 min over 15 min since. 1 query got slower and 7 queries are new. Around then: a mark (\"deploy v2.3.0\") and a statistics update.",
+  "threshold": 1.5,
+  "unchanged": 0
+ },
+ "mysql-demo": {
+  "baseline": {
+   "end": "2026-10-11T13:58:45Z",
+   "start": "2026-10-11T13:58:43Z"
+  },
+  "baseline_coverage": 1.0,
+  "baseline_total": {
+   "executions": 400.0,
+   "max_ms": null,
+   "mean_ms": 0.40314898500000707,
+   "min_ms": null,
+   "total_ms": 161.25959400000283
+  },
+  "connection": "mysql-demo",
+  "engine": "mysql",
+  "events": [
+   {
+    "action": "dropped",
+    "after": null,
+    "at": "2026-10-11T13:58:46Z",
+    "by": null,
+    "detail": "(grp)",
+    "id": "index:shop.culprit_lab_items.ix_grp:2026-10-11T13:58:46Z",
+    "kind": "index",
+    "minor": false,
+    "object": "ix_grp",
+    "source": "database",
+    "table": "shop.culprit_lab_items",
+    "title": "Index ix_grp was dropped from shop.culprit_lab_items",
+    "until": null
+   }
+  ],
+  "min_executions": 10.0,
+  "notes": [
+   "Periods follow Culprit's scans: 3 scans between Sun 13:58 UTC and Sun 13:58 UTC."
+  ],
+  "queries": [
+   {
+    "baseline": {
+     "executions": 400.0,
+     "max_ms": null,
+     "mean_ms": 0.40314898499999996,
+     "min_ms": null,
+     "total_ms": 161.259594
+    },
+    "context": [
+     {
+      "event": "index:shop.culprit_lab_items.ix_grp:2026-10-11T13:58:46Z",
+      "strong": true,
+      "why": "this query uses shop.culprit_lab_items"
+     }
+    ],
+    "headline": "Got 17\u00d7 slower (0.40 ms \u2192 6.9 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items). Around then: Index ix_grp was dropped from shop.culprit_lab_items at Sun 13:58 UTC (this query uses shop.culprit_lab_items).",
+    "impact_ms": 972.9237272500002,
+    "object_name": null,
+    "plan_switch": {
+     "at": "2026-10-11T13:58:48Z",
+     "from": "a525b0",
+     "from_label": "Index lookup on culprit_lab_items",
+     "to": "772a34",
+     "to_label": "Table scan on culprit_lab_items",
+     "what": "Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items"
+    },
+    "query_id": "93a584c5a6ac9536",
+    "ratio": 17.08873747174799,
+    "reason": null,
+    "recent": {
+     "executions": 150.0,
+     "max_ms": null,
+     "mean_ms": 6.889307166666668,
+     "min_ms": null,
+     "total_ms": 1033.396075
+    },
+    "recent_share": 0.9861288267808871,
+    "same_plan": false,
+    "status": "regressed",
+    "text": "SELECT COUNT ( * ) , MAX ( `note` ) FROM `culprit_lab_items` WHERE `grp` = ?"
+   },
+   {
+    "baseline": null,
+    "context": [],
+    "headline": "Ran once recently, but can't be compared: Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then).",
+    "impact_ms": 14.536048,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "ad78bacd6db2b9c3",
+    "ratio": null,
+    "reason": "Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then)",
+    "recent": {
+     "executions": 1.0,
+     "max_ms": null,
+     "mean_ms": 14.536048,
+     "min_ms": null,
+     "total_ms": 14.536048
+    },
+    "recent_share": 0.013871173219107356,
+    "same_plan": false,
+    "status": "not-comparable",
+    "text": "ALTER TABLE `culprit_lab_items` DROP INDEX `ix_grp`"
+   }
+  ],
+  "recent": {
+   "end": "2026-10-11T13:58:48Z",
+   "start": "2026-10-11T13:58:45Z"
+  },
+  "recent_total": {
+   "executions": 151.0,
+   "max_ms": null,
+   "mean_ms": 6.939947834437126,
+   "min_ms": null,
+   "total_ms": 1047.932123000006
+  },
+  "source": "scans",
+  "summary": "Database time rose 4.3\u00d7 for the time covered: 161 ms over 2.0 s before, 1.0 s over 3.0 s since. 1 query got slower. Around then: an index change.",
   "threshold": 1.5,
   "unchanged": 0
  },
@@ -313,6 +526,23 @@
   },
   "connection": "pg-demo",
   "engine": "postgres",
+  "events": [
+   {
+    "action": "dropped",
+    "after": "2026-10-11T13:58:40Z",
+    "at": "2026-10-11T13:58:43Z",
+    "by": null,
+    "detail": "CREATE INDEX ix_items_grp ON culprit_lab.items USING btree (grp)",
+    "id": "index:culprit_lab.items.ix_items_grp:2026-10-11T13:58:43Z",
+    "kind": "index",
+    "minor": false,
+    "object": "ix_items_grp",
+    "source": "scans",
+    "table": "culprit_lab.items",
+    "title": "Index ix_items_grp was dropped from culprit_lab.items",
+    "until": null
+   }
+  ],
   "min_executions": 10.0,
   "notes": [
    "Periods follow Culprit's scans: 3 scans between Sun 13:58 UTC and Sun 13:58 UTC."
@@ -326,7 +556,14 @@
      "min_ms": null,
      "total_ms": 1.5667009999999983
     },
-    "headline": "Got 791\u00d7 slower (0.01 ms \u2192 4.1 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index Scan on items \u2192 Seq Scan on items).",
+    "context": [
+     {
+      "event": "index:culprit_lab.items.ix_items_grp:2026-10-11T13:58:43Z",
+      "strong": true,
+      "why": "this query uses culprit_lab.items"
+     }
+    ],
+    "headline": "Got 791\u00d7 slower (0.01 ms \u2192 4.1 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index Scan on items \u2192 Seq Scan on items). Around then: Index ix_items_grp was dropped from culprit_lab.items between the Sun 13:58 UTC and 13:58 UTC scans (this query uses culprit_lab.items).",
     "impact_ms": 495.17235560000006,
     "object_name": null,
     "plan_switch": {
@@ -365,99 +602,7 @@
    "total_ms": 496.75419200002216
   },
   "source": "scans",
-  "summary": "Database time rose 211\u00d7 for the time covered: 2 ms over 2.0 s before, 497 ms over 3.0 s since. 1 query got slower.",
-  "threshold": 1.5,
-  "unchanged": 0
- },
- "mysql-demo": {
-  "baseline": {
-   "end": "2026-10-11T13:58:45Z",
-   "start": "2026-10-11T13:58:43Z"
-  },
-  "baseline_coverage": 1.0,
-  "baseline_total": {
-   "executions": 400.0,
-   "max_ms": null,
-   "mean_ms": 0.40314898500000707,
-   "min_ms": null,
-   "total_ms": 161.25959400000283
-  },
-  "connection": "mysql-demo",
-  "engine": "mysql",
-  "min_executions": 10.0,
-  "notes": [
-   "Periods follow Culprit's scans: 3 scans between Sun 13:58 UTC and Sun 13:58 UTC."
-  ],
-  "queries": [
-   {
-    "baseline": {
-     "executions": 400.0,
-     "max_ms": null,
-     "mean_ms": 0.40314898499999996,
-     "min_ms": null,
-     "total_ms": 161.259594
-    },
-    "headline": "Got 17\u00d7 slower (0.40 ms \u2192 6.9 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items).",
-    "impact_ms": 972.9237272500002,
-    "object_name": null,
-    "plan_switch": {
-     "at": "2026-10-11T13:58:48Z",
-     "from": "a525b0",
-     "from_label": "Index lookup on culprit_lab_items",
-     "to": "772a34",
-     "to_label": "Table scan on culprit_lab_items",
-     "what": "Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items"
-    },
-    "query_id": "93a584c5a6ac9536",
-    "ratio": 17.08873747174799,
-    "reason": null,
-    "recent": {
-     "executions": 150.0,
-     "max_ms": null,
-     "mean_ms": 6.889307166666668,
-     "min_ms": null,
-     "total_ms": 1033.396075
-    },
-    "recent_share": 0.9861288267808871,
-    "same_plan": false,
-    "status": "regressed",
-    "text": "SELECT COUNT ( * ) , MAX ( `note` ) FROM `culprit_lab_items` WHERE `grp` = ?"
-   },
-   {
-    "baseline": null,
-    "headline": "Ran once recently, but can't be compared: Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then).",
-    "impact_ms": 14.536048,
-    "object_name": null,
-    "plan_switch": null,
-    "query_id": "ad78bacd6db2b9c3",
-    "ratio": null,
-    "reason": "Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then)",
-    "recent": {
-     "executions": 1.0,
-     "max_ms": null,
-     "mean_ms": 14.536048,
-     "min_ms": null,
-     "total_ms": 14.536048
-    },
-    "recent_share": 0.013871173219107356,
-    "same_plan": false,
-    "status": "not-comparable",
-    "text": "ALTER TABLE `culprit_lab_items` DROP INDEX `ix_grp`"
-   }
-  ],
-  "recent": {
-   "end": "2026-10-11T13:58:48Z",
-   "start": "2026-10-11T13:58:45Z"
-  },
-  "recent_total": {
-   "executions": 151.0,
-   "max_ms": null,
-   "mean_ms": 6.939947834437126,
-   "min_ms": null,
-   "total_ms": 1047.932123000006
-  },
-  "source": "scans",
-  "summary": "Database time rose 4.3\u00d7 for the time covered: 161 ms over 2.0 s before, 1.0 s over 3.0 s since. 1 query got slower.",
+  "summary": "Database time rose 211\u00d7 for the time covered: 2 ms over 2.0 s before, 497 ms over 3.0 s since. 1 query got slower. Around then: an index change.",
   "threshold": 1.5,
   "unchanged": 0
  }

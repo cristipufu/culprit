@@ -26,6 +26,11 @@ impl Rec {
         self.value(name).map(value_text)
     }
 
+    /// The first column, whatever the server named it (`ANALYZE`, `EXPLAIN`).
+    pub fn first_text(&self) -> Option<String> {
+        self.values.first().filter(|v| !matches!(v, Value::NULL)).map(value_text)
+    }
+
     pub fn string(&self, name: &str) -> String {
         self.text(name).unwrap_or_default()
     }

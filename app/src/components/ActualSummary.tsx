@@ -2,7 +2,7 @@ import { Clock, Cpu, Database, Gauge, HardDrive, Scale, TriangleAlert, Users } f
 import type { ReactNode } from "react";
 import type { Plan } from "../gen/Plan";
 import { actualFacts } from "../lib/actual";
-import { count, duration, percent } from "../lib/format";
+import { count, duration, percent, when } from "../lib/format";
 
 function kb(value: number): string {
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} GB`;
@@ -112,7 +112,11 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
           {f.rows != null && <Stat icon={null} value={count(f.rows)} label={f.rows === 1 ? "row" : "rows"} />}
           {f.workers != null && f.workers > 1 && <Stat icon={<Users size={12} />} value={String(f.workers)} label="workers" />}
         </span>
-        {f.lastRunAt && <span className="as-when">{new Date(f.lastRunAt.endsWith("Z") ? f.lastRunAt : `${f.lastRunAt}Z`).toLocaleString()}</span>}
+        {f.lastRunAt && (
+          <span className="as-when" title={when(f.lastRunAt.endsWith("Z") ? f.lastRunAt : `${f.lastRunAt}Z`).full}>
+            {when(f.lastRunAt.endsWith("Z") ? f.lastRunAt : `${f.lastRunAt}Z`).short}
+          </span>
+        )}
       </div>
       {memory && (
         <div className="as-memory" title="Memory SQL Server reserved for sorts and hashes, and how much the run actually used">

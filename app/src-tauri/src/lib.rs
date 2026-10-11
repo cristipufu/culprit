@@ -269,6 +269,12 @@ fn index_advice(ws: Ws, name: String) -> Result<culprit_core::IndexAdvice> {
     ws.index_advice(&name)
 }
 
+/// The dashboard from the connection's latest report for the window; the app reads sessions itself, every few seconds.
+#[tauri::command]
+async fn dashboard(ws: Ws<'_>, name: String, window_days: Option<u32>) -> Result<culprit_core::Dashboard> {
+    ws.dashboard(&name, window_days, false).await
+}
+
 #[tauri::command]
 async fn live(ws: Ws<'_>, name: String) -> Result<LiveState> {
     ws.live(&name).await
@@ -299,6 +305,29 @@ async fn changes(
     request: culprit_engine::changes::ChangeRequest,
 ) -> Result<culprit_core::Changes> {
     ws.changes(&name, &request).await
+}
+
+/// What changed around a connection over a period: marks, schema, settings, restarts and cloud throttling.
+#[tauri::command]
+async fn events(ws: Ws<'_>, name: String, request: culprit_engine::EventsRequest) -> Result<culprit_engine::EventLog> {
+    ws.events(&name, &request).await
+}
+
+/// What the cloud measured for a connection's server and when it held the server back (through `aws` / `az`).
+#[tauri::command]
+async fn cloud(ws: Ws<'_>, name: String, request: culprit_engine::EventsRequest) -> Result<culprit_core::CloudSignals> {
+    ws.cloud(&name, &request).await
+}
+
+/// Put a moment (a deploy, a migration) on a connection's timeline.
+#[tauri::command]
+fn mark(ws: Ws<'_>, name: String, text: String, at: Option<String>) -> Result<culprit_engine::Mark> {
+    ws.mark(&name, &text, at.as_deref(), "app")
+}
+
+#[tauri::command]
+fn unmark(ws: Ws<'_>, name: String, id: String) -> Result<culprit_engine::Mark> {
+    ws.unmark(&name, &id)
 }
 
 /// Recent deadlocks on a connection, explained (pattern, statements, fixes).
@@ -441,7 +470,12 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             query_progress,
             drift,
             changes,
+            events,
+            cloud,
+            mark,
+            unmark,
             index_advice,
+            dashboard,
             parse_plan,
             diff_plans,
             export_plan,

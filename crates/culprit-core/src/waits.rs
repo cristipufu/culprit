@@ -198,6 +198,12 @@ pub struct Pressure {
     pub signals: Vec<Signal>,
     pub grants: Vec<GrantStat>,
     pub oldest_transaction: Option<OpenTransaction>,
+    /// Read and write latency per database file (or kind of I/O), since startup.
+    #[serde(default)]
+    pub files: Vec<crate::signals::FileIo>,
+    /// Replicas and replication slots, and how far behind they are.
+    #[serde(default)]
+    pub replicas: Vec<crate::signals::Replica>,
 }
 
 impl Pressure {

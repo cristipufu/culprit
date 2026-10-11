@@ -32,7 +32,7 @@ function when(iso: string | null): { short: string; full: string } {
   const d = new Date(iso);
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const short = sameDay ? `Today ${time}` : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
   return { short, full: d.toLocaleString() };
 }
@@ -295,7 +295,7 @@ function DropZone({ onText }: { onText: (text: string) => Promise<void> }) {
       <ClipboardPaste size={16} />
       <div>
         <strong>Have a deadlock from somewhere else?</strong>
-        <p className="muted">Paste a SQL Server deadlock graph (.xdl), the LATEST DETECTED DEADLOCK section from MySQL, or Postgres log lines from “deadlock detected”. Culprit names the pattern and the fix.</p>
+        <p className="muted">Paste a SQL Server deadlock graph (.xdl), the LATEST DETECTED DEADLOCK section from MySQL or MariaDB, or Postgres log lines from “deadlock detected”. Culprit names the pattern and the fix.</p>
         <textarea
           aria-label="Paste a deadlock"
           placeholder="Paste here, or press ⌘V anywhere on this page"

@@ -255,7 +255,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     if exact { "it has the same keys as" } else { "its keys are the start of" },
                     b.name
                 ),
-                sql: Some(hide_index_sql(engine, a)),
+                sql: Some(hide_index_sql(&s.server, a)),
                 caveats: Vec::new(),
                 finding_id: link(format!("duplicate-index:{table_name}.{}", a.name)),
             });
@@ -307,7 +307,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 a.key_names()[0],
                 b.name
             ),
-            sql: Some(hide_index_sql(engine, a)),
+            sql: Some(hide_index_sql(&s.server, a)),
             caveats: vec![format!("Check the plans of the queries that read {} before hiding it.", a.name)],
             finding_id: link(format!("overlapping-index:{table_name}.{}", a.name)),
         });
@@ -342,7 +342,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     .unwrap_or_default(),
                 table_name
             ),
-            sql: Some(hide_index_sql(engine, i)),
+            sql: Some(hide_index_sql(&s.server, i)),
             caveats: fk
                 .map(|fk| {
                     vec![format!("It supports the foreign key {}; deletes on the parent scan without it.", fk.name)]
@@ -453,11 +453,16 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
              tables, foreign keys, and the table scan counters."
                 .to_string(),
         ),
-        Engine::Mysql => notes.push(
-            "MySQL doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows \
-             read without an index (performance_schema)."
-                .to_string(),
-        ),
+        Engine::Mysql if !s.server.has(Capability::PerformanceSchema) => notes.push(format!(
+            "{} doesn't record missing-index requests. Candidates come from the plans of logged statements and foreign \
+             keys; performance_schema would add rows read without an index.",
+            s.server.name()
+        )),
+        Engine::Mysql => notes.push(format!(
+            "{} doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows \
+             read without an index (performance_schema).",
+            s.server.name()
+        )),
         _ => {}
     }
     if !s.server.has(Capability::IndexUsage) {

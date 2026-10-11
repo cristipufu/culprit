@@ -164,6 +164,15 @@ async fn read_tools_answer_from_the_saved_report() {
     assert!(!err);
     assert_eq!(body["blocked"], 0);
 
+    let (err, body) = call(&s, "dashboard", json!({ "connection": "replay-demo" })).await;
+    assert!(!err, "{body}");
+    let tiles = body["tiles"].as_array().unwrap();
+    assert_eq!(tiles.len(), 10, "every tile, on every engine");
+    assert!(tiles.iter().all(|t| !t["takeaway"].as_str().unwrap().is_empty() && t["next"].is_string()));
+    let now = tiles.iter().find(|t| t["key"] == "now").unwrap();
+    assert_eq!(now["takeaway"], "Nothing is running right now.", "sessions were read once");
+    assert_eq!(body["headline"], tiles.iter().find(|t| t["key"] == body["attention"][0]).unwrap()["takeaway"]);
+
     let (err, body) = call(&s, "finding", json!({ "connection": "replay-demo", "id": "nope" })).await;
     assert!(err);
     assert_eq!(body["error"]["code"], "not_found");

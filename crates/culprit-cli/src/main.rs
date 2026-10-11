@@ -1,8 +1,10 @@
 mod agents;
+mod dashboard_cmd;
 mod locks;
 mod output;
 mod plan_cmd;
 mod share_cmd;
+mod timeline_cmd;
 mod waits_cmd;
 
 use std::io::{IsTerminal, Read};
@@ -51,6 +53,9 @@ struct ChangesArgs {
     /// How much slower or faster counts as a change (default 1.5).
     #[arg(long)]
     threshold: Option<f64>,
+    /// Skip cloud metrics (CloudWatch, Azure Monitor) when looking for what changed around the periods.
+    #[arg(long)]
+    no_cloud: bool,
 }
 
 impl ChangesArgs {
@@ -60,13 +65,14 @@ impl ChangesArgs {
             recent_hours: self.recent,
             min_executions: self.min_runs,
             threshold: self.threshold,
+            cloud: self.no_cloud.then_some(false),
             ..Default::default()
         }
     }
 }
 
 /// `6h`, `90m`, `2d`, or a bare number of hours.
-fn parse_hours(text: &str) -> Result<f64, String> {
+pub(crate) fn parse_hours(text: &str) -> Result<f64, String> {
     let text = text.trim();
     let wrong = || format!("'{text}' isn't a duration like 6h, 90m or 2d");
     let (number, unit) = match text.chars().last() {
@@ -91,6 +97,11 @@ enum Command {
     /// Microsoft Entra ID sign-ins made with a device code (used when the Azure CLI is missing or signed out).
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// One database at a glance: database time and its trend, findings, top queries, waits, health, sessions right
+    /// now, deadlocks, indexes, plans and query statistics, each as one plain sentence with the numbers behind it and
+    /// the command to run next. Reads the latest scan, and sessions once unless --no-live. Takes a connection or a
+    /// saved report file.
+    Dashboard(dashboard_cmd::DashboardArgs),
     /// Show the server, what this login can see, and which checks are locked and why.
     Doctor { connection: String },
     /// Take a snapshot, run every check, save the report and print the findings.
@@ -142,6 +153,15 @@ enum Command {
     /// What changed between two periods: queries that got slower, new ones, ones that got faster or stopped, and the
     /// plan changes behind them. Query Store answers from its intervals; Postgres and MySQL from Culprit's earlier scans.
     Changes(ChangesArgs),
+    /// Put a moment on a connection's timeline: `culprit mark shop deploy v1.4.2` (from CI, after a migration). Charts
+    /// and `changes` line regressions up with it. --list shows them, --remove <id> takes one off.
+    Mark(timeline_cmd::MarkArgs),
+    /// What changed around a connection: marks, tables, columns, indexes, procedures, settings, upgrades, restarts and,
+    /// for Amazon RDS and Azure databases, throttling. Exact where the database dates it, otherwise between two scans.
+    Events(timeline_cmd::PeriodArgs),
+    /// What the cloud measured for the server (CloudWatch through `aws`, Azure Monitor through `az`; read-only, with
+    /// your own sign-in): CPU, credits, IOPS against limits, latency, and when it held the server back.
+    Cloud(timeline_cmd::PeriodArgs),
     /// The index advisor: indexes to add (ordered by the database time of the queries that need them), indexes to
     /// clean up, and tables whose shape costs reads or writes. Takes a connection or a saved report file.
     Indexes { connection: String },
@@ -496,6 +516,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             });
             Ok(0)
         }
+        Command::Dashboard(args) => dashboard_cmd::run(&ws, args, out).await,
         Command::Doctor { connection } => {
             let info = ws.connection(&connection)?;
             let server = ws.probe(&connection).await?;
@@ -645,6 +666,9 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.changes(&ws.changes(&args.connection, &args.request()).await?);
             Ok(0)
         }
+        Command::Mark(args) => timeline_cmd::mark(&ws, args, out),
+        Command::Events(args) => timeline_cmd::events(&ws, args, out).await,
+        Command::Cloud(args) => timeline_cmd::cloud(&ws, args, out).await,
         Command::Indexes { connection } => {
             let advice = match report_file(&connection) {
                 Some(path) => ws.index_advice_for(reports::load(&path)?),

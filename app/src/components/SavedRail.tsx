@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage } from "../lib/api";
+import { serverName } from "../lib/engines";
 import { loadSaved, toast, useStore } from "../lib/store";
 import { EngineBadge } from "./EngineBadge";
 
@@ -29,13 +30,18 @@ export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted
   const connections = useStore((s) => s.connections);
   const engineOf = (name: string | null) => connections.find((c) => c.name === name)?.engine;
   const [filter, setFilter] = useState("");
+  const [scope, setScope] = useState<"here" | "all">("all");
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   const list = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return (saved ?? []).filter((s) => !q || s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q) || (s.connection ?? "").toLowerCase().includes(q));
-  }, [saved, filter]);
+    return (saved ?? [])
+      .filter((s) => scope === "all" || s.connection === current.name || engineOf(s.connection) === current.engine)
+      .filter((s) => !q || s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q) || (s.connection ?? "").toLowerCase().includes(q));
+    // engineOf reads the store's connections, which change with them.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved, filter, scope, current.name, current.engine, connections]);
 
   const rename = async () => {
     if (!renaming) return;
@@ -68,9 +74,18 @@ export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted
     <aside className="saved-rail">
       <div className="saved-head">
         <span className="saved-title">
-          <Bookmark size={12} /> Saved queries
+          <Bookmark size={12} /> Saved
         </span>
-        {saved && saved.length > 0 && <span className="muted">{saved.length}</span>}
+        {saved && saved.length > 0 && (
+          <span className="seg saved-scope" role="radiogroup" aria-label="Which saved queries to show">
+            <button role="radio" aria-checked={scope === "here"} className={scope === "here" ? "on" : ""} onClick={() => setScope("here")} title={`Saved for ${current.name} or another ${current.engine} connection`}>
+              {serverName(current.engine, current.last_report?.product)}
+            </button>
+            <button role="radio" aria-checked={scope === "all"} className={scope === "all" ? "on" : ""} onClick={() => setScope("all")}>
+              All {saved.length}
+            </button>
+          </span>
+        )}
       </div>
       {saved && saved.length > 4 && (
         <label className="search saved-search">

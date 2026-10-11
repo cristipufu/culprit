@@ -1,4 +1,4 @@
-import { Activity, ChevronsUpDown, Gauge, GitCompareArrows, ListOrdered, Monitor, Moon, RefreshCw, Search, SquareTerminal, Sun, Table2 } from "lucide-react";
+import { Activity, ChevronsUpDown, CircleDot, Gauge, GitCompareArrows, ListOrdered, Monitor, Moon, Plus, RefreshCw, Search, SquareTerminal, Sun, Table2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ago } from "../lib/format";
 import { EngineBadge } from "./EngineBadge";
@@ -12,16 +12,21 @@ function ConnectionList() {
   if (connections.length === 0) return null;
   return (
     <div className="side-connections">
-      <div className="sidebar-section">Connections</div>
+      <div className="sidebar-section side-section-row">
+        Connections
+        <button className="side-add" onClick={() => setState({ view: "connections" })} aria-label="Add or manage connections" title="Add or manage connections">
+          <Plus size={13} />
+        </button>
+      </div>
       {groupByEnvironment(connections).flatMap((g) =>
         g.items.map((c) => (
           <button
             key={c.name}
             className={`nav-item conn-item ${c.name === active ? "active" : ""}`}
             title={`${c.display} · ${c.environment}`}
-            onClick={() => (c.name === active ? setState({ view: "overview" }) : openConnection(c.name))}
+            onClick={() => (c.name === active ? setState({ view: "dashboard" }) : openConnection(c.name))}
           >
-            <EngineBadge engine={c.engine} environment={c.environment} />
+            <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} />
             <span className="conn-name">{c.name}</span>
             {c.last_report && <span className="count">{c.last_report.opportunities}</span>}
           </button>
@@ -32,12 +37,13 @@ function ConnectionList() {
 }
 
 const NAV: { view: View; label: string; key: string; icon: ReactNode }[] = [
-  { view: "overview", label: "Overview", key: "1", icon: <Gauge size={15} /> },
-  { view: "queries", label: "Queries", key: "2", icon: <ListOrdered size={15} /> },
-  { view: "live", label: "Live", key: "3", icon: <Activity size={15} /> },
-  { view: "schema", label: "Schema", key: "4", icon: <Table2 size={15} /> },
-  { view: "editor", label: "Editor", key: "5", icon: <SquareTerminal size={15} /> },
-  { view: "plans", label: "Plans", key: "6", icon: <GitCompareArrows size={15} /> },
+  { view: "dashboard", label: "Dashboard", key: "1", icon: <Gauge size={15} /> },
+  { view: "overview", label: "Findings", key: "2", icon: <CircleDot size={15} /> },
+  { view: "queries", label: "Queries", key: "3", icon: <ListOrdered size={15} /> },
+  { view: "live", label: "Live", key: "4", icon: <Activity size={15} /> },
+  { view: "schema", label: "Schema", key: "5", icon: <Table2 size={15} /> },
+  { view: "editor", label: "Editor", key: "6", icon: <SquareTerminal size={15} /> },
+  { view: "plans", label: "Plans", key: "7", icon: <GitCompareArrows size={15} /> },
 ];
 
 export function Sidebar() {
@@ -52,7 +58,11 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-drag" data-tauri-drag-region />
       <button className="conn-switch" onClick={() => setState({ view: "connections" })}>
-        {connection ? <EngineBadge engine={connection.engine} environment={connection.environment} size="md" /> : <span className="env-dot" />}
+        {connection ? (
+          <EngineBadge engine={connection.engine} environment={connection.environment} product={report?.snapshot.server.product ?? connection.last_report?.product} size="md" />
+        ) : (
+          <span className="env-dot" />
+        )}
         <span style={{ minWidth: 0 }}>
           <div className="name">{active ?? "No connection"}</div>
           <div className="sub">

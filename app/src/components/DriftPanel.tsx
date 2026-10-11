@@ -9,6 +9,7 @@ import { api, copyText, errorMessage, type ApiError } from "../lib/api";
 import { ago } from "../lib/format";
 import { setState, toast, useStore } from "../lib/store";
 import { Sql } from "./Sql";
+import { serverName } from "../lib/engines";
 
 type DriftState = { status: "idle" } | { status: "loading" } | { status: "ready"; drift: Drift } | { status: "error"; error: ApiError };
 
@@ -82,7 +83,7 @@ export function DriftPanel({ report, onClose }: { report: Report; onClose: () =>
         {others.length === 0 && (
           <div className="empty" style={{ padding: 40 }}>
             <h3>Nothing to compare with yet</h3>
-            <p>Add another {report.snapshot.server.engine === "mssql" ? "SQL Server" : report.snapshot.server.engine === "postgres" ? "Postgres" : "MySQL"} connection, such as staging or production, and scan it. Culprit then shows the indexes, columns and settings that differ.</p>
+            <p>Add another {serverName(report.snapshot.server.engine, report.snapshot.server.product)} connection, such as staging or production, and scan it. Culprit then shows the indexes, columns and settings that differ.</p>
           </div>
         )}
         {state.status === "loading" && (

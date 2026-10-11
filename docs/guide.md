@@ -53,6 +53,9 @@ culprit conn import --dry-run                  # or bring in connections from Az
 
 culprit scan shop-staging                      # findings, ranked
 culprit dashboard shop-staging                 # the database at a glance: what needs a look first
+culprit changes shop-staging --recent 2h      # what got slower, and what changed around it
+culprit mark shop-staging deploy v1.4.2         # put a deploy on the timeline (from CI, after a migration)
+culprit cloud shop-staging                     # RDS / Azure metrics against their limits, via your aws or az sign-in
 culprit show shop-staging '<finding id>'       # evidence, fix, verification, and a brief for your coding agent
 culprit top shop-staging --by cpu -n 10        # heaviest queries
 culprit explain shop-staging --sql 'SELECT …'  # estimated plan, never executes
@@ -84,7 +87,7 @@ Findings whose queries stopped running well before the end of the data window (r
 
 Culprit is built to be driven by coding agents. Every command prints JSON when stdout isn't a terminal, finding ids are stable, and connections are referenced by name, so agents never handle credentials.
 
-**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `explain`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `index_advice`, `verify`, `export_finding`, `run_query`.
+**MCP server.** `culprit mcp` serves Culprit over the Model Context Protocol on stdio (no network port, no token). Tools: `list_connections`, `scan`, `dashboard`, `findings`, `finding`, `top_queries`, `query`, `query_plan`, `plan_insights`, `last_actual_plan`, `query_progress`, `what_changed`, `events`, `cloud_metrics`, `mark`, `explain`, `live`, `blocking`, `deadlocks`, `waits`, `schema`, `index_advice`, `verify`, `export_finding`, `run_query`. All are read-only except `mark`, which adds a note to the connection's local timeline.
 
 ```sh
 claude mcp add culprit -- culprit mcp                 # Claude Code

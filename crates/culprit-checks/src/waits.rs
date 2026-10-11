@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use culprit_core::waits::{category_info, category_key};
-use culprit_core::{Engine, QueryStat, Snapshot, WaitCategory, WaitQuery, WaitScope, WaitsReport, format};
+use culprit_core::{Capability, Engine, QueryStat, Snapshot, WaitCategory, WaitQuery, WaitScope, WaitsReport, format};
 
 use crate::support::app_queries;
 
@@ -56,7 +56,7 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
             fill_queries(&mut category, contributors);
             category.detail = detail(snapshot, &category, contributors);
             if category.queries.is_empty() {
-                category.attribution = Some(no_attribution(engine, key));
+                category.attribution = Some(no_attribution(engine, snapshot.server.name(), key));
             }
             category
         })
@@ -71,8 +71,11 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
                 notes.push("Turn on track_io_timing (ALTER SYSTEM SET track_io_timing = on; SELECT pg_reload_conf();) so time spent reading from disk is measured per statement.".into());
             }
         }
+        Engine::Mysql if !snapshot.server.has(Capability::PerformanceSchema) => {
+            notes.push(format!("performance_schema is off, so {} times no waits; the slow query log keeps each statement's lock time. Right now samples what sessions are doing.", snapshot.server.name()));
+        }
         Engine::Mysql => {
-            notes.push("MySQL counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total.".into());
+            notes.push(format!("{} counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total.", snapshot.server.name()));
         }
         Engine::Mssql => {
             if scope == WaitScope::SinceStartup {
@@ -104,12 +107,18 @@ fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
                 format!("Statement timing from pg_stat_statements, the {window} since statistics were reset")
             },
         ),
-        Engine::Mysql => (
-            WaitScope::SinceStartup,
-            uptime
-                .map(|u| format!("performance_schema totals since MySQL started {u} ago"))
-                .unwrap_or_else(|| "performance_schema totals since MySQL started".into()),
-        ),
+        Engine::Mysql if !snapshot.server.has(Capability::PerformanceSchema) => {
+            (WaitScope::Statements, format!("Lock time per statement from the slow query log, the last {window}"))
+        }
+        Engine::Mysql => {
+            let name = snapshot.server.name();
+            (
+                WaitScope::SinceStartup,
+                uptime
+                    .map(|u| format!("performance_schema totals since {name} started {u} ago"))
+                    .unwrap_or_else(|| format!("performance_schema totals since {name} started")),
+            )
+        }
     }
 }
 
@@ -226,7 +235,7 @@ fn pending_grants(snapshot: &Snapshot) -> Option<String> {
     (pending > 0.0).then(|| format!("{} queries were waiting for memory when the scan ran.", format::count(pending)))
 }
 
-fn no_attribution(engine: Engine, key: &str) -> String {
+fn no_attribution(engine: Engine, name: &str, key: &str) -> String {
     match engine {
         Engine::Mssql => "Query Store didn't record this wait for individual queries in the window.".into(),
         Engine::Postgres => match key {
@@ -235,7 +244,7 @@ fn no_attribution(engine: Engine, key: &str) -> String {
         },
         Engine::Mysql => match key {
             "lock" | "cpu" => "No statement recorded this in performance_schema.".into(),
-            _ => "MySQL doesn't attribute this wait to statements; it is a server-wide total.".into(),
+            _ => format!("{name} doesn't attribute this wait to statements; it is a server-wide total."),
         },
     }
 }

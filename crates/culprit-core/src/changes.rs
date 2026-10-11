@@ -172,6 +172,10 @@ pub struct QueryChange {
     pub headline: String,
     /// Why it couldn't be compared, when it couldn't.
     pub reason: Option<String>,
+    /// Changes around then that may explain it (a dropped index on a table it reads, a deploy, throttling), likeliest
+    /// first; ids point into `Changes::events`.
+    #[serde(default)]
+    pub context: Vec<crate::events::EventLink>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -195,6 +199,9 @@ pub struct Changes {
     /// Queries that ran about the same in both periods (the heaviest few are listed in `queries`).
     pub unchanged: usize,
     pub notes: Vec<String>,
+    /// What changed around the two periods (marks, schema, settings, restarts, throttling), oldest first.
+    #[serde(default)]
+    pub events: Vec<crate::events::ChangeEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,6 +254,10 @@ pub fn compare(connection: &str, engine: Engine, data: PeriodData, options: &Com
                 "Culprit's scans cover {} of the baseline period; it follows the scans it has.",
                 crate::format::percent(data.baseline_coverage)
             ),
+            TimelineSource::SlowLog => format!(
+                "The slow query log covers {} of the baseline period; statements missing from it may not have been logged.",
+                crate::format::percent(data.baseline_coverage)
+            ),
         });
     }
     let summary = summarize(&judged, &data.baseline, &data.recent, &data.baseline_total, &data.recent_total);
@@ -265,6 +276,7 @@ pub fn compare(connection: &str, engine: Engine, data: PeriodData, options: &Com
         queries: judged,
         unchanged,
         notes,
+        events: Vec::new(),
     }
 }
 
@@ -316,6 +328,7 @@ fn judge(
         ChangeStatus::NotComparable => Some(q.untracked.clone().unwrap_or_else(|| match source {
             TimelineSource::QueryStore => "Query Store has no data for the baseline period".to_string(),
             TimelineSource::Scans => "Culprit has no scan covering the baseline period".to_string(),
+            TimelineSource::SlowLog => "The slow query log has no runs of it in the baseline period".to_string(),
         })),
         _ => None,
     };
@@ -333,6 +346,7 @@ fn judge(
         same_plan,
         headline: String::new(),
         reason,
+        context: Vec::new(),
     };
     change.headline = headline(&change, engine, source, min);
     Some(change)
@@ -541,6 +555,14 @@ pub fn short_time(iso: &str) -> String {
     chrono::DateTime::parse_from_rfc3339(iso)
         .map(|t| t.with_timezone(&chrono::Utc).format("%a %H:%M UTC").to_string())
         .unwrap_or_else(|_| iso.to_string())
+}
+
+/// `2026-10-11 14:05:00` (UTC) for an ISO 8601 time, to embed in SQL. `None` for anything else, so only a time Culprit
+/// formatted itself reaches a statement.
+pub fn sql_timestamp(iso: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 pub fn epoch(text: &str) -> Option<f64> {

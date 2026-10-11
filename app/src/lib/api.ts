@@ -1,15 +1,19 @@
 import type { Catalog } from "../gen/Catalog";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { Changes } from "../gen/Changes";
+import type { CloudSignals } from "../gen/CloudSignals";
 import type { CheckInfo } from "../gen/CheckInfo";
 import type { AgentAccess } from "../gen/AgentAccess";
 import type { ApprovalRequest } from "../gen/ApprovalRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Deadlock } from "../gen/Deadlock";
+import type { Dashboard } from "../gen/Dashboard";
 import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
 import type { IndexAdvice } from "../gen/IndexAdvice";
+import type { EventLog } from "../gen/EventLog";
+import type { EventsRequest } from "../gen/EventsRequest";
 import type { ExplainMode } from "../gen/ExplainMode";
 import type { ExportFile } from "../gen/ExportFile";
 import type { ExportFormat } from "../gen/ExportFormat";
@@ -17,6 +21,7 @@ import type { ExportOptions } from "../gen/ExportOptions";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { ImportSource } from "../gen/ImportSource";
 import type { LiveState } from "../gen/LiveState";
+import type { Mark } from "../gen/Mark";
 import type { NewConnection } from "../gen/NewConnection";
 import type { ParsedConnection } from "../gen/ParsedConnection";
 import type { Plan } from "../gen/Plan";
@@ -66,6 +71,8 @@ export interface Api {
   queryProgress(name: string, session: string, withPlan: boolean): Promise<QueryProgress>;
   /** What differs between the latest scans of two connections of the same engine. */
   drift(a: string, b: string): Promise<Drift>;
+  /** The dashboard for the latest report with this window (no live read; the app polls sessions itself). */
+  dashboard(name: string, windowDays: number | null): Promise<Dashboard>;
   /** The index advisor's plan from the latest report: indexes to add, to clean up, and tables to look at. */
   indexAdvice(name: string): Promise<IndexAdvice>;
   parsePlan(text: string): Promise<Plan>;
@@ -89,6 +96,13 @@ export interface Api {
   run(name: string, sql: string, limit: number, confirmed: boolean): Promise<ResultSet>;
   /** What changed between two periods: Query Store intervals, or Culprit's own scans. */
   changes(name: string, request: ChangeRequest): Promise<Changes>;
+  /** What changed around a connection: marks, schema, settings, restarts and cloud throttling. */
+  events(name: string, request: EventsRequest): Promise<EventLog>;
+  /** What the cloud measured for the server (CloudWatch, Azure Monitor); `unsupported` for other hosts. */
+  cloud(name: string, request: EventsRequest): Promise<CloudSignals>;
+  /** Put a moment (a deploy, a migration) on the connection's timeline. */
+  mark(name: string, text: string, at: string | null): Promise<Mark>;
+  unmark(name: string, id: string): Promise<Mark>;
   /** Recent deadlocks on a connection, explained. */
   deadlocks(name: string, sinceHours: number): Promise<DeadlockReport>;
   /** Deadlocks in pasted text: SQL Server .xdl XML, InnoDB status, Postgres log lines. */
@@ -150,6 +164,7 @@ async function desktopApi(): Promise<Api> {
     queryProgress: (name, session, withPlan) => invoke("query_progress", { name, session, withPlan }),
     drift: (a, b) => invoke("drift", { a, b }),
     indexAdvice: (name) => invoke("index_advice", { name }),
+    dashboard: (name, windowDays) => invoke("dashboard", { name, windowDays }),
     parsePlan: (text) => invoke("parse_plan", { text }),
     diffPlans: (a, b, nameA, nameB, connection) =>
       invoke("diff_plans", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB, connection: connection ?? null }),
@@ -166,6 +181,10 @@ async function desktopApi(): Promise<Api> {
     interruptSession: (name, session, action) => invoke("interrupt_session", { name, session, action }),
     run: (name, sql, limit, confirmed) => invoke("run_sql", { name, sql, limit, confirmed }),
     changes: (name, request) => invoke("changes", { name, request }),
+    events: (name, request) => invoke("events", { name, request }),
+    cloud: (name, request) => invoke("cloud", { name, request }),
+    mark: (name, text, at) => invoke("mark", { name, text, at }),
+    unmark: (name, id) => invoke("unmark", { name, id }),
     deadlocks: (name, sinceHours) => invoke("deadlocks", { name, sinceHours }),
     parseDeadlock: (text) => invoke("parse_deadlock", { text }),
     checkStatement: (engine, sql) => invoke("check_statement", { engine, sql }),

@@ -399,6 +399,7 @@ fn to_query_stat(
         waits,
         trend: None,
         spread: q.min_ms().map(|min_ms| culprit_core::Spread { min_ms: Some(min_ms), ..Default::default() }),
+        costs: None,
     }
 }
 

@@ -5,6 +5,7 @@ import type { TableStat } from "../gen/TableStat";
 import { bytes, count } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { fuzzy, tableFindings, tableKey } from "../lib/schema-model";
+import { getState, setState } from "../lib/store";
 import { DriftPanel } from "../components/DriftPanel";
 import { SchemaTable } from "./SchemaTable";
 
@@ -67,7 +68,11 @@ export function Schema({ report }: { report: Report }) {
   const [sort, setSort] = useState<SortKey>(() => remembered(SORT_KEY, (v) => (SORTS.some((s) => s.key === v) ? (v as SortKey) : null), "size"));
   const [selected, setSelected] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
-  const [advising, setAdvising] = useState(false);
+  // The dashboard's Indexes tile opens straight on the advisor.
+  const [advising, setAdvising] = useState(() => getState().advisor);
+  useEffect(() => {
+    if (getState().advisor) setState({ advisor: false });
+  }, []);
   const toAdd = report.findings.filter((f) => ADD_CHECKS.includes(f.check)).length;
   const toClean = report.findings.filter((f) => CLEANUP_CHECKS.includes(f.check)).length;
   const [width, setWidth] = useState(() => remembered(WIDTH_KEY, (v) => Math.min(MAX_W, Math.max(MIN_W, Number(v) || DEFAULT_W)), DEFAULT_W));

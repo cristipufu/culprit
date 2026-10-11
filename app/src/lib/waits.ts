@@ -95,7 +95,8 @@ export function signalValue(s: Signal): string {
     case "percent":
       return `${s.value >= 10 || s.value === 0 ? Math.round(s.value) : s.value.toFixed(1)}%`;
     case "per-second":
-      return `${count(s.value)}/s`;
+      // Under one every ten seconds, a per-minute rate says more than "0.0/s".
+      return s.value > 0 && s.value < 0.1 ? `${count(s.value * 60)}/min` : `${count(s.value)}/s`;
     case "per-hour":
       return `${count(s.value)}/h`;
     case "count":

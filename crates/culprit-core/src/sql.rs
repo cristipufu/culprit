@@ -382,9 +382,151 @@ pub fn check(text: &str, engine: Engine) -> StatementCheck {
     StatementCheck { reads_only: reads, verb, warning, problem: None }
 }
 
+/// Words that end a table reference or can't be one.
+const NOT_NAMES: &[&str] = &[
+    "as",
+    "cross",
+    "except",
+    "fetch",
+    "for",
+    "full",
+    "group",
+    "having",
+    "inner",
+    "intersect",
+    "join",
+    "lateral",
+    "left",
+    "limit",
+    "natural",
+    "offset",
+    "on",
+    "only",
+    "option",
+    "order",
+    "outer",
+    "partition",
+    "returning",
+    "right",
+    "select",
+    "set",
+    "straight_join",
+    "tablesample",
+    "union",
+    "using",
+    "values",
+    "when",
+    "where",
+    "window",
+    "with",
+];
+
+/// Tables a statement reads or writes, as written (`schema.table` or `table`), lower-cased and unquoted. Best effort, for
+/// tying changes (a dropped index, fresh statistics) to the queries they touch; never used to decide what is safe.
+pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
+    let Some(tokens) = modes(engine).iter().find_map(|m| lex(text, engine, *m).ok()) else {
+        return Vec::new();
+    };
+    let word = |i: usize| match tokens.get(i) {
+        Some(Token::Word(w)) => Some((*w, false)),
+        Some(Token::Quoted(w, _)) => Some((*w, true)),
+        _ => None,
+    };
+    let keyword = |i: usize, list: &[&str]| matches!(tokens.get(i), Some(Token::Word(w)) if list.iter().any(|k| w.eq_ignore_ascii_case(k)));
+    // A dotted name starting at `i`: its last two parts, and where it ends.
+    let name_at = |mut i: usize| -> Option<(String, usize)> {
+        let mut parts = Vec::new();
+        loop {
+            let (w, quoted) = word(i)?;
+            if !quoted && (w.starts_with('@') || NOT_NAMES.iter().any(|k| w.eq_ignore_ascii_case(k))) {
+                return None;
+            }
+            parts.push(w.to_ascii_lowercase());
+            i += 1;
+            if tokens.get(i) == Some(&Token::Punct('.')) && word(i + 1).is_some() {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        let keep = parts.len().saturating_sub(2);
+        Some((parts[keep..].join("."), i))
+    };
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let into = keyword(i, &["into", "update", "table", "insert", "delete", "merge"]);
+        if !into && !keyword(i, &["from", "join", "using"]) {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        // T-SQL's `INSERT t`, `DELETE t` and `MERGE t` may leave out INTO and FROM.
+        if keyword(i, &["into", "from"]) {
+            i += 1;
+        }
+        while keyword(i, &["only", "lateral"]) {
+            i += 1;
+        }
+        while let Some((name, next)) = name_at(i) {
+            // `FROM generate_series(…)` is a function; `INSERT INTO t (a, b)` lists columns.
+            if !into && tokens.get(next) == Some(&Token::Punct('(')) {
+                i = next;
+                break;
+            }
+            if !out.contains(&name) {
+                out.push(name);
+            }
+            i = next;
+            if keyword(i, &["as"]) {
+                i += 1;
+            }
+            if let Some((alias, quoted)) = word(i)
+                && (quoted || !NOT_NAMES.iter().any(|k| alias.eq_ignore_ascii_case(k)))
+            {
+                i += 1;
+            }
+            if tokens.get(i) == Some(&Token::Punct(',')) {
+                i += 1;
+                continue;
+            }
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tables_a_statement_touches() {
+        assert_eq!(
+            tables_in(
+                "SELECT * FROM public.orders o JOIN customers c ON c.id = o.customer_id WHERE o.status = $1",
+                Engine::Postgres
+            ),
+            vec!["public.orders", "customers"]
+        );
+        assert_eq!(
+            tables_in("select a from [dbo].[Order Lines] l, dbo.Items AS i with (nolock)", Engine::Mssql),
+            vec!["dbo.order lines", "dbo.items"]
+        );
+        assert_eq!(
+            tables_in("INSERT INTO shop.events (a, b) SELECT a, b FROM `staging`.`events`", Engine::Mysql),
+            vec!["shop.events", "staging.events"]
+        );
+        assert_eq!(
+            tables_in("SELECT * FROM generate_series(1, 3) g JOIN LATERAL (SELECT 1) x ON true", Engine::Postgres),
+            Vec::<String>::new()
+        );
+        assert_eq!(tables_in("UPDATE ONLY accounts SET n = n + 1 WHERE id = $1", Engine::Postgres), vec!["accounts"]);
+        assert_eq!(tables_in("SELECT 1 FROM db.dbo.t", Engine::Mssql), vec!["dbo.t"]);
+        assert_eq!(tables_in("INSERT dbo.hot (v) VALUES (@i)", Engine::Mssql), vec!["dbo.hot"]);
+        assert_eq!(tables_in("DELETE FROM jobs WHERE id = $1", Engine::Postgres), vec!["jobs"]);
+        assert!(tables_in("SELECT 'unterminated FROM x", Engine::Postgres).is_empty());
+    }
 
     const ALL: [Engine; 3] = [Engine::Mssql, Engine::Postgres, Engine::Mysql];
 

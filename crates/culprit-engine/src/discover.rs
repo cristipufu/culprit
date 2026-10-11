@@ -98,7 +98,7 @@ fn query(terms: &[String]) -> String {
 }
 
 /// Run a Resource Graph query through the Azure CLI's signed-in account.
-async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) -> Result<Vec<T>> {
+pub(crate) async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) -> Result<Vec<T>> {
     #[derive(Deserialize)]
     struct Response<T> {
         data: Vec<T>,
@@ -125,7 +125,7 @@ async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) -> Result<V
     Ok(response.data)
 }
 
-fn az() -> &'static str {
+pub(crate) fn az() -> &'static str {
     if cfg!(windows) { "az.cmd" } else { "az" }
 }
 

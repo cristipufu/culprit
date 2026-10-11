@@ -28,6 +28,16 @@ pub struct ConnectionArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct DashboardArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// Read the latest scan with this window (SQL Server Query Store days). Default: the latest scan of any window.
+    pub window_days: Option<u32>,
+    /// Read sessions once for the "right now" tile (default true). Reads statistics views only.
+    pub live: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct DeadlocksArgs {
     /// A connection name from list_connections.
     pub connection: String,
@@ -45,6 +55,28 @@ pub struct WhatChangedArgs {
     pub recent_hours: Option<f64>,
     /// Runs a query needs in each period before its averages are compared (default 10).
     pub min_runs: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EventsArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// From this moment (RFC 3339). Default: 7 days ago for events, 24 hours ago for cloud_metrics.
+    pub since: Option<String>,
+    /// Until this moment (RFC 3339). Default: now.
+    pub until: Option<String>,
+    /// The last N hours, instead of `since`.
+    pub hours: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct MarkArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// What happened, in a few words: "deploy v1.4.2", "migration 0042 applied", "raised work_mem to 64MB".
+    pub text: String,
+    /// When it happened (RFC 3339), if not now.
+    pub at: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -221,6 +253,19 @@ pub fn definitions() -> Vec<Tool> {
                  are missing or stale.{DATA_NOTE}"
             ),
         ),
+        tool::<DashboardArgs>(
+            "dashboard",
+            "Dashboard",
+            format!(
+                "One database at a glance, a good first call: database time and its trend, findings by severity, top \
+                 queries, where time goes, health signals, sessions right now, deadlocks in the last day, the index \
+                 advisor, plan problems and how well query statistics are recorded. Each tile has a status \
+                 (good, info, watch, bad, unavailable), one plain-language takeaway, the numbers and rows behind it \
+                 (with query and finding ids) and `next`, the tool to call for more. `attention` lists the tiles that \
+                 need a look, most urgent first. Unavailable tiles say why this engine or login can't show them.\
+                 {DATA_NOTE}"
+            ),
+        ),
         tool::<FindingsArgs>(
             "findings",
             "Findings",
@@ -249,8 +294,9 @@ pub fn definitions() -> Vec<Tool> {
             "query",
             "Query detail",
             format!(
-                "One query from the latest scan: full text, statistics, the plans the engine kept and the findings \
-                 that mention it.{DATA_NOTE}"
+                "One query from the latest scan: full text, statistics, `costs` (failed and cancelled runs, planning \
+                 and JIT time, log bytes, estimated row width, where the engine keeps them), the plans the engine kept \
+                 and the findings that mention it.{DATA_NOTE}"
             ),
         ),
         tool::<QueryPlanArgs>(
@@ -290,6 +336,41 @@ pub fn definitions() -> Vec<Tool> {
                  change) to compare what ran after it with the same length of time before.{DATA_NOTE}"
             ),
         ),
+        tool::<EventsArgs>(
+            "events",
+            "What changed around",
+            format!(
+                "What changed around a connection over a period, oldest first: marks (deploys, migrations), tables, \
+                 columns, indexes, procedures and views, settings, upgrades, restarts, optimizer statistics and, for \
+                 Amazon RDS and Azure databases, cloud throttling (CPU credits or IO burst run out, tier limits hit). \
+                 Times are exact where the database dates the change, otherwise `after`..`at` brackets it between two \
+                 of Culprit's scans. what_changed already ties these to the queries they may explain.{DATA_NOTE}"
+            ),
+        ),
+        tool::<EventsArgs>(
+            "cloud_metrics",
+            "Cloud limits",
+            format!(
+                "What the cloud measured for the connection's server, read-only through the person's own `aws` or `az` \
+                 sign-in: CPU, CPU credits, IOPS against the provisioned limit, storage burst balance, disk latency, \
+                 DB load (Amazon RDS, CloudWatch); CPU, data IO, log write and worker percentages of the tier's limit \
+                 (Azure SQL Database, Azure Database for PostgreSQL/MySQL, Azure Monitor). Returns each metric's \
+                 average, worst value and limit, and the episodes where the cloud held the server back. Use it when \
+                 queries got slower with the same plan.{DATA_NOTE}"
+            ),
+        ),
+        Tool::new(
+            "mark",
+            "Put a moment on a connection's timeline, e.g. right after you deploy, apply a migration or change a \
+             setting: \"deploy v1.4.2\". Charts and what_changed then line query regressions up with it, and a later \
+             what_changed with `since` set to the mark's time compares before and after. Writes only to Culprit's \
+             own timeline, never to the database.",
+            schema_for_type::<MarkArgs>(),
+        )
+        .with_title("Mark the timeline")
+        .with_annotations(
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(false).open_world(false),
+        ),
         tool::<SqlArgs>(
             "explain",
             "Explain",
@@ -327,7 +408,8 @@ pub fn definitions() -> Vec<Tool> {
             format!(
                 "Where database time goes: wait categories (CPU, disk reads, locks, sending results, memory…) each \
                  explained in plain words with the queries behind it, plus pressure signals (compiles, memory grants, \
-                 cache hits, connections, the oldest open transaction). With `now`, samples the server for a few \
+                 cache hits, connections opened per second, the oldest open transaction), storage latency per file and \
+                 replica lag. With `now`, samples the server for a few \
                  seconds instead. Reads statistics views only.{DATA_NOTE}"
             ),
         ),
@@ -412,6 +494,15 @@ impl CulpritMcp {
                 let report = self.ws.scan(&a.connection, &options).await?;
                 Ok(view::findings(&report, None, Severity::Low, 30))
             }
+            "dashboard" => {
+                let a: DashboardArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let mut dashboard = self.ws.dashboard(&a.connection, a.window_days, a.live.unwrap_or(true)).await?;
+                for tile in &mut dashboard.tiles {
+                    tile.next = Some(view::next_tool(tile.key).to_string());
+                }
+                serde_json::to_value(&dashboard).map_err(|e| Error::internal(e.to_string()))
+            }
             "findings" => {
                 let a: FindingsArgs = args(value)?;
                 self.allowed(&a.connection)?;
@@ -494,6 +585,34 @@ impl CulpritMcp {
                     ..Default::default()
                 };
                 Ok(view::changes(&self.ws.changes(&a.connection, &request).await?))
+            }
+            "events" => {
+                let a: EventsArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let request = culprit_engine::EventsRequest {
+                    start: a.since,
+                    end: a.until,
+                    hours: a.hours,
+                    ..Default::default()
+                };
+                Ok(view::events(&self.ws.events(&a.connection, &request).await?))
+            }
+            "cloud_metrics" => {
+                let a: EventsArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let request = culprit_engine::EventsRequest {
+                    hours: a.hours.or((a.since.is_none()).then_some(24.0)),
+                    start: a.since,
+                    end: a.until,
+                    ..Default::default()
+                };
+                Ok(view::cloud(&self.ws.cloud(&a.connection, &request).await?))
+            }
+            "mark" => {
+                let a: MarkArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let mark = self.ws.mark(&a.connection, &a.text, a.at.as_deref(), client)?;
+                Ok(json!({ "marked": mark, "compare_since": mark.at }))
             }
             "explain" => {
                 let a: SqlArgs = args(value)?;
@@ -585,6 +704,7 @@ impl CulpritMcp {
                     "agent_access": c.agent_access,
                     "latest_scan": c.last_report.map(|r| json!({
                         "taken_at": r.taken_at,
+                        "product": r.product,
                         "opportunities": r.opportunities,
                         "headline": r.headline,
                     })),
@@ -667,6 +787,7 @@ mod tests {
             [
                 "list_connections",
                 "scan",
+                "dashboard",
                 "findings",
                 "finding",
                 "top_queries",
@@ -675,6 +796,9 @@ mod tests {
                 "plan_insights",
                 "last_actual_plan",
                 "what_changed",
+                "events",
+                "cloud_metrics",
+                "mark",
                 "explain",
                 "live",
                 "blocking",
@@ -690,7 +814,10 @@ mod tests {
         );
         for t in &tools {
             assert_eq!(t.input_schema.get("type"), Some(&json!("object")), "{}", t.name);
-            assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(true), "{}", t.name);
+            // `mark` writes to Culprit's own timeline; nothing writes to a database.
+            let read_only = t.name != "mark";
+            assert_eq!(t.annotations.as_ref().and_then(|a| a.read_only_hint), Some(read_only), "{}", t.name);
+            assert_eq!(t.annotations.as_ref().and_then(|a| a.destructive_hint), Some(false), "{}", t.name);
         }
         let run = tools.iter().find(|t| t.name == "run_query").unwrap();
         assert!(run.description.as_deref().unwrap_or_default().contains("approves"));

@@ -10,7 +10,12 @@ use culprit_core::{
 use crate::support::{qualified, quote, supports_online_index};
 
 /// Values that are measurements rather than configuration; they always differ.
-const NOT_SETTINGS: &[&str] = &["datfrozenxid_age"];
+pub const NOT_SETTINGS: &[&str] = &[
+    "datfrozenxid_age",
+    "pg_stat_statements.dealloc",
+    "performance_schema_digest_lost",
+    "query_store_options.current_storage_size_mb",
+];
 
 pub fn drift(a: &Report, b: &Report) -> Drift {
     let (sa, sb) = (&a.snapshot, &b.snapshot);

@@ -68,6 +68,18 @@ impl Out {
         self.paint(RED, text)
     }
 
+    pub fn yellow(&self, text: &str) -> String {
+        self.paint(YELLOW, text)
+    }
+
+    pub fn green(&self, text: &str) -> String {
+        self.paint(GREEN, text)
+    }
+
+    pub fn blue(&self, text: &str) -> String {
+        self.paint(BLUE, text)
+    }
+
     fn json(&self, value: &Value) {
         let mut stdout = std::io::stdout().lock();
         let _ = serde_json::to_writer_pretty(&mut stdout, value);
@@ -944,6 +956,17 @@ impl Out {
         if !c.notes.is_empty() {
             println!();
         }
+        let shown: Vec<_> = c.events.iter().filter(|e| !e.minor).collect();
+        if !shown.is_empty() {
+            println!("{}", self.paint(BOLD, "Around then"));
+            for e in shown.iter().take(12) {
+                println!("  {}  {}", e.title, self.paint(DIM, &e.when()));
+            }
+            if shown.len() > 12 {
+                println!("  {}", self.paint(DIM, &format!("… {} more (--json lists all)", shown.len() - 12)));
+            }
+            println!();
+        }
         for (status, heading, style) in [
             (ChangeStatus::Regressed, "Got slower", RED),
             (ChangeStatus::New, "New", YELLOW),
@@ -1018,6 +1041,8 @@ fn query_json(report: &Report, q: &QueryStat) -> Value {
         "plans": q.plans.len(),
         // Fastest run and, where the engine keeps them, percentiles and a run-time histogram.
         "spread": q.spread,
+        // Failed and cancelled runs, planning and JIT time, log bytes, estimated row width: null where not kept.
+        "costs": q.costs,
         // Per plan, when there are several: how each one's run times spread and what values it was compiled for.
         "plan_spread": (q.plans.len() > 1).then(|| {
             q.plans

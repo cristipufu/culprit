@@ -214,15 +214,23 @@ fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
         f.confidence = Confidence::Medium;
         out.push(f);
     }
-    if value(snapshot, &["slow_query_log"]).is_some_and(|v| !is_on(v)) {
+    // With performance_schema off, its finding already leads with the slow query log.
+    let ps_off = value(snapshot, &["performance_schema"]).is_some_and(|v| !is_on(v));
+    if value(snapshot, &["slow_query_log"]).is_some_and(|v| !is_on(v)) && !ps_off {
+        let output = value(snapshot, &["log_output"]).unwrap_or("FILE").trim().to_ascii_uppercase();
+        let to_table = (!output.split(',').any(|o| o.trim() == "TABLE")).then(|| {
+            let output =
+                if output.is_empty() || output == "NONE" { "TABLE".to_string() } else { format!("{output},TABLE") };
+            format!(", GLOBAL log_output = '{output}'")
+        });
         let mut f = setting_finding(
             "slow_query_log",
             Severity::Low,
             "The slow query log is off".into(),
-            "Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests.".into(),
+            "Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.".into(),
             Fix {
                 summary: "Turn it on with a threshold that matches your latency budget.".into(),
-                sql: Some("SET GLOBAL slow_query_log = ON;\nSET GLOBAL long_query_time = 1;".into()),
+                sql: Some(format!("SET GLOBAL slow_query_log = ON, GLOBAL long_query_time = 1{};", to_table.unwrap_or_default())),
                 cost: None,
             },
         );

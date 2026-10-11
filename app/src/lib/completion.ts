@@ -3,14 +3,55 @@ import type { SQLConfig, SQLNamespace } from "@codemirror/lang-sql";
 import type { Catalog } from "../gen/Catalog";
 import type { Engine } from "../gen/Engine";
 import type { Report } from "../gen/Report";
+import { count } from "./format";
 
-/** Completion for the editor: schema → table → column, with column types and table sizes as detail. */
-export function completionConfig(engine: Engine, catalog: Catalog | null): Pick<SQLConfig, "schema" | "defaultSchema"> {
+/** What the latest report knows about a table: row count, keys, foreign keys, the columns indexes lead with. */
+function tableFacts(report: Report | null) {
+  const key = (schema: string, table: string) => `${schema}.${table}`.toLowerCase();
+  const rows = new Map<string, number>();
+  const pk = new Map<string, Set<string>>();
+  const fk = new Map<string, Map<string, string>>();
+  const indexed = new Map<string, Set<string>>();
+  if (!report) return { rows, pk, fk, indexed, key };
+  for (const t of report.snapshot.tables) if (t.rows != null) rows.set(key(t.schema, t.name), t.rows);
+  for (const i of report.snapshot.indexes ?? []) {
+    const k = key(i.schema, i.table);
+    const lead = i.columns[0]?.toLowerCase();
+    if (i.is_primary_key) {
+      const keys = pk.get(k) ?? pk.set(k, new Set()).get(k)!;
+      i.columns.forEach((c) => keys.add(c.toLowerCase()));
+    }
+    if (lead) (indexed.get(k) ?? indexed.set(k, new Set()).get(k)!).add(lead);
+  }
+  for (const f of report.snapshot.foreign_keys ?? []) {
+    const k = key(f.schema, f.table);
+    const map = fk.get(k) ?? fk.set(k, new Map()).get(k)!;
+    f.columns.forEach((c) => map.set(c.toLowerCase(), f.ref_table));
+  }
+  return { rows, pk, fk, indexed, key };
+}
+
+/** Completion for the editor: schema → table → column, with column types, keys and table sizes as detail. */
+export function completionConfig(engine: Engine, catalog: Catalog | null, report: Report | null = null): Pick<SQLConfig, "schema" | "defaultSchema"> {
   if (!catalog || catalog.tables.length === 0) return {};
+  const facts = tableFacts(report);
   const schemas: Record<string, Record<string, SQLNamespace>> = {};
   for (const table of catalog.tables) {
-    const columns: Completion[] = table.columns.map((c, i) => ({ label: c.name, type: "property", detail: c.data_type, boost: -i / 1000 }));
-    const self: Completion = { label: table.name, type: table.view ? "interface" : "class", detail: table.view ? "view" : `${table.columns.length} columns` };
+    const k = facts.key(table.schema, table.name);
+    const pk = facts.pk.get(k);
+    const fk = facts.fk.get(k);
+    const indexed = facts.indexed.get(k);
+    const columns: Completion[] = table.columns.map((c, i) => {
+      const name = c.name.toLowerCase();
+      const tags = [pk?.has(name) ? "PK" : null, fk?.has(name) ? `FK → ${fk.get(name)}` : null, !pk?.has(name) && indexed?.has(name) ? "indexed" : null].filter(Boolean);
+      return { label: c.name, type: "property", detail: [c.data_type, ...tags].join(" · "), boost: (pk?.has(name) ? 0.2 : 0) - i / 1000 };
+    });
+    const rows = facts.rows.get(k);
+    const self: Completion = {
+      label: table.name,
+      type: table.view ? "interface" : "class",
+      detail: table.view ? "view" : rows != null ? `${count(rows)} rows` : `${table.columns.length} columns`,
+    };
     (schemas[table.schema] ??= {})[table.name] = { self, children: columns };
   }
   const schema: Record<string, SQLNamespace> = {};

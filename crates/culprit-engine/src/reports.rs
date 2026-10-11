@@ -20,6 +20,9 @@ pub struct ReportSummary {
     pub headline: String,
     #[serde(default)]
     pub window_days: Option<u32>,
+    /// The server as the scan saw it ("MariaDB 11.8.9"), so a list of connections can tell MariaDB from MySQL.
+    #[serde(default)]
+    pub product: Option<String>,
 }
 
 fn summary_path(dir: &Path, window_days: Option<u32>) -> PathBuf {
@@ -36,6 +39,7 @@ fn summary_of(report: &Report) -> ReportSummary {
         opportunities: report.summary.opportunities,
         headline: report.summary.headline.clone(),
         window_days: report.snapshot.options.as_ref().map(|o| o.window_days),
+        product: Some(report.snapshot.server.product.clone()),
     }
 }
 
@@ -69,9 +73,29 @@ fn counters_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}{COUNTERS_SUFFIX}"))
 }
 
+/// `<snapshot id>.json`: ids are UTC timestamps, so anything else in the directory (latest pointers, sidecars, marks,
+/// the cloud cache) is not a report.
 fn is_report_file(path: &Path) -> bool {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    name.ends_with(".json") && !name.starts_with("latest") && !name.ends_with(COUNTERS_SUFFIX)
+    name.ends_with(".json")
+        && name.starts_with(|c: char| c.is_ascii_digit())
+        && !name.ends_with(COUNTERS_SUFFIX)
+        && !name.ends_with(crate::history::EVENTS_SUFFIX)
+}
+
+/// Snapshot ids of every saved report, oldest first.
+pub(crate) fn report_ids(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| is_report_file(p))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
+    ids.sort();
+    ids
 }
 
 /// Running totals of every saved scan in the last [`trends::HISTORY_DAYS`] days, oldest first. Writes the counters file
@@ -112,7 +136,7 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
     out
 }
 
-fn id_epoch(id: &str) -> Option<f64> {
+pub(crate) fn id_epoch(id: &str) -> Option<f64> {
     let t = chrono::NaiveDateTime::parse_from_str(id.get(..15)?, "%Y%m%dT%H%M%S").ok()?;
     Some(t.and_utc().timestamp() as f64)
 }

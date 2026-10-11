@@ -3,4 +3,4 @@
 /**
  * Where a timeline's buckets come from.
  */
-export type TimelineSource = "query-store" | "scans";
+export type TimelineSource = "query-store" | "scans" | "slow-log";

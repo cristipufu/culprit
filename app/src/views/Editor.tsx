@@ -1,12 +1,12 @@
 import type { CompletionSource } from "@codemirror/autocomplete";
-import { MSSQL, MySQL, PostgreSQL, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
+import { MariaSQL, MSSQL, MySQL, PostgreSQL, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { EditorView, basicSetup } from "codemirror";
 import { Bookmark, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCw, Save, ScanSearch, X, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ConfirmRun, type PendingRun } from "../components/ConfirmRun";
 import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } from "../components/PlanSurface";
 import { ResultGrid } from "../components/ResultGrid";
@@ -21,6 +21,7 @@ import { api, errorMessage, type ApiError } from "../lib/api";
 import { catalogFromReport, completionConfig } from "../lib/completion";
 import { duration } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
+import { isMariadb } from "../lib/engines";
 
 type Output =
   | { kind: "none" }
@@ -134,15 +135,16 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   const effectiveCatalog = catalog ?? fallbackCatalog;
 
   const languageExtension = useCallback((): Extension => {
-    const dialect = connection.engine === "mssql" ? MSSQL : connection.engine === "mysql" ? MySQL : PostgreSQL;
+    const mariadb = isMariadb(connection.engine, connection.last_report?.product);
+    const dialect = connection.engine === "mssql" ? MSSQL : mariadb ? MariaSQL : connection.engine === "mysql" ? MySQL : PostgreSQL;
     const keywords = keywordCompletionSource(dialect, true);
     // After `alias.` only that table's columns make sense; keywords there are noise.
     const keywordsOutsideMembers: CompletionSource = (context) => (/[\w"`\]]\.\w*$/.test(context.state.sliceDoc(Math.max(0, context.pos - 120), context.pos)) ? null : keywords(context));
     return new LanguageSupport(dialect.language, [
-      dialect.language.data.of({ autocomplete: schemaCompletionSource({ dialect, ...completionConfig(connection.engine, effectiveCatalog) }) }),
+      dialect.language.data.of({ autocomplete: schemaCompletionSource({ dialect, ...completionConfig(connection.engine, effectiveCatalog, report?.snapshot.connection === connection.name ? report : null) }) }),
       dialect.language.data.of({ autocomplete: keywordsOutsideMembers }),
     ]);
-  }, [connection.engine, effectiveCatalog]);
+  }, [connection.engine, connection.last_report?.product, effectiveCatalog, report, connection.name]);
 
   // ── tab bookkeeping ────────────────────────────────────────────────────────────────────────────
   const updateTabs = useCallback((next: (t: Tabs) => Tabs) => {
@@ -421,7 +423,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   return (
     <div className="view editor-view">
-      <div className="editor-tabs" role="tablist">
+      <div className={`editor-tabs ${production ? "is-production" : ""}`} role="tablist">
         <button className="icon-btn" title={rail === "open" ? "Hide saved queries" : "Show saved queries"} onClick={() => setRail((r) => { const next = r === "open" ? "closed" : "open"; remember(RAIL_KEY, next); return next; })}>
           {rail === "open" ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
         </button>
@@ -481,9 +483,15 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
               </form>
             )}
             <span className="spacer" />
-            <span className={`env-note ${production ? "production" : ""}`}>
-              {production ? "Production: reads run as is; anything that changes data asks first" : "Reads run read-only; changes commit"}
-            </span>
+            {production ? (
+              <span className="env-chip env-production" title="Reads run as they are; anything that changes data asks first, and statements that touch every row need the connection's name typed">
+                Production · changes ask first
+              </span>
+            ) : (
+              <span className="env-note" title="Statements Culprit can prove only read run in a read-only transaction; anything else commits">
+                Reads roll back · changes commit
+              </span>
+            )}
             <button className="icon-btn" title={catalogBusy ? "Loading table and column names…" : `Reload table and column names${effectiveCatalog ? ` (${effectiveCatalog.tables.length} tables)` : ""}`} onClick={refreshCatalog} disabled={catalogBusy}>
               <RefreshCw size={13} className={catalogBusy ? "spin" : ""} />
             </button>
@@ -498,6 +506,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
             <div className="editor-splitter" onPointerDown={drag} role="separator" aria-orientation="horizontal" />
             <div className="editor-output">
               <OutputPane
+                empty={<EmptyOutput saved={(saved ?? []).filter((q) => q.connection === connection.name).slice(0, 4)} onOpen={(q) => openQuery(q, false)} />}
                 output={output}
                 look={look}
                 onLook={(next) => {
@@ -528,10 +537,42 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   );
 }
 
-function OutputPane({ output, look, onLook }: { output: Output; look: PlanLook; onLook: (look: PlanLook) => void }) {
+/** Before anything ran: the shortcuts, and this connection's saved queries one click away. */
+function EmptyOutput({ saved, onOpen }: { saved: SavedQuery[]; onOpen: (q: SavedQuery) => void }) {
+  const keys: [string, string][] = [
+    ["⌘↵", "Run the selection, or the whole tab"],
+    ["⌘E", "Plan without running"],
+    ["⌘⇧E", "Run and measure each step"],
+    ["⌘S", "Save as a named query"],
+  ];
+  return (
+    <div className="editor-empty">
+      <ul className="editor-keys">
+        {keys.map(([key, label]) => (
+          <li key={key}>
+            <span className="kbd">{key}</span> {label}
+          </li>
+        ))}
+      </ul>
+      {saved.length > 0 && (
+        <div className="editor-recent">
+          <div className="eyebrow">Saved for this connection</div>
+          {saved.map((q) => (
+            <button key={q.name} className="editor-recent-item" onClick={() => onOpen(q)}>
+              <Bookmark size={12} />
+              <span>{q.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OutputPane({ output, look, onLook, empty }: { output: Output; look: PlanLook; onLook: (look: PlanLook) => void; empty: ReactNode }) {
   switch (output.kind) {
     case "none":
-      return <div className="empty">Results and plans appear here.</div>;
+      return <>{empty}</>;
     case "busy":
       return (
         <div className="empty">

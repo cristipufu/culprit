@@ -1,5 +1,6 @@
 import { ArrowUpRight, Bot, Check, Copy, EyeOff, Flame, History, SquarePen } from "lucide-react";
 import { useState } from "react";
+import { SignalEvidence } from "../components/BeyondTime";
 import { FindingShareMenu, VerifyButton, VerifyResult, useVerify } from "../components/FindingShare";
 import { PlanView, shortPredicate } from "../components/PlanView";
 import { Prose } from "../components/Prose";
@@ -84,6 +85,8 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
             </div>
           </section>
         )}
+
+        <SignalEvidence report={report} finding={finding} />
 
         {queries.length > 0 && (
           <section>

@@ -10,7 +10,11 @@ import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { querySummary } from "../lib/query-summary";
+import { eventTime, useEventsVersion } from "../lib/events";
 import { changeRequest, setState } from "../lib/store";
+import { AroundThen, PeriodStrip } from "./ChangeTimeline";
+import { EventIcon, eventTone } from "./EventIcon";
+import { MarkButton } from "./MarkButton";
 import { rangeLabel, when } from "./TimeChart";
 
 type State = { status: "loading" } | { status: "ready"; changes: Changes } | { status: "error"; error: ApiError };
@@ -123,6 +127,8 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
   const list = useRef<HTMLDivElement>(null);
   const connection = report.snapshot.connection;
   const key = JSON.stringify(request);
+  // A mark added or removed anywhere changes what explains the queries.
+  const marks = useEventsVersion();
 
   useEffect(() => {
     let cancelled = false;
@@ -138,7 +144,7 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
     };
     // `key` stands for the request's contents.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection, key]);
+  }, [connection, key, marks]);
 
   const changes = state.status === "ready" ? state.changes : null;
   const rows = useMemo(() => (changes ? changes.queries.filter((q) => q.status !== "unchanged" || showUnchanged) : []), [changes, showUnchanged]);
@@ -190,6 +196,18 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
             <span className="muted">Comparing two periods…</span>
           )}
         </div>
+        {changes && changes.events.length > 0 && (
+          <PeriodStrip
+            changes={changes}
+            onFocusEvent={(id) => {
+              const at = rows.findIndex((q) => q.context.some((l) => l.event === id));
+              if (at >= 0) {
+                setCursor(at);
+                setOpen(rows[at]!.query_id);
+              }
+            }}
+          />
+        )}
         <div className="wc-controls">
           <span className="seg">
             {PRESETS.map((p) => (
@@ -198,6 +216,7 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
               </button>
             ))}
           </span>
+          <MarkButton connection={connection} />
           <label className="wc-since">
             Since
             <input
@@ -232,6 +251,16 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
       {changes && (
         <div className="wc-body" ref={list}>
           <Summary changes={changes} />
+          <AroundThen
+            changes={changes}
+            onFocusQuery={(id) => {
+              const at = rows.findIndex((q) => q.query_id === id);
+              if (at >= 0) {
+                setCursor(at);
+                setOpen(id);
+              }
+            }}
+          />
           {GROUPS.map((g) => {
             const group = rows.filter((q) => q.status === g.status);
             if (!group.length) return null;
@@ -282,6 +311,7 @@ export default function WhatChanged({ report, request, onClose }: { report: Repo
                             </span>
                           )}
                         </span>
+                        <Context q={q} changes={changes} />
                       </button>
                       {expanded && <Detail q={q} changes={changes} inReport={known.has(q.query_id)} />}
                     </div>
@@ -360,7 +390,7 @@ function Summary({ changes }: { changes: Changes }) {
         </span>
       </div>
       <p className="wc-source">
-        {changes.source === "query-store" ? "From Query Store's intervals" : "From Culprit's own scans"}
+        {changes.source === "query-store" ? "From Query Store's intervals" : changes.source === "slow-log" ? "From the slow query log's runs" : "From Culprit's own scans"}
         {changes.baseline_coverage < 0.99 && <span className="medium"> · the source covers {percent(changes.baseline_coverage)} of the baseline</span>}
       </p>
     </div>
@@ -404,6 +434,25 @@ function Detail({ q, changes, inReport }: { q: QueryChange; changes: Changes; in
           )}
         </div>
       )}
+      {q.context.length > 0 && (
+        <div className="wc-related">
+          <span className="label">What changed around it</span>
+          {q.context.map((l) => {
+            const e = changes.events.find((x) => x.id === l.event);
+            if (!e) return null;
+            return (
+              <span key={l.event} className="wc-context">
+                <span className={`tc-ev-dot ${eventTone(e.kind)}`}>
+                  <EventIcon kind={e.kind} size={10} />
+                </span>
+                <span>
+                  <b>{e.title}</b> · {eventTime(e)} <span className="muted">· {l.why}</span>
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
       <pre className="wc-sql">{q.text}</pre>
       <div className="wc-actions">
         <span className="muted">query {q.query_id}</span>
@@ -418,5 +467,22 @@ function Detail({ q, changes, inReport }: { q: QueryChange; changes: Changes; in
         </button>
       </div>
     </div>
+  );
+}
+
+/** The likeliest explanation from around the periods, on the row itself: "Index ix_orders_status was dropped …". */
+function Context({ q, changes }: { q: QueryChange; changes: Changes }) {
+  const top = q.context.find((l) => l.strong);
+  const e = top ? changes.events.find((x) => x.id === top.event) : undefined;
+  if (!top || !e) return null;
+  return (
+    <span className="wc-context row-context" title={`${e.title} · ${eventTime(e)} · ${top.why}`}>
+      <span className={`tc-ev-dot ${eventTone(e.kind)}`}>
+        <EventIcon kind={e.kind} size={10} />
+      </span>
+      <span className="row-context-text">
+        <span className="muted">Around then:</span> <b>{e.title}</b> <span className="muted">· {eventTime(e)}</span>
+      </span>
+    </span>
   );
 }

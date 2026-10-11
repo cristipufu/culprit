@@ -4,7 +4,7 @@ Culprit connects to a database and tells you, in plain language, what is making 
 
 ## Principles
 
-1. **Connect → answers.** The first screen after connecting is a ranked list of opportunities, not a schema tree. A scan reads only statistics views and finishes in seconds.
+1. **Connect → answers.** The first screen after connecting is the dashboard: what needs a look, most urgent first, each tile a plain sentence with the ranked findings one keystroke away (`2`). Never a schema tree. A scan reads only statistics views and finishes in seconds.
 2. **Human first, numbers second.** Every finding opens with one sentence a non-DBA understands, then the evidence.
 3. **Rank by impact.** Order by share of database time (or the resource the finding wastes), never by how many warnings fired.
 4. **Every finding is actionable.** Evidence → Fix → Verify. A finding without a next step is not shipped.
@@ -17,7 +17,7 @@ Culprit connects to a database and tells you, in plain language, what is making 
 
 | Who | Job | Where they start |
 |---|---|---|
-| App developer | "What's the low-hanging fruit in alpha before we ship?" | Overview |
+| App developer | "What's the low-hanging fruit in alpha before we ship?" | Dashboard → Findings |
 | On-call engineer | "The API is slow right now. What is the database doing?" | Live |
 | Coding agent | "Did my migration or query make things worse? What should I index?" | `culprit scan --json`, `culprit explain` |
 
@@ -26,11 +26,13 @@ Culprit connects to a database and tells you, in plain language, what is making 
 ```
 Connections (start)
 └─ Connected workspace
-   ├─ Overview   ranked opportunities + finding detail      (1)
-   ├─ Queries    workload explorer + query detail + plan     (2)
-   ├─ Live       sessions, blocking chains, waits           (3)
-   ├─ Schema     table and index health (not a browser)      (4)
-   └─ Editor     SQL, explain, run, compare plans            (5)
+   ├─ Dashboard  the database at a glance; where it opens     (1)
+   ├─ Findings   ranked opportunities + finding detail      (2)
+   ├─ Queries    workload explorer + query detail + plan     (3)
+   ├─ Live       sessions, blocking chains, waits           (4)
+   ├─ Schema     table and index health (not a browser)      (5)
+   ├─ Editor     SQL, explain, run, compare plans            (6)
+   └─ Plans      open, paste and compare plans               (7)
 ⌘K command palette reaches every view, finding, query, table and action.
 ```
 
@@ -54,9 +56,22 @@ Missing capabilities show as a quiet chip ("3 checks locked") that opens Doctor.
 
 ### Workload window
 
-Query Store keeps history by time, so Overview, Queries and Schema carry a **Last 24 hours / Last 7 days / Last 30 days** picker in the top bar (`W` cycles it). The choice is remembered per connection, and every window has its own cached report: switching shows the last result for that window instantly (never another window's numbers) while a fresh scan runs. When the store holds less history than asked for, the bar says so ("Query Store holds 13 days"). Cumulative sources (`pg_stat_statements`, the SQL Server plan cache) show "since <reset>" instead of a picker. CLI: `culprit scan <conn> --window-days 1|7|30`.
+Query Store keeps history by time, so Dashboard, Findings, Queries and Schema carry a **Last 24 hours / Last 7 days / Last 30 days** picker in the top bar (`W` cycles it). The choice is remembered per connection, and every window has its own cached report: switching shows the last result for that window instantly (never another window's numbers) while a fresh scan runs. When the store holds less history than asked for, the bar says so ("Query Store holds 13 days"). Cumulative sources (`pg_stat_statements`, the SQL Server plan cache) show "since <reset>" instead of a picker. CLI: `culprit scan <conn> --window-days 1|7|30`.
 
-### Overview
+### Dashboard
+
+One database at a glance, and where a connection opens. Not a wall of charts: a calm grid of ten tiles, each answering one question in a plain sentence first (*"Database time is up 2.3× in the last day compared with the 6 days before."*), then a small honest picture, then one quiet line on what the numbers cover. Clicking a tile (or Enter on it) opens the view that explains it.
+
+- **Headline.** The most urgent tile's sentence, with a dot in its colour, and chips for every tile that needs a look (bad first, then by urgency: right now, database time, findings, query statistics, deadlocks, health, waits, plans, indexes). When nothing does: *"Nothing needs a look right now."* Below it, what the numbers cover (*"Query Store, the last 7 days · scanned 2 min ago"*).
+- **Tiles.** *Database time*: per day (or measured totals under 20 hours), runs, CPU share, the step chart with plan flags, brush to compare, **What changed?**, and the queries that switched plans. *Findings*: counts by severity as one bar and the top three. *Top queries*: five rows (verb, table, predicate, trend line, share). *Where time goes*: the wait mix as one bar and a legend. *Right now*: running, blocked and idle-in-transaction sessions, a five-minute activity line, the blocking chain's sentence; read every 5 s, *"Updated 3 s ago"*, paused while the window is hidden. *Health*: every signal as a coloured square, the worst named. *Deadlocks*: ticks across the period and the patterns; Postgres shows its counter. *Indexes*: to add (with the share of database time behind them) and to clean up (with the space). *Plans*: captured plans as squares, the flagged ones amber, the commonest problems. *Query statistics*: what the source covers, or the one statement that turns it on (copy, open in the editor, re-scan).
+- **Honest everywhere.** Every engine gets every tile. When an engine, login or scan can't show a signal, the tile is *unavailable* and says why in the engine's words (*"PostgreSQL keeps no history of what sessions wait on."*, *"MariaDB isn't counting waits: performance_schema is off"*) with the fix where there is one. Without query statistics, turning them on leads the page and the tiles that need them sink to the end.
+- **Same words as the CLI.** The tiles come from `culprit_checks::dashboard`, the code behind `culprit dashboard` and the MCP `dashboard` tool; only *Right now* is polled by the app (it words its tile identically).
+- **Layout.** Twelve columns from ~880 px of content (a 1180 px window gets the full layout), two below, one on narrow panes; container queries, so it follows the content area. Light and dark, tabular numbers, no chart library, skeleton tiles in the same places while loading, reduced motion respected. The view is code-split; its skeleton is in the main bundle.
+- **Keyboard.** `j` or `↓` steps into the grid; arrows move to the nearest tile in that direction, `j`/`k` and Home/End in reading order; Enter opens; `v` opens What changed; `2` is the ranked findings.
+
+Why it leads instead of the findings list: the list answers "what should I fix", the dashboard answers "is anything wrong right now, and where should I look", which is the first question on opening a connection, and the list can't show blocking, deadlocks, a jump in database time or statistics that stopped recording. The findings are still the top of the dashboard's Findings tile and one key away.
+
+### Findings (formerly Overview)
 
 - Headline sentence: *"14 opportunities. The top 3 account for 38 % of database time over the last 7 days."*
 - Vital signs strip: database time per day, what the database waits on (CPU / IO / locks / memory / network), size, data window.
@@ -68,7 +83,7 @@ Query Store keeps history by time, so Overview, Queries and Schema carry a **Las
 
 ### Where time goes (waits)
 
-The Overview's middle card always answers "where does the time go", on every engine: the biggest category in plain words, a bar you can click by segment, and a legend. When the scan recorded no waits (PostgreSQL without `track_io_timing`) it says "Not tracked" and offers a live sample instead of disappearing. Under it, one calm health line names the signal that most needs a look, or says all is healthy.
+The Findings view's middle card always answers "where does the time go", on every engine: the biggest category in plain words, a bar you can click by segment, and a legend. When the scan recorded no waits (PostgreSQL without `track_io_timing`) it says "Not tracked" and offers a live sample instead of disappearing. Under it, one calm health line names the signal that most needs a look, or says all is healthy.
 
 Clicking either opens one panel with three tabs (`1`/`2`/`3`, `←`/`→`, `Esc`):
 
@@ -112,6 +127,8 @@ Verify             how to confirm: re-scan after deploy, what-if plan, run on al
 - **Runtime spread** (Queries → Summary): one lane per plan on a shared log scale, whisker from the fastest to the slowest run, a band of one standard deviation, a dot at the average or the median, and each plan's compiled parameter values (SQL Server). SQL Server 2022's parameter-sensitive plan variants get their own lanes; MySQL adds its run-time histogram and p95/p99 marks; Postgres shows one lane with fastest, average, slowest and spread, and says that's all it keeps.
 - **Parameter sensitivity** (`parameter-sensitive`): two plans used side by side where one is 5× slower (SQL Server), or a histogram whose slowest 1 in 100 runs take 10× the typical run (MySQL). The fix is a ladder to copy, lightest first: force the fast plan, RECOMPILE for this statement only, parameter-sensitive plan optimization, OPTIMIZE FOR UNKNOWN. Postgres's single-plan variance stays `unstable-query`, which shares the ladders.
 - **Honest numbers everywhere.** Under 20 hours of history, Queries, Overview and finding cards show runs *in the measured span*, not per day.
+- **What changed around it.** Every time chart has a change lane under it: marks (a deploy, a migration: `culprit mark`, the app's **Mark** button, the `mark` MCP tool), tables, columns, indexes, procedures and views, settings, upgrades, restarts and cloud throttling (shaded on the plot). Times are exact where the database dates the change (SQL Server `sys.objects`, MySQL `CREATE_TIME`/`LAST_ALTERED`/`variables_info`, Postgres configuration reloads and, with `track_commit_timestamp`, index builds) and otherwise a bracket between the two scans that noticed it; each scan compares itself with the previous one and keeps the result next to its report. Clicking a marker compares since then. In What changed, a strip shows both periods with their changes, **Around then** lists them oldest first with how many queries each may explain, and each row carries its likeliest explanation ("Index ix_orders_status was dropped from public.orders"), ranked by how directly it touches the query (its table, its procedure) and how close it is to the moment the query changed; statistics updates only appear when they precede a plan change, throttling only explains slower runs with the same plan.
+- **Cloud limits.** For Amazon RDS/Aurora and Azure SQL Database or Azure Database for PostgreSQL/MySQL, Health shows what the cloud measured (CloudWatch through `aws`, Azure Monitor through `az`, read-only, the person's own sign-in): CPU against a burstable class's baseline, CPU credits, IOPS against the provisioned limit, storage and EBS burst balances, disk latency, DB load against vCPUs, the tier's CPU/data IO/log write/worker percentages, each against its limit with episodes shaded and listed ("CPU credits ran out … held to its 20% CPU baseline"). Fetches are cached a few minutes per resolution; the CLI is `culprit cloud`, agents use `cloud_metrics`.
 - The Queries table's Query column reads verb · table · key predicate; Max, Rows/run and Reads/run step aside on narrow panes (then the Trend column), so the table never scrolls sideways.
 
 ### Plan viewer
@@ -208,15 +225,48 @@ Fuzzy search over views, findings, queries, tables, connections and actions (re-
 - **query-family**: the same statement sent with different literals — Query Store queries sharing a query_hash (plan cache when Query Store is off), and pg_stat_statements entries that differ only in IN-list or VALUES length — plus plan caches filled with single-use plans. MySQL digests already merge literals; its counterpart is the digest table running out of room (config).
 - **config** health per engine: Query Store near full / capture mode ALL / waits not captured, legacy cardinality estimation, unlimited MAXDOP (SQL Server); autovacuum off or too lazy for big tables, pg_stat_statements not tracking or evicting, shared_buffers at the 128 MB default (Postgres); performance_schema off, the digest consumer disabled, digests lost, statement text cut at 1,024 characters (MySQL).
 
+### Signals beyond run time
+
+Time and reads say where the work is; these say what else a statement, file or table costs. Each comes from a view the engine already keeps (statistics only, one cheap query each, a failure becomes a collector note), becomes a pure check with a stable id, and shows where the evidence lives: the query detail's **Beyond run time** block (one sentence first, then a row per signal with a dot), **Health → Storage / Replication**, the table header's facts in Schema, and an evidence table on server and index findings. Where an engine doesn't keep a number, the UI says so in one line instead of showing zero.
+
+| Signal (check) | SQL Server | PostgreSQL | MySQL / MariaDB |
+|---|---|---|---|
+| Runs that fail or time out (`failing-query`) | Query Store aborted and exception runs, with the cancelled runs' average (30 s ≈ a client timeout) | not kept per statement | `SUM_ERRORS`, plus the error code recent failed runs raised (`1205 lock wait timeout`; never the message, which can hold row values) |
+| Planning cost (`planning-time`) | Query Store compile time and count | `total_plan_time` with `pg_stat_statements.track_planning` | not kept |
+| JIT overhead (`jit-overhead`) | — | `jit_*` columns, 15+ | — |
+| Log volume per statement (`log-volume`) | `avg_log_bytes_used`, 2017+ | `wal_bytes` and full-page images, 13+ | not kept (no redo per digest) |
+| Lock time per statement (`lock-time`) | Query Store lock waits | not kept; Live shows blocking | `SUM_LOCK_TIME` (row locks from MySQL 8.0.28) |
+| Result size (`big-result`) | rows per run ≈ bytes from the plan's AvgRowSize | rows per run ≈ bytes from the plan width | rows sent per run |
+| Storage latency (`slow-storage`) | `dm_io_virtual_file_stats` per file, this database and tempdb | `pg_stat_io` by object (16+), `pg_stat_database` read time before; needs `track_io_timing` | `file_summary_by_instance` per file (performance_schema) |
+| Connection churn (`connection-churn`) | Logins/sec and pooled reuse (Connection Reset) | sessions, length and abandoned, 14+ | Connections, threads created, aborted connects |
+| Hot rows (`hot-rows`, `last-page-insert`) | `dm_db_index_operational_stats` lock and latch waits per index; sequential keys and OPTIMIZE_FOR_SEQUENTIAL_KEY | — | per statement via lock time |
+| Untrusted constraints (`untrusted-constraint`) | WITH NOCHECK or disabled FKs and checks | CHECK constraints added NOT VALID | not used by the optimizer |
+| Missing histograms (`missing-histogram`) | — | — | heavy filters on columns with no leading index and no histogram (COLUMN_STATISTICS, `mysql.column_stats`), noting EXPLAIN's 10% / 33% guesses |
+| HOT updates and bloat (`hot-updates`, `table-bloat`) | — | `n_tup_hot_upd`, `n_tup_newpage_upd` (16+), fillfactor; bloat estimated from pg_stats | — |
+| Replica lag (`replica-lag`) | availability group redo and send queues, geo-replication lag | `pg_stat_replication`, standby replay lag, inactive slots keeping WAL | `SHOW REPLICA STATUS` (needs REPLICATION CLIENT) |
+
+Wording follows the rest of the product: "A read from orders times out on every run, at about 15 s", "Planning takes almost all of the time of a read from orders", "Inserts into hot queue for the last page of pk_hot", "Reads from tempdb average 45 ms: storage is slow". Fixes are copy-only (an Extended Events session to capture errors, `OPTIMIZE_FOR_SEQUENTIAL_KEY`, `VALIDATE CONSTRAINT`, `UPDATE HISTOGRAM`, a fillfactor, `jit_above_cost`). A histogram finding whose columns an index finding already covers is dropped; lock time on statements that already fail with lock wait timeouts is left to `failing-query`.
+
+### MariaDB
+
+MariaDB runs on the MySQL provider and is first-class, not "MySQL with gaps" (the full matrix is in [parity.md](parity.md)):
+
+- **Named as itself.** `VERSION()` decides the flavor once per connector. Badges show "Ma" in MariaDB's copper once a scan has named the server (`ReportSummary.product`); sentences, plan headers, coverage notes and fixes say MariaDB and use its syntax (`ALTER INDEX … IGNORED` from 10.6, `ANALYZE TABLE … PERSISTENT FOR COLUMNS`, `max_statement_time`). The editor uses the MariaSQL dialect.
+- **No restart first.** MariaDB ships with performance_schema off. The unlock card leads with one `SET GLOBAL userstat = ON, slow_query_log = ON, log_output = 'FILE,TABLE', long_query_time = 0.1` (only the parts still needed), says connections opened earlier keep the old threshold and that it lasts until a restart unless also written to the configuration, and only then offers performance_schema with a restart.
+- **The slow query log table is a real source.** Every logged run is grouped by fingerprint (literals out, lists collapsed), with exact percentiles and a histogram, a timeline from the runs' own timestamps, "What changed" for any period the log covers, lock time as the one wait it records, and the newest real statement of each shape as the sample to plan. It says what it misses: statements faster than `long_query_time`. With performance_schema on, the same log supplies samples for digests MariaDB kept no text for (matched by fingerprint).
+- **Plans.** MariaDB's EXPLAIN/ANALYZE JSON has its own reader: sorts and temporary tables wrap their input, join buffers sit beside their table, rows are per loop (`loops` derived before 11.0, rows stand in for cost where there are no costs). ANALYZE adds time per operator, loops, rows, the share the filter kept, pages read and sort spills. Running statements show per-operator progress from `SHOW ANALYZE` (10.9+) and MariaDB's own PROGRESS for ALTER and LOAD.
+- **Locks and waits.** Blocking reads `INNODB_LOCK_WAITS`; the deadlock parser reads MariaDB's WAITING FOR / CONFLICTING WITH layout and attributes locks by transaction id. Right now samples the process list when no wait instrument records anything. Index usage falls back to userstat, worded as "since userstat was turned on", because the server doesn't record when.
+
 ## Keyboard
 
 | Key | Action |
 |---|---|
-| `1`–`5` | Switch view |
+| `1`–`7` | Switch view: Dashboard, Findings, Queries, Live, Schema, Editor, Plans |
 | `⌘K` | Command palette |
 | `j` / `k`, `↑` / `↓` | Move in lists |
 | `/` | Filter current list |
-| `v` (Overview) | What changed: compare recent vs baseline |
+| `v` (Dashboard, Findings) | What changed: compare recent vs baseline |
+| `↑` `↓` `←` `→`, Enter (Dashboard) | Move between tiles, open one |
 | `c` / `a` / `e` | Copy fix / copy for agent / open in editor |
 | `⌘R` | Re-scan |
 | `W` | Cycle the workload window: last 24 hours, 7 days, 30 days |
@@ -316,6 +366,7 @@ culprit conn discover [--cloud azure|aws] [--match <text>]… [--save] [--includ
 culprit conn import [--from ads|vscode|dbeaver|datagrip] [--file <path>]… [--match <text>]… [--dry-run]
                                       metadata only; never passwords or credential stores
 culprit auth logout                   forget device-code Entra sign-ins
+culprit dashboard <conn> [--scan] [--no-live]   the database at a glance: ten tiles, what needs a look first
 culprit doctor <conn>                 server, capabilities, permissions, locked checks
 culprit scan <conn>                   snapshot + findings (saved)
 culprit findings [<conn>]             findings from the latest snapshot
@@ -324,6 +375,14 @@ culprit top <conn> [--by time|cpu|reads|executions] [-n 20]
 culprit explain <conn> (--sql <sql> | --file <path> | --query-id <id>) [--analyze]
 culprit live <conn> [--cancel <id> | --kill <id>]   actions refused on production
 culprit drift <a> <b>                 indexes, columns, settings that differ between two connections (or report files)
+culprit changes <conn> [--since <time> | --recent 6h] [--no-cloud]
+                                      queries slower/faster/new/stopped, each with what changed around it
+culprit mark <conn> <text…> [--at <time>] | --list | --remove <id>
+                                      put a deploy or migration on the timeline
+culprit events <conn> [--last 24h | --since <time>] [--no-cloud]
+                                      marks, schema/index/settings changes, restarts, throttling
+culprit cloud <conn> [--last 24h|7d|14d] [--refresh]
+                                      CloudWatch / Azure Monitor limits and throttling episodes
 culprit checks                        every check with id, engines, requires
 culprit analyze <file>                re-run the checks on a saved snapshot or report, offline
 culprit mcp [--connection <name>]…    MCP server on stdio for coding agents

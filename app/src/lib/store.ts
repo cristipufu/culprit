@@ -5,7 +5,8 @@ import type { Report } from "../gen/Report";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage, type ApiError } from "./api";
 
-export type View = "overview" | "queries" | "live" | "schema" | "editor" | "plans" | "connections";
+/** `dashboard` is where a connection opens; `overview` is the ranked findings list (titled "Findings"). */
+export type View = "dashboard" | "overview" | "queries" | "live" | "schema" | "editor" | "plans" | "connections";
 
 export type ReportState =
   | { status: "none" }
@@ -29,6 +30,8 @@ export type State = {
   editorSaved: { name: string; run: boolean } | null;
   /** Saved queries, loaded on first use. */
   saved: SavedQuery[] | null;
+  /** Open Schema on the index advisor (from the dashboard). */
+  advisor: boolean;
   dismissed: Record<string, true>;
   windowDays: WindowDays;
 };
@@ -44,6 +47,7 @@ export function changeRequest(fields: Partial<ChangeRequest> = {}): ChangeReques
     recent_hours: null,
     min_executions: null,
     threshold: null,
+    cloud: null,
     ...fields,
   };
 }
@@ -88,6 +92,7 @@ let state: State = {
   editorSql: null,
   editorSaved: null,
   saved: null,
+  advisor: false,
   dismissed: loadDismissed(),
   windowDays: DEFAULT_WINDOW,
 };
@@ -144,7 +149,7 @@ export async function loadConnections(): Promise<ConnectionInfo[]> {
 export async function openConnection(name: string, options: { rescan?: boolean } = {}): Promise<void> {
   const rescan = options.rescan ?? true;
   const windowDays = rememberedWindow(name);
-  setState({ active: name, view: "overview", finding: null, query: null, changes: null, report: { status: "loading" }, windowDays });
+  setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, report: { status: "loading" }, windowDays });
   rememberLast(name);
   await showCachedThenScan(name, windowDays, rescan);
 }

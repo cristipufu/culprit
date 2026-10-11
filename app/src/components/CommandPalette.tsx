@@ -8,7 +8,8 @@ import { currentReport, loadSaved, openConnection, scan, setState, useStore, typ
 type Item = { id: string; section: string; title: string; hint?: string; icon?: ReactNode; run: () => void };
 
 const VIEWS: { view: View; title: string; icon: ReactNode }[] = [
-  { view: "overview", title: "Overview", icon: <Gauge size={13} /> },
+  { view: "dashboard", title: "Dashboard", icon: <Gauge size={13} /> },
+  { view: "overview", title: "Findings", icon: <CircleDot size={13} /> },
   { view: "queries", title: "Queries", icon: <ListOrdered size={13} /> },
   { view: "live", title: "Live sessions", icon: <Activity size={13} /> },
   { view: "schema", title: "Schema", icon: <Table2 size={13} /> },
@@ -81,7 +82,7 @@ export function CommandPalette() {
       list.push({ id: `q:${q.id}`, section: "Queries", title: q.text.replace(/\s+/g, " ").slice(0, 120), hint: `query ${q.id}`, icon: icon(<TextSearch size={13} />), run: () => setState({ view: "queries", query: q.id, palette: false }) }),
     );
     connections.forEach((c) =>
-      list.push({ id: `c:${c.name}`, section: "Connections", title: c.name, hint: c.display, icon: <EngineBadge engine={c.engine} environment={c.environment} />, run: () => (close(), openConnection(c.name)) }),
+      list.push({ id: `c:${c.name}`, section: "Connections", title: c.name, hint: c.display, icon: <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} />, run: () => (close(), openConnection(c.name)) }),
     );
     list.push({ id: "new", section: "Actions", title: "Add a connection", icon: icon(<Plus size={13} />), run: () => setState({ view: "connections", palette: false }) });
     return list;

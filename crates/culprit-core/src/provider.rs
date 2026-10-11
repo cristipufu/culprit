@@ -117,4 +117,11 @@ pub trait Provider: Send + Sync {
     async fn interrupt_session(&self, _session: &str, _action: SessionAction) -> Result<()> {
         Err(Error::new(ErrorCode::Unsupported, format!("{} sessions can't be ended from Culprit", self.engine())))
     }
+
+    /// Changes the database timestamps itself since `since` (UTC, ISO 8601): tables, procedures and views created or
+    /// altered, settings changed at runtime, the configuration reloaded. Catalog views only; safe on production. Changes
+    /// the engine doesn't date are found by comparing Culprit's scans instead.
+    async fn recorded_changes(&self, _since: &str) -> Result<Vec<crate::events::ChangeEvent>> {
+        Err(Error::new(ErrorCode::Unsupported, format!("{} doesn't date schema changes", self.engine())))
+    }
 }

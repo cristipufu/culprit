@@ -1,5 +1,5 @@
-import { ArrowRight, Cloud, Database, Import, KeyRound, Pencil, Plus, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ArrowRight, Bot, Check, ChevronDown, Cloud, Database, Import, KeyRound, LockKeyhole, Pencil, Plus, Search, ShieldCheck } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Logo } from "../components/Logo";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { AgentAccess } from "../gen/AgentAccess";
@@ -16,6 +16,7 @@ import { ENVIRONMENT_LABEL, groupByEnvironment } from "../lib/environments";
 import { ago } from "../lib/format";
 import { loadConnections, openConnection, useStore } from "../lib/store";
 import { EngineBadge } from "../components/EngineBadge";
+import { serverName } from "../lib/engines";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
@@ -27,8 +28,12 @@ type TestState = { status: "idle" } | { status: "busy" } | { status: "ok"; label
 
 export function Connections() {
   const connections = useStore((s) => s.connections);
-  const [panel, setPanel] = useState<"none" | "new" | "import" | CloudKind>("none");
-  const active = connections.length === 0 && panel === "none" ? "new" : panel;
+  const [panel, setPanel] = useState<Panel>("none");
+  const active = panel;
+  const firstRun = connections.length === 0;
+  const [filter, setFilter] = useState("");
+  const q = filter.trim().toLowerCase();
+  const shown = q ? connections.filter((c) => `${c.name} ${c.display} ${serverName(c.engine, c.last_report?.product)} ${c.environment}`.toLowerCase().includes(q)) : connections;
 
   return (
     <div className="connections">
@@ -40,7 +45,15 @@ export function Connections() {
             <p>Connect a database and see what's slowing it down.</p>
           </div>
         </div>
-        {groupByEnvironment(connections).map((group) => (
+        {firstRun && <FirstRun chosen={active} onChoose={(next) => setPanel(next === active ? "none" : next)} />}
+        {connections.length > 6 && (
+          <label className="search conn-filter">
+            <Search size={13} />
+            <input value={filter} placeholder={`Filter ${connections.length} connections`} onChange={(e) => setFilter(e.target.value)} aria-label="Filter connections" />
+          </label>
+        )}
+        {q && shown.length === 0 && <p className="muted">No connection matches “{filter}”.</p>}
+        {groupByEnvironment(shown).map((group) => (
           <section key={group.environment} style={{ marginBottom: 18 }}>
             <div className="eyebrow" style={{ marginBottom: 8 }}>
               {ENVIRONMENT_LABEL[group.environment]}
@@ -50,24 +63,63 @@ export function Connections() {
             ))}
           </section>
         ))}
-        <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-          <button className={`btn ${active === "new" ? "primary" : ""}`} onClick={() => setPanel(active === "new" ? "none" : "new")}>
+        {!firstRun && (
+        <div className="conn-actions">
+          <button className={`btn ${active === "new" || connections.length === 0 ? "primary" : ""}`} onClick={() => setPanel(active === "new" ? "none" : "new")}>
             <Plus size={14} /> New connection
           </button>
-          <button className={`btn ${active === "azure" ? "primary" : ""}`} onClick={() => setPanel(active === "azure" ? "none" : "azure")}>
-            <Cloud size={14} /> Find Azure databases
+          <button className={`btn ${active === "azure" ? "primary" : ""}`} onClick={() => setPanel(active === "azure" ? "none" : "azure")} title="Find Azure SQL, PostgreSQL and MySQL servers your az login can see">
+            <Cloud size={14} /> From Azure
           </button>
-          <button className={`btn ${active === "aws" ? "primary" : ""}`} onClick={() => setPanel(active === "aws" ? "none" : "aws")}>
-            <Cloud size={14} /> Find AWS databases
+          <button className={`btn ${active === "aws" ? "primary" : ""}`} onClick={() => setPanel(active === "aws" ? "none" : "aws")} title="Find RDS and Aurora databases your aws login can see">
+            <Cloud size={14} /> From AWS
           </button>
-          <button className={`btn ${active === "import" ? "primary" : ""}`} onClick={() => setPanel(active === "import" ? "none" : "import")}>
-            <Import size={14} /> Import from other tools
+          <button className={`btn ${active === "import" ? "primary" : ""}`} onClick={() => setPanel(active === "import" ? "none" : "import")} title="Import connections saved in Azure Data Studio, VS Code, DBeaver or DataGrip">
+            <Import size={14} /> Import
           </button>
         </div>
-        {active === "new" && <NewConnectionForm onDone={() => setPanel("none")} canCancel={connections.length > 0} />}
+        )}
+        {active === "new" && <NewConnectionForm onDone={() => setPanel("none")} canCancel />}
         {(active === "azure" || active === "aws") && <DiscoverPanel key={active} cloud={active} onDone={() => setPanel("none")} />}
         {active === "import" && <ImportPanel onDone={() => setPanel("none")} />}
       </div>
+    </div>
+  );
+}
+
+type Panel = "none" | "new" | "import" | CloudKind;
+
+const FIRST_RUN: { panel: Exclude<Panel, "none">; icon: ReactNode; title: string; text: string }[] = [
+  { panel: "new", icon: <Database size={18} />, title: "Paste a connection string", text: "SQL Server, Postgres, MySQL or MariaDB: a URL, an ADO.NET string or host:port/database." },
+  { panel: "azure", icon: <Cloud size={18} />, title: "Find in Azure", text: "Lists the SQL, PostgreSQL and MySQL servers your az login can reach." },
+  { panel: "aws", icon: <Cloud size={18} />, title: "Find in AWS", text: "Lists the RDS and Aurora databases your aws login can see." },
+  { panel: "import", icon: <Import size={18} />, title: "Import from another tool", text: "Azure Data Studio, VS Code, DBeaver or DataGrip connections, without retyping." },
+];
+
+/** No connections yet: four ways in, and what Culprit promises before anyone types a password. */
+function FirstRun({ chosen, onChoose }: { chosen: Panel; onChoose: (panel: Exclude<Panel, "none">) => void }) {
+  return (
+    <div className="first-run">
+      <div className="first-tiles">
+        {FIRST_RUN.map((t) => (
+          <button key={t.panel} className={`first-tile ${chosen === t.panel ? "on" : ""}`} aria-pressed={chosen === t.panel} onClick={() => onChoose(t.panel)}>
+            <span className="first-icon">{t.icon}</span>
+            <b>{t.title}</b>
+            <span>{t.text}</span>
+          </button>
+        ))}
+      </div>
+      <ul className="first-promises">
+        <li>
+          <ShieldCheck size={13} /> Reads statistics and catalog views only; never changes your database
+        </li>
+        <li>
+          <LockKeyhole size={13} /> Passwords stay in your OS keychain
+        </li>
+        <li>
+          <Bot size={13} /> Coding agents get the same answers through <code>culprit mcp</code>
+        </li>
+      </ul>
     </div>
   );
 }
@@ -92,7 +144,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
   if (editing) {
     return (
       <div className="conn-card">
-        <EngineBadge engine={c.engine} environment={c.environment} size="md" />
+        <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} size="md" />
         <input
           className="alias-input"
           autoFocus
@@ -105,14 +157,14 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
           onBlur={save}
         />
         <span className="last muted">Enter to save</span>
-        <span className="sub">{error ?? `${ENGINE_LABEL[c.engine]} · ${c.display}`}</span>
+        <span className="sub">{error ?? `${serverName(c.engine, c.last_report?.product)} · ${c.display}`}</span>
       </div>
     );
   }
 
   return (
     <div className="conn-card" role="button" tabIndex={0} onClick={() => openConnection(c.name)} onKeyDown={(e) => e.key === "Enter" && openConnection(c.name)}>
-      <EngineBadge engine={c.engine} environment={c.environment} size="md" />
+      <EngineBadge engine={c.engine} environment={c.environment} product={c.last_report?.product} size="md" />
       <span className="name">
         {c.name}
         <button
@@ -129,62 +181,123 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
       <span className="last">
         {c.last_report ? (
           <>
-            <b>{c.last_report.opportunities}</b> opportunities
-            <div className="muted">{ago(c.last_report.taken_at)}</div>
+            <span className="conn-count">
+              <b>{c.last_report.opportunities}</b> {c.last_report.opportunities === 1 ? "opportunity" : "opportunities"}
+            </span>
+            <span className={`conn-when ${stale(c.last_report.taken_at) ? "stale" : ""}`} title={stale(c.last_report.taken_at) ? "Scanned more than a day ago; open to scan again" : c.last_report.taken_at}>
+              {stale(c.last_report.taken_at) ? `Stale · ${ago(c.last_report.taken_at)}` : ago(c.last_report.taken_at)}
+            </span>
           </>
         ) : (
-          <span className="muted">
-            Scan <ArrowRight size={12} />
+          <span className="conn-scan">
+            First scan <ArrowRight size={12} />
           </span>
         )}
       </span>
       <span className="sub">
-        {ENGINE_LABEL[c.engine]} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
+        {serverName(c.engine, c.last_report?.product)} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
         {c.display}
+      </span>
+      {takeaway(c.last_report?.headline) && <span className="conn-headline">{takeaway(c.last_report?.headline)}</span>}
+      <span className="conn-tools">
         {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
-        <AgentAccessPicker connection={c} />
+        <AgentAccessMenu connection={c} />
       </span>
     </div>
   );
 }
 
+/** The report headline without its count ("14 opportunities. The top ones touch…"), which the card already shows. */
+function takeaway(headline: string | undefined): string | null {
+  const rest = headline?.replace(/^\s*\d[\d,]*\s+opportunit(?:y|ies)\.?\s*/i, "").trim();
+  return rest ? rest : null;
+}
+
+/** A report older than a day may describe a database that has moved on. */
+function stale(iso: string): boolean {
+  const t = Date.parse(iso);
+  return !Number.isNaN(t) && Date.now() - t > 86_400_000;
+}
+
 const AGENT_ACCESS: { value: AgentAccess; label: string; title: string }[] = [
-  { value: "off", label: "Agents: off", title: "Coding agents using `culprit mcp` don't see this connection" },
-  { value: "stats", label: "Agents: stats & plans", title: "Agents read findings, query statistics, schema and estimated plans. Nothing runs your SQL." },
-  { value: "query", label: "Agents: approved queries", title: "Agents may also run read-only statements, each one only after you approve it here" },
+  { value: "off", label: "Off", title: "Coding agents using culprit mcp don't see this connection." },
+  { value: "stats", label: "Stats & plans", title: "Agents read findings, query statistics, schema and estimated plans. Nothing runs your SQL." },
+  { value: "query", label: "Approved queries", title: "Agents may also run read-only statements, each one only after you approve it here." },
 ];
 
-/** What coding agents may do with this connection through `culprit mcp`. */
-function AgentAccessPicker({ connection: c }: { connection: ConnectionInfo }) {
+/** What coding agents may do with this connection through `culprit mcp`: a compact chip that opens a small menu. */
+function AgentAccessMenu({ connection: c }: { connection: ConnectionInfo }) {
+  const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const title = AGENT_ACCESS.find((a) => a.value === c.agent_access)?.title;
+  const root = useRef<HTMLSpanElement>(null);
+  const items = useRef<(HTMLButtonElement | null)[]>([]);
+  const menuId = useId();
+  const current = AGENT_ACCESS.find((a) => a.value === c.agent_access) ?? AGENT_ACCESS[0]!;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    requestAnimationFrame(() => items.current[AGENT_ACCESS.indexOf(current)]?.focus());
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open, current]);
+
+  const choose = async (value: AgentAccess) => {
+    setOpen(false);
+    if (value === c.agent_access) return;
+    try {
+      await (await api()).setAgentAccess(c.name, value);
+      await loadConnections();
+      setError(null);
+    } catch (err) {
+      setError(errorMessage(err).message);
+    }
+  };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    e.stopPropagation();
+    if (!open) return;
+    const at = items.current.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === "Escape") setOpen(false);
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      items.current[(at + (e.key === "ArrowDown" ? 1 : -1) + AGENT_ACCESS.length) % AGENT_ACCESS.length]?.focus();
+    }
+  };
+
   return (
-    <>
-      <select
-        className={`agent-select access-${c.agent_access}`}
-        value={c.agent_access}
-        title={title}
-        aria-label="What coding agents may do with this connection"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        onChange={async (e) => {
-          try {
-            await (await api()).setAgentAccess(c.name, e.target.value as AgentAccess);
-            await loadConnections();
-            setError(null);
-          } catch (err) {
-            setError(errorMessage(err).message);
-          }
-        }}
-      >
-        {AGENT_ACCESS.map((a) => (
-          <option key={a.value} value={a.value} title={a.title}>
-            {a.label}
-          </option>
-        ))}
-      </select>
+    <span className="agent-access" ref={root} onClick={(e) => e.stopPropagation()} onKeyDown={onKey}>
+      <button className={`agent-chip access-${c.agent_access}`} aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} title={current.title} onClick={() => setOpen((o) => !o)}>
+        <Bot size={12} /> Agents: {current.label}
+        <ChevronDown size={11} />
+      </button>
+      {open && (
+        <span className="agent-menu" role="menu" id={menuId}>
+          <span className="agent-menu-head">What coding agents may do here</span>
+          {AGENT_ACCESS.map((a, i) => (
+            <button
+              key={a.value}
+              role="menuitemradio"
+              aria-checked={a.value === c.agent_access}
+              ref={(el) => {
+                items.current[i] = el;
+              }}
+              className="agent-option"
+              onClick={() => choose(a.value)}
+            >
+              <span className="agent-check">{a.value === c.agent_access && <Check size={13} />}</span>
+              <span>
+                <b>{a.label}</b>
+                <span className="muted">{a.title}</span>
+              </span>
+            </button>
+          ))}
+        </span>
+      )}
       {error && <span className="muted"> {error}</span>}
-    </>
+    </span>
   );
 }
 

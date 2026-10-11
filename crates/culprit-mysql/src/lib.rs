@@ -1,17 +1,22 @@
-//! MySQL provider for Culprit: read-only snapshots from performance_schema and information_schema, plans via EXPLAIN,
-//! live sessions with lock waits.
+//! MySQL and MariaDB provider for Culprit: read-only snapshots from performance_schema, information_schema and the
+//! slow query log table, plans via EXPLAIN (and MariaDB's ANALYZE), live sessions with lock waits.
 
 mod collect;
 mod connect;
 pub mod deadlocks;
+pub mod fingerprint;
 pub mod plan_json;
+pub mod plan_maria;
 pub mod plan_tree;
 mod pressure;
 mod progress;
+mod recorded;
 mod rows;
 mod sessions;
+mod signals;
+mod slowlog;
+mod vars;
 
-use std::collections::HashMap;
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -24,7 +29,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
 use serde_json::Value as Json;
 
-use connect::{Connector, Scope, map_error};
+use connect::{Connector, Flavor, Scope, map_error};
 use rows::{explain_one, query, query_one, tagged, value_text};
 
 pub struct MysqlProvider {
@@ -64,9 +69,12 @@ impl Provider for MysqlProvider {
         let statement = single_statement(sql)?;
         let schema = self.connector.database.as_deref();
         let mut conn = self.connector.connect(Scope::Database).await?;
+        let flavor = self.connector.flavor();
         match mode {
             ExplainMode::Estimated => {
-                let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
+                if flavor == Flavor::Mysql {
+                    let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
+                }
                 let row = explain_one(&mut conn, &format!("EXPLAIN FORMAT=JSON {statement}"))
                     .await?
                     .ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
@@ -80,13 +88,27 @@ impl Provider for MysqlProvider {
                     )
                     .with_hint("Use Explain (estimated) for statements that change data."));
                 }
+                // MySQL's EXPLAIN ANALYZE prints a tree; MariaDB's ANALYZE prints the EXPLAIN JSON with measurements.
+                let sql = match flavor {
+                    Flavor::Mysql => format!("EXPLAIN ANALYZE {statement}"),
+                    Flavor::Mariadb => format!("ANALYZE FORMAT=JSON {statement}"),
+                };
                 conn.query_drop(tagged("START TRANSACTION READ ONLY")).await.map_err(map_error)?;
-                let result = explain_one(&mut conn, &format!("EXPLAIN ANALYZE {statement}")).await;
+                let result = explain_one(&mut conn, &sql).await;
                 let rollback = conn.query_drop(tagged("ROLLBACK")).await;
-                let row = result?.ok_or_else(|| Error::internal("EXPLAIN ANALYZE returned no plan"))?;
+                let row = result?.ok_or_else(|| Error::internal("ANALYZE returned no plan"))?;
                 rollback.map_err(map_error)?;
-                let tree = row.text("explain").ok_or_else(|| Error::internal("EXPLAIN ANALYZE returned no plan"))?;
-                plan_tree::parse(&tree, Some(statement), schema)
+                match flavor {
+                    Flavor::Mysql => {
+                        let tree =
+                            row.text("explain").ok_or_else(|| Error::internal("EXPLAIN ANALYZE returned no plan"))?;
+                        plan_tree::parse(&tree, Some(statement), schema)
+                    }
+                    Flavor::Mariadb => {
+                        let json = row.first_text().ok_or_else(|| Error::internal("ANALYZE returned no plan"))?;
+                        plan_json::parse(&json, PlanKind::Actual, Some(statement), schema)
+                    }
+                }
             }
         }
     }
@@ -101,7 +123,7 @@ impl Provider for MysqlProvider {
 
     async fn lock_waits(&self) -> Result<Vec<culprit_core::LockWait>> {
         let mut conn = self.connector.connect(Scope::Server).await?;
-        let out = deadlocks::lock_waits(&mut conn).await;
+        let out = deadlocks::lock_waits(&mut conn, self.connector.flavor()).await;
         let _ = conn.disconnect().await;
         out
     }
@@ -113,6 +135,13 @@ impl Provider for MysqlProvider {
         out
     }
 
+    async fn recorded_changes(&self, since: &str) -> Result<Vec<culprit_core::ChangeEvent>> {
+        let mut conn = self.connector.connect(Scope::Database).await?;
+        let out = recorded::changes(&mut conn, since).await;
+        let _ = conn.disconnect().await;
+        out
+    }
+
     async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
         let mut conn = self.connector.connect(Scope::Server).await?;
         let result = crate::pressure::sample(&mut conn, seconds).await;
@@ -120,11 +149,39 @@ impl Provider for MysqlProvider {
         result
     }
 
+    /// Servers whose workload comes from the slow query log table compare any two periods straight from the log.
+    async fn period_stats(
+        &self,
+        baseline: &culprit_core::changes::Period,
+        recent: &culprit_core::changes::Period,
+    ) -> Result<Option<culprit_core::changes::PeriodData>> {
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let probe = collect::probe(&mut conn, &self.connector).await?;
+        if probe.performance_schema || !probe.slow_log_table() {
+            let _ = conn.disconnect().await;
+            return Ok(None);
+        }
+        let runs = slowlog::read(
+            &mut conn,
+            &probe.database,
+            &slowlog::sql_time(&baseline.start),
+            Some(&slowlog::sql_time(&recent.end)),
+        )
+        .await;
+        let _ = conn.disconnect().await;
+        let runs = runs?;
+        let logged_since = runs.iter().map(|r| r.at).reduce(f64::min);
+        Ok(Some(slowlog::periods(&runs, baseline, recent, logged_since)))
+    }
+
     async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
-        Err(Error::new(culprit_core::ErrorCode::Unsupported, "MySQL doesn't keep the actual plan of past runs")
-            .with_hint(
-                "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction.",
-            ))
+        Err(Error::new(
+            culprit_core::ErrorCode::Unsupported,
+            "MySQL and MariaDB don't keep the actual plan of past runs",
+        )
+        .with_hint(
+            "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction.",
+        ))
     }
 
     async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
@@ -133,17 +190,26 @@ impl Provider for MysqlProvider {
 
     async fn live(&self) -> Result<LiveState> {
         let mut conn = self.connector.connect(Scope::Server).await?;
+        let flavor = self.connector.flavor();
+        // MariaDB's process list also has the time in milliseconds and progress for ALTER TABLE, LOAD DATA and others.
+        let extra = match flavor {
+            Flavor::Mariadb => "p.TIME_MS AS ms, p.PROGRESS AS progress, p.STAGE AS stage, p.MAX_STAGE AS max_stage",
+            Flavor::Mysql => "NULL AS ms, NULL AS progress, NULL AS stage, NULL AS max_stage",
+        };
         let rows = query(
             &mut conn,
-            "SELECT p.ID AS id, p.USER AS user_name, p.HOST AS host, p.DB AS db, p.COMMAND AS command, p.TIME AS seconds,
-                    p.STATE AS state, p.INFO AS info,
-                    TIMESTAMPDIFF(MICROSECOND, t.trx_started, NOW(6)) / 1000 AS trx_ms
-               FROM information_schema.PROCESSLIST p
-               LEFT JOIN information_schema.INNODB_TRX t ON t.trx_mysql_thread_id = p.ID
-              WHERE p.ID <> CONNECTION_ID() AND p.COMMAND NOT IN ('Daemon', 'Binlog Dump', 'Binlog Dump GTID')",
+            &format!(
+                "SELECT p.ID AS id, p.USER AS user_name, p.HOST AS host, p.DB AS db, p.COMMAND AS command, p.TIME AS seconds,
+                        p.STATE AS state, p.INFO AS info, {extra},
+                        TIMESTAMPDIFF(MICROSECOND, t.trx_started, NOW(6)) / 1000 AS trx_ms
+                   FROM information_schema.PROCESSLIST p
+                   LEFT JOIN information_schema.INNODB_TRX t ON t.trx_mysql_thread_id = p.ID
+                  WHERE p.ID <> CONNECTION_ID() AND p.COMMAND NOT IN ('Daemon', 'Binlog Dump', 'Binlog Dump GTID')
+                    AND p.USER <> 'system user'"
+            ),
         )
         .await?;
-        let blockers = lock_waits(&mut conn).await;
+        let blockers = deadlocks::blockers(&mut conn, flavor).await;
         let last_statements = deadlocks::last_statements(&mut conn).await;
         let now = query_one(&mut conn, "SELECT DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now")
             .await?
@@ -164,6 +230,7 @@ impl Provider for MysqlProvider {
                     _ => "active".to_string(),
                 };
                 let active = state == "active";
+                let wait = if active { r.text("state").filter(|s| !s.is_empty()) } else { None };
                 Session {
                     blocked_by: blockers.get(&id).cloned(),
                     user: r.text("user_name"),
@@ -171,9 +238,9 @@ impl Provider for MysqlProvider {
                     host: r.text("host"),
                     database: r.text("db"),
                     command: active.then(|| command.to_uppercase()),
-                    wait: if active { r.text("state").filter(|s| !s.is_empty()) } else { None },
+                    wait: wait.map(|w| with_progress(w, r)),
                     wait_ms: None,
-                    elapsed_ms: r.number("seconds").map(|s| s * 1000.0),
+                    elapsed_ms: r.number("ms").or_else(|| r.number("seconds").map(|s| s * 1000.0)),
                     transaction_ms: r.number("trx_ms"),
                     cpu_ms: None,
                     reads: None,
@@ -225,6 +292,10 @@ impl Provider for MysqlProvider {
         let started = Instant::now();
         // Sessions open read-only; a write the person chose to run gets a read-write session and commits (autocommit).
         conn.query_drop(tagged("SET SESSION TRANSACTION READ WRITE")).await.map_err(map_error)?;
+        // MySQL's timeout only stops SELECTs; MariaDB's stops anything, so it is lifted for a change the person ran.
+        if let Some(lift) = self.connector.flavor().no_timeout() {
+            conn.query_drop(tagged(lift)).await.map_err(map_error)?;
+        }
         let result = run_in_transaction(&mut conn, statement, limit).await;
         let _ = conn.disconnect().await;
         let mut result = result?;
@@ -234,20 +305,13 @@ impl Provider for MysqlProvider {
     }
 }
 
-/// Which session blocks which, from InnoDB's lock waits (MySQL 8.0+). Empty when the login can't see them.
-async fn lock_waits(conn: &mut Conn) -> HashMap<String, String> {
-    query(
-        conn,
-        "SELECT r.PROCESSLIST_ID AS waiting, b.PROCESSLIST_ID AS blocking
-           FROM performance_schema.data_lock_waits w
-           JOIN performance_schema.threads r ON r.THREAD_ID = w.REQUESTING_THREAD_ID
-           JOIN performance_schema.threads b ON b.THREAD_ID = w.BLOCKING_THREAD_ID",
-    )
-    .await
-    .unwrap_or_default()
-    .into_iter()
-    .filter_map(|r| Some((r.text("waiting")?, r.text("blocking")?)))
-    .collect()
+/// A process-list state with MariaDB's progress report, when the statement has one (ALTER TABLE, LOAD DATA, …).
+fn with_progress(state: String, r: &rows::Rec) -> String {
+    let Some(progress) = r.number("progress").filter(|p| *p > 0.0) else { return state };
+    match (r.number("stage"), r.number("max_stage")) {
+        (Some(stage), Some(max)) if max > 1.0 => format!("{state} · stage {stage:.0} of {max:.0}, {progress:.0}%"),
+        _ => format!("{state} · {progress:.0}%"),
+    }
 }
 
 /// Trim and reject empty or multi-statement input (the server would refuse the second statement anyway).

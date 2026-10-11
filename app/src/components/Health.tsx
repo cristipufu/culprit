@@ -1,10 +1,12 @@
 import { useState, type MouseEvent } from "react";
+import type { Engine } from "../gen/Engine";
 import type { OpenTransaction } from "../gen/OpenTransaction";
 import type { Pressure } from "../gen/Pressure";
 import type { ResourceSample } from "../gen/ResourceSample";
 import type { Signal } from "../gen/Signal";
 import { duration, percent } from "../lib/format";
 import { SIGNAL_SCOPE, signalValue } from "../lib/waits";
+import { Replication, StorageLatency } from "./BeyondTime";
 
 const RANK: Record<Signal["status"], number> = { bad: 0, watch: 1, good: 2, info: 3 };
 
@@ -46,7 +48,17 @@ function OpenTransactionCard({ t }: { t: OpenTransaction }) {
   );
 }
 
-export function HealthTab({ pressure, resources, engineLabel }: { pressure: Pressure | null; resources: ResourceSample[]; engineLabel: string }) {
+export function HealthTab({
+  pressure,
+  resources,
+  engineLabel,
+  engine,
+}: {
+  pressure: Pressure | null;
+  resources: ResourceSample[];
+  engineLabel: string;
+  engine?: Engine;
+}) {
   const signals = [...(pressure?.signals ?? [])].sort((a, b) => RANK[a.status] - RANK[b.status]);
   if (!signals.length && !resources.length) {
     return (
@@ -73,6 +85,8 @@ export function HealthTab({ pressure, resources, engineLabel }: { pressure: Pres
         </>
       )}
       {pressure?.oldest_transaction && <OpenTransactionCard t={pressure.oldest_transaction} />}
+      {engine && <StorageLatency files={pressure?.files ?? []} engine={engine} />}
+      <Replication replicas={pressure?.replicas ?? []} />
       {resources.length >= 4 && <ResourceCharts samples={resources} />}
     </div>
   );

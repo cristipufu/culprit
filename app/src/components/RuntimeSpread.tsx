@@ -2,6 +2,7 @@ import type { Engine } from "../gen/Engine";
 import type { QueryStat } from "../gen/QueryStat";
 import { count, duration, percent } from "../lib/format";
 import { planColor } from "./Trends";
+import { serverName } from "../lib/engines";
 
 /**
  * How a query's run times spread, lane by lane: a plan per lane where the engine keeps plans (SQL Server), the whole
@@ -81,7 +82,9 @@ function logTicks(lo: number, hi: number): number[] {
   return decades.length >= 3 ? decades : all.length > 6 ? all.filter((_, i) => i % 2 === 0) : all;
 }
 
-function coverage(engine: Engine, hasHistogram: boolean): string {
+function coverage(engine: Engine, hasHistogram: boolean, product?: string, source?: string): string {
+  if (source === "slow query log") return "The slow query log keeps every logged run, so the bars show how many runs took how long (only runs slower than long_query_time).";
+  const name = serverName(engine, product);
   switch (engine) {
     case "mssql":
       return "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.";
@@ -89,8 +92,10 @@ function coverage(engine: Engine, hasHistogram: boolean): string {
       return "Postgres keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.";
     case "mysql":
       return hasHistogram
-        ? "MySQL keeps a run-time histogram per statement, so the bars show how many runs took how long."
-        : "This MySQL keeps no run-time histogram (8.0.19+ does); the lane shows fastest, average and slowest.";
+        ? `${name} keeps a run-time histogram per statement, so the bars show how many runs took how long.`
+        : name === "MariaDB"
+          ? "MariaDB keeps no run-time histogram per statement; the lane shows fastest, average and slowest. The slow query log table adds every run."
+          : "This MySQL keeps no run-time histogram (8.0.19+ does); the lane shows fastest, average and slowest.";
   }
 }
 
@@ -112,7 +117,19 @@ function sentence(q: QueryStat, ls: Lane[]): string | null {
   return null;
 }
 
-export function RuntimeSpread({ query, engine, windowed }: { query: QueryStat; engine: Engine; windowed: boolean }) {
+export function RuntimeSpread({
+  query,
+  engine,
+  windowed,
+  product,
+  source,
+}: {
+  query: QueryStat;
+  engine: Engine;
+  windowed: boolean;
+  product?: string;
+  source?: string;
+}) {
   const ls = lanes(query);
   const values = ls
     .flatMap((l) => [l.min, l.max, l.mean, l.p50, l.p99, ...(l.histogram ?? []).flatMap((h) => [h[0], h[1]])])
@@ -199,7 +216,7 @@ export function RuntimeSpread({ query, engine, windowed }: { query: QueryStat; e
           <span />
           <div className="rs-ticks">
             {ticks.map((t) => (
-              <span key={t} style={{ left: `${pos(t)}%` }}>
+              <span key={t} style={{ left: `${pos(t)}%`, transform: `translateX(${pos(t) > 88 ? -100 : pos(t) < 8 ? 0 : -50}%)` }}>
                 {duration(t)}
               </span>
             ))}
@@ -207,7 +224,7 @@ export function RuntimeSpread({ query, engine, windowed }: { query: QueryStat; e
           <span className="muted rs-legend">fastest · {hasHistogram ? "median" : "average"} · slowest</span>
         </div>
       </div>
-      <p className="rs-note">{coverage(engine, hasHistogram)}</p>
+      <p className="rs-note">{coverage(engine, hasHistogram, product, source)}</p>
     </section>
   );
 }

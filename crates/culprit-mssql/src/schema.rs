@@ -344,6 +344,7 @@ fn table_of(r: &Rec) -> TableStat {
         forwarded_records: None,
         forwarded_fetches: None,
         xid_age: None,
+        storage: None,
     }
 }
 
@@ -382,6 +383,7 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
         lookups,
         last_read: r.str("last_read"),
         definition: None,
+        contention: None,
     }
 }
 

@@ -77,6 +77,25 @@ export function ago(iso: string | null | undefined, now = Date.now()): string {
   return `${Math.round(s / 86400)} days ago`;
 }
 
+/** A moment as people say it: "today 12:13", "yesterday 09:02", "Oct 7, 12:13", "Oct 7, 2025". `full` is for tooltips. */
+export function when(iso: string | null | undefined, now = new Date()): { short: string; full: string } {
+  if (!iso) return { short: "", full: "" };
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return { short: iso, full: iso };
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((day(now) - day(d)) / 86_400_000);
+  const short =
+    days === 0
+      ? `today ${time}`
+      : days === 1
+        ? `yesterday ${time}`
+        : d.getFullYear() === now.getFullYear()
+          ? `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`
+          : d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  return { short, full: d.toLocaleString([], { dateStyle: "full", timeStyle: "short" }) };
+}
+
 export function windowLabel(hours: number): string {
   const unit = (n: number, word: string) => `last ${n} ${word}${n === 1 ? "" : "s"}`;
   if (hours >= 47) return unit(Math.round(hours / 24), "day");

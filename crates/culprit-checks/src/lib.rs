@@ -3,6 +3,7 @@ mod advisor;
 mod brief;
 mod config;
 mod config_health;
+pub mod dashboard;
 mod deadlocks;
 pub mod drift;
 mod index_health;
@@ -12,6 +13,7 @@ mod maintenance;
 mod pressure;
 mod queries;
 mod sensitivity;
+mod signals;
 pub(crate) mod support;
 mod trends;
 mod tuning;
@@ -27,6 +29,7 @@ use culprit_core::{
 
 pub use advisor::index_advice;
 pub use brief::agent_brief;
+pub use dashboard::dashboard;
 pub use drift::drift;
 
 struct Builtin {
@@ -80,6 +83,21 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Builtin { info: pressure::tier_limit_info, run: pressure::tier_limit },
         Builtin { info: pressure::checkpoint_pressure_info, run: pressure::checkpoint_pressure },
         Builtin { info: pressure::row_lock_waits_info, run: pressure::row_lock_waits },
+        Builtin { info: signals::failing_query_info, run: signals::failing_query },
+        Builtin { info: signals::planning_time_info, run: signals::planning_time },
+        Builtin { info: signals::jit_overhead_info, run: signals::jit_overhead },
+        Builtin { info: signals::log_volume_info, run: signals::log_volume },
+        Builtin { info: signals::lock_time_info, run: signals::lock_time },
+        Builtin { info: signals::big_result_info, run: signals::big_result },
+        Builtin { info: signals::hot_rows_info, run: signals::hot_rows },
+        Builtin { info: signals::last_page_insert_info, run: signals::last_page_insert },
+        Builtin { info: signals::untrusted_constraint_info, run: signals::untrusted_constraint },
+        Builtin { info: signals::missing_histogram_info, run: signals::missing_histogram },
+        Builtin { info: signals::hot_updates_info, run: signals::hot_updates },
+        Builtin { info: signals::table_bloat_info, run: signals::table_bloat },
+        Builtin { info: signals::slow_storage_info, run: signals::slow_storage },
+        Builtin { info: signals::connection_churn_info, run: signals::connection_churn },
+        Builtin { info: signals::replica_lag_info, run: signals::replica_lag },
         Builtin { info: actual::last_actual_plans_info, run: actual::last_actual_plans },
     ];
     builtins.into_iter().map(|b| Box::new(b) as Box<dyn Check>).collect()
@@ -203,6 +221,33 @@ fn dedupe(findings: &mut Vec<Finding>) {
             .iter()
             .any(|(t, keys)| *t == table && fk_cols.iter().all(|c| keys.iter().take(fk_cols.len()).any(|k| k == c)))
     });
+
+    // An index on the filtered columns gives the optimizer exact estimates: the histogram is then the lesser fix.
+    let mut keep = Vec::with_capacity(findings.len());
+    for f in findings.iter_mut() {
+        if f.check != "missing-histogram" {
+            keep.push(true);
+            continue;
+        }
+        let table = f.subject.name.to_ascii_lowercase();
+        let columns = signals::histogram_columns(f);
+        let indexed: Vec<&String> = columns
+            .iter()
+            .filter(|c| {
+                index_keys.iter().any(|(t, keys)| *t == table && keys.iter().any(|k| k.eq_ignore_ascii_case(c)))
+            })
+            .collect();
+        if !indexed.is_empty() && indexed.len() < columns.len() {
+            let names: Vec<String> = indexed.iter().map(|c| c.to_string()).collect();
+            f.caveats.push(format!(
+                "An index is also suggested for {}; once it exists the optimizer estimates from the index instead.",
+                culprit_core::format::list(&names)
+            ));
+        }
+        keep.push(indexed.len() < columns.len());
+    }
+    let mut keep = keep.into_iter();
+    findings.retain(|_| keep.next().unwrap_or(true));
 
     // A regression finding says when the query got slower and carries the plan change; the plan-only finding repeats it.
     let regressed: BTreeSet<String> = findings

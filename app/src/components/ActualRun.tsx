@@ -4,12 +4,12 @@ import type { Engine } from "../gen/Engine";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import { api, copyText, errorMessage, type ApiError } from "../lib/api";
-import { setState } from "../lib/store";
+import { serverName } from "../lib/engines";
+import { currentReport, setState, useStore } from "../lib/store";
 import { PlanSurface, type PlanLook } from "./PlanSurface";
 
 export type PlanSource = "plan" | "actual";
 
-const ENGINE: Record<Engine, string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
 const TURN_ON = "ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;";
 
 /** "Estimated" (what the optimizer planned) or "Last run" (what actually happened). */
@@ -43,6 +43,7 @@ type State =
  */
 export function LastActualRun(props: { connection: string; engine: Engine; query: QueryStat; planId: string | null; look: PlanLook }) {
   const { connection, engine, query, planId, look } = props;
+  const product = useStore((s) => currentReport(s)?.snapshot.server.product);
   const [state, setRun] = useState<State>({ status: "loading" });
   const [copied, setCopied] = useState(false);
 
@@ -108,7 +109,7 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
           state.error.hint
         ) : (
           <>
-            {ENGINE[engine]} only reports what a query actually did while you measure it. {canRun ? "You can run it once now and see real rows and timings for every step." : "Its recorded text has placeholders instead of values, so open it in the editor, fill in real values and measure it there."}
+            {serverName(engine, product)} only reports what a query actually did while you measure it. {canRun ? "You can run it once now and see real rows and timings for every step." : "Its recorded text has placeholders instead of values, so open it in the editor, fill in real values and measure it there."}
           </>
         )}
       </p>

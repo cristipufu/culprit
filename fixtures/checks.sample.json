@@ -171,6 +171,20 @@
   },
   {
     "category": "queries",
+    "description": "Key lookups, functions on filtered columns, leading wildcards, NOT IN, scalar functions, eager spools, misestimates and repeated loops in the plans of queries that matter.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "plan-insights",
+    "requires": [
+      "query-plans"
+    ],
+    "title": "Plan insights"
+  },
+  {
+    "category": "queries",
     "description": "Queries whose current plan is much slower than a plan they used before.",
     "engines": [
       "mssql"
@@ -204,6 +218,17 @@
     "id": "unstable-query",
     "requires": [],
     "title": "Unstable queries"
+  },
+  {
+    "category": "queries",
+    "description": "Statements whose run time depends heavily on the values they run with: two plans used side by side, one fast and one slow (SQL Server Query Store), or a long tail in the run-time histogram (MySQL). Single-plan variance on any engine is `unstable-query`.",
+    "engines": [
+      "mssql",
+      "mysql"
+    ],
+    "id": "parameter-sensitive",
+    "requires": [],
+    "title": "Queries that are fast for most calls and slow for some"
   },
   {
     "category": "queries",
@@ -276,5 +301,284 @@
     "id": "config",
     "requires": [],
     "title": "Configuration"
+  },
+  {
+    "category": "queries",
+    "description": "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock escalation, parallelism) with the fix that removes them. SQL Server reads system_health, MySQL the latest InnoDB report, Postgres only keeps a counter.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "deadlocks",
+    "requires": [],
+    "title": "Deadlocks"
+  },
+  {
+    "category": "queries",
+    "description": "Statements whose memory grant (reserved before they run, for sorts and hashes) is many times what they use, so other queries queue for memory.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "memory-grant",
+    "requires": [],
+    "title": "Queries that reserve far more memory than they use"
+  },
+  {
+    "category": "configuration",
+    "description": "Memory-grant waits (RESOURCE_SEMAPHORE) take a real share of waiting, or queries were queueing for a grant when the scan ran.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "memory-queue",
+    "requires": [],
+    "title": "Queries waiting in line for memory"
+  },
+  {
+    "category": "configuration",
+    "description": "A large share of batches compile a new plan instead of reusing one, which costs CPU on every call.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "compile-pressure",
+    "requires": [],
+    "title": "Plans compiled over and over"
+  },
+  {
+    "category": "configuration",
+    "description": "SQL Server sessions waiting for a worker thread (THREADPOOL), or PostgreSQL/MySQL connections close to max_connections.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "worker-pressure",
+    "requires": [],
+    "title": "Running out of workers or connections"
+  },
+  {
+    "category": "maintenance",
+    "description": "The oldest open transaction keeps old row versions alive: the SQL Server version store, PostgreSQL's VACUUM horizon, or InnoDB's undo history.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "held-cleanup",
+    "requires": [],
+    "title": "A long open transaction holds cleanup back"
+  },
+  {
+    "category": "queries",
+    "description": "Queries that spend much of their time waiting for the application to take results (ASYNC_NETWORK_IO), usually because they return large result sets.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "network-wait",
+    "requires": [],
+    "title": "Results the application reads slowly"
+  },
+  {
+    "category": "configuration",
+    "description": "Azure SQL Database resources (CPU, data IO, log writes, workers) at the tier's limit for a real part of the last hour.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "tier-limit",
+    "requires": [],
+    "title": "Hitting the cloud tier's limits"
+  },
+  {
+    "category": "configuration",
+    "description": "Many checkpoints start because WAL filled max_wal_size rather than on schedule, causing write spikes.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "checkpoint-pressure",
+    "requires": [],
+    "title": "Checkpoints forced early"
+  },
+  {
+    "category": "queries",
+    "description": "InnoDB row-lock waits are frequent and long, from long transactions or updates that scan instead of using an index.",
+    "engines": [
+      "mysql"
+    ],
+    "id": "row-lock-waits",
+    "requires": [],
+    "title": "Transactions waiting for row locks"
+  },
+  {
+    "category": "queries",
+    "description": "Statements whose runs end in an error or are cancelled by the client (usually a command timeout): Query Store's aborted and exception runs, performance_schema's errors per digest. PostgreSQL keeps no per-statement error count.",
+    "engines": [
+      "mssql",
+      "mysql"
+    ],
+    "id": "failing-query",
+    "requires": [],
+    "title": "Queries that fail or time out"
+  },
+  {
+    "category": "queries",
+    "description": "Statements where planning (PostgreSQL, with pg_stat_statements.track_planning on) or compiling (SQL Server Query Store) takes a large part of their time, usually because the plan isn't reused.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "planning-time",
+    "requires": [],
+    "title": "Queries that spend their time being planned"
+  },
+  {
+    "category": "queries",
+    "description": "Statements where PostgreSQL's JIT compilation (pg_stat_statements jit_* columns, 15+) takes a large part of their run time: usually short queries whose cost the planner overestimates.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "jit-overhead",
+    "requires": [],
+    "title": "JIT compilation that costs more than it saves"
+  },
+  {
+    "category": "queries",
+    "description": "Statements that write a large share of the WAL (PostgreSQL 13+) or transaction log (SQL Server 2017+), or many kilobytes of it per row changed. Log volume drives replication lag, backup size and checkpoints. MySQL keeps no redo bytes per statement.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "log-volume",
+    "requires": [],
+    "title": "Writes that produce most of the log"
+  },
+  {
+    "category": "queries",
+    "description": "Statements that spend a large part of their time waiting for locks other sessions hold: Query Store's lock waits per query, MySQL and MariaDB lock time per digest. PostgreSQL keeps no lock time per statement; Live shows blocking as it happens.",
+    "engines": [
+      "mssql",
+      "mysql"
+    ],
+    "id": "lock-time",
+    "requires": [],
+    "title": "Queries that spend their time waiting for locks"
+  },
+  {
+    "category": "queries",
+    "description": "Reads that send tens of thousands of rows to the application on every run, with an estimate in bytes from the plan's row width where the engine gives one.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "big-result",
+    "requires": [],
+    "title": "Queries that return huge results"
+  },
+  {
+    "category": "indexes",
+    "description": "Indexes where sessions waited a long time for row and page locks, and where locks escalated to the whole table (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL keep no lock waits per table; see lock-time and Live.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "hot-rows",
+    "requires": [],
+    "title": "Rows that many sessions fight over"
+  },
+  {
+    "category": "indexes",
+    "description": "Indexes keyed on an ever-increasing value (identity, sequence, insert time) where concurrent inserts wait for the latch on the last page (PAGELATCH_EX).",
+    "engines": [
+      "mssql"
+    ],
+    "id": "last-page-insert",
+    "requires": [],
+    "title": "Inserts that queue for the last page"
+  },
+  {
+    "category": "maintenance",
+    "description": "SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), and PostgreSQL check constraints added NOT VALID. MySQL and MariaDB don't use constraints when planning.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "untrusted-constraint",
+    "requires": [],
+    "title": "Constraints the optimizer can't rely on"
+  },
+  {
+    "category": "maintenance",
+    "description": "Columns that heavy queries filter on with no index leading on them and no histogram (MySQL 8 COLUMN_STATISTICS, MariaDB mysql.column_stats), so the optimizer assumes a fixed share of rows match.",
+    "engines": [
+      "mysql"
+    ],
+    "id": "missing-histogram",
+    "requires": [],
+    "title": "Filter columns the optimizer has to guess about"
+  },
+  {
+    "category": "maintenance",
+    "description": "Tables where few updates are HOT (heap-only): each other update writes a new entry in every index and leaves cleanup for VACUUM. Says whether pages are too full (fillfactor) or an indexed column changes (PostgreSQL 16+ tells them apart).",
+    "engines": [
+      "postgres"
+    ],
+    "id": "hot-updates",
+    "requires": [],
+    "title": "Updates that rewrite every index"
+  },
+  {
+    "category": "maintenance",
+    "description": "Tables whose pages hold far fewer rows than they could, estimated from row counts and column widths in pg_stats (no extension needed). Every scan still reads the empty space.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "table-bloat",
+    "requires": [],
+    "title": "Tables that are mostly empty space"
+  },
+  {
+    "category": "configuration",
+    "description": "Average read and write latency per database file since startup: sys.dm_io_virtual_file_stats, pg_stat_io (16+, with track_io_timing), performance_schema file I/O.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "slow-storage",
+    "requires": [],
+    "title": "Storage that's slow to read or write"
+  },
+  {
+    "category": "configuration",
+    "description": "New connections per second since startup (SQL Server logins, PostgreSQL 14+ sessions, MySQL and MariaDB Connections), with how long sessions last and how many came from a pool where the engine says.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "connection-churn",
+    "requires": [],
+    "title": "Applications that connect for every request"
+  },
+  {
+    "category": "configuration",
+    "description": "Replicas far behind the primary or stopped, and PostgreSQL replication slots that keep WAL for a consumer that's gone: pg_stat_replication, availability group replica states, SHOW REPLICA STATUS.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "replica-lag",
+    "requires": [],
+    "title": "Replicas that fall behind"
+  },
+  {
+    "category": "configuration",
+    "description": "SQL Server 2019+ can keep each query's last actual plan (LAST_QUERY_PLAN_STATS) and report live per-operator progress (LIGHTWEIGHT_QUERY_PROFILING).",
+    "engines": [
+      "mssql"
+    ],
+    "id": "last-actual-plans",
+    "requires": [],
+    "title": "Actual plans without re-running queries"
   }
 ]

@@ -69,6 +69,7 @@ pub enum Capability {
     ResourceUsage,
     Sessions,
     Showplan,
+    SlowLog,
 }
 
 impl Capability {
@@ -88,6 +89,7 @@ impl Capability {
             Capability::ResourceUsage => "Resource usage",
             Capability::Sessions => "Sessions and blocking",
             Capability::Showplan => "Estimated plans (SHOWPLAN)",
+            Capability::SlowLog => "Slow query log table",
         }
     }
 }
@@ -119,6 +121,15 @@ pub struct ServerInfo {
 impl ServerInfo {
     pub fn has(&self, capability: Capability) -> bool {
         self.capabilities.contains(&capability)
+    }
+
+    /// The server's name in sentences: the engine's, except MariaDB, which the MySQL provider also serves.
+    pub fn name(&self) -> &'static str {
+        if self.engine == Engine::Mysql && self.product.starts_with("MariaDB") {
+            "MariaDB"
+        } else {
+            self.engine.label()
+        }
     }
 }
 
@@ -194,6 +205,9 @@ pub struct QueryStat {
     /// How run times spread beyond the average, as far as the engine keeps it.
     #[serde(default)]
     pub spread: Option<Spread>,
+    /// Failed runs, planning, JIT, log volume and result size, as far as the engine keeps them.
+    #[serde(default)]
+    pub costs: Option<crate::signals::QueryCosts>,
 }
 
 /// How a statement's run times spread. Every engine keeps something different: SQL Server and Postgres the fastest
@@ -223,6 +237,8 @@ pub enum TimelineSource {
     QueryStore,
     /// Differences between Culprit's own saved scans of a source that only keeps running totals.
     Scans,
+    /// Runs logged one by one (MySQL and MariaDB's slow query log table), bucketed by when they ran.
+    SlowLog,
 }
 
 /// Database time and executions per bucket. Buckets are equal for Query Store and fall between scans otherwise.
@@ -334,6 +350,9 @@ pub struct TableStat {
     /// (SQL Server).
     #[serde(default)]
     pub forwarded_fetches: Option<f64>,
+    /// How updates land on its pages and how much is empty space (PostgreSQL).
+    #[serde(default)]
+    pub storage: Option<crate::signals::TableStorage>,
 }
 
 impl TableStat {
@@ -364,6 +383,9 @@ pub struct IndexStat {
     pub lookups: Option<f64>,
     pub last_read: Option<String>,
     pub definition: Option<String>,
+    /// Lock and latch waits on this index (SQL Server).
+    #[serde(default)]
+    pub contention: Option<crate::signals::IndexContention>,
 }
 
 impl IndexStat {
@@ -512,6 +534,12 @@ pub struct Snapshot {
     /// Deadlocks the engine recorded in the last day (graphs on SQL Server and MySQL, a counter on Postgres).
     #[serde(default)]
     pub deadlocks: Option<crate::deadlock::DeadlockReport>,
+    /// Constraints the optimizer can't rely on: unchecked against existing rows or switched off.
+    #[serde(default)]
+    pub constraints: Vec<crate::signals::ConstraintIssue>,
+    /// Column histograms (MySQL 8, MariaDB); `None` when the engine has none or they couldn't be read.
+    #[serde(default)]
+    pub histograms: Option<Vec<crate::signals::ColumnHistogram>>,
 }
 
 impl Snapshot {

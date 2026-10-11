@@ -11,7 +11,9 @@ mod periods;
 pub mod plan_xml;
 mod pressure;
 mod probe;
+mod recorded;
 mod schema;
+mod signals;
 mod spread;
 mod statement;
 mod timeline;
@@ -395,7 +397,7 @@ impl Provider for MssqlProvider {
         for t in &mut tables {
             t.forwarded_fetches = misc_part.forwarded.get(&(t.schema.to_lowercase(), t.name.to_lowercase())).copied();
         }
-        Ok(Snapshot {
+        let mut snapshot = Snapshot {
             format: SNAPSHOT_FORMAT,
             id: taken_at.format("%Y%m%dT%H%M%SZ").to_string(),
             connection: connection.to_string(),
@@ -420,7 +422,18 @@ impl Provider for MssqlProvider {
             plan_cache: misc_part.plan_cache,
             tuning: misc_part.tuning,
             deadlocks: None,
-        })
+            constraints: Vec::new(),
+            histograms: None,
+        };
+        match self.pool.get().await {
+            Ok(mut client) => {
+                signals::collect(&mut client, &probe, options, &mut snapshot).await;
+                self.pool.put(client);
+            }
+            Err(err) => snapshot.notes.push(CollectorNote { collector: "signals".into(), message: err.message }),
+        }
+        snapshot.duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        Ok(snapshot)
     }
 
     async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
@@ -441,6 +454,16 @@ impl Provider for MssqlProvider {
 
     async fn deadlocks(&self, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
         self.pool.with(move |c| Box::pin(deadlocks::recent(c, since_hours))).await
+    }
+
+    async fn recorded_changes(&self, since: &str) -> Result<Vec<culprit_core::ChangeEvent>> {
+        let since = since.to_string();
+        self.pool
+            .with(move |c| {
+                let since = since.clone();
+                Box::pin(async move { recorded::changes(c, &since).await })
+            })
+            .await
     }
 
     async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
