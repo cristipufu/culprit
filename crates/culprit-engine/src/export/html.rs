@@ -271,7 +271,7 @@ pub fn plan_html(plan: &Plan, title: &str, options: &ExportOptions) -> String {
     let plan = prepared(plan, options);
     let mut body = String::new();
     let _ = write!(body, "<h1>{}</h1>", escape(title));
-    let _ = write!(body, r#"<p class="sub">{} · {}</p>"#, plan_engine_label(&plan), kind_label(plan.kind));
+    let _ = write!(body, r#"<p class="sub">{} · {}</p>"#, escape(plan_engine_label(&plan)), kind_label(plan.kind));
     body.push_str(&plan_figures(&plan));
     let _ = write!(body, "<h2>Where the cost goes</h2>{}", strip(&plan));
     let _ =
@@ -444,7 +444,7 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
             body,
             r#"<div class="side"><div class="side-head"><span class="badge">{badge}</span><b>{}</b><span>{} · {} · cost {}</span></div><div class="wrap">{}</div></div>"#,
             escape(name),
-            plan_engine_label(plan),
+            escape(plan_engine_label(plan)),
             kind_label(plan.kind).to_lowercase(),
             cost(plan.total_cost),
             diagram(plan, marks, None, name, id)

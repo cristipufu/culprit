@@ -118,9 +118,12 @@ pub(crate) fn sql_text(text: &str, engine: Engine, options: &ExportOptions) -> S
     if options.redact { redact_sql(text.trim(), engine) } else { text.trim().to_string() }
 }
 
-/// The server a plan came from, MariaDB included (its plans carry `flavor`; the engine is MySQL's for both).
-pub(crate) fn plan_engine_label(plan: &Plan) -> &str {
-    plan.props.get("flavor").map(String::as_str).unwrap_or_else(|| plan.engine.label())
+/// The server a plan came from, MariaDB included (its plans carry `flavor`; the engine is MySQL's for both). Always one
+/// of a fixed set of names: a plan opened from a file can carry any `flavor`, and this text goes into HTML pages.
+pub(crate) fn plan_engine_label(plan: &Plan) -> &'static str {
+    let mariadb =
+        plan.engine == Engine::Mysql && plan.props.get("flavor").is_some_and(|f| f.eq_ignore_ascii_case("mariadb"));
+    if mariadb { "MariaDB" } else { plan.engine.label() }
 }
 
 /// The server a report came from, MariaDB included.

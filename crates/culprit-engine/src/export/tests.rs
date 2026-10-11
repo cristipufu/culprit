@@ -37,3 +37,20 @@ fn redaction_is_on_unless_asked() {
     let parsed: ExportOptions = serde_json::from_str("{}").unwrap();
     assert!(parsed.redact && parsed.notes.is_empty());
 }
+
+#[test]
+fn a_plan_file_never_puts_markup_into_an_html_page() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/plans/mariadb-index.json")).unwrap();
+    let mut plan = crate::plans::parse_plan(&text).unwrap();
+    assert_eq!(plan_engine_label(&plan), "MariaDB");
+    // A plan opened from a saved JSON file can carry any properties.
+    for key in ["flavor", "server_version", "query_cost", "dop"] {
+        plan.props.insert(key.into(), "<img src=x onerror=alert(1)>".into());
+    }
+    assert_eq!(plan_engine_label(&plan), "MySQL");
+    let options = ExportOptions::default();
+    let page = plan_html(&plan, "Plan", &options);
+    assert!(!page.contains("onerror"), "plan page");
+    let diff = culprit_core::plan_diff_named(&plan, "A", &plan, "B");
+    assert!(!diff_html(&plan, &plan, &diff, "A", "B", &options).contains("onerror"), "diff page");
+}
