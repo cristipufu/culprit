@@ -83,7 +83,7 @@ export function MarkButton({ connection, label = "Mark" }: { connection: string;
             When
             <input type="datetime-local" value={at} max={localInput(Date.now())} onChange={(e) => setAt(e.target.value)} />
           </label>
-          {error && <div className="warn-text" style={{ fontSize: 11.5, marginBottom: 6 }}>{error}</div>}
+          {error && <div className="warn-text" style={{ fontSize: "var(--fs-ui-sm)", marginBottom: 6 }}>{error}</div>}
           <div className="row">
             <button className="btn small ghost" onClick={() => setOpen(false)}>
               Cancel

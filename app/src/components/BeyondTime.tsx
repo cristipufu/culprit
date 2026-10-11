@@ -6,7 +6,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import type { Replica } from "../gen/Replica";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
-import { bytes, count, duration, percent } from "../lib/format";
+import { bytes, count, duration, percent, rowCount } from "../lib/format";
 import { waitKey } from "../lib/waits";
 import { SignalTile } from "./Health";
 
@@ -130,10 +130,10 @@ function costRows(report: Report, q: QueryStat): Row[] {
     rows.push({
       key: "result",
       label: "Result",
-      value: `${count(perRun)} rows${width ? ` ≈ ${bytes(perRun * width)}` : ""}`,
+      value: `${rowCount(perRun)}${width ? ` ≈ ${bytes(perRun * width)}` : ""}`,
       note: `per run${width ? ` · about ${bytes(width)} a row, from the plan` : ""}`,
       status: q.executions >= 20 ? grade(perRun, 10_000, 100_000) : "info",
-      takeaway: `It returns ${count(perRun)} rows${width ? ` (≈ ${bytes(perRun * width)})` : ""} per run`,
+      takeaway: `It returns ${rowCount(perRun)}${width ? ` (≈ ${bytes(perRun * width)})` : ""} per run`,
     });
   }
   return rows;

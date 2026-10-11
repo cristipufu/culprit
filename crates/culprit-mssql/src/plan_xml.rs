@@ -43,6 +43,19 @@ const RESIDUAL_READ_FACTOR: f64 = 10.0;
 const RESIDUAL_MIN_ROWS_READ: f64 = 1_000.0;
 const MAX_LIST_PROP_LEN: usize = 600;
 
+/// Every statement in a showplan document, by the type SQL Server gives it (`SELECT`, `COMMIT TRANSACTION`, `COND`…),
+/// nested ones included (the branches of an IF are statements of their own).
+pub fn statement_types(xml: &str) -> Result<Vec<String>> {
+    let options = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
+    let doc = Document::parse_with_options(xml, options)
+        .map_err(|e| Error::internal(format!("Could not read the SQL Server plan XML: {e}")))?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name().starts_with("Stmt"))
+        .filter_map(|n| n.attribute("StatementType").map(str::to_string))
+        .collect())
+}
+
 pub fn parse(xml: &str) -> Result<Plan> {
     parse_statement(xml, None)
 }
@@ -600,6 +613,22 @@ fn push_unique(list: &mut Vec<PlanWarning>, warning: PlanWarning) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn statement_types_list_every_statement_the_server_sees() {
+        let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
+            <StmtSimple StatementText="SELECT 1" StatementType="SELECT WITHOUT QUERY"/>
+            <StmtSimple StatementText="COMMIT" StatementType="COMMIT TRANSACTION"/>
+            <StmtCond StatementText="IF 1 = 1" StatementType="COND"><Condition/><Then><Statements>
+              <StmtSimple StatementText="CREATE TABLE t (a int)" StatementType="CREATE TABLE"/>
+            </Statements></Then></StmtCond>
+        </Statements></Batch></BatchSequence></ShowPlanXML>"#;
+        assert_eq!(
+            statement_types(xml).unwrap(),
+            vec!["SELECT WITHOUT QUERY", "COMMIT TRANSACTION", "COND", "CREATE TABLE"]
+        );
+    }
+
     use super::*;
 
     const ESTIMATED: &str = r#"<?xml version="1.0" encoding="utf-16"?>

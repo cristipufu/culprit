@@ -47,7 +47,7 @@ fn postgres_tables_read_in_full_are_flagged_and_advised() {
     let table =
         advice.tables.iter().find(|t| t.kind == TableAdviceKind::ScanHeavy && t.table == "audit_log").expect("advised");
     assert_eq!(table.finding_id.as_deref(), Some(finding.id.as_str()));
-    assert!(advice.notes.iter().any(|n| n.contains("Postgres doesn't record missing-index requests")));
+    assert!(advice.notes.iter().any(|n| n.contains("PostgreSQL doesn't record missing-index requests")));
 }
 
 #[test]

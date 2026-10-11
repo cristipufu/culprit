@@ -1251,7 +1251,272 @@
     },
     "plan_cache": null,
     "pressure": {
-      "files": [],
+      "files": [
+        {
+          "database": null,
+          "kind": "data",
+          "name": "shop/order_items.ibd",
+          "read_bytes": 22806528,
+          "read_ms": 30.31880907,
+          "reads": 1392,
+          "write_bytes": 74891264,
+          "write_ms": 136.151442735,
+          "writes": 4571
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "shop/orders.ibd",
+          "read_bytes": 89260032,
+          "read_ms": 40.54917273,
+          "reads": 5448,
+          "write_bytes": 63438848,
+          "write_ms": 77.026663395,
+          "writes": 3872
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "shop/customers.ibd",
+          "read_bytes": 17580032,
+          "read_ms": 46.082931675,
+          "reads": 1073,
+          "write_bytes": 20561920,
+          "write_ms": 26.243035995,
+          "writes": 1255
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/ibdata1",
+          "read_bytes": 2703360,
+          "read_ms": 6.107669205,
+          "reads": 36,
+          "write_bytes": 9388032,
+          "write_ms": 4.440373905,
+          "writes": 58
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/undo002",
+          "read_bytes": 2359296,
+          "read_ms": 6.1256613,
+          "reads": 144,
+          "write_bytes": 2048000,
+          "write_ms": 4.175209665,
+          "writes": 125
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/undo003",
+          "read_bytes": 4489216,
+          "read_ms": 1.73033025,
+          "reads": 274,
+          "write_bytes": 8044544,
+          "write_ms": 8.511763755,
+          "writes": 491
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/slow_log.CSV",
+          "read_bytes": 2249981,
+          "read_ms": 6.132632715,
+          "reads": 587,
+          "write_bytes": 90160,
+          "write_ms": 1.758675105,
+          "writes": 368
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/8f6a0d435752-slow.log",
+          "read_bytes": 0,
+          "read_ms": 0,
+          "reads": 0,
+          "write_bytes": 131377,
+          "write_ms": 7.107127995,
+          "writes": 369
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/proc.MAD",
+          "read_bytes": 458752,
+          "read_ms": 6.40167924,
+          "reads": 56,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/undo001",
+          "read_bytes": 1310720,
+          "read_ms": 0.33663168,
+          "reads": 80,
+          "write_bytes": 655360,
+          "write_ms": 2.689338135,
+          "writes": 40
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "shop/products.ibd",
+          "read_bytes": 802816,
+          "read_ms": 0.204592245,
+          "reads": 49,
+          "write_bytes": 2211840,
+          "write_ms": 2.410147575,
+          "writes": 135
+        },
+        {
+          "database": null,
+          "kind": "temp",
+          "name": "mysql/ibtmp1",
+          "read_bytes": 0,
+          "read_ms": 0,
+          "reads": 0,
+          "write_bytes": 2146304,
+          "write_ms": 1.68850176,
+          "writes": 131
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/ddl_recovery.log",
+          "read_bytes": 0,
+          "read_ms": 0,
+          "reads": 0,
+          "write_bytes": 307496,
+          "write_ms": 0.65355972,
+          "writes": 167
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/help_keyword.frm",
+          "read_bytes": 1640,
+          "read_ms": 0.527030625,
+          "reads": 2,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "performance_schema/db.opt",
+          "read_bytes": 134,
+          "read_ms": 0.376080705,
+          "reads": 2,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "sys/x@0024user_summary_by_statement_type.frm",
+          "read_bytes": 4667,
+          "read_ms": 0.352786995,
+          "reads": 6,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "sys/db.opt",
+          "read_bytes": 134,
+          "read_ms": 0.234732135,
+          "reads": 2,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/time_zone_leap_second.MAI",
+          "read_bytes": 944,
+          "read_ms": 0.21749145,
+          "reads": 4,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/time_zone_transition.MAI",
+          "read_bytes": 1048,
+          "read_ms": 0.200250765,
+          "reads": 4,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/general_log.frm",
+          "read_bytes": 804,
+          "read_ms": 0.16188711,
+          "reads": 2,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/innodb_index_stats.ibd",
+          "read_bytes": 81920,
+          "read_ms": 0.056314005,
+          "reads": 5,
+          "write_bytes": 49152,
+          "write_ms": 0.102316995,
+          "writes": 3
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/innodb_table_stats.ibd",
+          "read_bytes": 65536,
+          "read_ms": 0.046044735,
+          "reads": 4,
+          "write_bytes": 49152,
+          "write_ms": 0.072594555,
+          "writes": 3
+        },
+        {
+          "database": null,
+          "kind": "data",
+          "name": "mysql/transaction_registry.ibd",
+          "read_bytes": 163840,
+          "read_ms": 0.101148135,
+          "reads": 7,
+          "write_bytes": 0,
+          "write_ms": 0,
+          "writes": 0
+        },
+        {
+          "database": null,
+          "kind": "other",
+          "name": "mysql/slow_log.CSM",
+          "read_bytes": 140,
+          "read_ms": 0.011062425,
+          "reads": 4,
+          "write_bytes": 315,
+          "write_ms": 0.084283155,
+          "writes": 9
+        }
+      ],
       "grants": [],
       "oldest_transaction": null,
       "replicas": [],
@@ -1336,6 +1601,33 @@
           "status": "good",
           "unit": "count",
           "value": 0
+        },
+        {
+          "healthy": "under 5 a second: pooled connections are opened once",
+          "key": "new-connections",
+          "label": "New connections",
+          "scope": "since-startup",
+          "status": "good",
+          "unit": "per-second",
+          "value": 0.02189330866481653
+        },
+        {
+          "healthy": null,
+          "key": "aborted-connects",
+          "label": "Failed connection attempts",
+          "scope": "since-startup",
+          "status": "info",
+          "unit": "per-hour",
+          "value": 0
+        },
+        {
+          "healthy": null,
+          "key": "aborted-clients",
+          "label": "Connections dropped without closing",
+          "scope": "since-startup",
+          "status": "info",
+          "unit": "per-hour",
+          "value": 21.75763182238668
         }
       ],
       "uptime_hours": 1.1566666666666667

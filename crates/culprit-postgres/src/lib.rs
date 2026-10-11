@@ -40,7 +40,7 @@ impl PostgresProvider {
         if let Some(engine) = spec.engine
             && engine != Engine::Postgres
         {
-            return Err(Error::invalid(format!("This connection is for {engine}, not Postgres")));
+            return Err(Error::invalid(format!("This connection is for {engine}, not PostgreSQL")));
         }
         Ok(PostgresProvider { connector: Connector::new(spec)?, spec: spec.clone() })
     }
@@ -144,7 +144,7 @@ impl Provider for PostgresProvider {
     }
 
     async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
-        Err(Error::new(ErrorCode::Unsupported, "Postgres doesn't keep the actual plan of past runs").with_hint(
+        Err(Error::new(ErrorCode::Unsupported, "PostgreSQL doesn't keep the actual plan of past runs").with_hint(
             "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the \
              editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
         ))

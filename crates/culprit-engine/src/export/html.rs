@@ -10,7 +10,7 @@ use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
 use super::{
     ExportNote, ExportOptions, engine_label, environment_label, exported_at, kind_label, node_label, prepared,
-    rows_text, share, sql_text, top_costs, where_,
+    rows_phrase, rows_text, share, sql_text, top_costs, where_,
 };
 
 const STYLE: &str = r#"
@@ -523,10 +523,10 @@ fn finding_body(
                 let pred = node.predicate.as_deref().or(node.seek_predicate.as_deref());
                 let _ = write!(
                     out,
-                    r#"<p class="note" style="margin-top:8px">The outlined step: <b>{}</b>, {} of the plan's cost, {} rows{}.</p>"#,
+                    r#"<p class="note" style="margin-top:8px">The outlined step: <b>{}</b>, {} of the plan's cost, {}{}.</p>"#,
                     escape(&node_label(node)),
                     format::percent(share(&plan, node)),
-                    escape(&rows_text(node)),
+                    escape(&rows_phrase(node)),
                     pred.map(|p| format!(", on <code>{}</code>", escape(&format::predicate(p)))).unwrap_or_default()
                 );
             }

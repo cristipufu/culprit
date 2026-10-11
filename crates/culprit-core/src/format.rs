@@ -2,6 +2,13 @@
 
 pub fn duration(ms: f64) -> String {
     let ms = ms.max(0.0);
+    // Nothing measured reads as 0 ms; cache-fast work in microseconds, as the app shows it ("3 µs", not "0.00 ms").
+    if ms == 0.0 {
+        return "0 ms".to_string();
+    }
+    if ms < 0.01 {
+        return format!("{:.0} µs", (ms * 1_000.0).max(1.0));
+    }
     if ms < 1.0 {
         return format!("{:.2} ms", ms);
     }
@@ -166,6 +173,23 @@ pub fn predicate(text: &str) -> String {
         i += 1;
     }
     spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// "Oct 1" (with the year when it isn't `now`'s): a date as people write it, from an ISO date or timestamp.
+pub fn friendly_date(iso: &str, now: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = iso.get(..10).unwrap_or(iso).split('-');
+    let (Some(year), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
+        return iso.to_string();
+    };
+    let (Ok(m), Ok(d)) = (month.parse::<usize>(), day.parse::<u32>()) else { return iso.to_string() };
+    let Some(name) = m.checked_sub(1).and_then(|i| MONTHS.get(i)) else { return iso.to_string() };
+    if now.get(..4) == Some(year) { format!("{name} {d}") } else { format!("{name} {d}, {year}") }
+}
+
+/// [`friendly_date`] relative to today (UTC).
+pub fn friendly_date_today(iso: &str) -> String {
+    friendly_date(iso, &chrono::Utc::now().format("%Y-%m-%d").to_string())
 }
 
 #[cfg(test)]

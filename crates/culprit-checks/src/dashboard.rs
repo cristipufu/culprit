@@ -748,8 +748,8 @@ fn health(s: &Snapshot) -> Tile {
     };
     let mut takeaway = match signals.first().filter(|s| matches!(s.status, SignalStatus::Bad | SignalStatus::Watch)) {
         Some(worst) => match &worst.healthy {
-            Some(healthy) => format!("{} is {}; {healthy}.", worst.label, signal_value(worst)),
-            None => format!("{} is {}.", worst.label, signal_value(worst)),
+            Some(healthy) => format!("{}: {}; {healthy}.", worst.label, signal_value(worst)),
+            None => format!("{}: {}.", worst.label, signal_value(worst)),
         },
         None if graded == 1 => "The one graded signal looks healthy.".to_string(),
         None if graded > 0 => format!("All {graded} graded signals look healthy."),
@@ -1262,8 +1262,10 @@ fn fix_statement(fix: &str) -> Option<String> {
 // ───────── storage, connections, replication, failing queries ─────────
 
 /// The worst finding of one check, for a tile that leads with it.
+/// Findings arrive ranked by impact; among equally severe ones the first is the most important. (`max_by_key` keeps
+/// the last of equal maximums, hence the reversal.)
 fn worst_finding<'a>(report: &'a Report, check: &str) -> Option<&'a Finding> {
-    report.findings.iter().filter(|f| f.check == check && !f.inactive).max_by_key(|f| f.severity)
+    report.findings.iter().filter(|f| f.check == check && !f.inactive).rev().max_by_key(|f| f.severity)
 }
 
 /// A collector's note, when it explains why a tile has nothing to show.
@@ -1283,8 +1285,10 @@ fn file_name(s: &Snapshot, f: &FileIo) -> String {
 }
 
 /// A latency people can read: cache-fast storage in microseconds ("3 µs", as the Health panel says), not "0.00 ms".
+/// Storage latency in one unit family: microseconds below a millisecond ("40 µs", "630 µs"), so SQL Server's 0.04 ms
+/// and MySQL's 8 µs read alike.
 fn latency(ms: f64) -> String {
-    if ms < 0.01 { format!("{} µs", (ms * 1000.0).round().max(1.0)) } else { format::duration(ms) }
+    if ms < 1.0 { format!("{} µs", (ms * 1000.0).round().max(1.0)) } else { format::duration(ms) }
 }
 
 /// The latency a file is waited on for (reads of data, writes of the log) and how many operations it averages.
@@ -1572,8 +1576,14 @@ fn failures(report: &Report) -> Tile {
         .map(|(q, unfinished, rate)| {
             let mut item = TileItem::new(ItemKind::Query, q.id.clone(), query_handle(q));
             item.query_id = Some(q.id.clone());
-            item.value =
-                Some(if *rate >= 0.999 { "every run".into() } else { format!("{} of runs", format::percent(*rate)) });
+            // Fewer than five unfinished runs is too few to grade (a grey dot), so the value says how few.
+            item.value = Some(if *unfinished < 5.0 {
+                format!("{} of {} runs", format::count(*unfinished), format::count(q.executions.max(*unfinished)))
+            } else if *rate >= 0.999 {
+                "every run".into()
+            } else {
+                format!("{} of runs", format::percent(*rate))
+            });
             item.share = Some(*rate);
             let id = format!("failing-query:{}", q.id);
             item.finding_id = report.findings.iter().find(|f| f.id == id).map(|f| f.id.clone());
@@ -1652,7 +1662,7 @@ fn statistics(report: &Report) -> Tile {
                 takeaway =
                     format!("{} covers only {window}, so the numbers are thin until it has seen more.", w.source);
             }
-            if let Some(worst) = stats_findings.iter().max_by_key(|f| f.severity) {
+            if let Some(worst) = stats_findings.iter().rev().max_by_key(|f| f.severity) {
                 status =
                     status.max(if worst.severity >= Severity::Medium { TileStatus::Watch } else { TileStatus::Info });
                 if status >= TileStatus::Watch && worst.severity >= Severity::Medium {
@@ -1755,6 +1765,26 @@ mod tests {
         assert_eq!(sentence("Query Store is OFF on this database."), "Query Store is OFF on this database.");
         assert_eq!(sentence("The login can't read it"), "the login can't read it.");
         assert_eq!(sentence("SQL Server 2016 or newer"), "SQL Server 2016 or newer.");
+    }
+
+    #[test]
+    fn the_first_of_equally_severe_findings_leads() {
+        use culprit_core::{Category, SubjectKind};
+        let mut report = crate::analyze(crate::waits::snapshot_with(Engine::Mssql));
+        let make = |key: &str| {
+            let mut f = crate::support::finding(
+                "failing-query",
+                key,
+                Category::Queries,
+                crate::support::subject(SubjectKind::Query, key),
+            );
+            f.severity = Severity::High;
+            f.title = format!("{key} fails");
+            f
+        };
+        report.findings.retain(|f| f.check != "failing-query");
+        report.findings.extend([make("first"), make("second")]);
+        assert_eq!(worst_finding(&report, "failing-query").map(|f| f.title.as_str()), Some("first fails"));
     }
 
     #[test]

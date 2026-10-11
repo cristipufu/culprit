@@ -270,7 +270,7 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             Severity::Medium,
             "shared_buffers is still the 128 MB default".into(),
             format!(
-                "Postgres keeps only {} of this database's {} in its own cache and leans on the operating system for the \
+                "PostgreSQL keeps only {} of this database's {} in its own cache and leans on the operating system for the \
                  rest, which costs a copy and an extra lookup on every read.",
                 format::bytes(shared),
                 format::bytes(data)
@@ -281,7 +281,7 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
                     "ALTER SYSTEM SET shared_buffers = '4GB'; -- size to ~25% of RAM; takes effect after a restart"
                         .into(),
                 ),
-                cost: Some("That much memory is reserved for Postgres.".into()),
+                cost: Some("That much memory is reserved for PostgreSQL.".into()),
             },
         );
         f.confidence = Confidence::Medium;

@@ -64,12 +64,17 @@ function lanes(q: QueryStat): Lane[] {
       min: spread?.min_ms,
       max: q.max_time_ms,
       stddev: q.stddev_time_ms,
-      p50: spread?.p50_ms,
-      p95: spread?.p95_ms,
-      p99: spread?.p99_ms,
+      p50: underMax(spread?.p50_ms, q.max_time_ms),
+      p95: underMax(spread?.p95_ms, q.max_time_ms),
+      p99: underMax(spread?.p99_ms, q.max_time_ms),
       histogram: spread?.histogram as [number, number, number][] | undefined,
     },
   ];
+}
+
+/** A percentile never above the slowest run (MySQL reports bucket upper edges, which can overshoot it). */
+function underMax(p: number | null | undefined, max: number | null | undefined): number | null | undefined {
+  return p != null && max != null && max > 0 ? Math.min(p, max) : p;
 }
 
 /** 1, 2 and 5 times each power of ten, for log-axis ticks. */
@@ -110,7 +115,9 @@ function sentence(q: QueryStat, ls: Lane[]): string | null {
   }
   const lane = ls[0];
   if (!lane) return null;
-  if (lane.p50 != null && lane.p99 != null) return `Half the runs finish within ${duration(lane.p50)}; 1 in 100 takes over ${duration(lane.p99)}.`;
+  // "1 in 100" needs a hundred runs to mean anything; fewer get the median alone.
+  if (lane.p50 != null && lane.p99 != null && lane.runs >= 100) return `Half the runs finish within ${duration(lane.p50)}; 1 in 100 takes over ${duration(lane.p99)}.`;
+  if (lane.p50 != null && lane.max != null && lane.runs >= 2) return `Half the runs finish within ${duration(lane.p50)}; the slowest took ${duration(lane.max)}.`;
   if (lane.min != null && lane.max != null && lane.max > lane.mean * 3) {
     return `Runs range from ${duration(lane.min)} to ${duration(lane.max)}, averaging ${duration(lane.mean)}${lane.stddev != null ? ` (±${duration(lane.stddev)})` : ""}.`;
   }

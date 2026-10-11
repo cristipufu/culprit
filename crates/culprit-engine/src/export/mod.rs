@@ -165,6 +165,12 @@ pub(crate) fn rows_text(node: &PlanNode) -> String {
     }
 }
 
+/// `rows_text` with its noun: "1 row", "12 rows", "12 → 1 row" (the noun follows the last number).
+pub(crate) fn rows_phrase(node: &PlanNode) -> String {
+    let last = node.act_rows.unwrap_or_else(|| node.est_rows_total());
+    format!("{} {}", rows_text(node), if last.round() == 1.0 { "row" } else { "rows" })
+}
+
 /// The plan's statement and the highest-cost operators, for the one-line "where the cost goes" summary.
 pub(crate) fn top_costs(plan: &Plan, limit: usize) -> Vec<(&'_ PlanNode, f64)> {
     let mut list: Vec<(&PlanNode, f64)> = plan.nodes().into_iter().map(|n| (n, share(plan, n))).collect();

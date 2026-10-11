@@ -24,7 +24,7 @@ pub fn parse_deadlock(text: &str) -> Result<Vec<Deadlock>> {
     if found.is_empty() {
         return Err(Error::invalid("No deadlock found in that text").with_hint(
             "Paste a SQL Server deadlock graph (.xdl XML), the LATEST DETECTED DEADLOCK section of SHOW ENGINE INNODB STATUS, \
-             or the Postgres log lines from \"deadlock detected\" to STATEMENT.",
+             or the PostgreSQL log lines from \"deadlock detected\" to STATEMENT.",
         ));
     }
     Ok(found

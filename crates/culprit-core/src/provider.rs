@@ -59,6 +59,14 @@ pub trait Provider: Send + Sync {
         Err(Error::new(ErrorCode::Unsupported, "This engine can't run statements that change data"))
     }
 
+    /// The statements the server itself would run for `sql`, by type (`SELECT`, `COMMIT TRANSACTION`, `CREATE TABLE`…),
+    /// read without running anything; `None` when the engine (or this login) can't tell. Confirms Culprit's own
+    /// classifier with the server's parser before a read or a measured run, so a lexing difference can't hide a
+    /// second statement.
+    async fn statement_types(&self, _sql: &str) -> Result<Option<Vec<String>>> {
+        Ok(None)
+    }
+
     /// The lock each waiting session asked for (object, index, mode), to explain blocking chains. Read only when someone
     /// is blocked. Empty when the engine can't tell.
     async fn lock_waits(&self) -> Result<Vec<crate::blocking::LockWait>> {

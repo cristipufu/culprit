@@ -170,14 +170,17 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
           <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
           <Format engine="MariaDB" what="EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON" />
         </div>
-        <div className="welcome-samples">
-          <span className="muted">See it with a sample comparison:</span>
-          {(["mssql", "postgres", "mysql"] as const).map((e) => (
-            <button key={e} className="btn ghost small" onClick={() => trySample(e)}>
-              {ENGINE[e]}
-            </button>
-          ))}
-        </div>
+        {/* The sample plans ship with the browser demo only; the desktop app doesn't offer buttons that can't load. */}
+        {import.meta.env.DEV && (
+          <div className="welcome-samples">
+            <span className="muted">See it with a sample comparison:</span>
+            {(["mssql", "postgres", "mysql"] as const).map((e) => (
+              <button key={e} className="btn ghost small" onClick={() => trySample(e)}>
+                {ENGINE[e]}
+              </button>
+            ))}
+          </div>
+        )}
         <p className="muted small">From Queries, any plan opens here, and two plans of the same query open side by side.</p>
       </div>
     </div>

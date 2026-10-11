@@ -38,7 +38,7 @@ pub struct Connector {
 impl Connector {
     pub fn new(spec: &ConnectionSpec) -> Result<Self> {
         if spec.host.trim().is_empty() {
-            return Err(Error::invalid("A Postgres connection needs a host"));
+            return Err(Error::invalid("A PostgreSQL connection needs a host"));
         }
         let port = spec.port.unwrap_or(DEFAULT_PORT);
         let mut config = tokio_postgres::Config::new();
@@ -289,7 +289,7 @@ fn map_connect_error(error: tokio_postgres::Error, host: &str, port: u16) -> Err
     match io_kind(&error) {
         Some(std::io::ErrorKind::ConnectionRefused) => {
             return Error::new(ErrorCode::ConnectionFailed, format!("Connection refused by {host}:{port}"))
-                .with_hint("Check that Postgres is running and reachable on that host and port.");
+                .with_hint("Check that PostgreSQL is running and reachable on that host and port.");
         }
         Some(std::io::ErrorKind::TimedOut) => {
             return Error::new(ErrorCode::Timeout, format!("Timed out connecting to {host}:{port}"))
@@ -338,7 +338,7 @@ pub fn map_error(error: tokio_postgres::Error) -> Error {
     let Some(db) = error.as_db_error() else {
         let message = full_message(&error);
         if error.is_closed() {
-            return Error::new(ErrorCode::ConnectionFailed, "The connection to Postgres was closed");
+            return Error::new(ErrorCode::ConnectionFailed, "The connection to PostgreSQL was closed");
         }
         return Error::new(ErrorCode::QueryFailed, message);
     };

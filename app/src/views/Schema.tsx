@@ -2,7 +2,7 @@ import { GitCompareArrows, Lightbulb, PanelLeftClose, PanelLeftOpen, Search, X }
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
-import { bytes, count } from "../lib/format";
+import { bytes, count, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { fuzzy, tableFindings, tableKey } from "../lib/schema-model";
 import { getState, setState, useStore } from "../lib/store";
@@ -326,7 +326,7 @@ export function Schema({ report }: { report: Report }) {
                     role="option"
                     aria-selected={!advising && e.key === current?.key}
                     className={`tl-row ${!advising && e.key === current?.key ? "on" : ""}`}
-                    title={`${e.key} · ${count(e.table.rows)} rows · ${bytes(e.table.total_bytes)}`}
+                    title={`${e.key} · ${rowCount(e.table.rows)} · ${bytes(e.table.total_bytes)}`}
                     onClick={() => (setSelected(e.key), setAdvising(false))}
                   >
                     <span className="tl-name">{highlight(e.table.name, e.hits)}</span>

@@ -19,7 +19,7 @@ const CONSUMED: &[&str] = &[
 /// Parse `EXPLAIN (FORMAT JSON)` output into Culprit's plan model.
 pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan> {
     let value: Value = serde_json::from_str(json)
-        .map_err(|e| Error::internal(format!("Postgres returned a plan Culprit cannot read: {e}")))?;
+        .map_err(|e| Error::internal(format!("PostgreSQL returned a plan Culprit cannot read: {e}")))?;
     let mut plan = from_value(&value, kind, statement)?;
     plan.raw = Some(json.to_string());
     Ok(plan)
@@ -33,9 +33,11 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         _ => None,
     }
     .and_then(Value::as_object)
-    .ok_or_else(|| Error::internal("Postgres returned an empty plan"))?;
-    let root =
-        top.get("Plan").and_then(Value::as_object).ok_or_else(|| Error::internal("Postgres plan has no root node"))?;
+    .ok_or_else(|| Error::internal("PostgreSQL returned an empty plan"))?;
+    let root = top
+        .get("Plan")
+        .and_then(Value::as_object)
+        .ok_or_else(|| Error::internal("PostgreSQL plan has no root node"))?;
 
     let mut next_id = 0;
     let root = node(root, &mut next_id);

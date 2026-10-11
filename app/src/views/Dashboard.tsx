@@ -172,6 +172,7 @@ export default function Dashboard({ report, connection }: { report: Report; conn
         <SignalsTile tile={tile("replication")} action="Replication" onOpen={() => openWaits("health")} />
         <SignalsTile
           tile={tile("failures")}
+          report={report}
           action="Findings"
           onOpen={() => setState({ view: "overview" })}
           onRow={(item) => (item.query_id ? openQuery(item.query_id) : setState({ view: "overview" }))}
@@ -639,7 +640,15 @@ function NowTile({ tile, live }: { tile: Tile; live: LiveNow }) {
 
 /** Running sessions over the last few minutes, blocked ones on top. */
 function Activity({ samples }: { samples: Sample[] }) {
-  if (samples.length < 2) return <div className="dash-activity empty" aria-hidden />;
+  const span = Math.round((HISTORY * REFRESH_MS) / 60000);
+  if (samples.length < 2) {
+    return (
+      <>
+        <div className="dash-activity empty" aria-hidden />
+        <div className="dash-activity-cap">Sampling every {REFRESH_MS / 1000} s</div>
+      </>
+    );
+  }
   const w = 200;
   const h = 34;
   const peak = Math.max(2, ...samples.map((s) => s.active)) * 1.25;
@@ -651,12 +660,22 @@ function Activity({ samples }: { samples: Sample[] }) {
   const area = `${line("active")}L${x(HISTORY - 1)},${h}L${x(offset).toFixed(1)},${h}Z`;
   const blocked = samples.some((s) => s.blocked > 0);
   const minutes = Math.max(1, Math.round((samples.length * REFRESH_MS) / 60000));
+  const filling = offset > 0;
   return (
-    <svg className="dash-activity" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={`Running sessions over the last ${minutes} min${blocked ? ", some blocked" : ""}`}>
-      <path className="area" d={area} />
-      <path className="line" d={line("active")} />
-      {blocked && <path className="blocked" d={line("blocked")} />}
-    </svg>
+    <>
+      <svg className="dash-activity" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" role="img" aria-label={`Running sessions over the last ${minutes} min${blocked ? ", some blocked" : ""}`}>
+        {/* A baseline across the whole window, dashed where no sample has arrived yet, so a young chart reads as filling. */}
+        {filling && <line className="pending" x1={0} x2={x(offset)} y1={h - 0.5} y2={h - 0.5} />}
+        <line className="base" x1={x(offset)} x2={w} y1={h - 0.5} y2={h - 0.5} />
+        <path className="area" d={area} />
+        <path className="line" d={line("active")} />
+        {blocked && <path className="blocked" d={line("blocked")} />}
+      </svg>
+      <div className="dash-activity-cap">
+        <span>{filling ? `${minutes} of ${span} min so far` : `Last ${span} min`}</span>
+        <span>now</span>
+      </div>
+    </>
   );
 }
 
@@ -694,7 +713,9 @@ function HealthTile({ tile, onOpen }: { tile: Tile; onOpen: () => void }) {
 // ───────── storage, connections, replication, failing queries ─────────
 
 /** The four signal tiles share one shape: up to two numbers, then the rows behind them, worst first. */
-function SignalsTile({ tile, action, onOpen, onRow }: { tile: Tile; action: string; onOpen: () => void; onRow?: (item: TileItem) => void }) {
+/** Rows are signals, or queries when `report` is given: those read like Top queries ("UPDATE orders · id = ?"), so two
+ * statements on one table stay apart. */
+function SignalsTile({ tile, action, onOpen, onRow, report }: { tile: Tile; action: string; onOpen: () => void; onRow?: (item: TileItem) => void; report?: Report }) {
   if (tile.status === "unavailable") return <Frame tile={tile} />;
   return (
     <Frame tile={tile} action={action} onOpen={onOpen}>
@@ -714,7 +735,7 @@ function SignalsTile({ tile, action, onOpen, onRow }: { tile: Tile; action: stri
             <li key={i.id}>
               <button className="dash-row" onClick={() => (onRow ? onRow(i) : onOpen())}>
                 <i className={`sig-dot ${i.status ?? "info"}`} aria-hidden />
-                <span className="dash-row-label">{i.label}</span>
+                <span className="dash-row-label">{report ? queryLabel(i, report) : i.label}</span>
                 <span className="dash-row-value">{i.value}</span>
               </button>
             </li>

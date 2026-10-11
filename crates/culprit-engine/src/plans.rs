@@ -29,8 +29,8 @@ impl PlanFormat {
     pub fn label(self) -> &'static str {
         match self {
             PlanFormat::ShowplanXml => "SQL Server showplan XML",
-            PlanFormat::PostgresJson => "Postgres EXPLAIN (FORMAT JSON)",
-            PlanFormat::PostgresText => "Postgres EXPLAIN",
+            PlanFormat::PostgresJson => "PostgreSQL EXPLAIN (FORMAT JSON)",
+            PlanFormat::PostgresText => "PostgreSQL EXPLAIN",
             PlanFormat::MysqlJson => "MySQL EXPLAIN FORMAT=JSON",
             PlanFormat::MysqlTree => "MySQL EXPLAIN ANALYZE / FORMAT=TREE",
             PlanFormat::Culprit => "Culprit plan JSON",
@@ -186,11 +186,11 @@ fn json_format(value: &Value) -> Option<PlanFormat> {
 }
 
 fn unrecognized(text: &str) -> Error {
-    let hint = "Paste or open a SQL Server plan (.sqlplan), Postgres EXPLAIN output (text or FORMAT JSON), or MySQL \
+    let hint = "Paste or open a SQL Server plan (.sqlplan), PostgreSQL EXPLAIN output (text or FORMAT JSON), or MySQL \
                 EXPLAIN FORMAT=JSON / EXPLAIN ANALYZE output.";
     let first = text.lines().next().unwrap_or("").trim();
     let message = if text.contains("<explain xmlns=\"http://www.postgresql.org") || first.starts_with("- Plan:") {
-        "Postgres plans in XML or YAML aren't supported; use EXPLAIN (FORMAT JSON) or the default text format"
+        "PostgreSQL plans in XML or YAML aren't supported; use EXPLAIN (FORMAT JSON) or the default text format"
     } else if text.starts_with('<') {
         "This XML isn't a SQL Server execution plan"
     } else if text.contains("|--") {
@@ -336,7 +336,7 @@ fn postgres_value(value: &Value, statement: Option<&str>) -> Result<Plan> {
     #[cfg(not(feature = "postgres"))]
     {
         let _ = (value, statement);
-        Err(Error::invalid("This build of Culprit has no Postgres support"))
+        Err(Error::invalid("This build of Culprit has no PostgreSQL support"))
     }
 }
 

@@ -388,7 +388,7 @@
     "counters": "in the hour since the server last restarted",
     "engine": "postgres",
     "notes": [
-      "Postgres doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters."
+      "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters."
     ],
     "tables": [],
     "taken_at": "2026-10-11T11:54:21Z"

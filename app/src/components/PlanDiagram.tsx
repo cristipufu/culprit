@@ -470,7 +470,7 @@ function PlanCard(props: {
           <>{rows(node.est_rows * Math.max(1, node.est_executions))} est.</>
         )}
         {(ownMs ?? node.act_time_ms) != null && <span className="muted"> · {duration(ownMs ?? node.act_time_ms!)}</span>}
-        {node.warnings.length > 0 && !worst && <TriangleAlert size={11} color="var(--medium)" style={{ marginLeft: 3 }} />}
+        {node.warnings.length > 0 && !worst && <TriangleAlert size={11} color="var(--medium-text)" style={{ marginLeft: 3 }} />}
         {/* The compare mark sits here, not beside the name: the name is what tells two steps apart. */}
         {mark && <span className={`pc-mark ${mark}`}>{MARK_LABEL[mark]}</span>}
       </span>

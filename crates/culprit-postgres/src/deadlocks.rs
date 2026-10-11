@@ -57,10 +57,10 @@ pub(crate) async fn recent(client: &Client, since_hours: f64) -> Result<Deadlock
     let log_waits = row.as_ref().and_then(|r| r.text("log_lock_waits")).is_some_and(|v| v == "on");
     let when = since
         .as_deref()
-        .map(|s| format!(" since statistics were reset ({})", &s[..s.len().min(10)]))
+        .map(|s| format!(" since statistics were reset on {}", culprit_core::format::friendly_date_today(s)))
         .unwrap_or_default();
     let note = format!(
-        "Postgres counted {} deadlock{} in this database{when}. It writes the details (who waited for whom, and the \
+        "PostgreSQL counted {} deadlock{} in this database{when}. It writes the details (who waited for whom, and the \
          statements) only to the server log, which SQL can't read: paste those log lines here to have them explained.{}",
         counted.map(|c| format!("{c:.0}")).unwrap_or_else(|| "no".into()),
         if counted == Some(1.0) { "" } else { "s" },

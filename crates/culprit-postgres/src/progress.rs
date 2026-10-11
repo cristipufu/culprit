@@ -7,8 +7,8 @@ use crate::connect::{Connector, INTERACTIVE};
 use crate::rows::{Row, iso, query_one};
 
 /// Postgres doesn't count rows per operator while a query runs; only these commands report how far along they are.
-pub(crate) const NO_OPERATOR_PROGRESS: &str = "Postgres doesn't report how far a running query has got, operator by \
-operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, \
+pub(crate) const NO_OPERATOR_PROGRESS: &str = "PostgreSQL doesn't report how far a running query has got, operator by \
+operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, \
 ANALYZE, CLUSTER and COPY report their own progress.";
 
 struct Phase {
@@ -123,7 +123,7 @@ pub(crate) async fn query_progress(connector: &Connector, session: &str) -> Resu
             progress.phase_percent = fraction;
             progress.percent = fraction;
             progress.percent_basis =
-                fraction.map(|_| format!("How far through this step, from Postgres ({})", phase.view));
+                fraction.map(|_| format!("How far through this step, from PostgreSQL ({})", phase.view));
             break;
         }
     }

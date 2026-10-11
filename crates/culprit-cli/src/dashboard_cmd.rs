@@ -1,14 +1,12 @@
 //! `culprit dashboard`: one database at a glance. Each tile is one plain sentence, the numbers behind it, the rows to
 //! open and the command to run next, the same as the app's dashboard.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use clap::Args;
-use culprit_core::{Dashboard, Result, SnapshotOptions, Tile, TileKey, TileStatus, format};
+use culprit_core::{Dashboard, Result, SnapshotOptions, Tile, TileKey, TileStatus};
 use culprit_engine::{Workspace, reports};
 use serde_json::json;
 
-use crate::output::{Format, Out};
+use crate::output::{Format, Out, age};
 
 #[derive(Args)]
 pub struct DashboardArgs {
@@ -85,12 +83,6 @@ fn shell_word(text: &str) -> String {
     }
 }
 
-fn age(taken_at: &str) -> Option<String> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs_f64();
-    let seconds = (now - format::epoch_seconds(taken_at)?).max(0.0);
-    Some(if seconds < 60.0 { "just now".into() } else { format!("{} ago", format::duration(seconds * 1000.0)) })
-}
-
 fn mark(out: &Out, status: TileStatus) -> String {
     match status {
         TileStatus::Bad => out.red("●"),
@@ -145,7 +137,10 @@ fn print_text(d: &Dashboard, out: &Out) {
             println!("{indent}{dot}{}{value}", item.label);
         }
         if let Some(sql) = &tile.fix_sql {
-            println!("{indent}{}", out.blue(sql));
+            // Settings files and multi-line statements keep the tile's indent on every line.
+            for line in sql.lines() {
+                println!("{indent}{}", out.blue(line));
+            }
         }
         if let Some(next) = &tile.next {
             println!("{indent}{}", out.dim(&format!("→ {next}")));
@@ -157,7 +152,7 @@ fn print_markdown(d: &Dashboard) {
     println!("## {} · {}", d.connection, d.product);
     println!();
     if let Some(coverage) = &d.coverage {
-        println!("_{coverage}; scanned {}_", d.taken_at);
+        println!("_{coverage}; scanned {}_", culprit_core::changes::dated_time(&d.taken_at));
         println!();
     }
     if d.attention.is_empty() {
@@ -176,7 +171,16 @@ fn print_markdown(d: &Dashboard) {
             println!("  - {}{value}", item.label);
         }
         if let Some(sql) = &tile.fix_sql {
-            println!("  `{sql}`");
+            if sql.contains('\n') {
+                println!();
+                println!("  ```");
+                for line in sql.lines() {
+                    println!("  {line}");
+                }
+                println!("  ```");
+            } else {
+                println!("  `{sql}`");
+            }
         }
     }
 }

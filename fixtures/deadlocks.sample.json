@@ -211,7 +211,7 @@
   "counted": 1.0,
   "counted_since": "2026-10-11T07:01:50Z",
   "deadlocks": [],
-  "note": "Postgres counted 1 deadlock in this database since statistics were reset (2026-10-11). It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout.",
+  "note": "PostgreSQL counted 1 deadlock in this database since statistics were reset on Oct 11. It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout.",
   "since_hours": 6.0,
   "source": "pg_stat_database"
  },

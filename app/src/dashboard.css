@@ -34,7 +34,7 @@
 .dash-headline h2 {
   margin: 0;
   font-size: var(--fs-title);
-  font-weight: 650;
+  font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -86,7 +86,7 @@
   background: var(--surface);
   color: var(--text-2);
   font-size: var(--fs-meta);
-  font-weight: 550;
+  font-weight: 600;
 }
 
 .dash-chip:hover {
@@ -263,7 +263,7 @@
 .dash-tile-head h3 {
   margin: 0;
   font-size: var(--fs-micro);
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-3);
@@ -315,13 +315,13 @@
 }
 
 .dash-open:hover {
-  color: var(--accent);
+  color: var(--link);
 }
 
 .dash-takeaway {
   margin: 7px 0 0;
   font-size: var(--fs-strong);
-  font-weight: 560;
+  font-weight: 600;
   line-height: 1.4;
   color: var(--text);
   text-wrap: pretty;
@@ -363,7 +363,7 @@
 .dash-count b,
 .dash-big b {
   font-size: var(--fs-metric);
-  font-weight: 620;
+  font-weight: 600;
   letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
   color: var(--text);
@@ -382,7 +382,7 @@
 }
 
 .dash-count.bad b {
-  color: var(--high);
+  color: var(--high-text);
 }
 
 .dash-count.watch b {
@@ -580,7 +580,7 @@
   width: 14px;
   text-align: center;
   font-weight: 700;
-  color: var(--good);
+  color: var(--good-text);
 }
 
 /* ───────── findings ───────── */
@@ -718,7 +718,27 @@
 }
 
 .dash-activity.empty {
-  border-bottom: 1px dashed var(--border);
+  border-bottom: 1px dashed var(--border-strong);
+}
+
+.dash-activity .base,
+.dash-activity .pending {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.dash-activity .pending {
+  stroke-dasharray: 3 3;
+}
+
+.dash-activity-cap {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-size: var(--fs-2xs);
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 .dash-activity .area {
@@ -807,7 +827,7 @@
   left: 0;
   padding-top: 3px;
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--text-3);
 }
 
@@ -910,5 +930,5 @@
 }
 
 .dash-stats.compact .dash-stat b {
-  font-size: 16px;
+  font-size: var(--fs-heading);
 }

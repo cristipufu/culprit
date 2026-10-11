@@ -8,8 +8,8 @@ use culprit_core::{
 };
 
 use super::{
-    ExportNote, ExportOptions, engine_label, exported_at, kind_label, prepared, rows_text, server_line, share,
-    sql_text, top_costs, where_,
+    ExportNote, ExportOptions, engine_label, exported_at, kind_label, prepared, rows_phrase, rows_text, server_line,
+    share, sql_text, top_costs, where_,
 };
 
 const MAX_STEPS: usize = 40;
@@ -328,10 +328,10 @@ fn finding_section(out: &mut String, report: &Report, finding: &Finding, options
                 .and_then(|id| plan.nodes().into_iter().find(|n| n.id == id))
                 .unwrap_or_else(|| plan.hottest());
             let mut line = format!(
-                "Plan: the step to look at is **{}** ({} of the plan's cost, {} rows",
+                "Plan: the step to look at is **{}** ({} of the plan's cost, {}",
                 label(node),
                 format::percent(share(&plan, node)),
-                rows_text(node)
+                rows_phrase(node)
             );
             if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
                 let _ = write!(line, ", on {}", code(&format::predicate(p)));

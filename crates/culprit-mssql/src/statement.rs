@@ -34,6 +34,20 @@ pub(crate) async fn estimated_plan(client: &mut MsClient, sql: &str) -> Result<P
     best_plan(&documents)
 }
 
+/// The server's own reading of a batch, without running it: SHOWPLAN compiles every statement and executes none.
+pub(crate) async fn statement_types(client: &mut MsClient, sql: &str) -> Result<Vec<String>> {
+    execute(client, "SET SHOWPLAN_XML ON").await.map_err(map_error)?;
+    let documents = collect_plans(client, sql).await;
+    let reset = execute(client, "SET SHOWPLAN_XML OFF").await;
+    let documents = documents?;
+    reset.map_err(map_error)?;
+    let mut types = Vec::new();
+    for xml in &documents {
+        types.extend(plan_xml::statement_types(xml)?);
+    }
+    Ok(types)
+}
+
 /// Runs the statement to measure it. SQL Server has no read-only transactions, so it always runs inside one that is
 /// rolled back: a write measured on a non-production connection changes nothing (the Workspace never lets a write
 /// reach here on production).
@@ -92,7 +106,12 @@ fn best_plan(documents: &[String]) -> Result<Plan> {
         .iter()
         .filter_map(|xml| plan_xml::parse(xml).ok())
         .max_by(|a, b| a.total_cost.total_cmp(&b.total_cost))
-        .ok_or_else(|| Error::new(ErrorCode::QueryFailed, "SQL Server returned no plan for this statement"))
+        .ok_or_else(|| {
+            Error::new(ErrorCode::Unsupported, "SQL Server returned no plan for this statement").with_hint(
+                "It builds no plan for a statement that reads no table (SELECT 1, a variable assignment) or only \
+                 declares or sets something. Explain a query that reads a table.",
+            )
+        })
 }
 
 /// Runs on a dedicated session that is discarded afterwards, so stopping early at `limit` rows is safe.

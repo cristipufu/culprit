@@ -1,5 +1,5 @@
 import { ArrowUpRight, Bot, Check, Copy, EyeOff, Flame, History, SquarePen } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { SignalEvidence } from "../components/BeyondTime";
 import { FindingShareMenu, VerifyButton, VerifyResult, useVerify } from "../components/FindingShare";
 import { PlanView, shortPredicate } from "../components/PlanView";
@@ -10,7 +10,7 @@ import type { PlanNode } from "../gen/PlanNode";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
 import { api } from "../lib/api";
-import { ago, count, duration, metric, percent } from "../lib/format";
+import { ago, count, duration, metric, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore } from "../lib/store";
@@ -172,8 +172,8 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
           <VerifyButton running={verify.result?.status === "running"} onRun={verify.run} />
           <FindingShareMenu report={report} finding={finding} />
           <span className="spacer" />
-          <button className="btn ghost" onClick={() => toggleDismissed(finding.id)}>
-            <EyeOff size={13} /> {dismissed ? "Restore" : "Dismiss"} <span className="kbd">D</span>
+          <button className="btn ghost dismiss" onClick={() => toggleDismissed(finding.id)} aria-label={dismissed ? "Restore" : "Dismiss"} title={`${dismissed ? "Restore" : "Dismiss"} (D)`}>
+            <EyeOff size={13} /> <span className="btn-label">{dismissed ? "Restore" : "Dismiss"}</span> <span className="kbd">D</span>
           </button>
         </div>
       </div>
@@ -199,6 +199,43 @@ function CopyId({ id }: { id: string }) {
   );
 }
 
+/** The statement in at most five lines; a longer one fades out over its last line and offers the rest in place. */
+function SqlPreview({ text }: { text: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [clipped, setClipped] = useState(false);
+  const [open, setOpen] = useState(false);
+  // Highlighting and fonts settle after the first layout, so the check runs whenever the statement's size changes.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || open) return;
+    const check = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const observer = new ResizeObserver(check);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, [text, open]);
+  return (
+    <>
+      <div ref={box} className={`sql ${open ? "open" : clipped ? "clipped" : ""}`}>
+        <Sql text={text} />
+      </div>
+      {(clipped || open) && (
+        <button
+          className="sql-more"
+          aria-expanded={open}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          {open ? "Show less" : "Show all"}
+        </button>
+      )}
+    </>
+  );
+}
+
 function QueryCard({ report, query, node }: { report: Report; query: QueryStat; node: number | null }) {
   const w = report.snapshot.workload;
   const share = w && w.total_time_ms > 0 ? query.total_time_ms / w.total_time_ms : null;
@@ -212,9 +249,7 @@ function QueryCard({ report, query, node }: { report: Report; query: QueryStat; 
       onClick={() => setState({ view: "queries", query: query.id })}
       onKeyDown={(e) => e.key === "Enter" && setState({ view: "queries", query: query.id })}
     >
-      <div className="sql">
-        <Sql text={query.text} />
-      </div>
+      <SqlPreview text={query.text} />
       <div className="qmeta">
         {share != null && (
           <span>
@@ -263,7 +298,7 @@ function HotNode({ plan, focus, total }: { plan: PlanNode; focus: number | null;
           <span className="muted"> · {percent(share)} of the plan's cost</span>
         </div>
         <div className="muted" style={{ marginTop: 2 }}>
-          {read != null ? `Reads ${count(read)} rows` : `Estimates ${count(node.est_rows)} rows`}
+          {read != null ? `Reads ${rowCount(read)}` : `Estimates ${rowCount(node.est_rows)}`}
           {read != null && ` to return ~${count(Math.max(1, Math.round(node.est_rows)))}`}
           {node.predicate ? ` · filter ${shortPredicate(node.predicate)}` : ""}
         </div>

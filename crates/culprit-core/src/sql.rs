@@ -9,17 +9,50 @@ use ts_rs::TS;
 use crate::{Engine, Error, Result};
 
 /// How backslashes behave inside quoted text. MySQL and Postgres both have a server setting that flips this
-/// (NO_BACKSLASH_ESCAPES, standard_conforming_strings), so their text is lexed both ways and must agree.
+/// (NO_BACKSLASH_ESCAPES, standard_conforming_strings).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Backslash {
     Escapes,
     Literal,
 }
 
-fn modes(engine: Engine) -> &'static [Backslash] {
+/// What `"…"` is. MySQL's ANSI_QUOTES and SQL Server's QUOTED_IDENTIFIER flip it between a string and a name,
+/// independently of the backslash setting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DoubleQuote {
+    String,
+    Identifier,
+}
+
+/// One combination of the server settings that change how text is lexed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Mode {
+    backslash: Backslash,
+    double_quote: DoubleQuote,
+}
+
+/// Every combination a server can be running with: the text is lexed under each and every reading must agree, so a
+/// session setting Culprit didn't choose can never make the server see a statement the lexer didn't.
+fn modes(engine: Engine) -> &'static [Mode] {
+    use Backslash::*;
+    use DoubleQuote::*;
     match engine {
-        Engine::Mssql => &[Backslash::Literal],
-        Engine::Postgres | Engine::Mysql => &[Backslash::Escapes, Backslash::Literal],
+        // QUOTED_IDENTIFIER ON (the driver default) and OFF.
+        Engine::Mssql => {
+            &[Mode { backslash: Literal, double_quote: Identifier }, Mode { backslash: Literal, double_quote: String }]
+        }
+        // standard_conforming_strings on and off (E'…' always escapes).
+        Engine::Postgres => &[
+            Mode { backslash: Escapes, double_quote: Identifier },
+            Mode { backslash: Literal, double_quote: Identifier },
+        ],
+        // NO_BACKSLASH_ESCAPES × ANSI_QUOTES.
+        Engine::Mysql => &[
+            Mode { backslash: Escapes, double_quote: String },
+            Mode { backslash: Literal, double_quote: String },
+            Mode { backslash: Escapes, double_quote: Identifier },
+            Mode { backslash: Literal, double_quote: Identifier },
+        ],
     }
 }
 
@@ -34,7 +67,8 @@ enum Token<'a> {
 }
 
 /// Top-level tokens, with literals and comments skipped. Errors on text it can't lex safely.
-fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<Vec<Token<'_>>, &'static str> {
+fn lex(text: &str, engine: Engine, mode: Mode) -> std::result::Result<Vec<Token<'_>>, &'static str> {
+    let backslash = mode.backslash;
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -64,9 +98,10 @@ fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<
             }
             b'\'' => i = quoted_end(bytes, i, b'\'', backslash == Backslash::Escapes)?,
             b'"' => {
-                // A string in MySQL's default mode (backslashes escape), an identifier elsewhere and under ANSI_QUOTES.
-                let string = engine == Engine::Mysql && backslash == Backslash::Escapes;
-                let end = quoted_end(bytes, i, b'"', string)?;
+                // A string (MySQL by default, SQL Server with QUOTED_IDENTIFIER OFF) or a name (ANSI_QUOTES, Postgres,
+                // QUOTED_IDENTIFIER ON). Backslashes escape only inside a string, and only where the server says so.
+                let string = mode.double_quote == DoubleQuote::String;
+                let end = quoted_end(bytes, i, b'"', string && backslash == Backslash::Escapes)?;
                 if !string {
                     tokens.push(Token::Quoted(&text[i + 1..end - 1], b'"'));
                 }
@@ -142,8 +177,10 @@ fn is_word_part(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_' || c == b'$' || c == b'@' || c == b'#' || c >= 0x80
 }
 
+/// Where a `--` or `#` comment ends. Servers end it at a carriage return as well as a line feed (Postgres does, and
+/// so may others): ending it at either one never hides text the server runs, so `-- note\rEXEC …` shows its EXEC.
 fn line_end(bytes: &[u8], from: usize) -> usize {
-    bytes[from..].iter().position(|b| *b == b'\n').map_or(bytes.len(), |p| from + p + 1)
+    bytes[from..].iter().position(|b| matches!(b, b'\n' | b'\r')).map_or(bytes.len(), |p| from + p + 1)
 }
 
 /// The index after a `/* … */` comment starting at `from`. Postgres and SQL Server nest these; MySQL doesn't.
@@ -515,9 +552,11 @@ fn side_effect_family(engine: Engine, name: &str) -> bool {
             (n.starts_with("pg_") && n.contains("reset"))
                 || n.contains("replication_slot")
                 || n.starts_with("pg_replication_origin")
-                || ["pg_backup_", "pg_start_backup", "pg_stop_backup", "pg_wal_", "pg_switch_", "pg_log_"]
+                // pg_wal_replay_pause and friends act; pg_wal_lsn_diff only subtracts (replication-lag queries use it).
+                || (["pg_backup_", "pg_start_backup", "pg_stop_backup", "pg_wal_", "pg_switch_", "pg_log_"]
                     .iter()
                     .any(|p| n.starts_with(p))
+                    && n != "pg_wal_lsn_diff")
                 || ["pg_create_", "pg_drop_", "pg_copy_", "pg_file_", "pg_read_", "pg_ls_", "pg_import_"]
                     .iter()
                     .any(|p| n.starts_with(p))
@@ -874,6 +913,37 @@ mod tests {
     }
 
     #[test]
+    fn every_server_setting_must_agree() {
+        // Under MySQL's default mode `"a\" , …"` is one string; under ANSI_QUOTES `"a\"` is a name and SLEEP is a call.
+        let text = "SELECT \"a\\\" , SLEEP(5) -- \"";
+        assert!(!reads_only(text, Engine::Mysql), "{text}");
+        // SQL Server with QUOTED_IDENTIFIER OFF reads `"…"` as a string: both readings still see one read.
+        assert!(reads_only("SELECT \"x\" AS a FROM t", Engine::Mssql));
+        assert!(reads_only("SELECT \"col\" FROM t", Engine::Mysql));
+    }
+
+    #[test]
+    fn no_tsql_statement_keyword_hides_behind_any_separator() {
+        let separators = [" ", "\n", "\t", "\r", "\r\n", "/**/", "/* note */", " -- note\n", " -- note\r", ".", ") "];
+        for keyword in MSSQL_STATEMENTS.iter().filter(|k| **k != "WITH") {
+            for sep in separators {
+                let text = format!("SELECT 1{sep}{keyword} x");
+                assert!(!reads_only(&text, Engine::Mssql), "{text:?}");
+                assert!(single_statement(&text, Engine::Mssql).is_err(), "{text:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_carriage_return_ends_a_line_comment() {
+        assert!(!reads_only("SELECT 1 -- note\r, pg_stat_statements_reset()", Engine::Postgres));
+        assert!(single_statement("SELECT 1 -- note\rCOMMIT CREATE TABLE t (a int)", Engine::Mssql).is_err());
+        assert!(!reads_only("SELECT 1 # note\r, GET_LOCK('a', 10)", Engine::Mysql));
+        // An ordinary comment on its own line still reads.
+        assert!(reads_only("SELECT 1 -- note\r\n", Engine::Postgres));
+    }
+
+    #[test]
     fn invisible_characters_never_hide_a_keyword() {
         for (text, engine) in [
             ("SELECT 1\u{00A0}EXEC sp_who", Engine::Mssql),
@@ -892,6 +962,15 @@ mod tests {
         assert!(reads_only("SELECT prénom FROM clients", Engine::Postgres));
         // A real qualified name still reads.
         assert!(reads_only("SELECT t.exec, [t].begin FROM t", Engine::Mssql));
+    }
+
+    #[test]
+    fn replication_lag_arithmetic_is_a_read() {
+        assert!(reads_only(
+            "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) FROM pg_stat_replication",
+            Engine::Postgres
+        ));
+        assert!(!reads_only("SELECT pg_wal_replay_pause()", Engine::Postgres));
     }
 
     #[test]

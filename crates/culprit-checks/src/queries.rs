@@ -500,7 +500,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 Engine::Mysql => crate::sensitivity::mysql_fix(0.0, snapshot.server.name() == "MariaDB"),
             });
             if snapshot.server.engine == Engine::Postgres {
-                f.caveats.push("Postgres keeps one minimum, average, maximum and standard deviation per statement, so Culprit can't tell which values were slow or how many calls were.".into());
+                f.caveats.push("PostgreSQL keeps one minimum, average, maximum and standard deviation per statement, so Culprit can't tell which values were slow or how many calls were.".into());
             }
             Some(f)
         })

@@ -45,6 +45,12 @@ export function count(value: number | null | undefined): string {
   return value.toFixed(1);
 }
 
+/** "1 row", "12 rows", "1.2K rows"; "— rows" when unknown. */
+export function rowCount(value: number | null | undefined): string {
+  const n = count(value);
+  return `${n} ${n === "1" ? "row" : "rows"}`;
+}
+
 export function percent(ratio: number | null | undefined): string {
   if (ratio == null) return "—";
   const p = ratio * 100;

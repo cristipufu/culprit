@@ -311,7 +311,7 @@ impl Workspace {
         let spec = merge(&new)?;
         let engine = spec.engine.ok_or_else(|| {
             Error::invalid("Can't tell which database engine this is")
-                .with_hint("Choose Postgres or SQL Server explicitly")
+                .with_hint("Choose PostgreSQL or SQL Server explicitly")
         })?;
         let password_env = new.password_env.clone().filter(|v| !v.is_empty());
         let password = spec.password.as_deref().filter(|p| !p.is_empty() && password_env.is_none());
@@ -688,7 +688,30 @@ impl Workspace {
         // (`… COMMIT …` on SQL Server, which needs no semicolons) could end that transaction early.
         culprit_core::sql::single_statement(sql, info.engine)?;
         guard_execution(&info, sql, mode == ExplainMode::Analyze, confirmed)?;
-        let mut plan = self.forget_rejected(name, self.provider(name).await?.explain(sql, mode).await)?;
+        let provider = self.provider(name).await?;
+        // A measured run executes the text inside a rolled-back transaction: the server must see one statement (and on
+        // production, one read), or a second statement could end the transaction.
+        if mode == ExplainMode::Analyze
+            && let Some(types) = self.forget_rejected(name, provider.statement_types(sql).await)?
+        {
+            let seen = format!("The server reads this text as: {}.", types.join(", ").to_lowercase());
+            if types.len() != 1 {
+                return Err(Error::invalid("Explain Analyze measures one statement at a time").with_hint(seen));
+            }
+            if info.environment.is_production() && !is_read_type(&types[0]) {
+                return Err(Error::new(
+                    ErrorCode::PermissionDenied,
+                    format!(
+                        "'{}' is a production connection; Explain Analyze would execute a statement that changes data",
+                        info.name
+                    ),
+                )
+                .with_hint(format!(
+                    "{seen} Use the estimated plan (Explain), or measure it on a non-production copy."
+                )));
+            }
+        }
+        let mut plan = self.forget_rejected(name, provider.explain(sql, mode).await)?;
         culprit_core::insights::annotate(&mut plan);
         Ok(plan)
     }
@@ -997,8 +1020,27 @@ impl Workspace {
             return Err(Error::new(ErrorCode::PermissionDenied, "Only statements that read data run here")
                 .with_hint("Send a single SELECT: no writes, DDL, procedure calls or locking reads."));
         }
+        let provider = self.provider(name).await?;
+        // The server's own parser has the last word where it can give one (SQL Server compiles the text under SHOWPLAN):
+        // exactly one statement, and a read.
+        let server_checked = match self.forget_rejected(name, provider.statement_types(statement).await)? {
+            Some(types) if !(types.len() == 1 && is_read_type(&types[0])) => {
+                return Err(Error::new(ErrorCode::PermissionDenied, "Only statements that read data run here")
+                    .with_hint(format!("The server reads this text as: {}.", types.join(", ").to_lowercase())));
+            }
+            Some(_) => true,
+            None => false,
+        };
         let batch = read_only_batch(info.engine, statement);
-        self.forget_rejected(name, self.provider(name).await?.run(&batch, limit).await)
+        let mut result = self.forget_rejected(name, provider.run(&batch, limit).await)?;
+        // Say so when the second opinion couldn't be asked for: the person (or the agent's approver) should know.
+        if !server_checked && info.engine == Engine::Mssql {
+            result.messages.push(
+                "SQL Server couldn't double-check that this only reads (the login has no SHOWPLAN permission); Culprit's own check decided."
+                    .to_string(),
+            );
+        }
+        Ok(result)
     }
 
     /// Databases, tables, views and columns for editor completion, read live through the read-only run path.
@@ -1081,7 +1123,15 @@ pub fn explain_waits(snapshot: &culprit_core::Snapshot) -> Option<culprit_core::
     culprit_checks::waits::explain(snapshot)
 }
 
-/// Postgres and MySQL providers already run reads inside a read-only transaction. SQL Server has no read-only
+/// The statement types SQL Server's showplan reports for a read. An allow-list: anything else (`SELECT INTO`, writes,
+/// types a later version adds) is refused and named in the error, so a new kind of read fails safe.
+const READ_TYPES: [&str; 4] = ["SELECT", "SELECT WITHOUT QUERY", "XML SELECT", "JSON SELECT"];
+
+fn is_read_type(t: &str) -> bool {
+    READ_TYPES.iter().any(|r| r.eq_ignore_ascii_case(t.trim()))
+}
+
+/// PostgreSQL and MySQL providers already run reads inside a read-only transaction. SQL Server has no read-only
 /// transactions, so a read runs inside one that is always rolled back.
 pub fn read_only_batch(engine: Engine, statement: &str) -> String {
     match engine {
@@ -1238,6 +1288,16 @@ mod tests {
             display: String::new(),
             last_report: None,
             agent_access: Default::default(),
+        }
+    }
+
+    #[test]
+    fn reads_are_the_select_types_showplan_reports() {
+        for t in ["SELECT", "select", "SELECT WITHOUT QUERY", "XML SELECT", "JSON SELECT"] {
+            assert!(is_read_type(t), "{t}");
+        }
+        for t in ["SELECT INTO", "INSERT", "UPDATE", "DELETE", "MERGE", "EXECUTE PROC", "COND", "SELECT INTO XML", ""] {
+            assert!(!is_read_type(t), "{t}");
         }
     }
 

@@ -378,24 +378,50 @@ pub fn statement_handle(text: &str) -> String {
     }
 }
 
-/// `CALL proc(…)`, `EXEC proc`, `DO f(…)`, `SELECT f(…)` without a table: name the routine or function.
+/// `CALL proc(…)`, `EXEC proc`, `DO f(…)`, `SELECT f(…)` without a table: name the routine or function. Names may be
+/// quoted the engine's way (MySQL's digest text writes ``DO `SLEEP` (?)``).
 fn other_handle(text: &str, lower: &str) -> Option<String> {
-    let word = |from: usize| -> Option<String> {
-        let rest = text.get(from..)?.trim_start();
-        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.')).collect();
-        (!name.is_empty()).then_some(name)
+    // The name at `from`, parts unquoted and joined by dots, and the text after it.
+    let name_at = |from: usize| -> Option<(String, &str)> {
+        let mut rest = text.get(from..)?.trim_start();
+        let mut parts = Vec::new();
+        loop {
+            let close = match rest.chars().next()? {
+                '`' => Some('`'),
+                '[' => Some(']'),
+                '"' => Some('"'),
+                _ => None,
+            };
+            if close.is_some() {
+                rest = &rest[1..];
+            }
+            let part: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if part.is_empty() {
+                return None;
+            }
+            rest = &rest[part.len()..];
+            if let Some(c) = close {
+                rest = rest.strip_prefix(c)?;
+            }
+            parts.push(part);
+            match rest.strip_prefix('.') {
+                Some(next) => rest = next,
+                None => break,
+            }
+        }
+        Some((parts.join("."), rest))
     };
     for (verb, what) in [("call ", "a call to"), ("exec ", "a call to"), ("execute ", "a call to")] {
         if lower.starts_with(verb) {
-            return word(verb.len()).map(|n| format!("{what} {n}"));
+            return name_at(verb.len()).map(|(n, _)| format!("{what} {n}"));
         }
     }
     for verb in ["do ", "select "] {
         if lower.starts_with(verb)
-            && let Some(name) = word(verb.len())
-            && text.get(verb.len()..).is_some_and(|r| r.trim_start()[name.len()..].trim_start().starts_with('('))
+            && let Some((name, after)) = name_at(verb.len())
+            && after.trim_start().starts_with('(')
         {
-            return Some(format!("a call to {}", name.to_ascii_uppercase()));
+            return Some(format!("a call to {name}"));
         }
     }
     None
@@ -697,7 +723,12 @@ mod predicate_tests {
     #[test]
     fn statements_without_a_table_are_named() {
         assert_eq!(statement_handle("DO SLEEP(?)"), "a call to SLEEP");
-        assert_eq!(statement_handle("SELECT sleep(?)"), "a call to SLEEP");
+        assert_eq!(statement_handle("SELECT sleep(?)"), "a call to sleep");
+        assert_eq!(statement_handle("SELECT pg_sleep($1)"), "a call to pg_sleep");
+        assert_eq!(statement_handle("DO `SLEEP` (?)"), "a call to SLEEP");
+        assert_eq!(statement_handle("CALL `refresh_totals` (?)"), "a call to refresh_totals");
+        assert_eq!(statement_handle("EXEC [dbo].[usp_orders] @id = 1"), "a call to dbo.usp_orders");
+        assert_eq!(statement_handle("CALL shop.refresh(?)"), "a call to shop.refresh");
         assert_eq!(statement_handle("CALL refresh_totals(?)"), "a call to refresh_totals");
         assert_eq!(statement_handle("SELECT id FROM orders WHERE id = ?"), "a read from orders");
         assert_eq!(statement_handle("SELECT 1"), "a query");

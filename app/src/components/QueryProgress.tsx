@@ -5,7 +5,7 @@ import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
 import type { QueryProgress } from "../gen/QueryProgress";
 import { api, errorMessage, type ApiError } from "../lib/api";
-import { count, duration, percent } from "../lib/format";
+import { count, duration, percent, rowCount } from "../lib/format";
 import { PlanDiagram } from "./PlanDiagram";
 
 const REFRESH_MS = 1000;
@@ -58,7 +58,7 @@ function ProgressOverlay({ p, hot, box }: { p: NodeProgress | undefined; hot: bo
         ) : f != null ? (
           percent(f)
         ) : (
-          `${count(p.rows)} rows`
+          rowCount(p.rows)
         )}
       </span>
       <span className="po-track">
@@ -264,7 +264,7 @@ export function QueryProgressPanel({ connection, session, onClose }: { connectio
                   {byId.get(hotNode.id) && (
                     <span className="muted">
                       {" · "}
-                      {byId.get(hotNode.id)!.rows > 0 ? `${count(byId.get(hotNode.id)!.rows)} rows out so far` : "still reading its input before it returns rows"}
+                      {byId.get(hotNode.id)!.rows > 0 ? `${rowCount(byId.get(hotNode.id)!.rows)} out so far` : "still reading its input before it returns rows"}
                     </span>
                   )}
                 </span>

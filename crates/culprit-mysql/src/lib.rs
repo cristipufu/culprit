@@ -65,12 +65,40 @@ impl MysqlProvider {
         let flavor = self.connector.flavor();
         match mode {
             ExplainMode::Estimated => {
+                let verb = leading_verb(statement);
+                if !EXPLAINABLE.contains(&verb.as_str()) {
+                    return Err(Error::new(
+                        culprit_core::ErrorCode::Unsupported,
+                        format!("{} can't EXPLAIN a {} statement", flavor.name(), verb.to_ascii_uppercase()),
+                    )
+                    .with_hint(
+                        "EXPLAIN covers SELECT, INSERT, UPDATE, DELETE and REPLACE. The scan's statement statistics show \
+                         this one's measured times.",
+                    ));
+                }
                 if flavor == Flavor::Mysql {
                     let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
                 }
-                let row = explain_one(&mut conn, &format!("EXPLAIN FORMAT=JSON {statement}"))
-                    .await?
-                    .ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
+                let row = match explain_one(&mut conn, &format!("EXPLAIN FORMAT=JSON {statement}")).await {
+                    // Culprit's sessions are read-only (EXPLAIN can evaluate stored functions), and the server refuses
+                    // to plan a write inside one. Nothing would have been written: say what happened instead.
+                    Err(e) if WRITES.contains(&verb.as_str()) && e.message.contains("READ ONLY") => {
+                        return Err(Error::new(
+                            culprit_core::ErrorCode::Unsupported,
+                            format!(
+                                "{} won't plan {} {} in a read-only session, and Culprit's sessions are always read-only",
+                                flavor.name(),
+                                if matches!(verb.as_str(), "insert" | "update") { "an" } else { "a" },
+                                verb.to_ascii_uppercase()
+                            ),
+                        )
+                        .with_hint(
+                            "Explain the SELECT with the same FROM and WHERE: the server usually finds the rows the \
+                             same way.",
+                        ));
+                    }
+                    result => result?.ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?,
+                };
                 let json = row.text("explain").ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
                 plan_json::parse(&json, PlanKind::Estimated, Some(statement), schema).map(|plan| self.versioned(plan))
             }
@@ -429,8 +457,38 @@ fn json_value(value: &Value, kind: Option<&ColumnType>) -> Json {
     }
 }
 
+/// What MySQL and MariaDB can EXPLAIN (`(`, `with`, `table`, `values` start reads too).
+const EXPLAINABLE: [&str; 9] = ["select", "with", "table", "values", "(", "insert", "update", "delete", "replace"];
+const WRITES: [&str; 4] = ["insert", "update", "delete", "replace"];
+
+/// The statement's first word after any comments, lowercased (`(` for a parenthesized read).
+fn leading_verb(statement: &str) -> String {
+    let mut text = statement.trim_start();
+    loop {
+        if let Some(rest) = text.strip_prefix("/*") {
+            text = rest.split_once("*/").map_or("", |(_, after)| after).trim_start();
+        } else if text.starts_with("-- ") || text.starts_with('#') {
+            text = text.split_once(['\n', '\r']).map_or("", |(_, after)| after).trim_start();
+        } else {
+            break;
+        }
+    }
+    if text.starts_with('(') {
+        return "(".into();
+    }
+    text.chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_leading_verb_skips_comments() {
+        assert_eq!(super::leading_verb("/* app */ SELECT 1"), "select");
+        assert_eq!(super::leading_verb("-- note\nUPDATE t SET a = 1"), "update");
+        assert_eq!(super::leading_verb("# note\r\n DO `SLEEP` (?)"), "do");
+        assert_eq!(super::leading_verb("(SELECT 1) UNION (SELECT 2)"), "(");
+    }
+
     use super::*;
 
     #[test]

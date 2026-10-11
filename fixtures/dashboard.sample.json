@@ -322,6 +322,28 @@
           {
             "at": null,
             "finding_id": null,
+            "id": "aborted-connects",
+            "kind": "signal",
+            "label": "Failed connection attempts",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0/h"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "aborted-clients",
+            "kind": "signal",
+            "label": "Connections dropped without closing",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "21.8/h"
+          },
+          {
+            "at": null,
+            "finding_id": null,
             "id": "buffer-pool-hit",
             "kind": "signal",
             "label": "Reads served from memory",
@@ -329,28 +351,6 @@
             "share": null,
             "status": "good",
             "value": "100%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "connections",
-            "kind": "signal",
-            "label": "Connections in use",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "3%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "max-used-connections",
-            "kind": "signal",
-            "label": "Busiest moment",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "4%"
           }
         ],
         "key": "health",
@@ -370,13 +370,13 @@
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "4",
-            "value": 4
+            "text": "5",
+            "value": 5
           }
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "Average row-lock wait is 7.6 s; under 50 ms is healthy.",
+        "takeaway": "Average row-lock wait: 7.6 s; under 50 ms is healthy.",
         "title": "Health"
       },
       {
@@ -516,14 +516,55 @@
         "title": "Plans"
       },
       {
-        "detail": null,
+        "detail": "Averages in the hour since the server last restarted.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/customers.ibd",
+            "kind": "signal",
+            "label": "shop/customers.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "43 µs per read"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/order_items.ibd",
+            "kind": "signal",
+            "label": "shop/order_items.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "22 µs per read"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/orders.ibd",
+            "kind": "signal",
+            "label": "shop/orders.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "7 µs per read"
+          }
+        ],
         "key": "storage",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "read-ms",
+            "label": "Avg read",
+            "text": "43 µs",
+            "value": 0.042947746202236715
+          }
+        ],
         "next": null,
-        "status": "unavailable",
-        "takeaway": "This scan has no storage timings.",
+        "status": "good",
+        "takeaway": "Storage answers quickly: reads average 43 µs.",
         "title": "Storage"
       },
       {
@@ -543,10 +584,17 @@
           }
         ],
         "key": "connections",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "per-minute",
+            "label": "New per minute",
+            "text": "1",
+            "value": 1
+          }
+        ],
         "next": null,
-        "status": "info",
-        "takeaway": "This scan has no count of new connections; the ones in use are below.",
+        "status": "good",
+        "takeaway": "Connections are reused: 1 new a minute.",
         "title": "Connections"
       },
       {
@@ -1629,7 +1677,7 @@
             "query_id": null,
             "share": null,
             "status": "good",
-            "value": "0.63 ms per write"
+            "value": "632 µs per write"
           },
           {
             "at": null,
@@ -1640,7 +1688,7 @@
             "query_id": null,
             "share": null,
             "status": "good",
-            "value": "0.04 ms per read"
+            "value": "40 µs per read"
           }
         ],
         "key": "storage",
@@ -1648,19 +1696,19 @@
           {
             "key": "read-ms",
             "label": "Avg read",
-            "text": "0.04 ms",
+            "text": "40 µs",
             "value": 0.04025974025974026
           },
           {
             "key": "log-write-ms",
             "label": "Avg log write",
-            "text": "0.63 ms",
+            "text": "632 µs",
             "value": 0.63199539082005
           }
         ],
         "next": null,
         "status": "good",
-        "takeaway": "Storage answers quickly: reads average 0.04 ms, log writes 0.63 ms.",
+        "takeaway": "Storage answers quickly: reads average 40 µs, log writes 632 µs.",
         "title": "Storage"
       },
       {
@@ -1727,7 +1775,7 @@
             "query_id": "161",
             "share": 0.25,
             "status": "info",
-            "value": "25% of runs"
+            "value": "1 of 4 runs"
           }
         ],
         "key": "failures",
@@ -1747,7 +1795,7 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "A read from orders fails 25% of the time.",
+        "takeaway": "A read from order_items times out on every run, at about 15 s.",
         "title": "Failing queries"
       },
       {
@@ -2178,7 +2226,7 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "Temporary tables on disk is 68%; under 10% of temporary tables is healthy.",
+        "takeaway": "Temporary tables on disk: 68%; under 10% of temporary tables is healthy.",
         "title": "Health"
       },
       {
@@ -2462,7 +2510,7 @@
             "query_id": "fc709554a9248878",
             "share": 0.125,
             "status": "info",
-            "value": "12% of runs"
+            "value": "1 of 8 runs"
           }
         ],
         "key": "failures",
@@ -2667,7 +2715,7 @@
             "finding_id": null,
             "id": "-8886085649470066503",
             "kind": "query",
-            "label": "a call to PG_SLEEP",
+            "label": "a call to pg_sleep",
             "query_id": "-8886085649470066503",
             "share": 0.12411350992902503,
             "status": null,
@@ -2890,11 +2938,11 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "Reads served from memory is 55%; above 99% is healthy for most workloads.",
+        "takeaway": "Reads served from memory: 55%; above 99% is healthy for most workloads.",
         "title": "Health"
       },
       {
-        "detail": "Postgres counted 1 deadlock in this database since statistics were reset (2026-10-11). It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout.",
+        "detail": "PostgreSQL counted 1 deadlock in this database since statistics were reset on Oct 11. It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout.",
         "fix_sql": null,
         "items": [],
         "key": "deadlocks",
@@ -2912,7 +2960,7 @@
         "title": "Deadlocks"
       },
       {
-        "detail": "Postgres doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters.",
+        "detail": "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters.",
         "fix_sql": null,
         "items": [
           {
@@ -2943,7 +2991,7 @@
             "id": "public.order_items(order_id)",
             "kind": "index-add",
             "label": "order_items (order_id)",
-            "query_id": "-3722457391793582113",
+            "query_id": null,
             "share": null,
             "status": null,
             "value": null
@@ -3004,7 +3052,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead.",
+        "detail": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.",
         "fix_sql": null,
         "items": [
           {

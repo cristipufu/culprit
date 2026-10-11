@@ -22,7 +22,7 @@ impl Engine {
     pub fn label(self) -> &'static str {
         match self {
             Engine::Mssql => "SQL Server",
-            Engine::Postgres => "Postgres",
+            Engine::Postgres => "PostgreSQL",
             Engine::Mysql => "MySQL",
         }
     }
@@ -88,7 +88,7 @@ impl Capability {
             Capability::PgStatStatements => "pg_stat_statements",
             Capability::PerformanceSchema => "performance_schema statement digests",
             Capability::QueryPlans => "Query plans",
-            Capability::GenericPlans => "Generic plans (Postgres 12+)",
+            Capability::GenericPlans => "Generic plans (PostgreSQL 12+)",
             Capability::TableStats => "Table statistics",
             Capability::IndexUsage => "Index usage statistics",
             Capability::MissingIndexes => "Missing-index suggestions",
@@ -293,6 +293,18 @@ pub struct Spread {
     /// Time spent waiting for locks across all runs (MySQL).
     #[serde(default)]
     pub lock_ms: Option<f64>,
+}
+
+impl Spread {
+    /// Percentiles never above the slowest run: MySQL reports them as bucket upper edges, which can overshoot it.
+    pub fn clamp_to(&mut self, max_ms: Option<f64>) {
+        let Some(max) = max_ms.filter(|m| m.is_finite() && *m > 0.0) else { return };
+        for p in [&mut self.p50_ms, &mut self.p95_ms, &mut self.p99_ms] {
+            if let Some(v) = p.as_mut() {
+                *v = v.min(max);
+            }
+        }
+    }
 }
 
 /// Where a timeline's buckets come from.
@@ -702,6 +714,15 @@ pub type Properties = BTreeMap<String, String>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn percentiles_never_pass_the_slowest_run() {
+        let mut s = super::Spread { p50_ms: Some(10.0), p95_ms: Some(40.0), p99_ms: Some(43.7), ..Default::default() };
+        s.clamp_to(Some(43.4));
+        assert_eq!((s.p50_ms, s.p95_ms, s.p99_ms), (Some(10.0), Some(40.0), Some(43.4)));
+        s.clamp_to(None);
+        assert_eq!(s.p99_ms, Some(43.4));
+    }
+
     #[test]
     fn how_often_never_extrapolates_a_short_window() {
         let w = |hours: f64, windowed: bool| Workload {

@@ -208,6 +208,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             widens: None,
             queries: queries_touching(s, &fk.schema, &fk.table)
                 .into_iter()
+                .filter(|q| uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
                 .take(5)
                 .map(|q| advice_query(s, q))
                 .collect(),
@@ -478,7 +479,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 .to_string(),
         ),
         Engine::Postgres => notes.push(
-            "Postgres doesn't record missing-index requests. Candidates come from captured plans that read whole \
+            "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole \
              tables, foreign keys, and the table scan counters."
                 .to_string(),
         ),
@@ -520,8 +521,49 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
 }
 
+/// Whether a statement on the child table goes through the foreign key: it names a key column or the parent table.
+/// Utility statements (DDL, EXPLAIN, maintenance) never count, even when they mention them.
+fn uses_foreign_key(text: &str, columns: &[String], parent: &str) -> bool {
+    let lower = text.to_lowercase();
+    let first = lower.trim_start().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
+    if matches!(first, "create" | "alter" | "drop" | "explain" | "vacuum" | "analyze" | "copy" | "truncate" | "reindex")
+    {
+        return false;
+    }
+    let parent = parent.rsplit('.').next().unwrap_or(parent).trim_matches(|c| matches!(c, '"' | '`' | '[' | ']'));
+    columns.iter().map(String::as_str).chain([parent]).any(|name| has_word(&lower, &name.to_lowercase()))
+}
+
+/// `word` appears in `text` as a whole identifier, not inside a longer one (`order_id` is not in `suborder_id`).
+fn has_word(text: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(word).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        !before.is_some_and(ident) && !after.is_some_and(ident)
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn foreign_key_candidates_list_statements_that_use_the_key() {
+        let cols = vec!["order_id".to_string()];
+        assert!(super::uses_foreign_key("SELECT * FROM order_items WHERE order_id = $1", &cols, "shop.orders"));
+        assert!(super::uses_foreign_key("DELETE FROM orders o USING order_items i WHERE i.x = o.id", &cols, "orders"));
+        assert!(!super::uses_foreign_key("SELECT * FROM order_items WHERE product_id = $1", &cols, "shop.orders"));
+        assert!(!super::uses_foreign_key("SELECT suborder_id FROM order_items", &cols, "shop.orders_archive"));
+        assert!(!super::uses_foreign_key("CREATE INDEX culprit_tmp ON order_items (order_id)", &cols, "orders"));
+        assert!(!super::uses_foreign_key(
+            "EXPLAIN (ANALYZE) SELECT * FROM order_items WHERE order_id = 1",
+            &cols,
+            "orders"
+        ));
+    }
+
     use super::*;
 
     fn report(name: &str) -> Report {
@@ -588,6 +630,6 @@ mod tests {
             advice.candidates.iter().filter(|c| c.source == CandidateSource::Optimizer).collect();
         assert!(!optimizer.is_empty());
         assert!(optimizer.iter().all(|c| !c.requests.is_empty()));
-        assert!(advice.notes.is_empty() || advice.notes.iter().all(|n| !n.contains("Postgres")));
+        assert!(advice.notes.is_empty() || advice.notes.iter().all(|n| !n.contains("PostgreSQL")));
     }
 }

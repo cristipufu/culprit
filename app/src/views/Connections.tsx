@@ -198,7 +198,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
         {serverName(c.engine, c.last_report?.product)} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
         {c.display}
       </span>
-      {takeaway(c.last_report?.headline) && <span className="conn-headline">{takeaway(c.last_report?.headline)}</span>}
+      {c.last_report && <span className="conn-headline">{takeaway(c.last_report.headline) ?? NO_TAKEAWAY}</span>}
       <span className="conn-tools">
         {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
         <AgentAccessMenu connection={c} />
@@ -206,6 +206,10 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
     </div>
   );
 }
+
+/** A headline with only a count (no workload, or no finding above 5% of database time) still gets a line, so every
+ * scanned card has the same shape. */
+const NO_TAKEAWAY = "No finding is tied to a large share of database time.";
 
 /** The report headline without its count ("14 opportunities. The top ones touch…"), which the card already shows. */
 function takeaway(headline: string | undefined): string | null {

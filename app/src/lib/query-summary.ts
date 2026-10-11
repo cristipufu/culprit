@@ -87,6 +87,11 @@ export function querySummary(text: string, objectName?: string | null): QuerySum
       target = first(body, String.raw`^(?:EXEC|EXECUTE|CALL)\s+` + IDENT);
       break;
   }
+  // A statement without a table still calls something people recognise: `SELECT pg_sleep($1)`, `DO SLEEP(?)`.
+  if (!target && (verb === "SELECT" || verb === "DO")) {
+    const call = /^(?:SELECT|DO)\s+(?:DISTINCT\s+)?([\w$]+(?:\.[\w$]+)?)\s*\(/i.exec(body);
+    if (call?.[1]) target = `${call[1]}(…)`;
+  }
   if (!target && objectName) target = tableName(objectName);
   return { verb, target, predicate: ["SELECT", "UPDATE", "DELETE"].includes(verb) ? predicate(body) : null };
 }

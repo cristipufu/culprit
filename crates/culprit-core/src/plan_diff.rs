@@ -118,7 +118,7 @@ pub fn plan_diff_named(a: &Plan, name_a: &str, b: &Plan, name_b: &str) -> PlanDi
 }
 
 /// [`plan_diff_named`] with what Culprit knows about the database (statistics from its latest scan), so scenarios can
-/// say "statistics on orders are 23% behind its data".
+/// say "statistics on orders are stale".
 pub fn plan_diff_in(a: &Plan, name_a: &str, b: &Plan, name_b: &str, context: &CompareContext) -> PlanDiff {
     let fa = Flat::new(a);
     let fb = Flat::new(b);
@@ -959,7 +959,7 @@ mod tests {
         let pg = plan(Engine::Postgres, node("Seq Scan", NodeKind::Scan, Some("public.orders"), None, 50.0, vec![]));
         let diff = plan_diff(&seek_plan(), &pg);
         assert!(!diff.comparable && diff.cost_ratio.is_none());
-        assert!(diff.headlines[0].starts_with("These plans come from different engines (SQL Server and Postgres)"));
+        assert!(diff.headlines[0].starts_with("These plans come from different engines (SQL Server and PostgreSQL)"));
     }
 
     #[test]

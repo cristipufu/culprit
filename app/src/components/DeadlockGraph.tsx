@@ -10,6 +10,8 @@ const RES_W = 168;
 const RES_H = 48;
 const ROW = 100;
 const TOP = 26;
+/** An edge label's line height, with room for its halo. */
+const LABEL_H = 16;
 
 type Box = { x: number; y: number; w: number; h: number };
 type Edge = { from: Box; to: Box; kind: "holds" | "wants"; mode: string | null; proc: string; res: string; leftward: boolean };
@@ -85,6 +87,28 @@ export function DeadlockGraph({ deadlock, onPick }: { deadlock: Deadlock; onPick
     return { d: `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 };
   };
 
+  // Labels sit on their curve (the halo hides the line beneath); labels that would touch are pushed apart vertically.
+  const labelY = useMemo(() => {
+    const boxes = layout.edges.map((e, i) => {
+      const p = path(e);
+      const text = `${e.kind}${shortMode(e.mode) ? ` ${shortMode(e.mode)}` : ""}`;
+      return { i, x: p.mx, half: text.length * 3.3, y: p.my + 4 };
+    });
+    const sorted = [...boxes].sort((a, b) => a.y - b.y);
+    for (let a = 0; a < sorted.length; a++) {
+      for (let b = a + 1; b < sorted.length; b++) {
+        const A = sorted[a]!;
+        const B = sorted[b]!;
+        const gap = B.y - A.y;
+        if (Math.abs(A.x - B.x) < A.half + B.half + 4 && gap < LABEL_H) {
+          A.y -= (LABEL_H - gap) / 2;
+          B.y += (LABEL_H - gap) / 2;
+        }
+      }
+    }
+    return new Map(boxes.map((b) => [b.i, b.y]));
+  }, [layout]);
+
   return (
     <figure className="dl-graph" aria-label={`Deadlock graph: ${deadlock.headline}`}>
       <svg viewBox={`0 0 ${W} ${layout.height}`} role="img" preserveAspectRatio="xMidYMin meet">
@@ -100,7 +124,7 @@ export function DeadlockGraph({ deadlock, onPick }: { deadlock: Deadlock; onPick
               <title>{`${e.kind === "holds" ? "Holds" : "Wants"}${e.mode ? ` ${e.mode}` : ""}`}</title>
               <path d={p.d} markerEnd={e.kind === "wants" ? "url(#dl-arrow)" : undefined} />
               {/* The label must fit the gap between boxes: a long lock mode (RangeS-U, X,REC_NOT_GAP) goes to the tooltip. */}
-              <text x={p.mx} y={p.my - 5} textAnchor="middle" className="dl-edge-label">
+              <text x={p.mx} y={labelY.get(i)} textAnchor="middle" className="dl-edge-label">
                 {e.kind === "holds" ? "holds" : "wants"}
                 {shortMode(e.mode) ? ` ${shortMode(e.mode)}` : ""}
               </text>

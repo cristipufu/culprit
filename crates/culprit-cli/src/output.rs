@@ -12,6 +12,13 @@ use serde_json::{Value, json};
 
 use crate::TopBy;
 
+/// "just now", "7 min ago", "2 h 5 min ago": how long ago a scan was taken, as the app says it.
+pub(crate) fn age(taken_at: &str) -> Option<String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64();
+    let seconds = (now - format::epoch_seconds(taken_at)?).max(0.0);
+    Some(if seconds < 60.0 { "just now".into() } else { format!("{} ago", format::duration(seconds * 1000.0)) })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Format {
     Text,
@@ -134,7 +141,10 @@ impl Out {
             let last = c
                 .last_report
                 .as_ref()
-                .map(|r| format!("{} opportunities · scanned {}", r.opportunities, r.taken_at))
+                .map(|r| {
+                    let when = age(&r.taken_at).unwrap_or_else(|| r.taken_at.clone());
+                    format!("{} opportunities · scanned {when}", r.opportunities)
+                })
                 .unwrap_or_else(|| "never scanned".into());
             println!(
                 "{}  {:<11}  {}  {}",

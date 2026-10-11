@@ -280,7 +280,7 @@
   },
   {
     "category": "maintenance",
-    "description": "Transaction ID age approaching the point where Postgres stops accepting writes to protect data.",
+    "description": "Transaction ID age approaching the point where PostgreSQL stops accepting writes to protect data.",
     "engines": [
       "postgres"
     ],
@@ -304,7 +304,7 @@
   },
   {
     "category": "queries",
-    "description": "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock escalation, parallelism) with the fix that removes them. SQL Server reads system_health, MySQL the latest InnoDB report, Postgres only keeps a counter.",
+    "description": "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock escalation, parallelism) with the fix that removes them. SQL Server reads system_health, MySQL the latest InnoDB report, PostgreSQL only keeps a counter.",
     "engines": [
       "mssql",
       "postgres",

@@ -3528,7 +3528,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -3757,7 +3757,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -3986,7 +3986,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -4215,7 +4215,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -4444,7 +4444,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -4673,7 +4673,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -4902,7 +4902,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -5131,7 +5131,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -5360,7 +5360,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    },
    {
     "session": "64",
@@ -5589,7 +5589,7 @@
     "hot_node": null,
     "phase": null,
     "phase_percent": null,
-    "note": "Postgres doesn't report how far a running query has got, operator by operator. Culprit shows the plan Postgres estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
+    "note": "PostgreSQL doesn't report how far a running query has got, operator by operator. Culprit shows the plan PostgreSQL estimated for it and how long it has been running. CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY report their own progress."
    }
   ],
   "mysql": [

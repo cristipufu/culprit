@@ -42,7 +42,12 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             let ratio = s.modifications / s.rows.max(1.0);
             let hot = !queries_touching(snapshot, &s.schema, &s.table).is_empty();
             let mut f = finding("stale-stats", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
-            f.title = format!("Statistics on {} are {} behind its data", s.table, format::percent(ratio.min(9.99)));
+            f.title = format!(
+                "Statistics on {} are stale: {} rows changed ({} of the table)",
+                s.table,
+                format::count(s.modifications),
+                format::percent(ratio.min(9.99))
+            );
             f.summary = format!(
                 "{} rows of {} ({} rows) changed since its statistics were last updated{}. The optimizer plans queries from those statistics, so its row estimates for this table drift, and with them join choices and memory grants.{}",
                 format::count(s.modifications),
@@ -278,8 +283,8 @@ pub fn xid_age_info() -> CheckInfo {
         category: Category::Maintenance,
         engines: vec![Engine::Postgres],
         requires: vec![Capability::TableStats],
-        description: "Transaction ID age approaching the point where Postgres stops accepting writes to protect data."
-            .into(),
+        description:
+            "Transaction ID age approaching the point where PostgreSQL stops accepting writes to protect data.".into(),
     }
 }
 
@@ -308,7 +313,7 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
     );
     f.title = format!("Transaction IDs are {} of the way to wraparound", format::percent(age / WRAPAROUND));
     f.summary = format!(
-        "The oldest unfrozen transaction ID in this database is {} transactions old. At about 2 billion Postgres stops accepting writes until a full vacuum completes. {} transactions remain.",
+        "The oldest unfrozen transaction ID in this database is {} transactions old. At about 2 billion PostgreSQL stops accepting writes until a full vacuum completes. {} transactions remain.",
         format::count(age),
         format::count(remaining)
     );

@@ -3,7 +3,7 @@ import type { SQLConfig, SQLNamespace } from "@codemirror/lang-sql";
 import type { Catalog } from "../gen/Catalog";
 import type { Engine } from "../gen/Engine";
 import type { Report } from "../gen/Report";
-import { count } from "./format";
+import { rowCount } from "./format";
 
 /** What the latest report knows about a table: row count, keys, foreign keys, the columns indexes lead with. */
 function tableFacts(report: Report | null) {
@@ -50,7 +50,7 @@ export function completionConfig(engine: Engine, catalog: Catalog | null, report
     const self: Completion = {
       label: table.name,
       type: table.view ? "interface" : "class",
-      detail: table.view ? "view" : rows != null ? `${count(rows)} rows` : `${table.columns.length} columns`,
+      detail: table.view ? "view" : rows != null ? rowCount(rows) : `${table.columns.length} columns`,
     };
     (schemas[table.schema] ??= {})[table.name] = { self, children: columns };
   }

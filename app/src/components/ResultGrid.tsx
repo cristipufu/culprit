@@ -50,7 +50,7 @@ export function ResultGrid({ result, types, summary }: { result: ResultSet; type
             </button>
           </>
         )}
-        <button className="btn ghost" onClick={() => copy([header, ...result.rows.map((_, i) => rowText(i))].join("\n"), `${result.rows.length} rows`)}>
+        <button className="btn ghost" onClick={() => copy([header, ...result.rows.map((_, i) => rowText(i))].join("\n"), result.rows.length === 1 ? "1 row" : `${result.rows.length} rows`)}>
           <Copy size={12} /> All as TSV
         </button>
       </div>

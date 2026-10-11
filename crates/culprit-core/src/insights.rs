@@ -132,10 +132,10 @@ pub fn coverage_note(plan: &Plan) -> Option<String> {
         ),
         (Engine::Mssql, true) => None,
         (Engine::Postgres, false) => Some(
-            "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead.".into(),
+            "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.".into(),
         ),
         (Engine::Postgres, true) => Some(
-            "Postgres plans carry no index suggestions or memory grants; index advice comes from the filters.".into(),
+            "PostgreSQL plans carry no index suggestions or memory grants; index advice comes from the filters.".into(),
         ),
         // EXPLAIN ANALYZE arrived in MySQL 8.0.18: older servers can't add actual rows at all.
         (Engine::Mysql, false)
@@ -1151,7 +1151,7 @@ fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
             )
         });
         d.verify = format!(
-            "Explain again: {} is read through an index (a Bitmap Index Scan on Postgres).",
+            "Explain again: {} is read through an index (a Bitmap Index Scan on PostgreSQL).",
             table_leaf(&table)
         );
         out.push(d);
@@ -1227,13 +1227,13 @@ fn not_in(cx: &Cx) -> Vec<Draft> {
                 "NOT IN against a column that can be NULL makes SQL Server check for NULLs row by row".into()
             }
             Engine::Postgres => {
-                "NOT IN (subquery) can't run as an anti-join, so Postgres tests every row against the subquery".into()
+                "NOT IN (subquery) can't run as an anti-join, so PostgreSQL tests every row against the subquery".into()
             }
             Engine::Mysql => "NOT IN (subquery) needs NULL handling MySQL can't turn into an anti-join".into(),
         };
         d.detail = match cx.engine() {
             Engine::Mssql => format!("Because the subquery's column allows NULL, NOT IN must prove no NULL exists before it can return anything, which adds the Row Count Spool under {}.", n.op),
-            Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops Postgres from using a Hash Anti Join, so it probes the subquery for each row instead.".into(),
+            Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops PostgreSQL from using a Hash Anti Join, so it probes the subquery for each row instead.".into(),
             Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, so MySQL materializes it and checks NULLs separately instead of a straight anti-join.".into(),
         };
         d.fix = "Rewrite as NOT EXISTS, which means what you almost certainly intend and runs as an anti-join: `WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`. Declaring the column NOT NULL also helps.".into();
@@ -1535,9 +1535,9 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                         "Analyze {}{}.",
                         table_leaf(t),
                         if cols.len() >= 2 {
-                            ", and tell Postgres the filtered columns are related with extended statistics"
+                            ", and tell PostgreSQL the filtered columns are related with extended statistics"
                         } else if on_expression {
-                            "; on Postgres 14+ statistics on the expression itself help (CREATE STATISTICS … ON (expression) FROM table)"
+                            "; on PostgreSQL 14+ statistics on the expression itself help (CREATE STATISTICS … ON (expression) FROM table)"
                         } else {
                             ""
                         }
@@ -1980,7 +1980,7 @@ fn heap_fetches(cx: &Cx) -> Vec<Draft> {
             let mut d = Draft::new("heap-fetches", InsightArea::Server, cx.share(n).max(0.05), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = format!("The index-only scan on {} still visits the table {} times", table_leaf(&table), rows_text(fetches));
-            d.detail = "Postgres can only skip the table for pages the visibility map marks all-visible, which VACUUM maintains; this table hasn't been vacuumed since many of its rows changed.".into();
+            d.detail = "PostgreSQL can only skip the table for pages the visibility map marks all-visible, which VACUUM maintains; this table hasn't been vacuumed since many of its rows changed.".into();
             d.fix = format!("Vacuum {}, and check that autovacuum isn't turned off for it (ALTER TABLE … SET (autovacuum_enabled = true)).", table_leaf(&table));
             d.fix_sql = Some(format!("VACUUM (ANALYZE) {};", qualified(Engine::Postgres, &table)));
             d.verify = "Explain analyze again: Heap Fetches is close to 0.".into();
@@ -2040,7 +2040,7 @@ fn jit(cx: &Cx) -> Vec<Draft> {
         }
         None => format!("JIT compilation took {}", format::duration(total)),
     };
-    d.detail = "Postgres compiled parts of this query to machine code because its estimated cost crossed jit_above_cost; for queries that run briefly, compiling costs more than it saves.".into();
+    d.detail = "PostgreSQL compiled parts of this query to machine code because its estimated cost crossed jit_above_cost; for queries that run briefly, compiling costs more than it saves.".into();
     d.fix = "Turn JIT off for this workload, or raise jit_above_cost so only long analytical queries use it.".into();
     d.fix_sql = Some("ALTER ROLE app_user SET jit = off;".into());
     d.verify = "Explain analyze again: no JIT section, and a shorter execution time.".into();
@@ -2090,7 +2090,7 @@ fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
             if cx.engine() == Engine::Mysql {
                 "MySQL marks it DEPENDENT and not cacheable, so it re-runs"
             } else {
-                "Postgres runs"
+                "PostgreSQL runs"
             },
             first_object(n).map(|t| format!(", reading {} each time", table_leaf(&t))).unwrap_or_default()
         );

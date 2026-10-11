@@ -46,7 +46,7 @@ export function WindowPicker({ coveredHours }: { coveredHours: number | null }) 
       </button>
       {short && (
         <span className="picker-note" title={`Query Store has kept history for ${held}; a longer window shows the same data until it has more.`}>
-          all {held} Query Store has
+          Query Store keeps {held}
         </span>
       )}
       {open && (

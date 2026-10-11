@@ -8,7 +8,7 @@ import type { IndexCleanup } from "../gen/IndexCleanup";
 import type { Report } from "../gen/Report";
 import type { TableAdvice } from "../gen/TableAdvice";
 import { api, errorMessage, type ApiError } from "../lib/api";
-import { ago, bytes, count, percent } from "../lib/format";
+import { ago, bytes, count, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { setState } from "../lib/store";
 import { Sql } from "./Sql";
@@ -362,7 +362,7 @@ function CandidateRow({ c, rank, focused, onFocus, expanded, onToggle, onCopy, o
   const facts: string[] = [];
   if (c.lookups != null) facts.push(`${count(c.lookups)} lookups`);
   if (c.estimated_improvement != null) facts.push(`≈${percent(c.estimated_improvement)} cheaper`);
-  if (c.table_rows != null) facts.push(`${count(c.table_rows)} rows`);
+  if (c.table_rows != null) facts.push(rowCount(c.table_rows));
   if (c.writes_per_day != null) facts.push(`${count(c.writes_per_day)} writes/day`);
   return (
     <div className={`ia-item ${focused ? "focus" : ""} ${expanded ? "expanded" : ""}`}>
@@ -497,7 +497,7 @@ function TableRow({ t, focused, onFocus, expanded, onToggle, onCopy, onFinding, 
           </span>
           <span className="ia-meta">{facts.join(" · ")}</span>
         </span>
-        <span className="ia-impact">{t.rows != null && <span className="ia-impact-l">{count(t.rows)} rows</span>}</span>
+        <span className="ia-impact">{t.rows != null && <span className="ia-impact-l">{rowCount(t.rows)}</span>}</span>
         <ChevronRight size={14} className="ia-chev" />
       </button>
       <Body expanded={expanded}>

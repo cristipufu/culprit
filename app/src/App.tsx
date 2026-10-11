@@ -14,6 +14,7 @@ import { Queries } from "./views/Queries";
 import { Schema } from "./views/Schema";
 import { PasswordNeeded } from "./components/PasswordNeeded";
 import { DashboardSkeleton } from "./components/DashboardSkeleton";
+import type { Capability } from "./gen/Capability";
 
 const Editor = lazy(() => import("./views/Editor"));
 // Where a connection opens; its skeleton (and stylesheet) are in the main bundle so the grid never jumps.
@@ -32,6 +33,9 @@ const TITLES: Record<View, string> = {
   plans: "Plans",
   connections: "Connections",
 };
+
+/** The sources a scan's query history comes from; when one is missing, its reason says why there is no workload. */
+const WORKLOAD_SOURCES: Capability[] = ["query-store", "plan-cache", "pg-stat-statements", "performance-schema", "slow-log"];
 
 const VIEW_KEYS: View[] = ["dashboard", "overview", "queries", "live", "schema", "editor", "plans"];
 
@@ -107,7 +111,9 @@ function TopBar() {
   const report = useStore((s) => (s.report.status === "ready" ? s.report : null));
   const engine = useStore((s) => s.connections.find((c) => c.name === s.active)?.engine);
   const w = report?.report.snapshot.workload;
-  const windowed = w ? w.windowed : engine === "mssql";
+  // Before the report loads, SQL Server keeps the picker's place; a scan without query history has nothing to window.
+  const windowed = w ? w.windowed : engine === "mssql" && !report;
+  const noHistory = report && !w ? report.report.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability)) : undefined;
   const showsWorkload = view === "dashboard" || view === "overview" || view === "queries" || view === "schema";
   if (view === "plans") {
     return (
@@ -121,6 +127,11 @@ function TopBar() {
     <header className="topbar" data-tauri-drag-region>
       <h1>{TITLES[view]}</h1>
       {showsWorkload && windowed && <WindowPicker coveredHours={w?.window_hours ?? null} />}
+      {showsWorkload && report && !w && (
+        <span className="context" title={noHistory?.reason ?? "This scan found no statement statistics."}>
+          No query history in this scan
+        </span>
+      )}
       {showsWorkload && !windowed && w && (
         <span className="context" title={`Cumulative statistics since they were last reset${w.window_start ? ` (${when(w.window_start).full})` : ""}; this source keeps no time windows.`}>
           {w.source} · since {w.window_start ? when(w.window_start).short : "the last reset"}

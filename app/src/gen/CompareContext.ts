@@ -3,7 +3,7 @@ import type { StatisticsInfo } from "./StatisticsInfo";
 
 /**
  * What Culprit knows about the database the plans ran on, from its latest scan: optimizer statistics, so a scenario
- * can say "statistics on orders are 23% behind its data". Empty when the plans came from files.
+ * can say "statistics on orders are stale". Empty when the plans came from files.
  */
 export type CompareContext = { statistics: Array<StatisticsInfo>, 
 /**

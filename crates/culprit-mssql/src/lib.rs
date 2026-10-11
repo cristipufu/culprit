@@ -535,6 +535,16 @@ impl Provider for MssqlProvider {
         statement::run(&mut client, sql, limit).await
     }
 
+    async fn statement_types(&self, sql: &str) -> Result<Option<Vec<String>>> {
+        let mut client = self.user_session().await?;
+        match statement::statement_types(&mut client, sql).await {
+            Ok(types) => Ok(Some(types)),
+            // A login without SHOWPLAN permission can't ask; Culprit's own classifier has already passed the text.
+            Err(e) if e.message.to_ascii_lowercase().contains("showplan permission") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// SQL Server has no read-only transactions, so reads and writes share one path (autocommit); the Workspace only
     /// sends statements here that the classifier proved read, or that the person confirmed.
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {

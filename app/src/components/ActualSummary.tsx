@@ -2,7 +2,7 @@ import { Clock, Cpu, Database, Gauge, HardDrive, Scale, TriangleAlert, Users } f
 import type { ReactNode } from "react";
 import type { Plan } from "../gen/Plan";
 import { actualFacts } from "../lib/actual";
-import { count, duration, percent, when } from "../lib/format";
+import { count, duration, percent, rowCount, when } from "../lib/format";
 
 function kb(value: number): string {
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} GB`;
@@ -59,7 +59,7 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
       icon: <Scale size={13} />,
       text: (
         <>
-          Expected {count(expected)} rows, got <b>{count(n.act_rows ?? 0)}</b> at <b>{where(n)}</b> · ×{count(Math.abs(f.worstEstimate.factor))} off
+          Expected {rowCount(expected)}, got <b>{count(n.act_rows ?? 0)}</b> at <b>{where(n)}</b> · ×{count(Math.abs(f.worstEstimate.factor))} off
         </>
       ),
       node: f.worstEstimate.node.id,

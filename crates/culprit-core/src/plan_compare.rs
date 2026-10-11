@@ -60,7 +60,7 @@ pub struct Scenario {
 }
 
 /// What Culprit knows about the database the plans ran on, from its latest scan: optimizer statistics, so a scenario
-/// can say "statistics on orders are 23% behind its data". Empty when the plans came from files.
+/// can say "statistics on orders are stale". Empty when the plans came from files.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default)]
 #[ts(export)]
 pub struct CompareContext {
@@ -388,7 +388,8 @@ fn index_use(a: &Plan, b: &Plan) -> Vec<IndexUse> {
         .collect()
 }
 
-/// "Statistics on orders are 23% behind its data (updated 6 days ago)." for the node's table, when Culprit knows.
+/// "Statistics on orders are stale: 23% of the table changed since they were updated, 6 days before the scan." for
+/// the node's table, when Culprit knows.
 fn stale(ctx: &CompareContext, node: &PlanNode) -> Option<String> {
     let object = node.object.as_deref()?;
     let name = bare(object);
@@ -403,14 +404,12 @@ fn stale(ctx: &CompareContext, node: &PlanNode) -> Option<String> {
         return None;
     }
     let age = match (&worst.1.last_updated, &ctx.taken_at) {
-        (Some(updated), Some(now)) => {
-            format::age_between(updated, now).map(|a| format!(", updated {a} before the scan"))
-        }
+        (Some(updated), Some(now)) => format::age_between(updated, now).map(|a| format!(", {a} before the scan")),
         _ => None,
     }
     .unwrap_or_default();
     Some(format!(
-        "Statistics on {} are {} behind its data{age}.",
+        "Statistics on {} are stale: {} of the table changed since they were updated{age}.",
         unquote(object.rsplit('.').next().unwrap_or(object)),
         format::percent(worst.0.min(9.99))
     ))
@@ -599,7 +598,10 @@ mod tests {
         assert_eq!(estimates.title, "On orders, Plan 1 expects 12 rows and Plan 2 expects 140K rows.");
         let detail = estimates.detail.as_deref().unwrap();
         assert!(
-            detail.starts_with("Statistics on orders are 23% behind its data, updated 6.0 days before the scan."),
+            detail.starts_with(
+                "Statistics on orders are stale: 23% of the table changed since they were updated, 6.0 days before the \
+                 scan."
+            ),
             "{detail}"
         );
         assert!(

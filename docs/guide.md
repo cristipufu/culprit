@@ -133,6 +133,7 @@ Reopening a connection renders its last report from disk immediately; a fresh SQ
 ## Safety
 
 - Scans read statistics and catalog views only.
+- Statements Culprit runs as reads must be exactly one statement that only reads, checked under every server setting that changes parsing; on SQL Server the server confirms it first by compiling the text without running it. For agents with `query` access on production, use a read-only login: see [agents.md](agents.md).
 - Postgres sessions are read-only with statement and lock timeouts. SQL Server sessions use a short lock timeout, low deadlock priority and read-uncommitted reads of the statistics views.
 - Estimated plans never execute anything. Reads run in a read-only transaction everywhere; on production, anything Culprit can't prove reads needs an explicit confirmation each time, and Explain Analyze only measures provable reads.
 - Statement text from a database's own history is lexed as exactly one statement before it reaches `EXPLAIN` (MySQL plans go through prepared statements). TLS certificates are verified for every non-local host unless the connection string asks for less.

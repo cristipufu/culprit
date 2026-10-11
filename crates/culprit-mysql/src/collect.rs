@@ -547,6 +547,12 @@ async fn collect_workload(
 
     let mut kept = select_top(all, options.top_queries as usize);
     attach_histograms(conn, &probe.database, &mut kept).await;
+    for d in kept.iter_mut() {
+        let max = d.stat.max_time_ms;
+        if let Some(spread) = d.stat.spread.as_mut() {
+            spread.clamp_to(max);
+        }
+    }
     let mut notes = Vec::new();
     let mut no_plans = None;
     if !kept.is_empty() && options.plans > 0 {

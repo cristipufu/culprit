@@ -27,7 +27,7 @@ pub(crate) async fn interrupt(connector: &Connector, session: &str, action: Sess
     }
     let backend: Option<String> = target.get("backend_type");
     if backend.as_deref() != Some("client backend") {
-        return Err(Error::invalid(format!("Session {pid} is a Postgres {} process", backend.unwrap_or_default())));
+        return Err(Error::invalid(format!("Session {pid} is a PostgreSQL {} process", backend.unwrap_or_default())));
     }
     let function = match action {
         SessionAction::Cancel => "pg_cancel_backend",

@@ -1,7 +1,7 @@
 import { Activity, Bookmark, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useFocusTrap } from "../lib/focus";
-import { count } from "../lib/format";
+import { rowCount } from "../lib/format";
 import { openLive } from "../views/Live";
 import { useTheme } from "../lib/theme";
 import { EngineBadge } from "./EngineBadge";
@@ -9,7 +9,8 @@ import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, loadSaved, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { keys } from "../lib/keys";
 
-type Item = { id: string; section: string; title: string; hint?: string; icon?: ReactNode; run: () => void };
+/** `rank` orders equally good matches: findings keep the report's impact order. */
+type Item = { id: string; section: string; title: string; hint?: string; icon?: ReactNode; run: () => void; rank?: number };
 
 const VIEWS: { view: View; title: string; icon: ReactNode }[] = [
   { view: "dashboard", title: "Dashboard", icon: <Gauge size={13} /> },
@@ -22,7 +23,7 @@ const VIEWS: { view: View; title: string; icon: ReactNode }[] = [
   { view: "connections", title: "Connections", icon: <Database size={13} /> },
 ];
 
-const SEVERITY_COLOR: Record<string, string> = { high: "var(--high)", medium: "var(--medium)", low: "var(--low)" };
+const SEVERITY_COLOR: Record<string, string> = { high: "var(--high-text)", medium: "var(--medium-text)", low: "var(--low-text)" };
 
 const icon = (node: ReactNode) => <span className="p-icon">{node}</span>;
 
@@ -44,6 +45,14 @@ function score(text: string, query: string): number {
     ti = found + 1;
   }
   return hits;
+}
+
+/** How a match reads: 2 at the start of a word, 1 inside one, 0 for scattered letters. */
+function matchTier(text: string, query: string): number {
+  const t = text.toLowerCase();
+  const at = t.indexOf(query.toLowerCase());
+  if (at < 0) return 0;
+  return at === 0 || /[\s._\-·/]/.test(t[at - 1] ?? "") ? 2 : 1;
 }
 
 export function CommandPalette() {
@@ -87,15 +96,15 @@ export function CommandPalette() {
       const where = q.connection ? ` · ${q.connection}` : "";
       list.push({ id: `s:${q.name}`, section: "Saved queries", title: `Run ${q.name}`, hint: `saved query${where}`, icon: icon(<Bookmark size={13} />), run: () => setState({ view: "editor", editorSaved: { name: q.name, run: true }, palette: false }) });
     });
-    report?.findings.forEach((f) =>
-      list.push({ id: `f:${f.id}`, section: "Findings", title: f.title, hint: f.impact.label, icon: icon(<CircleDot size={12} color={SEVERITY_COLOR[f.severity]} />), run: () => setState({ view: "overview", finding: f.id, palette: false }) }),
+    report?.findings.forEach((f, rank) =>
+      list.push({ id: `f:${f.id}`, section: "Findings", title: f.title, hint: f.impact.label, rank, icon: icon(<CircleDot size={12} color={SEVERITY_COLOR[f.severity]} />), run: () => setState({ view: "overview", finding: f.id, palette: false }) }),
     );
     report?.snapshot.tables.forEach((t) =>
       list.push({
         id: `t:${t.schema}.${t.name}`,
         section: "Tables",
         title: `${t.schema}.${t.name}`,
-        hint: t.rows != null ? `${count(t.rows)} rows` : "table",
+        hint: t.rows != null ? rowCount(t.rows) : "table",
         icon: icon(<Table2 size={13} />),
         run: () => setState({ view: "schema", schemaTable: `${t.schema}.${t.name}`, palette: false }),
       }),
@@ -111,9 +120,16 @@ export function CommandPalette() {
   }, [connections, report, active, saved, theme, setTheme]);
 
   const results = useMemo(() => {
-    const scored = items.map((item) => ({ item, s: score(`${item.title} ${item.hint ?? ""}`, query) })).filter((x) => x.s > 0);
+    const scored = items
+      .map((item) => {
+        const text = `${item.title} ${item.hint ?? ""}`;
+        return { item, s: score(text, query), tier: query ? matchTier(text, query) : 0 };
+      })
+      .filter((x) => x.s > 0);
     if (!query) return scored.slice(0, 60).map((x) => x.item);
-    scored.sort((a, b) => b.s - a.s);
+    // Word matches first; among them the most important finding (the report's order) before the earliest match, so
+    // "orders" lists the slow update of orders before a minor index on it.
+    scored.sort((a, b) => b.tier - a.tier || (a.item.rank ?? 0) - (b.item.rank ?? 0) || b.s - a.s);
     const sections = [...new Set(scored.map((x) => x.item.section))];
     return sections.flatMap((section) => scored.filter((x) => x.item.section === section).slice(0, 8)).map((x) => x.item);
   }, [items, query]);

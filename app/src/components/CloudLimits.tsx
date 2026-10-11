@@ -91,7 +91,7 @@ function Signals({ signals, onCompare }: { signals: CloudSignals; onCompare?: (f
   return (
     <>
       <div className={`cloud-summary ${bad ? "bad" : ""}`}>
-        {bad ? <CloudAlert size={14} color="var(--high)" /> : <CircleCheck size={14} color="var(--good)" />}
+        {bad ? <CloudAlert size={14} color="var(--high-text)" /> : <CircleCheck size={14} color="var(--good-text)" />}
         <span>{signals.summary}</span>
       </div>
       {bad && (

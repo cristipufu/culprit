@@ -67,7 +67,8 @@ pub async fn verify(ws: &Workspace, args: VerifyArgs, out: &Out) -> Result<u8> {
                     println!("              {}", paint("2", note));
                 }
             }
-            println!("{}", paint("2", &format!("Scans {} → {}", v.before_taken_at, v.after_taken_at)));
+            let (before, after) = culprit_core::changes::range_times(&v.before_taken_at, &v.after_taken_at);
+            println!("{}", paint("2", &format!("Scans {before} → {after}")));
         }
     }
     let still = v

@@ -70,8 +70,9 @@ export function ShareMenu({ actions, label = "Share", primary = false }: { actio
         aria-controls={menuId}
         onClick={() => setOpen((o) => !o)}
         title="Copy for a pull request, save an HTML page or the original plan"
+        aria-label={label}
       >
-        <Share2 size={13} /> {label} <ChevronDown size={12} className="share-caret" />
+        <Share2 size={13} /> <span className="btn-label">{label}</span> <ChevronDown size={12} className="share-caret" />
       </button>
       {open && (
         <div className="share-menu" role="menu" id={menuId}>

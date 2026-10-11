@@ -324,7 +324,7 @@ pub fn definitions() -> Vec<Tool> {
             format!(
                 "The actual plan of a query's most recent run as SQL Server kept it (2019+ with \
                  LAST_QUERY_PLAN_STATS): actual rows per operator next to the estimates, so you can see which estimate \
-                 was wrong. Reads the plan cache; never runs the query. Postgres and MySQL don't keep these and say so.\
+                 was wrong. Reads the plan cache; never runs the query. PostgreSQL and MySQL don't keep these and say so.\
                  {DATA_NOTE}"
             ),
         ),
@@ -334,7 +334,7 @@ pub fn definitions() -> Vec<Tool> {
             format!(
                 "What changed between two periods: queries that got slower, new ones, ones that got faster or stopped, \
                  each with runs and time per run before and after and the plan change behind it. SQL Server answers \
-                 from Query Store's intervals; Postgres and MySQL from Culprit's saved scans (at least 3). A query with \
+                 from Query Store's intervals; PostgreSQL and MySQL from Culprit's saved scans (at least 3). A query with \
                  no data in one period is `not-comparable`, never treated as zero. Pass `since` (a deploy, a plan \
                  change) to compare what ran after it with the same length of time before.{DATA_NOTE}"
             ),
@@ -402,7 +402,7 @@ pub fn definitions() -> Vec<Tool> {
             format!(
                 "Recent deadlocks, explained: the pattern (key lookup, opposite access order, read-then-update, lock \
                  escalation, parallelism), both statements, which one was rolled back, and the fixes. SQL Server reads \
-                 system_health, MySQL the latest InnoDB report, Postgres only counts them.{DATA_NOTE}"
+                 system_health, MySQL the latest InnoDB report, PostgreSQL only counts them.{DATA_NOTE}"
             ),
         ),
         tool::<WaitsArgs>(
@@ -422,7 +422,7 @@ pub fn definitions() -> Vec<Tool> {
             format!(
                 "How far along a running statement is, for a session id from `live`: elapsed time, CPU, the busiest \
                  operator and rows per operator against the estimates (SQL Server), or the plan, elapsed time and \
-                 command progress (Postgres CREATE INDEX/VACUUM/COPY…, MySQL stages). Call it again to watch it move.\
+                 command progress (PostgreSQL CREATE INDEX/VACUUM/COPY…, MySQL stages). Call it again to watch it move.\
                  {DATA_NOTE}"
             ),
         ),

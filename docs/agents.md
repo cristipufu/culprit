@@ -37,6 +37,11 @@ Results are compact JSON. Text that comes from the database (query text, object 
 
 **Approvals.** `run_query` checks the statement is a single read-only statement, then waits up to 60 seconds for the person to approve that exact text in the desktop app. A decision is bound to a SHA-256 of the connection and the SQL, so it can't approve different text. If the app isn't open, the request is denied at once with a hint to open it. Approved statements run in a transaction that is never committed (read-only on Postgres and MySQL), with a 30-second limit.
 
+**What "read-only" rests on.** Three layers, each with its limit:
+- Culprit's classifier refuses anything it can't prove is one statement that only reads. It lexes the text under every server setting that changes parsing (quoting, backslash escapes) and refuses invisible characters outside strings. Its list of functions with side effects is a deny-list, so a function it doesn't know about can still run.
+- The server enforces what it can: Postgres and MySQL run the statement in a read-only transaction, which stops table writes but not functions with side effects outside tables (statistics resets, locks, sleeps). On SQL Server the text first compiles under SHOWPLAN, which runs nothing, and must come back as exactly one SELECT. A login without SHOWPLAN permission skips this check, and the result says so.
+- The login. For `query` access on a production database, give the connection a login that can read the tables it needs and nothing else: no EXECUTE on administrative functions, no ownership of objects. That is the one complete guarantee.
+
 **Audit.** Every call (tool, client, connection, outcome, duration, and SQL for `explain` and `run_query`) is appended to `audit.jsonl` in the data directory. `culprit audit --json` reads it.
 
 ## Dashboard
