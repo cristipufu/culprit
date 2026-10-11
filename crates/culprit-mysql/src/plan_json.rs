@@ -69,7 +69,8 @@ impl Context {
 
     /// `o` → `shop.orders`, `orders` → `shop.orders`; internal tables (`<derived2>`, `<temporary>`) have no object.
     pub fn object(&self, table_name: &str) -> Option<String> {
-        if table_name.starts_with('<') {
+        // `<derived2>`, `<subquery3>` are steps, not tables; no name ("No tables used") is no table at all.
+        if table_name.is_empty() || table_name.starts_with('<') {
             return None;
         }
         let (schema, table) = match self.aliases.get(&table_name.to_ascii_lowercase()) {
@@ -242,6 +243,13 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     node.object = cx.object(&name);
     if node.object.is_none() && !name.is_empty() {
         node.detail = Some(name.clone());
+    }
+    // A message where a table would be ("No tables used", "Impossible WHERE"): the step is the message.
+    if name.is_empty()
+        && access.is_empty()
+        && let Some(message) = text(table, "message")
+    {
+        node.op = message;
     }
     node.index = text(table, "key");
     if flag(table, "using_index") {
@@ -496,6 +504,20 @@ fn tokenize(sql: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plan_without_tables_says_so() {
+        let json = r#"{"query_block":{"select_id":1,"table":{"message":"No tables used"}}}"#;
+        let plan = parse(json, PlanKind::Estimated, Some("SELECT SLEEP(1)"), Some("shop")).unwrap();
+        let mut nodes = vec![&plan.root];
+        let mut found = false;
+        while let Some(n) = nodes.pop() {
+            assert!(n.object.as_deref() != Some("shop."), "no empty table name");
+            found |= n.op == "No tables used";
+            nodes.extend(n.children.iter());
+        }
+        assert!(found, "{:?}", plan.root);
+    }
 
     const SCAN: &str = r#"{
       "query_block": {

@@ -57,24 +57,8 @@ impl MysqlProvider {
     }
 }
 
-#[async_trait]
-impl Provider for MysqlProvider {
-    fn engine(&self) -> Engine {
-        Engine::Mysql
-    }
-
-    async fn probe(&self) -> Result<ServerInfo> {
-        let mut conn = self.connector.connect(Scope::Server).await?;
-        let probe = collect::probe(&mut conn, &self.connector).await?;
-        let _ = conn.disconnect().await;
-        Ok(probe.server_info())
-    }
-
-    async fn snapshot(&self, connection: &str, options: &SnapshotOptions) -> Result<Snapshot> {
-        collect::snapshot(&self.connector, &self.spec, connection, options).await
-    }
-
-    async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
+impl MysqlProvider {
+    async fn explain_statement(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
         let statement = single_statement(sql)?;
         let schema = self.connector.database.as_deref();
         let mut conn = self.connector.connect(Scope::Database).await?;
@@ -129,6 +113,43 @@ impl Provider for MysqlProvider {
                 }
             }
         }
+    }
+}
+
+/// EXPLAIN goes through a prepared statement, where a `?` is a parameter MySQL wants a value for before it plans.
+fn parameter_error(e: Error) -> Error {
+    if !e.message.contains("parameters but") {
+        return e;
+    }
+    Error::invalid("This statement has `?` parameters, which MySQL needs values for to plan it").with_hint(
+        "Replace each ? with a sample value of its type (a quoted string for text, a number for an id) and explain again. \
+         Queries Culprit captured open from Queries with the plan of a real statement.",
+    )
+}
+
+#[async_trait]
+impl Provider for MysqlProvider {
+    fn engine(&self) -> Engine {
+        Engine::Mysql
+    }
+
+    async fn probe(&self) -> Result<ServerInfo> {
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let probe = collect::probe(&mut conn, &self.connector).await?;
+        let _ = conn.disconnect().await;
+        Ok(probe.server_info())
+    }
+
+    async fn snapshot(&self, connection: &str, options: &SnapshotOptions) -> Result<Snapshot> {
+        collect::snapshot(&self.connector, &self.spec, connection, options).await
+    }
+
+    async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
+        let mut plan = self.explain_statement(sql, mode).await.map_err(parameter_error)?;
+        if self.connector.flavor() == Flavor::Mariadb {
+            plan.props.insert("flavor".into(), "MariaDB".into());
+        }
+        Ok(plan)
     }
 
     fn session_actions(&self) -> Vec<SessionAction> {
@@ -411,6 +432,18 @@ fn json_value(value: &Value, kind: Option<&ColumnType>) -> Json {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholders_in_explain_get_a_plain_hint() {
+        let raw = Error::new(
+            culprit_core::ErrorCode::QueryFailed,
+            "Driver error: `Statement takes 1 parameters but 0 was supplied.'",
+        );
+        let mapped = parameter_error(raw);
+        assert!(mapped.message.contains("`?` parameters"), "{}", mapped.message);
+        assert!(mapped.hint.as_deref().is_some_and(|h| h.contains("sample value")));
+        assert_eq!(parameter_error(Error::invalid("other")).message, "other");
+    }
     use culprit_core::ErrorCode;
 
     #[test]

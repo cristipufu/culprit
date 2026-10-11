@@ -14,17 +14,18 @@ import { DashboardSkeleton } from "../components/DashboardSkeleton";
 import { MarkButton } from "../components/MarkButton";
 import { planFlags, Sparkline, trendNote, WorkloadTrend } from "../components/Trends";
 import type { WaitsTab } from "../components/Waits";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { useEvents } from "../lib/events";
 import { attention, nowTile, nowUnavailable, STATUS_LABEL } from "../lib/dashboard";
-import { ago, duration, percent } from "../lib/format";
+import { ago, duration, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { querySummary } from "../lib/query-summary";
-import { changeRequest, scan, setState, toast, useStore } from "../lib/store";
+import { changeRequest, scan, setState, useStore } from "../lib/store";
 import { waitColor } from "../lib/waits";
 import { openLive } from "./Live";
 import { compareSince } from "./Overview";
 import { keys } from "../lib/keys";
+import { copyAndTell } from "../lib/clipboard";
 
 const WaitsPanel = lazy(() => import("../components/WaitsPanel"));
 
@@ -51,7 +52,7 @@ function openFinding(id: string): void {
 }
 
 /**
- * One database at a glance: ten tiles, each a plain sentence, a small honest picture and a door to the view that
+ * One database at a glance: fourteen tiles, each a plain sentence, a small honest picture and a door to the view that
  * explains it. Composed from the latest scan by the same code as `culprit dashboard`; sessions are read live.
  */
 export default function Dashboard({ report, connection }: { report: Report; connection: ConnectionInfo }) {
@@ -102,7 +103,19 @@ export default function Dashboard({ report, connection }: { report: Report; conn
 
   const model = loaded.model;
   const { keys, headline } = attention(tiles);
-  const tile = (key: TileKey) => tiles.find((t) => t.key === key)!;
+  // A dashboard built by an older Culprit lacks newer tiles: they say so instead of breaking the page.
+  const tile = (key: TileKey): Tile =>
+    tiles.find((t) => t.key === key) ?? {
+      key,
+      title: key.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase()),
+      status: "unavailable",
+      takeaway: "Scan again to fill this tile.",
+      detail: null,
+      metrics: [],
+      items: [],
+      fix_sql: null,
+      next: null,
+    };
   const noWorkload = !report.snapshot.workload;
   const worst: TileStatus = keys[0] ? tile(keys[0]).status : "good";
   const focusTile = (key: TileKey) => gridRef.current?.querySelector<HTMLElement>(`[data-tile="${key}"]`)?.focus();
@@ -146,7 +159,7 @@ export default function Dashboard({ report, connection }: { report: Report; conn
 
       <div className={`dash-grid ${noWorkload ? "no-workload" : ""}`} ref={gridRef}>
         <DbTimeTile tile={tile("db-time")} report={report} />
-        <FindingsTile tile={tile("findings")} />
+        <FindingsTile tile={tile("findings")} report={report} />
         <TopQueriesTile tile={tile("top-queries")} report={report} />
         <WaitsTile tile={tile("waits")} onOpen={openWaits} />
         <NowTile tile={tile("now")} live={live} />
@@ -154,6 +167,15 @@ export default function Dashboard({ report, connection }: { report: Report; conn
         <DeadlocksTile tile={tile("deadlocks")} report={report} />
         <IndexesTile tile={tile("indexes")} />
         <PlansTile tile={tile("plans")} />
+        <SignalsTile tile={tile("storage")} action="Storage" onOpen={() => openWaits("health")} />
+        <SignalsTile tile={tile("connections")} action="All signals" onOpen={() => openWaits("health")} />
+        <SignalsTile tile={tile("replication")} action="Replication" onOpen={() => openWaits("health")} />
+        <SignalsTile
+          tile={tile("failures")}
+          action="Findings"
+          onOpen={() => setState({ view: "overview" })}
+          onRow={(item) => (item.query_id ? openQuery(item.query_id) : setState({ view: "overview" }))}
+        />
         <StatisticsTile tile={tile("statistics")} report={report} />
       </div>
 
@@ -267,7 +289,7 @@ function Fix({ sql }: { sql: string }) {
   return (
     <div className="dash-fix" data-own-click>
       <code>{sql}</code>
-      <button className="btn small" onClick={() => copyText(sql).then(() => toast("Copied"))} aria-label="Copy the statement">
+      <button className="btn small" onClick={() => copyAndTell(sql, "Copied")} aria-label="Copy the statement">
         <Copy size={12} /> Copy
       </button>
     </div>
@@ -356,9 +378,25 @@ function DbTimeTile({ tile, report }: { tile: Tile; report: Report }) {
 
 // ───────── findings ─────────
 
-function FindingsTile({ tile }: { tile: Tile }) {
-  const counts = (["high", "medium", "low"] as const).map((s) => ({ s, n: metricValue(tile, s) }));
+function FindingsTile({ tile, report }: { tile: Tile; report: Report }) {
+  // Findings you dismissed stay out of the tile, as they do in the list; the takeaway still describes the whole scan.
+  const dismissed = useStore((s) => s.dismissed);
+  const hidden = report.findings.filter((f) => !f.inactive && dismissed[f.id]).length;
+  const open = report.findings.filter((f) => !f.inactive && !dismissed[f.id]);
+  const counts = (["high", "medium", "low"] as const).map((s) => ({
+    s,
+    n: hidden > 0 ? open.filter((f) => f.severity === s).length : metricValue(tile, s),
+  }));
   const total = counts.reduce((a, c) => a + c.n, 0);
+  const rows: { id: string; label: string; value: string | null; status: TileStatus | null }[] =
+    hidden > 0
+      ? open.slice(0, 3).map((f) => ({
+          id: f.id,
+          label: f.title,
+          value: f.impact.label,
+          status: f.severity === "high" ? "bad" : f.severity === "medium" ? "watch" : "info",
+        }))
+      : tile.items.map((i) => ({ id: i.id, label: i.label, value: i.value, status: i.status }));
   return (
     <Frame tile={tile} action="All findings" onOpen={() => setState({ view: "overview", changes: null })}>
       {total > 0 && (
@@ -375,9 +413,9 @@ function FindingsTile({ tile }: { tile: Tile }) {
           </div>
         </div>
       )}
-      {tile.items.length > 0 && (
+      {rows.length > 0 && (
         <ul className="dash-rows">
-          {tile.items.map((item) => (
+          {rows.map((item) => (
             <li key={item.id}>
               <button className="dash-row two-line" onClick={() => openFinding(item.id)}>
                 <span className={`sev ${severityOf(item.status)}`} aria-hidden />
@@ -390,6 +428,7 @@ function FindingsTile({ tile }: { tile: Tile }) {
           ))}
         </ul>
       )}
+      {hidden > 0 && <p className="dash-detail">{hidden === 1 ? "1 dismissed finding is" : `${hidden} dismissed findings are`} left out here.</p>}
     </Frame>
   );
 }
@@ -652,6 +691,40 @@ function HealthTile({ tile, onOpen }: { tile: Tile; onOpen: () => void }) {
   );
 }
 
+// ───────── storage, connections, replication, failing queries ─────────
+
+/** The four signal tiles share one shape: up to two numbers, then the rows behind them, worst first. */
+function SignalsTile({ tile, action, onOpen, onRow }: { tile: Tile; action: string; onOpen: () => void; onRow?: (item: TileItem) => void }) {
+  if (tile.status === "unavailable") return <Frame tile={tile} />;
+  return (
+    <Frame tile={tile} action={action} onOpen={onOpen}>
+      {tile.metrics.length > 0 && (
+        <div className="dash-stats compact">
+          {tile.metrics.slice(0, 2).map((m) => (
+            <div key={m.key} className="dash-stat">
+              <b>{m.text}</b>
+              <span>{m.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {tile.items.length > 0 && (
+        <ul className="dash-rows compact">
+          {tile.items.map((i) => (
+            <li key={i.id}>
+              <button className="dash-row" onClick={() => (onRow ? onRow(i) : onOpen())}>
+                <i className={`sig-dot ${i.status ?? "info"}`} aria-hidden />
+                <span className="dash-row-label">{i.label}</span>
+                <span className="dash-row-value">{i.value}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Frame>
+  );
+}
+
 // ───────── deadlocks ─────────
 
 function DeadlocksTile({ tile, report }: { tile: Tile; report: Report }) {
@@ -663,7 +736,7 @@ function DeadlocksTile({ tile, report }: { tile: Tile; report: Report }) {
       <Frame tile={tile} action="Deadlocks" onOpen={open} foot={<p className="dash-detail">Paste the server log's lines into Live → Deadlocks to have one explained.</p>}>
         <div className="dash-big">
           <b>{d.counted}</b>
-          <span>counted{d.counted_since ? ` since ${new Date(d.counted_since).toLocaleDateString()}` : ""}</span>
+          <span title={d.counted_since ? when(d.counted_since).full : undefined}>counted{d.counted_since ? ` since ${when(d.counted_since).short}` : ""}</span>
         </div>
       </Frame>
     );
@@ -775,7 +848,7 @@ function StatisticsTile({ tile, report }: { tile: Tile; report: Report }) {
         {sql && (
           <div className="dash-fix" data-own-click>
             <code>{sql}</code>
-            <button className="btn small" onClick={() => copyText(sql).then(() => toast("Copied"))} aria-label="Copy the statement">
+            <button className="btn small" onClick={() => copyAndTell(sql, "Copied")} aria-label="Copy the statement">
               <Copy size={12} /> Copy
             </button>
             <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} title="Opens in the editor; production asks before it runs">

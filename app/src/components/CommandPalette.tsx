@@ -1,5 +1,8 @@
-import { Activity, Bookmark, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Activity, Bookmark, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useFocusTrap } from "../lib/focus";
+import { count } from "../lib/format";
+import { openLive } from "../views/Live";
 import { useTheme } from "../lib/theme";
 import { EngineBadge } from "./EngineBadge";
 import { useHotkeys } from "../lib/hotkeys";
@@ -28,7 +31,10 @@ function score(text: string, query: string): number {
   const t = text.toLowerCase();
   const q = query.toLowerCase();
   const direct = t.indexOf(q);
-  if (direct >= 0) return 100 - direct;
+  // A match at the start of a word ranks above one inside it.
+  if (direct >= 0) return 100 - direct + (direct === 0 || /[\s._\-·/]/.test(t[direct - 1] ?? "") ? 50 : 0);
+  // One or two letters scattered through a title match almost everything: short queries need a real substring.
+  if (q.length < 3) return 0;
   let ti = 0;
   let hits = 0;
   for (const ch of q) {
@@ -52,6 +58,8 @@ export function CommandPalette() {
   }, [saved]);
   const [index, setIndex] = useState(0);
   const [theme, , setTheme] = useTheme();
+  const panel = useRef<HTMLDivElement>(null);
+  useFocusTrap(panel);
 
   const items = useMemo<Item[]>(() => {
     const close = () => setState({ palette: false });
@@ -72,12 +80,25 @@ export function CommandPalette() {
     VIEWS.filter((v) => active || v.view === "plans" || v.view === "connections").forEach((v) =>
       list.push({ id: `view:${v.view}`, section: "Go to", title: v.title, icon: icon(v.icon), run: () => setState({ view: v.view, palette: false }) }),
     );
+    if (active) {
+      list.push({ id: "view:deadlocks", section: "Go to", title: "Deadlocks", hint: "Live", icon: icon(<Skull size={13} />), run: () => (close(), openLive("deadlocks")) });
+    }
     saved?.forEach((q) => {
       const where = q.connection ? ` · ${q.connection}` : "";
       list.push({ id: `s:${q.name}`, section: "Saved queries", title: `Run ${q.name}`, hint: `saved query${where}`, icon: icon(<Bookmark size={13} />), run: () => setState({ view: "editor", editorSaved: { name: q.name, run: true }, palette: false }) });
     });
     report?.findings.forEach((f) =>
       list.push({ id: `f:${f.id}`, section: "Findings", title: f.title, hint: f.impact.label, icon: icon(<CircleDot size={12} color={SEVERITY_COLOR[f.severity]} />), run: () => setState({ view: "overview", finding: f.id, palette: false }) }),
+    );
+    report?.snapshot.tables.forEach((t) =>
+      list.push({
+        id: `t:${t.schema}.${t.name}`,
+        section: "Tables",
+        title: `${t.schema}.${t.name}`,
+        hint: t.rows != null ? `${count(t.rows)} rows` : "table",
+        icon: icon(<Table2 size={13} />),
+        run: () => setState({ view: "schema", schemaTable: `${t.schema}.${t.name}`, palette: false }),
+      }),
     );
     report?.snapshot.workload?.queries.forEach((q) =>
       list.push({ id: `q:${q.id}`, section: "Queries", title: q.text.replace(/\s+/g, " ").slice(0, 120), hint: `query ${q.id}`, icon: icon(<TextSearch size={13} />), run: () => setState({ view: "queries", query: q.id, palette: false }) }),
@@ -103,9 +124,15 @@ export function CommandPalette() {
 
   return (
     <div className="overlay" onMouseDown={() => setState({ palette: false })}>
-      <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
+      <div ref={panel} className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onMouseDown={(e) => e.stopPropagation()}>
         <input
           autoFocus
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="palette-results"
+          aria-autocomplete="list"
+          aria-activedescendant={results[index] ? `palette-item-${index}` : undefined}
+          aria-label="Search findings, queries, tables and actions"
           value={query}
           placeholder="Search findings, queries, tables, actions…"
           onChange={(e) => {
@@ -125,11 +152,23 @@ export function CommandPalette() {
             }
           }}
         />
-        <div className="results">
+        <div className="results" id="palette-results" role="listbox" aria-label="Results">
           {results.map((item, i) => (
-            <div key={item.id}>
-              {(i === 0 || results[i - 1]?.section !== item.section) && <div className="section eyebrow">{item.section}</div>}
-              <button className={`item ${i === index ? "on" : ""}`} onMouseEnter={() => setIndex(i)} onClick={() => choose(i)}>
+            <div key={item.id} role="presentation">
+              {(i === 0 || results[i - 1]?.section !== item.section) && (
+                <div className="section eyebrow" role="presentation">
+                  {item.section}
+                </div>
+              )}
+              <button
+                id={`palette-item-${i}`}
+                role="option"
+                aria-selected={i === index}
+                tabIndex={-1}
+                className={`item ${i === index ? "on" : ""}`}
+                onMouseEnter={() => setIndex(i)}
+                onClick={() => choose(i)}
+              >
                 {item.icon}
                 <span className="t">{item.title}</span>
                 {item.hint && <span className="k">{item.hint}</span>}

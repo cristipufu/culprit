@@ -281,14 +281,19 @@ GROUP BY ws.plan_id, ws.wait_category_desc
         }
     }
 
+    // Culprit's own statements are left out, as they are from the workload: the waits describe the application.
     let db_waits_sql = format!(
         r#"
 SELECT ws.wait_category_desc, SUM(ws.total_query_wait_time_ms) AS wait_ms
 FROM sys.query_store_wait_stats ws
 JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = ws.runtime_stats_interval_id
-WHERE i.end_time >= {since}
+JOIN sys.query_store_plan p ON p.plan_id = ws.plan_id
+JOIN sys.query_store_query q ON q.query_id = p.query_id
+JOIN sys.query_store_query_text t ON t.query_text_id = q.query_text_id
+WHERE i.end_time >= {since} AND t.query_sql_text NOT LIKE N'%{marker}%'
 GROUP BY ws.wait_category_desc
-"#
+"#,
+        marker = OWN_QUERY_MARKER,
     );
     let waits = match query(client, &db_waits_sql).await {
         Ok(rows) => fold_waits(rows.iter().map(|r| (r.string("wait_category_desc"), r.f64_or_zero("wait_ms")))),

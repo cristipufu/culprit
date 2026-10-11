@@ -7,10 +7,11 @@ import type { DeadlockPattern } from "../gen/DeadlockPattern";
 import type { DeadlockProcess } from "../gen/DeadlockProcess";
 import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { Engine } from "../gen/Engine";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, setState, toast, useStore } from "../lib/store";
 import { keys } from "../lib/keys";
+import { copyAndTell } from "../lib/clipboard";
 
 const PATTERN: Record<DeadlockPattern, string> = {
   "key-lookup": "Key lookup",
@@ -45,7 +46,7 @@ function sourceLine(engine: Engine): string {
     case "mysql":
       return "Culprit reads InnoDB's latest deadlock report (SHOW ENGINE INNODB STATUS).";
     case "postgres":
-      return "Postgres counts deadlocks but keeps the details in the server log.";
+      return "PostgreSQL counts deadlocks but keeps the details in the server log.";
   }
 }
 
@@ -135,13 +136,16 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
       onDrop={onDrop}
     >
       <div className="dl-toolbar">
-        <span className="seg" role="radiogroup" aria-label="How far back">
-          {RANGES.map((r) => (
-            <button key={r.hours} role="radio" aria-checked={hours === r.hours} className={hours === r.hours ? "on" : ""} onClick={() => setHours(r.hours)}>
-              {r.label}
-            </button>
-          ))}
-        </span>
+        {/* PostgreSQL only counts deadlocks since its statistics were reset: there's no window to choose. */}
+        {engine !== "postgres" && (
+          <span className="seg" role="radiogroup" aria-label="How far back">
+            {RANGES.map((r) => (
+              <button key={r.hours} role="radio" aria-checked={hours === r.hours} className={hours === r.hours ? "on" : ""} onClick={() => setHours(r.hours)}>
+                {r.label}
+              </button>
+            ))}
+          </span>
+        )}
         <span className="muted dl-source">{sourceLine(engine)}</span>
         <span className="spacer" />
         <span className="muted dl-paste-hint">
@@ -180,7 +184,7 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
                 </span>
               </div>
               <p>
-                Postgres keeps only this counter. The details (who waited for whom, and both statements) go to the server log:
+                PostgreSQL keeps only this counter. The details (who waited for whom, and both statements) go to the server log:
                 paste the lines from <code>deadlock detected</code> to <code>STATEMENT</code> below and Culprit draws the cycle and names the fix.
               </p>
               {load.status === "ready" && load.report.note?.includes("log_lock_waits") && (
@@ -248,7 +252,7 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
                       {f.sql && (
                         <div className="dl-fix-sql">
                           <Sql text={f.sql} pretty={false} />
-                          <button className="btn ghost small" onClick={() => copyText(f.sql!).then(() => toast("Copied"))} aria-label="Copy SQL">
+                          <button className="btn ghost small" onClick={() => copyAndTell(f.sql!, "Copied")} aria-label="Copy SQL">
                             <Copy size={12} /> Copy
                           </button>
                         </div>
@@ -296,7 +300,7 @@ function DropZone({ onText }: { onText: (text: string) => Promise<void> }) {
       <ClipboardPaste size={16} />
       <div>
         <strong>Have a deadlock from somewhere else?</strong>
-        <p className="muted">Paste a SQL Server deadlock graph (.xdl), the LATEST DETECTED DEADLOCK section from MySQL or MariaDB, or Postgres log lines from “deadlock detected”. Culprit names the pattern and the fix.</p>
+        <p className="muted">Paste a SQL Server deadlock graph (.xdl), the LATEST DETECTED DEADLOCK section from MySQL or MariaDB, or PostgreSQL log lines from “deadlock detected”. Culprit names the pattern and the fix.</p>
         <textarea
           aria-label="Paste a deadlock"
           placeholder={keys("Paste here, or press ⌘V anywhere on this page")}

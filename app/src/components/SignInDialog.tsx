@@ -1,8 +1,9 @@
 import { Copy, ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { DeviceCodePrompt } from "../gen/DeviceCodePrompt";
-import { api, copyText } from "../lib/api";
+import { api } from "../lib/api";
 import { toast } from "../lib/store";
+import { copyAndTell } from "../lib/clipboard";
 
 type Dialog = { status: "closed" } | { status: "code"; prompt: DeviceCodePrompt; until: number } | { status: "failed"; message: string };
 
@@ -58,7 +59,7 @@ export function SignInDialog() {
             <p>This connection signs in with Entra ID and the Azure CLI isn't available. Open Microsoft's sign-in page and enter this code:</p>
             <div className="device-code">
               <span className="code">{dialog.prompt.user_code}</span>
-              <button className="btn ghost" onClick={() => copyText(dialog.prompt.user_code).then(() => toast("Code copied"))}>
+              <button className="btn ghost" onClick={() => copyAndTell(dialog.prompt.user_code, "Code copied")}>
                 <Copy size={13} /> Copy
               </button>
             </div>

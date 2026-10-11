@@ -117,15 +117,8 @@ pub async fn events(ws: &Workspace, args: PeriodArgs, out: &Out) -> Result<u8> {
 }
 
 fn print_events(log: &EventLog, out: &Out) {
-    println!(
-        "{}",
-        out.bold(&format!(
-            "What changed around {} · {} → {}",
-            log.connection,
-            short_time(&log.start),
-            short_time(&log.end)
-        ))
-    );
+    let (from, to) = culprit_core::changes::range_times(&log.start, &log.end);
+    println!("{}", out.bold(&format!("What changed around {} · {from} → {to}", log.connection)));
     if log.events.is_empty() {
         println!("Nothing: no marks, schema, index or settings changes, restarts or throttling in this period.");
     }

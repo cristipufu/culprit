@@ -194,7 +194,7 @@ export async function savePlan(item: LoadedPlan, asJson: boolean): Promise<void>
   }
 }
 
-const ENGINE_NAME: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+const ENGINE_NAME: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 
 /** Compare two sample plans captured on the demo databases (a seek that became a scan), to see what Plans does. */
 export async function trySample(engine: Plan["engine"] = "mssql"): Promise<void> {

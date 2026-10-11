@@ -107,6 +107,37 @@ pub struct FileIo {
     pub write_bytes: Option<f64>,
 }
 
+/// Log files of the same database as one: MySQL 8.0.30+ spreads redo over many `#ib_redo*` files, each too quiet on
+/// its own to average, and what commits wait on is the log as a whole. Other files pass through unchanged.
+pub fn merge_logs(files: &[FileIo]) -> Vec<FileIo> {
+    let mut out: Vec<FileIo> = Vec::new();
+    for f in files {
+        if f.kind != FileKind::Log {
+            out.push(f.clone());
+            continue;
+        }
+        match out.iter_mut().find(|o| o.kind == FileKind::Log && o.database == f.database) {
+            Some(log) => {
+                let sum = |a: Option<f64>, b: Option<f64>| match (a, b) {
+                    (None, None) => None,
+                    (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+                };
+                log.reads += f.reads;
+                log.writes += f.writes;
+                log.read_ms = sum(log.read_ms, f.read_ms);
+                log.write_ms = sum(log.write_ms, f.write_ms);
+                log.read_bytes = sum(log.read_bytes, f.read_bytes);
+                log.write_bytes = sum(log.write_bytes, f.write_bytes);
+                if log.name.contains("ib_redo") || log.name.contains("ib_logfile") {
+                    log.name = "redo log".into();
+                }
+            }
+            None => out.push(f.clone()),
+        }
+    }
+    out
+}
+
 impl FileIo {
     pub fn avg_read_ms(&self) -> Option<f64> {
         self.read_ms.filter(|_| self.reads > 0.0).map(|ms| ms / self.reads)
@@ -224,4 +255,36 @@ pub struct TableStorage {
     pub fillfactor: Option<f64>,
     /// Bytes beyond what the live rows need, estimated from column statistics (no pgstattuple needed).
     pub bloat_bytes: Option<f64>,
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn file(name: &str, kind: FileKind, writes: f64, write_ms: f64) -> FileIo {
+        FileIo {
+            name: name.into(),
+            kind,
+            database: None,
+            reads: 0.0,
+            read_ms: None,
+            read_bytes: None,
+            writes,
+            write_ms: Some(write_ms),
+            write_bytes: None,
+        }
+    }
+
+    #[test]
+    fn redo_files_add_up_to_one_log() {
+        let files = vec![
+            file("#ib_redo10", FileKind::Log, 600.0, 3.0),
+            file("#ib_redo11", FileKind::Log, 900.0, 6.0),
+            file("shop/orders.ibd", FileKind::Data, 10.0, 1.0),
+        ];
+        let merged = merge_logs(&files);
+        let log = merged.iter().find(|f| f.kind == FileKind::Log).unwrap();
+        assert_eq!((log.name.as_str(), log.writes, log.write_ms), ("redo log", 1_500.0, Some(9.0)));
+        assert_eq!(merged.len(), 2);
+    }
 }

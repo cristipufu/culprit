@@ -110,11 +110,12 @@ pub fn percent(ratio: f64) -> String {
     format!("{:.0}%", p)
 }
 
+/// "3.4×", "710×": how many times larger, written the way the rest of the product writes it.
 pub fn factor(value: f64) -> String {
     if value >= 100.0 {
-        return format!("×{}", count(value));
+        return format!("{}×", count(value));
     }
-    format!("×{:.1}", value)
+    format!("{:.1}×", value)
 }
 
 pub fn list(items: &[String]) -> String {

@@ -708,7 +708,8 @@ fn file_label(snapshot: &Snapshot, f: &FileIo) -> String {
 
 pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };
-    slow_files(&p.files)
+    let files = culprit_core::signals::merge_logs(&p.files);
+    slow_files(&files)
         .into_iter()
         .map(|(file, avg, ops, write)| {
             let label = file_label(snapshot, file);
@@ -789,8 +790,13 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     if rate < limit {
         return Vec::new();
     }
-    let key = snapshot.connection.clone();
-    let mut f = finding("connection-churn", &key, Category::Configuration, subject(SubjectKind::Database, &key));
+    // Keyed on `server`, never the connection's name: finding ids travel into exports and agent briefs.
+    let mut f = finding(
+        "connection-churn",
+        "server",
+        Category::Configuration,
+        subject(SubjectKind::Database, &snapshot.server.database),
+    );
     f.title = format!("The application opens {} connections a second: use a pool", format::count(rate));
     let detail = match engine {
         Engine::Postgres => {

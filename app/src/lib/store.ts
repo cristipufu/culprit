@@ -32,6 +32,8 @@ export type State = {
   saved: SavedQuery[] | null;
   /** Open Schema on the index advisor (from the dashboard). */
   advisor: boolean;
+  /** Open Schema on this table (`schema.table`, from the palette). */
+  schemaTable: string | null;
   dismissed: Record<string, true>;
   windowDays: WindowDays;
 };
@@ -93,6 +95,7 @@ let state: State = {
   editorSaved: null,
   saved: null,
   advisor: false,
+  schemaTable: null,
   dismissed: loadDismissed(),
   windowDays: DEFAULT_WINDOW,
 };

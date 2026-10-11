@@ -255,13 +255,7 @@ async fn connections(conn: &mut Conn) -> culprit_core::Result<Vec<Signal>> {
         if let Some(n) = get(name) {
             // Under an hour of uptime, a rate per hour would be an extrapolation: report the count.
             let signal = if hours >= 1.0 {
-                Signal::new(
-                    key,
-                    &format!("{label}, per hour"),
-                    n / hours,
-                    SignalUnit::PerHour,
-                    SignalScope::SinceStartup,
-                )
+                Signal::new(key, label, n / hours, SignalUnit::PerHour, SignalScope::SinceStartup)
             } else {
                 Signal::new(key, &format!("{label} since start"), n, SignalUnit::Count, SignalScope::SinceStartup)
             };

@@ -416,7 +416,7 @@
         "requests": [],
         "schema": "shop",
         "source": "plan-scan",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
         "table": "orders",
         "table_rows": 498573.0,
         "verify": [
@@ -448,7 +448,7 @@
         "reason": "Its keys are the start of ix_orders_status_created's, so any seek it serves ix_orders_status_created serves too.",
         "schema": "shop",
         "size_bytes": 11026432.0,
-        "sql": "DROP INDEX `ix_orders_status` ON `shop`.`orders` ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;",
         "table": "orders",
         "writes": 0.0
       },
@@ -486,7 +486,7 @@
         "reason": "Same keys as uq_products_sku: the same index twice, both maintained on every write.",
         "schema": "shop",
         "size_bytes": 442368.0,
-        "sql": "DROP INDEX `ix_products_sku` ON `shop`.`products` ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;",
         "table": "products",
         "writes": 0.0
       }
@@ -661,7 +661,7 @@
         "requests": [],
         "schema": "shop",
         "source": "plan-scan",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
         "table": "orders",
         "table_rows": 498573.0,
         "verify": [
@@ -693,7 +693,7 @@
         "reason": "Its keys are the start of ix_orders_status_created's, so any seek it serves ix_orders_status_created serves too.",
         "schema": "shop",
         "size_bytes": 9977856.0,
-        "sql": "DROP INDEX `ix_orders_status` ON `shop`.`orders` ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;",
         "table": "orders",
         "writes": 0.0
       },
@@ -731,7 +731,7 @@
         "reason": "Same keys as uq_products_sku: the same index twice, both maintained on every write.",
         "schema": "shop",
         "size_bytes": 442368.0,
-        "sql": "DROP INDEX `ix_products_sku` ON `shop`.`products` ALGORITHM=INPLACE, LOCK=NONE;",
+        "sql": "ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;",
         "table": "products",
         "writes": 0.0
       }

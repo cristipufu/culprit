@@ -442,6 +442,7 @@ impl Provider for MssqlProvider {
             ExplainMode::Estimated => statement::estimated_plan(&mut client, sql).await,
             ExplainMode::Analyze => statement::actual_plan(&mut client, sql).await,
         }
+        .map_err(statement::parameter_error)
     }
 
     async fn live(&self) -> Result<LiveState> {
@@ -543,7 +544,11 @@ impl Provider for MssqlProvider {
         } else {
             statement::run_changes(&mut client, sql).await?
         };
-        result.messages.push("Committed.".to_string());
+        // "2 rows changed, committed." — the same words MySQL and PostgreSQL use.
+        match result.messages.last_mut() {
+            Some(last) if last.ends_with("changed") => last.push_str(", committed."),
+            _ => result.messages.push("Committed.".to_string()),
+        }
         Ok(result)
     }
 }

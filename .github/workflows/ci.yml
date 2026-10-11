@@ -47,9 +47,9 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The desktop app crate needs the frontend build and, on Linux, WebKitGTK; the `app` job covers it.
       - name: Clippy
-        run: cargo clippy --workspace --exclude culprit-app --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --exclude culprit-app --all-targets -- -D warnings
       - name: Test
-        run: cargo test --workspace --exclude culprit-app
+        run: cargo test --locked --workspace --exclude culprit-app
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Typecheck the UI
         working-directory: app
@@ -91,7 +91,7 @@ jobs:
           bun install --frozen-lockfile
           bun run build
       - name: Clippy (desktop app)
-        run: cargo clippy -p culprit-app --all-targets -- -D warnings
+        run: cargo clippy --locked -p culprit-app --all-targets -- -D warnings
       # Unsigned: no certificates or notarization secrets in CI. Local signed builds use dev/build-local.sh.
       - name: Bundle
         working-directory: app

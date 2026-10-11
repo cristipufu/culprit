@@ -72,6 +72,8 @@ fn next(tile: &Tile, connection: &str) -> Option<String> {
             format!("culprit explain {c} --query-id {}", shell_word(id))
         }
         TileKey::Statistics => format!("culprit doctor {c}"),
+        TileKey::Storage | TileKey::Connections | TileKey::Replication => format!("culprit waits {c}"),
+        TileKey::Failures => format!("culprit findings {c}"),
     })
 }
 

@@ -72,6 +72,8 @@ pub fn next_tool(key: culprit_core::TileKey) -> &'static str {
         TileKey::Indexes => "index_advice",
         TileKey::Plans => "plan_insights",
         TileKey::Statistics => "scan",
+        TileKey::Storage | TileKey::Connections | TileKey::Replication => "waits",
+        TileKey::Failures => "findings",
     }
 }
 
@@ -124,7 +126,10 @@ fn query_row(w: &Workload, q: &QueryStat) -> Value {
     json!({
         "id": q.id,
         "db_time_pct": pct(w.share(q.total_time_ms)),
-        "runs_per_day": round(w.per_day(q.executions), 1),
+        // Per day only over 20 hours or more of data; otherwise null, with the measured runs and their window.
+        "runs_per_day": w.per_day_measured(q.executions).map(|v| round(v, 1)),
+        "runs": round(q.executions, 0),
+        "window_hours": round(w.window_hours, 2),
         "avg_ms": round(q.mean_time_ms, 3),
         "max_ms": q.max_time_ms.map(|v| round(v, 3)),
         "cpu_ms_per_run": q.cpu_time_ms.filter(|_| q.executions > 0.0).map(|c| round(c / q.executions, 3)),

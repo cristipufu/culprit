@@ -57,13 +57,10 @@ export function withSignals(report: Report, patch: SignalsPatch | undefined): Re
         replicas: patch.replicas,
       }
     : null;
-  const ids = new Set(report.findings.map((f) => f.id));
-  const added = patch.findings.filter((f) => !ids.has(f.id));
-  const findings = [...report.findings, ...added].sort((a, b) => b.impact.score - a.impact.score);
+  // Findings are not merged here: the fixture reports are re-analyzed with this data baked in
+  // (scratchpad gen/regen-reports.ts), so their findings, summary and shares all come from one run of the checks.
   return {
     ...report,
-    findings,
-    summary: { ...report.summary, opportunities: report.summary.opportunities + added.length },
     snapshot: {
       ...s,
       workload: workload

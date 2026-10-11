@@ -37,7 +37,11 @@ impl DriftSide {
 
 pub fn server_label(product: &str, version: &str) -> String {
     let (first, rest) = version.split_once(' ').unwrap_or((version, ""));
-    match (product.ends_with(first), rest.is_empty()) {
+    // "MariaDB 10.11.19" with VERSION() "10.11.19-MariaDB-ubu2204": the product already says the version.
+    let product_version = product.rsplit(' ').next().unwrap_or_default();
+    let said = product.ends_with(first)
+        || (product_version.chars().any(|c| c.is_ascii_digit()) && first.starts_with(product_version));
+    match (said, rest.is_empty()) {
         (true, true) => product.to_string(),
         (true, false) => format!("{product} {rest}"),
         (false, _) => format!("{product} {version}"),
@@ -92,5 +96,6 @@ mod tests {
         assert_eq!(server_label("SQL Server 2022", "16.0.4295.3"), "SQL Server 2022 16.0.4295.3");
         assert_eq!(server_label("PostgreSQL 18.6", "18.6 (Debian 18.6-1)"), "PostgreSQL 18.6 (Debian 18.6-1)");
         assert_eq!(server_label("MySQL 8.4.3", "8.4.3"), "MySQL 8.4.3");
+        assert_eq!(server_label("MariaDB 10.11.19", "10.11.19-MariaDB-ubu2204"), "MariaDB 10.11.19");
     }
 }

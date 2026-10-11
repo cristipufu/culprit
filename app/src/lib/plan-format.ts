@@ -12,7 +12,7 @@ export function allNodes(n: PlanNode, out: PlanNode[] = []): PlanNode[] {
 }
 
 /** What operator shares are measured against: the plan's cost, or the sum of operator costs when that is larger
- * (under a Postgres Limit the children's costs assume they run to completion). */
+ * (under a PostgreSQL Limit the children's costs assume they run to completion). */
 export function costBasis(plan: Plan): number {
   const own = allNodes(plan.root).reduce((s, n) => s + n.self_cost, 0);
   return Math.max(plan.total_cost, plan.root.subtree_cost, own) || 1;

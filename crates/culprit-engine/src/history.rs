@@ -380,6 +380,22 @@ fn indexes(
     }
 }
 
+/// A setting value as people write it: MySQL prints `long_query_time` as `10.000000`; it reads as `10`.
+fn setting_text(value: &str) -> String {
+    let value = value.trim();
+    match value.split_once('.') {
+        Some((whole, fraction))
+            if !whole.is_empty()
+                && whole.trim_start_matches('-').chars().all(|c| c.is_ascii_digit())
+                && fraction.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            let fraction = fraction.trim_end_matches('0');
+            if fraction.is_empty() { whole.to_string() } else { format!("{whole}.{fraction}") }
+        }
+        _ => value.to_string(),
+    }
+}
+
 fn settings(p: &Snapshot, c: &Snapshot, (after, at): (&str, &str), out: &mut Vec<ChangeEvent>) {
     let skip = |name: &str| culprit_checks::drift::NOT_SETTINGS.iter().any(|n| n.eq_ignore_ascii_case(name));
     let changed: Vec<(String, String, String)> = c
@@ -389,7 +405,7 @@ fn settings(p: &Snapshot, c: &Snapshot, (after, at): (&str, &str), out: &mut Vec
         .filter_map(|s| {
             let old = p.setting(&s.name)?;
             (!old.value.trim().eq_ignore_ascii_case(s.value.trim()))
-                .then(|| (s.name.clone(), old.value.trim().to_string(), s.value.trim().to_string()))
+                .then(|| (s.name.clone(), setting_text(&old.value), setting_text(&s.value)))
         })
         .collect();
     if changed.len() > MAX_SETTINGS {
@@ -550,6 +566,14 @@ fn statistics(p: Option<&Snapshot>, c: &Snapshot, since: f64, out: &mut Vec<Chan
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_values_lose_trailing_zeros() {
+        assert_eq!(setting_text("10.000000"), "10");
+        assert_eq!(setting_text("0.500000"), "0.5");
+        assert_eq!(setting_text(" ON "), "ON");
+        assert_eq!(setting_text("1.2.3"), "1.2.3");
+    }
 
     fn demo() -> Snapshot {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/pg-demo.report.json");

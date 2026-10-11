@@ -20,9 +20,9 @@ export const KIND_LABEL: Record<EventKind, string> = {
   throttle: "Cloud",
 };
 
-const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
-const dayClock = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
-const dateClock = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+const dayClock = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
+const dateClock = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 
 /** "Tue 14:05" within the week, "Oct 3, 14:05" before. */
 export function stamp(t: number): string {

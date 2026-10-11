@@ -168,12 +168,39 @@ pub fn analyze_with(snapshot: Snapshot, extra: &[Arc<dyn Check>]) -> Report {
         findings.extend(check.run(&snapshot));
     }
     dedupe(&mut findings);
+    if snapshot.server.engine == culprit_core::Engine::Mssql {
+        for f in findings.iter_mut() {
+            without_database_prose(f, &snapshot.server.database);
+        }
+    }
     mark_inactive(&snapshot, &mut findings);
     findings.sort_by(|a, b| {
         a.inactive.cmp(&b.inactive).then(b.impact.score.total_cmp(&a.impact.score)).then(b.severity.cmp(&a.severity))
     });
     let summary = summarize(&snapshot, &findings);
     Report { snapshot, findings, locked, summary }
+}
+
+/// SQL Server writes names in plans and DMVs with the database in front (`[shop_db].[dbo].[orders].[email]`). In
+/// sentences that's noise, and in a shared report it names the database: prose keeps `[dbo].[orders].[email]`. Fix
+/// scripts are left as they are.
+pub(crate) fn without_database(text: &str, database: &str) -> String {
+    if database.is_empty() {
+        return text.to_string();
+    }
+    let prefix = format!("[{}].[", database.replace(']', "]]"));
+    text.replace(&prefix, "[")
+}
+
+fn without_database_prose(f: &mut Finding, database: &str) {
+    f.title = without_database(&f.title, database);
+    f.summary = without_database(&f.summary, database);
+    for line in f.verify.iter_mut().chain(f.caveats.iter_mut()) {
+        *line = without_database(line, database);
+    }
+    if let Some(fix) = f.fix.as_mut() {
+        fix.summary = without_database(&fix.summary, database);
+    }
 }
 
 fn dedupe(findings: &mut Vec<Finding>) {
@@ -371,7 +398,8 @@ fn keys_of(id: &str) -> Vec<String> {
         .collect()
 }
 
-fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
+/// The report's summary for these findings: counts, the share the top ones touch and the headline.
+pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     let mut by_category: Vec<CategoryCount> = Vec::new();
     for category in [Category::Indexes, Category::Queries, Category::Maintenance, Category::Configuration] {
         let count = findings.iter().filter(|f| f.category == category).count() as u32;
@@ -388,19 +416,7 @@ fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         .filter(|c| c.count > 0)
         .collect();
 
-    let top_share = snapshot.workload.as_ref().and_then(|w| {
-        let ids: BTreeSet<&str> = findings
-            .iter()
-            .filter(|f| f.impact.db_time_share.is_some() && !f.inactive)
-            .take(3)
-            .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
-            .collect();
-        if ids.is_empty() {
-            return None;
-        }
-        let time: f64 = w.queries.iter().filter(|q| ids.contains(q.id.as_str())).map(|q| q.total_time_ms).sum();
-        Some(w.share(time))
-    });
+    let top_share = support::top_findings_share(snapshot, findings.iter());
 
     let n = findings.iter().filter(|f| !f.inactive).count();
     let window = snapshot.workload.as_ref().map(support::window_phrase);
@@ -426,4 +442,18 @@ fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
+}
+
+#[cfg(test)]
+mod prose_tests {
+    use super::without_database;
+
+    #[test]
+    fn prose_names_lose_the_database() {
+        assert_eq!(
+            without_database("CONVERT_IMPLICIT(nvarchar(200),[shop_db].[dbo].[customers].[email],0)", "shop_db"),
+            "CONVERT_IMPLICIT(nvarchar(200),[dbo].[customers].[email],0)"
+        );
+        assert_eq!(without_database("[other].[dbo].[t]", "shop_db"), "[other].[dbo].[t]");
+    }
 }

@@ -6,7 +6,7 @@ use culprit_core::{
     Severity, Snapshot, SubjectKind, Unit, format,
 };
 
-use crate::indexes::{backs_foreign_key, is_unused, redundant_indexes, same_keys, scan_groups, writes_per_day};
+use crate::indexes::{backs_foreign_key, is_unused, measured_writes, redundant_indexes, same_keys, scan_groups};
 use crate::support::*;
 
 pub fn overlapping_index_info() -> CheckInfo {
@@ -179,22 +179,29 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         if secondary.len() < MANY_INDEXES {
             continue;
         }
-        let Some(writes) = writes_per_day(snapshot, &t.schema, &t.name) else { continue };
+        let Some((writes_total, days)) = measured_writes(snapshot, &t.schema, &t.name) else { continue };
+        // Judged per day; said per day only over 20 hours of counters.
+        let writes = writes_total / days;
         if writes < 50_000.0 {
             continue;
         }
+        let measured = per_day_is_measured(days);
         let idle: Vec<&IndexStat> =
             secondary.iter().copied().filter(|i| is_unused(i) || redundant.contains(&i.name.as_str())).collect();
         let table_name = t.qualified();
         let mut f = finding("over-indexed", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
-        f.title =
-            format!("{} has {} indexes and gets about {} writes a day", t.name, secondary.len(), format::count(writes));
+        f.title = format!(
+            "{} has {} indexes and gets {}",
+            t.name,
+            secondary.len(),
+            how_many(snapshot, writes_total, days, "write", "writes")
+        );
         f.summary = format!(
             "Every insert into {} updates all {} secondary indexes, and every update touching their columns updates them \
-             too: about {} index changes a day. {}",
+             too: {}. {}",
             table_name,
             secondary.len(),
-            format::count(writes * secondary.len() as f64),
+            how_many(snapshot, writes_total * secondary.len() as f64, days, "index change", "index changes"),
             match idle.len() {
                 0 => "All of them are read, so trim only after checking which queries rely on each.".to_string(),
                 1 => format!("{} of them is never read or duplicated by another; start there.", idle[0].name),
@@ -206,10 +213,18 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         );
         f.severity = if idle.is_empty() { Severity::Low } else { Severity::Medium };
         f.impact.score = base_score(f.severity) + (writes.log10() - 4.0).max(0.0) * 3.0;
-        f.impact.label = format!("{} indexes · {} writes/day", secondary.len(), format::count(writes));
+        f.impact.label = if measured {
+            format!("{} indexes · {} writes/day", secondary.len(), format::count(writes))
+        } else {
+            format!("{} indexes · {} writes", secondary.len(), format::count(writes_total))
+        };
         f.confidence = if idle.is_empty() { Confidence::Low } else { Confidence::Medium };
         f.metrics.push(Metric::new("Secondary indexes", secondary.len() as f64, Unit::Count));
-        f.metrics.push(Metric::new("Writes per day", writes, Unit::Count));
+        f.metrics.push(if measured {
+            Metric::new("Writes per day", writes, Unit::Count)
+        } else {
+            Metric::new("Writes", writes_total, Unit::Count)
+        });
         f.metrics.push(Metric::new("Never read or duplicated", idle.len() as f64, Unit::Count));
         f.fix = Some(Fix {
             summary: if idle.is_empty() {
@@ -242,11 +257,17 @@ pub fn scan_heavy_info() -> CheckInfo {
 /// Full-table reads per day and rows read without an index per day, from Postgres' seq_scan/seq_tup_read or MySQL's
 /// rows read with no index.
 pub(crate) fn full_scans(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<(f64, f64)> {
+    let (scans, scanned, days) = full_scans_measured(snapshot, t)?;
+    Some((scans / days, scanned / days))
+}
+
+/// Full-table reads and rows read without an index since the counters started, and the days that covers.
+pub(crate) fn full_scans_measured(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<(f64, f64, f64)> {
     let days = counter_days(snapshot).filter(|d| *d >= 0.02)?;
     let rows = t.rows.filter(|r| *r >= 50_000.0)?;
     let scanned = t.seq_rows_read?;
     let scans = t.seq_scans.unwrap_or(scanned / rows);
-    Some((scans / days, scanned / days))
+    Some((scans, scanned, days))
 }
 
 pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
@@ -256,7 +277,10 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         .collect();
     let mut out = Vec::new();
     for t in &snapshot.tables {
-        let Some((scans, rows_read)) = full_scans(snapshot, t) else { continue };
+        let Some((scans_total, read_total, days)) = full_scans_measured(snapshot, t) else { continue };
+        // Judged per day; said per day only over 20 hours of counters, otherwise as counted.
+        let (scans, rows_read) = (scans_total / days, read_total / days);
+        let measured = per_day_is_measured(days);
         if scans < 50.0 || rows_read < 5_000_000.0 {
             continue;
         }
@@ -268,20 +292,22 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         let touching: Vec<&QueryStat> =
             queries_touching(snapshot, &t.schema, &t.name).into_iter().filter(|q| !is_monitoring_query(q)).collect();
         let mut f = finding("scan-heavy", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
+        let rows_text = if measured {
+            format!("{} rows a day", format::count(rows_read))
+        } else {
+            format!("{} rows", format::count(read_total))
+        };
         f.title = format!(
-            "{} is read in full about {} times a day ({} rows)",
+            "{} is read in full {} ({rows_text})",
             t.name,
-            format::count(scans),
-            format::count(rows_read)
+            how_many(snapshot, scans_total, days, "time", "times")
         );
         f.summary = format!(
-            "{} has {} rows, and queries have read all of it about {} times a day {}: {} rows a day read without an \
-             index. {}",
+            "{} has {} rows, and queries have read all of it {}{}: {rows_text} read without an index. {}",
             table_name,
             format::count(t.rows.unwrap_or(0.0)),
-            format::count(scans),
-            since_phrase(snapshot),
-            format::count(rows_read),
+            how_many(snapshot, scans_total, days, "time", "times"),
+            if measured { format!(" {}", since_phrase(snapshot)) } else { String::new() },
             if touching.is_empty() {
                 "None of the captured statements names it, so the scans come from statements outside the top of the workload."
                     .to_string()
@@ -301,13 +327,22 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             _ => {
                 f.severity = if rows_read >= 1e9 { Severity::Medium } else { Severity::Low };
                 f.impact.score = base_score(f.severity) + (rows_read.log10() - 6.0).max(0.0) * 3.0;
-                f.impact.label = format!("{} rows scanned/day", format::count(rows_read));
+                f.impact.label = if measured {
+                    format!("{} rows scanned/day", format::count(rows_read))
+                } else {
+                    format!("{} rows scanned", format::count(read_total))
+                };
             }
         }
         f.confidence = if touching.is_empty() { Confidence::Low } else { Confidence::Medium };
         f.queries = query_refs(&touching.iter().copied().take(5).collect::<Vec<_>>());
-        f.metrics.push(Metric::new("Full reads per day", scans, Unit::Count));
-        f.metrics.push(Metric::new("Rows read without an index per day", rows_read, Unit::Rows));
+        if measured {
+            f.metrics.push(Metric::new("Full reads per day", scans, Unit::Count));
+            f.metrics.push(Metric::new("Rows read without an index per day", rows_read, Unit::Rows));
+        } else {
+            f.metrics.push(Metric::new("Full reads", scans_total, Unit::Count));
+            f.metrics.push(Metric::new("Rows read without an index", read_total, Unit::Rows));
+        }
         if let Some(rows) = t.rows {
             f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
         }

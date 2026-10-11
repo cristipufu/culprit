@@ -89,7 +89,7 @@ function coverage(engine: Engine, hasHistogram: boolean, product?: string, sourc
     case "mssql":
       return "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.";
     case "postgres":
-      return "Postgres keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.";
+      return "PostgreSQL keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.";
     case "mysql":
       return hasHistogram
         ? `${name} keeps a run-time histogram per statement, so the bars show how many runs took how long.`

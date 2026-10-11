@@ -35,14 +35,18 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
         let _ = writeln!(out, "## Queries involved\n");
         for (r, q) in queries {
             let share = s.workload.as_ref().map(|w| w.share(q.total_time_ms)).unwrap_or(0.0);
-            let per_day = s.workload.as_ref().map(|w| w.per_day(q.executions)).unwrap_or(q.executions);
+            // Per day only over a day of data; under that, the measured runs and their window.
+            let how_often = s
+                .workload
+                .as_ref()
+                .map(|w| w.how_often(q.executions))
+                .unwrap_or_else(|| format!("{} runs", format::count(q.executions)));
             let _ = writeln!(
                 out,
-                "Query `{}`{} — {} of DB time, ~{} runs/day, {} average:\n",
+                "Query `{}`{} — {} of DB time, {how_often}, {} average:\n",
                 q.id,
                 q.object_name.as_deref().map(|o| format!(" in `{o}`")).unwrap_or_default(),
                 format::percent(share),
-                format::count(per_day),
                 format::duration(q.mean_time_ms)
             );
             let _ = writeln!(out, "```sql\n{}\n```\n", q.text.trim());

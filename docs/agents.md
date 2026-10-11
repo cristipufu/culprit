@@ -19,7 +19,7 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 |---|---|
 | `list_connections` | Connections the agent may use: name, engine, environment, agent access, latest scan |
 | `scan` | Fresh snapshot (statistics views only) and ranked findings |
-| `dashboard` | The database at a glance: ten tiles (database time, findings, top queries, waits, right now, health, deadlocks, indexes, plans, query statistics), each with a status, one takeaway, the rows behind it and the tool to call next; `attention` ranks what needs a look |
+| `dashboard` | The database at a glance: fourteen tiles (database time, findings, top queries, waits, right now, health, deadlocks, indexes, plans, storage, connections, replication, failing queries, query statistics), each with a status, one takeaway, the rows behind it and the tool to call next; `attention` ranks what needs a look |
 | `findings` | Findings from the latest scan, filtered by category or severity |
 | `finding` | One finding as a markdown brief: evidence, queries, fix, verification |
 | `top_queries` | Heaviest queries by time, CPU, reads or executions |

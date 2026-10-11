@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export type Theme = "system" | "light" | "dark";
 
@@ -22,12 +22,24 @@ function apply(theme: Theme): void {
   } catch {}
 }
 
+// One theme for the whole app: every control that shows or changes it reads the same value.
+let current: Theme = read();
+const listeners = new Set<() => void>();
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function setTheme(next: Theme): void {
+  if (next === current) return;
+  current = next;
+  apply(next);
+  listeners.forEach((l) => l());
+}
+
 export function useTheme(): [Theme, () => void, (theme: Theme) => void] {
-  const [theme, setTheme] = useState<Theme>(read);
-  const choose = (next: Theme) => {
-    apply(next);
-    setTheme(next);
-  };
-  const cycle = () => choose(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
-  return [theme, cycle, choose];
+  const theme = useSyncExternalStore(subscribe, () => current, () => current);
+  const cycle = () => setTheme(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
+  return [theme, cycle, setTheme];
 }

@@ -167,7 +167,7 @@ async fn read_tools_answer_from_the_saved_report() {
     let (err, body) = call(&s, "dashboard", json!({ "connection": "replay-demo" })).await;
     assert!(!err, "{body}");
     let tiles = body["tiles"].as_array().unwrap();
-    assert_eq!(tiles.len(), 10, "every tile, on every engine");
+    assert_eq!(tiles.len(), 14, "every tile, on every engine");
     assert!(tiles.iter().all(|t| !t["takeaway"].as_str().unwrap().is_empty() && t["next"].is_string()));
     let now = tiles.iter().find(|t| t["key"] == "now").unwrap();
     assert_eq!(now["takeaway"], "Nothing is running right now.", "sessions were read once");
@@ -185,8 +185,14 @@ async fn policies_hide_and_refuse() {
     let s = server(&f, Options::default());
     let (err, body) = call(&s, "findings", json!({ "connection": "replay-hidden" })).await;
     assert!(err);
-    assert_eq!(body["error"]["code"], "permission_denied");
-    assert!(body["error"]["hint"].as_str().unwrap().contains("culprit conn set replay-hidden --agent stats"));
+    // A hidden connection answers exactly like a missing one: its name isn't confirmed.
+    let (_, missing) = call(&s, "findings", json!({ "connection": "no-such-connection" })).await;
+    assert_eq!(body["error"]["code"], "not_found");
+    assert_eq!(
+        body["error"]["message"].as_str().unwrap().replace("replay-hidden", "X"),
+        missing["error"]["message"].as_str().unwrap().replace("no-such-connection", "X")
+    );
+    assert_eq!(body["error"]["hint"], missing["error"]["hint"]);
 
     let only = server(&f, Options { connections: vec!["other".into()], ..Options::default() });
     let (_, body) = call(&only, "list_connections", json!({})).await;
@@ -303,4 +309,17 @@ async fn verify_and_export_close_the_loop() {
 
     let (err, body) = call(&s, "verify", json!({ "connection": "replay-hidden" })).await;
     assert!(err, "agent access off applies to verify too: {body}");
+}
+
+#[tokio::test]
+async fn finding_ids_take_either_spelling() {
+    let f = fixture("aliases");
+    let s = server(&f, Options::default());
+    let (_, list) = call(&s, "findings", json!({ "connection": "replay-demo" })).await;
+    let id = list["findings"][0]["id"].as_str().unwrap().to_string();
+    let (err, a) = call(&s, "finding", json!({ "connection": "replay-demo", "id": id })).await;
+    assert!(!err, "{a}");
+    let (err, b) = call(&s, "finding", json!({ "connection": "replay-demo", "finding_id": id })).await;
+    assert!(!err, "{b}");
+    assert_eq!(a, b);
 }

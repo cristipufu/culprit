@@ -29,7 +29,7 @@ export function cloudValue(series: Pick<CloudSeries, "unit">, v: number): string
   }
 }
 
-const clock = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
 function episodeWhen(e: ThrottleEpisode): string {
   const a = Date.parse(e.start);

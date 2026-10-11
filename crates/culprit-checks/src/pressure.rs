@@ -35,8 +35,10 @@ fn capitalize(s: &str) -> String {
     chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
-fn server_key(snapshot: &Snapshot) -> String {
-    snapshot.connection.clone()
+/// Server-level findings key on `server`, never the connection's name: finding ids travel into exports, PR comments
+/// and agent briefs, which must not name the connection. They only need to be stable within one connection's reports.
+fn server_key(_: &Snapshot) -> String {
+    "server".to_string()
 }
 
 fn kb(value: f64) -> String {
@@ -149,7 +151,7 @@ pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
         "memory-queue",
         &server_key(snapshot),
         Category::Configuration,
-        subject(SubjectKind::Database, server_key(snapshot)),
+        subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     f.title = if pending > 0.0 {
         format!("{} queries were waiting in line for memory when the scan ran", format::count(pending))
@@ -217,7 +219,7 @@ pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
         "compile-pressure",
         &server_key(snapshot),
         Category::Configuration,
-        subject(SubjectKind::Database, server_key(snapshot)),
+        subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     f.title = match compiles_per_min {
         Some(per_min) => {
@@ -396,7 +398,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
         "held-cleanup",
         &t.session,
         Category::Maintenance,
-        subject(SubjectKind::Database, server_key(snapshot)),
+        subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     f.title = match engine {
         Engine::Mssql => match t.held_bytes {
@@ -587,7 +589,7 @@ pub fn tier_limit(snapshot: &Snapshot) -> Vec<Finding> {
                 return None;
             }
             let peak = values.iter().cloned().fold(0.0, f64::max);
-            let mut f = finding("tier-limit", key, Category::Configuration, subject(SubjectKind::Database, server_key(snapshot)));
+            let mut f = finding("tier-limit", key, Category::Configuration, subject(SubjectKind::Database, snapshot.server.database.clone()));
             f.title = format!("{label} hit the tier's limit {} of {span}: {effect}", format::percent(at_limit));
             f.summary = format!(
                 "Azure caps each tier's {}. In {span} it was at 95% or more of that cap in {} of the 15-second samples (peak {:.0}%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.",
@@ -685,7 +687,7 @@ pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
         "row-lock-waits",
         &server_key(snapshot),
         Category::Queries,
-        subject(SubjectKind::Database, server_key(snapshot)),
+        subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     // Under an hour of uptime the collector reports a plain count instead of a rate.
     let hourly =

@@ -4,8 +4,8 @@ use std::path::Path;
 use clap::ValueEnum;
 use culprit_core::changes::{Period, short_time};
 use culprit_core::{
-    AuthKind, ChangeKind, ChangeStatus, Changes, CheckInfo, Drift, DriftKind, DriftPresence, Error, Finding, LiveState,
-    LockedCheck, Plan, PlanDiff, PlanNode, QueryStat, Report, ResultSet, ServerInfo, Severity, format,
+    AuthKind, ChangeKind, ChangeStatus, Changes, CheckInfo, Drift, DriftKind, DriftPresence, Engine, Error, Finding,
+    LiveState, LockedCheck, Plan, PlanDiff, PlanNode, QueryStat, Report, ResultSet, ServerInfo, Severity, format,
 };
 use culprit_engine::{ConnectionInfo, DiscoveredDatabase, ImportCandidate};
 use serde_json::{Value, json};
@@ -139,7 +139,7 @@ impl Out {
             println!(
                 "{}  {:<11}  {}  {}",
                 self.paint(BOLD, &format!("{:<20}", c.name)),
-                c.engine.label(),
+                engine_name(c),
                 self.paint(DIM, &format!("{:<12}", env)),
                 self.paint(DIM, &format!("{}  ·  {last}", c.display))
             );
@@ -151,7 +151,7 @@ impl Out {
         if self.format == Format::Json {
             return self.json(&json!(info));
         }
-        let engine = server.map(|s| s.name()).unwrap_or(info.engine.label());
+        let engine = server.map(|s| s.name()).unwrap_or(engine_name(info));
         println!("Saved {} ({engine}, {}).", self.paint(BOLD, &info.name), info.display);
         println!("Next: culprit scan {}", info.name);
     }
@@ -358,7 +358,9 @@ impl Out {
         }
         println!("{}", self.paint(BOLD, &report.summary.headline));
         println!();
-        for (i, f) in list.iter().enumerate() {
+        // Findings whose queries stopped running come last, under their own heading: likely fixed or changed by a deploy.
+        let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = list.iter().partition(|f| !f.inactive);
+        for (i, f) in active.iter().enumerate() {
             println!(
                 "{:>3}  {}  {}  {}",
                 i + 1,
@@ -368,6 +370,24 @@ impl Out {
             );
             println!("       {}", self.paint(DIM, &f.id));
         }
+        if !stopped.is_empty() {
+            println!();
+            println!(
+                "{}",
+                self.paint(
+                    BOLD,
+                    &format!(
+                        "Stopped running ({}): their queries no longer run, likely changed by a deploy",
+                        stopped.len()
+                    )
+                )
+            );
+            for (i, f) in stopped.iter().enumerate() {
+                println!("{:>3}  {}  {}", active.len() + i + 1, self.paint(DIM, "○"), self.paint(DIM, &f.title));
+                println!("       {}", self.paint(DIM, &f.id));
+            }
+        }
+        let list: Vec<&Finding> = active.iter().chain(stopped.iter()).copied().collect();
         if !report.locked.is_empty() {
             println!();
             let names: Vec<String> = report.locked.iter().map(|l| l.check.title.clone()).collect();
@@ -742,7 +762,11 @@ impl Out {
         if blocked.is_empty() {
             println!("{} Nothing is blocked.", self.paint(GREEN, "✓"));
         } else {
-            println!("{} {} session(s) blocked", self.paint(RED, "!"), blocked.len());
+            println!(
+                "{} {} blocked",
+                self.paint(RED, "!"),
+                if blocked.len() == 1 { "1 session".to_string() } else { format!("{} sessions", blocked.len()) }
+            );
         }
         for s in &live.sessions {
             println!(
@@ -964,10 +988,12 @@ impl Out {
         println!("{}", self.paint(BOLD, &format!("What changed on {}", c.connection)));
         println!("{}", self.paint(DIM, &format!("recent {}  vs  baseline {}", span(&c.recent), span(&c.baseline))));
         println!("{}\n", c.summary);
-        for note in &c.notes {
+        // A note the summary already says (why there's nothing to compare) isn't repeated.
+        let notes: Vec<&String> = c.notes.iter().filter(|n| !c.summary.contains(n.as_str())).collect();
+        for note in &notes {
             println!("{}", self.paint(DIM, note));
         }
-        if !c.notes.is_empty() {
+        if !notes.is_empty() {
             println!();
         }
         let shown: Vec<_> = c.events.iter().filter(|e| !e.minor).collect();
@@ -1020,7 +1046,9 @@ impl Out {
             return self.json(&json!(checks));
         }
         for c in checks {
-            let engines: Vec<&str> = c.engines.iter().map(|e| e.label()).collect();
+            // The MySQL provider serves MariaDB too, and every MySQL check runs on both.
+            let engines: Vec<&str> =
+                c.engines.iter().map(|e| if *e == Engine::Mysql { "MySQL/MariaDB" } else { e.label() }).collect();
             println!("{}  {}", self.paint(BOLD, &format!("{:<16}", c.id)), c.title);
             println!("{}", self.paint(DIM, &format!("{:<18}{} · {}", "", engines.join(", "), c.description)));
         }
@@ -1045,7 +1073,9 @@ fn query_json(report: &Report, q: &QueryStat) -> Value {
         "text": q.text,
         "object_name": q.object_name,
         "db_time_share": w.map(|w| w.share(q.total_time_ms)),
-        "runs_per_day": w.map(|w| w.per_day(q.executions)),
+        // Per day only from a day's worth of history (20 hours); `runs` and `window_hours` are what was measured.
+        "runs_per_day": w.filter(|w| w.window_hours >= 20.0).map(|w| w.per_day(q.executions)),
+        "window_hours": w.map(|w| w.window_hours),
         "mean_time_ms": q.mean_time_ms,
         "max_time_ms": q.max_time_ms,
         "cpu_time_ms": q.cpu_time_ms,
@@ -1120,18 +1150,40 @@ fn markdown_report(report: &Report) -> String {
         "# Culprit report: {}\n\n{} · database `{}` · {}\n\n**{}**\n\n",
         s.connection, s.server.product, s.server.database, s.taken_at, report.summary.headline
     );
-    out.push_str("| # | Severity | Finding | Impact | Id |\n|---|---|---|---|---|\n");
-    for (i, f) in report.findings.iter().enumerate() {
+    let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = report.findings.iter().partition(|f| !f.inactive);
+    let table = |out: &mut String, list: &[&Finding], from: usize| {
+        out.push_str("| # | Severity | Finding | Impact | Id |\n|---|---|---|---|---|\n");
+        for (i, f) in list.iter().enumerate() {
+            out.push_str(&format!(
+                "| {} | {:?} | {} | {} | `{}` |\n",
+                from + i + 1,
+                f.severity,
+                md_cell(&f.title),
+                md_cell(&f.impact.label),
+                f.id.replace('`', "'")
+            ));
+        }
+    };
+    table(&mut out, &active, 0);
+    if !stopped.is_empty() {
         out.push_str(&format!(
-            "| {} | {:?} | {} | {} | `{}` |\n",
-            i + 1,
-            f.severity,
-            f.title.replace('|', "\\|"),
-            f.impact.label,
-            f.id
+            "\n## Stopped running ({})\n\nTheir queries no longer run, likely changed by a deploy.\n\n",
+            stopped.len()
         ));
+        table(&mut out, &stopped, active.len());
     }
     out
+}
+
+/// The engine as people know it: a MySQL connection whose last scan met MariaDB is MariaDB.
+fn engine_name(c: &ConnectionInfo) -> &'static str {
+    let mariadb = c.last_report.as_ref().and_then(|r| r.product.as_deref()).is_some_and(|p| p.contains("MariaDB"));
+    if c.engine == Engine::Mysql && mariadb { "MariaDB" } else { c.engine.label() }
+}
+
+/// Database text in a Markdown table cell: pipes would split the row, and HTML would render where the report is pasted.
+fn md_cell(text: &str) -> String {
+    text.replace('|', "\\|").replace('<', "&lt;").replace('>', "&gt;").replace('\n', " ")
 }
 
 fn kb(value: f64) -> String {
@@ -1147,4 +1199,28 @@ fn kb(value: f64) -> String {
 fn bar(fraction: f64, width: usize) -> String {
     let filled = ((fraction.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report() -> Report {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/mssql-demo.report.json"))
+                .expect("fixture");
+        serde_json::from_str(&text).expect("report")
+    }
+
+    #[test]
+    fn stopped_findings_get_their_own_section_and_text_stays_text() {
+        let mut r = report();
+        let stopped = r.findings.iter().filter(|f| f.inactive).count();
+        r.findings[0].inactive = true;
+        r.findings[1].title = "orders <img src=x onerror=alert(1)> | split".into();
+        let md = markdown_report(&r);
+        assert!(md.contains(&format!("## Stopped running ({})", stopped + 1)), "{md}");
+        assert!(md.contains("&lt;img") && !md.contains("<img"));
+        assert!(md.contains("\\| split"));
+    }
 }

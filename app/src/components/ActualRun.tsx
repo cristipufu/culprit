@@ -3,10 +3,11 @@ import { useEffect, useState } from "react";
 import type { Engine } from "../gen/Engine";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { serverName } from "../lib/engines";
 import { currentReport, setState, useStore } from "../lib/store";
 import { PlanSurface, type PlanLook } from "./PlanSurface";
+import { copyAndTell } from "../lib/clipboard";
 
 export type PlanSource = "plan" | "actual";
 
@@ -119,7 +120,8 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
           <button
             className="btn small"
             onClick={() =>
-              copyText(TURN_ON).then(() => {
+              copyAndTell(TURN_ON).then((ok) => {
+                if (!ok) return;
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               })

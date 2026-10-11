@@ -189,7 +189,8 @@ export function Sparkline({ query, timeline, alert }: { query: QueryStat; timeli
   const b = useMemo(() => (timeline ? bucketsOf(timeline) : []), [timeline]);
   const points = useMemo(() => meanPoints(query, b), [query, b]);
   const known = points.filter((p): p is number => p != null);
-  if (known.length < 2) return <span className="spark-empty">—</span>;
+  // Two points draw as a stray tick, not a trend: show a trend from three readings.
+  if (known.length < 3) return <span className="spark-empty">—</span>;
   const from = b[0]!.start;
   const to = b[b.length - 1]!.end;
   const max = Math.max(...known);

@@ -1,6 +1,21 @@
 import "../dashboard.css";
 
-const TILES = ["db-time", "findings", "top-queries", "waits", "now", "health", "deadlocks", "indexes", "plans", "statistics"];
+const TILES = [
+  "db-time",
+  "findings",
+  "top-queries",
+  "waits",
+  "now",
+  "health",
+  "deadlocks",
+  "indexes",
+  "plans",
+  "storage",
+  "connections",
+  "replication",
+  "failures",
+  "statistics",
+];
 
 /** The dashboard's grid while the scan or the view loads: the same tiles in the same places, so nothing jumps. */
 export function DashboardSkeleton() {

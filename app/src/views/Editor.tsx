@@ -385,12 +385,17 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     if (saved === null) void loadSaved();
   }, [saved]);
 
-  // "Open in editor" from findings and queries: a new tab with that SQL.
+  // "Open in editor" from findings and queries: a new tab with that SQL, or the tab that already holds it.
   useEffect(() => {
     if (!incoming || !view.current) return;
-    newTab(incoming);
+    const wanted = incoming.trim();
+    const textOf = (tab: Tab) =>
+      tab.id === tabsRef.current.active && view.current ? view.current.state.doc.toString() : (states.current.get(tab.id)?.doc.toString() ?? tab.sql);
+    const open = wanted ? tabsRef.current.tabs.find((t) => textOf(t).trim() === wanted) : undefined;
+    if (open) activate(open.id);
+    else newTab(incoming);
     setState({ editorSql: null });
-  }, [incoming, newTab]);
+  }, [incoming, newTab, activate]);
 
   // A saved query picked in the command palette.
   useEffect(() => {
@@ -582,8 +587,9 @@ function OutputPane({ output, look, onLook, empty }: { output: Output; look: Pla
         </div>
       );
     case "error":
+      // "Not available here" (the browser demo, an engine that can't) is information, not a failure.
       return (
-        <div className="notice error" style={{ margin: 12 }}>
+        <div className={`notice ${output.error.code === "unsupported" ? "info" : "error"}`} style={{ margin: 12 }}>
           <div>
             <b>{output.error.message}</b>
             {output.error.hint && <div style={{ marginTop: 4 }}>{output.error.hint}</div>}

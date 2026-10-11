@@ -5,14 +5,14 @@
     "disabled": false,
     "kind": "foreign-key",
     "name": "fk_child_parent",
-    "schema": "culprit_sig",
+    "schema": "archive",
     "table": "child"
    },
    {
     "disabled": false,
     "kind": "check",
     "name": "ck_child_amount",
-    "schema": "culprit_sig",
+    "schema": "archive",
     "table": "child"
    }
   ],
@@ -29,7 +29,7 @@
     "row_lock_waits": 0.0,
     "sequential_key": true
    },
-   "culprit_sig.hot.pk_hot": {
+   "archive.hot.pk_hot": {
     "leaf_inserts": 128000.0,
     "lock_escalations": 0.0,
     "optimize_for_sequential_key": false,
@@ -41,7 +41,7 @@
     "row_lock_waits": 0.0,
     "sequential_key": true
    },
-   "culprit_sig.wide.pk_wide": {
+   "archive.wide.pk_wide": {
     "leaf_inserts": 30000.0,
     "lock_escalations": 2.0,
     "optimize_for_sequential_key": false,
@@ -1746,7 +1746,7 @@
           "id": 2,
           "index": "pk_wide",
           "kind": "scan",
-          "object": "culprit_sig.wide",
+          "object": "archive.wide",
           "op": "Clustered Index Scan",
           "predicate": null,
           "props": {
@@ -1817,7 +1817,7 @@
       "id": 0,
       "index": "pk_wide",
       "kind": "modify",
-      "object": "culprit_sig.wide",
+      "object": "archive.wide",
       "op": "Clustered Index Update",
       "predicate": null,
       "props": {
@@ -1841,7 +1841,7 @@
       "table_rows": null,
       "warnings": []
      },
-     "statement": "UPDATE culprit_sig.wide SET pad = REPLICATE('y', 4000)",
+     "statement": "UPDATE archive.wide SET pad = REPLICATE('y', 4000)",
      "total_cost": 0.0132842,
      "warnings": []
     },
@@ -1873,7 +1873,7 @@
     },
     "stddev_time_ms": null,
     "temp_writes": 0.0,
-    "text": "UPDATE culprit_sig.wide SET pad = REPLICATE('y', 4000)",
+    "text": "UPDATE archive.wide SET pad = REPLICATE('y', 4000)",
     "total_time_ms": 528.407,
     "trend": null,
     "waits": [
@@ -2859,10 +2859,10 @@
     "confidence": "medium",
     "fix": {
      "cost": null,
-     "sql": "ALTER INDEX [pk_hot] ON [culprit_sig].[hot] SET (OPTIMIZE_FOR_SEQUENTIAL_KEY = ON);",
+     "sql": "ALTER INDEX [pk_hot] ON [archive].[hot] SET (OPTIMIZE_FOR_SEQUENTIAL_KEY = ON);",
      "summary": "SQL Server 2019 can pace inserts into a sequential key so the page isn't handed back and forth: turn OPTIMIZE_FOR_SEQUENTIAL_KEY on for this index. It's a metadata change and takes effect at once."
     },
-    "id": "last-page-insert:culprit_sig.hot.pk_hot",
+    "id": "last-page-insert:archive.hot.pk_hot",
     "impact": {
      "db_time_share": null,
      "label": "53.6 s latch waits",
@@ -2895,7 +2895,7 @@
     "severity": "medium",
     "subject": {
      "kind": "index",
-     "name": "culprit_sig.hot.pk_hot"
+     "name": "archive.hot.pk_hot"
     },
     "summary": "pk_hot starts with a value that only grows (id), so every insert goes to the same last page. Concurrent inserts wait for each other's latch on it (PAGELATCH_EX): 106K waits, 53.6 s in all since the index was loaded. It gets worse with more concurrent writers.",
     "title": "Inserts into hot queue for the last page of pk_hot",
@@ -3026,10 +3026,10 @@
     "confidence": "high",
     "fix": {
      "cost": "Reads the whole table",
-     "sql": "ALTER TABLE [culprit_sig].[child] WITH CHECK CHECK CONSTRAINT [fk_child_parent];\nALTER TABLE [culprit_sig].[child] WITH CHECK CHECK CONSTRAINT [ck_child_amount];",
+     "sql": "ALTER TABLE [archive].[child] WITH CHECK CHECK CONSTRAINT [fk_child_parent];\nALTER TABLE [archive].[child] WITH CHECK CHECK CONSTRAINT [ck_child_amount];",
      "summary": "Check the existing rows so SQL Server trusts them again. It reads the whole table and locks it while it runs: schedule it off-peak. It fails if a row breaks the constraint; fix those rows first."
     },
-    "id": "untrusted-constraint:culprit_sig.child",
+    "id": "untrusted-constraint:archive.child",
     "impact": {
      "db_time_share": null,
      "label": "2 untrusted",
@@ -3050,7 +3050,7 @@
     "severity": "low",
     "subject": {
      "kind": "table",
-     "name": "culprit_sig.child"
+     "name": "archive.child"
     },
     "summary": "fk_child_parent and ck_child_amount were created or re-enabled WITH NOCHECK, so existing rows were never checked against them. The optimizer only relies on trusted constraints: it can't remove a join to the referenced table when no columns from it are used, or rule out values a check constraint excludes, so it plans work it could skip.",
     "title": "SQL Server doesn't trust 2 constraints on child",
@@ -3079,7 +3079,7 @@
     "name": "PK__child__3213E83F2BAF9907",
     "reads": 0.0,
     "scans": 0.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seeks": 0.0,
     "size_bytes": 0.0,
     "table": "child",
@@ -3114,7 +3114,7 @@
     "name": "pk_hot",
     "reads": 0.0,
     "scans": 0.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seeks": 0.0,
     "size_bytes": 3743744.0,
     "table": "hot",
@@ -3151,7 +3151,7 @@
     "modifications_since_analyze": null,
     "name": "child",
     "rows": 0.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seq_rows_read": null,
     "seq_scans": null,
     "storage": null,
@@ -3175,7 +3175,7 @@
     "modifications_since_analyze": null,
     "name": "hot",
     "rows": 128000.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seq_rows_read": null,
     "seq_scans": null,
     "storage": null,
@@ -4134,7 +4134,7 @@
    {
     "database": null,
     "kind": "data",
-    "name": "culprit_scratch/t1.ibd",
+    "name": "staging/import_batches.ibd",
     "read_bytes": 0.0,
     "read_ms": 0.0,
     "reads": 0.0,
@@ -4505,7 +4505,7 @@
     "disabled": false,
     "kind": "check",
     "name": "wide_touched_positive",
-    "schema": "culprit_sig",
+    "schema": "archive",
     "table": "wide"
    }
   ],
@@ -4744,7 +4744,7 @@
         "id": 1,
         "index": null,
         "kind": "scan",
-        "object": "culprit_sig.wide",
+        "object": "archive.wide",
         "op": "Seq Scan",
         "predicate": "((wide.id % $2) = $3)",
         "props": {
@@ -4772,7 +4772,7 @@
       "id": 0,
       "index": null,
       "kind": "modify",
-      "object": "culprit_sig.wide",
+      "object": "archive.wide",
       "op": "ModifyTable",
       "predicate": null,
       "props": {
@@ -4792,7 +4792,7 @@
       "table_rows": null,
       "warnings": []
      },
-     "statement": "UPDATE culprit_sig.wide SET touched = touched + $1 WHERE id % $2 = $3",
+     "statement": "UPDATE archive.wide SET touched = touched + $1 WHERE id % $2 = $3",
      "total_cost": 22104.56,
      "warnings": []
     },
@@ -4809,7 +4809,7 @@
     },
     "stddev_time_ms": 0.0,
     "temp_writes": 0.0,
-    "text": "UPDATE culprit_sig.wide SET touched = touched + $1 WHERE id % $2 = $3",
+    "text": "UPDATE archive.wide SET touched = touched + $1 WHERE id % $2 = $3",
     "total_time_ms": 326.781899,
     "trend": null,
     "waits": [
@@ -6038,10 +6038,10 @@
     "confidence": "high",
     "fix": {
      "cost": null,
-     "sql": "SELECT pg_drop_replication_slot('culprit_sig_slot');\n-- Cap what any slot may keep:\n-- ALTER SYSTEM SET max_slot_wal_keep_size = '50GB'; SELECT pg_reload_conf();",
+     "sql": "SELECT pg_drop_replication_slot('analytics_slot');\n-- Cap what any slot may keep:\n-- ALTER SYSTEM SET max_slot_wal_keep_size = '50GB'; SELECT pg_reload_conf();",
      "summary": "If nothing will consume this slot again, drop it. To keep a slot from filling the disk, cap what slots may keep (PostgreSQL 13+)."
     },
-    "id": "replica-lag:culprit_sig_slot",
+    "id": "replica-lag:analytics_slot",
     "impact": {
      "db_time_share": null,
      "label": "WAL kept",
@@ -6062,10 +6062,10 @@
     "severity": "medium",
     "subject": {
      "kind": "database",
-     "name": "culprit_sig_slot"
+     "name": "analytics_slot"
     },
-    "summary": "A replication slot keeps every WAL file its consumer hasn't confirmed. culprit_sig_slot is inactive, so the WAL it holds keeps growing until the disk fills and the server stops accepting writes.",
-    "title": "The inactive replication slot culprit_sig_slot keeps 1.1 GB of WAL",
+    "summary": "A replication slot keeps every WAL file its consumer hasn't confirmed. analytics_slot is inactive, so the WAL it holds keeps growing until the disk fills and the server stops accepting writes.",
+    "title": "The inactive replication slot analytics_slot keeps 1.1 GB of WAL",
     "verify": [
      "Re-scan: the lag should be seconds, or the slot gone."
     ]
@@ -6077,10 +6077,10 @@
     "confidence": "high",
     "fix": {
      "cost": "Reads the whole table",
-     "sql": "ALTER TABLE culprit_sig.wide VALIDATE CONSTRAINT wide_touched_positive;",
+     "sql": "ALTER TABLE archive.wide VALIDATE CONSTRAINT wide_touched_positive;",
      "summary": "Validate it: PostgreSQL scans the table but takes only a SHARE UPDATE EXCLUSIVE lock, so reads and writes continue. It fails if a row breaks the constraint; fix those rows first."
     },
-    "id": "untrusted-constraint:culprit_sig.wide",
+    "id": "untrusted-constraint:archive.wide",
     "impact": {
      "db_time_share": null,
      "label": "1 untrusted",
@@ -6101,7 +6101,7 @@
     "severity": "low",
     "subject": {
      "kind": "table",
-     "name": "culprit_sig.wide"
+     "name": "archive.wide"
     },
     "summary": "wide_touched_positive was added NOT VALID, so rows that existed then were never checked. Until it is validated the planner can't use it to skip the table when a query's filter contradicts it (constraint exclusion).",
     "title": "The check constraint wide_touched_positive on wide was never validated",
@@ -6116,10 +6116,10 @@
     "confidence": "high",
     "fix": {
      "cost": null,
-     "sql": "ALTER TABLE culprit_sig.wide SET (fillfactor = 85);",
+     "sql": "ALTER TABLE archive.wide SET (fillfactor = 85);",
      "summary": "Leave room on each page so updated rows fit next to the old version: a fillfactor of 85\u201390 is typical for tables updated often. It applies to pages written from now on; existing pages get the room as rows move (pg_repack rewrites the table online if you want it at once). If an index covers a column that changes on every update (updated_at, status, counters), dropping it makes those updates HOT too."
     },
-    "id": "hot-updates:culprit_sig.wide",
+    "id": "hot-updates:archive.wide",
     "impact": {
      "db_time_share": null,
      "label": "0% HOT",
@@ -6158,7 +6158,7 @@
     "severity": "low",
     "subject": {
      "kind": "table",
-     "name": "culprit_sig.wide"
+     "name": "archive.wide"
     },
     "summary": "An update that changes no indexed column and finds room on the same page is HOT: it writes no index entries and its old version is cleaned up without VACUUM. None of wide's 21K updates were, so each wrote a new entry in both of its indexes. 100% of them moved to another page because their own was full (fillfactor 100).",
     "title": "No update to wide is HOT: each one rewrites every index",
@@ -6173,10 +6173,10 @@
     "confidence": "medium",
     "fix": {
      "cost": "Rewrites the table",
-     "sql": "-- Exact numbers (needs the pgstattuple extension)\nSELECT * FROM pgstattuple('culprit_sig.wide');\n-- Rewrite offline: blocks reads and writes until it finishes\n-- VACUUM (FULL, ANALYZE) culprit_sig.wide;",
+     "sql": "-- Exact numbers (needs the pgstattuple extension)\nSELECT * FROM pgstattuple('archive.wide');\n-- Rewrite offline: blocks reads and writes until it finishes\n-- VACUUM (FULL, ANALYZE) archive.wide;",
      "summary": "Measure it exactly first. To give the space back, rewrite the table: pg_repack does it online; VACUUM FULL does it while blocking all reads and writes. If the table keeps growing, make autovacuum visit it more often so freed space is reused sooner."
     },
-    "id": "table-bloat:culprit_sig.wide",
+    "id": "table-bloat:archive.wide",
     "impact": {
      "db_time_share": null,
      "label": "\u2248 123 MB empty",
@@ -6209,7 +6209,7 @@
     "severity": "low",
     "subject": {
      "kind": "table",
-     "name": "culprit_sig.wide"
+     "name": "archive.wide"
     },
     "summary": "From its row count and average row width, wide's rows need about 44.0 MB; it takes 167 MB. New rows reuse freed space, but every scan still reads the empty pages, and the cache holds them. This is an estimate from statistics, good to tens of percent; pgstattuple measures it exactly.",
     "title": "wide is about 74% empty space (\u2248 123 MB)",
@@ -6225,7 +6225,7 @@
      "id"
     ],
     "contention": null,
-    "definition": "CREATE UNIQUE INDEX wide_pkey ON culprit_sig.wide USING btree (id)",
+    "definition": "CREATE UNIQUE INDEX wide_pkey ON archive.wide USING btree (id)",
     "filter": null,
     "include": [],
     "is_clustered": false,
@@ -6238,7 +6238,7 @@
     "name": "wide_pkey",
     "reads": 0.0,
     "scans": 0.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seeks": null,
     "size_bytes": 6750208.0,
     "table": "wide",
@@ -6249,7 +6249,7 @@
      "touched"
     ],
     "contention": null,
-    "definition": "CREATE INDEX wide_touched ON culprit_sig.wide USING btree (touched)",
+    "definition": "CREATE INDEX wide_touched ON archive.wide USING btree (touched)",
     "filter": null,
     "include": [],
     "is_clustered": false,
@@ -6262,7 +6262,7 @@
     "name": "wide_touched",
     "reads": 0.0,
     "scans": 0.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seeks": null,
     "size_bytes": 1122304.0,
     "table": "wide",
@@ -6274,7 +6274,7 @@
     "error": null,
     "lag_bytes": 1172682184.0,
     "lag_seconds": null,
-    "name": "culprit_sig_slot",
+    "name": "analytics_slot",
     "role": "slot",
     "state": "inactive",
     "sync": "physical",
@@ -6311,13 +6311,13 @@
    }
   ],
   "storage": {
-   "culprit_ctx.readings": {
+   "iot.readings": {
     "bloat_bytes": 2965504.0,
     "fillfactor": 100.0,
     "hot_updates": 0.0,
     "new_page_updates": 0.0
    },
-   "culprit_sig.wide": {
+   "archive.wide": {
     "bloat_bytes": 129466368.0,
     "fillfactor": 100.0,
     "hot_updates": 0.0,
@@ -6371,7 +6371,7 @@
     "modifications_since_analyze": 105000.0,
     "name": "wide",
     "rows": 45000.0,
-    "schema": "culprit_sig",
+    "schema": "archive",
     "seq_rows_read": 300000.0,
     "seq_scans": 4.0,
     "storage": {

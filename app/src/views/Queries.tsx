@@ -10,7 +10,7 @@ import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
 import { api, errorMessage, type ApiError } from "../lib/api";
-import { count, duration, oneLine, percent } from "../lib/format";
+import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
 import { querySummary } from "../lib/query-summary";
@@ -332,8 +332,12 @@ function PlanHistory({ query, planId, onOpen }: { query: QueryStat; planId: stri
               </td>
               <td className={`r ${query.plans.length > 1 && v.mean_time_ms > best * 2 ? "slow" : ""}`}>{duration(v.mean_time_ms)}</td>
               <td className="r">{count(v.executions)}</td>
-              <td className="muted">{v.first_seen ? v.first_seen.slice(0, 16).replace("T", " ") : "—"}</td>
-              <td className="muted">{v.last_seen ? v.last_seen.slice(0, 16).replace("T", " ") : "—"}</td>
+              <td className="muted" title={v.first_seen ? seenAt(v.first_seen).full : undefined}>
+                {v.first_seen ? seenAt(v.first_seen).short : "—"}
+              </td>
+              <td className="muted" title={v.last_seen ? seenAt(v.last_seen).full : undefined}>
+                {v.last_seen ? seenAt(v.last_seen).short : "—"}
+              </td>
               <td className="r">
                 <span className="link">Open plan →</span>
               </td>
@@ -442,7 +446,12 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
               </span>
               <span className="v-stats">
                 <b className={best != null && v.mean_time_ms > best * 2 ? "slow" : ""}>{duration(v.mean_time_ms)}</b> avg · {count(v.executions)} runs
-                {v.last_seen && <span className="muted"> · last {v.last_seen.slice(0, 16).replace("T", " ")}</span>}
+                {v.last_seen && (
+                  <span className="muted" title={seenAt(v.last_seen).full}>
+                    {" "}
+                    · last {seenAt(v.last_seen).short}
+                  </span>
+                )}
               </span>
             </button>
           ))}
@@ -466,4 +475,10 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
       {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} focus={planId === dominant ? focus : null} look={look} />}
     </section>
   );
+}
+
+/** A first or last seen time as people say it ("today 3:55 PM"); sources that write no zone mean UTC. */
+function seenAt(text: string): { short: string; full: string } {
+  const iso = /[zZ]$|[+-]\d\d:?\d\d$/.test(text) ? text : `${text.replace(" ", "T")}Z`;
+  return when(iso);
 }

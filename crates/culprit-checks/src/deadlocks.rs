@@ -117,8 +117,11 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
     if report.deadlocks.is_empty()
         && let Some(counted) = report.counted.filter(|c| *c > 0.0)
     {
-        let since =
-            report.counted_since.as_deref().map(|s| format!(" since {}", &s[..s.len().min(10)])).unwrap_or_default();
+        let since = report
+            .counted_since
+            .as_deref()
+            .map(|s| format!(" since {}", friendly_date(s, &snapshot.taken_at)))
+            .unwrap_or_default();
         let mut f = finding(
             "deadlocks",
             "counter",
@@ -130,7 +133,7 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
         f.title = format!("Postgres resolved {counted:.0} deadlock{}{since}", if counted == 1.0 { "" } else { "s" });
         f.summary = report.note.clone().unwrap_or_default();
         f.impact.score = base_score(f.severity);
-        f.impact.label = format!("{counted:.0} deadlocks");
+        f.impact.label = if counted == 1.0 { "1 deadlock".into() } else { format!("{counted:.0} deadlocks") };
         f.fix = Some(Fix {
             summary: "Find \"deadlock detected\" in the server log and paste those lines into Live › Deadlocks: Culprit names \
                       the pattern. Most are fixed by changing rows in the same order everywhere and keeping transactions short."
@@ -158,6 +161,18 @@ fn serde_key(pattern: DeadlockPattern) -> &'static str {
         DeadlockPattern::Parallelism => "parallelism",
         DeadlockPattern::Cycle => "cycle",
     }
+}
+
+/// "Oct 1" (with the year when it isn't the scan's): a date as people write it.
+fn friendly_date(iso: &str, now: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = iso.get(..10).unwrap_or(iso).split('-');
+    let (Some(year), Some(month), Some(day)) = (parts.next(), parts.next(), parts.next()) else {
+        return iso.to_string();
+    };
+    let (Ok(m), Ok(d)) = (month.parse::<usize>(), day.parse::<u32>()) else { return iso.to_string() };
+    let Some(name) = m.checked_sub(1).and_then(|i| MONTHS.get(i)) else { return iso.to_string() };
+    if now.get(..4) == Some(year) { format!("{name} {d}") } else { format!("{name} {d}, {year}") }
 }
 
 #[cfg(test)]
@@ -234,7 +249,7 @@ mod tests {
             ..Default::default()
         });
         let found = deadlocks(&snapshot);
-        assert_eq!(found[0].title, "Postgres resolved 3 deadlocks since 2026-10-01");
+        assert_eq!(found[0].title, "Postgres resolved 3 deadlocks since Oct 1");
         snapshot.deadlocks = Some(DeadlockReport { counted: Some(0.0), ..Default::default() });
         assert!(deadlocks(&snapshot).is_empty());
     }

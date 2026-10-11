@@ -5,11 +5,12 @@ import type { DriftItem } from "../gen/DriftItem";
 import type { DriftKind } from "../gen/DriftKind";
 import type { DriftSide } from "../gen/DriftSide";
 import type { Report } from "../gen/Report";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { ago } from "../lib/format";
-import { setState, toast, useStore } from "../lib/store";
+import { setState, useStore } from "../lib/store";
 import { Sql } from "./Sql";
 import { serverName } from "../lib/engines";
+import { copyAndTell } from "../lib/clipboard";
 
 type DriftState = { status: "idle" } | { status: "loading" } | { status: "ready"; drift: Drift } | { status: "error"; error: ApiError };
 
@@ -176,8 +177,7 @@ function DriftRow({ item, drift, active }: { item: DriftItem; drift: Drift; acti
   const definition = item.presence === "only-a" ? item.a : item.presence === "only-b" ? item.b : null;
   const copy = async () => {
     if (!item.sql) return;
-    await copyText(item.sql);
-    toast("SQL copied");
+    await copyAndTell(item.sql, "SQL copied");
   };
   return (
     <div className={`drift-item ${item.presence}`}>

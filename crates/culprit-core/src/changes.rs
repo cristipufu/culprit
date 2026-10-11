@@ -107,6 +107,9 @@ pub struct PeriodData {
     pub baseline_coverage: f64,
     pub queries: Vec<QueryPeriods>,
     pub notes: Vec<String>,
+    /// Why the source can't compare these periods at all (too few scans, no data inside them), when it can't.
+    #[serde(default)]
+    pub unavailable: Option<String>,
 }
 
 /// How Culprit judges one query between the periods.
@@ -244,7 +247,8 @@ pub fn compare(connection: &str, engine: Engine, data: PeriodData, options: &Com
     });
 
     let mut notes = data.notes;
-    if data.baseline_coverage < 0.999 && data.baseline.hours() > 0.0 {
+    // A comparison that couldn't be made has no coverage to describe: its reason leads the summary instead.
+    if data.unavailable.is_none() && data.baseline_coverage < 0.999 && data.baseline.hours() > 0.0 {
         notes.push(match data.source {
             TimelineSource::QueryStore => format!(
                 "Query Store has data for {} of the baseline period; queries missing from it may not have been recorded.",
@@ -260,7 +264,11 @@ pub fn compare(connection: &str, engine: Engine, data: PeriodData, options: &Com
             ),
         });
     }
-    let summary = summarize(&judged, &data.baseline, &data.recent, &data.baseline_total, &data.recent_total);
+    // A comparison that couldn't be made says so first, rather than "no queries ran".
+    let summary = match &data.unavailable {
+        Some(why) => format!("Can't compare yet. {why}"),
+        None => summarize(&judged, &data.baseline, &data.recent, &data.baseline_total, &data.recent_total),
+    };
     Changes {
         connection: connection.to_string(),
         engine,
@@ -557,6 +565,22 @@ pub fn short_time(iso: &str) -> String {
         .unwrap_or_else(|_| iso.to_string())
 }
 
+/// "Sun Oct 4 18:00 UTC": [`short_time`] with the date, for ranges longer than a day.
+pub fn dated_time(iso: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .map(|t| t.with_timezone(&chrono::Utc).format("%a %b %-d %H:%M UTC").to_string())
+        .unwrap_or_else(|_| iso.to_string())
+}
+
+/// Both ends of a range: weekday and time within a day, with dates once it spans more than one.
+pub fn range_times(start: &str, end: &str) -> (String, String) {
+    let long = match (epoch(start), epoch(end)) {
+        (Some(a), Some(b)) => (b - a).abs() > 20.0 * 3600.0,
+        _ => false,
+    };
+    if long { (dated_time(start), dated_time(end)) } else { (short_time(start), short_time(end)) }
+}
+
 /// `2026-10-11 14:05:00` (UTC) for an ISO 8601 time, to embed in SQL. `None` for anything else, so only a time Culprit
 /// formatted itself reaches a statement.
 pub fn sql_timestamp(iso: &str) -> Option<String> {
@@ -572,6 +596,14 @@ pub fn epoch(text: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_longer_than_a_day_carry_dates() {
+        let (a, b) = range_times("2026-10-04T18:00:00Z", "2026-10-11T18:00:00Z");
+        assert_eq!((a.as_str(), b.as_str()), ("Sun Oct 4 18:00 UTC", "Sun Oct 11 18:00 UTC"));
+        let (a, b) = range_times("2026-10-11T12:00:00Z", "2026-10-11T18:00:00Z");
+        assert_eq!((a.as_str(), b.as_str()), ("Sun 12:00 UTC", "Sun 18:00 UTC"));
+    }
 
     fn stats(runs: f64, mean: f64) -> PeriodStats {
         PeriodStats::new(runs, runs * mean)
@@ -597,6 +629,7 @@ mod tests {
             baseline_coverage: coverage,
             queries,
             notes: vec![],
+            unavailable: None,
         }
     }
 

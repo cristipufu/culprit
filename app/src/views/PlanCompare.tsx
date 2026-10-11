@@ -33,7 +33,7 @@ import { setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib
 import { deliver, exportOptions } from "../lib/share";
 import { planEngineName } from "../lib/engines";
 
-const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
 const LOOK_KEY = "culprit.plan.look";
 const SYNC_KEY = "culprit.compare.sync";

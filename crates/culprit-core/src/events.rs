@@ -425,6 +425,7 @@ mod tests {
             baseline_coverage: 1.0,
             queries,
             notes: vec![],
+            unavailable: None,
         };
         compare("shop", Engine::Postgres, data, &CompareOptions::default())
     }

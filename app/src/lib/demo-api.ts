@@ -61,7 +61,7 @@ const deadlockSample: () => Promise<Record<string, DeadlockReport> | null> = imp
   ? () => import("../../../fixtures/deadlocks.sample.json").then((m) => m.default as unknown as Record<string, DeadlockReport>)
   : async () => null;
 
-/** "What changed" as the desktop app computed it on the demo databases (Query Store, and scans for Postgres/MySQL). */
+/** "What changed" as the desktop app computed it on the demo databases (Query Store, and scans for PostgreSQL/MySQL). */
 const changesSample: () => Promise<Record<string, Changes> | null> = import.meta.env.DEV
   ? () => import("../../../fixtures/changes.sample.json").then((m) => m.default as unknown as Record<string, Changes>)
   : async () => null;
@@ -279,7 +279,7 @@ export async function demoApi(): Promise<Api> {
       ? {
           id: "0".repeat(32),
           connection: connections[0]?.name ?? "mssql-demo",
-          environment: "staging",
+          environment: connections[0]?.environment ?? "staging",
           tool: "run_query",
           sql: "SELECT segment, COUNT(*) AS customers\nFROM shop.customers\nWHERE email LIKE '%@example.com'\nGROUP BY segment",
           hash: "",
@@ -418,7 +418,7 @@ export async function demoApi(): Promise<Api> {
       if (engine === "postgres") {
         return Promise.reject({
           code: "unsupported",
-          message: "Postgres doesn't keep the actual plan of past runs",
+          message: "PostgreSQL doesn't keep the actual plan of past runs",
           hint: "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
         });
       }

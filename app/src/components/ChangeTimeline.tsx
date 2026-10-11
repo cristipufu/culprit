@@ -115,7 +115,7 @@ export function AroundThen({ changes, onFocusQuery }: { changes: Changes; onFocu
   );
 }
 
-const day = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const day = new Intl.DateTimeFormat(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" });
 
 /** The two periods on one line, with a marker wherever something changed. */
 export function PeriodStrip({ changes, onFocusEvent }: { changes: Changes; onFocusEvent?: (id: string) => void }) {

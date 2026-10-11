@@ -20,7 +20,7 @@ import { serverName } from "../lib/engines";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
-const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 
 const AUTH_LABEL: Partial<Record<AuthKind, string>> = { entra: "Entra ID", "aws-iam": "AWS IAM" };
 
@@ -90,7 +90,7 @@ export function Connections() {
 type Panel = "none" | "new" | "import" | CloudKind;
 
 const FIRST_RUN: { panel: Exclude<Panel, "none">; icon: ReactNode; title: string; text: string }[] = [
-  { panel: "new", icon: <Database size={18} />, title: "Paste a connection string", text: "SQL Server, Postgres, MySQL or MariaDB: a URL, an ADO.NET string or host:port/database." },
+  { panel: "new", icon: <Database size={18} />, title: "Paste a connection string", text: "SQL Server, PostgreSQL, MySQL or MariaDB: a URL, an ADO.NET string or host:port/database." },
   { panel: "azure", icon: <Cloud size={18} />, title: "Find in Azure", text: "Lists the SQL, PostgreSQL and MySQL servers your az login can reach." },
   { panel: "aws", icon: <Cloud size={18} />, title: "Find in AWS", text: "Lists the RDS and Aurora databases your aws login can see." },
   { panel: "import", icon: <Import size={18} />, title: "Import from another tool", text: "Azure Data Studio, VS Code, DBeaver or DataGrip connections, without retyping." },

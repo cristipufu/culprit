@@ -220,10 +220,202 @@ pub fn single_statement(text: &str, engine: Engine) -> Result<&str> {
         cut = Some(end);
     }
     let statement = text[..cut.unwrap_or(text.len())].trim();
-    if statement.is_empty() || lex(statement, engine, modes(engine)[0]).map_err(Error::invalid)?.is_empty() {
+    let tokens = lex(statement, engine, modes(engine)[0]).map_err(Error::invalid)?;
+    if statement.is_empty() || tokens.is_empty() {
         return Err(Error::invalid("There is no statement to run"));
     }
+    // T-SQL runs consecutive statements without a semicolon between them: `SELECT 1 COMMIT CREATE TABLE …` is three.
+    if engine == Engine::Mssql
+        && let Some(word) = mssql_second_statement(&tokens)
+    {
+        return Err(too_many().with_hint(format!(
+            "SQL Server reads `{word}` here as the start of another statement. Run or explain one statement at a time."
+        )));
+    }
     Ok(statement)
+}
+
+/// Keywords that can only start a T-SQL statement: at the top level after the first word they begin a second one.
+const MSSQL_STATEMENTS: &[&str] = &[
+    "EXEC",
+    "EXECUTE",
+    "COMMIT",
+    "ROLLBACK",
+    "BEGIN",
+    "SAVE",
+    "GRANT",
+    "REVOKE",
+    "DENY",
+    "DBCC",
+    "KILL",
+    "SHUTDOWN",
+    "BACKUP",
+    "RESTORE",
+    "USE",
+    "DECLARE",
+    "WAITFOR",
+    "RAISERROR",
+    "THROW",
+    "PRINT",
+    "GO",
+    "CHECKPOINT",
+    "RECONFIGURE",
+    "DEALLOCATE",
+    "WHILE",
+    "RETURN",
+    "GOTO",
+    "TRUNCATE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "IF",
+    "SET",
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "WITH",
+    "OPEN",
+    "CLOSE",
+    "BULK",
+    "SETUSER",
+    "REVERT",
+    "ENABLE",
+    "DISABLE",
+    "RECEIVE",
+    "SEND",
+    "MOVE",
+    "GET",
+    "UPDATETEXT",
+    "WRITETEXT",
+    "READTEXT",
+];
+
+/// The keyword that starts a second statement in one T-SQL text, if any. Conservative: a word SQL Server might read
+/// as a new statement counts unless the first statement's grammar clearly allows it there (UNION SELECT, a CTE's main
+/// query, MERGE's THEN UPDATE, ALTER TABLE … DROP COLUMN, DROP … IF EXISTS, a table hint's WITH (…)).
+fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
+    // Query Store's parameterized text starts with the parameter declarations: `(@P1 nvarchar(4000))SELECT …`.
+    let tokens = match tokens {
+        [Token::Punct('('), Token::Word(w), ..] if w.starts_with('@') => {
+            let mut depth = 0i32;
+            let close = tokens.iter().position(|t| {
+                match t {
+                    Token::Punct('(') => depth += 1,
+                    Token::Punct(')') => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            });
+            match close {
+                Some(at) => &tokens[at + 1..],
+                None => tokens,
+            }
+        }
+        _ => tokens,
+    };
+    let upper = |t: &Token| match t {
+        Token::Word(w) => Some(w.to_ascii_uppercase()),
+        _ => None,
+    };
+    let first = tokens.iter().find_map(upper)?;
+    let words: Vec<String> = tokens.iter().filter_map(upper).collect();
+    // A module body (procedure, function, trigger) is a batch of its own: Culprit never runs one as a read, and a
+    // production change asks first with the full text shown.
+    let module = |w: &str| matches!(w, "PROC" | "PROCEDURE" | "FUNCTION" | "TRIGGER");
+    if (first == "CREATE" || first == "ALTER") && words.iter().take(4).any(|w| module(w)) {
+        return None;
+    }
+    // The main query a statement may still introduce: a CTE's or INSERT's SELECT (or a CTE's DML), one each.
+    let mut main_query = matches!(first.as_str(), "WITH" | "INSERT");
+    let mut depth = 0i32;
+    let mut seen_first = false;
+    let mut previous: Option<String> = None;
+    let mut seen_select = false;
+    // GRANT/REVOKE/DENY name permissions (SELECT, EXECUTE, ALTER…) before ON or TO: words, not statements.
+    let mut permissions = matches!(first.as_str(), "GRANT" | "REVOKE" | "DENY");
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::Punct('(') => depth += 1,
+            Token::Punct(')') => depth -= 1,
+            _ => {}
+        }
+        let Token::Word(raw) = token else {
+            if !matches!(token, Token::Punct(_)) {
+                previous = None;
+            }
+            continue;
+        };
+        let word = raw.to_ascii_uppercase();
+        if permissions {
+            if matches!(word.as_str(), "ON" | "TO" | "FROM") {
+                permissions = false;
+            }
+            previous = Some(word);
+            seen_first = true;
+            continue;
+        }
+        if !seen_first {
+            seen_first = true;
+            previous = Some(word);
+            continue;
+        }
+        // `t.exec`, `@begin`, `#tmp` and the like are names.
+        let qualified = i > 0 && matches!(tokens[i - 1], Token::Punct('.'));
+        let next_word = tokens.get(i + 1).and_then(upper);
+        let next_is_paren = matches!(tokens.get(i + 1), Some(Token::Punct('(')));
+        let prev = previous.clone().unwrap_or_default();
+        let starts = depth == 0
+            && !qualified
+            && !raw.starts_with(['@', '#'])
+            && MSSQL_STATEMENTS.contains(&word.as_str())
+            && match word.as_str() {
+                "SELECT" => {
+                    let set_op = matches!(prev.as_str(), "UNION" | "EXCEPT" | "INTERSECT" | "ALL");
+                    let allowed = set_op || (main_query && !seen_select);
+                    if allowed && !set_op {
+                        main_query = false;
+                    }
+                    !allowed
+                }
+                "INSERT" | "UPDATE" | "DELETE" | "MERGE" => {
+                    let merge_action = first == "MERGE" && prev == "THEN";
+                    let join_hint = word == "MERGE" && next_word.as_deref() == Some("JOIN");
+                    let cte_dml = first == "WITH" && main_query && !seen_select;
+                    if cte_dml {
+                        main_query = false;
+                    }
+                    !(merge_action || join_hint || cte_dml)
+                }
+                // Table hints and options: WITH (NOLOCK), WITH TIES, WITH CHECK, WITH GRANT OPTION…; a CTE is `WITH x AS (`.
+                "WITH" => {
+                    matches!(tokens.get(i + 1), Some(Token::Word(_)) | Some(Token::Quoted(..)))
+                        && tokens.get(i + 2).and_then(upper).as_deref() == Some("AS")
+                }
+                "SET" => {
+                    matches!(first.as_str(), "SELECT" | "WITH" | "INSERT" | "DELETE" | "DROP" | "CREATE" | "TRUNCATE")
+                }
+                "DROP" => first != "ALTER",
+                "ALTER" => !(first == "CREATE" && prev == "OR"),
+                "IF" => !(prev == "DROP" || matches!(next_word.as_deref(), Some("EXISTS") | Some("NOT"))),
+                "ROLLBACK" | "GRANT" | "REVOKE" | "DENY" => prev != "WITH",
+                "EXEC" | "EXECUTE" => !(first == "INSERT" && !seen_select),
+                // `OPEN`/`CLOSE`/`GET`/`MOVE` and friends are only statements when followed by a name, not a call.
+                "OPEN" | "CLOSE" | "GET" | "MOVE" | "SEND" | "RECEIVE" | "ENABLE" | "DISABLE" | "BULK" => {
+                    !next_is_paren && first != "ALTER"
+                }
+                _ => true,
+            };
+        if word == "SELECT" && depth == 0 {
+            seen_select = true;
+        }
+        if starts {
+            return Some(raw);
+        }
+        previous = Some(word);
+    }
+    None
 }
 
 /// Statements a read starts with, per engine.
@@ -282,6 +474,42 @@ fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
     }
 }
 
+/// Families of built-ins with side effects that a read-only transaction doesn't stop, matched by name pattern so new
+/// members (`pg_stat_reset_*`, `pg_create_*_replication_slot`) are covered too.
+fn side_effect_family(engine: Engine, name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    match engine {
+        Engine::Postgres => {
+            (n.starts_with("pg_") && n.contains("reset"))
+                || n.contains("replication_slot")
+                || n.starts_with("pg_replication_origin")
+                || ["pg_backup_", "pg_start_backup", "pg_stop_backup", "pg_wal_", "pg_switch_", "pg_log_"]
+                    .iter()
+                    .any(|p| n.starts_with(p))
+                || ["pg_create_", "pg_drop_", "pg_copy_", "pg_file_", "pg_read_", "pg_ls_", "pg_import_"]
+                    .iter()
+                    .any(|p| n.starts_with(p))
+                || n.starts_with("pg_terminate_")
+                || n.starts_with("pg_cancel_")
+                || n.starts_with("pg_promote")
+                // Functions that run SQL passed as a string: anything blocked could hide inside the literal.
+                || n.starts_with("crosstab")
+                || n.ends_with("_exec")
+                || n.starts_with("dblink")
+                || n.starts_with("query_to_")
+                || n.starts_with("lo_")
+        }
+        Engine::Mysql => {
+            matches!(n.as_str(), "setval" | "nextval" | "lastval" | "sleep" | "benchmark")
+                || n.ends_with("_lock")
+                || n.starts_with("release_")
+        }
+        Engine::Mssql => {
+            n.starts_with("open") && matches!(n.as_str(), "openrowset" | "opendatasource" | "openquery" | "openxml")
+        }
+    }
+}
+
 /// True when `text` is one statement that only reads: it starts like a read, contains no data-changing clause
 /// (data-modifying CTE, SELECT INTO, locking reads, EXPLAIN ANALYZE) and calls no built-in with side effects.
 /// User-defined functions can still have side effects, so callers also run reads in a read-only transaction where the
@@ -304,12 +532,15 @@ pub fn reads_only(text: &str, engine: Engine) -> bool {
             return false;
         }
         let functions = side_effect_functions(engine);
-        let unsafe_call = |name: &str| functions.iter().any(|f| f.eq_ignore_ascii_case(name)) || advisory(name);
+        let unsafe_call = |name: &str| {
+            functions.iter().any(|f| f.eq_ignore_ascii_case(name)) || advisory(name) || side_effect_family(engine, name)
+        };
         let keywords_ok = words.iter().enumerate().all(|(n, (at, word))| {
             let previous = n.checked_sub(1).map(|p| words[p].1.as_str());
             let calls = matches!(tokens.get(at + 1), Some(Token::Punct('(')));
             let locking = word == "SHARE" && matches!(previous, Some("FOR") | Some("IN") | Some("KEY"));
-            let sequence = engine == Engine::Mssql && word == "VALUE" && previous == Some("NEXT");
+            // NEXT VALUE FOR advances a sequence (SQL Server, MariaDB): a write a read-only transaction doesn't undo.
+            let sequence = engine != Engine::Postgres && word == "VALUE" && previous == Some("NEXT");
             !(WRITES.contains(&word.as_str()) || locking || sequence || (calls && unsafe_call(word)))
         });
         // A quoted name can call a function too ("pg_terminate_backend"(…), [openquery](…), `get_lock`(…)). Compare its
@@ -540,6 +771,92 @@ mod tests {
             assert!(single_statement("  ; ", engine).is_err());
             assert!(single_statement("-- only a comment", engine).is_err());
         }
+    }
+
+    #[test]
+    fn tsql_statements_without_semicolons_are_refused() {
+        // SQL Server runs these as several statements: none may pass as one read.
+        for text in [
+            "SELECT 1 AS a COMMIT CREATE TABLE tempdb.dbo.x (a int)",
+            "SELECT 1 EXEC sp_who",
+            "SELECT 1 EXECUTE('DROP TABLE t')",
+            "SELECT name FROM sys.tables SELECT 2",
+            "SELECT 1 DECLARE @x int",
+            "SELECT 1 SET NOCOUNT ON",
+            "SELECT 1\nGO\nDROP TABLE t",
+            "SELECT 1 DBCC FREEPROCCACHE",
+            "SELECT 1 KILL 53",
+            "SELECT 1 USE master",
+            "SELECT 1 WAITFOR DELAY '00:00:10'",
+            "SELECT a FROM t DELETE FROM t",
+            "SELECT 1 BEGIN TRAN",
+            "SELECT 1 IF 1 = 1 DROP TABLE t",
+            "WITH x AS (SELECT 1 AS a) SELECT a FROM x SELECT 2",
+            "SELECT 1 GRANT SELECT ON t TO public",
+            "GRANT SELECT ON t TO u DROP TABLE t",
+            "(@P1 int)SELECT a FROM t WHERE b = @P1 DELETE FROM t",
+        ] {
+            assert!(single_statement(text, Engine::Mssql).is_err(), "{text}");
+            assert!(!reads_only(text, Engine::Mssql), "{text}");
+            assert!(check(text, Engine::Mssql).problem.is_some(), "{text}");
+        }
+        // One statement each, with the words that legitimately appear inside one.
+        for (text, read) in [
+            ("SELECT a FROM t UNION ALL SELECT b FROM u", true),
+            ("SELECT a FROM t EXCEPT SELECT b FROM u", true),
+            ("WITH x AS (SELECT 1 AS a) SELECT a FROM x", true),
+            ("SELECT a FROM t WITH (NOLOCK)", true),
+            ("SELECT TOP 5 WITH TIES a FROM t ORDER BY a", true),
+            ("SELECT a FROM t INNER MERGE JOIN u ON t.id = u.id", false),
+            ("SELECT t.[exec], t.[begin] FROM t", true),
+            ("SELECT x.exec FROM t AS x", true),
+            ("SELECT a FROM t WHERE b = @begin", true),
+            ("SELECT a FROM t ORDER BY a OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY", true),
+            ("SELECT a FROM t OPTION (USE HINT ('FORCE_LEGACY_CARDINALITY_ESTIMATION'))", true),
+            ("UPDATE t SET a = 1 WHERE b = 2", false),
+            (
+                "MERGE t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = s.a WHEN NOT MATCHED THEN INSERT (id) VALUES (s.id)",
+                false,
+            ),
+            ("INSERT INTO t (a) SELECT a FROM u", false),
+            ("INSERT INTO t EXEC p", false),
+            ("WITH x AS (SELECT 1 AS a) DELETE FROM t WHERE a IN (SELECT a FROM x)", false),
+            ("ALTER TABLE t DROP COLUMN c", false),
+            ("DROP TABLE IF EXISTS t", false),
+            ("ALTER DATABASE d SET SINGLE_USER WITH ROLLBACK IMMEDIATE", false),
+            ("GRANT SELECT ON t TO u WITH GRANT OPTION", false),
+            ("CREATE PROCEDURE p AS BEGIN SELECT 1 END", false),
+            ("CREATE OR ALTER PROCEDURE p AS BEGIN SET NOCOUNT ON SELECT 1 END", false),
+            ("DENY EXECUTE ON SCHEMA::app TO u", false),
+            ("CREATE NONCLUSTERED INDEX ix ON t (a) WITH (ONLINE = ON)", false),
+            ("(@P1 nvarchar(4000))SELECT id FROM shop.customers WHERE email = @P1", false),
+        ] {
+            assert!(single_statement(text, Engine::Mssql).is_ok(), "{text}");
+            assert_eq!(reads_only(text, Engine::Mssql), read, "{text}");
+        }
+    }
+
+    #[test]
+    fn functions_with_side_effects_are_not_reads() {
+        for text in [
+            "SELECT pg_stat_statements_reset()",
+            "SELECT pg_stat_reset_single_table_counters(0)",
+            "SELECT pg_stat_reset()",
+            "SELECT pg_create_logical_replication_slot('s', 'pgoutput')",
+            "SELECT pg_drop_replication_slot('s')",
+            "SELECT pg_log_backend_memory_contexts(1)",
+            "SELECT * FROM crosstab('SELECT pg_terminate_backend(1)')",
+            "SELECT pg_backup_start('x')",
+            "SELECT \"pg_stat_statements_reset\"()",
+        ] {
+            assert!(!reads_only(text, Engine::Postgres), "{text}");
+        }
+        for text in ["SELECT NEXT VALUE FOR s", "SELECT nextval(s)", "SELECT setval(s, 5)", "SELECT SLEEP(10)"] {
+            assert!(!reads_only(text, Engine::Mysql), "{text}");
+        }
+        // Ordinary functions still read.
+        assert!(reads_only("SELECT lower(name), count(*) FROM t GROUP BY 1", Engine::Postgres));
+        assert!(reads_only("SELECT pg_size_pretty(pg_total_relation_size('t'))", Engine::Postgres));
     }
 
     #[test]

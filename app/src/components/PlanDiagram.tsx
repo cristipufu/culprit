@@ -12,6 +12,17 @@ import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
 const CARD_W = 196;
+
+/**
+ * An operator name short enough for a card, keeping the word that tells operators apart: "Clustered Index Update" →
+ * "Clustered Update" (it is never the "Index" that differs). The card's tooltip and label keep the full name.
+ */
+export function compactOp(op: string): string {
+  return op
+    .replace(/^(Clustered|Nonclustered|Columnstore|Clustered Columnstore) Index (?=\S)/i, "$1 ")
+    .replace(/^(Unique|Subquery) index lookup$/i, "$1 lookup")
+    .replace(/^Table-valued function$/i, "Table function");
+}
 const CARD_H = 74;
 const GAP_X = 28;
 const GAP_Y = 62;
@@ -440,9 +451,10 @@ function PlanCard(props: {
         <span className="pc-icon">
           <OpIcon node={node} size={14} />
         </span>
-        <span className="pc-op">{node.op}</span>
+        <span className={`pc-op ${compactOp(node.op).length > 13 ? "long" : ""}`} title={node.op}>
+          {compactOp(node.op)}
+        </span>
         <span className="pc-share">
-          {mark && <span className={`pc-mark ${mark}`}>{MARK_LABEL[mark]}</span>}
           {hottest && <Flame size={11} color="var(--heat-4)" />}
           {percent(share)}
         </span>
@@ -459,6 +471,8 @@ function PlanCard(props: {
         )}
         {(ownMs ?? node.act_time_ms) != null && <span className="muted"> · {duration(ownMs ?? node.act_time_ms!)}</span>}
         {node.warnings.length > 0 && !worst && <TriangleAlert size={11} color="var(--medium)" style={{ marginLeft: 3 }} />}
+        {/* The compare mark sits here, not beside the name: the name is what tells two steps apart. */}
+        {mark && <span className={`pc-mark ${mark}`}>{MARK_LABEL[mark]}</span>}
       </span>
       {worst && (
         <span className={`pc-flag ${worst.severity}`} title={insights!.map((i) => i.title).join("\n")}>

@@ -1,5 +1,6 @@
 import { Clock, RotateCcw, ShieldAlert, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useFocusTrap } from "../lib/focus";
 import type { ApprovalRequest } from "../gen/ApprovalRequest";
 import { api, errorMessage } from "../lib/api";
 import { ENVIRONMENT_LABEL } from "../lib/environments";
@@ -20,6 +21,7 @@ export default function ApprovalDialog() {
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const connections = useStore((s) => s.connections);
+  const dialog = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -70,6 +72,9 @@ export default function ApprovalDialog() {
     }
   });
 
+  // While a request waits, Tab stays inside the dialog and focus returns where it was afterwards.
+  useFocusTrap(dialog, request !== null);
+
   if (!request) {
     return error ? (
       <div className="toast" role="status">
@@ -79,13 +84,16 @@ export default function ApprovalDialog() {
   }
 
   const production = request.environment === "production";
-  const engine = connections.find((c) => c.name === request.connection)?.engine;
+  const target = connections.find((c) => c.name === request.connection);
+  const engine = target?.engine;
   const total = Math.max(1, (Date.parse(request.expires_at) - Date.parse(request.requested_at)) / 1000);
   return (
     <div className="overlay approval-overlay">
       <div
+        ref={dialog}
         className="approval"
         role="alertdialog"
+        aria-modal="true"
         aria-labelledby="approval-title"
         onKeyDown={(e) => {
           if (e.key === "Escape") {
@@ -106,7 +114,7 @@ export default function ApprovalDialog() {
           <div>
             <h2 id="approval-title">{request.client} wants to run a statement</h2>
             <div className="approval-sub">
-              {engine && <EngineBadge engine={engine} environment={request.environment} />}
+              {engine && <EngineBadge engine={engine} environment={request.environment} product={target?.last_report?.product} />}
               <b>{request.connection}</b>
               <span className={`env-chip env-${request.environment}`}>{ENVIRONMENT_LABEL[request.environment]}</span>
               <span className="muted">via {request.tool}</span>

@@ -467,6 +467,19 @@ impl From<SeverityArg> for Severity {
 
 const EXIT_FINDINGS: u8 = 3;
 
+fn writes_markdown(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Dashboard(_)
+            | Command::Scan(_)
+            | Command::Findings(_)
+            | Command::Show { .. }
+            | Command::Analyze { .. }
+            | Command::Verify(_)
+            | Command::Export(_)
+    )
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let format = match (cli.json, cli.format) {
@@ -476,6 +489,15 @@ fn main() -> ExitCode {
         _ => Format::Json,
     };
     let out = Out::new(format);
+    // Markdown is written by the commands whose output is meant for a pull request or a ticket; elsewhere it would be
+    // plain text under a Markdown label.
+    if format == Format::Md && !writes_markdown(&cli.command) {
+        out.error(
+            &Error::invalid("This command has no Markdown output")
+                .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify and export; use --format text or json here."),
+        );
+        return ExitCode::FAILURE;
+    }
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(rt) => rt,
         Err(e) => {

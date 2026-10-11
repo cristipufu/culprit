@@ -108,10 +108,12 @@ fn heavy_fix_text(hot: Option<&PlanNode>, per_day_runs: f64, q: &QueryStat) -> S
 
 fn describe_node(node: &PlanNode) -> String {
     let what = node.op.to_ascii_lowercase();
+    // "an index scan", "a seq scan".
+    let a = if what.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
     match (&node.object, node.rows_read.or(node.table_rows)) {
-        (Some(object), Some(rows)) => format!("a {what} of {object} that reads {} rows", format::count(rows)),
-        (Some(object), None) => format!("a {what} of {object}"),
-        _ => format!("a {what}"),
+        (Some(object), Some(rows)) => format!("{a} {what} of {object} that reads {} rows", format::count(rows)),
+        (Some(object), None) => format!("{a} {what} of {object}"),
+        _ => format!("{a} {what}"),
     }
 }
 
@@ -600,4 +602,40 @@ fn suggested_work_mem(per_run_bytes: f64) -> String {
     let mb = (per_run_bytes / (1024.0 * 1024.0) * 2.0).ceil().clamp(16.0, 512.0);
     let rounded = 2f64.powf(mb.log2().ceil());
     format!("{rounded:.0}MB")
+}
+
+#[cfg(test)]
+mod wording_tests {
+    use super::*;
+    use culprit_core::{NodeKind, Properties};
+
+    #[test]
+    fn plan_steps_take_the_right_article() {
+        let mut n = PlanNode {
+            id: 1,
+            op: "Index Scan".into(),
+            kind: NodeKind::Scan,
+            detail: None,
+            object: Some("orders".into()),
+            index: None,
+            seek_predicate: None,
+            predicate: None,
+            est_rows: 1.0,
+            est_executions: 1.0,
+            act_rows: None,
+            act_executions: None,
+            rows_read: None,
+            table_rows: None,
+            subtree_cost: 1.0,
+            self_cost: 1.0,
+            act_time_ms: None,
+            warnings: vec![],
+            props: Properties::new(),
+            children: vec![],
+            runtime: None,
+        };
+        assert_eq!(describe_node(&n), "an index scan of orders");
+        n.op = "Seq Scan".into();
+        assert_eq!(describe_node(&n), "a seq scan of orders");
+    }
 }

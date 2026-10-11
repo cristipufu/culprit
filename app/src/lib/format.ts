@@ -3,6 +3,9 @@ import type { Unit } from "../gen/Unit";
 export function duration(ms: number | null | undefined): string {
   if (ms == null) return "—";
   const v = Math.max(0, ms);
+  if (v === 0) return "0 ms";
+  // Under a hundredth of a millisecond, "0.00 ms" says nothing: microseconds do.
+  if (v < 0.01) return `${Math.max(1, Math.round(v * 1000))} µs`;
   if (v < 1) return `${v.toFixed(2)} ms`;
   if (v < 1000) return `${Math.round(v)} ms`;
   const s = v / 1000;

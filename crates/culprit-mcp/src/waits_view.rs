@@ -89,7 +89,8 @@ pub fn sample(s: &WaitSample) -> Value {
                 "top_wait": c.wait_type,
             })
         }).collect::<Vec<_>>(),
-        "busy_sessions_on_average": s.active_sessions,
+        // An empty sum is -0.0; a count of sessions is never negative.
+        "busy_sessions_on_average": s.active_sessions.map(|v| v.max(0.0)),
         "signals": s.signals.iter().map(signal).collect::<Vec<_>>(),
         "notes": s.notes,
     })

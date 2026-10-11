@@ -101,7 +101,13 @@ pub fn queries_touching<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -
 
 /// Statements reading the engine's own catalogs (monitoring tools, IDEs, migrations' introspection): real load, but not the application's to fix.
 pub fn is_monitoring_query(q: &QueryStat) -> bool {
-    let t = q.text.to_ascii_lowercase();
+    is_monitoring_text(&q.text)
+}
+
+/// Statements that read the server's own catalog and statistics (monitoring tools, audits, Culprit-like agents), in
+/// plain or digest form (MySQL digests quote names: `` `performance_schema` . `events_waits_current` ``).
+pub fn is_monitoring_text(text: &str) -> bool {
+    let t = text.to_ascii_lowercase().replace("` . `", ".").replace('`', "");
     [
         "sys.dm_",
         "sys.query_store",
@@ -111,6 +117,11 @@ pub fn is_monitoring_query(q: &QueryStat) -> bool {
         "information_schema.",
         "pg_catalog.",
         "pg_stat_",
+        "performance_schema.",
+        " mysql.",
+        "(mysql.",
+        " sys.",
+        "(sys.",
     ]
     .iter()
     .any(|marker| t.contains(marker))
@@ -206,7 +217,7 @@ pub fn create_index_sql(snapshot: &Snapshot, schema: &str, table: &str, keys: &[
         Engine::Mysql => {
             // InnoDB has no INCLUDE: secondary indexes already carry the primary key, so extra columns would have to become keys.
             format!(
-                "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM=INPLACE, LOCK=NONE;",
+                "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM=INPLACE LOCK=NONE;",
                 quote(engine, &name.to_ascii_lowercase())
             )
         }
@@ -217,19 +228,53 @@ pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) ->
     match engine {
         Engine::Mssql => format!("DROP INDEX {} ON {};", quote(engine, index), qualified(engine, schema, table)),
         Engine::Postgres => format!("DROP INDEX CONCURRENTLY {};", qualified(engine, schema, index)),
+        // MariaDB's DROP INDEX takes no ALGORITHM/LOCK options; ALTER TABLE takes them (comma-separated) on both.
         Engine::Mysql => format!(
-            "DROP INDEX {} ON {} ALGORITHM=INPLACE, LOCK=NONE;",
-            quote(engine, index),
-            qualified(engine, schema, table)
+            "ALTER TABLE {} DROP INDEX {}, ALGORITHM=INPLACE, LOCK=NONE;",
+            qualified(engine, schema, table),
+            quote(engine, index)
         ),
     }
 }
 
-/// Days the cumulative counters (index usage, table stats) have been accumulating.
+/// Days the cumulative counters (index usage, table stats) have been accumulating. One source for every window that
+/// says so: the counters' own age as the scan measured it (on PostgreSQL from `pg_stat_database.stats_reset`, which
+/// outlives a restart), else the server's start time.
 pub fn counter_days(snapshot: &Snapshot) -> Option<f64> {
+    if let Some(hours) = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours) {
+        return Some((hours / 24.0).max(0.0));
+    }
     let started = snapshot.server.started_at.as_deref()?;
     let days = days_between(started, &snapshot.taken_at)?;
     Some(days.max(0.0))
+}
+
+/// Whether the counters cover enough time (20 hours) for a per-day rate that isn't an extrapolation.
+pub fn per_day_is_measured(days: f64) -> bool {
+    days * 24.0 >= culprit_core::PER_DAY_MIN_HOURS
+}
+
+/// "about 1.2K times a day" over 20 hours or more of counters, otherwise what was counted and over how long: "340 times
+/// in the 5 hours since the server last restarted".
+pub fn how_many(snapshot: &Snapshot, total: f64, days: f64, one: &str, many: &str) -> String {
+    if per_day_is_measured(days) {
+        let per_day = total / days;
+        format!("about {} {} a day", format::count(per_day), if per_day.round() == 1.0 { one } else { many })
+    } else {
+        format!("{} {} {}", format::count(total), if total == 1.0 { one } else { many }, since_phrase(snapshot))
+    }
+}
+
+/// Whether the counters started at a statistics reset rather than at the last restart (PostgreSQL keeps statistics
+/// across a clean restart, and `pg_stat_reset()` starts them over without one).
+fn counters_since_reset(snapshot: &Snapshot) -> bool {
+    let (Some(hours), Some(started)) =
+        (snapshot.pressure.as_ref().and_then(|p| p.uptime_hours), snapshot.server.started_at.as_deref())
+    else {
+        return false;
+    };
+    let since_start = days_between(started, &snapshot.taken_at).map(|d| d * 24.0);
+    snapshot.server.engine == Engine::Postgres && since_start.is_some_and(|h| (h - hours).abs() > 0.1)
 }
 
 pub fn days_between(from: &str, to: &str) -> Option<f64> {
@@ -288,19 +333,20 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
     {
         return "since userstat was turned on or its statistics last flushed".to_string();
     }
+    let since = if counters_since_reset(snapshot) {
+        "since its statistics were last reset"
+    } else {
+        "since the server last restarted"
+    };
     match counter_days(snapshot) {
-        Some(days) if days >= 2.0 => format!("in the {} days since the server last restarted", days.round()),
+        Some(days) if days >= 2.0 => format!("in the {} days {since}", days.round()),
         Some(days) if days * 24.0 < 1.0 => {
             let minutes = (days * 24.0 * 60.0).round().max(1.0);
-            if minutes == 1.0 {
-                "in the minute since the server last restarted".to_string()
-            } else {
-                format!("in the {minutes} minutes since the server last restarted")
-            }
+            if minutes == 1.0 { format!("in the minute {since}") } else { format!("in the {minutes} minutes {since}") }
         }
-        Some(days) if days * 24.0 < 1.5 => "in the hour since the server last restarted".to_string(),
-        Some(days) => format!("in the {} hours since the server last restarted", (days * 24.0).round()),
-        None => "since the server last restarted".to_string(),
+        Some(days) if days * 24.0 < 1.5 => format!("in the hour {since}"),
+        Some(days) => format!("in the {} hours {since}", (days * 24.0).round()),
+        None => since.to_string(),
     }
 }
 
@@ -327,8 +373,32 @@ pub fn statement_handle(text: &str) -> String {
         ("update", Some(t)) => format!("an update of {t}"),
         ("delete", Some(t)) => format!("a delete from {t}"),
         ("merge", Some(t)) => format!("a merge into {t}"),
-        _ => "a query".to_string(),
+        // Statements without a table still have a name people recognise: `SELECT SLEEP(?)`, `DO SLEEP(?)`, `CALL p(?)`.
+        _ => other_handle(text, &lower).unwrap_or_else(|| "a query".to_string()),
     }
+}
+
+/// `CALL proc(…)`, `EXEC proc`, `DO f(…)`, `SELECT f(…)` without a table: name the routine or function.
+fn other_handle(text: &str, lower: &str) -> Option<String> {
+    let word = |from: usize| -> Option<String> {
+        let rest = text.get(from..)?.trim_start();
+        let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.')).collect();
+        (!name.is_empty()).then_some(name)
+    };
+    for (verb, what) in [("call ", "a call to"), ("exec ", "a call to"), ("execute ", "a call to")] {
+        if lower.starts_with(verb) {
+            return word(verb.len()).map(|n| format!("{what} {n}"));
+        }
+    }
+    for verb in ["do ", "select "] {
+        if lower.starts_with(verb)
+            && let Some(name) = word(verb.len())
+            && text.get(verb.len()..).is_some_and(|r| r.trim_start()[name.len()..].trim_start().starts_with('('))
+        {
+            return Some(format!("a call to {}", name.to_ascii_uppercase()));
+        }
+    }
+    None
 }
 
 /// `lower` is `text` ASCII-lowercased, so byte offsets line up and the name keeps its original casing.
@@ -350,28 +420,34 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
 pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
     match &snapshot.workload {
         Some(w) if w.window_hours >= 20.0 => format!("about {} times a day", format::count(w.per_day(executions))),
-        Some(w) => format!("{} times in {}", format::count(executions), span(w.window_hours)),
+        Some(w) => format!("{} times in {}", format::count(executions), culprit_core::span_words(w.window_hours)),
         None => format!("{} times", format::count(executions)),
     }
 }
 
-/// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
-pub fn window_phrase(workload: &culprit_core::Workload) -> String {
-    if workload.windowed {
-        return format!("the last {}", span(workload.window_hours));
+/// Share of database time behind the top three active findings: their distinct queries, each counted once, so
+/// two findings about the same query don't double it. The one number both the summary and the dashboard state.
+pub fn top_findings_share<'a>(
+    snapshot: &Snapshot,
+    findings: impl IntoIterator<Item = &'a culprit_core::Finding>,
+) -> Option<f64> {
+    let w = snapshot.workload.as_ref()?;
+    let ids: std::collections::BTreeSet<&str> = findings
+        .into_iter()
+        .filter(|f| !f.inactive)
+        .take(3)
+        .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
+        .collect();
+    if ids.is_empty() {
+        return None;
     }
-    format!("the {} since statistics were reset", span(workload.window_hours))
+    let time: f64 = w.queries.iter().filter(|q| ids.contains(q.id.as_str())).map(|q| q.total_time_ms).sum();
+    Some(w.share(time).min(1.0))
 }
 
-fn span(hours: f64) -> String {
-    if hours >= 47.0 {
-        return format!("{} days", (hours / 24.0).round());
-    }
-    if hours >= 1.5 {
-        return format!("{} hours", hours.round());
-    }
-    let minutes = (hours * 60.0).round().max(1.0);
-    if minutes == 1.0 { "1 minute".into() } else { format!("{minutes} minutes") }
+/// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
+pub fn window_phrase(workload: &culprit_core::Workload) -> String {
+    workload.window_phrase()
 }
 
 pub fn per_day(snapshot: &Snapshot, value: f64) -> f64 {
@@ -393,6 +469,7 @@ pub(crate) mod tests {
     fn usage_windows_say_how_long_the_server_has_been_up() {
         let mut s = crate::waits::snapshot_with(Engine::Mssql);
         s.taken_at = "2026-10-11T17:05:00Z".into();
+        s.pressure = None;
         let mut at = |started: &str| {
             s.server.started_at = Some(started.into());
             since_phrase(&s)
@@ -401,6 +478,49 @@ pub(crate) mod tests {
         assert_eq!(at("2026-10-11T16:05:00Z"), "in the hour since the server last restarted");
         assert_eq!(at("2026-10-11T12:05:00Z"), "in the 5 hours since the server last restarted");
         assert_eq!(at("2026-10-01T17:05:00Z"), "in the 10 days since the server last restarted");
+    }
+
+    #[test]
+    fn postgres_counters_that_outlived_a_restart_say_so() {
+        // The server restarted 5 hours ago, but its statistics were last reset 10.9 hours ago and survived.
+        let mut s = crate::waits::snapshot_with(Engine::Postgres);
+        s.taken_at = "2026-10-11T17:00:00Z".into();
+        s.server.started_at = Some("2026-10-11T12:00:00Z".into());
+        s.pressure = Some(culprit_core::Pressure { uptime_hours: Some(10.9), ..Default::default() });
+        assert_eq!(since_phrase(&s), "in the 11 hours since its statistics were last reset");
+        assert!((counter_days(&s).unwrap() * 24.0 - 10.9).abs() < 1e-9);
+        // Counters as old as the server: a restart, as before.
+        s.pressure = Some(culprit_core::Pressure { uptime_hours: Some(5.0), ..Default::default() });
+        assert_eq!(since_phrase(&s), "in the 5 hours since the server last restarted");
+    }
+
+    #[test]
+    fn counts_are_per_day_only_over_a_day_of_counters() {
+        let mut s = crate::waits::snapshot_with(Engine::Mssql);
+        s.taken_at = "2026-10-11T17:05:00Z".into();
+        s.pressure = None;
+        s.server.started_at = Some("2026-10-11T12:05:00Z".into());
+        let days = counter_days(&s).unwrap();
+        // 5 hours: what was counted, not "~1.6K times a day".
+        assert_eq!(
+            how_many(&s, 340.0, days, "time", "times"),
+            "340 times in the 5 hours since the server last restarted"
+        );
+        s.server.started_at = Some("2026-10-09T17:05:00Z".into());
+        let days = counter_days(&s).unwrap();
+        assert_eq!(how_many(&s, 340.0, days, "time", "times"), "about 170 times a day");
+    }
+
+    #[test]
+    fn system_schema_reads_are_monitoring_on_every_engine() {
+        assert!(is_monitoring_text(
+            "SELECT `EVENT_NAME` FROM `performance_schema` . `events_waits_summary_global_by_event_name`"
+        ));
+        assert!(is_monitoring_text("SELECT * FROM mysql.slow_log WHERE db = ?"));
+        assert!(is_monitoring_text("SELECT * FROM sys.innodb_lock_waits"));
+        assert!(is_monitoring_text("SELECT * FROM `information_schema` . `TABLES`"));
+        assert!(!is_monitoring_text("SELECT `id` FROM `orders` WHERE `customer_id` = ?"));
+        assert!(!is_monitoring_text("SELECT analysis.id FROM analysis WHERE mysqlish = 1"));
     }
 
     #[test]
@@ -573,6 +693,24 @@ fn is_value(side: &str) -> bool {
 #[cfg(test)]
 mod predicate_tests {
     use super::*;
+
+    #[test]
+    fn statements_without_a_table_are_named() {
+        assert_eq!(statement_handle("DO SLEEP(?)"), "a call to SLEEP");
+        assert_eq!(statement_handle("SELECT sleep(?)"), "a call to SLEEP");
+        assert_eq!(statement_handle("CALL refresh_totals(?)"), "a call to refresh_totals");
+        assert_eq!(statement_handle("SELECT id FROM orders WHERE id = ?"), "a read from orders");
+        assert_eq!(statement_handle("SELECT 1"), "a query");
+    }
+
+    #[test]
+    fn mysql_online_ddl_options_are_space_separated() {
+        // `ALGORITHM=INPLACE, LOCK=NONE` is ERROR 1064 in CREATE/DROP INDEX on MySQL and MariaDB: index options don't
+        // take commas (only ALTER TABLE's clauses do).
+        // MariaDB's DROP INDEX has no such options at all, so the drop goes through ALTER TABLE (whose clauses do).
+        let drop = drop_index_sql(Engine::Mysql, "shop", "orders", "ix_orders_status");
+        assert_eq!(drop, "ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;");
+    }
 
     #[test]
     fn postgres_predicates() {

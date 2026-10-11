@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use culprit_core::{Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample, WaitStat};
-use mysql_async::Conn;
+use mysql_async::{Conn, Value};
 
-use crate::rows::{query, query_one};
+use crate::connect::TAG;
+use crate::rows::{query, query_one, query_with};
 
 const PICOS_PER_MS: f64 = 1e9;
 
@@ -36,12 +37,14 @@ pub fn category(event: &str) -> &'static str {
 }
 
 /// Event name → (wait ms, count) from performance_schema's server-wide wait totals.
+/// Wait totals since startup. `wait/io/table/sql/handler` is left out: it times row reads inside the storage engine,
+/// the statements' own work rather than waiting, and would otherwise dwarf every real wait.
 async fn wait_totals(conn: &mut Conn) -> Result<HashMap<String, (f64, f64)>> {
     Ok(query(
         conn,
         "SELECT EVENT_NAME AS event, COUNT_STAR AS tasks, SUM_TIMER_WAIT AS wait_ps
            FROM performance_schema.events_waits_summary_global_by_event_name
-          WHERE SUM_TIMER_WAIT > 0 AND EVENT_NAME <> 'idle'",
+          WHERE SUM_TIMER_WAIT > 0 AND EVENT_NAME NOT IN ('idle', 'wait/io/table/sql/handler')",
     )
     .await?
     .iter()
@@ -122,7 +125,36 @@ fn oldest_sql(with_program: bool) -> String {
     )
 }
 
+/// Culprit's own connections: those named `program_name = culprit` where performance_schema shows connection
+/// attributes, otherwise this session and any running a tagged statement.
+async fn own_sessions(conn: &mut Conn) -> f64 {
+    let named = "SELECT COUNT(DISTINCT PROCESSLIST_ID) AS n FROM performance_schema.session_connect_attrs
+                  WHERE ATTR_NAME = 'program_name' AND ATTR_VALUE = 'culprit'";
+    if let Ok(rows) = query(conn, named).await
+        && let Some(n) = rows.first().and_then(|r| r.number("n")).filter(|n| *n >= 1.0)
+    {
+        return n;
+    }
+    let tagged = "SELECT COUNT(*) AS n FROM information_schema.PROCESSLIST WHERE ID = CONNECTION_ID() OR INFO LIKE ?";
+    query_with(conn, tagged, vec![Value::from(format!("%{TAG}%"))])
+        .await
+        .ok()
+        .and_then(|rows| rows.first().and_then(|r| r.number("n")))
+        .unwrap_or(1.0)
+}
+
+/// Statements running right now, counted the way Live counts them: other sessions' work, never Culprit's own (a scan
+/// runs several collectors at once, each on its own session, so `Threads_running - 1` still counts some of them).
+async fn running_statements(conn: &mut Conn) -> Option<f64> {
+    let sql = "SELECT COUNT(*) AS n FROM information_schema.PROCESSLIST
+                WHERE ID <> CONNECTION_ID() AND COMMAND NOT IN ('Sleep', 'Daemon', 'Binlog Dump', 'Binlog Dump GTID')
+                  AND USER <> 'system user' AND (INFO IS NULL OR INFO NOT LIKE ?)";
+    let rows = query_with(conn, sql, vec![Value::from(format!("%{TAG}%"))]).await.ok()?;
+    rows.first().and_then(|r| r.number("n"))
+}
+
 pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
+    let running = running_statements(conn).await;
     let mut p = Pressure::default();
     let mut notes = Vec::new();
     match status(conn).await {
@@ -167,12 +199,12 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
                     SignalScope::SinceStartup,
                 ));
             }
-            if let Some(running) = get("Threads_running") {
-                // Culprit's own session is one of them.
+            // The process list without Culprit's sessions; the counter (minus this session) if it can't be read.
+            if let Some(running) = running.or_else(|| get("Threads_running").map(|r| (r - 1.0).max(0.0))) {
                 p.signals.push(Signal::new(
                     "threads-running",
                     "Statements running now",
-                    (running - 1.0).max(0.0),
+                    running,
                     SignalUnit::Count,
                     SignalScope::Now,
                 ));
@@ -202,7 +234,9 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
             if let Ok(Some(r)) = query_one(conn, "SELECT @@max_connections AS max").await
                 && let Some(max) = r.number("max").filter(|m| *m > 0.0)
             {
-                if let Some(used) = get("Threads_connected") {
+                // The application's connections: Culprit's own (this scan opens several) don't count.
+                let own = own_sessions(conn).await;
+                if let Some(used) = get("Threads_connected").map(|u| (u - own).max(0.0)) {
                     p.signals.push(
                         Signal::new(
                             "connections",

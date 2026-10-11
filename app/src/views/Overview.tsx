@@ -24,6 +24,12 @@ const CATEGORY_LABEL: Record<Category, string> = {
   configuration: "Configuration",
 };
 
+/** One chip per category that has findings, counted from the list itself so a chip's number is what it shows. */
+function categoryCounts(findings: Finding[]): { category: Category; count: number }[] {
+  const order = Object.keys(CATEGORY_LABEL) as Category[];
+  return order.map((category) => ({ category, count: findings.filter((f) => f.category === category).length })).filter((c) => c.count > 0);
+}
+
 // The waits and "What changed" panels load on first use, so Overview's first paint stays as light as before.
 const WaitsPanel = lazy(() => import("../components/WaitsPanel"));
 const WhatChanged = lazy(() => import("../components/WhatChanged"));
@@ -65,6 +71,8 @@ export function Overview({ report }: { report: Report }) {
   }, [report.findings, category, filter, dismissed, showDismissed]);
 
   const dismissedCount = report.findings.filter((f) => dismissed[f.id]).length;
+  // Chips count what their filter would list: dismissed findings only while they're shown.
+  const listed = showDismissed ? report.findings : report.findings.filter((f) => !dismissed[f.id]);
   const current = report.findings.find((f) => f.id === selected) ?? visible[0] ?? null;
 
   const move = (delta: number) => {
@@ -94,9 +102,9 @@ export function Overview({ report }: { report: Report }) {
         <Header report={report} onOpenWaits={openWaits} changes={changes} />
         <div className="filters">
           <button className={`chip ${category === "all" ? "on" : ""}`} onClick={() => setCategory("all")}>
-            All <span className="n">{report.findings.length}</span>
+            All <span className="n">{listed.length}</span>
           </button>
-          {report.summary.by_category.map((c) => (
+          {categoryCounts(listed).map((c) => (
             <button key={c.category} className={`chip ${category === c.category ? "on" : ""}`} onClick={() => setCategory(c.category)}>
               {CATEGORY_LABEL[c.category]} <span className="n">{c.count}</span>
             </button>

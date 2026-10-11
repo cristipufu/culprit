@@ -106,7 +106,7 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
               icon={<Database size={12} />}
               value={count(f.logicalReads)}
               label={f.physicalReads ? `reads · ${count(f.physicalReads)} from disk` : "reads"}
-              title="Pages (SQL Server) or buffers (Postgres) read, from memory or disk"
+              title="Pages (SQL Server) or buffers (PostgreSQL) read, from memory or disk"
             />
           )}
           {f.rows != null && <Stat icon={null} value={count(f.rows)} label={f.rows === 1 ? "row" : "rows"} />}

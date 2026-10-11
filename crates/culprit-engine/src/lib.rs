@@ -171,6 +171,15 @@ impl Workspace {
     /// `CULPRIT_KEYCHAIN=off`).
     pub fn open() -> Result<Workspace> {
         let paths = Paths::resolve()?;
+        // Folders older versions created with the default permissions. Only Culprit's own: the reports folder, and the
+        // data and config folders when they are the default `…/culprit` ones (never a CULPRIT_HOME someone pointed
+        // at a folder of their own).
+        private_fs::tighten(&paths.data.join("reports"));
+        for dir in [&paths.data, &paths.config] {
+            if dir.file_name().is_some_and(|n| n == "culprit") {
+                private_fs::tighten(dir);
+            }
+        }
         Ok(Workspace::with_paths(paths, secrets::default_store()))
     }
 
@@ -350,6 +359,15 @@ impl Workspace {
             self.secrets.delete(name)?;
         }
         Ok(())
+    }
+
+    /// Mark a connection production, staging, development or local. Production refuses session kills and asks before
+    /// anything that changes data.
+    pub fn set_environment(&self, name: &str, environment: Environment) -> Result<ConnectionInfo> {
+        let mut stored = self.store.get(name)?;
+        stored.environment = environment;
+        self.store.put(name, stored)?;
+        self.connection(name)
     }
 
     /// Rename (re-alias) a connection, carrying its keychain secret and report history along.
@@ -666,6 +684,9 @@ impl Workspace {
     /// `confirmed` is the caller's explicit, per-action consent to execute on production (only matters for Analyze).
     pub async fn explain(&self, name: &str, sql: &str, mode: ExplainMode, confirmed: bool) -> Result<Plan> {
         let info = self.connection(name)?;
+        // One statement only: Analyze runs it inside a transaction that's rolled back, and a second statement
+        // (`… COMMIT …` on SQL Server, which needs no semicolons) could end that transaction early.
+        culprit_core::sql::single_statement(sql, info.engine)?;
         guard_execution(&info, sql, mode == ExplainMode::Analyze, confirmed)?;
         let mut plan = self.forget_rejected(name, self.provider(name).await?.explain(sql, mode).await)?;
         culprit_core::insights::annotate(&mut plan);
@@ -938,19 +959,28 @@ impl Workspace {
     pub async fn run(&self, name: &str, sql: &str, limit: usize, confirmed: bool) -> Result<ResultSet> {
         let info = self.connection(name)?;
         let check = culprit_core::sql::check(sql, info.engine);
+        // Text that isn't exactly one statement never runs, confirmed or not: on SQL Server, statements need no
+        // semicolon between them, so `SELECT 1 COMMIT CREATE TABLE …` would otherwise run all three.
+        if let Some(problem) = check.problem {
+            return Err(Error::invalid(problem)
+                .with_hint("Run one statement at a time: select it in the editor first, or split the script."));
+        }
         if check.reads_only {
             return self.run_read(name, sql, limit).await;
         }
         if info.environment.is_production() && !confirmed {
             let what = if check.verb.is_empty() { "statement".to_string() } else { check.verb.clone() };
+            // A read-shaped statement Culprit can't prove reads (a locking read, a function call) may write; a verb
+            // that writes does.
+            let reads_like = matches!(what.as_str(), "SELECT" | "WITH" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN");
+            let does = if reads_like { "may change data" } else { "changes data" };
             return Err(Error::new(
                 ErrorCode::ConfirmationRequired,
-                format!("This {what} changes data on the production connection '{}'", info.name),
+                format!("This {what} {does} on the production connection '{}'", info.name),
             )
             .with_hint(
                 check
-                    .problem
-                    .or(check.warning)
+                    .warning
                     .unwrap_or_else(|| "Confirm to run it (--yes-execute-on-production in the CLI).".to_string()),
             ));
         }

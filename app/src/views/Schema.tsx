@@ -5,7 +5,7 @@ import type { TableStat } from "../gen/TableStat";
 import { bytes, count } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { fuzzy, tableFindings, tableKey } from "../lib/schema-model";
-import { getState, setState } from "../lib/store";
+import { getState, setState, useStore } from "../lib/store";
 import { DriftPanel } from "../components/DriftPanel";
 import { SchemaTable } from "./SchemaTable";
 
@@ -73,6 +73,15 @@ export function Schema({ report }: { report: Report }) {
   useEffect(() => {
     if (getState().advisor) setState({ advisor: false });
   }, []);
+  // A table picked elsewhere (the command palette) opens here, whatever was selected before.
+  const wanted = useStore((s) => s.schemaTable);
+  useEffect(() => {
+    if (!wanted) return;
+    setSelected(wanted);
+    setQuery("");
+    setAdvising(false);
+    setState({ schemaTable: null });
+  }, [wanted]);
   const toAdd = report.findings.filter((f) => ADD_CHECKS.includes(f.check)).length;
   const toClean = report.findings.filter((f) => CLEANUP_CHECKS.includes(f.check)).length;
   const [width, setWidth] = useState(() => remembered(WIDTH_KEY, (v) => Math.min(MAX_W, Math.max(MIN_W, Number(v) || DEFAULT_W)), DEFAULT_W));

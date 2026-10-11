@@ -16,16 +16,16 @@
    "by": null
   },
   {
-   "id": "table:culprit_lab.events:2026-10-11T10:02:00Z",
+   "id": "table:telemetry.events:2026-10-11T10:02:00Z",
    "kind": "table",
    "source": "database",
    "action": "changed",
    "at": "2026-10-11T10:02:00Z",
    "after": null,
    "until": null,
-   "title": "Table culprit_lab.events was altered (its columns, constraints or indexes)",
+   "title": "Table telemetry.events was altered (its columns, constraints or indexes)",
    "detail": null,
-   "table": "culprit_lab.events",
+   "table": "telemetry.events",
    "object": null,
    "minor": false,
    "by": null
@@ -78,16 +78,16 @@
    "by": "claude-code"
   },
   {
-   "id": "index:culprit_lab.items.ix_items_grp:2026-10-11T10:10:00Z",
+   "id": "index:telemetry.items.ix_items_grp:2026-10-11T10:10:00Z",
    "kind": "index",
    "source": "scans",
    "action": "dropped",
    "at": "2026-10-11T10:10:00Z",
    "after": "2026-10-11T09:30:00Z",
    "until": null,
-   "title": "Index ix_items_grp was dropped from culprit_lab.items",
-   "detail": "CREATE INDEX ix_items_grp ON culprit_lab.items USING btree (grp)",
-   "table": "culprit_lab.items",
+   "title": "Index ix_items_grp was dropped from telemetry.items",
+   "detail": "CREATE INDEX ix_items_grp ON telemetry.items USING btree (grp)",
+   "table": "telemetry.items",
    "object": "ix_items_grp",
    "minor": false,
    "by": null

@@ -19,6 +19,12 @@ function clip(text: string, max: number): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
+/** A lock mode short enough for an edge label (X, S, U, IX, SIX); longer ones only in the tooltip. */
+function shortMode(mode: string | null): string | null {
+  const m = mode?.split(" (")[0]?.trim();
+  return m && m.length <= 3 ? m : null;
+}
+
 function who(p: DeadlockProcess): string {
   return p.session ? `Session ${p.session}` : `Process ${p.id}`;
 }
@@ -91,10 +97,12 @@ export function DeadlockGraph({ deadlock, onPick }: { deadlock: Deadlock; onPick
           const p = path(e);
           return (
             <g key={i} className={`dl-edge ${e.kind} ${lit(e) ? "" : "dim"}`}>
+              <title>{`${e.kind === "holds" ? "Holds" : "Wants"}${e.mode ? ` ${e.mode}` : ""}`}</title>
               <path d={p.d} markerEnd={e.kind === "wants" ? "url(#dl-arrow)" : undefined} />
+              {/* The label must fit the gap between boxes: a long lock mode (RangeS-U, X,REC_NOT_GAP) goes to the tooltip. */}
               <text x={p.mx} y={p.my - 5} textAnchor="middle" className="dl-edge-label">
                 {e.kind === "holds" ? "holds" : "wants"}
-                {e.mode ? ` ${clip(e.mode.split(" (")[0]!, 10)}` : ""}
+                {shortMode(e.mode) ? ` ${shortMode(e.mode)}` : ""}
               </text>
             </g>
           );

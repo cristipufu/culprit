@@ -88,7 +88,7 @@ impl Capability {
             Capability::PgStatStatements => "pg_stat_statements",
             Capability::PerformanceSchema => "performance_schema statement digests",
             Capability::QueryPlans => "Query plans",
-            Capability::GenericPlans => "Generic plans (Postgres 16+)",
+            Capability::GenericPlans => "Generic plans (Postgres 12+)",
             Capability::TableStats => "Table statistics",
             Capability::IndexUsage => "Index usage statistics",
             Capability::MissingIndexes => "Missing-index suggestions",
@@ -180,12 +180,55 @@ pub struct Workload {
     pub timeline: Option<Timeline>,
 }
 
+/// "7 days", "10 hours", "35 minutes": a window's length in words.
+pub fn span_words(hours: f64) -> String {
+    if hours >= 47.0 {
+        return format!("{} days", (hours / 24.0).round());
+    }
+    if hours >= 1.5 {
+        return format!("{} hours", hours.round());
+    }
+    let minutes = (hours * 60.0).round().max(1.0);
+    if minutes == 1.0 { "1 minute".into() } else { format!("{minutes} minutes") }
+}
+
+/// Under this many hours of data, a per-day rate would be an extrapolation: say what was measured instead.
+pub const PER_DAY_MIN_HOURS: f64 = 20.0;
+
 impl Workload {
     pub fn per_day(&self, value: f64) -> f64 {
         if self.window_hours <= 0.0 {
             return value;
         }
         value * 24.0 / self.window_hours
+    }
+
+    /// `value` per day, only when the window is long enough ([`PER_DAY_MIN_HOURS`]) to say so without extrapolating.
+    pub fn per_day_measured(&self, value: f64) -> Option<f64> {
+        (self.window_hours >= PER_DAY_MIN_HOURS).then(|| self.per_day(value))
+    }
+
+    /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
+    pub fn window_phrase(&self) -> String {
+        if self.windowed {
+            format!("the last {}", span_words(self.window_hours))
+        } else {
+            format!("the {} since statistics were reset", span_words(self.window_hours))
+        }
+    }
+
+    /// How often something ran, honestly: "about 4.2K runs a day" over a day or more of data, otherwise the measured
+    /// count and its window ("4 runs over the last 10 hours").
+    pub fn how_often(&self, runs: f64) -> String {
+        match self.per_day_measured(runs) {
+            Some(per_day) => format!("about {} runs a day", crate::format::count(per_day)),
+            None => format!(
+                "{} {} over {}",
+                crate::format::count(runs),
+                if (runs - 1.0).abs() < f64::EPSILON { "run" } else { "runs" },
+                self.window_phrase()
+            ),
+        }
     }
 
     pub fn share(&self, time_ms: f64) -> f64 {
@@ -659,6 +702,28 @@ pub type Properties = BTreeMap<String, String>;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn how_often_never_extrapolates_a_short_window() {
+        let w = |hours: f64, windowed: bool| Workload {
+            source: "Query Store".into(),
+            windowed,
+            window_start: None,
+            window_end: None,
+            window_hours: hours,
+            total_time_ms: 0.0,
+            total_cpu_ms: None,
+            total_executions: 0.0,
+            query_count: 0.0,
+            queries: vec![],
+            timeline: None,
+        };
+        // 4 runs in 10 hours is not "~9.6 runs a day".
+        assert_eq!(w(10.0, true).how_often(4.0), "4 runs over the last 10 hours");
+        assert_eq!(w(10.0, true).per_day_measured(4.0), None);
+        assert_eq!(w(0.5, false).how_often(1.0), "1 run over the 30 minutes since statistics were reset");
+        assert_eq!(w(48.0, true).how_often(4200.0), "about 2.1K runs a day");
+    }
+
     use super::*;
 
     #[test]

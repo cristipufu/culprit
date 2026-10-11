@@ -5,7 +5,7 @@ import { PlanCompare } from "./PlanCompare";
 import { LookToggle as PlanLookToggle, PlanSurface, rememberLook, rememberedLook as rememberedPlanLook, type PlanLook } from "../components/PlanSurface";
 import { Sql } from "../components/Sql";
 import type { Plan } from "../gen/Plan";
-import { api, copyText, type ApiError } from "../lib/api";
+import { api, type ApiError } from "../lib/api";
 import { useHotkeys } from "../lib/hotkeys";
 import {
   dismissError,
@@ -26,8 +26,9 @@ import { deliver, exportOptions } from "../lib/share";
 import { toast } from "../lib/store";
 import { planEngineName } from "../lib/engines";
 import { keys } from "../lib/keys";
+import { copyAndTell } from "../lib/clipboard";
 
-const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
 function cost(value: number): string {
   if (value < 10) return value.toFixed(3);
@@ -165,7 +166,7 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
         {error && <ErrorNote error={error} onDismiss={dismissError} />}
         <div className="formats">
           <Format engine="SQL Server" what=".sqlplan or showplan XML (SSMS, Query Store)" />
-          <Format engine="Postgres" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
+          <Format engine="PostgreSQL" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
           <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
           <Format engine="MariaDB" what="EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON" />
         </div>
@@ -303,7 +304,7 @@ function Single({ item }: { item: LoadedPlan }) {
             },
           ]}
         />
-        <button className="btn icon ghost" title="Copy the plan text" aria-label="Copy the plan text" onClick={() => copyText(file.contents).then(() => toast("Plan copied"), () => toast("Couldn't copy"))}>
+        <button className="btn icon ghost" title="Copy the plan text" aria-label="Copy the plan text" onClick={() => copyAndTell(file.contents, "Plan copied")}>
           <Copy size={13} />
         </button>
         <button className="btn icon ghost" title="Close this plan" onClick={() => removePlan(item.id)}>

@@ -11,6 +11,7 @@ mod recorded;
 mod rows;
 mod sessions;
 mod signals;
+mod tables;
 
 use std::time::Instant;
 
@@ -71,18 +72,21 @@ impl Provider for PostgresProvider {
             ExplainMode::Estimated => {
                 let client = self.connector.connect(INTERACTIVE).await?;
                 let parameters = parameter_count(&client, statement).await?;
-                if parameters == 0 {
-                    return explain_text(
+                let mut plan = if parameters == 0 {
+                    explain_text(
                         &client,
                         &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
                         PlanKind::Estimated,
                         statement,
                     )
-                    .await;
-                }
-                // Placeholders ($1, $2… as pg_stat_statements records statements): the generic plan, never run.
-                let json = generic::plan_json(&client, statement, server_version(&client).await?).await?;
-                plan_json::parse(&json, PlanKind::Generic, Some(statement))
+                    .await?
+                } else {
+                    // Placeholders ($1, $2… as pg_stat_statements records statements): the generic plan, never run.
+                    let json = generic::plan_json(&client, statement, server_version(&client).await?).await?;
+                    plan_json::parse(&json, PlanKind::Generic, Some(statement))?
+                };
+                tables::fill(&client, &mut plan).await;
+                Ok(plan)
             }
             ExplainMode::Analyze => {
                 let client = self.connector.connect(EXECUTION).await?;

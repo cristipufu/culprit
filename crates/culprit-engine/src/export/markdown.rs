@@ -15,9 +15,30 @@ use super::{
 const MAX_STEPS: usize = 40;
 const NBSP: char = '\u{a0}';
 
-/// A table cell: pipes escaped, kept on one line.
-fn cell(text: &str) -> String {
-    text.replace('|', "\\|").replace(['\n', '\r'], " ")
+/// A table cell: kept on one line, with HTML, Markdown and pipes escaped.
+fn cell(raw: &str) -> String {
+    text(raw)
+}
+
+/// Database-sourced text (names, titles built from them) outside code: HTML and Markdown that would render in a pull
+/// request or wiki become plain characters. A table named `<img src=x onerror=…>` stays text.
+fn text(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            // Characters Markdown would turn into links, images, emphasis or headings inside a line.
+            '[' | ']' | '*' | '_' | '`' | '|' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' | '\r' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Inline code that survives backticks in the text.
@@ -45,7 +66,7 @@ pub fn plan_markdown(plan: &Plan, title: &str, options: &ExportOptions) -> Strin
     let plan = prepared(plan, options);
     let mut out = String::new();
     let count = plan.nodes().len();
-    let _ = writeln!(out, "## {}\n", title.trim());
+    let _ = writeln!(out, "## {}\n", text(title.trim()));
     let _ = writeln!(
         out,
         "{} · {} · {count} operator{} · estimated cost {}\n",
@@ -215,7 +236,7 @@ pub fn diff_markdown(
         let _ = writeln!(out, "### What changed\n");
         for c in diff.changes.iter().take(20) {
             let detail = c.detail.as_deref().map(|d| format!(" — {d}")).unwrap_or_default();
-            let _ = writeln!(out, "- {} {}{detail}", change_word(c.kind), c.title);
+            let _ = writeln!(out, "- {} {}{}", change_word(c.kind), text(&c.title), text(&detail));
         }
         let _ = writeln!(out);
     }
@@ -223,12 +244,12 @@ pub fn diff_markdown(
         let _ = writeln!(out, "### Why the optimizer may have chosen differently\n");
         for s in &diff.scenarios {
             let detail = s.detail.as_deref().map(|d| format!(" {d}")).unwrap_or_default();
-            let _ = writeln!(out, "- **{}**{detail}", s.title);
+            let _ = writeln!(out, "- **{}**{}", text(&s.title), text(&detail));
         }
         let _ = writeln!(out);
     }
     for (name, plan) in [(name_a, &a), (name_b, &b)] {
-        let _ = writeln!(out, "<details><summary>{name}: {} operators</summary>\n", plan.nodes().len());
+        let _ = writeln!(out, "<details><summary>{}: {} operators</summary>\n", text(name), plan.nodes().len());
         plan_body(&mut out, plan, &[]);
         let _ = writeln!(out, "</details>\n");
     }
@@ -270,7 +291,7 @@ pub fn finding_markdown(report: &Report, finding: &Finding, options: &ExportOpti
 
 fn finding_section(out: &mut String, report: &Report, finding: &Finding, options: &ExportOptions, level: &str) {
     let s = &report.snapshot;
-    let _ = writeln!(out, "{level} {}\n", finding.title);
+    let _ = writeln!(out, "{level} {}\n", text(&finding.title));
     let _ = writeln!(
         out,
         "**{}** · {} impact, {} confidence · {}\n",
@@ -279,10 +300,10 @@ fn finding_section(out: &mut String, report: &Report, finding: &Finding, options
         format!("{:?}", finding.confidence).to_lowercase(),
         server_line(report)
     );
-    let _ = writeln!(out, "{}\n", finding.summary);
+    let _ = writeln!(out, "{}\n", text(&finding.summary));
     if !finding.metrics.is_empty() {
         for m in &finding.metrics {
-            let _ = writeln!(out, "- {}: **{}**", m.label, metric_text(m));
+            let _ = writeln!(out, "- {}: **{}**", text(&m.label), text(&metric_text(m)));
         }
         let _ = writeln!(out);
     }
@@ -293,10 +314,10 @@ fn finding_section(out: &mut String, report: &Report, finding: &Finding, options
         let w = s.workload.as_ref().expect("filtered on workload");
         let _ = writeln!(
             out,
-            "**Query {}** · {} of database time · about {} runs a day · {} on average\n",
+            "**Query {}** · {} of database time · {} · {} on average\n",
             code(&q.id),
             format::percent(w.share(q.total_time_ms)),
-            format::count(w.per_day(q.executions)),
+            w.how_often(q.executions),
             format::duration(q.mean_time_ms)
         );
         fence(out, "sql", &sql_text(&q.text, engine, options));
@@ -320,12 +341,12 @@ fn finding_section(out: &mut String, report: &Report, finding: &Finding, options
         }
     }
     if let Some(fix) = &finding.fix {
-        let _ = writeln!(out, "**Fix.** {}\n", fix.summary);
+        let _ = writeln!(out, "**Fix.** {}\n", text(&fix.summary));
         if let Some(sql) = &fix.sql {
             fence(out, "sql", sql);
         }
         if let Some(cost) = &fix.cost {
-            let _ = writeln!(out, "_Cost:_ {cost}\n");
+            let _ = writeln!(out, "_Cost:_ {}\n", text(cost));
         }
     }
     if !finding.verify.is_empty() {
@@ -398,7 +419,7 @@ fn severity_dot(f: &Finding) -> &'static str {
 /// The verification as Markdown, for a PR comment after the fix shipped.
 pub fn verification_markdown(v: &Verification) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "**{}**\n", v.summary);
+    let _ = writeln!(out, "**{}**\n", text(&v.summary));
     for f in v.findings.iter().chain(v.new_findings.iter()) {
         let mark = match f.status {
             VerifyStatus::Fixed => "✅ Fixed",
@@ -412,11 +433,24 @@ pub fn verification_markdown(v: &Verification) -> String {
             (_, Some(a)) => format!(" ({a})"),
             _ => String::new(),
         };
-        let _ = writeln!(out, "- {mark}: {}{impact}", f.title);
+        let _ = writeln!(out, "- {mark}: {}{}", text(&f.title), text(&impact));
         if let Some(note) = &f.note {
-            let _ = writeln!(out, "  {note}");
+            let _ = writeln!(out, "  {}", text(note));
         }
     }
     let _ = writeln!(out, "\n<sub>Scans {} → {}.</sub>", v.before_taken_at, v.after_taken_at);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cell, text};
+
+    #[test]
+    fn database_text_stays_text() {
+        assert_eq!(text("T <img src=x onerror=alert(1)>"), "T &lt;img src=x onerror=alert(1)&gt;");
+        assert_eq!(text("[click](https://example.com)"), "\\[click\\](https://example.com)");
+        assert_eq!(text("order_items is *hot*"), "order\\_items is \\*hot\\*");
+        assert_eq!(cell("a | b\nc"), "a \\| b c");
+    }
 }

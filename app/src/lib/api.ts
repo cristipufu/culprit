@@ -105,7 +105,7 @@ export interface Api {
   unmark(name: string, id: string): Promise<Mark>;
   /** Recent deadlocks on a connection, explained. */
   deadlocks(name: string, sinceHours: number): Promise<DeadlockReport>;
-  /** Deadlocks in pasted text: SQL Server .xdl XML, InnoDB status, Postgres log lines. */
+  /** Deadlocks in pasted text: SQL Server .xdl XML, InnoDB status, PostgreSQL log lines. */
   parseDeadlock(text: string): Promise<Deadlock[]>;
   checkStatement(engine: Engine, sql: string): Promise<StatementCheck>;
   checks(): Promise<CheckInfo[]>;
@@ -208,5 +208,18 @@ export function api(): Promise<Api> {
 }
 
 export async function copyText(text: string): Promise<void> {
-  await navigator.clipboard.writeText(text);
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    // The async clipboard refuses when the document isn't focused; the older copy command works within the click.
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.cssText = "position:fixed;top:-1000px;opacity:0";
+    document.body.appendChild(area);
+    area.select();
+    const copied = document.execCommand("copy");
+    area.remove();
+    if (!copied) throw e;
+  }
 }

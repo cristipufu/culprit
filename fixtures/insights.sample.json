@@ -105,7 +105,7 @@
           "area": "index",
           "detail": "As planned, the Table scan checks `(shop.o.promo_code = 'SPRING0')` on every row it reads because no index starts with promo_code, so most of the reading is thrown away. 100% of this plan's work.",
           "fix": "Add an index on promo_code so the database can go straight to the matching rows.",
-          "fix_sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM = INPLACE, LOCK = NONE;",
+          "fix_sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM = INPLACE LOCK = NONE;",
           "impact": 1.0,
           "nodes": [
             2

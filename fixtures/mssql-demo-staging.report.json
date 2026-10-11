@@ -1,6 +1,90 @@
 {
   "findings": [
     {
+      "category": "configuration",
+      "caveats": [],
+      "check": "tier-limit",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Batch small writes into fewer transactions and avoid row-by-row changes; then consider a tier with more log throughput."
+      },
+      "id": "tier-limit:log-write",
+      "impact": {
+        "db_time_share": null,
+        "label": "at limit 38%",
+        "score": 56.25,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Time at the limit",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.375
+        },
+        {
+          "label": "Peak",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.996
+        }
+      ],
+      "queries": [],
+      "severity": "high",
+      "subject": {
+        "kind": "database",
+        "name": "culprit_demo"
+      },
+      "summary": "Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.",
+      "title": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
+      "verify": [
+        "Re-scan: log writes should stay under 95% for most of the hour (the Health strip on Overview shows it)."
+      ]
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "memory-queue",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Shrink the biggest over-sized grants first (see the memory-grant findings), then look at plans that sort or hash large scans. Raising max server memory, or the tier, treats the symptom."
+      },
+      "id": "memory-queue:server",
+      "impact": {
+        "db_time_share": null,
+        "label": "6% of waits",
+        "score": 24.23380379562592,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of waits",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.05584509489064804
+        }
+      ],
+      "queries": [],
+      "severity": "medium",
+      "subject": {
+        "kind": "database",
+        "name": "culprit_demo"
+      },
+      "summary": "Memory-grant waits are 6% of all waiting. A query needs its memory grant to sort or hash before it starts; when the pool is spoken for, the rest wait (RESOURCE_SEMAPHORE). The usual cause is a few queries that reserve far more than they use.",
+      "title": "Waiting for memory takes 6% of all waiting",
+      "verify": [
+        "Re-scan, or sample Right now in Waits: memory waits should fall under 1% and nothing should be waiting for a grant."
+      ]
+    },
+    {
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -24,13 +108,13 @@
           "label": "Rows in table",
           "text": null,
           "unit": "rows",
-          "value": 800000.0
+          "value": 800000
         },
         {
           "label": "Foreign key",
           "text": "fk_ticket_events_ticket",
           "unit": "text",
-          "value": 0.0
+          "value": 0
         }
       ],
       "queries": [],
@@ -43,6 +127,110 @@
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
       "verify": [
         "Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "deadlocks",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
+        "summary": "Make the read skip the lookup: Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns. Or let reads stop taking shared locks: With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions."
+      },
+      "id": "deadlocks:key-lookup:shop.customers",
+      "impact": {
+        "db_time_share": null,
+        "label": "1 deadlock",
+        "score": 9,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T11:42:17Z",
+      "metrics": [
+        {
+          "label": "Deadlocks",
+          "text": null,
+          "unit": "count",
+          "value": 1
+        },
+        {
+          "label": "Pattern",
+          "text": "key-lookup deadlock",
+          "unit": "text",
+          "value": 0
+        },
+        {
+          "label": "Rolled back",
+          "text": "orders-api",
+          "unit": "text",
+          "value": 0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.customers"
+      },
+      "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
+      "title": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+      "verify": [
+        "Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.",
+        "Live › Deadlocks shows the graph of each one, with both statements."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "deadlocks",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking."
+      },
+      "id": "deadlocks:opposite-order:shop.customers+shop.orders",
+      "impact": {
+        "db_time_share": null,
+        "label": "1 deadlock",
+        "score": 9,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T13:58:59Z",
+      "metrics": [
+        {
+          "label": "Deadlocks",
+          "text": null,
+          "unit": "count",
+          "value": 1
+        },
+        {
+          "label": "Pattern",
+          "text": "opposite access order",
+          "unit": "text",
+          "value": 0
+        },
+        {
+          "label": "Rolled back",
+          "text": "SQLCMD",
+          "unit": "text",
+          "value": 0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.customers"
+      },
+      "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
+      "title": "Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)",
+      "verify": [
+        "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
+        "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
     {
@@ -72,13 +260,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 33890304.0
+          "value": 33890304
         },
         {
           "label": "Writes to the table",
           "text": null,
           "unit": "count",
-          "value": 0.0
+          "value": 0
         },
         {
           "label": "Counting for",
@@ -93,7 +281,7 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "No query has read ix_orders_status_created in the 1 hours since the server last restarted, while shop.orders was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 32.3 MB of storage and buffer memory.",
+      "summary": "No query has read ix_orders_status_created in the 2 minutes since the server last restarted, and shop.orders hasn't been written to either. It takes 32.3 MB of storage and buffer memory.",
       "title": "ix_orders_status_created on orders is never read",
       "verify": [
         "Watch the queries on this table for a week after disabling; none should get slower."
@@ -125,13 +313,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 27795456.0
+          "value": 27795456
         },
         {
           "label": "Reads of ix_orders_status",
           "text": null,
           "unit": "count",
-          "value": 0.0
+          "value": 0
         }
       ],
       "queries": [],
@@ -172,13 +360,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 27729920.0
+          "value": 27729920
         },
         {
           "label": "Writes to the table",
           "text": null,
           "unit": "count",
-          "value": 0.0
+          "value": 0
         },
         {
           "label": "Counting for",
@@ -193,7 +381,7 @@
         "kind": "table",
         "name": "shop.order_items"
       },
-      "summary": "No query has read ix_order_items_product_id in the 1 hours since the server last restarted, while shop.order_items was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 26.4 MB of storage and buffer memory.",
+      "summary": "No query has read ix_order_items_product_id in the 2 minutes since the server last restarted, and shop.order_items hasn't been written to either. It takes 26.4 MB of storage and buffer memory.",
       "title": "ix_order_items_product_id on order_items is never read",
       "verify": [
         "Watch the queries on this table for a week after disabling; none should get slower."
@@ -227,13 +415,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 4464640.0
+          "value": 4464640
         },
         {
           "label": "Writes to the table",
           "text": null,
           "unit": "count",
-          "value": 0.0
+          "value": 0
         },
         {
           "label": "Counting for",
@@ -248,7 +436,7 @@
         "kind": "table",
         "name": "shop.support_tickets"
       },
-      "summary": "No query has read ix_support_tickets_customer_id in the 1 hours since the server last restarted, while shop.support_tickets was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 4.3 MB of storage and buffer memory.",
+      "summary": "No query has read ix_support_tickets_customer_id in the 2 minutes since the server last restarted, and shop.support_tickets hasn't been written to either. It takes 4.3 MB of storage and buffer memory.",
       "title": "ix_support_tickets_customer_id on support_tickets is never read",
       "verify": [
         "Watch the queries on this table for a week after disabling; none should get slower."
@@ -278,13 +466,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 663552.0
+          "value": 663552
         },
         {
           "label": "Reads of ix_products_sku",
           "text": null,
           "unit": "count",
-          "value": 1.0
+          "value": 1
         }
       ],
       "queries": [],
@@ -326,6 +514,66 @@
       "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
       "title": "Cost threshold for parallelism is still the 1990s default of 5",
       "verify": []
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
+        "summary": "Switch to automatic capture."
+      },
+      "id": "config:query-store-capture",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "query-store-capture"
+      },
+      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. They crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
+      "title": "Query Store records every statement, including one-off ones",
+      "verify": []
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "low",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 8;",
+        "summary": "Cap it for this database (or server-wide with sp_configure)."
+      },
+      "id": "config:maxdop",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "maxdop"
+      },
+      "summary": "With no limit on parallelism, a single large query can occupy all schedulers and make everything else queue behind it. Microsoft's guidance is at most 8, or the cores in one NUMA node.",
+      "title": "One query may use every CPU core (MAXDOP 0)",
+      "verify": []
     }
   ],
   "locked": [
@@ -351,6 +599,23 @@
     {
       "check": {
         "category": "queries",
+        "description": "Plan-forcing recommendations from automatic tuning, forced plans and Query Store hints that stopped applying, and automatic plan correction left off.",
+        "engines": [
+          "mssql"
+        ],
+        "id": "tuning-advice",
+        "requires": [
+          "query-store"
+        ],
+        "title": "SQL Server's own tuning advice"
+      },
+      "missing": [
+        "query-store"
+      ]
+    },
+    {
+      "check": {
+        "category": "queries",
         "description": "Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.",
         "engines": [
           "mssql",
@@ -362,6 +627,25 @@
           "query-plans"
         ],
         "title": "Plan warnings"
+      },
+      "missing": [
+        "query-plans"
+      ]
+    },
+    {
+      "check": {
+        "category": "queries",
+        "description": "Key lookups, functions on filtered columns, leading wildcards, NOT IN, scalar functions, eager spools, misestimates and repeated loops in the plans of queries that matter.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql"
+        ],
+        "id": "plan-insights",
+        "requires": [
+          "query-plans"
+        ],
+        "title": "Plan insights"
       },
       "missing": [
         "query-plans"
@@ -749,6 +1033,215 @@
       }
     ],
     "connection": "mssql-demo-staging",
+    "constraints": [],
+    "deadlocks": {
+      "counted": null,
+      "counted_since": null,
+      "deadlocks": [
+        {
+          "at": "2026-10-11T13:58:59Z",
+          "explanation": "Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
+          "fixes": [
+            {
+              "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
+              "finding": null,
+              "sql": null,
+              "title": "Touch tables and rows in the same order everywhere"
+            },
+            {
+              "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
+              "finding": null,
+              "sql": null,
+              "title": "Keep transactions short"
+            },
+            {
+              "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
+              "finding": null,
+              "sql": null,
+              "title": "Retry the victim"
+            }
+          ],
+          "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
+          "id": "8e8d0546690aef93",
+          "objects": [
+            "shop.customers",
+            "shop.orders"
+          ],
+          "pattern": "opposite-order",
+          "processes": [
+            {
+              "application": "SQLCMD",
+              "database": "culprit_demo",
+              "host": "web-1",
+              "id": "processa14d1e4e8",
+              "isolation": "read committed",
+              "log_used": 240,
+              "login": "sa",
+              "procedure": null,
+              "session": "75",
+              "statement": "BEGIN TRAN; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.orders SET total = total + 1 WHERE id = 2; ROLLBACK;",
+              "victim": true,
+              "wait_mode": "X"
+            },
+            {
+              "application": "SQLCMD",
+              "database": "culprit_demo",
+              "host": "web-1",
+              "id": "processa007b4ca8",
+              "isolation": "read committed",
+              "log_used": 244,
+              "login": "sa",
+              "procedure": null,
+              "session": "73",
+              "statement": "BEGIN TRAN; UPDATE shop.orders SET total = total + 1 WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; ROLLBACK;",
+              "victim": false,
+              "wait_mode": "X"
+            }
+          ],
+          "resources": [
+            {
+              "holders": [
+                {
+                  "mode": "X",
+                  "process": "processa007b4ca8"
+                }
+              ],
+              "id": "locka15a63500",
+              "index": "pk_orders",
+              "kind": "keylock",
+              "object": "shop.orders",
+              "waiters": [
+                {
+                  "mode": "X",
+                  "process": "processa14d1e4e8"
+                }
+              ]
+            },
+            {
+              "holders": [
+                {
+                  "mode": "X",
+                  "process": "processa14d1e4e8"
+                }
+              ],
+              "id": "locka08802980",
+              "index": "pk_customers",
+              "kind": "keylock",
+              "object": "shop.customers",
+              "waiters": [
+                {
+                  "mode": "X",
+                  "process": "processa007b4ca8"
+                }
+              ]
+            }
+          ],
+          "source": "system_health"
+        },
+        {
+          "at": "2026-10-11T11:42:17Z",
+          "explanation": "The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
+          "fixes": [
+            {
+              "detail": "Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns.",
+              "finding": null,
+              "sql": null,
+              "title": "Make the read skip the lookup"
+            },
+            {
+              "detail": "With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions.",
+              "finding": "config:read-committed-snapshot",
+              "sql": "ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
+              "title": "Let reads stop taking shared locks"
+            },
+            {
+              "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
+              "finding": null,
+              "sql": null,
+              "title": "Retry the victim"
+            }
+          ],
+          "headline": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back.",
+          "id": "948217a42dfae823",
+          "objects": [
+            "shop.customers"
+          ],
+          "pattern": "key-lookup",
+          "processes": [
+            {
+              "application": "orders-api",
+              "database": "culprit_demo",
+              "host": "web-1",
+              "id": "process61",
+              "isolation": "read committed",
+              "log_used": 0,
+              "login": "app",
+              "procedure": null,
+              "session": "61",
+              "statement": "SELECT id, name, segment FROM shop.customers WHERE email = @P1",
+              "victim": true,
+              "wait_mode": "S"
+            },
+            {
+              "application": "billing",
+              "database": "culprit_demo",
+              "host": "worker-2",
+              "id": "process64",
+              "isolation": "read committed",
+              "log_used": 1240,
+              "login": "app",
+              "procedure": null,
+              "session": "64",
+              "statement": "UPDATE shop.customers SET email = @P1 WHERE id = @P2",
+              "victim": false,
+              "wait_mode": "X"
+            }
+          ],
+          "resources": [
+            {
+              "holders": [
+                {
+                  "mode": "X",
+                  "process": "process64"
+                }
+              ],
+              "id": "lock1",
+              "index": "ix_customers_email",
+              "kind": "keylock",
+              "object": "shop.customers",
+              "waiters": [
+                {
+                  "mode": "S",
+                  "process": "process61"
+                }
+              ]
+            },
+            {
+              "holders": [
+                {
+                  "mode": "S",
+                  "process": "process61"
+                }
+              ],
+              "id": "lock2",
+              "index": "PK_customers",
+              "kind": "keylock",
+              "object": "shop.customers",
+              "waiters": [
+                {
+                  "mode": "X",
+                  "process": "process64"
+                }
+              ]
+            }
+          ],
+          "source": "system_health"
+        }
+      ],
+      "note": null,
+      "since_hours": 6,
+      "source": "system_health event files and ring buffer"
+    },
     "duration_ms": 456.244667,
     "environment": "staging",
     "foreign_keys": [
@@ -819,12 +1312,14 @@
       }
     ],
     "format": 1,
+    "histograms": null,
     "id": "20261011T121512.204Z",
     "indexes": [
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -834,20 +1329,21 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 600.0,
+        "lookups": 600,
         "name": "pk_customers",
-        "reads": 600.0,
-        "scans": 0.0,
+        "reads": 600,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 17506304.0,
+        "seeks": 0,
+        "size_bytes": 17506304,
         "table": "customers",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "email"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -857,20 +1353,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_customers_email",
-        "reads": 602.0,
-        "scans": 602.0,
+        "reads": 602,
+        "scans": 602,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 7413760.0,
+        "seeks": 0,
+        "size_bytes": 7413760,
         "table": "customers",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -880,20 +1377,21 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:25Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "pk_products",
-        "reads": 30000.0,
-        "scans": 0.0,
+        "reads": 30000,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 30000.0,
-        "size_bytes": 1646592.0,
+        "seeks": 30000,
+        "size_bytes": 1646592,
         "table": "products",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "sku"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -903,20 +1401,21 @@
         "is_unique": true,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "uq_products_sku",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 663552.0,
+        "seeks": 0,
+        "size_bytes": 663552,
         "table": "products",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "sku"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -926,20 +1425,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_products_sku",
-        "reads": 1.0,
-        "scans": 1.0,
+        "reads": 1,
+        "scans": 1,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 663552.0,
+        "seeks": 0,
+        "size_bytes": 663552,
         "table": "products",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -949,21 +1449,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:40Z",
-        "lookups": 2000.0,
+        "lookups": 2000,
         "name": "pk_orders",
-        "reads": 2150.0,
-        "scans": 150.0,
+        "reads": 2150,
+        "scans": 150,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 62070784.0,
+        "seeks": 0,
+        "size_bytes": 62070784,
         "table": "orders",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "customer_id",
           "created_at"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -973,20 +1474,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:20Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_orders_customer_id",
-        "reads": 2000.0,
-        "scans": 0.0,
+        "reads": 2000,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 2000.0,
-        "size_bytes": 24649728.0,
+        "seeks": 2000,
+        "size_bytes": 24649728,
         "table": "orders",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "status"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -996,21 +1498,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_orders_status",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 27795456.0,
+        "seeks": 0,
+        "size_bytes": 27795456,
         "table": "orders",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "status",
           "created_at"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1020,20 +1523,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_orders_status_created",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 33890304.0,
+        "seeks": 0,
+        "size_bytes": 33890304,
         "table": "orders",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "channel"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1043,20 +1547,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_orders_by_channel",
-        "reads": 1.0,
-        "scans": 1.0,
+        "reads": 1,
+        "scans": 1,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 22290432.0,
+        "seeks": 0,
+        "size_bytes": 22290432,
         "table": "orders",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1066,20 +1571,21 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:44Z",
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "pk_order_items",
-        "reads": 300.0,
-        "scans": 300.0,
+        "reads": 300,
+        "scans": 300,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 64495616.0,
+        "seeks": 0,
+        "size_bytes": 64495616,
         "table": "order_items",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "product_id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1089,20 +1595,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_order_items_product_id",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 27729920.0,
+        "seeks": 0,
+        "size_bytes": 27729920,
         "table": "order_items",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1112,20 +1619,21 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:47Z",
-        "lookups": 2005.0,
+        "lookups": 2005,
         "name": "pk_support_tickets",
-        "reads": 2005.0,
-        "scans": 0.0,
+        "reads": 2005,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 27992064.0,
+        "seeks": 0,
+        "size_bytes": 27992064,
         "table": "support_tickets",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "customer_id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1135,20 +1643,21 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "ix_support_tickets_customer_id",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 4464640.0,
+        "seeks": 0,
+        "size_bytes": 4464640,
         "table": "support_tickets",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1158,20 +1667,21 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": null,
-        "lookups": 0.0,
+        "lookups": 0,
         "name": "pk_ticket_events",
-        "reads": 0.0,
-        "scans": 0.0,
+        "reads": 0,
+        "scans": 0,
         "schema": "shop",
-        "seeks": 0.0,
-        "size_bytes": 39460864.0,
+        "seeks": 0,
+        "size_bytes": 39460864,
         "table": "ticket_events",
-        "writes": 0.0
+        "writes": 0
       },
       {
         "columns": [
           "order_id"
         ],
+        "contention": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1187,7 +1697,7 @@
         "scans": null,
         "schema": "shop",
         "seeks": null,
-        "size_bytes": 27729920.0,
+        "size_bytes": 27729920,
         "table": "order_items",
         "writes": null
       }
@@ -1199,7 +1709,1931 @@
       "top_queries": 60,
       "window_days": 7
     },
-    "resources": [],
+    "plan_cache": null,
+    "pressure": null,
+    "query_families": [],
+    "resources": [
+      {
+        "at": "2026-10-11T11:00:00Z",
+        "cpu_pct": 35.89,
+        "data_io_pct": 11.21,
+        "log_write_pct": 48.41,
+        "memory_pct": 72.29,
+        "workers_pct": 6.07
+      },
+      {
+        "at": "2026-10-11T11:00:15Z",
+        "cpu_pct": 37.55,
+        "data_io_pct": 10.75,
+        "log_write_pct": 47.75,
+        "memory_pct": 72.15,
+        "workers_pct": 6
+      },
+      {
+        "at": "2026-10-11T11:00:30Z",
+        "cpu_pct": 35.15,
+        "data_io_pct": 11.31,
+        "log_write_pct": 48.05,
+        "memory_pct": 75.31,
+        "workers_pct": 5.51
+      },
+      {
+        "at": "2026-10-11T11:00:45Z",
+        "cpu_pct": 38.14,
+        "data_io_pct": 15.89,
+        "log_write_pct": 58.01,
+        "memory_pct": 74.31,
+        "workers_pct": 6.18
+      },
+      {
+        "at": "2026-10-11T11:01:00Z",
+        "cpu_pct": 48.31,
+        "data_io_pct": 11.53,
+        "log_write_pct": 58.14,
+        "memory_pct": 73.16,
+        "workers_pct": 5.81
+      },
+      {
+        "at": "2026-10-11T11:01:15Z",
+        "cpu_pct": 39.14,
+        "data_io_pct": 13.91,
+        "log_write_pct": 58.96,
+        "memory_pct": 72.72,
+        "workers_pct": 6.81
+      },
+      {
+        "at": "2026-10-11T11:01:30Z",
+        "cpu_pct": 46.5,
+        "data_io_pct": 14.71,
+        "log_write_pct": 56.1,
+        "memory_pct": 72.25,
+        "workers_pct": 5.89
+      },
+      {
+        "at": "2026-10-11T11:01:45Z",
+        "cpu_pct": 42.39,
+        "data_io_pct": 17.46,
+        "log_write_pct": 55.54,
+        "memory_pct": 73.26,
+        "workers_pct": 7.07
+      },
+      {
+        "at": "2026-10-11T11:02:00Z",
+        "cpu_pct": 60.43,
+        "data_io_pct": 14.7,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.18,
+        "workers_pct": 7.42
+      },
+      {
+        "at": "2026-10-11T11:02:15Z",
+        "cpu_pct": 58.96,
+        "data_io_pct": 17.17,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.1,
+        "workers_pct": 7.89
+      },
+      {
+        "at": "2026-10-11T11:02:30Z",
+        "cpu_pct": 65.81,
+        "data_io_pct": 15.16,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.92,
+        "workers_pct": 6.5
+      },
+      {
+        "at": "2026-10-11T11:02:45Z",
+        "cpu_pct": 63.05,
+        "data_io_pct": 19.18,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.61,
+        "workers_pct": 7.36
+      },
+      {
+        "at": "2026-10-11T11:03:00Z",
+        "cpu_pct": 59.46,
+        "data_io_pct": 18.74,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.06,
+        "workers_pct": 7.64
+      },
+      {
+        "at": "2026-10-11T11:03:15Z",
+        "cpu_pct": 70.41,
+        "data_io_pct": 16.17,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.78,
+        "workers_pct": 7.8
+      },
+      {
+        "at": "2026-10-11T11:03:30Z",
+        "cpu_pct": 67.74,
+        "data_io_pct": 17.58,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.36,
+        "workers_pct": 8.6
+      },
+      {
+        "at": "2026-10-11T11:03:45Z",
+        "cpu_pct": 67.31,
+        "data_io_pct": 19.5,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.24,
+        "workers_pct": 8.22
+      },
+      {
+        "at": "2026-10-11T11:04:00Z",
+        "cpu_pct": 70.18,
+        "data_io_pct": 22.39,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.29,
+        "workers_pct": 7.49
+      },
+      {
+        "at": "2026-10-11T11:04:15Z",
+        "cpu_pct": 67.79,
+        "data_io_pct": 20.04,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.09,
+        "workers_pct": 7.94
+      },
+      {
+        "at": "2026-10-11T11:04:30Z",
+        "cpu_pct": 65.88,
+        "data_io_pct": 15.87,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.24,
+        "workers_pct": 8.65
+      },
+      {
+        "at": "2026-10-11T11:04:45Z",
+        "cpu_pct": 66.06,
+        "data_io_pct": 17.16,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.56,
+        "workers_pct": 8.95
+      },
+      {
+        "at": "2026-10-11T11:05:00Z",
+        "cpu_pct": 66.08,
+        "data_io_pct": 19.01,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.2,
+        "workers_pct": 9.06
+      },
+      {
+        "at": "2026-10-11T11:05:15Z",
+        "cpu_pct": 75.49,
+        "data_io_pct": 22.55,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.11,
+        "workers_pct": 8.2
+      },
+      {
+        "at": "2026-10-11T11:05:30Z",
+        "cpu_pct": 70.46,
+        "data_io_pct": 22.94,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.83,
+        "workers_pct": 7.75
+      },
+      {
+        "at": "2026-10-11T11:05:45Z",
+        "cpu_pct": 54.7,
+        "data_io_pct": 17.94,
+        "log_write_pct": 57.35,
+        "memory_pct": 73.94,
+        "workers_pct": 8.7
+      },
+      {
+        "at": "2026-10-11T11:06:00Z",
+        "cpu_pct": 56.12,
+        "data_io_pct": 16.33,
+        "log_write_pct": 59.45,
+        "memory_pct": 73.48,
+        "workers_pct": 8.73
+      },
+      {
+        "at": "2026-10-11T11:06:15Z",
+        "cpu_pct": 64.73,
+        "data_io_pct": 22.02,
+        "log_write_pct": 59.99,
+        "memory_pct": 74.47,
+        "workers_pct": 9.01
+      },
+      {
+        "at": "2026-10-11T11:06:30Z",
+        "cpu_pct": 54.2,
+        "data_io_pct": 23.89,
+        "log_write_pct": 63.11,
+        "memory_pct": 75.5,
+        "workers_pct": 9.31
+      },
+      {
+        "at": "2026-10-11T11:06:45Z",
+        "cpu_pct": 58.46,
+        "data_io_pct": 20.08,
+        "log_write_pct": 51.07,
+        "memory_pct": 74.54,
+        "workers_pct": 7.89
+      },
+      {
+        "at": "2026-10-11T11:07:00Z",
+        "cpu_pct": 54.7,
+        "data_io_pct": 18.74,
+        "log_write_pct": 50.7,
+        "memory_pct": 73.36,
+        "workers_pct": 7.92
+      },
+      {
+        "at": "2026-10-11T11:07:15Z",
+        "cpu_pct": 53.98,
+        "data_io_pct": 18.45,
+        "log_write_pct": 48.34,
+        "memory_pct": 73.45,
+        "workers_pct": 7.91
+      },
+      {
+        "at": "2026-10-11T11:07:30Z",
+        "cpu_pct": 64.49,
+        "data_io_pct": 22.33,
+        "log_write_pct": 47.62,
+        "memory_pct": 73.01,
+        "workers_pct": 8.59
+      },
+      {
+        "at": "2026-10-11T11:07:45Z",
+        "cpu_pct": 58.33,
+        "data_io_pct": 18.56,
+        "log_write_pct": 57.3,
+        "memory_pct": 75.97,
+        "workers_pct": 8.86
+      },
+      {
+        "at": "2026-10-11T11:08:00Z",
+        "cpu_pct": 59.66,
+        "data_io_pct": 18.41,
+        "log_write_pct": 43.78,
+        "memory_pct": 73.37,
+        "workers_pct": 8.48
+      },
+      {
+        "at": "2026-10-11T11:08:15Z",
+        "cpu_pct": 63.64,
+        "data_io_pct": 19.16,
+        "log_write_pct": 40.91,
+        "memory_pct": 75.8,
+        "workers_pct": 9.03
+      },
+      {
+        "at": "2026-10-11T11:08:30Z",
+        "cpu_pct": 55.24,
+        "data_io_pct": 22.35,
+        "log_write_pct": 39.34,
+        "memory_pct": 74.11,
+        "workers_pct": 9.94
+      },
+      {
+        "at": "2026-10-11T11:08:45Z",
+        "cpu_pct": 63.56,
+        "data_io_pct": 23.71,
+        "log_write_pct": 41.45,
+        "memory_pct": 73.47,
+        "workers_pct": 8.33
+      },
+      {
+        "at": "2026-10-11T11:09:00Z",
+        "cpu_pct": 62.12,
+        "data_io_pct": 22.52,
+        "log_write_pct": 48.11,
+        "memory_pct": 73.32,
+        "workers_pct": 8.45
+      },
+      {
+        "at": "2026-10-11T11:09:15Z",
+        "cpu_pct": 62.2,
+        "data_io_pct": 26.25,
+        "log_write_pct": 47.68,
+        "memory_pct": 75.22,
+        "workers_pct": 9.63
+      },
+      {
+        "at": "2026-10-11T11:09:30Z",
+        "cpu_pct": 60.88,
+        "data_io_pct": 20.28,
+        "log_write_pct": 40.74,
+        "memory_pct": 73.42,
+        "workers_pct": 8.05
+      },
+      {
+        "at": "2026-10-11T11:09:45Z",
+        "cpu_pct": 51.83,
+        "data_io_pct": 20.8,
+        "log_write_pct": 35.07,
+        "memory_pct": 74.77,
+        "workers_pct": 9.89
+      },
+      {
+        "at": "2026-10-11T11:10:00Z",
+        "cpu_pct": 56.3,
+        "data_io_pct": 26.14,
+        "log_write_pct": 45.26,
+        "memory_pct": 75.82,
+        "workers_pct": 8.69
+      },
+      {
+        "at": "2026-10-11T11:10:15Z",
+        "cpu_pct": 52.96,
+        "data_io_pct": 20.54,
+        "log_write_pct": 31.2,
+        "memory_pct": 72.82,
+        "workers_pct": 9.18
+      },
+      {
+        "at": "2026-10-11T11:10:30Z",
+        "cpu_pct": 60.45,
+        "data_io_pct": 25.51,
+        "log_write_pct": 34.4,
+        "memory_pct": 74.61,
+        "workers_pct": 9.5
+      },
+      {
+        "at": "2026-10-11T11:10:45Z",
+        "cpu_pct": 49.95,
+        "data_io_pct": 24.13,
+        "log_write_pct": 40.06,
+        "memory_pct": 75.13,
+        "workers_pct": 9.37
+      },
+      {
+        "at": "2026-10-11T11:11:00Z",
+        "cpu_pct": 53.91,
+        "data_io_pct": 20.33,
+        "log_write_pct": 37,
+        "memory_pct": 73.33,
+        "workers_pct": 9.43
+      },
+      {
+        "at": "2026-10-11T11:11:15Z",
+        "cpu_pct": 59.02,
+        "data_io_pct": 22.1,
+        "log_write_pct": 29.79,
+        "memory_pct": 75.79,
+        "workers_pct": 9.23
+      },
+      {
+        "at": "2026-10-11T11:11:30Z",
+        "cpu_pct": 48.56,
+        "data_io_pct": 19.98,
+        "log_write_pct": 24.89,
+        "memory_pct": 75.62,
+        "workers_pct": 9.34
+      },
+      {
+        "at": "2026-10-11T11:11:45Z",
+        "cpu_pct": 47.38,
+        "data_io_pct": 25.6,
+        "log_write_pct": 37.4,
+        "memory_pct": 74.63,
+        "workers_pct": 8.37
+      },
+      {
+        "at": "2026-10-11T11:12:00Z",
+        "cpu_pct": 65.28,
+        "data_io_pct": 20.05,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.06,
+        "workers_pct": 9.55
+      },
+      {
+        "at": "2026-10-11T11:12:15Z",
+        "cpu_pct": 65.53,
+        "data_io_pct": 23.21,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.73,
+        "workers_pct": 8.41
+      },
+      {
+        "at": "2026-10-11T11:12:30Z",
+        "cpu_pct": 67.2,
+        "data_io_pct": 25.6,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.84,
+        "workers_pct": 7.97
+      },
+      {
+        "at": "2026-10-11T11:12:45Z",
+        "cpu_pct": 59.23,
+        "data_io_pct": 20.9,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.35,
+        "workers_pct": 7.91
+      },
+      {
+        "at": "2026-10-11T11:13:00Z",
+        "cpu_pct": 59.69,
+        "data_io_pct": 20,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.64,
+        "workers_pct": 8.02
+      },
+      {
+        "at": "2026-10-11T11:13:15Z",
+        "cpu_pct": 59.09,
+        "data_io_pct": 23.58,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.62,
+        "workers_pct": 8.07
+      },
+      {
+        "at": "2026-10-11T11:13:30Z",
+        "cpu_pct": 63.5,
+        "data_io_pct": 22.88,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.13,
+        "workers_pct": 8.19
+      },
+      {
+        "at": "2026-10-11T11:13:45Z",
+        "cpu_pct": 51.6,
+        "data_io_pct": 22.34,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.73,
+        "workers_pct": 7.05
+      },
+      {
+        "at": "2026-10-11T11:14:00Z",
+        "cpu_pct": 59.84,
+        "data_io_pct": 20.13,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.89,
+        "workers_pct": 8.4
+      },
+      {
+        "at": "2026-10-11T11:14:15Z",
+        "cpu_pct": 55.78,
+        "data_io_pct": 21.29,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.07,
+        "workers_pct": 7.96
+      },
+      {
+        "at": "2026-10-11T11:14:30Z",
+        "cpu_pct": 57.37,
+        "data_io_pct": 19.45,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.24,
+        "workers_pct": 7.24
+      },
+      {
+        "at": "2026-10-11T11:14:45Z",
+        "cpu_pct": 50.12,
+        "data_io_pct": 24.69,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.03,
+        "workers_pct": 7.76
+      },
+      {
+        "at": "2026-10-11T11:15:00Z",
+        "cpu_pct": 54.76,
+        "data_io_pct": 25.71,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.77,
+        "workers_pct": 7.75
+      },
+      {
+        "at": "2026-10-11T11:15:15Z",
+        "cpu_pct": 50.55,
+        "data_io_pct": 22.4,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.77,
+        "workers_pct": 7.32
+      },
+      {
+        "at": "2026-10-11T11:15:30Z",
+        "cpu_pct": 49.73,
+        "data_io_pct": 22.01,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.77,
+        "workers_pct": 7.69
+      },
+      {
+        "at": "2026-10-11T11:15:45Z",
+        "cpu_pct": 38.71,
+        "data_io_pct": 25.6,
+        "log_write_pct": 32.65,
+        "memory_pct": 74.24,
+        "workers_pct": 8.06
+      },
+      {
+        "at": "2026-10-11T11:16:00Z",
+        "cpu_pct": 37.13,
+        "data_io_pct": 19.02,
+        "log_write_pct": 31.87,
+        "memory_pct": 73.77,
+        "workers_pct": 6.2
+      },
+      {
+        "at": "2026-10-11T11:16:15Z",
+        "cpu_pct": 28.82,
+        "data_io_pct": 18.37,
+        "log_write_pct": 42.13,
+        "memory_pct": 75.14,
+        "workers_pct": 7.72
+      },
+      {
+        "at": "2026-10-11T11:16:30Z",
+        "cpu_pct": 26.68,
+        "data_io_pct": 23.36,
+        "log_write_pct": 43.53,
+        "memory_pct": 72.57,
+        "workers_pct": 7.57
+      },
+      {
+        "at": "2026-10-11T11:16:45Z",
+        "cpu_pct": 35.35,
+        "data_io_pct": 19.23,
+        "log_write_pct": 49.8,
+        "memory_pct": 73.59,
+        "workers_pct": 6.65
+      },
+      {
+        "at": "2026-10-11T11:17:00Z",
+        "cpu_pct": 34.56,
+        "data_io_pct": 23.97,
+        "log_write_pct": 38.76,
+        "memory_pct": 73.73,
+        "workers_pct": 6.58
+      },
+      {
+        "at": "2026-10-11T11:17:15Z",
+        "cpu_pct": 25.72,
+        "data_io_pct": 18.7,
+        "log_write_pct": 42.91,
+        "memory_pct": 74.89,
+        "workers_pct": 5.46
+      },
+      {
+        "at": "2026-10-11T11:17:30Z",
+        "cpu_pct": 27.29,
+        "data_io_pct": 20.48,
+        "log_write_pct": 39.74,
+        "memory_pct": 73.33,
+        "workers_pct": 6.54
+      },
+      {
+        "at": "2026-10-11T11:17:45Z",
+        "cpu_pct": 25.81,
+        "data_io_pct": 17.28,
+        "log_write_pct": 56.83,
+        "memory_pct": 75.15,
+        "workers_pct": 7.11
+      },
+      {
+        "at": "2026-10-11T11:18:00Z",
+        "cpu_pct": 19.98,
+        "data_io_pct": 18.7,
+        "log_write_pct": 43.3,
+        "memory_pct": 75.12,
+        "workers_pct": 5.57
+      },
+      {
+        "at": "2026-10-11T11:18:15Z",
+        "cpu_pct": 19.37,
+        "data_io_pct": 19.75,
+        "log_write_pct": 58.81,
+        "memory_pct": 75.28,
+        "workers_pct": 5.42
+      },
+      {
+        "at": "2026-10-11T11:18:30Z",
+        "cpu_pct": 18.75,
+        "data_io_pct": 23.52,
+        "log_write_pct": 54.86,
+        "memory_pct": 74.8,
+        "workers_pct": 4.95
+      },
+      {
+        "at": "2026-10-11T11:18:45Z",
+        "cpu_pct": 16.82,
+        "data_io_pct": 21.46,
+        "log_write_pct": 53.98,
+        "memory_pct": 72.29,
+        "workers_pct": 6.52
+      },
+      {
+        "at": "2026-10-11T11:19:00Z",
+        "cpu_pct": 22.96,
+        "data_io_pct": 22.14,
+        "log_write_pct": 49.88,
+        "memory_pct": 75.42,
+        "workers_pct": 4.65
+      },
+      {
+        "at": "2026-10-11T11:19:15Z",
+        "cpu_pct": 24.97,
+        "data_io_pct": 19.13,
+        "log_write_pct": 55.25,
+        "memory_pct": 74.21,
+        "workers_pct": 6.24
+      },
+      {
+        "at": "2026-10-11T11:19:30Z",
+        "cpu_pct": 17.15,
+        "data_io_pct": 16.3,
+        "log_write_pct": 59.44,
+        "memory_pct": 72.95,
+        "workers_pct": 4.48
+      },
+      {
+        "at": "2026-10-11T11:19:45Z",
+        "cpu_pct": 15.23,
+        "data_io_pct": 15.43,
+        "log_write_pct": 55.31,
+        "memory_pct": 73.25,
+        "workers_pct": 4.74
+      },
+      {
+        "at": "2026-10-11T11:20:00Z",
+        "cpu_pct": 21.83,
+        "data_io_pct": 17.11,
+        "log_write_pct": 61.05,
+        "memory_pct": 72.71,
+        "workers_pct": 4.7
+      },
+      {
+        "at": "2026-10-11T11:20:15Z",
+        "cpu_pct": 12.4,
+        "data_io_pct": 16.54,
+        "log_write_pct": 54.12,
+        "memory_pct": 74.93,
+        "workers_pct": 4.99
+      },
+      {
+        "at": "2026-10-11T11:20:30Z",
+        "cpu_pct": 13.98,
+        "data_io_pct": 18.08,
+        "log_write_pct": 69.54,
+        "memory_pct": 72.43,
+        "workers_pct": 5.4
+      },
+      {
+        "at": "2026-10-11T11:20:45Z",
+        "cpu_pct": 16.47,
+        "data_io_pct": 17.99,
+        "log_write_pct": 68.5,
+        "memory_pct": 73.57,
+        "workers_pct": 4.66
+      },
+      {
+        "at": "2026-10-11T11:21:00Z",
+        "cpu_pct": 19.18,
+        "data_io_pct": 21.63,
+        "log_write_pct": 61.06,
+        "memory_pct": 75.33,
+        "workers_pct": 4.95
+      },
+      {
+        "at": "2026-10-11T11:21:15Z",
+        "cpu_pct": 18.26,
+        "data_io_pct": 16.74,
+        "log_write_pct": 61.42,
+        "memory_pct": 72.22,
+        "workers_pct": 3.68
+      },
+      {
+        "at": "2026-10-11T11:21:30Z",
+        "cpu_pct": 11.23,
+        "data_io_pct": 19.16,
+        "log_write_pct": 60.08,
+        "memory_pct": 72.65,
+        "workers_pct": 3.48
+      },
+      {
+        "at": "2026-10-11T11:21:45Z",
+        "cpu_pct": 20.29,
+        "data_io_pct": 19.92,
+        "log_write_pct": 66.7,
+        "memory_pct": 73.13,
+        "workers_pct": 3.69
+      },
+      {
+        "at": "2026-10-11T11:22:00Z",
+        "cpu_pct": 27.59,
+        "data_io_pct": 16.36,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.63,
+        "workers_pct": 3.99
+      },
+      {
+        "at": "2026-10-11T11:22:15Z",
+        "cpu_pct": 27.17,
+        "data_io_pct": 20.1,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.89,
+        "workers_pct": 4.1
+      },
+      {
+        "at": "2026-10-11T11:22:30Z",
+        "cpu_pct": 26.94,
+        "data_io_pct": 19.85,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.24,
+        "workers_pct": 3.62
+      },
+      {
+        "at": "2026-10-11T11:22:45Z",
+        "cpu_pct": 24.08,
+        "data_io_pct": 14.89,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.9,
+        "workers_pct": 3.82
+      },
+      {
+        "at": "2026-10-11T11:23:00Z",
+        "cpu_pct": 26.6,
+        "data_io_pct": 15.59,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.02,
+        "workers_pct": 3.26
+      },
+      {
+        "at": "2026-10-11T11:23:15Z",
+        "cpu_pct": 25.44,
+        "data_io_pct": 14.47,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.17,
+        "workers_pct": 2.69
+      },
+      {
+        "at": "2026-10-11T11:23:30Z",
+        "cpu_pct": 28.26,
+        "data_io_pct": 12.84,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.34,
+        "workers_pct": 3.63
+      },
+      {
+        "at": "2026-10-11T11:23:45Z",
+        "cpu_pct": 33.91,
+        "data_io_pct": 15.95,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.86,
+        "workers_pct": 4.25
+      },
+      {
+        "at": "2026-10-11T11:24:00Z",
+        "cpu_pct": 29.94,
+        "data_io_pct": 13.01,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.94,
+        "workers_pct": 2.72
+      },
+      {
+        "at": "2026-10-11T11:24:15Z",
+        "cpu_pct": 34.37,
+        "data_io_pct": 15.26,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.18,
+        "workers_pct": 4.03
+      },
+      {
+        "at": "2026-10-11T11:24:30Z",
+        "cpu_pct": 36.85,
+        "data_io_pct": 14.84,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.94,
+        "workers_pct": 3.93
+      },
+      {
+        "at": "2026-10-11T11:24:45Z",
+        "cpu_pct": 28.35,
+        "data_io_pct": 13.72,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.02,
+        "workers_pct": 3.92
+      },
+      {
+        "at": "2026-10-11T11:25:00Z",
+        "cpu_pct": 36.91,
+        "data_io_pct": 15.85,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.34,
+        "workers_pct": 3.98
+      },
+      {
+        "at": "2026-10-11T11:25:15Z",
+        "cpu_pct": 36.08,
+        "data_io_pct": 14.5,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.92,
+        "workers_pct": 2.22
+      },
+      {
+        "at": "2026-10-11T11:25:30Z",
+        "cpu_pct": 30.16,
+        "data_io_pct": 11.55,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.42,
+        "workers_pct": 3.79
+      },
+      {
+        "at": "2026-10-11T11:25:45Z",
+        "cpu_pct": 22,
+        "data_io_pct": 13.4,
+        "log_write_pct": 49.12,
+        "memory_pct": 74.72,
+        "workers_pct": 3.06
+      },
+      {
+        "at": "2026-10-11T11:26:00Z",
+        "cpu_pct": 16.11,
+        "data_io_pct": 14.48,
+        "log_write_pct": 49.44,
+        "memory_pct": 74.01,
+        "workers_pct": 3.12
+      },
+      {
+        "at": "2026-10-11T11:26:15Z",
+        "cpu_pct": 24.81,
+        "data_io_pct": 8.34,
+        "log_write_pct": 47.62,
+        "memory_pct": 73.01,
+        "workers_pct": 2.18
+      },
+      {
+        "at": "2026-10-11T11:26:30Z",
+        "cpu_pct": 20.94,
+        "data_io_pct": 13.37,
+        "log_write_pct": 37.5,
+        "memory_pct": 74.96,
+        "workers_pct": 3.97
+      },
+      {
+        "at": "2026-10-11T11:26:45Z",
+        "cpu_pct": 24.59,
+        "data_io_pct": 10.31,
+        "log_write_pct": 40.3,
+        "memory_pct": 74.73,
+        "workers_pct": 3.54
+      },
+      {
+        "at": "2026-10-11T11:27:00Z",
+        "cpu_pct": 27,
+        "data_io_pct": 12.12,
+        "log_write_pct": 32.34,
+        "memory_pct": 72.59,
+        "workers_pct": 2.51
+      },
+      {
+        "at": "2026-10-11T11:27:15Z",
+        "cpu_pct": 29.49,
+        "data_io_pct": 9.14,
+        "log_write_pct": 38.7,
+        "memory_pct": 72.05,
+        "workers_pct": 2.12
+      },
+      {
+        "at": "2026-10-11T11:27:30Z",
+        "cpu_pct": 24.8,
+        "data_io_pct": 11.82,
+        "log_write_pct": 39.28,
+        "memory_pct": 74.7,
+        "workers_pct": 2.59
+      },
+      {
+        "at": "2026-10-11T11:27:45Z",
+        "cpu_pct": 28.81,
+        "data_io_pct": 9.89,
+        "log_write_pct": 34.34,
+        "memory_pct": 72.47,
+        "workers_pct": 3.81
+      },
+      {
+        "at": "2026-10-11T11:28:00Z",
+        "cpu_pct": 26.06,
+        "data_io_pct": 13.74,
+        "log_write_pct": 40.62,
+        "memory_pct": 72.07,
+        "workers_pct": 2.95
+      },
+      {
+        "at": "2026-10-11T11:28:15Z",
+        "cpu_pct": 34.59,
+        "data_io_pct": 13.4,
+        "log_write_pct": 31.69,
+        "memory_pct": 73.07,
+        "workers_pct": 2.48
+      },
+      {
+        "at": "2026-10-11T11:28:30Z",
+        "cpu_pct": 37.2,
+        "data_io_pct": 7.09,
+        "log_write_pct": 32.78,
+        "memory_pct": 72.57,
+        "workers_pct": 3.14
+      },
+      {
+        "at": "2026-10-11T11:28:45Z",
+        "cpu_pct": 38.41,
+        "data_io_pct": 6.22,
+        "log_write_pct": 35.69,
+        "memory_pct": 74.03,
+        "workers_pct": 3.9
+      },
+      {
+        "at": "2026-10-11T11:29:00Z",
+        "cpu_pct": 36.55,
+        "data_io_pct": 6.77,
+        "log_write_pct": 36.16,
+        "memory_pct": 73.94,
+        "workers_pct": 2.21
+      },
+      {
+        "at": "2026-10-11T11:29:15Z",
+        "cpu_pct": 29.29,
+        "data_io_pct": 8.61,
+        "log_write_pct": 28.36,
+        "memory_pct": 73.21,
+        "workers_pct": 2.49
+      },
+      {
+        "at": "2026-10-11T11:29:30Z",
+        "cpu_pct": 34.53,
+        "data_io_pct": 6.98,
+        "log_write_pct": 34.09,
+        "memory_pct": 72.01,
+        "workers_pct": 3.76
+      },
+      {
+        "at": "2026-10-11T11:29:45Z",
+        "cpu_pct": 41.63,
+        "data_io_pct": 5.18,
+        "log_write_pct": 35.1,
+        "memory_pct": 74.85,
+        "workers_pct": 4.12
+      },
+      {
+        "at": "2026-10-11T11:30:00Z",
+        "cpu_pct": 36.2,
+        "data_io_pct": 6.98,
+        "log_write_pct": 26.35,
+        "memory_pct": 76,
+        "workers_pct": 3.55
+      },
+      {
+        "at": "2026-10-11T11:30:15Z",
+        "cpu_pct": 38.2,
+        "data_io_pct": 7.21,
+        "log_write_pct": 24.4,
+        "memory_pct": 72.19,
+        "workers_pct": 2.64
+      },
+      {
+        "at": "2026-10-11T11:30:30Z",
+        "cpu_pct": 45.04,
+        "data_io_pct": 5.87,
+        "log_write_pct": 35.05,
+        "memory_pct": 73,
+        "workers_pct": 3.04
+      },
+      {
+        "at": "2026-10-11T11:30:45Z",
+        "cpu_pct": 42.3,
+        "data_io_pct": 4.9,
+        "log_write_pct": 26.28,
+        "memory_pct": 75.82,
+        "workers_pct": 4.35
+      },
+      {
+        "at": "2026-10-11T11:31:00Z",
+        "cpu_pct": 47.04,
+        "data_io_pct": 8.24,
+        "log_write_pct": 35.3,
+        "memory_pct": 75.76,
+        "workers_pct": 3.76
+      },
+      {
+        "at": "2026-10-11T11:31:15Z",
+        "cpu_pct": 47.05,
+        "data_io_pct": 3.4,
+        "log_write_pct": 32.92,
+        "memory_pct": 73.8,
+        "workers_pct": 4.25
+      },
+      {
+        "at": "2026-10-11T11:31:30Z",
+        "cpu_pct": 47.24,
+        "data_io_pct": 5.11,
+        "log_write_pct": 22.65,
+        "memory_pct": 75.71,
+        "workers_pct": 3.09
+      },
+      {
+        "at": "2026-10-11T11:31:45Z",
+        "cpu_pct": 46.25,
+        "data_io_pct": 5.4,
+        "log_write_pct": 27.42,
+        "memory_pct": 74.96,
+        "workers_pct": 4.88
+      },
+      {
+        "at": "2026-10-11T11:32:00Z",
+        "cpu_pct": 58.76,
+        "data_io_pct": 7.74,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.2,
+        "workers_pct": 4.14
+      },
+      {
+        "at": "2026-10-11T11:32:15Z",
+        "cpu_pct": 61.4,
+        "data_io_pct": 3.67,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.65,
+        "workers_pct": 3.54
+      },
+      {
+        "at": "2026-10-11T11:32:30Z",
+        "cpu_pct": 68.54,
+        "data_io_pct": 6.16,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.88,
+        "workers_pct": 5.04
+      },
+      {
+        "at": "2026-10-11T11:32:45Z",
+        "cpu_pct": 70.59,
+        "data_io_pct": 5.64,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.56,
+        "workers_pct": 3.72
+      },
+      {
+        "at": "2026-10-11T11:33:00Z",
+        "cpu_pct": 60.65,
+        "data_io_pct": 4.65,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.36,
+        "workers_pct": 3.93
+      },
+      {
+        "at": "2026-10-11T11:33:15Z",
+        "cpu_pct": 63.55,
+        "data_io_pct": 6.35,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.55,
+        "workers_pct": 5.06
+      },
+      {
+        "at": "2026-10-11T11:33:30Z",
+        "cpu_pct": 66.26,
+        "data_io_pct": 4.99,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.1,
+        "workers_pct": 4.43
+      },
+      {
+        "at": "2026-10-11T11:33:45Z",
+        "cpu_pct": 66.17,
+        "data_io_pct": 2.07,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.11,
+        "workers_pct": 5.73
+      },
+      {
+        "at": "2026-10-11T11:34:00Z",
+        "cpu_pct": 64.39,
+        "data_io_pct": 5.5,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.52,
+        "workers_pct": 5.64
+      },
+      {
+        "at": "2026-10-11T11:34:15Z",
+        "cpu_pct": 66.19,
+        "data_io_pct": 3.55,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.99,
+        "workers_pct": 4.84
+      },
+      {
+        "at": "2026-10-11T11:34:30Z",
+        "cpu_pct": 69.62,
+        "data_io_pct": 8.94,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.39,
+        "workers_pct": 5.91
+      },
+      {
+        "at": "2026-10-11T11:34:45Z",
+        "cpu_pct": 65.15,
+        "data_io_pct": 1.49,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.84,
+        "workers_pct": 6.08
+      },
+      {
+        "at": "2026-10-11T11:35:00Z",
+        "cpu_pct": 71.14,
+        "data_io_pct": 5.87,
+        "log_write_pct": 99.6,
+        "memory_pct": 72,
+        "workers_pct": 5.2
+      },
+      {
+        "at": "2026-10-11T11:35:15Z",
+        "cpu_pct": 77.09,
+        "data_io_pct": 7.73,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.42,
+        "workers_pct": 6.49
+      },
+      {
+        "at": "2026-10-11T11:35:30Z",
+        "cpu_pct": 69.41,
+        "data_io_pct": 1.95,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.62,
+        "workers_pct": 5.72
+      },
+      {
+        "at": "2026-10-11T11:35:45Z",
+        "cpu_pct": 61.01,
+        "data_io_pct": 8.58,
+        "log_write_pct": 57.11,
+        "memory_pct": 74.59,
+        "workers_pct": 6.33
+      },
+      {
+        "at": "2026-10-11T11:36:00Z",
+        "cpu_pct": 58.66,
+        "data_io_pct": 5.43,
+        "log_write_pct": 47.65,
+        "memory_pct": 75.13,
+        "workers_pct": 5.4
+      },
+      {
+        "at": "2026-10-11T11:36:15Z",
+        "cpu_pct": 64.5,
+        "data_io_pct": 6.17,
+        "log_write_pct": 53.25,
+        "memory_pct": 72.51,
+        "workers_pct": 5.57
+      },
+      {
+        "at": "2026-10-11T11:36:30Z",
+        "cpu_pct": 61.32,
+        "data_io_pct": 6.59,
+        "log_write_pct": 51.48,
+        "memory_pct": 72.28,
+        "workers_pct": 6.24
+      },
+      {
+        "at": "2026-10-11T11:36:45Z",
+        "cpu_pct": 60.84,
+        "data_io_pct": 4.11,
+        "log_write_pct": 54.46,
+        "memory_pct": 74.4,
+        "workers_pct": 5.34
+      },
+      {
+        "at": "2026-10-11T11:37:00Z",
+        "cpu_pct": 57.57,
+        "data_io_pct": 4.7,
+        "log_write_pct": 67.31,
+        "memory_pct": 74.58,
+        "workers_pct": 7.22
+      },
+      {
+        "at": "2026-10-11T11:37:15Z",
+        "cpu_pct": 59.7,
+        "data_io_pct": 2.92,
+        "log_write_pct": 56.89,
+        "memory_pct": 75.84,
+        "workers_pct": 6.99
+      },
+      {
+        "at": "2026-10-11T11:37:30Z",
+        "cpu_pct": 57.67,
+        "data_io_pct": 1.25,
+        "log_write_pct": 61.76,
+        "memory_pct": 74.7,
+        "workers_pct": 6.55
+      },
+      {
+        "at": "2026-10-11T11:37:45Z",
+        "cpu_pct": 56.99,
+        "data_io_pct": 6.45,
+        "log_write_pct": 69.31,
+        "memory_pct": 72.91,
+        "workers_pct": 5.9
+      },
+      {
+        "at": "2026-10-11T11:38:00Z",
+        "cpu_pct": 57.82,
+        "data_io_pct": 4.53,
+        "log_write_pct": 66.01,
+        "memory_pct": 72.79,
+        "workers_pct": 7.55
+      },
+      {
+        "at": "2026-10-11T11:38:15Z",
+        "cpu_pct": 62.44,
+        "data_io_pct": 5.26,
+        "log_write_pct": 58.82,
+        "memory_pct": 75.88,
+        "workers_pct": 6.71
+      },
+      {
+        "at": "2026-10-11T11:38:30Z",
+        "cpu_pct": 63.15,
+        "data_io_pct": 3.14,
+        "log_write_pct": 59.37,
+        "memory_pct": 75.04,
+        "workers_pct": 6.79
+      },
+      {
+        "at": "2026-10-11T11:38:45Z",
+        "cpu_pct": 64.41,
+        "data_io_pct": 5.34,
+        "log_write_pct": 58.98,
+        "memory_pct": 72.89,
+        "workers_pct": 7.15
+      },
+      {
+        "at": "2026-10-11T11:39:00Z",
+        "cpu_pct": 60.6,
+        "data_io_pct": 9.05,
+        "log_write_pct": 58.32,
+        "memory_pct": 73.57,
+        "workers_pct": 6.86
+      },
+      {
+        "at": "2026-10-11T11:39:15Z",
+        "cpu_pct": 63.87,
+        "data_io_pct": 2.69,
+        "log_write_pct": 56.66,
+        "memory_pct": 72.24,
+        "workers_pct": 7.34
+      },
+      {
+        "at": "2026-10-11T11:39:30Z",
+        "cpu_pct": 62.47,
+        "data_io_pct": 8.73,
+        "log_write_pct": 67.26,
+        "memory_pct": 75.99,
+        "workers_pct": 8.52
+      },
+      {
+        "at": "2026-10-11T11:39:45Z",
+        "cpu_pct": 55.1,
+        "data_io_pct": 3.25,
+        "log_write_pct": 70.08,
+        "memory_pct": 74.99,
+        "workers_pct": 6.83
+      },
+      {
+        "at": "2026-10-11T11:40:00Z",
+        "cpu_pct": 58.53,
+        "data_io_pct": 4.92,
+        "log_write_pct": 60.5,
+        "memory_pct": 73.33,
+        "workers_pct": 7.21
+      },
+      {
+        "at": "2026-10-11T11:40:15Z",
+        "cpu_pct": 49.94,
+        "data_io_pct": 4.26,
+        "log_write_pct": 59.43,
+        "memory_pct": 75.82,
+        "workers_pct": 7.22
+      },
+      {
+        "at": "2026-10-11T11:40:30Z",
+        "cpu_pct": 60.78,
+        "data_io_pct": 3.82,
+        "log_write_pct": 58.66,
+        "memory_pct": 75.29,
+        "workers_pct": 8.71
+      },
+      {
+        "at": "2026-10-11T11:40:45Z",
+        "cpu_pct": 53.66,
+        "data_io_pct": 2.7,
+        "log_write_pct": 59.56,
+        "memory_pct": 73.49,
+        "workers_pct": 9
+      },
+      {
+        "at": "2026-10-11T11:41:00Z",
+        "cpu_pct": 49.99,
+        "data_io_pct": 5.38,
+        "log_write_pct": 65.25,
+        "memory_pct": 72.12,
+        "workers_pct": 8.07
+      },
+      {
+        "at": "2026-10-11T11:41:15Z",
+        "cpu_pct": 56.59,
+        "data_io_pct": 8.76,
+        "log_write_pct": 50.36,
+        "memory_pct": 72.14,
+        "workers_pct": 7.46
+      },
+      {
+        "at": "2026-10-11T11:41:30Z",
+        "cpu_pct": 57.01,
+        "data_io_pct": 4.85,
+        "log_write_pct": 60.37,
+        "memory_pct": 75.59,
+        "workers_pct": 8.09
+      },
+      {
+        "at": "2026-10-11T11:41:45Z",
+        "cpu_pct": 48.32,
+        "data_io_pct": 10.63,
+        "log_write_pct": 56.91,
+        "memory_pct": 73.05,
+        "workers_pct": 8.92
+      },
+      {
+        "at": "2026-10-11T11:42:00Z",
+        "cpu_pct": 61.9,
+        "data_io_pct": 5.36,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.02,
+        "workers_pct": 9.07
+      },
+      {
+        "at": "2026-10-11T11:42:15Z",
+        "cpu_pct": 68.12,
+        "data_io_pct": 8.42,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.77,
+        "workers_pct": 7.67
+      },
+      {
+        "at": "2026-10-11T11:42:30Z",
+        "cpu_pct": 58.91,
+        "data_io_pct": 7.35,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.83,
+        "workers_pct": 9.59
+      },
+      {
+        "at": "2026-10-11T11:42:45Z",
+        "cpu_pct": 59.7,
+        "data_io_pct": 5.76,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.72,
+        "workers_pct": 8.73
+      },
+      {
+        "at": "2026-10-11T11:43:00Z",
+        "cpu_pct": 65.14,
+        "data_io_pct": 5.43,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.21,
+        "workers_pct": 9.27
+      },
+      {
+        "at": "2026-10-11T11:43:15Z",
+        "cpu_pct": 62.78,
+        "data_io_pct": 10.37,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.43,
+        "workers_pct": 8.49
+      },
+      {
+        "at": "2026-10-11T11:43:30Z",
+        "cpu_pct": 55.64,
+        "data_io_pct": 7.3,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.13,
+        "workers_pct": 8.03
+      },
+      {
+        "at": "2026-10-11T11:43:45Z",
+        "cpu_pct": 53.05,
+        "data_io_pct": 10.66,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.99,
+        "workers_pct": 8.04
+      },
+      {
+        "at": "2026-10-11T11:44:00Z",
+        "cpu_pct": 49.95,
+        "data_io_pct": 9.3,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.3,
+        "workers_pct": 9.9
+      },
+      {
+        "at": "2026-10-11T11:44:15Z",
+        "cpu_pct": 58.99,
+        "data_io_pct": 13.02,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.06,
+        "workers_pct": 8.13
+      },
+      {
+        "at": "2026-10-11T11:44:30Z",
+        "cpu_pct": 48.4,
+        "data_io_pct": 9.35,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.84,
+        "workers_pct": 8.87
+      },
+      {
+        "at": "2026-10-11T11:44:45Z",
+        "cpu_pct": 48.89,
+        "data_io_pct": 8.95,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.48,
+        "workers_pct": 9.34
+      },
+      {
+        "at": "2026-10-11T11:45:00Z",
+        "cpu_pct": 53.9,
+        "data_io_pct": 12.65,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.66,
+        "workers_pct": 8.24
+      },
+      {
+        "at": "2026-10-11T11:45:15Z",
+        "cpu_pct": 53.86,
+        "data_io_pct": 8.48,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.27,
+        "workers_pct": 8.75
+      },
+      {
+        "at": "2026-10-11T11:45:30Z",
+        "cpu_pct": 51.48,
+        "data_io_pct": 7.99,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.99,
+        "workers_pct": 8.49
+      },
+      {
+        "at": "2026-10-11T11:45:45Z",
+        "cpu_pct": 29.32,
+        "data_io_pct": 13.74,
+        "log_write_pct": 32.84,
+        "memory_pct": 73.31,
+        "workers_pct": 8.78
+      },
+      {
+        "at": "2026-10-11T11:46:00Z",
+        "cpu_pct": 38.27,
+        "data_io_pct": 10.99,
+        "log_write_pct": 26.37,
+        "memory_pct": 75.23,
+        "workers_pct": 9.27
+      },
+      {
+        "at": "2026-10-11T11:46:15Z",
+        "cpu_pct": 37.14,
+        "data_io_pct": 8.03,
+        "log_write_pct": 29.47,
+        "memory_pct": 75.28,
+        "workers_pct": 9.63
+      },
+      {
+        "at": "2026-10-11T11:46:30Z",
+        "cpu_pct": 35.13,
+        "data_io_pct": 7.81,
+        "log_write_pct": 25.91,
+        "memory_pct": 72.48,
+        "workers_pct": 8.3
+      },
+      {
+        "at": "2026-10-11T11:46:45Z",
+        "cpu_pct": 34.76,
+        "data_io_pct": 12.43,
+        "log_write_pct": 35.58,
+        "memory_pct": 73.49,
+        "workers_pct": 9.62
+      },
+      {
+        "at": "2026-10-11T11:47:00Z",
+        "cpu_pct": 27.43,
+        "data_io_pct": 10.13,
+        "log_write_pct": 32.76,
+        "memory_pct": 75.78,
+        "workers_pct": 8.06
+      },
+      {
+        "at": "2026-10-11T11:47:15Z",
+        "cpu_pct": 28.17,
+        "data_io_pct": 13.29,
+        "log_write_pct": 23.57,
+        "memory_pct": 73.47,
+        "workers_pct": 8.09
+      },
+      {
+        "at": "2026-10-11T11:47:30Z",
+        "cpu_pct": 22.48,
+        "data_io_pct": 10.66,
+        "log_write_pct": 29.59,
+        "memory_pct": 74.61,
+        "workers_pct": 8.16
+      },
+      {
+        "at": "2026-10-11T11:47:45Z",
+        "cpu_pct": 19.21,
+        "data_io_pct": 11.52,
+        "log_write_pct": 30.92,
+        "memory_pct": 72.74,
+        "workers_pct": 8.33
+      },
+      {
+        "at": "2026-10-11T11:48:00Z",
+        "cpu_pct": 20.6,
+        "data_io_pct": 15.56,
+        "log_write_pct": 29.05,
+        "memory_pct": 72.25,
+        "workers_pct": 7.84
+      },
+      {
+        "at": "2026-10-11T11:48:15Z",
+        "cpu_pct": 22.02,
+        "data_io_pct": 13.88,
+        "log_write_pct": 30.86,
+        "memory_pct": 72.36,
+        "workers_pct": 7.9
+      },
+      {
+        "at": "2026-10-11T11:48:30Z",
+        "cpu_pct": 24.78,
+        "data_io_pct": 13.05,
+        "log_write_pct": 25.67,
+        "memory_pct": 73.23,
+        "workers_pct": 9.41
+      },
+      {
+        "at": "2026-10-11T11:48:45Z",
+        "cpu_pct": 19.39,
+        "data_io_pct": 14.6,
+        "log_write_pct": 27.5,
+        "memory_pct": 73.67,
+        "workers_pct": 9.16
+      },
+      {
+        "at": "2026-10-11T11:49:00Z",
+        "cpu_pct": 26.85,
+        "data_io_pct": 13.26,
+        "log_write_pct": 25.71,
+        "memory_pct": 74.91,
+        "workers_pct": 7.76
+      },
+      {
+        "at": "2026-10-11T11:49:15Z",
+        "cpu_pct": 14.26,
+        "data_io_pct": 17.86,
+        "log_write_pct": 30.24,
+        "memory_pct": 75.28,
+        "workers_pct": 8.09
+      },
+      {
+        "at": "2026-10-11T11:49:30Z",
+        "cpu_pct": 24.13,
+        "data_io_pct": 14.62,
+        "log_write_pct": 27.08,
+        "memory_pct": 72.06,
+        "workers_pct": 8.29
+      },
+      {
+        "at": "2026-10-11T11:49:45Z",
+        "cpu_pct": 20.62,
+        "data_io_pct": 18.5,
+        "log_write_pct": 27.04,
+        "memory_pct": 74.49,
+        "workers_pct": 7.84
+      },
+      {
+        "at": "2026-10-11T11:50:00Z",
+        "cpu_pct": 18.43,
+        "data_io_pct": 12.68,
+        "log_write_pct": 31.39,
+        "memory_pct": 74.08,
+        "workers_pct": 8.85
+      },
+      {
+        "at": "2026-10-11T11:50:15Z",
+        "cpu_pct": 13.19,
+        "data_io_pct": 15.72,
+        "log_write_pct": 41.06,
+        "memory_pct": 75.87,
+        "workers_pct": 7.29
+      },
+      {
+        "at": "2026-10-11T11:50:30Z",
+        "cpu_pct": 12.96,
+        "data_io_pct": 19.62,
+        "log_write_pct": 45.2,
+        "memory_pct": 73.93,
+        "workers_pct": 6.9
+      },
+      {
+        "at": "2026-10-11T11:50:45Z",
+        "cpu_pct": 22.17,
+        "data_io_pct": 15.46,
+        "log_write_pct": 45.54,
+        "memory_pct": 74.48,
+        "workers_pct": 8.34
+      },
+      {
+        "at": "2026-10-11T11:51:00Z",
+        "cpu_pct": 12.66,
+        "data_io_pct": 18.92,
+        "log_write_pct": 36.16,
+        "memory_pct": 73.62,
+        "workers_pct": 8.27
+      },
+      {
+        "at": "2026-10-11T11:51:15Z",
+        "cpu_pct": 20.42,
+        "data_io_pct": 14.38,
+        "log_write_pct": 37.68,
+        "memory_pct": 73.6,
+        "workers_pct": 7.5
+      },
+      {
+        "at": "2026-10-11T11:51:30Z",
+        "cpu_pct": 14.86,
+        "data_io_pct": 14.17,
+        "log_write_pct": 39.76,
+        "memory_pct": 74.9,
+        "workers_pct": 8.15
+      },
+      {
+        "at": "2026-10-11T11:51:45Z",
+        "cpu_pct": 10.6,
+        "data_io_pct": 17.96,
+        "log_write_pct": 49.55,
+        "memory_pct": 72.15,
+        "workers_pct": 7.91
+      },
+      {
+        "at": "2026-10-11T11:52:00Z",
+        "cpu_pct": 25.44,
+        "data_io_pct": 18.52,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.2,
+        "workers_pct": 7.37
+      },
+      {
+        "at": "2026-10-11T11:52:15Z",
+        "cpu_pct": 27.67,
+        "data_io_pct": 17.35,
+        "log_write_pct": 99.6,
+        "memory_pct": 74.33,
+        "workers_pct": 6.85
+      },
+      {
+        "at": "2026-10-11T11:52:30Z",
+        "cpu_pct": 31.94,
+        "data_io_pct": 17.82,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.75,
+        "workers_pct": 5.92
+      },
+      {
+        "at": "2026-10-11T11:52:45Z",
+        "cpu_pct": 31.56,
+        "data_io_pct": 18.41,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.94,
+        "workers_pct": 7.27
+      },
+      {
+        "at": "2026-10-11T11:53:00Z",
+        "cpu_pct": 33.65,
+        "data_io_pct": 18.41,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.72,
+        "workers_pct": 6.56
+      },
+      {
+        "at": "2026-10-11T11:53:15Z",
+        "cpu_pct": 25.79,
+        "data_io_pct": 16.02,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.72,
+        "workers_pct": 5.67
+      },
+      {
+        "at": "2026-10-11T11:53:30Z",
+        "cpu_pct": 30.09,
+        "data_io_pct": 19.31,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.16,
+        "workers_pct": 6.63
+      },
+      {
+        "at": "2026-10-11T11:53:45Z",
+        "cpu_pct": 26.11,
+        "data_io_pct": 21.33,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.11,
+        "workers_pct": 6.25
+      },
+      {
+        "at": "2026-10-11T11:54:00Z",
+        "cpu_pct": 26.16,
+        "data_io_pct": 19.72,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.51,
+        "workers_pct": 7
+      },
+      {
+        "at": "2026-10-11T11:54:15Z",
+        "cpu_pct": 27.6,
+        "data_io_pct": 22.77,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.98,
+        "workers_pct": 6.43
+      },
+      {
+        "at": "2026-10-11T11:54:30Z",
+        "cpu_pct": 36.25,
+        "data_io_pct": 17.68,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.93,
+        "workers_pct": 5.82
+      },
+      {
+        "at": "2026-10-11T11:54:45Z",
+        "cpu_pct": 38.51,
+        "data_io_pct": 23.67,
+        "log_write_pct": 99.6,
+        "memory_pct": 72.66,
+        "workers_pct": 6.29
+      },
+      {
+        "at": "2026-10-11T11:55:00Z",
+        "cpu_pct": 38.81,
+        "data_io_pct": 17.06,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.4,
+        "workers_pct": 6.09
+      },
+      {
+        "at": "2026-10-11T11:55:15Z",
+        "cpu_pct": 30.21,
+        "data_io_pct": 23.91,
+        "log_write_pct": 99.6,
+        "memory_pct": 73.1,
+        "workers_pct": 6.08
+      },
+      {
+        "at": "2026-10-11T11:55:30Z",
+        "cpu_pct": 30.74,
+        "data_io_pct": 20.94,
+        "log_write_pct": 99.6,
+        "memory_pct": 75.68,
+        "workers_pct": 4.74
+      },
+      {
+        "at": "2026-10-11T11:55:45Z",
+        "cpu_pct": 18.93,
+        "data_io_pct": 21.16,
+        "log_write_pct": 60.91,
+        "memory_pct": 72.15,
+        "workers_pct": 4.56
+      },
+      {
+        "at": "2026-10-11T11:56:00Z",
+        "cpu_pct": 18.51,
+        "data_io_pct": 24.77,
+        "log_write_pct": 66.85,
+        "memory_pct": 75.58,
+        "workers_pct": 4.41
+      },
+      {
+        "at": "2026-10-11T11:56:15Z",
+        "cpu_pct": 26.84,
+        "data_io_pct": 18.37,
+        "log_write_pct": 64.48,
+        "memory_pct": 74.55,
+        "workers_pct": 4.67
+      },
+      {
+        "at": "2026-10-11T11:56:30Z",
+        "cpu_pct": 28.79,
+        "data_io_pct": 22.05,
+        "log_write_pct": 65.14,
+        "memory_pct": 75.53,
+        "workers_pct": 4.04
+      },
+      {
+        "at": "2026-10-11T11:56:45Z",
+        "cpu_pct": 31.15,
+        "data_io_pct": 22.8,
+        "log_write_pct": 61.89,
+        "memory_pct": 75.19,
+        "workers_pct": 4.24
+      },
+      {
+        "at": "2026-10-11T11:57:00Z",
+        "cpu_pct": 32.08,
+        "data_io_pct": 22.52,
+        "log_write_pct": 60.92,
+        "memory_pct": 75.06,
+        "workers_pct": 4.48
+      },
+      {
+        "at": "2026-10-11T11:57:15Z",
+        "cpu_pct": 23.31,
+        "data_io_pct": 23.99,
+        "log_write_pct": 55.37,
+        "memory_pct": 75.28,
+        "workers_pct": 3.99
+      },
+      {
+        "at": "2026-10-11T11:57:30Z",
+        "cpu_pct": 29.88,
+        "data_io_pct": 26.04,
+        "log_write_pct": 63.27,
+        "memory_pct": 74.65,
+        "workers_pct": 3.99
+      },
+      {
+        "at": "2026-10-11T11:57:45Z",
+        "cpu_pct": 23.28,
+        "data_io_pct": 18.55,
+        "log_write_pct": 55.45,
+        "memory_pct": 74.46,
+        "workers_pct": 4.12
+      },
+      {
+        "at": "2026-10-11T11:58:00Z",
+        "cpu_pct": 30.49,
+        "data_io_pct": 25.55,
+        "log_write_pct": 54.21,
+        "memory_pct": 72.91,
+        "workers_pct": 4.46
+      },
+      {
+        "at": "2026-10-11T11:58:15Z",
+        "cpu_pct": 25.7,
+        "data_io_pct": 18.51,
+        "log_write_pct": 56.71,
+        "memory_pct": 72.43,
+        "workers_pct": 3.77
+      },
+      {
+        "at": "2026-10-11T11:58:30Z",
+        "cpu_pct": 29.24,
+        "data_io_pct": 23.25,
+        "log_write_pct": 59.27,
+        "memory_pct": 72.82,
+        "workers_pct": 4.2
+      },
+      {
+        "at": "2026-10-11T11:58:45Z",
+        "cpu_pct": 33.37,
+        "data_io_pct": 19.74,
+        "log_write_pct": 63.55,
+        "memory_pct": 72.97,
+        "workers_pct": 3.16
+      },
+      {
+        "at": "2026-10-11T11:59:00Z",
+        "cpu_pct": 29.96,
+        "data_io_pct": 23.85,
+        "log_write_pct": 61.14,
+        "memory_pct": 75.13,
+        "workers_pct": 3.58
+      },
+      {
+        "at": "2026-10-11T11:59:15Z",
+        "cpu_pct": 33.13,
+        "data_io_pct": 18.9,
+        "log_write_pct": 56.08,
+        "memory_pct": 74.25,
+        "workers_pct": 3.39
+      },
+      {
+        "at": "2026-10-11T11:59:30Z",
+        "cpu_pct": 38.87,
+        "data_io_pct": 22.41,
+        "log_write_pct": 59.25,
+        "memory_pct": 74.93,
+        "workers_pct": 3.1
+      },
+      {
+        "at": "2026-10-11T11:59:45Z",
+        "cpu_pct": 43.12,
+        "data_io_pct": 19.26,
+        "log_write_pct": 51.2,
+        "memory_pct": 73.62,
+        "workers_pct": 3.01
+      }
+    ],
     "server": {
       "capabilities": [
         "table-stats",
@@ -1212,7 +3646,7 @@
       ],
       "cloud": null,
       "database": "culprit_demo",
-      "database_size_bytes": 411041792.0,
+      "database_size_bytes": 411041792,
       "edition": "Developer Edition (64-bit)",
       "engine": "mssql",
       "missing": [
@@ -1641,30 +4075,30 @@
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:06Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "pk_customers",
-        "rows": 200000.0,
-        "rows_sampled": 110814.0,
+        "rows": 200000,
+        "rows_sampled": 110814,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:25Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_customers_email",
-        "rows": 200000.0,
-        "rows_sampled": 111593.0,
+        "rows": 200000,
+        "rows_sampled": 111593,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:20Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "pk_products",
-        "rows": 20000.0,
-        "rows_sampled": 20000.0,
+        "rows": 20000,
+        "rows_sampled": 20000,
         "schema": "shop",
         "table": "products"
       },
@@ -1691,130 +4125,130 @@
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "pk_orders",
-        "rows": 1000000.0,
-        "rows_sampled": 175627.0,
+        "rows": 1000000,
+        "rows_sampled": 175627,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_orders_customer_id",
-        "rows": 1000000.0,
-        "rows_sampled": 168777.0,
+        "rows": 1000000,
+        "rows_sampled": 168777,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_orders_status",
-        "rows": 1000000.0,
-        "rows_sampled": 168777.0,
+        "rows": 1000000,
+        "rows_sampled": 168777,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_orders_status_created",
-        "rows": 1000000.0,
-        "rows_sampled": 168777.0,
+        "rows": 1000000,
+        "rows_sampled": 168777,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_orders_channel",
-        "rows": 1000000.0,
-        "rows_sampled": 168777.0,
+        "rows": 1000000,
+        "rows_sampled": 168777,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "_WA_Sys_00000006_3A81B327",
-        "rows": 1000000.0,
-        "rows_sampled": 178273.0,
+        "rows": 1000000,
+        "rows_sampled": 178273,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:45Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "_WA_Sys_00000007_3A81B327",
-        "rows": 1000000.0,
-        "rows_sampled": 168777.0,
+        "rows": 1000000,
+        "rows_sampled": 168777,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "pk_order_items",
-        "rows": 1500000.0,
-        "rows_sampled": 243358.0,
+        "rows": 1500000,
+        "rows_sampled": 243358,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_order_items_product_id",
-        "rows": 1500000.0,
-        "rows_sampled": 220800.0,
+        "rows": 1500000,
+        "rows_sampled": 220800,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "_WA_Sys_00000002_3D5E1FD2",
-        "rows": 1500000.0,
-        "rows_sampled": 220800.0,
+        "rows": 1500000,
+        "rows_sampled": 220800,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "pk_support_tickets",
-        "rows": 300000.0,
-        "rows_sampled": 100832.0,
+        "rows": 300000,
+        "rows_sampled": 100832,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_support_tickets_customer_id",
-        "rows": 300000.0,
-        "rows_sampled": 108383.0,
+        "rows": 300000,
+        "rows_sampled": 108383,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0.0,
+        "modifications": 0,
         "name": "ix_support_tickets_priority",
-        "rows": 300000.0,
-        "rows_sampled": 108383.0,
+        "rows": 300000,
+        "rows_sampled": 108383,
         "schema": "shop",
         "table": "support_tickets"
       },
@@ -1831,12 +4265,13 @@
     ],
     "tables": [
       {
-        "data_bytes": 17506304.0,
+        "data_bytes": 17506304,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7413760.0,
+        "index_bytes": 7413760,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1844,21 +4279,23 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "customers",
-        "rows": 200000.0,
+        "rows": 200000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 24920064.0,
+        "storage": null,
+        "total_bytes": 24920064,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 64495616.0,
+        "data_bytes": 64495616,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 27729920.0,
+        "index_bytes": 27729920,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1866,21 +4303,23 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "order_items",
-        "rows": 1500000.0,
+        "rows": 1500000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 92225536.0,
+        "storage": null,
+        "total_bytes": 92225536,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 62070784.0,
+        "data_bytes": 62070784,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 108625920.0,
+        "index_bytes": 108625920,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1888,21 +4327,23 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "orders",
-        "rows": 1000000.0,
+        "rows": 1000000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 170696704.0,
+        "storage": null,
+        "total_bytes": 170696704,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 1646592.0,
+        "data_bytes": 1646592,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 1327104.0,
+        "index_bytes": 1327104,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1910,21 +4351,23 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "products",
-        "rows": 20000.0,
+        "rows": 20000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 2973696.0,
+        "storage": null,
+        "total_bytes": 2973696,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 27992064.0,
+        "data_bytes": 27992064,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7946240.0,
+        "index_bytes": 7946240,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1932,21 +4375,23 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "support_tickets",
-        "rows": 300000.0,
+        "rows": 300000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 35938304.0,
+        "storage": null,
+        "total_bytes": 35938304,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 39460864.0,
+        "data_bytes": 39460864,
         "dead_rows": null,
         "deletes": null,
+        "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 0.0,
+        "index_bytes": 0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
@@ -1954,45 +4399,47 @@
         "last_vacuum": null,
         "modifications_since_analyze": null,
         "name": "ticket_events",
-        "rows": 800000.0,
+        "rows": 800000,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
-        "total_bytes": 39460864.0,
+        "storage": null,
+        "total_bytes": 39460864,
         "updates": null,
         "xid_age": null
       }
     ],
     "taken_at": "2026-10-11T12:15:12Z",
+    "tuning": null,
     "waits": [
       {
         "category": "Latch",
         "tasks": null,
-        "wait_ms": 82441.0,
+        "wait_ms": 82441,
         "wait_type": "Latch"
       },
       {
         "category": "Parallelism",
         "tasks": null,
-        "wait_ms": 17665.0,
+        "wait_ms": 17665,
         "wait_type": "Parallelism"
       },
       {
         "category": "Memory",
         "tasks": null,
-        "wait_ms": 5947.0,
+        "wait_ms": 5947,
         "wait_type": "Memory"
       },
       {
         "category": "CPU",
         "tasks": null,
-        "wait_ms": 423.0,
+        "wait_ms": 423,
         "wait_type": "CPU"
       },
       {
         "category": "Lock",
         "tasks": null,
-        "wait_ms": 15.0,
+        "wait_ms": 15,
         "wait_type": "Lock"
       }
     ],
@@ -2005,18 +4452,30 @@
         "count": 6
       },
       {
+        "category": "queries",
+        "count": 2
+      },
+      {
         "category": "configuration",
-        "count": 1
+        "count": 5
       }
     ],
     "by_severity": [
       {
-        "count": 7,
+        "count": 1,
+        "severity": "high"
+      },
+      {
+        "count": 1,
+        "severity": "medium"
+      },
+      {
+        "count": 11,
         "severity": "low"
       }
     ],
-    "headline": "7 opportunities.",
-    "opportunities": 7,
+    "headline": "13 opportunities.",
+    "opportunities": 13,
     "top_share": null
   }
 }

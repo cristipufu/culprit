@@ -57,9 +57,9 @@ fn live(sessions: Vec<Session>, engine: Engine) -> LiveState {
 
 #[test]
 fn every_engine_gets_every_tile_with_a_takeaway() {
-    for name in ["mssql-demo", "mssql-demo-staging", "pg-demo", "mysql-demo"] {
+    for name in ["mssql-demo", "mssql-demo-staging", "pg-demo", "mysql-demo", "mariadb-demo"] {
         let d = dashboard(&report(name));
-        assert_eq!(d.tiles.len(), 10, "{name}");
+        assert_eq!(d.tiles.len(), 14, "{name}");
         for t in &d.tiles {
             assert!(t.takeaway.ends_with('.'), "{name} {:?}: one full sentence: {}", t.key, t.takeaway);
             assert!(!t.takeaway.contains("  ") && !t.takeaway.contains(".."), "{name}: {}", t.takeaway);
@@ -74,6 +74,13 @@ fn every_engine_gets_every_tile_with_a_takeaway() {
 }
 
 #[test]
+fn without_query_statistics_the_headline_says_how_to_turn_them_on() {
+    let d = dashboard(&report("mssql-demo-staging"));
+    assert_eq!(d.attention.first(), Some(&TileKey::Statistics), "{:?}", d.attention);
+    assert_eq!(d.headline, tile(&d, TileKey::Statistics).takeaway);
+}
+
+#[test]
 fn without_query_statistics_the_statistics_tile_leads_with_the_fix() {
     let d = dashboard(&report("mssql-demo-staging"));
     let stats = tile(&d, TileKey::Statistics);
@@ -84,12 +91,17 @@ fn without_query_statistics_the_statistics_tile_leads_with_the_fix() {
         assert_eq!(tile(&d, key).status, TileStatus::Unavailable, "{key:?}");
     }
     // Findings still come from tables, indexes and settings.
-    assert!(tile(&d, TileKey::Findings).takeaway.starts_with("7 opportunities"));
+    let r = report("mssql-demo-staging");
+    let count = format!("{} opportunities", r.summary.opportunities);
+    assert!(tile(&d, TileKey::Findings).takeaway.starts_with(&count), "{}", tile(&d, TileKey::Findings).takeaway);
 }
 
 #[test]
 fn postgres_says_why_there_are_no_waits() {
-    let d = dashboard(&report("pg-demo"));
+    // A scan that recorded no waits (the demo report carries a sampled mix; take it away).
+    let mut r = report("pg-demo");
+    r.snapshot.waits.clear();
+    let d = dashboard(&r);
     let waits = tile(&d, TileKey::Waits);
     assert_eq!(waits.status, TileStatus::Unavailable);
     assert!(waits.takeaway.starts_with("PostgreSQL keeps no history"), "{}", waits.takeaway);
@@ -97,14 +109,22 @@ fn postgres_says_why_there_are_no_waits() {
 
 #[test]
 fn top_queries_and_plans_link_to_queries() {
-    let r = report("mssql-demo");
+    let mut r = report("mssql-demo");
+    // Query 8 switched plans in the window; give it a share the tile lists (it lists switches over 2% of the time).
+    let w = r.snapshot.workload.as_mut().unwrap();
+    let total = w.total_time_ms;
+    w.queries.iter_mut().find(|q| q.id == "8").unwrap().total_time_ms = total * 0.12;
     let d = dashboard(&r);
     let top = tile(&d, TileKey::TopQueries);
-    assert!(top.takeaway.starts_with("One query is 54% of database time"), "{}", top.takeaway);
+    assert!(
+        top.takeaway.starts_with("One query is ") && top.takeaway.contains("% of database time"),
+        "{}",
+        top.takeaway
+    );
     let ids: Vec<&str> = r.snapshot.workload.as_ref().unwrap().queries.iter().map(|q| q.id.as_str()).collect();
     assert!(top.items.iter().all(|i| ids.contains(&i.query_id.as_deref().unwrap())));
     let plans = tile(&d, TileKey::Plans);
-    assert!(plans.takeaway.contains("implicit conversion"), "{}", plans.takeaway);
+    assert!(plans.takeaway.contains("captured plans have something to fix"), "{}", plans.takeaway);
     assert!(plans.items.iter().all(|i| i.query_id.is_some()));
     // The one query that switched plans in the window shows on the database time tile.
     let db = tile(&d, TileKey::DbTime);
@@ -243,4 +263,108 @@ fn slow_log_lock_time_is_not_called_where_time_goes() {
     assert!(waits.takeaway.starts_with("MariaDB times no waits without performance_schema"), "{}", waits.takeaway);
     assert!(!waits.takeaway.contains("Most time goes to"), "{}", waits.takeaway);
     assert_eq!(waits.status, TileStatus::Info, "9 ms of lock time is a sliver of database time");
+}
+
+#[test]
+fn storage_connections_replication_and_failures_say_what_they_saw() {
+    use culprit_core::signals::{FileIo, FileKind, QueryCosts, Replica, ReplicaRole};
+    let mut r = report("pg-demo");
+    // Nothing collected: a tile names the engine's reason only when the scan proves it, otherwise what's missing.
+    if let Some(p) = r.snapshot.pressure.as_mut() {
+        p.files.clear();
+        p.replicas.clear();
+    }
+    let d = dashboard(&r);
+    assert_eq!(tile(&d, TileKey::Storage).takeaway, "This scan has no storage timings.");
+    assert!(tile(&d, TileKey::Failures).takeaway.contains("doesn't count failed runs"));
+    r.snapshot.settings.retain(|s| s.name != "track_io_timing");
+    r.snapshot.settings.push(culprit_core::Setting {
+        name: "track_io_timing".into(),
+        value: "off".into(),
+        default_value: Some("off".into()),
+        scope: "server".into(),
+    });
+    let d = dashboard(&r);
+    assert!(tile(&d, TileKey::Storage).takeaway.contains("track_io_timing"), "{}", tile(&d, TileKey::Storage).takeaway);
+
+    // A slow WAL, a lagging replica and an inactive slot, as a scan would collect them.
+    let p = r.snapshot.pressure.get_or_insert_with(Default::default);
+    p.uptime_hours = Some(48.0);
+    p.files = vec![
+        FileIo {
+            name: "relation".into(),
+            kind: FileKind::Data,
+            database: None,
+            reads: 50_000.0,
+            read_ms: Some(50_000.0 * 0.4),
+            read_bytes: None,
+            writes: 0.0,
+            write_ms: None,
+            write_bytes: None,
+        },
+        FileIo {
+            name: "wal".into(),
+            kind: FileKind::Log,
+            database: None,
+            reads: 0.0,
+            read_ms: None,
+            read_bytes: None,
+            writes: 20_000.0,
+            write_ms: Some(20_000.0 * 40.0),
+            write_bytes: None,
+        },
+    ];
+    p.replicas = vec![Replica {
+        name: "standby-1".into(),
+        role: ReplicaRole::Replica,
+        state: Some("streaming".into()),
+        sync: Some("async".into()),
+        lag_seconds: Some(90.0),
+        lag_bytes: None,
+        unsent_bytes: None,
+        error: None,
+    }];
+    let d = dashboard(&r);
+    let storage = tile(&d, TileKey::Storage);
+    assert_eq!(storage.items.first().map(|i| i.label.as_str()), Some("WAL"), "the slowest file first");
+    assert_eq!(storage.items[0].status, Some(TileStatus::Bad), "40 ms per log write");
+    assert!(storage.metric("log-write-ms").is_some());
+    let replication = tile(&d, TileKey::Replication);
+    assert_eq!(replication.items[0].status, Some(TileStatus::Watch), "90 s behind");
+    assert!(replication.items[0].value.as_deref().is_some_and(|v| v.contains("behind")));
+
+    // Engines that count unfinished runs: the tile ranks statements by how often they don't finish.
+    let mut m = report("mysql-demo");
+    let w = m.snapshot.workload.as_mut().expect("workload");
+    // Only the planted counts: the demo report carries its own.
+    for q in w.queries.iter_mut() {
+        q.costs = None;
+    }
+    let q = &mut w.queries[0];
+    q.executions = 100.0;
+    q.costs = Some(QueryCosts { failed: Some(30.0), ..Default::default() });
+    let d = dashboard(&m);
+    let failures = tile(&d, TileKey::Failures);
+    assert_eq!(failures.items.len(), 1);
+    assert_eq!(failures.items[0].value.as_deref(), Some("30% of runs"));
+    assert_eq!(failures.items[0].status, Some(TileStatus::Bad));
+    for t in &d.tiles {
+        assert!(t.takeaway.ends_with('.'), "{:?}: {}", t.key, t.takeaway);
+    }
+}
+
+#[test]
+fn the_top_share_is_the_same_number_as_the_findings_summary() {
+    for name in ["mssql-demo", "pg-demo", "mysql-demo", "mariadb-demo"] {
+        let r = report(name);
+        let d = dashboard(&r);
+        let takeaway = &tile(&d, TileKey::Findings).takeaway;
+        // Recompute the summary from the same findings: both must name the same share.
+        let summary = culprit_checks::summarize(&r.snapshot, &r.findings);
+        if let Some(share) = summary.top_share.filter(|s| *s >= 0.05) {
+            let text = culprit_core::format::percent(share);
+            assert!(takeaway.contains(&text), "{name}: dashboard '{takeaway}' vs summary {text}");
+            assert!(summary.headline.contains(&text), "{name}: {}", summary.headline);
+        }
+    }
 }

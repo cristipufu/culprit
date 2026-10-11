@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  A fast desktop app and CLI for SQL Server, PostgreSQL, MySQL and MariaDB.<br>
+  A fast desktop app and CLI for SQL Server, PostgreSQL, MySQL and MariaDB, on macOS, Linux and Windows.<br>
   Plain-language answers for people. Safe, structured access for coding agents.
 </p>
 
@@ -19,7 +19,8 @@
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-00758F?style=flat-square&logo=mysql&logoColor=white">
   <img alt="MariaDB" src="https://img.shields.io/badge/MariaDB-003545?style=flat-square&logo=mariadb&logoColor=white">
   <img alt="MCP server" src="https://img.shields.io/badge/MCP-ready-1b1a18?style=flat-square">
-  <img alt="macOS" src="https://img.shields.io/badge/macOS-app-1b1a18?style=flat-square&logo=apple&logoColor=white">
+  <img alt="macOS, Linux and Windows" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-1b1a18?style=flat-square">
+  <a href="https://github.com/cristipufu/culprit-sql-studio/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cristipufu/culprit-sql-studio/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-ffcf33?style=flat-square"></a>
 </p>
 
@@ -197,7 +198,7 @@ When a source is switched off (Query Store, `pg_stat_statements`, `performance_s
 
 ## Get started
 
-Culprit builds from source today. You need [Rust](https://rustup.rs) (stable) and [Bun](https://bun.sh).
+Culprit builds from source today. You need [Rust](https://rustup.rs) (stable) and [Bun](https://bun.sh); on Linux, also the WebKitGTK development packages listed in the [guide](docs/guide.md#platforms). CI builds and tests every commit on macOS, Linux and Windows, and bundles the desktop app for each (an `.app`, a `.deb` and an `.msi`).
 
 ```sh
 git clone https://github.com/cristipufu/culprit-sql-studio.git

@@ -192,7 +192,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Vec<String>) 
     }
     if let Ok(Some(r)) = query_one(
         client,
-        "SELECT count(*) FILTER (WHERE backend_type = 'client backend') AS used,
+        "SELECT count(*) FILTER (WHERE backend_type = 'client backend' AND application_name IS DISTINCT FROM 'culprit') AS used,
                 current_setting('max_connections')::float8 - current_setting('superuser_reserved_connections')::float8 AS max
            FROM pg_stat_activity",
     )

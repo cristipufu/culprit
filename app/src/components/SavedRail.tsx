@@ -120,7 +120,9 @@ export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted
             <div className="saved-meta">
               {q.connection && (
                 <span className={`saved-conn ${q.connection === current.name ? "here" : ""} ${engineOf(q.connection) && engineOf(q.connection) !== current.engine ? "other-engine" : ""}`} title={engineOf(q.connection) && engineOf(q.connection) !== current.engine ? `Saved for a different engine than ${current.name}` : undefined}>
-                  {engineOf(q.connection) && <EngineBadge engine={engineOf(q.connection)!} />}
+                  {engineOf(q.connection) && (
+                    <EngineBadge engine={engineOf(q.connection)!} product={connections.find((c) => c.name === q.connection)?.last_report?.product} />
+                  )}
                   {q.connection}
                 </span>
               )}

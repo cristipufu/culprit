@@ -131,7 +131,10 @@ impl Connector {
             .user(Some(user))
             .prefer_socket(false)
             .tcp_nodelay(true)
-            .stmt_cache_size(0);
+            .stmt_cache_size(0)
+            // Names Culprit's sessions (performance_schema.session_connect_attrs), so its own idle connections can be
+            // left out of what the application uses.
+            .connect_attribute("program_name", "culprit");
         match spec.auth {
             AuthKind::Password => base = base.pass(spec.password.clone()),
             AuthKind::None => {}

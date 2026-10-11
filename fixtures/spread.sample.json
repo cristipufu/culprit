@@ -153,7 +153,7 @@
    {
     "id": "146",
     "query_hash": "0x4139ABA55C1459B3",
-    "text": "SELECT @c = COUNT(*) FROM culprit_lab.events WHERE tenant = @t AND payload <> 'y'",
+    "text": "SELECT @c = COUNT(*) FROM telemetry.events WHERE tenant = @t AND payload <> 'y'",
     "parameters": "@t int,@c int",
     "object_name": null,
     "executions": 771.0,

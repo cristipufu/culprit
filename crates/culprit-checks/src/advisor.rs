@@ -223,6 +223,34 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         });
     }
 
+    // A table the scan no longer lists was dropped or renamed, and an index for queries that all stopped running fixes
+    // nothing now: neither belongs on the list of indexes to add.
+    let inactive: HashSet<&str> = report.findings.iter().filter(|f| f.inactive).map(|f| f.id.as_str()).collect();
+    let query_ids = |active: bool| -> HashSet<&str> {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.inactive != active)
+            .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
+            .collect()
+    };
+    let (running, stopped) = (query_ids(true), query_ids(false));
+    let before = candidates.len();
+    candidates.retain(|c| {
+        let table_known =
+            s.tables.is_empty() || s.tables.iter().any(|t| same_table(&t.schema, &t.name, &c.schema, &c.table));
+        let all_stopped = c.finding_id.as_deref().is_some_and(|id| inactive.contains(id))
+            || (!c.queries.is_empty()
+                && c.queries.iter().all(|q| stopped.contains(q.id.as_str()) && !running.contains(q.id.as_str())));
+        table_known && !all_stopped
+    });
+    let skipped = before - candidates.len();
+    if engine == Engine::Mssql {
+        for c in candidates.iter_mut() {
+            c.reason = crate::without_database(&c.reason, &s.server.database);
+        }
+    }
+
     candidates.sort_by(|a, b| {
         b.db_time_share
             .unwrap_or(0.0)
@@ -394,7 +422,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         if t.is_heap == Some(true)
             && let Some(forwarded) = t.forwarded_fetches.filter(|f| *f > 0.0)
         {
-            let per_day = counter_days(s).filter(|d| *d >= 0.02).map(|d| forwarded / d);
+            // A per-day rate only from a day's worth of counters (20 hours): less would be an extrapolation.
+            let per_day = counter_days(s).filter(|d| *d * 24.0 >= 20.0).map(|d| forwarded / d);
             tables.push(TableAdvice {
                 kind: TableAdviceKind::ForwardedFetches,
                 schema: t.schema.clone(),
@@ -471,6 +500,13 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     if !s.server.has(Capability::QueryPlans) {
         notes.push("No plans were captured, so plan-based candidates are missing.".into());
     }
+    if skipped > 0 {
+        notes.push(if skipped == 1 {
+            "Left out 1 candidate for a table that no longer exists or queries that stopped running.".to_string()
+        } else {
+            format!("Left out {skipped} candidates for tables that no longer exist or queries that stopped running.")
+        });
+    }
 
     IndexAdvice {
         connection: s.connection.clone(),
@@ -517,6 +553,32 @@ mod tests {
             }
             assert!(!advice.candidates.is_empty() || !advice.cleanups.is_empty(), "{name}: the demos have index work");
         }
+    }
+
+    #[test]
+    fn dropped_tables_and_stopped_queries_get_no_new_index() {
+        let mut r = report("mssql-demo.report.json");
+        let before = index_advice(&r);
+        let first = before.candidates.first().expect("a candidate").clone();
+        // The table is gone from the scan: its candidate is left out, and a note says so.
+        r.snapshot
+            .tables
+            .retain(|t| !(t.schema.eq_ignore_ascii_case(&first.schema) && t.name.eq_ignore_ascii_case(&first.table)));
+        let after = index_advice(&r);
+        assert!(after.candidates.iter().all(|c| !(c.schema == first.schema && c.table == first.table)));
+        assert!(after.notes.iter().any(|n| n.contains("no longer exist")), "{:?}", after.notes);
+
+        // Every query behind a candidate stopped running: left out too.
+        let mut r = report("mssql-demo.report.json");
+        let advice = index_advice(&r);
+        let with_finding =
+            advice.candidates.iter().find(|c| c.finding_id.is_some()).expect("a linked candidate").clone();
+        let id = with_finding.finding_id.clone().unwrap();
+        for f in r.findings.iter_mut().filter(|f| f.id == id) {
+            f.inactive = true;
+        }
+        let after = index_advice(&r);
+        assert!(after.candidates.iter().all(|c| c.finding_id.as_deref() != Some(id.as_str())));
     }
 
     #[test]

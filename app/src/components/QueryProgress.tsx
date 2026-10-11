@@ -72,7 +72,7 @@ type Load = { status: "loading" } | { status: "ready"; progress: QueryProgress }
 
 /**
  * A running statement, refreshed every second while it's on screen: how long it has run, how far along it is, the step
- * doing the work right now, and (SQL Server) every operator's progress drawn on the plan. Postgres and MySQL show the
+ * doing the work right now, and (SQL Server) every operator's progress drawn on the plan. PostgreSQL and MySQL show the
  * plan and the engine's own progress reports for the commands that have them, and say plainly what they can't show.
  */
 export function QueryProgressPanel({ connection, session, onClose }: { connection: string; session: string; onClose: () => void }) {
@@ -104,7 +104,7 @@ export function QueryProgressPanel({ connection, session, onClose }: { connectio
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        // Postgres and MySQL send their (estimated) plan once per statement; ask again when the statement changes.
+        // PostgreSQL and MySQL send their (estimated) plan once per statement; ask again when the statement changes.
         const known = plan.current;
         const next = await (await api()).queryProgress(connection, session, known.plan == null);
         if (cancelled) return;

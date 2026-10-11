@@ -59,6 +59,14 @@ pub enum TileKey {
     Plans,
     /// Where query statistics come from and how much they cover.
     Statistics,
+    /// How fast storage answers: average read latency of data files, write latency of the log.
+    Storage,
+    /// New connections per second, and how many of the allowed are in use.
+    Connections,
+    /// How far replicas and replication slots are behind.
+    Replication,
+    /// Statements whose runs fail or are cancelled.
+    Failures,
 }
 
 impl TileKey {
@@ -74,6 +82,10 @@ impl TileKey {
             TileKey::Indexes => "Indexes",
             TileKey::Plans => "Plans",
             TileKey::Statistics => "Query statistics",
+            TileKey::Storage => "Storage",
+            TileKey::Connections => "Connections",
+            TileKey::Replication => "Replication",
+            TileKey::Failures => "Failing queries",
         }
     }
 }

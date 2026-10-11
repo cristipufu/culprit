@@ -11,6 +11,20 @@ use crate::value::to_json;
 /// Column name SQL Server gives the XML plan returned by SET SHOWPLAN_XML / SET STATISTICS XML.
 const SHOWPLAN_COLUMN_MARKER: &str = "Showplan";
 
+/// SHOWPLAN compiles the text as it is: an application's parameters (`@P1`) aren't declared there, and SQL Server
+/// can't plan a statement whose values it can't see the type of.
+pub(crate) fn parameter_error(e: culprit_core::Error) -> culprit_core::Error {
+    if !e.message.contains("Must declare the scalar variable") {
+        return e;
+    }
+    let name = e.message.split('"').nth(1).unwrap_or("parameters").to_string();
+    culprit_core::Error::invalid(format!("This statement uses {name}, which SQL Server needs a value for to plan it"))
+        .with_hint(
+            "Replace each parameter with a sample value of its type (a quoted string for text, a number for an id) and \
+             explain again. Queries Culprit captured open from Queries with the plan SQL Server actually used.",
+        )
+}
+
 pub(crate) async fn estimated_plan(client: &mut MsClient, sql: &str) -> Result<Plan> {
     execute(client, "SET SHOWPLAN_XML ON").await.map_err(map_error)?;
     let documents = collect_plans(client, sql).await;
@@ -132,7 +146,7 @@ pub(crate) async fn run_changes(client: &mut MsClient, sql: &str) -> Result<Resu
         rows: Vec::new(),
         truncated: false,
         elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
-        messages: vec![format!("{affected} row{} affected", if affected == 1 { "" } else { "s" })],
+        messages: vec![format!("{affected} row{} changed", if affected == 1 { "" } else { "s" })],
     })
 }
 
@@ -178,5 +192,21 @@ mod tests {
         assert!(is_wrapper_plan(wrapper));
         assert!(!is_wrapper_plan(users));
         assert!(!is_wrapper_plan("<ShowPlanXML/>"), "no statement text: keep it and let parsing decide");
+    }
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::parameter_error;
+    use culprit_core::{Error, ErrorCode};
+
+    #[test]
+    fn undeclared_parameters_get_a_plain_hint() {
+        let raw = Error::new(ErrorCode::QueryFailed, "Must declare the scalar variable \"@P1\".");
+        let mapped = parameter_error(raw);
+        assert_eq!(mapped.message, "This statement uses @P1, which SQL Server needs a value for to plan it");
+        assert!(mapped.hint.as_deref().is_some_and(|h| h.contains("sample value")));
+        let other = parameter_error(Error::new(ErrorCode::QueryFailed, "Invalid object name 'x'."));
+        assert_eq!(other.message, "Invalid object name 'x'.");
     }
 }

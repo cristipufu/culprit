@@ -132,11 +132,14 @@ fn query_block(block: &Map<String, Value>, cx: &Context, id: &mut u32, costed: b
     }
     let children: f64 = root.children.iter().map(|c| c.subtree_cost).sum();
     root.subtree_cost = number_field(block, "cost").filter(|_| costed).unwrap_or(0.0).max(children);
-    root.est_rows = root.children.first().map(|c| c.est_rows_total()).unwrap_or(0.0);
+    // MariaDB reports no rows for a query block itself. Like MySQL's reader, estimate from the last step's output;
+    // never borrow a child's actual rows (rows a scan examined aren't rows the query returned: COUNT(*) returns one).
+    root.est_rows =
+        number_field(block, "rows").unwrap_or_else(|| root.children.last().map(|c| c.est_rows).unwrap_or(0.0));
     measured(block, &mut root);
     root.act_time_ms = number_field(block, "r_total_time_ms");
-    if root.act_rows.is_none() && root.act_executions.is_some() {
-        root.act_rows = root.children.first().and_then(|c| c.act_rows);
+    if root.act_rows.is_none() {
+        root.act_rows = number_field(block, "r_rows");
     }
     root
 }
@@ -312,7 +315,13 @@ fn table_node(
     let name = text(table, "table_name").unwrap_or_default();
     node.object = cx.object(&name);
     let mut detail = Vec::new();
-    if let Some(message) = text(table, "message") {
+    if name.is_empty()
+        && raw_access.is_empty()
+        && let Some(message) = text(table, "message")
+    {
+        // "No tables used": the step is the message.
+        node.op = message;
+    } else if let Some(message) = text(table, "message") {
         detail.push(message);
     } else if node.object.is_none() && !name.is_empty() {
         detail.push(name.clone());
@@ -469,6 +478,19 @@ pub fn progress(plan: &Plan) -> Vec<culprit_core::NodeProgress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_query_block_keeps_its_own_rows() {
+        // ANALYZE of `SELECT COUNT(*) FROM orders WHERE …`: the scan examined 125K rows; the query returned one row,
+        // which MariaDB doesn't report for the block. The root must not claim the scan's rows.
+        let json = r#"{"query_block": {"select_id": 1, "r_loops": 1, "r_total_time_ms": 52.1,
+            "table": {"table_name": "orders", "access_type": "ALL", "r_loops": 1, "rows": 226000, "r_rows": 125000,
+                      "r_total_time_ms": 50.2, "filtered": 100, "r_filtered": 40, "attached_condition": "orders.status = 'x'"}}}"#;
+        let plan =
+            crate::plan_json::parse(json, PlanKind::Actual, Some("SELECT COUNT(*) FROM orders"), Some("shop")).unwrap();
+        assert_eq!(plan.root.act_rows, None, "{:?}", plan.root);
+        assert_eq!(plan.root.est_rows, 226000.0);
+    }
 
     const ANALYZE_SORT: &str = r#"{
       "query_optimization": {"r_total_time_ms": 0.13},

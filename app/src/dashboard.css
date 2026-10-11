@@ -197,7 +197,11 @@
   .t-health,
   .t-deadlocks,
   .t-indexes,
-  .t-plans {
+  .t-plans,
+  .t-storage,
+  .t-connections,
+  .t-replication,
+  .t-failures {
     grid-column: span 3;
   }
 
@@ -218,7 +222,11 @@
   .no-workload .t-health,
   .no-workload .t-deadlocks,
   .no-workload .t-indexes,
-  .no-workload .t-plans {
+  .no-workload .t-plans,
+  .no-workload .t-storage,
+  .no-workload .t-connections,
+  .no-workload .t-replication,
+  .no-workload .t-failures {
     grid-column: span 4;
   }
 }
@@ -895,3 +903,12 @@
   margin-left: auto;
 }
 
+/* The signal tiles' numbers: two side by side, smaller than the database-time tile's. */
+.dash-stats.compact {
+  gap: 18px;
+  margin-bottom: 4px;
+}
+
+.dash-stats.compact .dash-stat b {
+  font-size: 16px;
+}

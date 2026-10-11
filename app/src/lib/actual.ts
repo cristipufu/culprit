@@ -12,7 +12,7 @@ function batchMode(node: PlanNode): boolean {
 }
 
 /**
- * Each operator's own time. Row-mode operators (and every Postgres/MySQL operator) report time including their inputs,
+ * Each operator's own time. Row-mode operators (and every PostgreSQL/MySQL operator) report time including their inputs,
  * SQL Server batch-mode operators report their own, and untimed operators (Compute Scalar) count as the sum of their
  * inputs. Mirrors culprit_core::actual::own_times.
  */

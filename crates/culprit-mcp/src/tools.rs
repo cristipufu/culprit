@@ -83,7 +83,8 @@ pub struct MarkArgs {
 pub struct VerifyArgs {
     /// A connection name from list_connections.
     pub connection: String,
-    /// Finding ids to check (from `findings`). Omit to check every finding of the latest scan.
+    /// Finding ids to check (from `findings`). Omit to check every finding of the latest scan. `ids` works too.
+    #[serde(alias = "ids")]
     pub finding_ids: Option<Vec<String>>,
 }
 
@@ -91,7 +92,8 @@ pub struct VerifyArgs {
 pub struct ExportFindingArgs {
     /// A connection name from list_connections.
     pub connection: String,
-    /// The finding id (from `findings`).
+    /// The finding id (from `findings`). `id` works too, as in `finding`.
+    #[serde(alias = "id")]
     pub finding_id: String,
     /// Replace literal values in query text and predicates with `?` (default true). Keep it on for anything posted.
     pub redact: Option<bool>,
@@ -138,7 +140,8 @@ pub struct FindingsArgs {
 pub struct FindingArgs {
     /// A connection name from list_connections.
     pub connection: String,
-    /// The finding id from `findings`, e.g. `missing-index:dbo.orders(customer_id)`.
+    /// The finding id from `findings`, e.g. `missing-index:dbo.orders(customer_id)`. `finding_id` works too.
+    #[serde(alias = "finding_id")]
     pub id: String,
 }
 
@@ -573,7 +576,17 @@ impl CulpritMcp {
             "query_progress" => {
                 let a: ProgressArgs = args(value)?;
                 self.allowed(&a.connection)?;
-                Ok(view::progress(&self.ws.query_progress(&a.connection, &a.session, true).await?))
+                let progress = self.ws.query_progress(&a.connection, &a.session, true).await?;
+                // Nothing at all about the session: it doesn't exist (or ended), rather than "not running".
+                if !progress.running
+                    && progress.state.is_none()
+                    && progress.statement.is_none()
+                    && progress.elapsed_ms.is_none()
+                {
+                    return Err(Error::not_found(format!("No session '{}' is connected right now", a.session))
+                        .with_hint("Call live for the sessions running now and their ids"));
+                }
+                Ok(view::progress(&progress))
             }
             "what_changed" => {
                 let a: WhatChangedArgs = args(value)?;
@@ -720,20 +733,19 @@ impl CulpritMcp {
     }
 
     /// The connection, if agents may use it at all.
+    /// The connection, when agents may see it. A hidden one (agent access off, or outside `--connection`) answers
+    /// exactly like one that doesn't exist, so its name isn't confirmed to an agent guessing names.
     fn allowed(&self, name: &str) -> Result<ConnectionInfo> {
-        let info = self.ws.connection(name).map_err(|_| {
-            Error::not_found(format!("No connection named '{name}'")).with_hint("Call list_connections for the names")
-        })?;
-        if !self.options.connections.is_empty() && !self.options.connections.iter().any(|n| n == name) {
-            return Err(Error::new(
-                ErrorCode::PermissionDenied,
-                format!("'{name}' isn't available to this MCP server"),
+        let unknown = || {
+            Error::not_found(format!("No connection named '{name}'")).with_hint(
+                "Call list_connections for the names this server exposes. A connection the person hasn't shared with \
+                 agents isn't listed; they can share it with `culprit conn set <name> --agent stats`.",
             )
-            .with_hint("It was started with --connection for other connections; call list_connections"));
-        }
-        if info.agent_access == AgentAccess::Off {
-            return Err(Error::new(ErrorCode::PermissionDenied, format!("Agent access to '{name}' is off"))
-                .with_hint(format!("The person can allow it with `culprit conn set {name} --agent stats`")));
+        };
+        let info = self.ws.connection(name).map_err(|_| unknown())?;
+        let outside = !self.options.connections.is_empty() && !self.options.connections.iter().any(|n| n == name);
+        if outside || info.agent_access == AgentAccess::Off {
+            return Err(unknown());
         }
         Ok(info)
     }

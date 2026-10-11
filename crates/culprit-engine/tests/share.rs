@@ -209,10 +209,17 @@ fn finding_exports_never_name_the_connection_and_redact_query_text() {
                 export::finding_html(&report, finding, &ExportOptions::default()),
             ] {
                 assert!(!out.contains(&report.snapshot.connection), "{file}: {} names the connection", finding.id);
-                assert!(
-                    out.contains(&finding.title.replace('&', "&amp;").replace('<', "&lt;"))
-                        || out.contains(&finding.title)
-                );
+                // Markdown escapes `_`, `*`, `[`…; what renders (backslashes removed) is the title.
+                let rendered = out.replace('\\', "");
+                // HTML escapes quotes too (`doesn't` → `doesn&#39;t`).
+                let escaped = finding
+                    .title
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+                    .replace('\'', "&#39;");
+                assert!(rendered.contains(&escaped) || rendered.contains(&finding.title), "{file}: {}", finding.title);
                 assert!(
                     out.contains(&format!("culprit verify &lt;connection&gt; {}", finding.id))
                         || out.contains(&format!("`culprit verify <connection> {}`", finding.id))

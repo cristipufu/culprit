@@ -111,14 +111,32 @@ function capitalized(text: string): string {
 }
 
 /** Most urgent first when two tiles share a status (mirrors `PRIORITY` in Rust). */
-const PRIORITY: TileKey[] = ["now", "db-time", "findings", "statistics", "deadlocks", "health", "waits", "plans", "indexes", "top-queries"];
+const PRIORITY: TileKey[] = [
+  "now",
+  "db-time",
+  "findings",
+  "statistics",
+  "failures",
+  "replication",
+  "deadlocks",
+  "storage",
+  "health",
+  "connections",
+  "waits",
+  "plans",
+  "indexes",
+  "top-queries",
+];
 const SEVERITY: Record<TileStatus, number> = { bad: 4, watch: 3, unavailable: 2, info: 1, good: 0 };
 
 /** Tiles that need a look, most urgent first, and the sentence that leads the page. */
 export function attention(tiles: Tile[]): { keys: TileKey[]; headline: string } {
+  // Without query statistics, turning them on comes first: only a problem happening right now is more urgent (mirrors Rust).
+  const noWorkload = tiles.some((t) => t.key === "db-time" && t.status === "unavailable");
+  const rank = (k: TileKey) => (k === "now" ? 0 : k === "statistics" && noWorkload ? 1 : PRIORITY.indexOf(k) + 1);
   const urgent = tiles
     .filter((t) => t.status === "bad" || t.status === "watch")
-    .sort((a, b) => SEVERITY[b.status] - SEVERITY[a.status] || PRIORITY.indexOf(a.key) - PRIORITY.indexOf(b.key));
+    .sort((a, b) => SEVERITY[b.status] - SEVERITY[a.status] || rank(a.key) - rank(b.key));
   if (urgent.length > 0) return { keys: urgent.map((t) => t.key), headline: urgent[0]!.takeaway };
   const missing = tiles.filter((t) => t.status === "unavailable").length;
   const headline =

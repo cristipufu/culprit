@@ -1,9 +1,10 @@
 import { Copy, KeyRound, RefreshCw, SquarePen } from "lucide-react";
 import type { MissingCapability } from "../gen/MissingCapability";
 import type { Report } from "../gen/Report";
-import { copyText } from "../lib/api";
-import { scan, setState, toast } from "../lib/store";
+
+import { scan, setState } from "../lib/store";
 import { keys } from "../lib/keys";
+import { copyAndTell } from "../lib/clipboard";
 
 /** The capabilities that hold query statistics, per engine. Without one, findings come from tables and indexes only. */
 const WORKLOAD = ["pg-stat-statements", "query-store", "plan-cache", "performance-schema"];
@@ -54,7 +55,7 @@ export function WorkloadUnlock({ report }: { report: Report }) {
         <div className="unlock-sql">
           <code>{sql}</code>
           <span className="spacer" />
-          <button className="btn small" onClick={() => copyText(sql).then(() => toast("Copied"))} aria-label="Copy the statement">
+          <button className="btn small" onClick={() => copyAndTell(sql, "Copied")} aria-label="Copy the statement">
             <Copy size={12} /> Copy
           </button>
           <button className="btn small" onClick={() => setState({ view: "editor", editorSql: sql })} aria-label="Open the statement in the editor">

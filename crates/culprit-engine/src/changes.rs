@@ -225,10 +225,12 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
     let at = |p: &Period| (epoch(&p.start).unwrap_or(0.0), epoch(&p.end).unwrap_or(0.0));
     let ((b0, _), (r0, r1)) = (at(baseline), at(recent));
     if points.len() < 3 {
-        data.notes.push(format!(
+        let why = format!(
             "Comparing two periods needs at least three scans of this database; Culprit has {}. Scan again later (each scan marks a point in time).",
             points.len()
-        ));
+        );
+        data.notes.push(why.clone());
+        data.unavailable = Some(why);
         return data;
     }
     let end = nearest(&points, r1);
@@ -241,7 +243,9 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
         }
     }
     if !(start < mid && mid < end) {
-        data.notes.push("The scans Culprit has don't fall inside both periods; pick a longer range.".to_string());
+        let why = "The scans Culprit has don't fall inside both periods; pick a longer range.".to_string();
+        data.notes.push(why.clone());
+        data.unavailable = Some(why);
         return data;
     }
     data.baseline = Period { start: iso(points[start].0), end: iso(points[mid].0) };
@@ -261,6 +265,9 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
     data.recent_total = PeriodStats::new(after.executions, after.time_ms);
 
     let meta_at = |i: usize, id: &str| -> Option<&QueryMeta> { points[i].1.meta.get(id) };
+    // Scans that recorded no queries at all (statistics just reset, or nothing ran): a new query isn't "untracked", there
+    // was simply nothing to compare it with.
+    let baseline_empty = points[start..=mid].iter().all(|(_, c)| c.queries.is_empty());
     let latest_meta = |id: &str, from: usize, to: usize| (from..=to).rev().find_map(|i| meta_at(i, id));
     let ids: BTreeSet<String> = before.queries.keys().chain(after.queries.keys()).cloned().collect();
     for id in ids {
@@ -271,6 +278,10 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
         let unknown_after = after.queries.get(&id).is_none_or(Option::is_none);
         let meta = latest_meta(&id, start, end);
         let untracked = match (&b, &r) {
+            (None, Some(_)) if unknown_before && baseline_empty => Some(
+                "Culprit's scans before then recorded no queries at all (the statistics were empty, for example just reset), so there is nothing to compare it with"
+                    .to_string(),
+            ),
             (None, Some(_)) if unknown_before => {
                 Some("Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then)".to_string())
             }
@@ -280,9 +291,12 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
             ),
             _ => None,
         };
-        // A query the source says last ran before the recent period really stopped.
+        // A query the source says last ran before the recent period really stopped; one it says first ran after the
+        // baseline really is new (pg_stat_statements' stats_since, Query Store's first execution).
         let stopped = meta.and_then(|m| m.last_seen.as_deref()).and_then(epoch).is_some_and(|t| t < points[mid].0);
-        let untracked = if stopped { None } else { untracked };
+        let started =
+            meta.and_then(|m| m.first_seen.as_deref()).and_then(epoch).is_some_and(|t| t + 1.0 >= points[mid].0);
+        let untracked = if stopped || (started && b.is_none()) { None } else { untracked };
 
         let shape_before = latest_meta(&id, start, mid).and_then(|m| Some((m.shape.clone()?, m.hot.clone())));
         let shape_after = latest_meta(&id, mid, end).and_then(|m| Some((m.shape.clone()?, m.hot.clone())));
@@ -452,10 +466,53 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_the_source_says_started_after_the_baseline_is_new() {
+        let mut later = counters(
+            "2026-10-11T12:00:00Z",
+            [3_000.0, 600.0],
+            &[("a", 300.0, 300.0, None), ("n", 2_640.0, 200.0, None)],
+        );
+        later.meta.get_mut("n").unwrap().first_seen = Some("2026-10-11T09:30:00Z".into());
+        let history = vec![
+            counters("2026-10-11T00:00:00Z", [100.0, 100.0], &[("a", 100.0, 100.0, None)]),
+            counters("2026-10-11T06:00:00Z", [200.0, 200.0], &[("a", 200.0, 200.0, None)]),
+            later,
+        ];
+        let (baseline, recent) = default_scan_periods(&history).unwrap();
+        let data = from_scans(&history, &baseline, &recent);
+        let n = data.queries.iter().find(|q| q.query_id == "n").expect("n ran recently");
+        assert_eq!(n.untracked, None, "first seen after the baseline: new, not untracked");
+        let changes = culprit_core::changes::compare("shop", Engine::Postgres, data, &CompareOptions::default());
+        let status = changes.queries.iter().find(|q| q.query_id == "n").map(|q| q.status);
+        assert_eq!(status, Some(ChangeStatus::New));
+    }
+
+    #[test]
+    fn empty_earlier_scans_are_not_called_untracked() {
+        // Statistics were reset before the first scans: they saw nothing, then a query appeared.
+        let mut later = counters("2026-10-11T12:00:00Z", [500.0, 50.0], &[("a", 500.0, 50.0, None)]);
+        later.window_start = Some("2026-10-11T07:00:00Z".into());
+        let history = vec![
+            counters("2026-10-11T00:00:00Z", [0.0, 0.0], &[]),
+            counters("2026-10-11T06:00:00Z", [0.0, 0.0], &[]),
+            later,
+        ];
+        let (baseline, recent) = default_scan_periods(&history).unwrap();
+        let data = from_scans(&history, &baseline, &recent);
+        let a = data.queries.iter().find(|q| q.query_id == "a").expect("a ran recently");
+        let why = a.untracked.as_deref().unwrap_or_default();
+        assert!(why.contains("recorded no queries at all"), "{why}");
+        assert!(!why.contains("heaviest"), "{why}");
+    }
+
+    #[test]
     fn too_few_scans_say_so() {
         let history = vec![counters("2026-10-11T00:00:00Z", [1.0, 1.0], &[])];
         let p = Period { start: "2026-10-11T00:00:00Z".into(), end: "2026-10-11T06:00:00Z".into() };
         let data = from_scans(&history, &p, &p);
-        assert!(data.notes[0].contains("at least three scans"));
+        assert!(data.unavailable.as_deref().is_some_and(|w| w.contains("at least three scans")));
+        let changes = culprit_core::changes::compare("shop", Engine::Postgres, data, &CompareOptions::default());
+        assert!(changes.summary.starts_with("Can't compare yet."), "{}", changes.summary);
+        assert!(!changes.summary.contains("No queries ran"));
     }
 }

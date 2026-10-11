@@ -795,6 +795,8 @@ struct PlanOutcome {
     unusable: usize,
     /// Statements that change data (or aren't queries): Culprit plans reads only.
     not_reads: usize,
+    /// Samples whose values matched nothing, so MySQL showed no operators ("no matching row in const table").
+    empty: usize,
     failed: usize,
     error: Option<String>,
 }
@@ -804,7 +806,7 @@ impl PlanOutcome {
         if let Some(error) = &self.error {
             return Some(format!("Could not open a session to plan statements: {error}"));
         }
-        if self.no_text + self.unusable + self.failed == 0 {
+        if self.no_text + self.unusable + self.failed + self.empty == 0 {
             return None;
         }
         let mut parts = Vec::new();
@@ -813,6 +815,13 @@ impl PlanOutcome {
         }
         if self.unusable > 0 {
             parts.push(format!("{} had only truncated or server-side prepared text", self.unusable));
+        }
+        if self.empty > 0 {
+            parts.push(format!(
+                "{} {} for values that matched no rows, so the server showed no plan",
+                self.empty,
+                if self.empty == 1 { "was sampled" } else { "were sampled" }
+            ));
         }
         if self.failed > 0 {
             parts.push(format!("{} could not be explained", self.failed));
@@ -857,9 +866,16 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
             Ok(Some(row)) => {
                 let json = row.text("explain").or_else(|| row.first_text()).unwrap_or_default();
                 match sample_plan(&json, sample, database, &digest.stat.text) {
+                    // Nothing under the query block: the sample's values matched no row and MySQL stopped there. An
+                    // empty diagram would read as "this query does nothing"; say why instead.
+                    Ok(plan) if plan.root.children.is_empty() => outcome.empty += 1,
                     Ok(mut plan) => {
                         if let Some(version) = connector.version() {
                             plan.props.insert("server_version".into(), version.to_string());
+                        }
+                        // A simple MariaDB plan reads like MySQL's JSON; say which server made it so notes name it.
+                        if connector.flavor() == Flavor::Mariadb {
+                            plan.props.insert("flavor".into(), "MariaDB".into());
                         }
                         digest.stat.plan = Some(plan);
                         outcome.planned += 1;
@@ -1514,6 +1530,18 @@ mod tests {
         assert!(!text.contains("vip"), "{text}");
         assert!(text.contains("'%?%'"), "the LIKE pattern keeps its shape: {text}");
         assert_eq!(plan.statement.as_deref(), Some("SELECT `id` FROM `customers` WHERE `email` = ? AND `note` LIKE ?"));
+    }
+
+    #[test]
+    fn samples_that_matched_nothing_are_explained() {
+        let json = r#"{"query_block":{"select_id":1,"message":"no matching row in const table"}}"#;
+        let plan =
+            sample_plan(json, "SELECT * FROM orders WHERE id = 0", "shop", "SELECT * FROM `orders` WHERE `id` = ?")
+                .unwrap();
+        assert!(plan.root.children.is_empty(), "the parser keeps the empty block; attach_plans skips it");
+        let outcome = PlanOutcome { planned: 2, empty: 1, ..Default::default() };
+        let note = outcome.note().unwrap();
+        assert!(note.contains("matched no rows"), "{note}");
     }
 
     #[test]

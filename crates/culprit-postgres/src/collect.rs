@@ -695,7 +695,8 @@ async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, v
         let Some(statement) = plannable(&queries[index].text) else { continue };
         attempted += 1;
         let Some(json) = generic_plan_json(client, statement, version_num).await else { continue };
-        if let Ok(plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
+        if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
+            crate::tables::fill(client, &mut plan).await;
             queries[index].plan = Some(plan);
             planned += 1;
         }

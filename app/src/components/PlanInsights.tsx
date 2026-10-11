@@ -4,12 +4,13 @@ import type { InsightArea } from "../gen/InsightArea";
 import type { Plan } from "../gen/Plan";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { Severity } from "../gen/Severity";
-import { copyText } from "../lib/api";
+
 import { percent } from "../lib/format";
 import { bySeverity } from "../lib/plan-format";
-import { toast } from "../lib/store";
+
 import { Prose } from "./Prose";
 import { Sql } from "./Sql";
+import { copyAndTell } from "../lib/clipboard";
 
 const AREA: Record<InsightArea, { icon: LucideIcon; label: string }> = {
   index: { icon: KeyRound, label: "Index" },
@@ -141,7 +142,7 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
                     {i.fix_sql && (
                       <div className="ins-sql">
                         <Sql text={i.fix_sql} />
-                        <button className="btn ghost small ins-copy" onClick={() => copyText(i.fix_sql!).then(() => toast("Copied the fix"))} title="Copy the SQL; Culprit never runs it">
+                        <button className="btn ghost small ins-copy" onClick={() => copyAndTell(i.fix_sql!, "Copied the fix")} title="Copy the SQL; Culprit never runs it">
                           <Copy size={12} /> Copy
                         </button>
                       </div>

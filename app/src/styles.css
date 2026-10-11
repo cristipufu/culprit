@@ -12406,3 +12406,13 @@ li code,
 .tc-peak.below span {
   top: 6px;
 }
+
+/* Long operator names (after compactOp) step down a size instead of truncating the word that tells them apart. */
+.pc-op.long {
+  font-size: 11.5px;
+  letter-spacing: -0.01em;
+}
+
+.pc-rows .pc-mark {
+  margin-left: auto;
+}

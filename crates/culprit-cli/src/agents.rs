@@ -45,12 +45,35 @@ pub struct InitArgs {
 }
 
 #[derive(Args)]
+#[command(group = clap::ArgGroup::new("change").required(true).multiple(true).args(["agent", "env"]))]
 pub struct SetArgs {
     pub name: String,
     /// What coding agents may do through `culprit mcp`: off (hidden), stats (findings, statistics, schema, estimated
     /// plans; the default), query (also read-only statements, each approved in the desktop app).
     #[arg(long, value_enum)]
-    pub agent: AgentArg,
+    pub agent: Option<AgentArg>,
+    /// The connection's environment. Production refuses session kills and asks before anything that changes data.
+    #[arg(long, value_enum)]
+    pub env: Option<EnvironmentArg>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum EnvironmentArg {
+    Production,
+    Staging,
+    Development,
+    Local,
+}
+
+impl From<EnvironmentArg> for culprit_core::Environment {
+    fn from(e: EnvironmentArg) -> culprit_core::Environment {
+        match e {
+            EnvironmentArg::Production => culprit_core::Environment::Production,
+            EnvironmentArg::Staging => culprit_core::Environment::Staging,
+            EnvironmentArg::Development => culprit_core::Environment::Development,
+            EnvironmentArg::Local => culprit_core::Environment::Local,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -81,7 +104,12 @@ pub async fn mcp(ws: Workspace, args: McpArgs) -> Result<u8> {
 }
 
 pub fn set(ws: &Workspace, args: SetArgs, out: &Out) -> Result<u8> {
-    let info = ws.set_agent_access(&args.name, args.agent.into())?;
+    if let Some(env) = args.env {
+        let info = ws.set_environment(&args.name, env.into())?;
+        out.done(&format!("{} is now marked {}", info.name, format!("{:?}", info.environment).to_lowercase()));
+    }
+    let Some(agent) = args.agent else { return Ok(0) };
+    let info = ws.set_agent_access(&args.name, agent.into())?;
     let message = match info.agent_access {
         AgentAccess::Off => format!("Coding agents can no longer see {}", info.name),
         AgentAccess::Stats => {

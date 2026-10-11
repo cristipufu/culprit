@@ -7,11 +7,12 @@ import type { IndexCandidate } from "../gen/IndexCandidate";
 import type { IndexCleanup } from "../gen/IndexCleanup";
 import type { Report } from "../gen/Report";
 import type { TableAdvice } from "../gen/TableAdvice";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { ago, bytes, count, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { setState, toast } from "../lib/store";
+import { setState } from "../lib/store";
 import { Sql } from "./Sql";
+import { copyAndTell } from "../lib/clipboard";
 
 type Load = { status: "loading" } | { status: "ready"; advice: IndexAdvice } | { status: "error"; error: ApiError };
 type Section = "add" | "cleanup" | "tables";
@@ -112,8 +113,7 @@ export default function IndexAdvisor({ report, onOpenTable }: { report: Report; 
     });
   const copy = async (sql: string | null) => {
     if (!sql) return;
-    await copyText(sql);
-    toast("Copied. Culprit never runs it; review it, then run it in your migration tooling.");
+    await copyAndTell(sql, "Copied. Culprit never runs it; review it, then run it in your migration tooling.");
   };
   const openFinding = (fid: string | null) => fid && setState({ view: "overview", finding: fid });
   const openQuery = (q: AdviceQuery) => setState({ view: "queries", query: q.id });

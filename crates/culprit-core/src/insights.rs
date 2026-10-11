@@ -117,7 +117,9 @@ pub fn annotate(plan: &mut Plan) {
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
     let actual = has_actuals(plan);
-    let mariadb = plan.props.get("flavor").is_some_and(|f| f == "MariaDB");
+    // MariaDB's own plan reader sets the flavor; plans of logged statements carry the server's version instead.
+    let mariadb = plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
+        || plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"));
     match (plan.engine, actual) {
         (Engine::Mysql, false) if mariadb => Some(
             "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.".into(),
@@ -353,8 +355,18 @@ fn conditions(n: &PlanNode) -> String {
     [n.seek_predicate.as_deref(), n.predicate.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" AND ")
 }
 
+/// One name part as written in a plan, without its delimiters: `[a]]b]` → `a]b`, `` `a``b` `` → ``a`b``, `"a""b"` → `a"b`.
 fn clean_identifier(raw: &str) -> String {
-    raw.trim_matches(|c| c == '[' || c == ']' || c == '`' || c == '"').to_string()
+    let raw = raw.trim();
+    let inner = |open: char, close: char| {
+        raw.strip_prefix(open)
+            .and_then(|r| r.strip_suffix(close))
+            .map(|r| r.replace(&format!("{close}{close}"), &close.to_string()))
+    };
+    inner('[', ']')
+        .or_else(|| inner('`', '`'))
+        .or_else(|| inner('"', '"'))
+        .unwrap_or_else(|| raw.trim_matches(|c| c == '[' || c == ']' || c == '`' || c == '"').to_string())
 }
 
 /// The last name in `[db].[shop].[orders].[created_at]`, `` `shop`.`orders`.`created_at` `` or `o.created_at`.
@@ -529,16 +541,15 @@ fn filter_columns(text: &str) -> Vec<String> {
     cols
 }
 
+/// A name quoted for a script, with its closing delimiter doubled so a name can never end the quoting early.
 fn quote(engine: Engine, name: &str) -> String {
     match engine {
-        Engine::Mssql => format!("[{name}]"),
-        Engine::Mysql => format!("`{name}`"),
+        Engine::Mssql => format!("[{}]", name.replace(']', "]]")),
+        Engine::Mysql => format!("`{}`", name.replace('`', "``")),
         Engine::Postgres => {
-            if name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
-                name.to_string()
-            } else {
-                format!("\"{name}\"")
-            }
+            let simple = name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !name.starts_with(|c: char| c.is_ascii_digit());
+            if simple { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
         }
     }
 }
@@ -583,7 +594,7 @@ fn index_sql(engine: Engine, table: &str, keys: &[String], include: &[String]) -
             sql
         }
         Engine::Mysql => format!(
-            "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM = INPLACE, LOCK = NONE;",
+            "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM = INPLACE LOCK = NONE;",
             quote(engine, &name)
         ),
     })
@@ -738,7 +749,20 @@ fn scan_filter(cx: &Cx) -> Vec<Draft> {
             && n.rows_read.is_some_and(|r| r >= 10_000.0)
             && n.predicate.is_some()
     };
-    for n in cx.nodes.iter().filter(|n| n.warnings.contains(&PlanWarning::ResidualPredicate) || mysql_estimate(n)) {
+    // PostgreSQL's estimate: a sequential scan of a big table expected to keep almost none of it (the table's size
+    // comes from the planner's statistics, filled in with the plan).
+    let postgres_estimate = |n: &PlanNode| {
+        cx.engine() == Engine::Postgres
+            && n.kind == NodeKind::Scan
+            && n.act_rows.is_none()
+            && n.predicate.is_some()
+            && n.table_rows.is_some_and(|t| t >= 10_000.0 && rows_out(n) * 10.0 <= t)
+    };
+    for n in cx
+        .nodes
+        .iter()
+        .filter(|n| n.warnings.contains(&PlanWarning::ResidualPredicate) || mysql_estimate(n) || postgres_estimate(n))
+    {
         let Some(table) = n.object.clone() else { continue };
         if hinted.contains(&table_leaf(&table).to_ascii_lowercase()) {
             continue;
@@ -793,7 +817,8 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     let node = cx
         .nodes
         .iter()
-        .filter(|n| conditions(n).contains("CONVERT_IMPLICIT") || n.warnings.contains(&PlanWarning::ImplicitConversion))
+        // A converted column is the problem; a converted parameter, variable or literal costs nothing.
+        .filter(|n| converts_column(&conditions(n)) || n.warnings.contains(&PlanWarning::ImplicitConversion))
         .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
         .copied();
     if plan_lines.is_empty() && node.is_none() {
@@ -803,7 +828,11 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     let text =
         seek_line.cloned().or_else(|| plan_lines.first().cloned()).or_else(|| node.map(conditions)).unwrap_or_default();
     let blocks_seek = seek_line.is_some() || node.is_some_and(|n| n.kind == NodeKind::Scan);
-    let column = convert_column(&text);
+    let column = convert_operands(&text)
+        .into_iter()
+        .find(|op| is_column_operand(op))
+        .and_then(column_label)
+        .or_else(|| convert_column(&text));
     let impact = node.map_or(0.05, |n| cx.share(n));
     let mut d =
         Draft::new("implicit-conversion", InsightArea::Query, impact, node.map(|n| vec![n.id]).unwrap_or_default());
@@ -823,6 +852,83 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     d.fix = "Send the parameter with the column's exact type: VarChar instead of NVarChar (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM).".into();
     d.verify = "Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek.".into();
     vec![d]
+}
+
+/// Each CONVERT_IMPLICIT operand in a predicate as written: `[db].[s].[t].[c]`, `[@1]`, `N'x'`, `[Expr1004]`.
+fn convert_operands(text: &str) -> Vec<&str> {
+    const CALL: &str = "CONVERT_IMPLICIT(";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = rest.find(CALL) {
+        let after = &rest[i + CALL.len()..];
+        // The target type comes first and may have its own parentheses: nvarchar(200).
+        let mut depth = 0i32;
+        let start = after.char_indices().find_map(|(j, ch)| {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => return Some(j + 1),
+                _ => {}
+            }
+            None
+        });
+        if let Some(start) = start {
+            let operand = &after[start..];
+            let (mut depth, mut bracket, mut quote) = (0i32, false, false);
+            let mut end = operand.len();
+            for (j, ch) in operand.char_indices() {
+                match ch {
+                    '[' if !quote => bracket = true,
+                    ']' if !quote => bracket = false,
+                    '\'' if !bracket => quote = !quote,
+                    '(' if !bracket && !quote => depth += 1,
+                    ')' if !bracket && !quote => {
+                        if depth == 0 {
+                            end = j;
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    ',' if depth == 0 && !bracket && !quote => {
+                        end = j;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            out.push(operand[..end].trim());
+        }
+        rest = after;
+    }
+    out
+}
+
+/// A CONVERT_IMPLICIT operand that is a column, not a parameter (`@1`), variable, literal or computed expression.
+fn is_column_operand(op: &str) -> bool {
+    let last = op.rsplit('.').next().unwrap_or(op).trim_matches(|c| c == '[' || c == ']' || c == '"');
+    let computed = last.len() > 4 && last.starts_with("Expr") && last[4..].chars().all(|c| c.is_ascii_digit());
+    !last.is_empty()
+        && !op.contains('(')
+        && !op.starts_with('\'')
+        && !op.starts_with("N'")
+        && !last.starts_with('@')
+        && !last.starts_with(|c: char| c.is_ascii_digit() || c == '-')
+        && !computed
+}
+
+/// Whether a predicate converts a column (the case that costs an index seek or a good estimate).
+fn converts_column(text: &str) -> bool {
+    convert_operands(text).into_iter().any(is_column_operand)
+}
+
+/// `[db].[dbo].[Users].[Email]` → "Users.Email".
+fn column_label(op: &str) -> Option<String> {
+    let parts: Vec<&str> = op.split('.').map(|p| p.trim_matches(|c| c == '[' || c == ']' || c == '"')).collect();
+    match parts.as_slice() {
+        [.., table, column] if !column.is_empty() => Some(format!("{table}.{column}")),
+        [column] if !column.is_empty() => Some((*column).to_string()),
+        _ => None,
+    }
 }
 
 /// `CONVERT_IMPLICIT(nvarchar(256),[db].[dbo].[Users].[Email],0)` → "Users.Email".
@@ -2052,24 +2158,62 @@ fn join_buffer(cx: &Cx) -> Vec<Draft> {
 }
 
 fn temp_table_sort(cx: &Cx) -> Vec<Draft> {
+    let mariadb = cx.plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
+        || cx.plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"));
+    let server = if mariadb { "MariaDB" } else { "MySQL" };
+    let in_temp =
+        |n: &PlanNode| n.op == "Temporary table" || n.detail.as_deref().is_some_and(|d| d.contains("temporary table"));
+    // MySQL marks the grouping step (`grouping_operation`, op Group) or the ordering step (`ordering_operation`, op
+    // Sort); MariaDB wraps a "Temporary table" node, sorted when a Sort wraps that.
+    let grouping = |n: &PlanNode| matches!(n.op.as_str(), "Group" | "Distinct" | "Temporary table");
+    let sorted = |n: &PlanNode| {
+        n.detail.as_deref().is_some_and(|d| d.contains("filesort"))
+            || cx.nodes.iter().any(|p| p.kind == NodeKind::Sort && p.children.iter().any(|c| c.id == n.id))
+    };
+    fn grouped_below(n: &PlanNode, in_temp: &dyn Fn(&PlanNode) -> bool) -> bool {
+        n.children.iter().any(|c| {
+            (matches!(c.op.as_str(), "Group" | "Distinct" | "Temporary table") && in_temp(c))
+                || grouped_below(c, in_temp)
+        })
+    }
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| n.detail.as_deref().is_some_and(|d| d.contains("temporary table"))) {
+    for n in cx.nodes.iter().filter(|n| in_temp(n)) {
         let rows = n.children.iter().map(rows_out).fold(0.0, f64::max).max(rows_out(n));
         if rows < 10_000.0 {
             continue;
         }
-        let filesort = n.detail.as_deref().is_some_and(|d| d.contains("filesort"));
         let impact = cx.subtree(n).max(0.1);
-        let mut d = Draft::new("temp-table-sort", InsightArea::Index, impact, vec![n.id]);
-        d.title = if filesort {
-            format!("Groups {} rows in an internal temporary table, then sorts them (filesort)", format::count(rows))
-        } else {
-            format!("Collects {} rows in an internal temporary table", format::count(rows))
-        };
-        d.detail = "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.".into();
-        d.fix = "An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.".into();
-        d.verify = "Explain again: no \"using temporary table\" on the grouping.".into();
-        out.push(d);
+        if grouping(n) {
+            let mut d = Draft::new("temp-table-sort", InsightArea::Index, impact, vec![n.id]);
+            d.title = if sorted(n) {
+                format!(
+                    "Groups {} rows in an internal temporary table, then sorts them (filesort)",
+                    format::count(rows)
+                )
+            } else {
+                format!("Collects {} rows in an internal temporary table", format::count(rows))
+            };
+            d.detail = format!(
+                "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so {server} builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result."
+            );
+            d.fix = format!(
+                "An index whose leading columns match the GROUP BY lets {server} group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small."
+            );
+            d.verify = "Explain again: no \"using temporary table\" on the grouping.".into();
+            out.push(d);
+        } else if !grouped_below(n, &in_temp) {
+            // The ordering step's temporary table: the grouping below already reads an index in order, so only the
+            // groups are sorted. No index changes that when the order is by an aggregate.
+            let mut d = Draft::new("temp-table-sort", InsightArea::Query, impact, vec![n.id]);
+            d.cap = Severity::Low;
+            d.title = "Sorts the groups in a temporary table (filesort)".into();
+            d.detail = format!(
+                "Grouping already reads an index in order; {server} then sorts the grouped result, because the query orders by an aggregate or by columns the index doesn't provide."
+            );
+            d.fix = "Ordering by an aggregate (COUNT(*) DESC) always needs this sort: keep the grouped set small with a selective WHERE, or add a LIMIT so only the top groups are kept.".into();
+            d.verify = "Explain again: the sort's input is the groups you expect, not every row.".into();
+            out.push(d);
+        }
     }
     out
 }
@@ -2111,6 +2255,20 @@ fn capitalize(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn names_in_scripts_cannot_break_out_of_their_quotes() {
+        assert_eq!(quote(Engine::Mssql, "a]; DROP TABLE t; --"), "[a]]; DROP TABLE t; --]");
+        assert_eq!(quote(Engine::Mysql, "a`; DROP TABLE t; --"), "`a``; DROP TABLE t; --`");
+        assert_eq!(quote(Engine::Postgres, "a\"; DROP TABLE t; --"), "\"a\"\"; DROP TABLE t; --\"");
+        assert_eq!(quote(Engine::Postgres, "orders"), "orders");
+        // Names read back from plans are unescaped once, so quoting them again round-trips.
+        assert_eq!(clean_identifier("[a]]b]"), "a]b");
+        assert_eq!(clean_identifier("`a``b`"), "a`b");
+        assert_eq!(clean_identifier("\"a\"\"b\""), "a\"b");
+        assert_eq!(quote(Engine::Mssql, &clean_identifier("[a]]b]")), "[a]]b]");
+    }
+
     use super::*;
     use crate::model::Properties;
 
@@ -2164,6 +2322,73 @@ mod tests {
 
     fn rules(p: &Plan) -> Vec<String> {
         insights(p).into_iter().map(|i| i.rule).collect()
+    }
+
+    #[test]
+    fn a_temporary_table_on_the_grouping_differs_from_sorting_the_groups() {
+        let scan = || {
+            let mut t = node(3, "Table scan", NodeKind::Scan);
+            t.est_rows = 499_000.0;
+            t.object = Some("shop.orders".into());
+            t
+        };
+        let title = |p: &Plan| insights(p).into_iter().find(|i| i.rule == "temp-table-sort").map(|i| i.title);
+        // MySQL: grouping reads an index in order; only the ORDER BY COUNT(*) sorts, in a temporary table.
+        let mut group = node(2, "Group", NodeKind::Aggregate);
+        group.est_rows = 499_000.0;
+        group.children = vec![scan()];
+        let mut sort = node(1, "Sort", NodeKind::Sort);
+        sort.detail = Some("using filesort, using temporary table".into());
+        sort.est_rows = 499_000.0;
+        sort.children = vec![group.clone()];
+        let t = title(&plan(Engine::Mysql, sort.clone())).expect("the sort of the groups");
+        assert!(t.starts_with("Sorts the groups"), "{t}");
+
+        // MySQL: the grouping itself needs a temporary table.
+        group.detail = Some("using temporary table".into());
+        sort.children = vec![group];
+        sort.detail = Some("using filesort".into());
+        let t = title(&plan(Engine::Mysql, sort)).expect("grouping in a temporary table");
+        assert!(t.starts_with("Groups 499K rows"), "{t}");
+
+        // MariaDB: Sort → Temporary table → table.
+        let mut temp = node(2, "Temporary table", NodeKind::Other);
+        temp.est_rows = 499_000.0;
+        temp.children = vec![scan()];
+        let mut sort = node(1, "Sort", NodeKind::Sort);
+        sort.est_rows = 499_000.0;
+        sort.children = vec![temp];
+        let mut p = plan(Engine::Mysql, sort);
+        p.props.insert("flavor".into(), "MariaDB".into());
+        let found = insights(&p).into_iter().find(|i| i.rule == "temp-table-sort").expect("MariaDB's shape");
+        assert!(found.title.contains("then sorts them"), "{}", found.title);
+        assert!(found.detail.contains("MariaDB"), "{}", found.detail);
+    }
+
+    #[test]
+    fn converting_a_parameter_is_not_a_type_mismatch() {
+        // SQL Server converts the parameter, not the column: the index works and estimates are fine.
+        let mut scan = node(1, "Clustered Index Seek", NodeKind::Seek);
+        scan.seek_predicate = Some("[db].[shop].[orders].[id]=CONVERT_IMPLICIT(bigint,[@1],0)".into());
+        assert!(!rules(&plan(Engine::Mssql, scan.clone())).contains(&"implicit-conversion".to_string()));
+        // `UPDATE shop.products SET price = price + 1 WHERE id = 1`, auto-parameterized.
+        scan.seek_predicate = Some("[db].[shop].[products].[id]=CONVERT_IMPLICIT(int,[@2],0)".into());
+        assert!(!rules(&plan(Engine::Mssql, scan.clone())).contains(&"implicit-conversion".to_string()));
+        scan.seek_predicate =
+            Some("[Expr1004]=CONVERT_IMPLICIT(int,[Expr1003],0) AND x=CONVERT_IMPLICIT(int,N'5',0)".into());
+        assert!(!rules(&plan(Engine::Mssql, scan)).contains(&"implicit-conversion".to_string()));
+
+        // The column is converted: that's the mismatch, named after the column even after a parameter convert.
+        let mut scan = node(1, "Clustered Index Scan", NodeKind::Scan);
+        scan.predicate = Some(
+            "CONVERT_IMPLICIT(bigint,[@1],0)>0 AND CONVERT_IMPLICIT(nvarchar(200),[db].[shop].[customers].[email],0)=[@P1]"
+                .into(),
+        );
+        let p = plan(Engine::Mssql, scan);
+        let found =
+            insights(&p).into_iter().find(|i| i.rule == "implicit-conversion").expect("the column is converted");
+        assert!(found.title.contains("customers.email"), "{}", found.title);
+        assert_eq!(convert_operands("CONVERT_IMPLICIT(nvarchar(36),[m].[c],0)=[@p1]"), vec!["[m].[c]"]);
     }
 
     #[test]

@@ -9,11 +9,12 @@ import type { Finding } from "../gen/Finding";
 import type { PlanNode } from "../gen/PlanNode";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
-import { api, copyText } from "../lib/api";
+import { api } from "../lib/api";
 import { ago, count, duration, metric, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore } from "../lib/store";
+import { copyAndTell } from "../lib/clipboard";
 
 const CONFIDENCE_LABEL = { high: "High confidence", medium: "Medium confidence", low: "Low confidence" } as const;
 const SEVERITY_LABEL = { high: "High impact", medium: "Medium impact", low: "Low impact" } as const;
@@ -30,13 +31,11 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
 
   const copyFix = async () => {
     if (!finding.fix?.sql) return toast("This finding has no script to copy");
-    await copyText(finding.fix.sql);
-    toast("Fix copied");
+    await copyAndTell(finding.fix.sql, "Fix copied");
   };
   const copyBrief = async () => {
     const brief = await (await api()).brief(report.snapshot.connection, finding.id, report.snapshot.options?.window_days ?? null);
-    await copyText(brief);
-    toast("Brief copied. Paste it into your coding agent");
+    await copyAndTell(brief, "Brief copied. Paste it into your coding agent");
   };
   const openInEditor = () => {
     const sql = finding.fix?.sql ?? queries[0]?.query.text;
@@ -189,7 +188,7 @@ function CopyId({ id }: { id: string }) {
       className="tag mono"
       title="Copy finding id (for culprit show)"
       onClick={async () => {
-        await copyText(id);
+        if (!(await copyAndTell(id))) return;
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
       }}

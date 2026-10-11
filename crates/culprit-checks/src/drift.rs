@@ -177,7 +177,7 @@ fn columns(
                     sql: None,
                     sql_for: None,
                 }),
-                Some(other) if !col.data_type.eq_ignore_ascii_case(&other.data_type) => items.push(DriftItem {
+                Some(other) if !same_type(&col.data_type, &other.data_type) => items.push(DriftItem {
                     kind: DriftKind::Column,
                     presence: DriftPresence::Different,
                     title: format!("{subject} is {} in {} and {} in {}.", col.data_type, n.a, other.data_type, n.b),
@@ -422,9 +422,28 @@ fn create_sql(target: &Snapshot, index: &IndexStat) -> Option<String> {
             sql + &filter + ";"
         }
         Engine::Mysql => {
-            format!("CREATE {unique}INDEX {name}\n    ON {table} ({keys})\n    ALGORITHM=INPLACE, LOCK=NONE;")
+            format!("CREATE {unique}INDEX {name}\n    ON {table} ({keys})\n    ALGORITHM=INPLACE LOCK=NONE;")
         }
     })
+}
+
+/// Column types compare without MySQL's integer display widths: 8.0.19+ dropped `int(11)` to `int`, MariaDB keeps it,
+/// and the column stores the same values either way. `tinyint(1)` keeps its width: it reads as a boolean.
+fn same_type(a: &str, b: &str) -> bool {
+    fn plain(t: &str) -> String {
+        let lower = t.trim().to_ascii_lowercase();
+        for int in ["bigint", "mediumint", "smallint", "integer", "int"] {
+            if let Some(rest) = lower.strip_prefix(int)
+                && let Some(after) = rest.strip_prefix('(')
+                && let Some(close) = after.find(')')
+                && after[..close].chars().all(|c| c.is_ascii_digit())
+            {
+                return format!("{int}{}", &after[close + 1..]);
+            }
+        }
+        lower
+    }
+    plain(a) == plain(b)
 }
 
 fn settings(n: &Names, sa: &Snapshot, sb: &Snapshot, items: &mut Vec<DriftItem>) {
@@ -481,6 +500,15 @@ fn summarize(items: &[DriftItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_display_widths_are_not_drift() {
+        assert!(same_type("int", "int(11)"));
+        assert!(same_type("bigint unsigned", "bigint(20) unsigned"));
+        assert!(!same_type("tinyint(1)", "tinyint(4)"));
+        assert!(!same_type("int", "bigint"));
+        assert!(same_type("VARCHAR(20)", "varchar(20)"));
+    }
 
     fn report(name: &str) -> Report {
         let text = include_str!("../../../fixtures/mssql-demo.report.json");

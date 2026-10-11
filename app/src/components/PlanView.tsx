@@ -5,7 +5,7 @@ import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
 import { planShares } from "../lib/actual";
 import { count, duration, percent } from "../lib/format";
-import { insightsByNode } from "../lib/plan-format";
+import { insightsByNode, rows as rowsText } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
 import { ActualSummary } from "./ActualSummary";
@@ -73,7 +73,7 @@ function misestimate(node: PlanNode): number | null {
 export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) {
   const nodes = useMemo(() => walk(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
-  // Measured plans rank operators by their own time; estimated plans by cost (under a Postgres Limit, children's costs
+  // Measured plans rank operators by their own time; estimated plans by cost (under a PostgreSQL Limit, children's costs
   // assume they run to completion and add up to more than the root's, which planShares accounts for).
   const shares = useMemo(() => planShares(plan), [plan]);
   const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
@@ -194,11 +194,11 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
               <span className="rows">
                 {node.act_rows != null ? (
                   <>
-                    {count(node.est_rows * Math.max(1, node.est_executions))} <span className="arrow">→</span> {count(node.act_rows)}
+                    {rowsText(node.est_rows * Math.max(1, node.est_executions))} <span className="arrow">→</span> {rowsText(node.act_rows)}
                     {mis != null && Math.abs(mis) >= 10 && <span className="mis">×{count(Math.abs(mis))}{mis < 0 ? " over" : " under"}</span>}
                   </>
                 ) : (
-                  count(node.est_rows * Math.max(1, node.est_executions))
+                  rowsText(node.est_rows * Math.max(1, node.est_executions))
                 )}
               </span>
               <span className="cost">

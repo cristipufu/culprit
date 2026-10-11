@@ -4,14 +4,15 @@
       "findings",
       "health",
       "statistics",
-      "deadlocks"
+      "deadlocks",
+      "plans"
     ],
     "connection": "mariadb-demo",
     "coverage": "performance_schema, the 1 minute since statistics were reset",
     "database": "shop",
     "engine": "mysql",
     "environment": "development",
-    "headline": "9 opportunities; the top 3 touch 95% of database time.",
+    "headline": "10 opportunities; the top 3 touch 90% of database time.",
     "product": "MariaDB 11.8.9",
     "report_id": "20261011T160540.394Z",
     "taken_at": "2026-10-11T16:05:40Z",
@@ -63,6 +64,17 @@
           },
           {
             "at": null,
+            "finding_id": "lock-time:375c64398248650e",
+            "id": "lock-time:375c64398248650e",
+            "kind": "finding",
+            "label": "A read from orders spends nearly all its time waiting on locks, 2.5 s per run",
+            "query_id": null,
+            "share": 0.8855883790586936,
+            "status": "bad",
+            "value": "50.0 s waiting on locks"
+          },
+          {
+            "at": null,
             "finding_id": "chatty-query:a92bb0be330ac53a",
             "id": "chatty-query:a92bb0be330ac53a",
             "kind": "finding",
@@ -71,17 +83,6 @@
             "share": 0.010408117938943744,
             "status": "watch",
             "value": "75% of executions"
-          },
-          {
-            "at": null,
-            "finding_id": "heavy-query:decf59629e790076",
-            "id": "heavy-query:decf59629e790076",
-            "kind": "finding",
-            "label": "A read from orders examines 11K rows for every row it returns",
-            "query_id": null,
-            "share": 0.05613893923861639,
-            "status": "watch",
-            "value": "6% of DB time"
           }
         ],
         "key": "findings",
@@ -89,8 +90,8 @@
           {
             "key": "high",
             "label": "High",
-            "text": "1",
-            "value": 1
+            "text": "2",
+            "value": 2
           },
           {
             "key": "medium",
@@ -107,7 +108,7 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "9 opportunities; the top 3 touch 95% of database time.",
+        "takeaway": "10 opportunities; the top 3 touch 90% of database time.",
         "title": "Findings"
       },
       {
@@ -197,7 +198,7 @@
         "title": "Top queries"
       },
       {
-        "detail": "Time inside InnoDB fetching and changing rows.",
+        "detail": "performance_schema totals since MariaDB started 69 minutes ago.",
         "fix_sql": null,
         "items": [
           {
@@ -238,7 +239,7 @@
         "metrics": [
           {
             "key": "total",
-            "label": "Waiting",
+            "label": "Waiting since start",
             "text": "8 min",
             "value": 463670.206726155
           }
@@ -481,7 +482,19 @@
       {
         "detail": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "temp-table-sort",
+            "kind": "rule",
+            "label": "A temporary table and filesort",
+            "query_id": "375c64398248650e",
+            "share": 0.8855883790586936,
+            "status": "bad",
+            "value": "1 plan"
+          }
+        ],
         "key": "plans",
         "metrics": [
           {
@@ -493,14 +506,70 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "0",
-            "value": 0
+            "text": "1",
+            "value": 1
           }
         ],
         "next": null,
-        "status": "good",
-        "takeaway": "None of the 5 captured plans shows a known problem.",
+        "status": "watch",
+        "takeaway": "One of the 5 captured plans has something to fix: a temporary table and filesort (89% of database time).",
         "title": "Plans"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "storage",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "This scan has no storage timings.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "3%"
+          }
+        ],
+        "key": "connections",
+        "metrics": [],
+        "next": null,
+        "status": "info",
+        "takeaway": "This scan has no count of new connections; the ones in use are below.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": null,
+        "status": "good",
+        "takeaway": "MariaDB isn't a replica here and reports none: nothing can fall behind.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "MariaDB reported no failed or cancelled runs per statement in this scan.",
+        "title": "Failing queries"
       },
       {
         "detail": null,
@@ -543,6 +612,7 @@
   "mssql-demo-staging": {
     "attention": [
       "statistics",
+      "findings",
       "deadlocks",
       "waits"
     ],
@@ -573,6 +643,28 @@
         "items": [
           {
             "at": null,
+            "finding_id": "tier-limit:log-write",
+            "id": "tier-limit:log-write",
+            "kind": "finding",
+            "label": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
+            "query_id": null,
+            "share": null,
+            "status": "bad",
+            "value": "at limit 38%"
+          },
+          {
+            "at": null,
+            "finding_id": "memory-queue:server",
+            "id": "memory-queue:server",
+            "kind": "finding",
+            "label": "Waiting for memory takes 6% of all waiting",
+            "query_id": null,
+            "share": null,
+            "status": "watch",
+            "value": "6% of waits"
+          },
+          {
+            "at": null,
             "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
             "id": "unindexed-fk:shop.ticket_events(ticket_id)",
             "kind": "finding",
@@ -581,28 +673,6 @@
             "share": null,
             "status": "info",
             "value": "800K rows unindexed"
-          },
-          {
-            "at": null,
-            "finding_id": "unused-index:shop.orders",
-            "id": "unused-index:shop.orders",
-            "kind": "finding",
-            "label": "ix_orders_status_created on orders is never read",
-            "query_id": null,
-            "share": null,
-            "status": "info",
-            "value": "32.3 MB unused"
-          },
-          {
-            "at": null,
-            "finding_id": "duplicate-index:shop.orders.ix_orders_status",
-            "id": "duplicate-index:shop.orders.ix_orders_status",
-            "kind": "finding",
-            "label": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
-            "query_id": null,
-            "share": null,
-            "status": "info",
-            "value": "26.5 MB redundant"
           }
         ],
         "key": "findings",
@@ -610,25 +680,25 @@
           {
             "key": "high",
             "label": "High",
-            "text": "0",
-            "value": 0
+            "text": "1",
+            "value": 1
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "0",
-            "value": 0
+            "text": "1",
+            "value": 1
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "7",
-            "value": 7
+            "text": "11",
+            "value": 11
           }
         ],
         "next": null,
-        "status": "info",
-        "takeaway": "7 opportunities, none of them high.",
+        "status": "bad",
+        "takeaway": "13 opportunities, 1 of them high.",
         "title": "Findings"
       },
       {
@@ -643,7 +713,7 @@
         "title": "Top queries"
       },
       {
-        "detail": "Short waits on the server's own memory structures (page latches, mutexes).",
+        "detail": "Server totals since SQL Server started.",
         "fix_sql": null,
         "items": [
           {
@@ -706,7 +776,7 @@
         "metrics": [
           {
             "key": "total",
-            "label": "Waiting",
+            "label": "Waiting since start",
             "text": "2 min",
             "value": 106491
           }
@@ -744,7 +814,7 @@
         "items": [
           {
             "at": "2026-10-11T11:42:17Z",
-            "finding_id": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
             "id": "948217a42dfae823",
             "kind": "deadlock",
             "label": "Key-lookup deadlock on shop.customers",
@@ -755,7 +825,7 @@
           },
           {
             "at": "2026-10-11T13:58:59Z",
-            "finding_id": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
             "id": "8e8d0546690aef93",
             "kind": "deadlock",
             "label": "Opposite access order on shop.customers, shop.orders",
@@ -861,6 +931,50 @@
         "title": "Plans"
       },
       {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "storage",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "This scan has no storage timings.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "connections",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "This scan has no connection counters.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": null,
+        "status": "good",
+        "takeaway": "No availability group or geo-replica: nothing can fall behind.",
+        "title": "Replication"
+      },
+      {
+        "detail": "Query statistics shows what it takes to turn them on.",
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "No query statistics, so failed runs aren't counted.",
+        "title": "Failing queries"
+      },
+      {
         "detail": "Until they're on, Culprit checks tables, indexes and settings only: no query list, plans or trends.",
         "fix_sql": "ALTER DATABASE CURRENT SET QUERY_STORE = ON;",
         "items": [
@@ -881,8 +995,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "3",
-            "value": 3
+            "text": "5",
+            "value": 5
           }
         ],
         "next": null,
@@ -895,6 +1009,7 @@
   "mssql-demo": {
     "attention": [
       "findings",
+      "failures",
       "deadlocks",
       "waits",
       "plans"
@@ -904,7 +1019,7 @@
     "database": "culprit_demo",
     "engine": "mssql",
     "environment": "local",
-    "headline": "24 opportunities; the top 3 touch 80% of database time.",
+    "headline": "31 opportunities; the top 3 touch 61% of database time.",
     "product": "SQL Server 2022",
     "report_id": "20261011T121347.162Z",
     "taken_at": "2026-10-11T12:13:47Z",
@@ -919,19 +1034,19 @@
             "key": "total",
             "label": "Database time",
             "text": "6 min",
-            "value": 334370.19700000004
+            "value": 336961.25000000006
           },
           {
             "key": "runs",
             "label": "Runs",
             "text": "71K",
-            "value": 70655
+            "value": 71426
           },
           {
             "key": "cpu-share",
             "label": "On CPU",
             "text": "27%",
-            "value": 0.27233856012591934
+            "value": 0.2702444212798949
           },
           {
             "key": "window-hours",
@@ -951,36 +1066,36 @@
         "items": [
           {
             "at": null,
-            "finding_id": "plan-warnings:implicit-conversion:customers.email",
-            "id": "plan-warnings:implicit-conversion:customers.email",
-            "kind": "finding",
-            "label": "A type mismatch on customers.email stops a read from customers from using an index",
-            "query_id": null,
-            "share": 0.5439766525721529,
-            "status": "bad",
-            "value": "54% of DB time"
-          },
-          {
-            "at": null,
             "finding_id": "lock-time:138",
             "id": "lock-time:138",
             "kind": "finding",
             "label": "An update of orders spends nearly all its time waiting on locks, 28.7 s per run",
             "query_id": null,
-            "share": 0.23571236877472987,
+            "share": 0.34120252699679854,
             "status": "bad",
             "value": "2 min waiting on locks"
           },
           {
             "at": null,
-            "finding_id": "chatty-query:6",
-            "id": "chatty-query:6",
+            "finding_id": "failing-query:263",
+            "id": "failing-query:263",
             "kind": "finding",
-            "label": "A read from products runs 60K times in 5 hours, one row at a time",
+            "label": "A read from order_items times out on every run, at about 15 s",
             "query_id": null,
-            "share": 0.02017928520000951,
+            "share": 0.2673650901995407,
+            "status": "bad",
+            "value": "100% of runs fail"
+          },
+          {
+            "at": null,
+            "finding_id": "plan-insights:nested-loops:query-263",
+            "id": "plan-insights:nested-loops:query-263",
+            "kind": "finding",
+            "label": "Repeats its read of order_items 1.5M times, once per row of order_items",
+            "query_id": null,
+            "share": 0.2673650901995407,
             "status": "watch",
-            "value": "86% of executions"
+            "value": "27% of DB time"
           }
         ],
         "key": "findings",
@@ -988,29 +1103,29 @@
           {
             "key": "high",
             "label": "High",
-            "text": "6",
-            "value": 6
+            "text": "5",
+            "value": 5
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "8",
-            "value": 8
+            "text": "11",
+            "value": 11
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "10",
-            "value": 10
+            "text": "15",
+            "value": 15
           }
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "24 opportunities; the top 3 touch 80% of database time.",
+        "takeaway": "31 opportunities; the top 3 touch 61% of database time.",
         "title": "Findings"
       },
       {
-        "detail": "15 queries tracked over the last 5 hours.",
+        "detail": "16 queries tracked over the last 5 hours.",
         "fix_sql": null,
         "items": [
           {
@@ -1020,7 +1135,7 @@
             "kind": "query",
             "label": "an update of orders",
             "query_id": "138",
-            "share": 0.34384652409676325,
+            "share": 0.34120252699679854,
             "status": null,
             "value": "34%"
           },
@@ -1031,7 +1146,7 @@
             "kind": "query",
             "label": "a read from order_items",
             "query_id": "263",
-            "share": 0.26943691695106425,
+            "share": 0.2673650901995407,
             "status": null,
             "value": "27%"
           },
@@ -1042,7 +1157,7 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "143",
-            "share": 0.21442932905889334,
+            "share": 0.21278048143517983,
             "status": null,
             "value": "21%"
           },
@@ -1053,7 +1168,7 @@
             "kind": "query",
             "label": "a read from customers",
             "query_id": "7",
-            "share": 0.06628937686094073,
+            "share": 0.06577964676947273,
             "status": null,
             "value": "7%"
           },
@@ -1064,7 +1179,7 @@
             "kind": "query",
             "label": "a read from orders",
             "query_id": "249",
-            "share": 0.04064144508668636,
+            "share": 0.040328933964958874,
             "status": null,
             "value": "4%"
           }
@@ -1075,19 +1190,19 @@
             "key": "top-share",
             "label": "Top query",
             "text": "34%",
-            "value": 0.34384652409676325
+            "value": 0.34120252699679854
           },
           {
             "key": "top5-share",
             "label": "Top five",
             "text": "93%",
-            "value": 0.9346435920543479
+            "value": 0.9274566793659507
           },
           {
             "key": "queries",
             "label": "Queries",
-            "text": "15",
-            "value": 15
+            "text": "16",
+            "value": 16
           }
         ],
         "next": null,
@@ -1305,7 +1420,7 @@
         "items": [
           {
             "at": "2026-10-11T11:42:17Z",
-            "finding_id": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
             "id": "948217a42dfae823",
             "kind": "deadlock",
             "label": "Key-lookup deadlock on shop.customers",
@@ -1316,7 +1431,7 @@
           },
           {
             "at": "2026-10-11T13:58:59Z",
-            "finding_id": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
             "id": "8e8d0546690aef93",
             "kind": "deadlock",
             "label": "Opposite access order on shop.customers, shop.orders",
@@ -1351,7 +1466,7 @@
             "kind": "index-add",
             "label": "order_items (order_id)",
             "query_id": "9",
-            "share": 0.060806501842626835,
+            "share": 0.060338932147242445,
             "status": null,
             "value": "6%"
           },
@@ -1362,7 +1477,7 @@
             "kind": "index-add",
             "label": "orders (shipped_at)",
             "query_id": "8",
-            "share": 0.014892989999344946,
+            "share": 0.014778470818232064,
             "status": null,
             "value": "1%"
           },
@@ -1439,24 +1554,24 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "implicit-conversion",
-            "kind": "rule",
-            "label": "An implicit conversion",
-            "query_id": "138",
-            "share": 0.6317586133431622,
-            "status": "bad",
-            "value": "4 plans"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "missing-index-hint",
             "kind": "rule",
             "label": "A missing index",
             "query_id": "249",
-            "share": 0.07569949184197178,
+            "share": 0.0751174029654745,
             "status": "bad",
             "value": "3 plans"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "implicit-conversion",
+            "kind": "rule",
+            "label": "An implicit conversion",
+            "query_id": "7",
+            "share": 0.06577964676947273,
+            "status": "bad",
+            "value": "1 plan"
           },
           {
             "at": null,
@@ -1465,7 +1580,7 @@
             "kind": "rule",
             "label": "A nested loop repeating thousands of times",
             "query_id": "263",
-            "share": 0.26943691695106425,
+            "share": 0.2673650901995407,
             "status": "watch",
             "value": "1 plan"
           },
@@ -1476,7 +1591,7 @@
             "kind": "rule",
             "label": "A plan that can't go parallel",
             "query_id": "263",
-            "share": 0.26943691695106425,
+            "share": 0.2673650901995407,
             "status": "watch",
             "value": "1 plan"
           }
@@ -1492,26 +1607,172 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "8",
-            "value": 8
+            "text": "5",
+            "value": 5
           }
         ],
         "next": null,
         "status": "watch",
-        "takeaway": "8 of 13 captured plans have something to fix; an implicit conversion shows up in 4 plans (63% of database time).",
+        "takeaway": "5 of 13 captured plans have something to fix; a missing index shows up in 3 plans (8% of database time).",
         "title": "Plans"
+      },
+      {
+        "detail": "Averages in the hour since the server last restarted.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "culprit_demo:culprit_demo_log",
+            "kind": "signal",
+            "label": "culprit_demo log",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "0.63 ms per write"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "culprit_demo:culprit_demo",
+            "kind": "signal",
+            "label": "culprit_demo",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "0.04 ms per read"
+          }
+        ],
+        "key": "storage",
+        "metrics": [
+          {
+            "key": "read-ms",
+            "label": "Avg read",
+            "text": "0.04 ms",
+            "value": 0.04025974025974026
+          },
+          {
+            "key": "log-write-ms",
+            "label": "Avg log write",
+            "text": "0.63 ms",
+            "value": 0.63199539082005
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Storage answers quickly: reads average 0.04 ms, log writes 0.63 ms.",
+        "title": "Storage"
       },
       {
         "detail": null,
         "fix_sql": null,
         "items": [],
+        "key": "connections",
+        "metrics": [
+          {
+            "key": "per-minute",
+            "label": "New per minute",
+            "text": "3",
+            "value": 3
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Connections are reused: 3 new a minute.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": null,
+        "status": "good",
+        "takeaway": "No availability group or geo-replica: nothing can fall behind.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "failing-query:246",
+            "id": "246",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "246",
+            "share": 0.25,
+            "status": "bad",
+            "value": "25% of runs"
+          },
+          {
+            "at": null,
+            "finding_id": "failing-query:263",
+            "id": "263",
+            "kind": "query",
+            "label": "a read from order_items",
+            "query_id": "263",
+            "share": 1,
+            "status": "bad",
+            "value": "every run"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "161",
+            "kind": "query",
+            "label": "an update of orders",
+            "query_id": "161",
+            "share": 0.25,
+            "status": "info",
+            "value": "25% of runs"
+          }
+        ],
+        "key": "failures",
+        "metrics": [
+          {
+            "key": "statements",
+            "label": "Statements",
+            "text": "3",
+            "value": 3
+          },
+          {
+            "key": "runs",
+            "label": "Unfinished runs",
+            "text": "57",
+            "value": 57
+          }
+        ],
+        "next": null,
+        "status": "bad",
+        "takeaway": "A read from orders fails 25% of the time.",
+        "title": "Failing queries"
+      },
+      {
+        "detail": null,
+        "fix_sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
+        "items": [
+          {
+            "at": null,
+            "finding_id": "config:query-store-capture",
+            "id": "config:query-store-capture",
+            "kind": "finding",
+            "label": "Query Store records every statement, including one-off ones",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": null
+          }
+        ],
         "key": "statistics",
         "metrics": [
           {
             "key": "queries",
             "label": "Queries",
-            "text": "15",
-            "value": 15
+            "text": "16",
+            "value": 16
           },
           {
             "key": "plans",
@@ -1533,8 +1794,8 @@
           }
         ],
         "next": null,
-        "status": "good",
-        "takeaway": "Query Store covers the last 5 hours: 15 queries, 13 with plans.",
+        "status": "info",
+        "takeaway": "Query Store covers the last 5 hours: 16 queries, 13 with plans.",
         "title": "Query statistics"
       }
     ]
@@ -1542,6 +1803,7 @@
   "mysql-demo": {
     "attention": [
       "findings",
+      "failures",
       "health",
       "statistics",
       "deadlocks",
@@ -1552,7 +1814,7 @@
     "database": "shop",
     "engine": "mysql",
     "environment": "local",
-    "headline": "14 opportunities; the top 3 touch 100% of database time.",
+    "headline": "14 opportunities; the top 3 touch 84% of database time.",
     "product": "MySQL 8.4.11",
     "report_id": "20261011T120900.394Z",
     "taken_at": "2026-10-11T12:09:00Z",
@@ -1593,23 +1855,12 @@
         "items": [
           {
             "at": null,
-            "finding_id": "temp-spill:04cd7be9c366fadc",
-            "id": "temp-spill:04cd7be9c366fadc",
-            "kind": "finding",
-            "label": "A read from orders builds an on-disk temporary table on 100% of its runs",
-            "query_id": null,
-            "share": 0.768454670886012,
-            "status": "bad",
-            "value": "77% of DB time"
-          },
-          {
-            "at": null,
             "finding_id": "lock-time:4167fe7f2c20deb7",
             "id": "lock-time:4167fe7f2c20deb7",
             "kind": "finding",
             "label": "A read from orders spends nearly all its time waiting on locks, 28.8 s per run",
             "query_id": null,
-            "share": 0.30343934329274724,
+            "share": 0.400906129644737,
             "status": "bad",
             "value": "2 min waiting on locks"
           },
@@ -1620,9 +1871,20 @@
             "kind": "finding",
             "label": "An update of orders spends nearly all its time waiting on locks, 14.4 s per run",
             "query_id": null,
-            "share": 0.30343898353572635,
+            "share": 0.4009056543313076,
             "status": "bad",
             "value": "2 min waiting on locks"
+          },
+          {
+            "at": null,
+            "finding_id": "failing-query:4515abd524a46f37",
+            "id": "failing-query:4515abd524a46f37",
+            "kind": "finding",
+            "label": "An update of orders fails 28% of the time (1205 lock wait timeout)",
+            "query_id": null,
+            "share": 0.0418843969784605,
+            "status": "bad",
+            "value": "28% of runs fail"
           }
         ],
         "key": "findings",
@@ -1630,14 +1892,14 @@
           {
             "key": "high",
             "label": "High",
-            "text": "4",
-            "value": 4
+            "text": "3",
+            "value": 3
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "3",
-            "value": 3
+            "text": "4",
+            "value": 4
           },
           {
             "key": "low",
@@ -1648,7 +1910,7 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "14 opportunities; the top 3 touch 100% of database time.",
+        "takeaway": "14 opportunities; the top 3 touch 84% of database time.",
         "title": "Findings"
       },
       {
@@ -1738,7 +2000,7 @@
         "title": "Top queries"
       },
       {
-        "detail": "Time inside InnoDB fetching and changing rows.",
+        "detail": "performance_schema totals since MySQL started 80 minutes ago.",
         "fix_sql": null,
         "items": [
           {
@@ -1779,7 +2041,7 @@
         "metrics": [
           {
             "key": "total",
-            "label": "Waiting",
+            "label": "Waiting since start",
             "text": "1 min",
             "value": 82095.7673703
           }
@@ -1925,7 +2187,7 @@
         "items": [
           {
             "at": "2026-10-11T13:48:08Z",
-            "finding_id": null,
+            "finding_id": "deadlocks:opposite-order:shop.customers+shop.orders",
             "id": "60c5fc0c135a790f",
             "kind": "deadlock",
             "label": "Opposite access order on shop.customers, shop.orders",
@@ -2067,6 +2329,163 @@
         "title": "Plans"
       },
       {
+        "detail": "Averages in the hour since the server last restarted.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/products.ibd",
+            "kind": "signal",
+            "label": "shop/products.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "8 µs per read"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/order_items.ibd",
+            "kind": "signal",
+            "label": "shop/order_items.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "7 µs per read"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":shop/orders.ibd",
+            "kind": "signal",
+            "label": "shop/orders.ibd",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "5 µs per read"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":mysql/binlog.000002",
+            "kind": "signal",
+            "label": "mysql/binlog.000002",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "5 µs per write"
+          }
+        ],
+        "key": "storage",
+        "metrics": [
+          {
+            "key": "read-ms",
+            "label": "Avg read",
+            "text": "8 µs",
+            "value": 0.008323210703703704
+          },
+          {
+            "key": "log-write-ms",
+            "label": "Avg log write",
+            "text": "5 µs",
+            "value": 0.00460215403164557
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Storage answers quickly: reads average 8 µs, log writes 5 µs.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "5%"
+          }
+        ],
+        "key": "connections",
+        "metrics": [
+          {
+            "key": "per-minute",
+            "label": "New per minute",
+            "text": "4",
+            "value": 4
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Connections are reused: 4 new a minute.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": null,
+        "status": "good",
+        "takeaway": "MySQL isn't a replica here and reports none: nothing can fall behind.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "failing-query:4515abd524a46f37",
+            "id": "4515abd524a46f37",
+            "kind": "query",
+            "label": "an update of orders",
+            "query_id": "4515abd524a46f37",
+            "share": 0.27906976744186046,
+            "status": "bad",
+            "value": "28% of runs"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "fc709554a9248878",
+            "kind": "query",
+            "label": "an update of orders",
+            "query_id": "fc709554a9248878",
+            "share": 0.125,
+            "status": "info",
+            "value": "12% of runs"
+          }
+        ],
+        "key": "failures",
+        "metrics": [
+          {
+            "key": "statements",
+            "label": "Statements",
+            "text": "2",
+            "value": 2
+          },
+          {
+            "key": "runs",
+            "label": "Unfinished runs",
+            "text": "13",
+            "value": 13
+          }
+        ],
+        "next": null,
+        "status": "bad",
+        "takeaway": "An update of orders fails 28% of the time (1205 lock wait timeout).",
+        "title": "Failing queries"
+      },
+      {
         "detail": null,
         "fix_sql": null,
         "items": [],
@@ -2108,6 +2527,7 @@
     "attention": [
       "findings",
       "health",
+      "replication",
       "deadlocks",
       "plans",
       "indexes"
@@ -2117,7 +2537,7 @@
     "database": "demo",
     "engine": "postgres",
     "environment": "local",
-    "headline": "18 opportunities; the top 3 touch 84% of database time.",
+    "headline": "22 opportunities; the top 3 touch 67% of database time.",
     "product": "PostgreSQL 18.6",
     "report_id": "20261011T115421.485Z",
     "taken_at": "2026-10-11T11:54:21Z",
@@ -2163,20 +2583,9 @@
             "kind": "finding",
             "label": "A read from orders writes 19.9 MB of temp files per run",
             "query_id": null,
-            "share": 0.45193564924572927,
+            "share": 0.4402906625894278,
             "status": "bad",
-            "value": "45% of DB time"
-          },
-          {
-            "at": null,
-            "finding_id": "filtered-scan:public.orders(customer_id)",
-            "id": "filtered-scan:public.orders(customer_id)",
-            "kind": "finding",
-            "label": "orders is read in full to find rows by customer_id",
-            "query_id": null,
-            "share": 0.23975915432338368,
-            "status": "bad",
-            "value": "24% of DB time"
+            "value": "44% of DB time"
           },
           {
             "at": null,
@@ -2185,9 +2594,20 @@
             "kind": "finding",
             "label": "A read from orders returns 247K rows (≈ 17.4 MB) per run",
             "query_id": null,
-            "share": 0.14637284687525332,
+            "share": 0.4402906625894278,
             "status": "watch",
             "value": "247K rows per run"
+          },
+          {
+            "at": null,
+            "finding_id": "filtered-scan:public.orders(customer_id)",
+            "id": "filtered-scan:public.orders(customer_id)",
+            "kind": "finding",
+            "label": "orders is read in full to find rows by customer_id",
+            "query_id": null,
+            "share": 0.23358130099961572,
+            "status": "bad",
+            "value": "23% of DB time"
           }
         ],
         "key": "findings",
@@ -2201,19 +2621,19 @@
           {
             "key": "medium",
             "label": "Medium",
-            "text": "10",
-            "value": 10
+            "text": "11",
+            "value": 11
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "6",
-            "value": 6
+            "text": "9",
+            "value": 9
           }
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "18 opportunities; the top 3 touch 84% of database time.",
+        "takeaway": "22 opportunities; the top 3 touch 67% of database time.",
         "title": "Findings"
       },
       {
@@ -2247,7 +2667,7 @@
             "finding_id": null,
             "id": "-8886085649470066503",
             "kind": "query",
-            "label": "a query",
+            "label": "a call to PG_SLEEP",
             "query_id": "-8886085649470066503",
             "share": 0.12411350992902503,
             "status": null,
@@ -2618,6 +3038,122 @@
         "status": "watch",
         "takeaway": "One of the 12 captured plans has something to fix: a large sort (44% of database time).",
         "title": "Plans"
+      },
+      {
+        "detail": "Averages in the 7 hours since the server last restarted.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": ":Tables and indexes",
+            "kind": "signal",
+            "label": "tables and indexes",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "3 µs per read"
+          }
+        ],
+        "key": "storage",
+        "metrics": [
+          {
+            "key": "read-ms",
+            "label": "Avg read",
+            "text": "3 µs",
+            "value": 0.0025107618709221523
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Storage answers quickly: reads average 3 µs.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "6%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "session-length",
+            "kind": "signal",
+            "label": "Average session length",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "1.3 s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "sessions-abandoned",
+            "kind": "signal",
+            "label": "Sessions the client abandoned",
+            "query_id": null,
+            "share": null,
+            "status": "watch",
+            "value": "1%"
+          }
+        ],
+        "key": "connections",
+        "metrics": [
+          {
+            "key": "per-minute",
+            "label": "New per minute",
+            "text": "1",
+            "value": 1
+          }
+        ],
+        "next": null,
+        "status": "good",
+        "takeaway": "Connections are reused: 1 new a minute.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "analytics_slot",
+            "kind": "signal",
+            "label": "analytics_slot (slot)",
+            "query_id": null,
+            "share": null,
+            "status": "watch",
+            "value": "1.1 GB of log"
+          }
+        ],
+        "key": "replication",
+        "metrics": [],
+        "next": null,
+        "status": "watch",
+        "takeaway": "The inactive replication slot analytics_slot keeps 1.1 GB of WAL.",
+        "title": "Replication"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "PostgreSQL doesn't count failed runs per statement; its log does (log_min_error_statement).",
+        "title": "Failing queries"
       },
       {
         "detail": null,

@@ -1,5 +1,5 @@
 //! The per-database dashboard, composed from one report: a takeaway, the numbers behind it and the rows to open for
-//! each of ten tiles. `now` (sessions right now) comes from a live read and is added with [`with_now`].
+//! each of fourteen tiles. `now` (sessions right now) comes from a live read and is added with [`with_now`].
 //!
 //! Every tile says something on every engine: when an engine, login or scan can't show a signal, the tile is
 //! `unavailable` and its takeaway says why, in the engine's own terms.
@@ -7,12 +7,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use culprit_core::insights::{coverage_note, insights};
+use culprit_core::signals::{FileIo, FileKind, Replica, ReplicaRole, merge_logs};
 use culprit_core::{
     Capability, Dashboard, Engine, Finding, ItemKind, LiveState, QueryStat, Report, ServerInfo, Severity, Signal,
     SignalStatus, SignalUnit, Snapshot, Tile, TileItem, TileKey, TileMetric, TileStatus, WaitScope, Workload, format,
 };
 
-use crate::support::{app_queries, query_handle, statement_handle, window_phrase};
+use crate::support::{app_queries, query_handle, since_phrase, statement_handle, top_findings_share, window_phrase};
 
 /// Below this many hours, per-day figures would be forecasts from a sliver of data (the UI's `PER_DAY_MIN_HOURS`).
 const PER_DAY_MIN_HOURS: f64 = 20.0;
@@ -36,13 +37,17 @@ const STATISTICS_FINDINGS: [&str; 10] = [
 ];
 
 /// Most urgent first when two tiles share a status.
-const PRIORITY: [TileKey; 10] = [
+const PRIORITY: [TileKey; 14] = [
     TileKey::Now,
     TileKey::DbTime,
     TileKey::Findings,
     TileKey::Statistics,
+    TileKey::Failures,
+    TileKey::Replication,
     TileKey::Deadlocks,
+    TileKey::Storage,
     TileKey::Health,
+    TileKey::Connections,
     TileKey::Waits,
     TileKey::Plans,
     TileKey::Indexes,
@@ -62,6 +67,10 @@ pub fn dashboard(report: &Report) -> Dashboard {
         deadlocks(report),
         indexes(report),
         plans(s),
+        storage(report),
+        connections(report),
+        replication(report),
+        failures(report),
         statistics(report),
     ];
     let mut d = Dashboard {
@@ -104,7 +113,13 @@ pub fn without_now(d: &mut Dashboard, reason: &str) {
 }
 
 fn summarize(d: &mut Dashboard) {
-    let rank = |k: TileKey| PRIORITY.iter().position(|p| *p == k).unwrap_or(PRIORITY.len());
+    // Without query statistics, turning them on comes first: only a problem happening right now is more urgent.
+    let no_workload = d.tiles.iter().any(|t| t.key == TileKey::DbTime && t.status == TileStatus::Unavailable);
+    let rank = |k: TileKey| match k {
+        TileKey::Statistics if no_workload => 1,
+        TileKey::Now => 0,
+        _ => PRIORITY.iter().position(|p| *p == k).unwrap_or(PRIORITY.len()) + 1,
+    };
     let mut attention: Vec<&Tile> =
         d.tiles.iter().filter(|t| matches!(t.status, TileStatus::Bad | TileStatus::Watch)).collect();
     attention.sort_by(|a, b| b.status.cmp(&a.status).then(rank(a.key).cmp(&rank(b.key))));
@@ -186,6 +201,18 @@ fn trend(w: &Workload) -> Option<Trend> {
 }
 
 /// "the last day", "the last 6 hours".
+/// The trend's two spans in words that add up to the window: over 10 hours, "the last 3 hours" and "7 hours", not
+/// "3" and "8" from rounding each on its own.
+fn trend_spans(t: &Trend) -> (String, String) {
+    let (r, b) = (t.recent_hours, t.baseline_hours);
+    if r >= 1.5 && b >= 1.5 && r + b < 47.0 {
+        let recent = r.round();
+        let baseline = ((r + b).round() - recent).max(1.0);
+        return (last(recent), span(baseline));
+    }
+    (last(r), span(b))
+}
+
 fn last(hours: f64) -> String {
     if (hours - 24.0).abs() < 0.5 { "the last day".into() } else { format!("the last {}", span(hours)) }
 }
@@ -274,8 +301,8 @@ fn db_time(s: &Snapshot) -> Tile {
             format!(
                 "Database time is up {:.1}× in {} compared with the {} before.",
                 t.ratio,
-                last(t.recent_hours),
-                span(t.baseline_hours)
+                trend_spans(&t).0,
+                trend_spans(&t).1
             ),
         ),
         Some(t) if t.ratio <= 1.0 / 1.5 => (
@@ -283,8 +310,8 @@ fn db_time(s: &Snapshot) -> Tile {
             format!(
                 "Database time is down {} in {} compared with the {} before.",
                 format::percent(1.0 - t.ratio),
-                last(t.recent_hours),
-                span(t.baseline_hours)
+                trend_spans(&t).0,
+                trend_spans(&t).1
             ),
         ),
         Some(_) if per_day => (
@@ -376,7 +403,8 @@ fn findings(report: &Report) -> Tile {
         TileStatus::Good
     };
     let top: Vec<&Finding> = active.iter().take(3).copied().collect();
-    let touched: f64 = top.iter().filter_map(|f| f.impact.db_time_share).sum::<f64>().min(1.0);
+    // The same number the findings summary states: the top three's distinct queries, each counted once.
+    let touched = top_findings_share(&report.snapshot, active.iter().copied()).unwrap_or(0.0);
     let takeaway = if active.is_empty() {
         match &span {
             Some(span) => format!("Nothing stands out over {span}."),
@@ -543,8 +571,15 @@ fn waits(s: &Snapshot) -> Tile {
     let status = if contended >= 0.25 { TileStatus::Watch } else { TileStatus::Info };
     let mut tile = Tile::new(TileKey::Waits, status, takeaway);
     let lead = if top.key == "other" { named.unwrap_or(top) } else { top };
-    tile.detail = lead.detail.clone().or_else(|| first_sentence(&lead.meaning));
-    tile.metrics = vec![TileMetric::new("total", "Waiting", Some(r.total_ms), format::duration(r.total_ms))];
+    // Totals since startup cover a different stretch than database time: say which, rather than set them side by side.
+    let since_start = r.scope == WaitScope::SinceStartup;
+    tile.detail = if since_start {
+        Some(format!("{}.", r.source.trim_end_matches('.')))
+    } else {
+        lead.detail.clone().or_else(|| first_sentence(&lead.meaning))
+    };
+    let label = if since_start { "Waiting since start" } else { "Waiting" };
+    tile.metrics = vec![TileMetric::new("total", label, Some(r.total_ms), format::duration(r.total_ms))];
     tile.items = r
         .categories
         .iter()
@@ -870,7 +905,7 @@ pub fn now(live: &LiveState) -> Tile {
         item
     }));
     tile.items = items;
-    tile.detail = Some(format!("Read at {}.", live.taken_at));
+    tile.detail = Some(format!("Read {}.", culprit_core::changes::short_time(&live.taken_at)));
     tile
 }
 
@@ -1224,6 +1259,339 @@ fn fix_statement(fix: &str) -> Option<String> {
     Some(fix[start..end].trim().to_string())
 }
 
+// ───────── storage, connections, replication, failing queries ─────────
+
+/// The worst finding of one check, for a tile that leads with it.
+fn worst_finding<'a>(report: &'a Report, check: &str) -> Option<&'a Finding> {
+    report.findings.iter().filter(|f| f.check == check && !f.inactive).max_by_key(|f| f.severity)
+}
+
+/// A collector's note, when it explains why a tile has nothing to show.
+fn collector_note(s: &Snapshot, names: &[&str]) -> Option<String> {
+    s.notes.iter().find(|n| names.contains(&n.collector.as_str())).map(|n| n.message.clone())
+}
+
+fn file_name(s: &Snapshot, f: &FileIo) -> String {
+    match (s.server.engine, f.kind, f.database.as_deref()) {
+        (Engine::Mssql, FileKind::Log, Some(db)) => format!("{db} log"),
+        (Engine::Mssql, _, Some(db)) if db.eq_ignore_ascii_case("tempdb") => "tempdb".into(),
+        (Engine::Postgres, FileKind::Log, _) => "WAL".into(),
+        (Engine::Postgres, FileKind::Temp, _) => "temporary files".into(),
+        (Engine::Postgres, _, _) => "tables and indexes".into(),
+        _ => f.name.clone(),
+    }
+}
+
+/// A latency people can read: cache-fast storage in microseconds ("3 µs", as the Health panel says), not "0.00 ms".
+fn latency(ms: f64) -> String {
+    if ms < 0.01 { format!("{} µs", (ms * 1000.0).round().max(1.0)) } else { format::duration(ms) }
+}
+
+/// The latency a file is waited on for (reads of data, writes of the log) and how many operations it averages.
+fn waited_latency(f: &FileIo) -> Option<(f64, f64, &'static str)> {
+    if f.kind == FileKind::Log {
+        f.avg_write_ms().map(|avg| (avg, f.writes, "write"))
+    } else {
+        f.avg_read_ms().map(|avg| (avg, f.reads, "read"))
+    }
+}
+
+/// Average read latency of data and temporary files, and write latency of the log: what queries and commits wait on.
+fn storage(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let merged = s.pressure.as_ref().map(|p| merge_logs(&p.files)).unwrap_or_default();
+    let files: Vec<&FileIo> =
+        merged.iter().filter(|f| f.kind != FileKind::Other && waited_latency(f).is_some()).collect();
+    if files.is_empty() {
+        // An engine fact only when the scan proves it; otherwise just what this scan lacks (an older scan, a login
+        // that can't read the views).
+        let why = match s.server.engine {
+            Engine::Postgres if is_off(setting(s, "track_io_timing")) => {
+                "PostgreSQL times reads and writes only with track_io_timing on.".to_string()
+            }
+            Engine::Mysql if !s.server.has(Capability::PerformanceSchema) => {
+                format!("{family} times no file I/O while performance_schema is off.")
+            }
+            _ => "This scan has no storage timings.".to_string(),
+        };
+        let mut t = Tile::new(TileKey::Storage, TileStatus::Unavailable, why);
+        t.detail = collector_note(s, &["storage", "files", "signals"]);
+        return t;
+    }
+    // Enough operations for an average to mean something: the floor the slow-storage check uses.
+    let worst = |log: bool| {
+        files
+            .iter()
+            .filter(|f| (f.kind == FileKind::Log) == log)
+            .filter_map(|f| waited_latency(f).filter(|(_, ops, _)| *ops >= 1_000.0).map(|(avg, _, _)| avg))
+            .max_by(f64::total_cmp)
+    };
+    let (read, log) = (worst(false), worst(true));
+    let (status, takeaway) = match worst_finding(report, "slow-storage") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => {
+            let mut parts = Vec::new();
+            if let Some(avg) = read {
+                parts.push(format!("reads average {}", latency(avg)));
+            }
+            if let Some(avg) = log {
+                parts.push(format!("log writes {}", latency(avg)));
+            }
+            if parts.is_empty() {
+                (TileStatus::Info, "Too little I/O since startup to judge storage speed.".to_string())
+            } else {
+                (TileStatus::Good, format!("Storage answers quickly: {}.", parts.join(", ")))
+            }
+        }
+    };
+    let mut t = Tile::new(TileKey::Storage, status, takeaway);
+    if let Some(avg) = read {
+        t.metrics.push(TileMetric::new("read-ms", "Avg read", Some(avg), latency(avg)));
+    }
+    if let Some(avg) = log {
+        t.metrics.push(TileMetric::new("log-write-ms", "Avg log write", Some(avg), latency(avg)));
+    }
+    // The slowest files, each by what it's waited on for.
+    let mut rows: Vec<(f64, TileItem)> = files
+        .iter()
+        .filter_map(|f| {
+            let (avg, ops, what) = waited_latency(f)?;
+            (ops >= 1_000.0).then(|| {
+                let id = format!("{}:{}", f.database.as_deref().unwrap_or(""), f.name);
+                let mut item = TileItem::new(ItemKind::Signal, id, file_name(s, f));
+                item.value = Some(format!("{} per {what}", latency(avg)));
+                let limit = if f.kind == FileKind::Log { 10.0 } else { 20.0 };
+                item.status = Some(if avg >= limit * 2.5 {
+                    TileStatus::Bad
+                } else if avg >= limit {
+                    TileStatus::Watch
+                } else {
+                    TileStatus::Good
+                });
+                (avg, item)
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    t.items = rows.into_iter().map(|(_, i)| i).take(4).collect();
+    // The counters' own window, worded like every other one (a statistics reset on PostgreSQL, else the restart).
+    t.detail = Some(format!("Averages {}.", since_phrase(s)));
+    t
+}
+
+/// A pressure signal as a tile row: its label, value and grade.
+fn signal_item(sig: &Signal) -> TileItem {
+    let mut item = TileItem::new(ItemKind::Signal, sig.key.clone(), sig.label.clone());
+    item.value = Some(signal_value(sig));
+    item.status = Some(signal_status(sig.status));
+    item
+}
+
+/// New connections per second and connections in use: an application that connects for every request pays for it
+/// on every request.
+fn connections(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let p = s.pressure.as_ref();
+    let rate = p.and_then(|p| p.signal("new-connections"));
+    let used = p.and_then(|p| p.signal("connections"));
+    if rate.is_none() && used.is_none() {
+        let why = match s.server.engine {
+            Engine::Postgres if !culprit_core::version_at_least(&s.server.version, [14, 0, 0]) => {
+                "PostgreSQL counts sessions from version 14; this server doesn't.".to_string()
+            }
+            _ => "This scan has no connection counters.".to_string(),
+        };
+        let mut t = Tile::new(TileKey::Connections, TileStatus::Unavailable, why);
+        t.detail = collector_note(s, &["connections", "logins", "sessions"]);
+        return t;
+    }
+    let (status, takeaway) = match worst_finding(report, "connection-churn") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => match rate {
+            Some(r) if r.value >= 1.0 => (
+                TileStatus::Good,
+                format!("{} new connections a second, within what a pool keeps up with.", format::count(r.value)),
+            ),
+            Some(r) => (
+                TileStatus::Good,
+                format!("Connections are reused: {} new a minute.", format::count((r.value * 60.0).round())),
+            ),
+            None => {
+                (TileStatus::Info, "This scan has no count of new connections; the ones in use are below.".to_string())
+            }
+        },
+    };
+    let mut t = Tile::new(TileKey::Connections, status, takeaway);
+    // Under one a second, a per-minute count reads better than "0.0".
+    if let Some(r) = rate {
+        t.metrics.push(if r.value >= 1.0 {
+            TileMetric::new("per-second", "New per second", Some(r.value), format::count(r.value))
+        } else {
+            let per_minute = (r.value * 60.0).round();
+            TileMetric::new("per-minute", "New per minute", Some(per_minute), format::count(per_minute))
+        });
+    }
+    if let Some(u) = used {
+        let item = signal_item(u);
+        // Running out of connections is worse than opening too many.
+        if let Some(st @ (TileStatus::Bad | TileStatus::Watch)) = item.status {
+            t.status = t.status.max(st);
+        }
+        t.items.push(item);
+    }
+    for key in ["session-length", "pooled-reuse", "thread-cache-misses", "sessions-abandoned"] {
+        if let Some(sig) = p.and_then(|p| p.signal(key)) {
+            t.items.push(signal_item(sig));
+        }
+    }
+    t.items.truncate(4);
+    t
+}
+
+fn lag_text(r: &Replica) -> String {
+    r.lag_seconds
+        .map(|sec| format!("{} behind", format::duration(sec * 1000.0)))
+        .or_else(|| r.lag_bytes.map(|b| format!("{} of log", format::bytes(b))))
+        .or_else(|| r.state.clone())
+        .unwrap_or_else(|| "in sync".into())
+}
+
+/// How far replicas and replication slots are behind, worst first.
+fn replication(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let replicas = s.pressure.as_ref().map(|p| p.replicas.as_slice()).unwrap_or_default();
+    if replicas.is_empty() {
+        if let Some(note) = collector_note(s, &["replication"]) {
+            let mut t = Tile::new(
+                TileKey::Replication,
+                TileStatus::Unavailable,
+                format!("Couldn't read {family}'s replication state."),
+            );
+            t.detail = Some(note);
+            return t;
+        }
+        let none = match s.server.engine {
+            Engine::Postgres => {
+                "No replicas or replication slots: nothing can fall behind or hold WAL back.".to_string()
+            }
+            Engine::Mssql => "No availability group or geo-replica: nothing can fall behind.".to_string(),
+            Engine::Mysql => format!("{family} isn't a replica here and reports none: nothing can fall behind."),
+        };
+        return Tile::new(TileKey::Replication, TileStatus::Good, none);
+    }
+    let (status, takeaway) = match worst_finding(report, "replica-lag") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => (
+            TileStatus::Good,
+            format!(
+                "{} {} keeping up.",
+                capitalized(&plural(replicas.len(), "copy", "copies")),
+                if replicas.len() == 1 { "is" } else { "are" }
+            ),
+        ),
+    };
+    let mut t = Tile::new(TileKey::Replication, status, takeaway);
+    let mut rows: Vec<&Replica> = replicas.iter().collect();
+    rows.sort_by(|a, b| {
+        b.lag_seconds
+            .unwrap_or(0.0)
+            .total_cmp(&a.lag_seconds.unwrap_or(0.0))
+            .then(b.lag_bytes.unwrap_or(0.0).total_cmp(&a.lag_bytes.unwrap_or(0.0)))
+    });
+    t.items = rows
+        .into_iter()
+        .take(4)
+        .map(|r| {
+            let role = match r.role {
+                ReplicaRole::Replica => "replica",
+                ReplicaRole::ThisServer => "this server",
+                ReplicaRole::Slot => "slot",
+            };
+            let mut item = TileItem::new(ItemKind::Signal, r.name.clone(), format!("{} ({role})", r.name));
+            item.value = Some(lag_text(r));
+            item.status = Some(if r.error.is_some() || r.lag_seconds.is_some_and(|s| s >= 300.0) {
+                TileStatus::Bad
+            } else if r.lag_seconds.is_some_and(|s| s >= 30.0) || r.state.as_deref() == Some("inactive") {
+                TileStatus::Watch
+            } else {
+                TileStatus::Good
+            });
+            item
+        })
+        .collect();
+    t
+}
+
+/// Statements whose runs fail or are cancelled (timeouts), from the counts the engine keeps per statement.
+fn failures(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let Some(w) = &s.workload else { return no_workload(TileKey::Failures, "failed runs aren't counted") };
+    let counted: Vec<(&QueryStat, f64)> =
+        app_queries(s).filter_map(|q| q.costs.as_ref()?.unfinished().map(|u| (q, u))).collect();
+    if counted.is_empty() {
+        let why = match s.server.engine {
+            Engine::Postgres => {
+                "PostgreSQL doesn't count failed runs per statement; its log does (log_min_error_statement)."
+                    .to_string()
+            }
+            _ if w.source == "slow query log" => format!(
+                "The slow query log keeps runs that finished; {family} counts errors per statement only in performance_schema."
+            ),
+            _ => format!("{family} reported no failed or cancelled runs per statement in this scan."),
+        };
+        return Tile::new(TileKey::Failures, TileStatus::Unavailable, why);
+    }
+    let mut failing: Vec<(&QueryStat, f64, f64)> = counted
+        .into_iter()
+        .filter(|(_, u)| *u > 0.0)
+        .map(|(q, u)| (q, u, if q.executions > 0.0 { (u / q.executions).min(1.0) } else { 1.0 }))
+        .collect();
+    failing.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let total: f64 = failing.iter().map(|f| f.1).sum();
+    let window = window_phrase(w);
+    let (status, takeaway) = match worst_finding(report, "failing-query") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None if failing.is_empty() => (TileStatus::Good, format!("No statement failed or timed out over {window}.")),
+        None => (
+            TileStatus::Info,
+            format!(
+                "{} didn't finish over {window}, too few to matter.",
+                capitalized(&plural(total.round() as usize, "run", "runs"))
+            ),
+        ),
+    };
+    let mut t = Tile::new(TileKey::Failures, status, takeaway);
+    t.metrics.push(TileMetric::new("statements", "Statements", Some(failing.len() as f64), failing.len().to_string()));
+    t.metrics.push(TileMetric::new("runs", "Unfinished runs", Some(total), format::count(total)));
+    t.items = failing
+        .iter()
+        .take(4)
+        .map(|(q, unfinished, rate)| {
+            let mut item = TileItem::new(ItemKind::Query, q.id.clone(), query_handle(q));
+            item.query_id = Some(q.id.clone());
+            item.value =
+                Some(if *rate >= 0.999 { "every run".into() } else { format!("{} of runs", format::percent(*rate)) });
+            item.share = Some(*rate);
+            let id = format!("failing-query:{}", q.id);
+            item.finding_id = report.findings.iter().find(|f| f.id == id).map(|f| f.id.clone());
+            item.status = Some(if *unfinished < 5.0 {
+                TileStatus::Info
+            } else if *rate >= 0.1 {
+                TileStatus::Bad
+            } else if *rate >= 0.01 {
+                TileStatus::Watch
+            } else {
+                TileStatus::Info
+            });
+            item
+        })
+        .collect();
+    t
+}
+
 fn statistics(report: &Report) -> Tile {
     let s = &report.snapshot;
     let locked = report.locked.len();
@@ -1357,6 +1725,14 @@ fn capability_id(c: Capability) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trend_spans_add_up_to_the_window() {
+        let t = Trend { recent_hours: 10.25 / 4.0, baseline_hours: 10.25 * 3.0 / 4.0, ratio: 2.0 };
+        assert_eq!(trend_spans(&t), ("the last 3 hours".to_string(), "7 hours".to_string()));
+        let day = Trend { recent_hours: 24.0, baseline_hours: 48.0, ratio: 2.0 };
+        assert_eq!(trend_spans(&day), ("the last day".to_string(), "2 days".to_string()));
+    }
+
     use super::*;
 
     #[test]

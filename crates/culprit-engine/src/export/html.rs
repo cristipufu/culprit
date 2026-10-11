@@ -504,10 +504,10 @@ fn finding_body(
         let w = s.workload.as_ref().expect("filtered on workload");
         let _ = write!(
             out,
-            r#"<h2>Query {}</h2><p class="qmeta">{} of database time · about {} runs a day · {} on average</p><pre>{}</pre>"#,
+            r#"<h2>Query {}</h2><p class="qmeta">{} of database time · {} · {} on average</p><pre>{}</pre>"#,
             escape(&q.id),
             format::percent(w.share(q.total_time_ms)),
-            format::count(w.per_day(q.executions)),
+            escape(&w.how_often(q.executions)),
             format::duration(q.mean_time_ms),
             escape(&sql_text(&q.text, engine, options))
         );

@@ -288,11 +288,23 @@ pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[St
 }
 
 pub(crate) fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
-    let per_day = writes_per_day(snapshot, schema, table)?;
+    let (writes, days) = measured_writes(snapshot, schema, table)?;
     Some(format!(
-        "{schema}.{table} receives about {} writes a day; each one will also update this index.",
-        format::count(per_day)
+        "{schema}.{table} receives {}; each one will also update this index.",
+        how_many(snapshot, writes, days, "write", "writes")
     ))
+}
+
+/// Inserts, updates and deletes on a table since its counters started, and the days they cover (at least half an
+/// hour, so a just-restarted server doesn't read as a write storm).
+pub(crate) fn measured_writes(snapshot: &Snapshot, schema: &str, table: &str) -> Option<(f64, f64)> {
+    let base = snapshot.indexes_on(schema, table).find(|i| i.is_clustered || i.is_primary_key).and_then(|i| i.writes);
+    let row_writes = snapshot
+        .table(schema, table)
+        .and_then(|t| Some(t.inserts? + t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0)));
+    let writes = base.or(row_writes)?;
+    let days = counter_days(snapshot).filter(|d| *d >= 0.02)?;
+    Some((writes, days))
 }
 
 /// Inserts, updates and deletes a day on a table, from the clustered index's update counter (SQL Server) or the
@@ -303,7 +315,8 @@ pub(crate) fn writes_per_day(snapshot: &Snapshot, schema: &str, table: &str) -> 
         .table(schema, table)
         .and_then(|t| Some(t.inserts? + t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0)));
     let writes = base.or(row_writes)?;
-    let days = counter_days(snapshot).filter(|d| *d >= 0.5)?;
+    // A rate a day only over 20 hours of counters: under that it would be an extrapolation.
+    let days = counter_days(snapshot).filter(|d| per_day_is_measured(*d))?;
     Some(writes / days)
 }
 
@@ -349,14 +362,25 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 many => format!("{} indexes on {} are never read", many.len(), table),
             };
             let names = format::list(&list.iter().map(|i| i.name.clone()).collect::<Vec<_>>());
-            f.summary = format!(
-                "No query has read {} {}{}. {} still has to be updated on every insert, and on updates that touch its columns, and it takes {} of storage and buffer memory.",
-                names,
-                since_phrase(snapshot),
-                writes.map(|w| format!(", while {} was written {} times", table_name, format::count(w))).unwrap_or_default(),
-                if list.len() == 1 { "It" } else { "Each one" },
-                format::bytes(total_size)
-            );
+            f.summary = match writes {
+                // Nothing written either: the cost is the space, not the upkeep.
+                Some(0.0) => format!(
+                    "No query has read {} {}, and {} hasn't been written to either. {} {} of storage and buffer memory.",
+                    names,
+                    since_phrase(snapshot),
+                    table_name,
+                    if list.len() == 1 { "It takes" } else { "Together they take" },
+                    format::bytes(total_size)
+                ),
+                _ => format!(
+                    "No query has read {} {}{}. {} still has to be updated on every insert, and on updates that touch its columns, and it takes {} of storage and buffer memory.",
+                    names,
+                    since_phrase(snapshot),
+                    writes.map(|w| format!(", while {} was written {} times", table_name, format::count(w))).unwrap_or_default(),
+                    if list.len() == 1 { "It" } else { "Each one" },
+                    format::bytes(total_size)
+                ),
+            };
             f.severity = if total_size >= 1024.0 * 1024.0 * 1024.0 || writes.is_some_and(|w| w >= 1e6) {
                 Severity::Medium
             } else {
