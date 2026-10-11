@@ -1,0 +1,12 @@
+[package]
+name = "culprit-checks"
+description = "Culprit's built-in checks: pure functions from a Snapshot to Findings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+culprit-core.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

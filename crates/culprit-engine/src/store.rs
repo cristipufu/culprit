@@ -1,0 +1,204 @@
+//! Saved connections: metadata in `connections.toml`, secrets in the OS keychain.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use culprit_core::{AuthKind, ConnectionSpec, Engine, Environment, Error, ErrorCode, Result};
+use serde::{Deserialize, Serialize};
+
+use crate::private_fs;
+
+const KEYCHAIN_SERVICE: &str = "culprit";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StoredConnection {
+    pub engine: Engine,
+    pub environment: Environment,
+    pub host: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub auth: AuthKind,
+    /// Read the password from this environment variable instead of the OS keychain (CI, agents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_env: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
+}
+
+impl StoredConnection {
+    pub fn spec(&self) -> ConnectionSpec {
+        ConnectionSpec {
+            engine: Some(self.engine),
+            host: self.host.clone(),
+            port: self.port,
+            database: self.database.clone(),
+            user: self.user.clone(),
+            auth: self.auth,
+            environment: self.environment,
+            options: self.options.clone(),
+            password: None,
+            token: None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct ConnectionsFile {
+    #[serde(default)]
+    connections: BTreeMap<String, StoredConnection>,
+}
+
+pub struct Paths {
+    pub config: PathBuf,
+    pub data: PathBuf,
+}
+
+impl Paths {
+    /// `CULPRIT_HOME` puts everything in one directory; otherwise XDG-style config and data directories.
+    pub fn resolve() -> Result<Paths> {
+        if let Some(home) = std::env::var_os("CULPRIT_HOME") {
+            let home = PathBuf::from(home);
+            return Ok(Paths { config: home.clone(), data: home });
+        }
+        let config = xdg("XDG_CONFIG_HOME", ".config", dirs::config_dir)?;
+        let data = xdg("XDG_DATA_HOME", ".local/share", dirs::data_dir)?;
+        Ok(Paths { config: config.join("culprit"), data: data.join("culprit") })
+    }
+
+    pub fn connections_file(&self) -> PathBuf {
+        self.config.join("connections.toml")
+    }
+
+    pub fn reports_dir(&self, connection: &str) -> PathBuf {
+        self.data.join("reports").join(safe_file_name(connection))
+    }
+}
+
+fn xdg(var: &str, unix_default: &str, fallback: fn() -> Option<PathBuf>) -> Result<PathBuf> {
+    if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(v));
+    }
+    if cfg!(windows) {
+        return fallback().ok_or_else(|| Error::internal("Cannot find the user's application data directory"));
+    }
+    dirs::home_dir().map(|h| h.join(unix_default)).ok_or_else(|| Error::internal("Cannot find the home directory"))
+}
+
+pub fn safe_file_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect()
+}
+
+pub fn validate_name(name: &str) -> Result<()> {
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    if ok {
+        return Ok(());
+    }
+    Err(Error::invalid(format!("'{name}' is not a valid connection name"))
+        .with_hint("Use letters, digits, '-', '_' or '.', up to 64 characters, e.g. shop-staging"))
+}
+
+pub struct Store {
+    file: PathBuf,
+}
+
+impl Store {
+    pub fn new(paths: &Paths) -> Store {
+        Store { file: paths.connections_file() }
+    }
+
+    fn load(&self) -> Result<ConnectionsFile> {
+        if !self.file.exists() {
+            return Ok(ConnectionsFile::default());
+        }
+        let text = fs::read_to_string(&self.file).map_err(|e| io_error(&self.file, e))?;
+        toml::from_str(&text).map_err(|e| Error::invalid(format!("{} is not valid: {e}", self.file.display())))
+    }
+
+    fn save(&self, file: &ConnectionsFile) -> Result<()> {
+        if let Some(dir) = self.file.parent() {
+            private_fs::create_dir(dir).map_err(|e| io_error(dir, e))?;
+        }
+        let text = toml::to_string_pretty(file).map_err(|e| Error::internal(e.to_string()))?;
+        private_fs::write_atomic(&self.file, text.as_bytes()).map_err(|e| io_error(&self.file, e))
+    }
+
+    pub fn list(&self) -> Result<Vec<(String, StoredConnection)>> {
+        Ok(self.load()?.connections.into_iter().collect())
+    }
+
+    pub fn get(&self, name: &str) -> Result<StoredConnection> {
+        self.load()?.connections.remove(name).ok_or_else(|| {
+            Error::not_found(format!("No connection named '{name}'"))
+                .with_hint("List saved connections with `culprit conn list`, add one with `culprit conn add`")
+        })
+    }
+
+    pub fn put(&self, name: &str, connection: StoredConnection) -> Result<()> {
+        validate_name(name)?;
+        let mut file = self.load()?;
+        file.connections.insert(name.to_string(), connection);
+        self.save(&file)
+    }
+
+    pub fn rename(&self, old: &str, new: &str) -> Result<()> {
+        validate_name(new)?;
+        let mut file = self.load()?;
+        if file.connections.contains_key(new) {
+            return Err(Error::invalid(format!("A connection named '{new}' already exists")));
+        }
+        let connection =
+            file.connections.remove(old).ok_or_else(|| Error::not_found(format!("No connection named '{old}'")))?;
+        file.connections.insert(new.to_string(), connection);
+        if let Some(secret) = get_secret(old)? {
+            set_secret(new, &secret)?;
+        }
+        self.save(&file)?;
+        delete_secret(old)
+    }
+
+    pub fn remove(&self, name: &str) -> Result<()> {
+        let mut file = self.load()?;
+        if file.connections.remove(name).is_none() {
+            return Err(Error::not_found(format!("No connection named '{name}'")));
+        }
+        self.save(&file)?;
+        delete_secret(name)
+    }
+}
+
+fn io_error(path: &Path, error: std::io::Error) -> Error {
+    Error::internal(format!("{}: {error}", path.display()))
+}
+
+fn keychain_error(error: keyring::Error) -> Error {
+    Error::new(ErrorCode::Internal, format!("OS keychain: {error}"))
+}
+
+pub fn set_secret(name: &str, secret: &str) -> Result<()> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, name).and_then(|e| e.set_password(secret)).map_err(keychain_error)
+}
+
+pub fn get_secret(name: &str) -> Result<Option<String>> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(keychain_error)?;
+    match entry.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(keychain_error(e)),
+    }
+}
+
+pub fn delete_secret(name: &str) -> Result<()> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(keychain_error)?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(keychain_error(e)),
+    }
+}

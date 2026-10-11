@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "app/src-tauri"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/cristipufu/culprit"
+
+[workspace.dependencies]
+culprit-core = { path = "crates/culprit-core" }
+culprit-checks = { path = "crates/culprit-checks" }
+culprit-mssql = { path = "crates/culprit-mssql" }
+culprit-postgres = { path = "crates/culprit-postgres" }
+culprit-engine = { path = "crates/culprit-engine" }
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dirs = "7.0.0"
+futures-util = "0.3.34"
+keyring = "4.2.0"
+roxmltree = "0.21.1"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"
+thiserror = "2.0.21"
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync"] }
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = "0.14.0"
+tokio-util = { version = "0.7.20", features = ["compat"] }
+toml = "1.1.8"
+ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
+webpki-roots = "1.0.9"
+rustls-pki-types = "1.15.1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = 3

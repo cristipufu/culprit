@@ -1,0 +1,13 @@
+[package]
+name = "culprit-core"
+description = "Culprit's engine-neutral model: snapshots, plans, findings, and the Provider and Check contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ts-rs.workspace = true

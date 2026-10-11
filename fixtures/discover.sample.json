@@ -1,0 +1,6 @@
+[
+  { "alias": "shop-alpha-db", "engine": "mssql", "environment": "staging", "server": "sql-acme-alp", "host": "sql-acme-alp.database.windows.net", "database": "shop-alp-db", "location": "westeurope", "subscription": "00000000-0000-0000-0000-000000000001", "resource_group": "rg-shop-alpha", "saved_as": null },
+  { "alias": "shop-stg-db", "engine": "mssql", "environment": "staging", "server": "sql-acme-stg", "host": "sql-acme-stg.database.windows.net", "database": "shop-stg-db", "location": "northeurope", "subscription": "00000000-0000-0000-0000-000000000002", "resource_group": "rg-shop-staging", "saved_as": null },
+  { "alias": "shop-prod-db", "engine": "mssql", "environment": "production", "server": "sql-acme-prd", "host": "sql-acme-prd.database.windows.net", "database": "shop-prd-db", "location": "northeurope", "subscription": "00000000-0000-0000-0000-000000000003", "resource_group": "rg-shop-prod", "saved_as": null },
+  { "alias": "culprit-demo", "engine": "mssql", "environment": "local", "server": "localhost", "host": "localhost", "database": "culprit_demo", "location": "local", "subscription": "-", "resource_group": "-", "saved_as": "mssql-demo" }
+]

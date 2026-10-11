@@ -1,0 +1,2072 @@
+{
+  "findings": [
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "temp-spill",
+      "confidence": "high",
+      "fix": {
+        "cost": "work_mem is per sort/hash node per connection; size it with your connection count in mind.",
+        "sql": "ALTER ROLE current_user SET work_mem = '64MB';",
+        "summary": "Give this workload more sort memory, scoped to the role that runs it rather than server-wide, or add an index that returns rows already ordered."
+      },
+      "id": "temp-spill:9065391607317686058",
+      "impact": {
+        "db_time_share": 0.6012504070349399,
+        "label": "60% of DB time",
+        "score": 77.54033834301602,
+        "time_ms_per_day": 194506067.29868236
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Temp written per run",
+          "text": null,
+          "unit": "bytes",
+          "value": 20824064.0
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 331.8799853551402
+        }
+      ],
+      "queries": [
+        {
+          "id": "9065391607317686058",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "high",
+      "subject": {
+        "kind": "query",
+        "name": "9065391607317686058"
+      },
+      "summary": "A sort or hash in this statement needs more than work_mem (4MB) and spills to disk on every run. Disk spills are many times slower than in-memory sorts.",
+      "title": "A read from orders writes 19.9 MB of temp files per run",
+      "verify": []
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "filtered-scan",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
+        "summary": "Create an index on customer_id so these queries seek instead of scanning."
+      },
+      "id": "filtered-scan:public.orders(customer_id)",
+      "impact": {
+        "db_time_share": 0.31897304266189097,
+        "label": "32% of DB time",
+        "score": 56.47769848903999,
+        "time_ms_per_day": 103188607.23674129
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.31897304266189097
+        },
+        {
+          "label": "DB time per day",
+          "text": null,
+          "unit": "ms",
+          "value": 103188607.23674129
+        },
+        {
+          "label": "Rows scanned per run",
+          "text": null,
+          "unit": "rows",
+          "value": 1999995.0
+        },
+        {
+          "label": "Queries",
+          "text": null,
+          "unit": "count",
+          "value": 1.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "5308963031944094559",
+          "note": null,
+          "plan_node": 3
+        }
+      ],
+      "severity": "high",
+      "subject": {
+        "kind": "table",
+        "name": "public.orders"
+      },
+      "summary": "One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. Together they account for 32% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
+      "title": "orders is read in full to find rows by customer_id",
+      "verify": [
+        "Explain one of the queries again: the scan of orders should become an index seek/scan on the new index.",
+        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:3432126458605143571",
+      "impact": {
+        "db_time_share": 0.001092582714033983,
+        "label": "71% of executions",
+        "score": 31.557148035155084,
+        "time_ms_per_day": 353453.34392916464
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Runs per day",
+          "text": null,
+          "unit": "count",
+          "value": 22437851.645769004
+        },
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.7062931034482759
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.015752548394971234
+        }
+      ],
+      "queries": [
+        {
+          "id": "3432126458605143571",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "3432126458605143571"
+      },
+      "summary": "This statement is 71% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small (<1%), but each call costs a network round trip and a connection.",
+      "title": "A read from customers runs 22.4M times a day, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "unindexed-fk",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX CONCURRENTLY ix_order_items_order_id\n    ON public.order_items (order_id);",
+        "summary": "Index the foreign key column on public.order_items."
+      },
+      "id": "unindexed-fk:public.order_items(order_id)",
+      "impact": {
+        "db_time_share": null,
+        "label": "1.0M rows unindexed",
+        "score": 26.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 1000000.0
+        },
+        {
+          "label": "Foreign key",
+          "text": "order_items_order_id_fkey",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "-3722457391793582113",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "table",
+        "name": "public.order_items"
+      },
+      "summary": "Deleting a row from public.orders, or changing its key, makes the database look for matching rows in public.order_items (1.0M rows) without an index, which means reading the whole table. Queries that load order_items rows for one orders row can't seek either.",
+      "title": "order_items has no index on order_id, its foreign key to orders",
+      "verify": [
+        "Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "filtered-scan",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
+        "summary": "Create an index on product_id so these queries seek instead of scanning."
+      },
+      "id": "filtered-scan:public.order_items(product_id)",
+      "impact": {
+        "db_time_share": 0.05746352572558571,
+        "label": "6% of DB time",
+        "score": 23.971550998128116,
+        "time_ms_per_day": 18589599.726209946
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.05746352572558571
+        },
+        {
+          "label": "DB time per day",
+          "text": null,
+          "unit": "ms",
+          "value": 18589599.726209946
+        },
+        {
+          "label": "Rows scanned per run",
+          "text": null,
+          "unit": "rows",
+          "value": 1000000.0
+        },
+        {
+          "label": "Queries",
+          "text": null,
+          "unit": "count",
+          "value": 1.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "-3722457391793582113",
+          "note": null,
+          "plan_node": 3
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "table",
+        "name": "public.order_items"
+      },
+      "summary": "One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. Together they account for 6% of database time. product_id is also the foreign key to products, so deletes there scan this table too.",
+      "title": "order_items is read in full to find rows by product_id",
+      "verify": [
+        "Explain one of the queries again: the scan of order_items should become an index seek/scan on the new index.",
+        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:2885972271926804069",
+      "impact": {
+        "db_time_share": 0.0010993311360352393,
+        "label": "15% of executions",
+        "score": 9.308719734933952,
+        "time_ms_per_day": 355636.4759629697
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Runs per day",
+          "text": null,
+          "unit": "count",
+          "value": 4759793.257701272
+        },
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.14982758620689654
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.07471679056386649
+        }
+      ],
+      "queries": [
+        {
+          "id": "2885972271926804069",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "2885972271926804069"
+      },
+      "summary": "This statement is 15% of every statement the database executes, and each run returns about 1.7 rows. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small (<1%), but each call costs a network round trip and a connection.",
+      "title": "A read from events runs 4.8M times a day, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "orders_status_idx is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
+      ],
+      "check": "duplicate-index",
+      "confidence": "medium",
+      "fix": {
+        "cost": "Frees 13.3 MB.",
+        "sql": "DROP INDEX CONCURRENTLY public.orders_status_idx;",
+        "summary": "Drop orders_status_idx and keep orders_status_created_idx."
+      },
+      "id": "duplicate-index:public.orders.orders_status_idx",
+      "impact": {
+        "db_time_share": null,
+        "label": "13.3 MB redundant",
+        "score": 8.013015747070312,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 13975552.0
+        },
+        {
+          "label": "Reads of orders_status_idx",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "public.orders.orders_status_idx"
+      },
+      "summary": "orders_status_idx has keys (status) and orders_status_created_idx has keys (status, created_at). Any query that can seek on orders_status_idx can seek on orders_status_created_idx instead. Every write to public.orders maintains both.",
+      "title": "orders_status_idx is covered by the wider orders_status_created_idx on orders",
+      "verify": []
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
+        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
+        "Definitions, to recreate if needed:\nCREATE INDEX customers_region_idx ON public.customers USING btree (region);"
+      ],
+      "check": "unused-index",
+      "confidence": "low",
+      "fix": {
+        "cost": "Frees 1.3 MB and makes writes to public.customers cheaper.",
+        "sql": "DROP INDEX CONCURRENTLY public.customers_region_idx;",
+        "summary": "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it."
+      },
+      "id": "unused-index:public.customers",
+      "impact": {
+        "db_time_share": null,
+        "label": "1.3 MB unused",
+        "score": 8.001304626464844,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 1400832.0
+        },
+        {
+          "label": "Writes to the table",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "label": "Counting for",
+          "text": null,
+          "unit": "days",
+          "value": 0.0030902777777777777
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "public.customers"
+      },
+      "summary": "No query has read customers_region_idx in the 1 hours since the server last restarted, while public.customers was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 1.3 MB of storage and buffer memory.",
+      "title": "customers_region_idx on customers is never read",
+      "verify": [
+        "Watch the queries on this table for a week after disabling; none should get slower."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "duplicate-index",
+      "confidence": "high",
+      "fix": {
+        "cost": "Frees 328 KB.",
+        "sql": "DROP INDEX CONCURRENTLY public.products_sku_idx;",
+        "summary": "Drop products_sku_idx and keep products_sku_key."
+      },
+      "id": "duplicate-index:public.products.products_sku_idx",
+      "impact": {
+        "db_time_share": null,
+        "label": "328 KB redundant",
+        "score": 8.000312805175781,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 335872.0
+        },
+        {
+          "label": "Reads of products_sku_idx",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "public.products.products_sku_idx"
+      },
+      "summary": "products_sku_idx has keys (sku) and products_sku_key has keys (sku). They are the same index twice. Every write to public.products maintains both.",
+      "title": "products_sku_idx duplicates products_sku_key on products",
+      "verify": []
+    }
+  ],
+  "locked": [],
+  "snapshot": {
+    "connection": "pg-demo",
+    "duration_ms": 105.12,
+    "environment": "local",
+    "foreign_keys": [
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "name": "orders_customer_id_fkey",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "public",
+        "ref_table": "customers",
+        "schema": "public",
+        "table": "orders"
+      },
+      {
+        "columns": [
+          "product_id"
+        ],
+        "name": "order_items_product_id_fkey",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "public",
+        "ref_table": "products",
+        "schema": "public",
+        "table": "order_items"
+      },
+      {
+        "columns": [
+          "order_id"
+        ],
+        "name": "order_items_order_id_fkey",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "public",
+        "ref_table": "orders",
+        "schema": "public",
+        "table": "order_items"
+      }
+    ],
+    "format": 1,
+    "id": "20261011T070221Z",
+    "indexes": [
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": "2026-10-11T07:02:20Z",
+        "lookups": null,
+        "name": "customers_pkey",
+        "reads": 8193.0,
+        "scans": 8193.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 4513792.0,
+        "table": "customers",
+        "writes": null
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "CREATE UNIQUE INDEX products_pkey ON public.products USING btree (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "products_pkey",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 245760.0,
+        "table": "products",
+        "writes": null
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": "CREATE UNIQUE INDEX products_sku_key ON public.products USING btree (sku)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "products_sku_key",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 335872.0,
+        "table": "products",
+        "writes": null
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "orders_pkey",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 44941312.0,
+        "table": "orders",
+        "writes": null
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "CREATE UNIQUE INDEX order_items_pkey ON public.order_items USING btree (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "order_items_pkey",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 22487040.0,
+        "table": "order_items",
+        "writes": null
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": "CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "events_pkey",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 17989632.0,
+        "table": "events",
+        "writes": null
+      },
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "definition": "CREATE INDEX events_customer_idx ON public.events USING btree (customer_id)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": "2026-10-11T07:02:20Z",
+        "lookups": null,
+        "name": "events_customer_idx",
+        "reads": 1738.0,
+        "scans": 1738.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 14860288.0,
+        "table": "events",
+        "writes": null
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": "CREATE INDEX products_sku_idx ON public.products USING btree (sku)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "products_sku_idx",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 335872.0,
+        "table": "products",
+        "writes": null
+      },
+      {
+        "columns": [
+          "status"
+        ],
+        "definition": "CREATE INDEX orders_status_idx ON public.orders USING btree (status)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "orders_status_idx",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 13975552.0,
+        "table": "orders",
+        "writes": null
+      },
+      {
+        "columns": [
+          "status",
+          "created_at"
+        ],
+        "definition": "CREATE INDEX orders_status_created_idx ON public.orders USING btree (status, created_at)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": "2026-10-11T07:02:20Z",
+        "lookups": null,
+        "name": "orders_status_created_idx",
+        "reads": 2508.0,
+        "scans": 2508.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 70361088.0,
+        "table": "orders",
+        "writes": null
+      },
+      {
+        "columns": [
+          "region"
+        ],
+        "definition": "CREATE INDEX customers_region_idx ON public.customers USING btree (region)",
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "btree",
+        "last_read": null,
+        "lookups": null,
+        "name": "customers_region_idx",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "public",
+        "seeks": null,
+        "size_bytes": 1400832.0,
+        "table": "customers",
+        "writes": null
+      }
+    ],
+    "missing_indexes": [],
+    "notes": [],
+    "options": null,
+    "resources": [],
+    "server": {
+      "capabilities": [
+        "table-stats",
+        "index-usage",
+        "statistics",
+        "sessions",
+        "showplan",
+        "pg-stat-statements",
+        "generic-plans",
+        "query-plans",
+        "wait-stats"
+      ],
+      "cloud": null,
+      "database": "demo",
+      "database_size_bytes": 596555455.0,
+      "edition": null,
+      "engine": "postgres",
+      "missing": [],
+      "product": "PostgreSQL 18.6",
+      "read_only_session": true,
+      "started_at": "2026-10-11T06:57:54Z",
+      "version": "18.6 (Debian 18.6-1.pgdg13+2)"
+    },
+    "settings": [
+      {
+        "default_value": "on",
+        "name": "autovacuum",
+        "scope": "server",
+        "value": "on"
+      },
+      {
+        "default_value": "0.1",
+        "name": "autovacuum_analyze_scale_factor",
+        "scope": "server",
+        "value": "0.1"
+      },
+      {
+        "default_value": "0.2",
+        "name": "autovacuum_vacuum_scale_factor",
+        "scope": "server",
+        "value": "0.2"
+      },
+      {
+        "default_value": "100",
+        "name": "default_statistics_target",
+        "scope": "server",
+        "value": "100"
+      },
+      {
+        "default_value": "4GB",
+        "name": "effective_cache_size",
+        "scope": "server",
+        "value": "4GB"
+      },
+      {
+        "default_value": "16",
+        "name": "effective_io_concurrency",
+        "scope": "server",
+        "value": "16"
+      },
+      {
+        "default_value": "on",
+        "name": "jit",
+        "scope": "server",
+        "value": "on"
+      },
+      {
+        "default_value": "64MB",
+        "name": "maintenance_work_mem",
+        "scope": "server",
+        "value": "64MB"
+      },
+      {
+        "default_value": "100",
+        "name": "max_connections",
+        "scope": "server",
+        "value": "100"
+      },
+      {
+        "default_value": "4",
+        "name": "random_page_cost",
+        "scope": "server",
+        "value": "4"
+      },
+      {
+        "default_value": "1",
+        "name": "seq_page_cost",
+        "scope": "server",
+        "value": "1"
+      },
+      {
+        "default_value": "128MB",
+        "name": "shared_buffers",
+        "scope": "server",
+        "value": "128MB"
+      },
+      {
+        "default_value": "off",
+        "name": "track_io_timing",
+        "scope": "server",
+        "value": "on"
+      },
+      {
+        "default_value": "4MB",
+        "name": "work_mem",
+        "scope": "server",
+        "value": "4MB"
+      },
+      {
+        "default_value": null,
+        "name": "datfrozenxid_age",
+        "scope": "database",
+        "value": "87"
+      }
+    ],
+    "statistics": [
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": 0.0,
+        "name": "orders",
+        "rows": 1999995.0,
+        "rows_sampled": null,
+        "schema": "public",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": 0.0,
+        "name": "customers",
+        "rows": 200000.0,
+        "rows_sampled": null,
+        "schema": "public",
+        "table": "customers"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": 0.0,
+        "name": "order_items",
+        "rows": 1000000.0,
+        "rows_sampled": null,
+        "schema": "public",
+        "table": "order_items"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": 0.0,
+        "name": "products",
+        "rows": 10000.0,
+        "rows_sampled": null,
+        "schema": "public",
+        "table": "products"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": 0.0,
+        "name": "events",
+        "rows": 300000.0,
+        "rows_sampled": null,
+        "schema": "public",
+        "table": "events"
+      }
+    ],
+    "tables": [
+      {
+        "data_bytes": 268673024.0,
+        "dead_rows": 0.0,
+        "deletes": 0.0,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 129277952.0,
+        "index_scans": 2508.0,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": 0.0,
+        "name": "orders",
+        "rows": 1999995.0,
+        "schema": "public",
+        "seq_rows_read": 1704000000.0,
+        "seq_scans": 2536.0,
+        "total_bytes": 397950976.0,
+        "updates": 0.0,
+        "xid_age": 75.0
+      },
+      {
+        "data_bytes": 17195008.0,
+        "dead_rows": 0.0,
+        "deletes": 0.0,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 5914624.0,
+        "index_scans": 8193.0,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": 0.0,
+        "name": "customers",
+        "rows": 200000.0,
+        "schema": "public",
+        "seq_rows_read": 0.0,
+        "seq_scans": 0.0,
+        "total_bytes": 23109632.0,
+        "updates": 0.0,
+        "xid_age": 77.0
+      },
+      {
+        "data_bytes": 60268544.0,
+        "dead_rows": 0.0,
+        "deletes": 0.0,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 22487040.0,
+        "index_scans": 0.0,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": 0.0,
+        "name": "order_items",
+        "rows": 1000000.0,
+        "schema": "public",
+        "seq_rows_read": 397000000.0,
+        "seq_scans": 1190.0,
+        "total_bytes": 82755584.0,
+        "updates": 0.0,
+        "xid_age": 74.0
+      },
+      {
+        "data_bytes": 720896.0,
+        "dead_rows": 0.0,
+        "deletes": 0.0,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 917504.0,
+        "index_scans": 0.0,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": 0.0,
+        "name": "products",
+        "rows": 10000.0,
+        "schema": "public",
+        "seq_rows_read": 0.0,
+        "seq_scans": 0.0,
+        "total_bytes": 1638400.0,
+        "updates": 0.0,
+        "xid_age": 76.0
+      },
+      {
+        "data_bytes": 50069504.0,
+        "dead_rows": 0.0,
+        "deletes": 0.0,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 32849920.0,
+        "index_scans": 1738.0,
+        "inserts": 0.0,
+        "is_heap": null,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": 0.0,
+        "name": "events",
+        "rows": 300000.0,
+        "schema": "public",
+        "seq_rows_read": 0.0,
+        "seq_scans": 0.0,
+        "total_bytes": 82919424.0,
+        "updates": 0.0,
+        "xid_age": 73.0
+      }
+    ],
+    "taken_at": "2026-10-11T07:02:21Z",
+    "waits": [],
+    "workload": {
+      "queries": [
+        {
+          "cpu_time_ms": null,
+          "executions": 214.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "9065391607317686058",
+          "last_seen": null,
+          "logical_reads": 2249491.0,
+          "max_time_ms": 405.976845,
+          "mean_time_ms": 331.8799853551402,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 226021.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "JIT": "{\"Functions\":4,\"Options\":{\"Deforming\":true,\"Expressions\":true,\"Inlining\":false,\"Optimization\":false}}",
+              "Query Identifier": "-8094429823453666749"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Gather Merge\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 85828.82,\n      \"Total Cost\": 163472.94,\n      \"Plan Rows\": 666665,\n      \"Plan Width\": 74,\n      \"Disabled\": false,\n      \"Output\": [\"id\", \"note\"],\n      \"Workers Planned\": 2,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 84828.79,\n          \"Total Cost\": 85523.24,\n          \"Plan Rows\": 277777,\n          \"Plan Width\": 74,\n          \"Disabled\": false,\n          \"Output\": [\"id\", \"note\"],\n          \"Sort Key\": [\"orders.note\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Seq Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": true,\n              \"Async Capable\": false,\n              \"Relation Name\": \"orders\",\n              \"Schema\": \"public\",\n              \"Alias\": \"orders\",\n              \"Startup Cost\": 0.00,\n              \"Total Cost\": 47368.30,\n              \"Plan Rows\": 277777,\n              \"Plan Width\": 74,\n              \"Disabled\": false,\n              \"Output\": [\"id\", \"note\"],\n              \"Filter\": \"(orders.created_at > (now() - $1))\"\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -8094429823453666749,\n    \"JIT\": {\n      \"Functions\": 4,\n      \"Options\": {\n        \"Inlining\": false,\n        \"Optimization\": false,\n        \"Expressions\": true,\n        \"Deforming\": true\n      }\n    }\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": "Parallel",
+                      "est_executions": 1.0,
+                      "est_rows": 277777.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "scan",
+                      "object": "public.orders",
+                      "op": "Seq Scan",
+                      "predicate": "(orders.created_at > (now() - $1))",
+                      "props": {
+                        "Alias": "orders",
+                        "Async Capable": "false",
+                        "Disabled": "false",
+                        "Filter": "(orders.created_at > (now() - $1))",
+                        "Parallel Aware": "true",
+                        "Parent Relationship": "Outer",
+                        "Plan Width": "74",
+                        "Startup Cost": "0.0"
+                      },
+                      "rows_read": null,
+                      "seek_predicate": null,
+                      "self_cost": 47368.3,
+                      "subtree_cost": 47368.3,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "sort key: orders.note",
+                  "est_executions": 1.0,
+                  "est_rows": 277777.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "Async Capable": "false",
+                    "Disabled": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Plan Width": "74",
+                    "Sort Key": "orders.note",
+                    "Startup Cost": "84828.79"
+                  },
+                  "rows_read": null,
+                  "seek_predicate": null,
+                  "self_cost": 38154.94,
+                  "subtree_cost": 85523.24,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 666665.0,
+              "id": 0,
+              "index": null,
+              "kind": "parallelism",
+              "object": null,
+              "op": "Gather Merge",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Parallel Aware": "false",
+                "Plan Width": "74",
+                "Startup Cost": "85828.82",
+                "Workers Planned": "2"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 77949.7,
+              "subtree_cost": 163472.94,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note",
+            "total_cost": 163472.94,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 52768740.0,
+          "stddev_time_ms": 21.93120453003782,
+          "temp_writes": 543988.0,
+          "text": "SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note",
+          "total_time_ms": 71022.31686599995,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 852.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "5308963031944094559",
+          "last_seen": null,
+          "logical_reads": 27910548.0,
+          "max_time_ms": 90.344787,
+          "mean_time_ms": 44.22357407042247,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 14001597.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "-3115203753024809050"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 44202.93,\n      \"Total Cost\": 44202.93,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 29,\n      \"Disabled\": false,\n      \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 44202.93,\n          \"Total Cost\": 44202.96,\n          \"Plan Rows\": 11,\n          \"Plan Width\": 29,\n          \"Disabled\": false,\n          \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n          \"Sort Key\": [\"orders.created_at DESC\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Gather\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 1000.00,\n              \"Total Cost\": 44202.74,\n              \"Plan Rows\": 11,\n              \"Plan Width\": 29,\n              \"Disabled\": false,\n              \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n              \"Workers Planned\": 2,\n              \"Single Copy\": false,\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Seq Scan\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": true,\n                  \"Async Capable\": false,\n                  \"Relation Name\": \"orders\",\n                  \"Schema\": \"public\",\n                  \"Alias\": \"orders\",\n                  \"Startup Cost\": 0.00,\n                  \"Total Cost\": 43201.64,\n                  \"Plan Rows\": 5,\n                  \"Plan Width\": 29,\n                  \"Disabled\": false,\n                  \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n                  \"Filter\": \"(orders.customer_id = $1)\"\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -3115203753024809050\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [
+                        {
+                          "act_executions": null,
+                          "act_rows": null,
+                          "act_time_ms": null,
+                          "children": [],
+                          "detail": "Parallel",
+                          "est_executions": 1.0,
+                          "est_rows": 5.0,
+                          "id": 3,
+                          "index": null,
+                          "kind": "scan",
+                          "object": "public.orders",
+                          "op": "Seq Scan",
+                          "predicate": "(orders.customer_id = $1)",
+                          "props": {
+                            "Alias": "orders",
+                            "Async Capable": "false",
+                            "Disabled": "false",
+                            "Filter": "(orders.customer_id = $1)",
+                            "Parallel Aware": "true",
+                            "Parent Relationship": "Outer",
+                            "Plan Width": "29",
+                            "Startup Cost": "0.0"
+                          },
+                          "rows_read": null,
+                          "seek_predicate": null,
+                          "self_cost": 43201.64,
+                          "subtree_cost": 43201.64,
+                          "table_rows": null,
+                          "warnings": []
+                        }
+                      ],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 11.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "parallelism",
+                      "object": null,
+                      "op": "Gather",
+                      "predicate": null,
+                      "props": {
+                        "Async Capable": "false",
+                        "Disabled": "false",
+                        "Parallel Aware": "false",
+                        "Parent Relationship": "Outer",
+                        "Plan Width": "29",
+                        "Single Copy": "false",
+                        "Startup Cost": "1000.0",
+                        "Workers Planned": "2"
+                      },
+                      "rows_read": null,
+                      "seek_predicate": null,
+                      "self_cost": 1001.0999999999984,
+                      "subtree_cost": 44202.74,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "sort key: orders.created_at DESC",
+                  "est_executions": 1.0,
+                  "est_rows": 11.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "Async Capable": "false",
+                    "Disabled": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Plan Width": "29",
+                    "Sort Key": "orders.created_at DESC",
+                    "Startup Cost": "44202.93"
+                  },
+                  "rows_read": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.22000000000116415,
+                  "subtree_cost": 44202.96,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "Limit",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Parallel Aware": "false",
+                "Plan Width": "29",
+                "Startup Cost": "44202.93"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 44202.93,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2",
+            "total_cost": 44202.93,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 8638.0,
+          "stddev_time_ms": 8.299890707788853,
+          "temp_writes": 0.0,
+          "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2",
+          "total_time_ms": 37678.48510800003,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 397.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "-3722457391793582113",
+          "last_seen": null,
+          "logical_reads": 2918202.0,
+          "max_time_ms": 30.878364,
+          "mean_time_ms": 17.097838652392948,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 2469131.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "-7653842676421569731"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 13561.98,\n      \"Total Cost\": 13561.99,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 40,\n      \"Disabled\": false,\n      \"Output\": [\"count(*)\", \"sum(((quantity)::numeric * price))\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Gather\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 13561.76,\n          \"Total Cost\": 13561.97,\n          \"Plan Rows\": 2,\n          \"Plan Width\": 40,\n          \"Disabled\": false,\n          \"Output\": [\"(PARTIAL count(*))\", \"(PARTIAL sum(((quantity)::numeric * price)))\"],\n          \"Workers Planned\": 2,\n          \"Single Copy\": false,\n          \"Plans\": [\n            {\n              \"Node Type\": \"Aggregate\",\n              \"Strategy\": \"Plain\",\n              \"Partial Mode\": \"Partial\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 12561.76,\n              \"Total Cost\": 12561.77,\n              \"Plan Rows\": 1,\n              \"Plan Width\": 40,\n              \"Disabled\": false,\n              \"Output\": [\"PARTIAL count(*)\", \"PARTIAL sum(((quantity)::numeric * price))\"],\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Seq Scan\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": true,\n                  \"Async Capable\": false,\n                  \"Relation Name\": \"order_items\",\n                  \"Schema\": \"public\",\n                  \"Alias\": \"order_items\",\n                  \"Startup Cost\": 0.00,\n                  \"Total Cost\": 12561.33,\n                  \"Plan Rows\": 42,\n                  \"Plan Width\": 10,\n                  \"Disabled\": false,\n                  \"Output\": [\"id\", \"order_id\", \"product_id\", \"quantity\", \"price\"],\n                  \"Filter\": \"(order_items.product_id = $1)\"\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -7653842676421569731\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [
+                        {
+                          "act_executions": null,
+                          "act_rows": null,
+                          "act_time_ms": null,
+                          "children": [],
+                          "detail": "Parallel",
+                          "est_executions": 1.0,
+                          "est_rows": 42.0,
+                          "id": 3,
+                          "index": null,
+                          "kind": "scan",
+                          "object": "public.order_items",
+                          "op": "Seq Scan",
+                          "predicate": "(order_items.product_id = $1)",
+                          "props": {
+                            "Alias": "order_items",
+                            "Async Capable": "false",
+                            "Disabled": "false",
+                            "Filter": "(order_items.product_id = $1)",
+                            "Parallel Aware": "true",
+                            "Parent Relationship": "Outer",
+                            "Plan Width": "10",
+                            "Startup Cost": "0.0"
+                          },
+                          "rows_read": null,
+                          "seek_predicate": null,
+                          "self_cost": 12561.33,
+                          "subtree_cost": 12561.33,
+                          "table_rows": null,
+                          "warnings": []
+                        }
+                      ],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 1.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "aggregate",
+                      "object": null,
+                      "op": "Aggregate",
+                      "predicate": null,
+                      "props": {
+                        "Async Capable": "false",
+                        "Disabled": "false",
+                        "Parallel Aware": "false",
+                        "Parent Relationship": "Outer",
+                        "Partial Mode": "Partial",
+                        "Plan Width": "40",
+                        "Startup Cost": "12561.76",
+                        "Strategy": "Plain"
+                      },
+                      "rows_read": null,
+                      "seek_predicate": null,
+                      "self_cost": 0.4400000000005093,
+                      "subtree_cost": 12561.77,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": null,
+                  "est_executions": 1.0,
+                  "est_rows": 2.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "parallelism",
+                  "object": null,
+                  "op": "Gather",
+                  "predicate": null,
+                  "props": {
+                    "Async Capable": "false",
+                    "Disabled": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Plan Width": "40",
+                    "Single Copy": "false",
+                    "Startup Cost": "13561.76",
+                    "Workers Planned": "2"
+                  },
+                  "rows_read": null,
+                  "seek_predicate": null,
+                  "self_cost": 1000.1999999999988,
+                  "subtree_cost": 13561.97,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": null,
+              "kind": "aggregate",
+              "object": null,
+              "op": "Aggregate",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Parallel Aware": "false",
+                "Partial Mode": "Finalize",
+                "Plan Width": "40",
+                "Startup Cost": "13561.98",
+                "Strategy": "Plain"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.020000000000436557,
+              "subtree_cost": 13561.99,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1",
+            "total_cost": 13561.99,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 397.0,
+          "stddev_time_ms": 2.409066030206302,
+          "temp_writes": 0.0,
+          "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1",
+          "total_time_ms": 6787.841944999999,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 204.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "2004611025554862962",
+          "last_seen": null,
+          "logical_reads": 1265824.0,
+          "max_time_ms": 30.808281,
+          "mean_time_ms": 11.650515877450973,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 37450.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "1758281497443122294"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Sorted\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 50451.77,\n      \"Total Cost\": 50453.35,\n      \"Plan Rows\": 5,\n      \"Plan Width\": 47,\n      \"Disabled\": false,\n      \"Output\": [\"status\", \"count(*)\", \"sum(total)\"],\n      \"Group Key\": [\"orders.status\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Gather Merge\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 50451.77,\n          \"Total Cost\": 50453.17,\n          \"Plan Rows\": 12,\n          \"Plan Width\": 47,\n          \"Disabled\": false,\n          \"Output\": [\"status\", \"(PARTIAL count(*))\", \"(PARTIAL sum(total))\"],\n          \"Workers Planned\": 2,\n          \"Plans\": [\n            {\n              \"Node Type\": \"Sort\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 49451.74,\n              \"Total Cost\": 49451.76,\n              \"Plan Rows\": 5,\n              \"Plan Width\": 47,\n              \"Disabled\": false,\n              \"Output\": [\"status\", \"(PARTIAL count(*))\", \"(PARTIAL sum(total))\"],\n              \"Sort Key\": [\"orders.status\"],\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Aggregate\",\n                  \"Strategy\": \"Hashed\",\n                  \"Partial Mode\": \"Partial\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": false,\n                  \"Async Capable\": false,\n                  \"Startup Cost\": 49451.62,\n                  \"Total Cost\": 49451.69,\n                  \"Plan Rows\": 5,\n                  \"Plan Width\": 47,\n                  \"Disabled\": false,\n                  \"Output\": [\"status\", \"PARTIAL count(*)\", \"PARTIAL sum(total)\"],\n                  \"Group Key\": [\"orders.status\"],\n                  \"Planned Partitions\": 0,\n                  \"Plans\": [\n                    {\n                      \"Node Type\": \"Seq Scan\",\n                      \"Parent Relationship\": \"Outer\",\n                      \"Parallel Aware\": true,\n                      \"Async Capable\": false,\n                      \"Relation Name\": \"orders\",\n                      \"Schema\": \"public\",\n                      \"Alias\": \"orders\",\n                      \"Startup Cost\": 0.00,\n                      \"Total Cost\": 47368.30,\n                      \"Plan Rows\": 277777,\n                      \"Plan Width\": 13,\n                      \"Disabled\": false,\n                      \"Output\": [\"id\", \"customer_id\", \"status\", \"total\", \"note\", \"created_at\"],\n                      \"Filter\": \"(orders.created_at > (now() - $1))\"\n                    }\n                  ]\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": 1758281497443122294\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [
+                        {
+                          "act_executions": null,
+                          "act_rows": null,
+                          "act_time_ms": null,
+                          "children": [
+                            {
+                              "act_executions": null,
+                              "act_rows": null,
+                              "act_time_ms": null,
+                              "children": [],
+                              "detail": "Parallel",
+                              "est_executions": 1.0,
+                              "est_rows": 277777.0,
+                              "id": 4,
+                              "index": null,
+                              "kind": "scan",
+                              "object": "public.orders",
+                              "op": "Seq Scan",
+                              "predicate": "(orders.created_at > (now() - $1))",
+                              "props": {
+                                "Alias": "orders",
+                                "Async Capable": "false",
+                                "Disabled": "false",
+                                "Filter": "(orders.created_at > (now() - $1))",
+                                "Parallel Aware": "true",
+                                "Parent Relationship": "Outer",
+                                "Plan Width": "13",
+                                "Startup Cost": "0.0"
+                              },
+                              "rows_read": null,
+                              "seek_predicate": null,
+                              "self_cost": 47368.3,
+                              "subtree_cost": 47368.3,
+                              "table_rows": null,
+                              "warnings": []
+                            }
+                          ],
+                          "detail": "Hashed · group key: orders.status",
+                          "est_executions": 1.0,
+                          "est_rows": 5.0,
+                          "id": 3,
+                          "index": null,
+                          "kind": "aggregate",
+                          "object": null,
+                          "op": "Aggregate",
+                          "predicate": null,
+                          "props": {
+                            "Async Capable": "false",
+                            "Disabled": "false",
+                            "Group Key": "orders.status",
+                            "Parallel Aware": "false",
+                            "Parent Relationship": "Outer",
+                            "Partial Mode": "Partial",
+                            "Plan Width": "47",
+                            "Planned Partitions": "0",
+                            "Startup Cost": "49451.62",
+                            "Strategy": "Hashed"
+                          },
+                          "rows_read": null,
+                          "seek_predicate": null,
+                          "self_cost": 2083.3899999999994,
+                          "subtree_cost": 49451.69,
+                          "table_rows": null,
+                          "warnings": []
+                        }
+                      ],
+                      "detail": "sort key: orders.status",
+                      "est_executions": 1.0,
+                      "est_rows": 5.0,
+                      "id": 2,
+                      "index": null,
+                      "kind": "sort",
+                      "object": null,
+                      "op": "Sort",
+                      "predicate": null,
+                      "props": {
+                        "Async Capable": "false",
+                        "Disabled": "false",
+                        "Parallel Aware": "false",
+                        "Parent Relationship": "Outer",
+                        "Plan Width": "47",
+                        "Sort Key": "orders.status",
+                        "Startup Cost": "49451.74"
+                      },
+                      "rows_read": null,
+                      "seek_predicate": null,
+                      "self_cost": 0.06999999999970896,
+                      "subtree_cost": 49451.76,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": null,
+                  "est_executions": 1.0,
+                  "est_rows": 12.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "parallelism",
+                  "object": null,
+                  "op": "Gather Merge",
+                  "predicate": null,
+                  "props": {
+                    "Async Capable": "false",
+                    "Disabled": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Plan Width": "47",
+                    "Startup Cost": "50451.77",
+                    "Workers Planned": "2"
+                  },
+                  "rows_read": null,
+                  "seek_predicate": null,
+                  "self_cost": 1001.4099999999962,
+                  "subtree_cost": 50453.17,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": "Sorted · group key: orders.status",
+              "est_executions": 1.0,
+              "est_rows": 5.0,
+              "id": 0,
+              "index": null,
+              "kind": "aggregate",
+              "object": null,
+              "op": "Aggregate",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Group Key": "orders.status",
+                "Parallel Aware": "false",
+                "Partial Mode": "Finalize",
+                "Plan Width": "47",
+                "Startup Cost": "50451.77",
+                "Strategy": "Sorted"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.18000000000029104,
+              "subtree_cost": 50453.35,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT status, count(*), sum(total) FROM orders WHERE created_at > now() - interval $1 GROUP BY status",
+            "total_cost": 50453.35,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 1020.0,
+          "stddev_time_ms": 3.120407355203056,
+          "temp_writes": 0.0,
+          "text": "SELECT status, count(*), sum(total) FROM orders WHERE created_at > now() - interval $1 GROUP BY status",
+          "total_time_ms": 2376.705239000001,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 1738.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "2885972271926804069",
+          "last_seen": null,
+          "logical_reads": 11671.0,
+          "max_time_ms": 2.1103490000000003,
+          "mean_time_ms": 0.07471679056386649,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 7902.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "-8565942875766726703"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Sorted\",\n      \"Partial Mode\": \"Simple\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 12.33,\n      \"Total Cost\": 12.36,\n      \"Plan Rows\": 2,\n      \"Plan Width\": 14,\n      \"Disabled\": false,\n      \"Output\": [\"kind\", \"count(*)\"],\n      \"Group Key\": [\"events.kind\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 12.33,\n          \"Total Cost\": 12.33,\n          \"Plan Rows\": 2,\n          \"Plan Width\": 6,\n          \"Disabled\": false,\n          \"Output\": [\"kind\"],\n          \"Sort Key\": [\"events.kind\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Index Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Scan Direction\": \"Forward\",\n              \"Index Name\": \"events_customer_idx\",\n              \"Relation Name\": \"events\",\n              \"Schema\": \"public\",\n              \"Alias\": \"events\",\n              \"Startup Cost\": 0.42,\n              \"Total Cost\": 12.32,\n              \"Plan Rows\": 2,\n              \"Plan Width\": 6,\n              \"Disabled\": false,\n              \"Output\": [\"kind\"],\n              \"Index Cond\": \"(events.customer_id = $1)\"\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -8565942875766726703\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [
+                    {
+                      "act_executions": null,
+                      "act_rows": null,
+                      "act_time_ms": null,
+                      "children": [],
+                      "detail": null,
+                      "est_executions": 1.0,
+                      "est_rows": 2.0,
+                      "id": 2,
+                      "index": "events_customer_idx",
+                      "kind": "seek",
+                      "object": "public.events",
+                      "op": "Index Scan",
+                      "predicate": null,
+                      "props": {
+                        "Alias": "events",
+                        "Async Capable": "false",
+                        "Disabled": "false",
+                        "Index Cond": "(events.customer_id = $1)",
+                        "Parallel Aware": "false",
+                        "Parent Relationship": "Outer",
+                        "Plan Width": "6",
+                        "Scan Direction": "Forward",
+                        "Startup Cost": "0.42"
+                      },
+                      "rows_read": null,
+                      "seek_predicate": "(events.customer_id = $1)",
+                      "self_cost": 12.32,
+                      "subtree_cost": 12.32,
+                      "table_rows": null,
+                      "warnings": []
+                    }
+                  ],
+                  "detail": "sort key: events.kind",
+                  "est_executions": 1.0,
+                  "est_rows": 2.0,
+                  "id": 1,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Sort",
+                  "predicate": null,
+                  "props": {
+                    "Async Capable": "false",
+                    "Disabled": "false",
+                    "Parallel Aware": "false",
+                    "Parent Relationship": "Outer",
+                    "Plan Width": "6",
+                    "Sort Key": "events.kind",
+                    "Startup Cost": "12.33"
+                  },
+                  "rows_read": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.009999999999999789,
+                  "subtree_cost": 12.33,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": "Sorted · group key: events.kind",
+              "est_executions": 1.0,
+              "est_rows": 2.0,
+              "id": 0,
+              "index": null,
+              "kind": "aggregate",
+              "object": null,
+              "op": "Aggregate",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Group Key": "events.kind",
+                "Parallel Aware": "false",
+                "Partial Mode": "Simple",
+                "Plan Width": "14",
+                "Startup Cost": "12.33",
+                "Strategy": "Sorted"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.02999999999999936,
+              "subtree_cost": 12.36,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind",
+            "total_cost": 12.36,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 2996.0,
+          "stddev_time_ms": 0.06958091203996157,
+          "temp_writes": 0.0,
+          "text": "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind",
+          "total_time_ms": 129.85778199999993,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 8193.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "3432126458605143571",
+          "last_seen": null,
+          "logical_reads": 32772.0,
+          "max_time_ms": 7.569031000000001,
+          "mean_time_ms": 0.015752548394971234,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 15782.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "5459391128893703637"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"Forward\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Schema\": \"public\",\n      \"Alias\": \"customers\",\n      \"Startup Cost\": 0.42,\n      \"Total Cost\": 8.44,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 37,\n      \"Disabled\": false,\n      \"Output\": [\"name\", \"email\"],\n      \"Index Cond\": \"(customers.id = $1)\"\n    },\n    \"Query Identifier\": 5459391128893703637\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": "customers_pkey",
+              "kind": "seek",
+              "object": "public.customers",
+              "op": "Index Scan",
+              "predicate": null,
+              "props": {
+                "Alias": "customers",
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Index Cond": "(customers.id = $1)",
+                "Parallel Aware": "false",
+                "Plan Width": "37",
+                "Scan Direction": "Forward",
+                "Startup Cost": "0.42"
+              },
+              "rows_read": null,
+              "seek_predicate": "(customers.id = $1)",
+              "self_cost": 8.44,
+              "subtree_cost": 8.44,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT name, email FROM customers WHERE id = $1",
+            "total_cost": 8.44,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 8193.0,
+          "stddev_time_ms": 0.11234093600405518,
+          "temp_writes": 0.0,
+          "text": "SELECT name, email FROM customers WHERE id = $1",
+          "total_time_ms": 129.0606290000006,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 1.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "-6576252161252119529",
+          "last_seen": null,
+          "logical_reads": 0.0,
+          "max_time_ms": 0.06691599999999999,
+          "mean_time_ms": 0.06691599999999999,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 0.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "-6576252161252119529"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 8,\n      \"Disabled\": false,\n      \"Output\": [\"pg_stat_statements_reset('0'::oid, '0'::oid, '0'::bigint, false)\"]\n    },\n    \"Query Identifier\": -6576252161252119529\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": null,
+              "kind": "compute",
+              "object": null,
+              "op": "Result",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Parallel Aware": "false",
+                "Plan Width": "8",
+                "Startup Cost": "0.0"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.01,
+              "subtree_cost": 0.01,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT pg_stat_statements_reset()",
+            "total_cost": 0.01,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 1.0,
+          "stddev_time_ms": 0.0,
+          "temp_writes": 0.0,
+          "text": "SELECT pg_stat_statements_reset()",
+          "total_time_ms": 0.06691599999999999,
+          "waits": []
+        },
+        {
+          "cpu_time_ms": null,
+          "executions": 1.0,
+          "first_seen": "2026-10-11T07:01:50Z",
+          "id": "2169115237613314459",
+          "last_seen": null,
+          "logical_reads": 0.0,
+          "max_time_ms": 0.021083,
+          "mean_time_ms": 0.021083,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": 0.0,
+          "plan": {
+            "engine": "postgres",
+            "index_hints": [],
+            "kind": "generic",
+            "props": {
+              "Query Identifier": "2169115237613314459"
+            },
+            "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 4,\n      \"Disabled\": false,\n      \"Output\": [\"pg_stat_reset()\"]\n    },\n    \"Query Identifier\": 2169115237613314459\n  }\n]",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
+              "id": 0,
+              "index": null,
+              "kind": "compute",
+              "object": null,
+              "op": "Result",
+              "predicate": null,
+              "props": {
+                "Async Capable": "false",
+                "Disabled": "false",
+                "Parallel Aware": "false",
+                "Plan Width": "4",
+                "Startup Cost": "0.0"
+              },
+              "rows_read": null,
+              "seek_predicate": null,
+              "self_cost": 0.01,
+              "subtree_cost": 0.01,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT pg_stat_reset()",
+            "total_cost": 0.01,
+            "warnings": []
+          },
+          "plans": [],
+          "query_hash": null,
+          "rows": 1.0,
+          "stddev_time_ms": 0.0,
+          "temp_writes": 0.0,
+          "text": "SELECT pg_stat_reset()",
+          "total_time_ms": 0.021083,
+          "waits": []
+        }
+      ],
+      "query_count": 8.0,
+      "source": "pg_stat_statements",
+      "total_cpu_ms": null,
+      "total_executions": 11600.0,
+      "total_time_ms": 118124.35556799996,
+      "window_end": "2026-10-11T07:02:21Z",
+      "window_hours": 0.008763405833333333,
+      "window_start": "2026-10-11T07:01:50Z",
+      "windowed": false
+    }
+  },
+  "summary": {
+    "by_category": [
+      {
+        "category": "indexes",
+        "count": 6
+      },
+      {
+        "category": "queries",
+        "count": 3
+      }
+    ],
+    "by_severity": [
+      {
+        "count": 2,
+        "severity": "high"
+      },
+      {
+        "count": 3,
+        "severity": "medium"
+      },
+      {
+        "count": 4,
+        "severity": "low"
+      }
+    ],
+    "headline": "9 opportunities. The top ones touch 92% of database time over the last hour.",
+    "opportunities": 9,
+    "top_share": 0.9213160324108649
+  }
+}
