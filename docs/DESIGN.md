@@ -181,7 +181,7 @@ app/
 
 **Pluggable at the seams that matter.**
 
-- `Provider` trait — one implementation per engine, selected by a registry keyed on engine, compiled in behind cargo features.
+- `Provider` trait — one implementation per engine, selected by a registry keyed on engine, compiled in behind cargo features; an embedding app can override or add one at runtime with `Workspace::with_provider`.
 - `Check` trait — metadata (`id`, `title`, `category`, `engines`, `requires` capabilities) plus `run(&Snapshot)`. Checks declare the capabilities they need, so the UI and CLI can explain exactly what is locked and why.
 - Engine-specific data rides in the normalized model as optional fields, so cross-engine checks (`unused-index`, `unindexed-fk`) are written once.
 - Checks plug in without forking: `culprit_checks::analyze_with(snapshot, &extra)` or `Workspace::with_check(Arc::new(MyCheck))` in an embedding app or CLI. Plugged-in checks are ranked, summarized and locked exactly like built-ins and can't take over a built-in id (`crates/culprit-checks/tests/plugin.rs`).

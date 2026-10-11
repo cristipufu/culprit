@@ -67,17 +67,45 @@ pub struct ParsedConnection {
     pub suggested_name: String,
 }
 
+/// Builds a provider for a connection; lets an embedding app supply its own engine implementation.
+pub type ProviderFactory = Arc<dyn Fn(&ConnectionSpec) -> Result<Box<dyn Provider>> + Send + Sync>;
+
 pub struct Workspace {
     paths: Paths,
     store: Store,
     extra_checks: Vec<Arc<dyn Check>>,
+    providers: Vec<(Engine, ProviderFactory)>,
 }
 
 impl Workspace {
     pub fn open() -> Result<Workspace> {
         let paths = Paths::resolve()?;
+        Ok(Workspace::with_paths(paths))
+    }
+
+    /// A workspace whose connections and reports live in `dir`, without reading `CULPRIT_HOME`.
+    pub fn open_in(dir: impl Into<std::path::PathBuf>) -> Workspace {
+        let dir = dir.into();
+        Workspace::with_paths(Paths { config: dir.clone(), data: dir })
+    }
+
+    fn with_paths(paths: Paths) -> Workspace {
         let store = Store::new(&paths);
-        Ok(Workspace { paths, store, extra_checks: Vec::new() })
+        Workspace { paths, store, extra_checks: Vec::new(), providers: Vec::new() }
+    }
+
+    /// Use `factory` instead of the built-in provider for `engine` (a wrapped driver, a remote collector, a test double).
+    pub fn with_provider(mut self, engine: Engine, factory: ProviderFactory) -> Workspace {
+        self.providers.retain(|(e, _)| *e != engine);
+        self.providers.push((engine, factory));
+        self
+    }
+
+    fn open_provider(&self, spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
+        match self.providers.iter().find(|(e, _)| Some(*e) == spec.engine) {
+            Some((_, factory)) => factory(spec),
+            None => registry::provider(spec),
+        }
     }
 
     /// Plug in a check from outside Culprit. It runs, ranks and locks exactly like a built-in check.
@@ -209,7 +237,7 @@ impl Workspace {
         let stored = self.store.get(name)?;
         let mut spec = stored.spec();
         resolve_secrets(name, stored.password_env.as_deref(), &mut spec).await?;
-        registry::provider(&spec)
+        self.open_provider(&spec)
     }
 
     /// Open a provider for an unsaved connection (used by "Test" before saving).
@@ -220,7 +248,7 @@ impl Workspace {
             let engine = spec.engine.ok_or_else(|| Error::invalid("Can't tell which database engine this is"))?;
             spec.token = Some(entra::token_for(engine, &spec.host).await?);
         }
-        registry::provider(&spec)
+        self.open_provider(&spec)
     }
 
     pub async fn probe(&self, name: &str) -> Result<ServerInfo> {

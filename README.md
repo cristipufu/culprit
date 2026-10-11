@@ -52,6 +52,22 @@ Findings whose queries stopped running well before the end of the data window (r
 
 Every command prints JSON when stdout isn't a terminal, finding ids are stable, and connections are referenced by name so agents never handle credentials. See [docs/agents.md](docs/agents.md).
 
+## Speed
+
+Measured on an Apple-silicon MacBook (macOS 26), release build, empty profile, three launches each, time from process start to the first on-screen window:
+
+| | Launch → window (cold / warm / warm) | Memory after 4 s | App size |
+|---|---|---|---|
+| Culprit (Tauri) | 857 / 277 / 250 ms | 203 MB incl. WebKit helpers | 8.9 MB |
+| A popular native macOS database client | 1009 / 267 / 271 ms | ~124 MB | 383 MB |
+
+Reopening a connection renders its last report from disk immediately; a fresh SQL Server scan takes 0.1–0.5 s locally and 2.5–4.5 s against Azure SQL over the internet (1.4K queries, 30 days of Query Store). `CULPRIT_TRACE_STARTUP=1` prints the app's own window-shown time.
+
+## Extending
+
+- **Checks:** implement `culprit_core::Check` and pass it to `culprit_checks::analyze_with` or `Workspace::with_check`; it runs, ranks and locks like a built-in check.
+- **Engines:** providers implement `culprit_core::Provider`; built-in ones are cargo features, and `Workspace::with_provider` plugs one in at runtime.
+
 ## Safety
 
 - Scans read statistics and catalog views only.

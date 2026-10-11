@@ -942,6 +942,7 @@ dependencies = [
 name = "culprit-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "culprit-checks",
  "culprit-core",
