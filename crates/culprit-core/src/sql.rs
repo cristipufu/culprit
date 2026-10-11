@@ -89,12 +89,26 @@ fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<
                     i += 1;
                 }
             },
+            // Characters servers may read as whitespace (or ignore) but this lexer would take for part of a word or a
+            // symbol: a non-breaking space or zero-width space between `1` and `EXEC` must never hide the keyword.
+            _ if c < 0x20 || c == 0x7f || (c >= 0x80 && text[i..].chars().next().is_some_and(invisible)) => {
+                return Err(
+                    "The text has a control character or unusual whitespace outside a string; retype it with plain spaces",
+                );
+            }
             _ if is_word_start(c) => {
                 let start = i;
                 while i < bytes.len() && is_word_part(bytes[i]) {
                     i += 1;
                 }
                 let word = &text[start..i];
+                // Inside a word too: `pg_stat_reset<zero-width space>()` must not read as an unknown name here while
+                // a server sees the function.
+                if word.chars().any(invisible) {
+                    return Err(
+                        "The text has a control character or unusual whitespace outside a string; retype it with plain spaces",
+                    );
+                }
                 // Postgres E'…' strings always treat backslashes as escapes.
                 if engine == Engine::Postgres && word.eq_ignore_ascii_case("e") && bytes.get(i) == Some(&b'\'') {
                     i = quoted_end(bytes, i, b'\'', true)?;
@@ -111,6 +125,13 @@ fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<
         }
     }
     Ok(tokens)
+}
+
+/// Whitespace, controls and format characters outside ASCII: invisible, and lexed differently by different servers.
+fn invisible(ch: char) -> bool {
+    ch.is_whitespace()
+        || ch.is_control()
+        || matches!(ch, '\u{00AD}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}')
 }
 
 fn is_word_start(c: u8) -> bool {
@@ -361,12 +382,23 @@ fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
             previous = Some(word);
             continue;
         }
-        // `t.exec`, `@begin`, `#tmp` and the like are names.
-        let qualified = i > 0 && matches!(tokens[i - 1], Token::Punct('.'));
+        // `t.exec`, `[t].exec`, `@begin`, `#tmp` and the like are names. A number before the dot is not: SQL Server reads
+        // `1.EXEC` as the literal `1.` and then a new statement, and `1e.EXEC` likewise.
+        let digit = |t: Option<&Token>| matches!(t, Some(Token::Punct(c)) if c.is_ascii_digit());
+        let qualified = i >= 2
+            && matches!(tokens[i - 1], Token::Punct('.'))
+            && match tokens[i - 2] {
+                Token::Quoted(..) => true,
+                Token::Word(w) => {
+                    w.starts_with(|c: char| c.is_alphabetic() || c == '_' || c == '#' || c == '@')
+                        && !digit(i.checked_sub(3).and_then(|k| tokens.get(k)))
+                }
+                _ => false,
+            };
         let next_word = tokens.get(i + 1).and_then(upper);
         let next_is_paren = matches!(tokens.get(i + 1), Some(Token::Punct('(')));
         let prev = previous.clone().unwrap_or_default();
-        let starts = depth == 0
+        let starts = depth <= 0
             && !qualified
             && !raw.starts_with(['@', '#'])
             && MSSQL_STATEMENTS.contains(&word.as_str())
@@ -407,7 +439,7 @@ fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
                 }
                 _ => true,
             };
-        if word == "SELECT" && depth == 0 {
+        if word == "SELECT" && depth <= 0 {
             seen_select = true;
         }
         if starts {
@@ -795,6 +827,11 @@ mod tests {
             "SELECT 1 GRANT SELECT ON t TO public",
             "GRANT SELECT ON t TO u DROP TABLE t",
             "(@P1 int)SELECT a FROM t WHERE b = @P1 DELETE FROM t",
+            // Parser differentials: a number before the dot, unbalanced parentheses.
+            "SELECT 1.COMMIT CREATE TABLE tempdb.dbo.x (a int)",
+            "SELECT 1. EXEC sp_who",
+            "SELECT 1e.EXEC sp_who",
+            "SELECT 1) EXEC sp_who",
         ] {
             assert!(single_statement(text, Engine::Mssql).is_err(), "{text}");
             assert!(!reads_only(text, Engine::Mssql), "{text}");
@@ -834,6 +871,27 @@ mod tests {
             assert!(single_statement(text, Engine::Mssql).is_ok(), "{text}");
             assert_eq!(reads_only(text, Engine::Mssql), read, "{text}");
         }
+    }
+
+    #[test]
+    fn invisible_characters_never_hide_a_keyword() {
+        for (text, engine) in [
+            ("SELECT 1\u{00A0}EXEC sp_who", Engine::Mssql),
+            ("SELECT 1\u{200B}EXEC sp_who", Engine::Mssql),
+            ("SELECT 1\u{3000}EXEC sp_who", Engine::Mssql),
+            ("SELECT 1\u{2028}COMMIT", Engine::Mssql),
+            ("SELECT pg_stat_reset\u{FEFF}()", Engine::Postgres),
+            ("SELECT 1\u{0000}; DROP TABLE t", Engine::Mysql),
+            ("SELECT 1\u{0085}KILL 53", Engine::Mssql),
+        ] {
+            assert!(single_statement(text, engine).is_err(), "{text:?}");
+            assert!(!reads_only(text, engine), "{text:?}");
+        }
+        // Non-ASCII inside strings, quoted names and plain identifiers is fine.
+        assert!(reads_only("SELECT 'café\u{00A0}' AS x, [prénom] FROM t", Engine::Mssql));
+        assert!(reads_only("SELECT prénom FROM clients", Engine::Postgres));
+        // A real qualified name still reads.
+        assert!(reads_only("SELECT t.exec, [t].begin FROM t", Engine::Mssql));
     }
 
     #[test]
