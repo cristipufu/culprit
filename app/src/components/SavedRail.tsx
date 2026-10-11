@@ -3,7 +3,8 @@ import { useMemo, useState } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage } from "../lib/api";
-import { loadSaved, toast } from "../lib/store";
+import { loadSaved, toast, useStore } from "../lib/store";
+import { EngineBadge } from "./EngineBadge";
 
 type Props = {
   current: ConnectionInfo;
@@ -25,6 +26,8 @@ function firstLine(sql: string): string {
 
 /** The collection of saved queries: search, open, rerun, rename, delete. */
 export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted }: Props) {
+  const connections = useStore((s) => s.connections);
+  const engineOf = (name: string | null) => connections.find((c) => c.name === name)?.engine;
   const [filter, setFilter] = useState("");
   const [renaming, setRenaming] = useState<{ from: string; to: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
@@ -99,7 +102,12 @@ export function SavedRail({ current, saved, active, onOpen, onRenamed, onDeleted
             )}
             <div className="saved-sql">{firstLine(q.sql)}</div>
             <div className="saved-meta">
-              {q.connection && <span className={`saved-conn ${q.connection === current.name ? "here" : ""}`}>{q.connection}</span>}
+              {q.connection && (
+                <span className={`saved-conn ${q.connection === current.name ? "here" : ""} ${engineOf(q.connection) && engineOf(q.connection) !== current.engine ? "other-engine" : ""}`} title={engineOf(q.connection) && engineOf(q.connection) !== current.engine ? `Saved for a different engine than ${current.name}` : undefined}>
+                  {engineOf(q.connection) && <EngineBadge engine={engineOf(q.connection)!} />}
+                  {q.connection}
+                </span>
+              )}
               <span className="spacer" />
               {deleting === q.name ? (
                 <span className="saved-confirm" onClick={(e) => e.stopPropagation()}>

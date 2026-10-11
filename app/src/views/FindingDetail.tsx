@@ -1,5 +1,6 @@
 import { ArrowUpRight, Bot, Check, Copy, EyeOff, Flame, History, SquarePen } from "lucide-react";
 import { useState } from "react";
+import { FindingShareMenu, VerifyButton, VerifyResult, useVerify } from "../components/FindingShare";
 import { PlanView, shortPredicate } from "../components/PlanView";
 import { Prose } from "../components/Prose";
 import { Sql } from "../components/Sql";
@@ -10,6 +11,7 @@ import type { Report } from "../gen/Report";
 import { api, copyText } from "../lib/api";
 import { ago, count, duration, metric, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
+import { honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore } from "../lib/store";
 
 const CONFIDENCE_LABEL = { high: "High confidence", medium: "Medium confidence", low: "Low confidence" } as const;
@@ -22,6 +24,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
     .map((ref) => ({ ref, query: workload?.queries.find((q) => q.id === ref.id) }))
     .filter((x): x is { ref: (typeof finding.queries)[number]; query: QueryStat } => !!x.query);
   const [showPlan, setShowPlan] = useState(false);
+  const verify = useVerify(report, finding);
   const firstWithPlan = queries.find((q) => q.query.plan);
 
   const copyFix = async () => {
@@ -157,12 +160,15 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
         )}
 
         <div className="actionbar">
+          <VerifyResult result={verify.result} report={report} onClose={verify.clear} />
           <button className="btn primary" onClick={copyBrief}>
             <Bot size={14} /> Copy for agent <span className="kbd">A</span>
           </button>
           <button className="btn" onClick={openInEditor}>
             <SquarePen size={13} /> Open in editor <span className="kbd">E</span>
           </button>
+          <VerifyButton running={verify.result?.status === "running"} onRun={verify.run} />
+          <FindingShareMenu report={report} finding={finding} />
           <span className="spacer" />
           <button className="btn ghost" onClick={() => toggleDismissed(finding.id)}>
             <EyeOff size={13} /> {dismissed ? "Restore" : "Dismiss"} <span className="kbd">D</span>
@@ -194,7 +200,8 @@ function CopyId({ id }: { id: string }) {
 function QueryCard({ report, query, node }: { report: Report; query: QueryStat; node: number | null }) {
   const w = report.snapshot.workload;
   const share = w && w.total_time_ms > 0 ? query.total_time_ms / w.total_time_ms : null;
-  const perDay = w && w.window_hours > 0 ? (query.executions * 24) / w.window_hours : query.executions;
+  // Per day only over a long enough window; a few minutes of data stays a measured count.
+  const rates = w ? honest(w) : null;
   return (
     <div
       className="qcard"
@@ -213,7 +220,7 @@ function QueryCard({ report, query, node }: { report: Report; query: QueryStat; 
           </span>
         )}
         <span>
-          <b>{count(perDay)}</b> runs/day
+          <b>{count(rates ? rates.value(query.executions) : query.executions)}</b> {rates?.perDay ? "runs/day" : "runs"}
         </span>
         <span>
           avg <b>{duration(query.mean_time_ms)}</b>

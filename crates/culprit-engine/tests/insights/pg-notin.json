@@ -1,0 +1,95 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Gather",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 5482.66,
+      "Total Cost": 1765785159.66,
+      "Plan Rows": 100000,
+      "Plan Width": 4,
+      "Disabled": false,
+      "Output": ["customers.id"],
+      "Workers Planned": 2,
+      "Single Copy": false,
+      "Plans": [
+        {
+          "Node Type": "Index Only Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": true,
+          "Async Capable": false,
+          "Scan Direction": "Forward",
+          "Index Name": "customers_pkey",
+          "Relation Name": "customers",
+          "Schema": "public",
+          "Alias": "customers",
+          "Startup Cost": 4482.66,
+          "Total Cost": 1765774159.66,
+          "Plan Rows": 41667,
+          "Plan Width": 4,
+          "Disabled": false,
+          "Output": ["customers.id"],
+          "Filter": "(NOT (ANY (customers.id = (SubPlan 1).col1)))",
+          "Plans": [
+            {
+              "Node Type": "Materialize",
+              "Parent Relationship": "SubPlan",
+              "Subplan Name": "SubPlan 1",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 4482.24,
+              "Total Cost": 45857.39,
+              "Plan Rows": 401266,
+              "Plan Width": 4,
+              "Disabled": false,
+              "Output": ["orders.customer_id"],
+              "Plans": [
+                {
+                  "Node Type": "Bitmap Heap Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "orders",
+                  "Schema": "public",
+                  "Alias": "orders",
+                  "Startup Cost": 4482.24,
+                  "Total Cost": 42283.06,
+                  "Plan Rows": 401266,
+                  "Plan Width": 4,
+                  "Disabled": false,
+                  "Output": ["orders.customer_id"],
+                  "Recheck Cond": "(orders.status = 'paid'::text)",
+                  "Plans": [
+                    {
+                      "Node Type": "Bitmap Index Scan",
+                      "Parent Relationship": "Outer",
+                      "Parallel Aware": false,
+                      "Async Capable": false,
+                      "Index Name": "orders_status_idx",
+                      "Startup Cost": 0.00,
+                      "Total Cost": 4381.92,
+                      "Plan Rows": 401266,
+                      "Plan Width": 0,
+                      "Disabled": false,
+                      "Index Cond": "(orders.status = 'paid'::text)"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Query Identifier": -6954135505519031614,
+    "JIT": {
+      "Functions": 6,
+      "Options": {
+        "Inlining": true,
+        "Optimization": true,
+        "Expressions": true,
+        "Deforming": true
+      }
+    }
+  }
+]

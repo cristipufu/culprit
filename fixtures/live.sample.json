@@ -1,0 +1,379 @@
+{
+ "mssql": {
+  "blocking": {
+   "chains": [
+    {
+     "advice": "The application opened a transaction and stopped sending statements: usually a missing COMMIT, an error path that skips the ROLLBACK, or slow work (an HTTP call, a user prompt) done while the transaction is open. Ending session 71 rolls its transaction back and frees everyone behind it. SET XACT_ABORT ON in the application makes an error roll the transaction back instead of leaving it open.",
+     "head": "71",
+     "head_kind": "idle-in-transaction",
+     "head_ms": 22410.0,
+     "headline": "Session 71 has been idle in an open transaction for 22.4 s; 2 sessions wait behind it (an update lock on shop.orders).",
+     "lock": {
+      "index": "pk_orders",
+      "mode": "U",
+      "object": "shop.orders",
+      "resource": "KEY",
+      "session": "76"
+     },
+     "longest_wait_ms": 20909.0,
+     "transaction_ms": 22410.0,
+     "tree": {
+      "children": [
+       {
+        "children": [
+         {
+          "children": [],
+          "lock": {
+           "index": "pk_orders",
+           "mode": "S",
+           "object": "shop.orders",
+           "resource": "KEY",
+           "session": "75"
+          },
+          "session": "75",
+          "waits_for": "a shared lock on shop.orders"
+         }
+        ],
+        "lock": {
+         "index": "pk_orders",
+         "mode": "U",
+         "object": "shop.orders",
+         "resource": "KEY",
+         "session": "76"
+        },
+        "session": "76",
+        "waits_for": "an update lock on shop.orders"
+       }
+      ],
+      "lock": null,
+      "session": "71",
+      "waits_for": null
+     },
+     "wait_type": "LCK_M_U",
+     "waiters": 2
+    }
+   ],
+   "waiting": 2
+  },
+  "session_actions": [
+   "terminate"
+  ],
+  "session_actions_note": null,
+  "sessions": [
+   {
+    "application": "SQLCMD",
+    "blocked_by": null,
+    "command": null,
+    "cpu_ms": 1.0,
+    "database": "culprit_demo",
+    "elapsed_ms": 22410.0,
+    "host": "web-1",
+    "id": "71",
+    "reads": 3.0,
+    "sql": "BEGIN TRAN;\nUPDATE shop.orders SET total = total + 1 WHERE id = 1;",
+    "state": "sleeping",
+    "transaction_ms": 22410.0,
+    "user": "sa",
+    "wait": null,
+    "wait_ms": null
+   },
+   {
+    "application": "SQLCMD",
+    "blocked_by": "76",
+    "command": "SELECT",
+    "cpu_ms": 0.0,
+    "database": "culprit_demo",
+    "elapsed_ms": 20909.0,
+    "host": "web-1",
+    "id": "75",
+    "reads": 3.0,
+    "sql": "SELECT [status] FROM [shop].[orders] WHERE [id]=@1",
+    "state": "suspended",
+    "transaction_ms": null,
+    "user": "sa",
+    "wait": "LCK_M_S",
+    "wait_ms": 20908.0
+   },
+   {
+    "application": "SQLCMD",
+    "blocked_by": "71",
+    "command": "UPDATE",
+    "cpu_ms": 0.0,
+    "database": "culprit_demo",
+    "elapsed_ms": 20909.0,
+    "host": "web-1",
+    "id": "76",
+    "reads": 3.0,
+    "sql": "UPDATE [shop].[orders] set [status] = [status]  WHERE [id]=@1",
+    "state": "suspended",
+    "transaction_ms": 20907.0,
+    "user": "sa",
+    "wait": "LCK_M_U",
+    "wait_ms": 20909.0
+   }
+  ],
+  "taken_at": "2026-10-11T14:19:02Z",
+  "waits": [
+   {
+    "category": "Lock",
+    "tasks": 2.0,
+    "wait_ms": 41817.0,
+    "wait_type": "LCK_M_S"
+   }
+  ]
+ },
+ "postgres": {
+  "blocking": {
+   "chains": [
+    {
+     "advice": "The application opened a transaction and stopped sending statements: usually a missing COMMIT, an error path that skips the ROLLBACK, or slow work (an HTTP call, a user prompt) done while the transaction is open. Ending session 3427 rolls its transaction back and frees everyone behind it. Set idle_in_transaction_session_timeout so the server ends sessions that sit in a transaction.",
+     "head": "3427",
+     "head_kind": "idle-in-transaction",
+     "head_ms": 22547.744,
+     "headline": "Session 3427 has been idle in an open transaction for 22.5 s; 2 sessions wait behind it (a row lock on public.orders).",
+     "lock": {
+      "index": null,
+      "mode": "ShareLock",
+      "object": "public.orders",
+      "resource": "transactionid",
+      "session": "3439"
+     },
+     "longest_wait_ms": 21053.995,
+     "transaction_ms": 22550.222,
+     "tree": {
+      "children": [
+       {
+        "children": [
+         {
+          "children": [],
+          "lock": {
+           "index": null,
+           "mode": "ExclusiveLock",
+           "object": "public.orders",
+           "resource": "tuple",
+           "session": "3440"
+          },
+          "session": "3440",
+          "waits_for": "a row lock on public.orders"
+         }
+        ],
+        "lock": {
+         "index": null,
+         "mode": "ShareLock",
+         "object": "public.orders",
+         "resource": "transactionid",
+         "session": "3439"
+        },
+        "session": "3439",
+        "waits_for": "a row lock on public.orders"
+       }
+      ],
+      "lock": null,
+      "session": "3427",
+      "waits_for": null
+     },
+     "wait_type": "Lock: transactionid",
+     "waiters": 2
+    }
+   ],
+   "waiting": 2
+  },
+  "session_actions": [
+   "cancel",
+   "terminate"
+  ],
+  "session_actions_note": null,
+  "sessions": [
+   {
+    "application": "psql",
+    "blocked_by": "3427",
+    "command": "SET",
+    "cpu_ms": null,
+    "database": "demo",
+    "elapsed_ms": 21053.995,
+    "host": null,
+    "id": "3439",
+    "reads": null,
+    "sql": "SET lock_timeout = '30s'; SELECT id FROM orders WHERE id = 1 FOR UPDATE",
+    "state": "active",
+    "transaction_ms": 21053.995,
+    "user": "postgres",
+    "wait": "Lock: transactionid",
+    "wait_ms": null
+   },
+   {
+    "application": "psql",
+    "blocked_by": "3439",
+    "command": "SET",
+    "cpu_ms": null,
+    "database": "demo",
+    "elapsed_ms": 21053.791,
+    "host": null,
+    "id": "3440",
+    "reads": null,
+    "sql": "SET lock_timeout = '30s'; UPDATE orders SET id = id WHERE id = 1",
+    "state": "active",
+    "transaction_ms": 21053.791,
+    "user": "postgres",
+    "wait": "Lock: tuple",
+    "wait_ms": null
+   },
+   {
+    "application": "psql",
+    "blocked_by": null,
+    "command": null,
+    "cpu_ms": null,
+    "database": "demo",
+    "elapsed_ms": 22547.744,
+    "host": null,
+    "id": "3427",
+    "reads": null,
+    "sql": "UPDATE orders SET id = id WHERE id = 1;",
+    "state": "idle in transaction",
+    "transaction_ms": 22550.222,
+    "user": "postgres",
+    "wait": null,
+    "wait_ms": null
+   }
+  ],
+  "taken_at": "2026-10-11T14:19:02Z",
+  "waits": [
+   {
+    "category": "Lock",
+    "tasks": 1.0,
+    "wait_ms": 0.0,
+    "wait_type": "transactionid"
+   },
+   {
+    "category": "Lock",
+    "tasks": 1.0,
+    "wait_ms": 0.0,
+    "wait_type": "tuple"
+   }
+  ]
+ },
+ "mysql": {
+  "blocking": {
+   "chains": [
+    {
+     "advice": "The application opened a transaction and stopped sending statements: usually a missing COMMIT, an error path that skips the ROLLBACK, or slow work (an HTTP call, a user prompt) done while the transaction is open. Ending session 656 rolls its transaction back and frees everyone behind it. Keep transactions short; waiters give up after innodb_lock_wait_timeout (50 s by default).",
+     "head": "656",
+     "head_kind": "idle-in-transaction",
+     "head_ms": 23000.0,
+     "headline": "Session 656 has been idle in an open transaction for 23.0 s; 2 sessions wait behind it (an exclusive row lock on shop.orders).",
+     "lock": {
+      "index": "PRIMARY",
+      "mode": "X,REC_NOT_GAP",
+      "object": "shop.orders",
+      "resource": "RECORD",
+      "session": "658"
+     },
+     "longest_wait_ms": 21000.0,
+     "transaction_ms": 23541.73,
+     "tree": {
+      "children": [
+       {
+        "children": [
+         {
+          "children": [],
+          "lock": {
+           "index": "PRIMARY",
+           "mode": "X,REC_NOT_GAP",
+           "object": "shop.orders",
+           "resource": "RECORD",
+           "session": "657"
+          },
+          "session": "657",
+          "waits_for": "an exclusive row lock on shop.orders"
+         }
+        ],
+        "lock": {
+         "index": "PRIMARY",
+         "mode": "X,REC_NOT_GAP",
+         "object": "shop.orders",
+         "resource": "RECORD",
+         "session": "658"
+        },
+        "session": "658",
+        "waits_for": "an exclusive row lock on shop.orders"
+       }
+      ],
+      "lock": null,
+      "session": "656",
+      "waits_for": null
+     },
+     "wait_type": null,
+     "waiters": 2
+    }
+   ],
+   "waiting": 2
+  },
+  "session_actions": [
+   "cancel",
+   "terminate"
+  ],
+  "session_actions_note": null,
+  "sessions": [
+   {
+    "application": null,
+    "blocked_by": null,
+    "command": null,
+    "cpu_ms": null,
+    "database": "shop",
+    "elapsed_ms": 23000.0,
+    "host": "localhost",
+    "id": "656",
+    "reads": null,
+    "sql": "UPDATE orders SET id = id WHERE id = 1",
+    "state": "idle in transaction",
+    "transaction_ms": 23541.73,
+    "user": "root",
+    "wait": null,
+    "wait_ms": null
+   },
+   {
+    "application": null,
+    "blocked_by": "658",
+    "command": "QUERY",
+    "cpu_ms": null,
+    "database": "shop",
+    "elapsed_ms": 21000.0,
+    "host": "localhost",
+    "id": "657",
+    "reads": null,
+    "sql": "UPDATE orders SET id = id WHERE id = 1",
+    "state": "active",
+    "transaction_ms": 21541.73,
+    "user": "root",
+    "wait": "updating",
+    "wait_ms": null
+   },
+   {
+    "application": null,
+    "blocked_by": "656",
+    "command": "QUERY",
+    "cpu_ms": null,
+    "database": "shop",
+    "elapsed_ms": 21000.0,
+    "host": "localhost",
+    "id": "658",
+    "reads": null,
+    "sql": "SELECT id FROM orders WHERE id = 1 FOR UPDATE",
+    "state": "active",
+    "transaction_ms": 21541.73,
+    "user": "root",
+    "wait": "statistics",
+    "wait_ms": null
+   }
+  ],
+  "taken_at": "2026-10-11T14:19:02Z",
+  "waits": [
+   {
+    "category": "Lock",
+    "tasks": 2.0,
+    "wait_ms": 0.0,
+    "wait_type": null
+   }
+  ]
+ }
+}

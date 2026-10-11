@@ -1,14 +1,14 @@
 import type { CompletionSource } from "@codemirror/autocomplete";
 import { MSSQL, MySQL, PostgreSQL, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
-import { LanguageSupport } from "@codemirror/language";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { EditorView, basicSetup } from "codemirror";
 import { Bookmark, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCw, Save, ScanSearch, X, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmRun, type PendingRun } from "../components/ConfirmRun";
-import { PlanDiagram } from "../components/PlanDiagram";
-import { PlanView } from "../components/PlanView";
+import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } from "../components/PlanSurface";
 import { ResultGrid } from "../components/ResultGrid";
 import { SavedRail } from "../components/SavedRail";
 import type { Catalog } from "../gen/Catalog";
@@ -35,9 +35,20 @@ type Tabs = { tabs: Tab[]; active: string };
 const TABS_KEY = "culprit.editor.tabs";
 const SPLIT_KEY = "culprit.editor.split";
 const RAIL_KEY = "culprit.editor.rail";
-const LOOK_KEY = "culprit.plan.look";
 const ROW_LIMIT = 1000;
 const PLACEHOLDER = "-- Write a query. ⌘↵ runs it (or the selection), ⌘E shows its plan without running it, ⌘S saves it.\n";
+
+/** SQL colors from the same tokens as every other code block, so they follow light and dark mode. */
+const sqlColors = syntaxHighlighting(
+  HighlightStyle.define([
+    { tag: [tags.keyword, tags.operatorKeyword, tags.modifier], color: "var(--code-keyword)" },
+    { tag: [tags.string, tags.special(tags.string)], color: "var(--code-string)" },
+    { tag: [tags.number, tags.bool, tags.null], color: "var(--code-number)" },
+    { tag: [tags.comment, tags.lineComment, tags.blockComment], color: "var(--code-comment)", fontStyle: "italic" },
+    { tag: [tags.special(tags.name), tags.variableName], color: "var(--code-param)" },
+    { tag: [tags.typeName, tags.standard(tags.name)], color: "var(--code-keyword)" },
+  ]),
+);
 
 /** Catalogs fetched this session, per connection. */
 const catalogs = new Map<string, Catalog>();
@@ -100,7 +111,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   const [pending, setPending] = useState<PendingRun | null>(null);
   const [naming, setNaming] = useState<string | null>(null);
   const [rail, setRail] = useState(() => remembered(RAIL_KEY, "open", ["open", "closed"] as const));
-  const [look, setLook] = useState(() => remembered(LOOK_KEY, "diagram", ["diagram", "tree"] as const));
+  const [look, setLook] = useState<PlanLook>(rememberedLook);
   const [split, setSplit] = useState(() => {
     try {
       return Math.min(0.8, Math.max(0.2, Number(localStorage.getItem(SPLIT_KEY)) || 0.45));
@@ -160,8 +171,10 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
         doc: tab.sql,
         extensions: [
           basicSetup,
+          Prec.high(sqlColors),
           language.current.of(languageExtension()),
-          actions,
+          // Above CodeMirror's defaults, which bind Mod-Enter to "insert blank line".
+          Prec.highest(actions),
           EditorView.updateListener.of((update) => {
             if (!update.docChanged) return;
             const text = update.state.doc.toString();
@@ -205,7 +218,9 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
     const tab = tabsRef.current.active;
     setOutput(tab, { kind: "busy", label: mode === "analyze" ? "Running and measuring…" : "Planning…" });
     try {
-      const plan = await (await api()).explain(connection.name, sql, mode, true);
+      // No consent travels with a plan request: Culprit only measures provable reads on production, and the engine
+      // enforces that whatever the UI sends.
+      const plan = await (await api()).explain(connection.name, sql, mode, false);
       setOutput(tab, { kind: "plan", plan });
     } catch (e) {
       setOutput(tab, { kind: "error", error: errorMessage(e) });
@@ -487,7 +502,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
                 look={look}
                 onLook={(next) => {
                   setLook(next);
-                  remember(LOOK_KEY, next);
+                  rememberLook(next);
                 }}
               />
             </div>
@@ -513,7 +528,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
   );
 }
 
-function OutputPane({ output, look, onLook }: { output: Output; look: "diagram" | "tree"; onLook: (look: "diagram" | "tree") => void }) {
+function OutputPane({ output, look, onLook }: { output: Output; look: PlanLook; onLook: (look: PlanLook) => void }) {
   switch (output.kind) {
     case "none":
       return <div className="empty">Results and plans appear here.</div>;
@@ -537,16 +552,9 @@ function OutputPane({ output, look, onLook }: { output: Output; look: "diagram" 
       return (
         <div style={{ padding: 12 }}>
           <div className="output-head">
-            <span className="seg">
-              <button className={look === "diagram" ? "on" : ""} onClick={() => onLook("diagram")}>
-                Diagram
-              </button>
-              <button className={look === "tree" ? "on" : ""} onClick={() => onLook("tree")}>
-                Tree
-              </button>
-            </span>
+            <LookToggle look={look} onChange={onLook} />
           </div>
-          {look === "diagram" ? <PlanDiagram plan={output.plan} focus={null} /> : <PlanView plan={output.plan} />}
+          <PlanSurface plan={output.plan} look={look} />
         </div>
       );
     case "rows": {

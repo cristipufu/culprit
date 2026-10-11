@@ -1,0 +1,32 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "51621.30"
+    },
+    "table": {
+      "table_name": "orders",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 498573,
+      "rows_produced_per_join": 49857,
+      "filtered": "10.00",
+      "cost_info": {
+        "read_cost": "46635.57",
+        "eval_cost": "4985.73",
+        "prefix_cost": "51621.30",
+        "data_read_per_join": "10M"
+      },
+      "used_columns": [
+        "id",
+        "customer_id",
+        "status",
+        "channel",
+        "promo_code",
+        "total",
+        "created_at",
+        "shipped_at"
+      ],
+      "attached_condition": "(`shop`.`orders`.`promo_code` = 'SPRING3')"
+    }
+  }
+}

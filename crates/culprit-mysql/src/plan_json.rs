@@ -46,6 +46,7 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option
         index_hints: Vec::new(),
         props,
         raw: Some(json.to_string()),
+        insights: None,
     };
     plan.compute_self_costs();
     Ok(plan)
@@ -92,6 +93,7 @@ fn new_node(id: &mut u32, op: &str, kind: NodeKind) -> PlanNode {
         subtree_cost: 0.0,
         self_cost: 0.0,
         act_time_ms: None,
+        runtime: None,
         warnings: Vec::new(),
         props: Properties::new(),
         children: Vec::new(),
@@ -116,7 +118,26 @@ fn query_block(block: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNo
     let query_cost = block.get("cost_info").and_then(|c| number(c, "query_cost")).unwrap_or(0.0);
     root.subtree_cost = query_cost.max(children);
     root.est_rows = root.children.last().map(|c| c.est_rows).unwrap_or(0.0);
+    // Scalar subqueries in the SELECT list; DEPENDENT and not cacheable ones re-run for every row.
+    for sub in block.get("select_list_subqueries").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(inner) = sub.get("query_block").and_then(Value::as_object) {
+            let mut child = query_block(inner, cx, id);
+            for flag in ["dependent", "cacheable"] {
+                if let Some(v) = sub.get(flag) {
+                    child.props.insert(flag.into(), scalar_text(v));
+                }
+            }
+            child.op = subquery_label(sub).into();
+            root.subtree_cost = root.subtree_cost.max(children + child.subtree_cost);
+            root.children.push(child);
+        }
+    }
     root
+}
+
+/// What a subquery block is called in the diagram: whether it re-runs per row is the thing to know about it.
+fn subquery_label(sub: &Value) -> &'static str {
+    if sub.get("dependent").and_then(Value::as_bool) == Some(true) { "Dependent subquery" } else { "Subquery" }
 }
 
 /// The operations directly inside `map`: at most one of the wrappers, which in turn hold the next level.
@@ -254,7 +275,15 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     }
     for sub in table.get("attached_subqueries").and_then(Value::as_array).into_iter().flatten() {
         if let Some(block) = sub.get("query_block").and_then(Value::as_object) {
-            children.push(query_block(block, cx, id));
+            let mut child = query_block(block, cx, id);
+            // DEPENDENT and not cacheable: the subquery re-runs for every row of this table.
+            for flag in ["dependent", "cacheable", "using_temporary_table"] {
+                if let Some(v) = sub.get(flag) {
+                    child.props.insert(flag.into(), scalar_text(v));
+                }
+            }
+            child.op = subquery_label(sub).into();
+            children.push(child);
         }
     }
     node.subtree_cost = own + children.iter().map(|c| c.subtree_cost).sum::<f64>();

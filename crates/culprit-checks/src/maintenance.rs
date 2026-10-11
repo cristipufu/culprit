@@ -164,12 +164,38 @@ pub fn heap_table(snapshot: &Snapshot) -> Vec<Finding> {
             let table_name = t.qualified();
             let rows = t.rows.unwrap_or(0.0);
             let mut f = finding("heap-table", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
-            f.title = format!("{} ({} rows) has no clustered index", t.name, format::count(rows));
+            let forwarded_per_day = t
+                .forwarded_fetches
+                .filter(|f| *f > 0.0)
+                .and_then(|f| counter_days(snapshot).filter(|d| *d >= 0.02).map(|d| f / d));
+            f.title = match forwarded_per_day {
+                Some(per_day) if per_day >= 1000.0 => format!(
+                    "Reads of {} follow forwarding pointers about {} times a day",
+                    t.name,
+                    format::count(per_day)
+                ),
+                _ => format!("{} ({} rows) has no clustered index", t.name, format::count(rows)),
+            };
             f.summary = format!(
-                "{table_name} is stored as a heap. Updates that grow a row leave forwarding pointers behind, deleted space isn't reclaimed well, and every nonclustered index lookup has to go through a row identifier.{}",
+                "{table_name} is stored as a heap. Updates that grow a row leave forwarding pointers behind, deleted space isn't reclaimed well, and every nonclustered index lookup has to go through a row identifier.{}{}",
+                forwarded_per_day
+                    .map(|d| format!(
+                        " Reads have followed a forwarding pointer to another page {} times {} (about {} a day): each one is an extra random read.",
+                        format::count(t.forwarded_fetches.unwrap_or(0.0)),
+                        since_phrase(snapshot),
+                        format::count(d)
+                    ))
+                    .unwrap_or_default(),
                 if t.has_primary_key { " It does have a primary key, just not a clustered one." } else { " It has no primary key either." }
             );
-            f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
+            f.severity = if rows >= 1_000_000.0 || forwarded_per_day.is_some_and(|d| d >= 100_000.0) {
+                Severity::Medium
+            } else {
+                Severity::Low
+            };
+            if let Some(d) = forwarded_per_day {
+                f.metrics.push(Metric::new("Forwarded reads per day", d, Unit::Count));
+            }
             f.impact.score = base_score(f.severity);
             f.impact.label = format!("{} rows", format::count(rows));
             f.confidence = Confidence::Medium;

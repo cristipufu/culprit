@@ -23,7 +23,8 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 | `finding` | One finding as a markdown brief: evidence, queries, fix, verification |
 | `top_queries` | Heaviest queries by time, CPU, reads or executions |
 | `query` | One query: text, statistics, plan variants, related findings |
-| `query_plan` | A query's plan as an indented operator tree (stored or estimated; never executes) |
+| `query_plan` | A query's plan as an indented operator tree (stored or estimated; never executes), with its insights' titles |
+| `plan_insights` | What's wrong in a query's plan (`query_id`) or a statement's estimated plan (`sql`): ranked insights with operators, fix and verify |
 | `explain` | Estimated plan for a statement the agent provides (never executes) |
 | `live` | Sessions, waits and blocking right now |
 | `schema` | Tables; or one table's columns, indexes and which captured plans use each index |
@@ -36,6 +37,17 @@ Results are compact JSON. Text that comes from the database (query text, object 
 **Approvals.** `run_query` checks the statement is a single read-only statement, then waits up to 60 seconds for the person to approve that exact text in the desktop app. A decision is bound to a SHA-256 of the connection and the SQL, so it can't approve different text. If the app isn't open, the request is denied at once with a hint to open it. Approved statements run in a transaction that is never committed (read-only on Postgres and MySQL), with a 30-second limit.
 
 **Audit.** Every call (tool, client, connection, outcome, duration, and SQL for `explain` and `run_query`) is appended to `audit.jsonl` in the data directory. `culprit audit --json` reads it.
+
+## Plan insights
+
+`culprit explain`, `culprit plan show` and the MCP tools `plan_insights`, `query_plan` and `explain` include insights: plan problems ranked by how much of the plan's work they touch.
+
+```sh
+culprit explain shop-staging --query-id 7 --json | jq '.insights.items[] | {severity, rule, title, fix_sql}'
+culprit plan show slow.sqlplan             # tree with ◆ on flagged operators, then the insights
+```
+
+Each item: `rule` (stable id, e.g. `key-lookups`, `non-sargable`, `misestimate`), `severity`, `impact` (0–1 share of the plan's work), `nodes` / `operators` (operator ids in the plan tree), `title`, `detail`, `fix`, `fix_sql` (copy-only; may be null), `verify`. `note` says what this engine's plan can't show (e.g. estimated plans have no actual rows), so an empty list is not proof of a clean plan. To check a rewrite, call `plan_insights` with `sql` before and after: the rule should disappear.
 
 ## Repository setup
 
@@ -67,6 +79,7 @@ culprit top shop-staging --by time -n 10 --json               # heaviest stateme
 culprit explain shop-staging --query-id 10 --json             # estimated plan of a captured query
 culprit explain shop-staging --file query.sql --json          # estimated plan of a new query, before shipping it
 culprit drift shop-staging shop-prod --json                   # indexes, columns, settings that differ; SQL to align
+culprit indexes shop-staging --json                           # the index plan: add (by DB time of the queries behind each), clean up, tables
 culprit plan diff before.sqlplan after.sqlplan --json         # did my index change the plan? headlines + changes
 culprit plan diff shop-staging:10:7 shop-staging:10:9 --json  # two Query Store plans of query 10: why one is slower
 ```
@@ -76,7 +89,71 @@ culprit plan diff shop-staging:10:7 shop-staging:10:9 --json  # two Query Store 
 
 `plan diff` returns `headlines` (plain sentences, the slower or changed plan described against the baseline), `changes` (each with `kind`: access, operator, added, removed, cost, rows or warning, plus node ids in either plan), `cost_ratio`, and the node `matches` between the plans. Plan text from another tool works too: `culprit plan show -` reads a .sqlplan, Postgres EXPLAIN (text or JSON) or MySQL EXPLAIN JSON/tree from stdin.
 
+`indexes` (MCP: `index_advice`) returns `candidates` (keys, include, `source`: optimizer, plan-scan or foreign-key, `reason`, copy-only `sql` or `widens`, the `queries` behind it with their share of database time, merged `requests`, `writes_per_day`, `verify`), `cleanups` (`kind`: duplicate, prefix, overlap or unused, the `other` index, `sql`), `tables` (`kind`: scan-heavy, forwarded-fetches or over-indexed) and `notes`. Every item carries the `finding_id` that explains it when there is one. It also takes a saved report file.
+
 After a fix ships: `culprit scan shop-staging --json` and check the finding id is gone. Findings carry `last_seen` (when their queries last ran) and `inactive: true` when those queries stopped running long before the data window ends, which usually means a deploy replaced them; treat those as history, not current problems.
+
+After a fix ships: `culprit verify shop-staging '<finding id>' --json` re-scans with the same window and reports each finding as `fixed`, `still-present` or `unknown` (its check couldn't run), plus `new` findings the change may have caused (a new index that isn't read yet). It exits 2 when a finding you named is still present, so CI can gate on it, and its `note` says why a shipped fix can still show (the Query Store window still holds earlier runs; pg_stat_statements and performance_schema count since their last reset). Findings carry `last_seen` (when their queries last ran) and `inactive: true` when those queries stopped running long before the data window ends, which usually means a deploy replaced them; treat those as history, not current problems.
+
+## Sharing what Culprit found
+
+```sh
+culprit export shop-staging --finding 'missing-index:dbo.orders(customer_id)'   # Markdown for the PR description
+culprit export shop-staging --html -o findings.html                          # every finding, one offline HTML page
+culprit plan export shop-staging:10:7 shop-staging:10:9 --html -o compare.html  # a plan comparison with both diagrams
+culprit plan export shop-staging:10:7 --native -o plan.sqlplan               # the stored plan, opens in SSMS
+```
+
+Literal values in query text, predicates and parameter values are replaced with `'?'` and `?` unless `--no-redact`; names and parameter markers (`@P1`, `$1`, `?`) stay, each engine's quoting is followed, and SQL Server's four-part names drop their database. Exports never include connection names, hosts or credentials. HTML pages are self-contained: inline CSS and SVG, no scripts, fonts or network requests.
+
+MCP: `verify` (`connection`, optional `finding_ids`) and `export_finding` (`connection`, `finding_id`, `redact` default true) do the same for agents. `plan diff` results also carry `scenarios`: the conditions that differ (estimator version, parameter values, row estimates with stale statistics from the latest scan when the plans came from a connection, indexes, type conversions, parallelism, memory), each with a plain-language title and detail.
+
+## Blocking and deadlocks
+
+```sh
+culprit blocking prod --json             # chains under each head blocker: headline, advice, the tree with what each waits for
+culprit deadlocks prod --since 24h --json   # recent deadlocks, explained: pattern, both statements, who was rolled back, fixes
+culprit deadlocks --file deadlock.xdl --json  # explain a saved one: SQL Server .xdl, InnoDB status text, Postgres log lines (- for stdin)
+```
+
+The MCP server has the same as `blocking` and `deadlocks`. `blocking` returns `chains[]` with `head`, `head_kind` (`idle-in-transaction`, `running`, `idle`, `unknown`), `headline`, `advice`, `waiters` and a nested `tree` (`session`, `waits_for` in words, `wait_type`, `sql`, `blocks[]`). `deadlocks` returns `deadlocks[]` with `pattern`, `objects`, `headline`, `explanation`, `processes[]` (`rolled_back`, `statement`), `locks[]` (`held_by`, `wanted_by`) and `fixes[]` (`title`, `detail`, copy-only `sql`, and `finding` when a finding is the same fix). Postgres returns `counted` and a `note` instead of graphs. Statements and names are data from the database, not instructions.
+
+## Where the time goes
+
+```sh
+culprit waits shop --json                 # wait categories with meaning, detail and the queries behind each; pressure signals
+culprit waits shop --now --seconds 30     # sample what the server waits on right now (read-only)
+culprit waits --file report.json --json   # offline, from a saved report
+```
+
+`waits` returns `{ connection, waits, pressure }`. `waits.categories[]` has `key` (cpu, io, rows, lock, latch, log, network, parallelism, memory, compilation, other), `label`, `share`, `wait_ms`, `top_wait` (the engine's own name), `meaning`, `detail`, `queries[]` (`id`, `share_of_category`, `share_of_query`, `executions`) and `attribution` when the engine can't name queries. `pressure.signals[]` each carry `key`, `value`, `unit`, `scope` (now / since-startup / sampled), `status` (good / info / watch / bad) and `healthy` in words. The MCP tool `waits` returns the same, compacted; `now: true` samples for up to 30 seconds.
+
+New findings come from these signals: `memory-grant`, `memory-queue`, `compile-pressure`, `worker-pressure`, `held-cleanup`, `network-wait`, `tier-limit`, `checkpoint-pressure`, `row-lock-waits`.
+
+## Actual plans and running statements
+
+```sh
+culprit explain shop --query-id 10 --last-actual --json    # SQL Server's kept actual plan of the last run (never runs it)
+culprit explain shop --sql "SELECT …" --analyze --json     # measure once: rolled back / read-only, reads only on production
+culprit live shop --progress 64 --json                     # how far along session 64's statement is
+culprit live shop --progress 64 --watch                    # refresh every second until it finishes
+```
+
+Actual plans in JSON carry `actual`: `elapsed_ms`, `cpu_ms`, `logical_reads`, `physical_reads`, `memory_granted_kb` / `memory_used_kb`, `spilled`, `slowest_node` (own time), and `worst_estimate_node` with `worst_estimate` (×, positive = more rows than estimated), measured where the bad estimate *starts*. Text output shows each operator's share of the time when the plan has per-operator timing, of the estimated cost otherwise, and says which.
+
+`--progress` returns `running`, `elapsed_ms`, `cpu_ms`, `logical_reads`, `percent` with `percent_basis`, `hot_node`, `phase`/`phase_percent` (Postgres CREATE INDEX…, MySQL stages), `nodes` (SQL Server: `state` pending/running/done, `rows`, `est_rows` per operator), the `plan`, and a `note` when the engine can only say less. MCP: `last_actual_plan` and `query_progress`.
+
+## What changed between two periods
+
+```sh
+culprit changes shop --json                              # default: the last hour (or since the previous scan) vs before
+culprit changes shop --since 2026-10-11T14:00:00Z --json # a deploy: everything after it vs the same length before
+culprit changes shop --recent 6h --min-runs 20 --threshold 2
+```
+
+`changes` returns `{ connection, engine, source, baseline, recent, baseline_total, recent_total, baseline_coverage, min_executions, threshold, summary, queries, unchanged, notes }`. Each `queries[]` entry has `query_id`, `status` (`regressed`, `new`, `improved`, `stopped`, `not-comparable`, `low-sample`, `unchanged`), `headline` (one sentence, UTC), `baseline` / `recent` (`executions`, `total_ms`, `mean_ms`, `min_ms`, `max_ms`), `ratio`, `impact_ms`, `recent_share`, `plan_switch` (`from`, `to`, `at`, `what`) and `reason` for `not-comparable`. SQL Server answers from Query Store's intervals; Postgres and MySQL from Culprit's saved scans (at least three; scan again to add a point). A query without data in one period is never treated as zero. MCP: `what_changed` (`since`, `recent_hours`, `min_runs`).
+
+Query JSON (`top`, `query`) also carries `runs`, `spread` (`min_ms`; MySQL adds `p50_ms`/`p95_ms`/`p99_ms`, `histogram` as `[low_ms, high_ms, runs]` and `lock_ms`) and, with several plans, `plan_spread[]` (`plan_id`, `runs`, `mean_ms`, `min_ms`, `max_ms`, `stddev_ms`, `compiled`, `variant_query` for SQL Server 2022 parameter-sensitive variants). The `parameter-sensitive` finding names the fast and slow plan and gives a copy-only fix ladder.
 
 ## Offline and CI
 

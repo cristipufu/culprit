@@ -7,7 +7,7 @@ use crate::plan_xml;
 use crate::value::Rec;
 
 /// Converts a datetimeoffset expression to second-precision UTC ISO 8601 that every JS engine parses.
-fn utc_offset_iso(expr: &str) -> String {
+pub(crate) fn utc_offset_iso(expr: &str) -> String {
     format!("CONVERT(varchar(19), CAST(SWITCHOFFSET({expr}, '+00:00') AS datetime2(0)), 126) + 'Z'")
 }
 
@@ -45,6 +45,8 @@ struct PlanAgg {
     executions: f64,
     total_ms: f64,
     max_ms: f64,
+    /// The fastest run, when the source keeps it.
+    min_ms: Option<f64>,
     cpu_ms: f64,
     reads: f64,
     physical_reads: f64,
@@ -64,6 +66,7 @@ impl PlanAgg {
             executions: r.f64_or_zero("executions"),
             total_ms: r.f64_or_zero("total_ms"),
             max_ms: r.f64_or_zero("max_ms"),
+            min_ms: r.f64("min_ms"),
             cpu_ms: r.f64_or_zero("cpu_ms"),
             reads: r.f64_or_zero("logical_reads"),
             physical_reads: r.f64_or_zero("physical_reads"),
@@ -74,6 +77,16 @@ impl PlanAgg {
             last_seen: r.str("last_seen"),
             forced: r.bool("is_forced"),
         }
+    }
+
+    /// This plan's own spread, pooled across intervals like `QueryAgg::stddev_ms`.
+    fn stddev_ms(&self) -> Option<f64> {
+        if self.executions < 2.0 || self.sum_sq_us <= 0.0 {
+            return None;
+        }
+        let mean_us = self.total_ms * 1_000.0 / self.executions;
+        let variance = self.sum_sq_us / self.executions - mean_us * mean_us;
+        Some(variance.max(0.0).sqrt() / 1_000.0)
     }
 }
 
@@ -110,6 +123,10 @@ impl QueryAgg {
         Some(variance.max(0.0).sqrt() / 1_000.0)
     }
 
+    fn min_ms(&self) -> Option<f64> {
+        self.plans.iter().filter_map(|p| p.min_ms).reduce(f64::min)
+    }
+
     fn first_seen(&self) -> Option<String> {
         self.plans.iter().filter_map(|p| p.first_seen.clone()).min()
     }
@@ -130,6 +147,7 @@ SELECT
   SUM(rs.count_executions) AS executions,
   SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_ms,
   MAX(rs.max_duration) / 1000.0 AS max_ms,
+  MIN(rs.min_duration) / 1000.0 AS min_ms,
   SUM(rs.avg_cpu_time * rs.count_executions) / 1000.0 AS cpu_ms,
   SUM(rs.avg_logical_io_reads * rs.count_executions) AS logical_reads,
   SUM(rs.avg_physical_io_reads * rs.count_executions) AS physical_reads,
@@ -289,7 +307,7 @@ GROUP BY ws.wait_category_desc
 
     let mut plans_parsed = 0;
     let mut plan_errors = 0;
-    let queries = selected
+    let mut queries: Vec<QueryStat> = selected
         .iter()
         .map(|q| {
             let dominant = q.dominant_plan();
@@ -311,6 +329,8 @@ GROUP BY ws.wait_category_desc
             stat
         })
         .collect();
+    // Compiled values and SQL Server 2022 variants are a bonus as well.
+    crate::spread::attach(client, days, &mut queries).await;
 
     let workload = Workload {
         source: "Query Store".into(),
@@ -347,6 +367,11 @@ fn to_query_stat(
             first_seen: p.first_seen.clone(),
             last_seen: p.last_seen.clone(),
             is_forced: p.forced,
+            min_time_ms: p.min_ms,
+            max_time_ms: Some(p.max_ms),
+            stddev_time_ms: p.stddev_ms(),
+            compiled: None,
+            variant_query: None,
         })
         .collect();
     variants.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
@@ -373,6 +398,7 @@ fn to_query_stat(
         plan,
         waits,
         trend: None,
+        spread: q.min_ms().map(|min_ms| culprit_core::Spread { min_ms: Some(min_ms), ..Default::default() }),
     }
 }
 
@@ -477,6 +503,7 @@ SELECT
   SUM(execution_count) AS executions,
   SUM(total_elapsed_time) / 1000.0 AS total_ms,
   MAX(max_elapsed_time) / 1000.0 AS max_ms,
+  MIN(min_elapsed_time) / 1000.0 AS min_ms,
   SUM(total_worker_time) / 1000.0 AS cpu_ms,
   SUM(total_logical_reads) AS logical_reads,
   SUM(total_physical_reads) AS physical_reads,

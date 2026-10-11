@@ -11,6 +11,7 @@ import { Live } from "./views/Live";
 import { Overview } from "./views/Overview";
 import { Queries } from "./views/Queries";
 import { Schema } from "./views/Schema";
+import { PasswordNeeded } from "./components/PasswordNeeded";
 
 const Editor = lazy(() => import("./views/Editor"));
 // Statements coding agents want to run; loaded after first paint, polls only in the desktop app.
@@ -32,6 +33,7 @@ const VIEW_KEYS: View[] = ["overview", "queries", "live", "schema", "editor", "p
 export function App() {
   const view = useStore((s) => s.view);
   const active = useStore((s) => s.active);
+  const environment = useStore((s) => s.connections.find((c) => c.name === s.active)?.environment);
   const palette = useStore((s) => s.palette);
   const toast = useStore((s) => s.toast);
 
@@ -66,7 +68,7 @@ export function App() {
   return (
     <div className="shell">
       <Sidebar />
-      <main className="main">
+      <main className={`main ${view !== "connections" && environment === "production" ? "is-production" : ""}`}>
         {view !== "connections" && <TopBar />}
         <div className="view">
           {view === "plans" ? (
@@ -92,6 +94,7 @@ export function App() {
 
 function TopBar() {
   const view = useStore((s) => s.view);
+  const environment = useStore((s) => s.connections.find((c) => c.name === s.active)?.environment);
   const report = useStore((s) => (s.report.status === "ready" ? s.report : null));
   const engine = useStore((s) => s.connections.find((c) => c.name === s.active)?.engine);
   const w = report?.report.snapshot.workload;
@@ -114,7 +117,14 @@ function TopBar() {
           {w.source} · since {w.window_start ? new Date(w.window_start).toLocaleDateString() : "the last reset"}
         </span>
       )}
-      {report?.report.snapshot.environment === "production" && <span className="context">read-only</span>}
+      {environment && (
+        <span
+          className={`env-chip env-${environment}`}
+          title={environment === "production" ? "Production: reads run as they are; anything that changes data asks first" : `${environment} connection`}
+        >
+          {environment}
+        </span>
+      )}
       <span className="spacer" />
       {report?.scanError && (
         <span className="tag high" title={report.scanError.hint ?? ""}>
@@ -138,6 +148,9 @@ function Workspace({ view, name }: { view: View; name: string }) {
   }
   if (state.status === "loading" || state.status === "none") return <Loading />;
   if (state.status === "error") {
+    if (connection?.auth === "password" && (state.error.code === "auth_failed" || !connection.has_secret)) {
+      return <PasswordNeeded connection={connection} message={state.error.message} />;
+    }
     return (
       <div className="empty">
         <h3>Couldn't scan {name}</h3>

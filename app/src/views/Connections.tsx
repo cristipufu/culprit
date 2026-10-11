@@ -15,6 +15,7 @@ import { api, errorMessage, type ApiError } from "../lib/api";
 import { ENVIRONMENT_LABEL, groupByEnvironment } from "../lib/environments";
 import { ago } from "../lib/format";
 import { loadConnections, openConnection, useStore } from "../lib/store";
+import { EngineBadge } from "../components/EngineBadge";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
@@ -91,7 +92,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
   if (editing) {
     return (
       <div className="conn-card">
-        <span className={`env-dot env-${c.environment}`} />
+        <EngineBadge engine={c.engine} environment={c.environment} size="md" />
         <input
           className="alias-input"
           autoFocus
@@ -111,7 +112,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
 
   return (
     <div className="conn-card" role="button" tabIndex={0} onClick={() => openConnection(c.name)} onKeyDown={(e) => e.key === "Enter" && openConnection(c.name)}>
-      <span className={`env-dot env-${c.environment}`} />
+      <EngineBadge engine={c.engine} environment={c.environment} size="md" />
       <span className="name">
         {c.name}
         <button
@@ -368,7 +369,7 @@ function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () => void
             return (
               <label key={key} className={`discover-row ${d.saved_as ? "saved" : ""}`}>
                 <input type="checkbox" disabled={!!d.saved_as} checked={!!d.saved_as || !!picked[key]} onChange={(e) => setPicked((p) => ({ ...p, [key]: e.target.checked }))} />
-                <span className={`env-dot env-${d.environment}`} />
+                <EngineBadge engine={d.engine} environment={d.environment} />
                 {d.saved_as ? (
                   <span className="alias">{d.saved_as}</span>
                 ) : (
@@ -499,7 +500,7 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
               <div key={key}>
                 <label className={`discover-row ${c.saved_as ? "saved" : ""}`}>
                   <input type="checkbox" disabled={!!c.saved_as} checked={!!c.saved_as || !!picked[key]} onChange={(e) => setPicked((p) => ({ ...p, [key]: e.target.checked }))} />
-                  <span className={`env-dot env-${c.environment}`} />
+                  <EngineBadge engine={c.engine} environment={c.environment} />
                   {c.saved_as ? (
                     <span className="alias">{c.saved_as}</span>
                   ) : (

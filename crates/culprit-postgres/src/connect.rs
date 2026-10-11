@@ -317,9 +317,19 @@ fn map_connect_error(error: tokio_postgres::Error, host: &str, port: u16) -> Err
         return Error::new(ErrorCode::ConnectionFailed, format!("Cannot resolve host `{host}`"))
             .with_hint("Check the host name.");
     }
-    if lower.contains("password missing") || lower.contains("authentication") {
-        return Error::new(ErrorCode::AuthFailed, message)
-            .with_hint("The server asked for a password; add one to the connection.");
+    if lower.contains("password missing") {
+        return Error::new(
+            ErrorCode::AuthFailed,
+            "The server asks for a password and none is saved for this connection",
+        )
+        .with_hint(
+            "Enter it when Culprit asks, or run `culprit conn set-password <name>`. It's kept in the OS keychain.",
+        );
+    }
+    if lower.contains("authentication") {
+        return Error::new(ErrorCode::AuthFailed, message).with_hint(
+            "The server rejected the user name or password; set it again with `culprit conn set-password <name>`.",
+        );
     }
     Error::new(ErrorCode::ConnectionFailed, message)
 }

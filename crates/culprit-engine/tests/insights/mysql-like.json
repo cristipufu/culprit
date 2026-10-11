@@ -1,0 +1,27 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "20968.60"
+    },
+    "table": {
+      "table_name": "customers",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 199116,
+      "rows_produced_per_join": 22121,
+      "filtered": "11.11",
+      "cost_info": {
+        "read_cost": "18756.42",
+        "eval_cost": "2212.18",
+        "prefix_cost": "20968.60",
+        "data_read_per_join": "18M"
+      },
+      "used_columns": [
+        "id",
+        "email",
+        "name"
+      ],
+      "attached_condition": "(`shop`.`customers`.`email` like '%@example.com')"
+    }
+  }
+}

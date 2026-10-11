@@ -28,6 +28,44 @@ pub fn duration(ms: f64) -> String {
     format!("{:.1} days", h / 24.0)
 }
 
+/// Seconds since the epoch for an RFC 3339 / ISO 8601 timestamp (UTC offsets honoured), without a date library.
+pub fn epoch_seconds(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let (date, rest) = t.split_once(['T', ' '])?;
+    let mut d = date.split('-');
+    let (y, m, day): (i64, i64, i64) = (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
+    let (time, offset) = if let Some(stripped) = rest.strip_suffix('Z') {
+        (stripped, 0.0)
+    } else if let Some(pos) = rest.rfind(['+', '-']).filter(|p| *p >= 5) {
+        let (time, off) = rest.split_at(pos);
+        let sign = if off.starts_with('-') { -1.0 } else { 1.0 };
+        let mut parts = off[1..].split(':');
+        let h: f64 = parts.next().and_then(|v| v.get(..2)).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let mm: f64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        (time, sign * (h * 3600.0 + mm * 60.0))
+    } else {
+        (rest, 0.0)
+    };
+    let mut tp = time.split(':');
+    let hour: f64 = tp.next()?.parse().ok()?;
+    let minute: f64 = tp.next().unwrap_or("0").parse().ok()?;
+    let second: f64 = tp.next().unwrap_or("0").parse().ok()?;
+    // Days from 1970-01-01 (Howard Hinnant's civil-from-days, inverted).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days as f64 * 86_400.0 + hour * 3600.0 + minute * 60.0 + second - offset)
+}
+
+/// "6.2 days" between two timestamps, when both parse and `to` is not earlier.
+pub fn age_between(from: &str, to: &str) -> Option<String> {
+    let seconds = epoch_seconds(to)? - epoch_seconds(from)?;
+    (seconds >= 0.0).then(|| duration(seconds * 1000.0))
+}
+
 pub fn bytes(value: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = value.max(0.0);
@@ -130,6 +168,14 @@ pub fn predicate(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ages_between_timestamps() {
+        assert_eq!(epoch_seconds("1970-01-02T00:00:00Z"), Some(86_400.0));
+        assert_eq!(epoch_seconds("2026-10-01T02:00:00+02:00"), epoch_seconds("2026-10-01T00:00:00Z"));
+        assert_eq!(age_between("2026-10-01T00:00:00Z", "2026-10-01 06:00:00").as_deref(), Some("6 h"));
+        assert_eq!(age_between("2026-10-02T00:00:00Z", "2026-10-01T00:00:00Z"), None);
+    }
 
     #[test]
     fn durations_read_naturally() {

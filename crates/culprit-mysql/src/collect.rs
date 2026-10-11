@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use culprit_core::{
     Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Error, ForeignKey, IndexStat, MissingCapability,
-    PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, TableStat, WaitStat,
-    Workload,
+    PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread, TableStat,
+    WaitStat, Workload,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
@@ -191,7 +191,10 @@ pub async fn snapshot(
         },
         async {
             let mut conn = connector.connect(Scope::Server).await?;
-            Ok::<_, Error>((settings(&mut conn).await, waits(&mut conn).await))
+            let settings = settings(&mut conn).await;
+            let waits = crate::pressure::waits(&mut conn).await;
+            let pressure = crate::pressure::collect(&mut conn).await;
+            Ok::<_, Error>((settings, waits, pressure))
         },
     );
 
@@ -279,9 +282,13 @@ pub async fn snapshot(
         }
     }
 
-    let (mut settings_out, mut waits_out) = (Vec::new(), Vec::new());
+    let (mut settings_out, mut waits_out, mut pressure_out) = (Vec::new(), Vec::new(), None);
     match misc {
-        Ok((settings, waits)) => {
+        Ok((settings, waits, (pressure, pressure_notes))) => {
+            for message in pressure_notes {
+                note("pressure", message);
+            }
+            pressure_out = Some(pressure);
             match settings {
                 Ok(s) => settings_out = s,
                 Err(e) => note("settings", e.message),
@@ -316,8 +323,13 @@ pub async fn snapshot(
         waits: waits_out,
         resources: Vec::new(),
         settings: settings_out,
+        pressure: pressure_out,
         notes,
         options: Some(options.clone()),
+        query_families: Vec::new(),
+        plan_cache: None,
+        tuning: None,
+        deadlocks: None,
     })
 }
 
@@ -370,8 +382,9 @@ async fn collect_workload(
     // EXPLAINs are Culprit's own planning; `SELECT @@…` digests are driver handshakes (Culprit's included), never actionable.
     let sql = format!(
         "SELECT DIGEST AS digest, DIGEST_TEXT AS digest_text, COUNT_STAR AS calls, SUM_TIMER_WAIT AS total_ps,
-                MAX_TIMER_WAIT AS max_ps, SUM_ROWS_SENT AS rows_sent, SUM_ROWS_EXAMINED AS rows_examined,
-                SUM_CREATED_TMP_DISK_TABLES AS tmp_disk, SUM_NO_INDEX_USED AS no_index, {cpu}, {sample},
+                MAX_TIMER_WAIT AS max_ps, MIN_TIMER_WAIT AS min_ps, SUM_ROWS_SENT AS rows_sent, SUM_ROWS_EXAMINED AS rows_examined,
+                SUM_CREATED_TMP_DISK_TABLES AS tmp_disk, SUM_NO_INDEX_USED AS no_index, SUM_LOCK_TIME AS lock_ps,
+                {cpu}, {sample}, {p95}, {p99},
                 DATE_FORMAT(FIRST_SEEN, '%Y-%m-%dT%H:%i:%sZ') AS first_seen,
                 DATE_FORMAT(LAST_SEEN, '%Y-%m-%dT%H:%i:%sZ') AS last_seen
            FROM performance_schema.events_statements_summary_by_digest
@@ -379,6 +392,8 @@ async fn collect_workload(
             AND DIGEST_TEXT NOT LIKE 'SELECT @@%'",
         cpu = optional("SUM_CPU_TIME"),
         sample = optional("QUERY_SAMPLE_TEXT"),
+        p95 = optional("QUANTILE_95"),
+        p99 = optional("QUANTILE_99"),
     );
     let rows = query_with(conn, &sql, vec![Value::from(probe.database.clone())]).await?;
     let all: Vec<Digest> = rows
@@ -402,6 +417,7 @@ async fn collect_workload(
         window_start.as_deref().and_then(|start| hours_between(start, &probe.now)).unwrap_or(0.0).max(1.0 / 60.0);
 
     let mut kept = select_top(all, options.top_queries as usize);
+    attach_histograms(conn, &probe.database, &mut kept).await;
     let mut plan_note = None;
     if !kept.is_empty() && options.plans > 0 {
         plan_note = attach_plans(connector, &probe.database, &mut kept, options.plans as usize).await;
@@ -426,6 +442,7 @@ async fn collect_workload(
 }
 
 fn digest(r: &Rec, has_cpu: bool) -> Digest {
+    let ms = |key: &str| r.number(key).map(|p| p / PICOS_PER_MS);
     let executions = r.number("calls").unwrap_or(0.0);
     let total = r.number("total_ps").unwrap_or(0.0) / PICOS_PER_MS;
     let digest = r.string("digest");
@@ -450,12 +467,91 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
             last_seen: r.text("last_seen"),
             plans: Vec::new(),
             plan: None,
-            waits: Vec::new(),
+            // Lock time (table, metadata and, since 8.0.28, InnoDB row locks) is the wait MySQL attributes to statements.
+            waits: r
+                .number("lock_ps")
+                .map(|p| p / PICOS_PER_MS)
+                .filter(|ms| *ms > 0.0)
+                .map(|ms| {
+                    vec![WaitStat {
+                        category: "Lock".into(),
+                        wait_type: Some("lock time".into()),
+                        wait_ms: ms,
+                        tasks: None,
+                    }]
+                })
+                .unwrap_or_default(),
             trend: None,
+            // Percentiles exist from 8.0.31; the histogram, attached later, from 8.0.19.
+            spread: Some(Spread {
+                min_ms: ms("min_ps"),
+                p95_ms: ms("quantile_95"),
+                p99_ms: ms("quantile_99"),
+                lock_ms: ms("lock_ps"),
+                ..Default::default()
+            }),
         },
         sample: r.text("query_sample_text"),
         rows_examined: r.number("rows_examined").unwrap_or(0.0),
     }
+}
+
+/// MySQL 8.0.19+ keeps a run-time histogram per digest: enough to tell a long tail from a uniformly slow statement.
+/// Older servers have no histogram table; the spread then shows fastest, average and slowest only.
+async fn attach_histograms(conn: &mut Conn, database: &str, kept: &mut [Digest]) {
+    let digests: Vec<String> = kept.iter().filter_map(|d| d.stat.query_hash.clone()).collect();
+    if digests.is_empty() {
+        return;
+    }
+    let marks = vec!["?"; digests.len()].join(", ");
+    let sql = format!(
+        "SELECT DIGEST AS digest, BUCKET_TIMER_LOW AS low_ps, BUCKET_TIMER_HIGH AS high_ps, COUNT_BUCKET AS runs
+           FROM performance_schema.events_statements_histogram_by_digest
+          WHERE SCHEMA_NAME = ? AND DIGEST IN ({marks}) AND COUNT_BUCKET > 0
+          ORDER BY DIGEST, BUCKET_NUMBER"
+    );
+    let mut params = vec![Value::from(database.to_string())];
+    params.extend(digests.into_iter().map(Value::from));
+    let Ok(rows) = query_with(conn, &sql, params).await else { return };
+    let mut by_digest: HashMap<String, Vec<[f64; 3]>> = HashMap::new();
+    for r in rows {
+        let low = r.number("low_ps").unwrap_or(0.0) / PICOS_PER_MS;
+        let high = r.number("high_ps").unwrap_or(0.0) / PICOS_PER_MS;
+        by_digest.entry(r.string("digest")).or_default().push([low, high, r.number("runs").unwrap_or(0.0)]);
+    }
+    for d in kept.iter_mut() {
+        let Some(buckets) = d.stat.query_hash.as_ref().and_then(|h| by_digest.remove(h)) else { continue };
+        let spread = d.stat.spread.get_or_insert_with(Spread::default);
+        spread.p50_ms = quantile(&buckets, 0.5);
+        spread.p95_ms = spread.p95_ms.or(quantile(&buckets, 0.95));
+        spread.p99_ms = spread.p99_ms.or(quantile(&buckets, 0.99));
+        spread.histogram = fold_buckets(&buckets, 32);
+    }
+}
+
+/// The upper edge of the bucket where the running count reaches `q` of all runs.
+fn quantile(buckets: &[[f64; 3]], q: f64) -> Option<f64> {
+    let total: f64 = buckets.iter().map(|b| b[2]).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut seen = 0.0;
+    for b in buckets {
+        seen += b[2];
+        if seen >= total * q {
+            return Some(b[1]);
+        }
+    }
+    buckets.last().map(|b| b[1])
+}
+
+/// MySQL's histogram has 450 narrow buckets; neighbours merge until at most `max` remain.
+fn fold_buckets(buckets: &[[f64; 3]], max: usize) -> Vec<[f64; 3]> {
+    if buckets.len() <= max {
+        return buckets.to_vec();
+    }
+    let per = buckets.len().div_ceil(max);
+    buckets.chunks(per).map(|c| [c[0][0], c[c.len() - 1][1], c.iter().map(|b| b[2]).sum()]).collect()
 }
 
 /// Keep the heaviest digests by time, plus the heaviest by executions and rows examined, so chatty and scan-heavy
@@ -637,6 +733,7 @@ async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> {
                 last_vacuum: None,
                 last_analyze: analyzed.get(&key).cloned(),
                 forwarded_records: None,
+                forwarded_fetches: None,
                 xid_age: None,
                 name,
             }
@@ -836,7 +933,11 @@ async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<ForeignKey>> {
 }
 
 /// Server variables the checks and the UI read, with their compiled-in defaults (MySQL 8.0/8.4).
-const SETTINGS: [(&str, &str); 12] = [
+const SETTINGS: [(&str, &str); 16] = [
+    ("performance_schema_digests_size", "10000"),
+    ("performance_schema_max_digest_length", "1024"),
+    ("performance_schema_max_sql_text_length", "1024"),
+    ("max_digest_length", "1024"),
     ("innodb_buffer_pool_size", "134217728"),
     ("innodb_page_size", "16384"),
     ("tmp_table_size", "16777216"),
@@ -865,55 +966,46 @@ async fn settings(conn: &mut Conn) -> Result<Vec<Setting>> {
             let default = SETTINGS.iter().find(|(n, _)| *n == name).map(|(_, d)| d.to_string());
             Setting { name, value: r.string("value"), default_value: default, scope: "server".into() }
         })
+        .chain(statement_status(conn).await)
         .collect())
 }
 
-/// Where the server has spent time waiting since it started, by category. Only instruments that are enabled count.
-async fn waits(conn: &mut Conn) -> Result<Vec<WaitStat>> {
-    let rows = query(
+/// Whether performance_schema keeps up with the workload: digests it had no room for, statements lumped into the
+/// overflow row, and the consumer that has to be on for digests at all. Best effort; each part may be unreadable.
+async fn statement_status(conn: &mut Conn) -> Vec<Setting> {
+    let mut out = Vec::new();
+    let status =
+        |name: &str, value: String| Setting { name: name.into(), value, default_value: None, scope: "status".into() };
+    if let Ok(Some(r)) = query_one(
         conn,
-        "SELECT EVENT_NAME AS event, COUNT_STAR AS tasks, SUM_TIMER_WAIT AS wait_ps
-           FROM performance_schema.events_waits_summary_global_by_event_name
-          WHERE SUM_TIMER_WAIT > 0 AND EVENT_NAME <> 'idle'",
+        "SELECT VARIABLE_VALUE AS lost FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Performance_schema_digest_lost'",
     )
-    .await?;
-    let mut by_category: BTreeMap<&'static str, (f64, f64)> = BTreeMap::new();
-    for r in &rows {
-        let entry = by_category.entry(wait_category(&r.string("event"))).or_insert((0.0, 0.0));
-        entry.0 += r.number("wait_ps").unwrap_or(0.0) / PICOS_PER_MS;
-        entry.1 += r.number("tasks").unwrap_or(0.0);
+    .await
+    {
+        out.push(status("performance_schema_digest_lost", r.string("lost")));
     }
-    let mut out: Vec<WaitStat> = by_category
-        .into_iter()
-        .map(|(category, (wait_ms, tasks))| WaitStat {
-            category: category.into(),
-            wait_type: None,
-            wait_ms,
-            tasks: Some(tasks),
-        })
-        .collect();
-    out.sort_by(|a, b| b.wait_ms.total_cmp(&a.wait_ms));
-    Ok(out)
-}
-
-fn wait_category(event: &str) -> &'static str {
-    let e = event.to_ascii_lowercase();
-    if e.starts_with("wait/io/file") {
-        return "IO";
+    if let Ok(Some(r)) = query_one(
+        conn,
+        "SELECT COUNT_STAR AS calls, SUM_TIMER_WAIT / 1000000000 AS total_ms
+           FROM performance_schema.events_statements_summary_by_digest WHERE DIGEST IS NULL",
+    )
+    .await
+    {
+        out.push(status("performance_schema.untracked_statements", r.string("calls")));
+        out.push(status("performance_schema.untracked_ms", r.string("total_ms")));
     }
-    if e.starts_with("wait/io/table") {
-        return "Table IO";
+    if let Ok(rows) = query(
+        conn,
+        "SELECT NAME AS name, ENABLED AS enabled FROM performance_schema.setup_consumers
+          WHERE NAME IN ('statements_digest', 'events_statements_current', 'global_instrumentation')",
+    )
+    .await
+    {
+        for r in rows {
+            out.push(status(&format!("performance_schema.consumer.{}", r.string("name")), r.string("enabled")));
+        }
     }
-    if e.starts_with("wait/io/socket") {
-        return "Network";
-    }
-    if e.starts_with("wait/lock") {
-        return "Lock";
-    }
-    if e.starts_with("wait/synch") {
-        return "Latch";
-    }
-    "Other"
+    out
 }
 
 #[cfg(test)]
@@ -944,6 +1036,7 @@ mod tests {
                 plan: None,
                 waits: Vec::new(),
                 trend: None,
+                spread: None,
             },
             sample: None,
             rows_examined: examined,
@@ -974,7 +1067,16 @@ mod tests {
     #[test]
     fn windows_are_measured_in_hours() {
         assert_eq!(hours_between("2026-10-11T06:00:00Z", "2026-10-11T07:30:00Z"), Some(1.5));
-        assert_eq!(wait_category("wait/io/file/innodb/innodb_data_file"), "IO");
-        assert_eq!(wait_category("wait/lock/metadata/sql/mdl"), "Lock");
+        assert_eq!(crate::pressure::category("wait/io/file/innodb/innodb_data_file"), "IO");
+        assert_eq!(crate::pressure::category("wait/lock/metadata/sql/mdl"), "Lock");
+    }
+
+    #[test]
+    fn histogram_percentiles_and_folding() {
+        let buckets = [[0.0, 1.0, 50.0], [1.0, 2.0, 45.0], [2.0, 4.0, 4.0], [500.0, 1000.0, 1.0]];
+        assert_eq!(quantile(&buckets, 0.5), Some(1.0));
+        assert_eq!(quantile(&buckets, 0.95), Some(2.0));
+        assert_eq!(quantile(&buckets, 0.995), Some(1000.0));
+        assert_eq!(fold_buckets(&buckets, 2), vec![[0.0, 2.0, 95.0], [2.0, 1000.0, 5.0]]);
     }
 }

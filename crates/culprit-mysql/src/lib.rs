@@ -3,8 +3,11 @@
 
 mod collect;
 mod connect;
+pub mod deadlocks;
 pub mod plan_json;
 pub mod plan_tree;
+mod pressure;
+mod progress;
 mod rows;
 mod sessions;
 
@@ -96,6 +99,38 @@ impl Provider for MysqlProvider {
         sessions::interrupt(&self.connector, session, action).await
     }
 
+    async fn lock_waits(&self) -> Result<Vec<culprit_core::LockWait>> {
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let out = deadlocks::lock_waits(&mut conn).await;
+        let _ = conn.disconnect().await;
+        out
+    }
+
+    async fn deadlocks(&self, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let out = deadlocks::recent(&mut conn, since_hours).await;
+        let _ = conn.disconnect().await;
+        out
+    }
+
+    async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
+        let mut conn = self.connector.connect(Scope::Server).await?;
+        let result = crate::pressure::sample(&mut conn, seconds).await;
+        let _ = conn.disconnect().await;
+        result
+    }
+
+    async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
+        Err(Error::new(culprit_core::ErrorCode::Unsupported, "MySQL doesn't keep the actual plan of past runs")
+            .with_hint(
+                "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction.",
+            ))
+    }
+
+    async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
+        progress::query_progress(&self.connector, session, with_plan).await
+    }
+
     async fn live(&self) -> Result<LiveState> {
         let mut conn = self.connector.connect(Scope::Server).await?;
         let rows = query(
@@ -109,6 +144,7 @@ impl Provider for MysqlProvider {
         )
         .await?;
         let blockers = lock_waits(&mut conn).await;
+        let last_statements = deadlocks::last_statements(&mut conn).await;
         let now = query_one(&mut conn, "SELECT DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now")
             .await?
             .map(|r| r.string("now"))
@@ -141,7 +177,11 @@ impl Provider for MysqlProvider {
                     transaction_ms: r.number("trx_ms"),
                     cpu_ms: None,
                     reads: None,
-                    sql: r.text("info").filter(|s| !s.is_empty()),
+                    // An idle session in a transaction shows its last statement: usually what took the locks.
+                    sql: r
+                        .text("info")
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| in_transaction.then(|| last_statements.get(&id).cloned()).flatten()),
                     state,
                     id,
                 }
@@ -155,7 +195,14 @@ impl Provider for MysqlProvider {
                 None => waits.push(WaitStat { category, wait_type: None, wait_ms: 0.0, tasks: Some(1.0) }),
             }
         }
-        Ok(LiveState { taken_at: now, sessions, waits, session_actions: Vec::new(), session_actions_note: None })
+        Ok(LiveState {
+            taken_at: now,
+            sessions,
+            waits,
+            session_actions: Vec::new(),
+            session_actions_note: None,
+            blocking: None,
+        })
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {

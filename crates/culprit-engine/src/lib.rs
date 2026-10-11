@@ -1,9 +1,12 @@
 pub mod agent;
 pub mod aws;
 pub mod catalog;
+pub mod changes;
 pub mod connstr;
+pub mod deadlocks;
 pub mod discover;
 pub mod entra;
+pub mod export;
 mod http;
 pub mod import;
 pub mod plans;
@@ -12,6 +15,7 @@ pub mod registry;
 pub mod reports;
 pub mod saved;
 pub mod secrets;
+mod share;
 pub mod store;
 pub mod trends;
 
@@ -19,9 +23,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use culprit_core::{
-    AuthKind, Check, CheckInfo, ConnectionSpec, Drift, Engine, Environment, Error, ErrorCode, ExplainMode, LiveState,
-    LockedCheck, Plan, Provider, Report, Result, ResultSet, ServerInfo, SessionAction, SnapshotOptions,
-    entra_host_allowed,
+    AuthKind, Check, CheckInfo, CollectorNote, ConnectionSpec, DeadlockReport, Drift, Engine, Environment, Error,
+    ErrorCode, ExplainMode, LiveState, LockedCheck, Plan, Provider, Report, Result, ResultSet, ServerInfo,
+    SessionAction, SnapshotOptions, entra_host_allowed,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -33,6 +37,7 @@ pub use import::{ImportCandidate, ImportSource};
 pub use plans::{PlanFormat, parse_plan};
 pub use reports::ReportSummary;
 use secrets::SecretStore;
+pub use share::{export_diff, export_plan};
 use store::{Paths, Store, StoredConnection};
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
@@ -508,6 +513,12 @@ impl Workspace {
         snapshot.taken_at = taken_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         snapshot.connection = name.to_string();
         snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        // A day of deadlocks: graphs where the engine keeps them, Postgres's counter. Never fails the scan.
+        match provider.deadlocks(24.0).await {
+            Ok(found) => snapshot.deadlocks = Some(found),
+            Err(e) if e.code == ErrorCode::Unsupported => {}
+            Err(e) => snapshot.notes.push(CollectorNote { collector: "deadlocks".into(), message: e.message }),
+        }
         let dir = self.paths.reports_dir(name);
         if let Some(workload) = snapshot.workload.as_mut().filter(|w| !w.windowed && w.timeline.is_none()) {
             let history = reports::counters_history(&dir, &snapshot.taken_at);
@@ -527,6 +538,22 @@ impl Workspace {
         reports::list(&self.paths.reports_dir(name))
     }
 
+    /// The index advisor's plan for a connection, from its latest saved report re-checked with the current checks (so
+    /// advice from an older report still links to today's findings).
+    pub fn index_advice(&self, name: &str) -> Result<culprit_core::IndexAdvice> {
+        let report = self.latest_report(name, None)?.ok_or_else(|| {
+            Error::not_found(format!("No saved report for '{name}'"))
+                .with_hint(format!("Run `culprit scan {name}` first"))
+        })?;
+        Ok(self.index_advice_for(report))
+    }
+
+    /// The index advisor's plan for a report already in hand (a saved file, a fixture).
+    pub fn index_advice_for(&self, report: Report) -> culprit_core::IndexAdvice {
+        let fresh = culprit_checks::analyze_with(report.snapshot, &self.extra_checks);
+        culprit_checks::index_advice(&fresh)
+    }
+
     /// What differs between the latest scans of two connections: tables, columns, indexes, settings, version.
     pub fn drift(&self, a: &str, b: &str) -> Result<Drift> {
         let load = |name: &str| -> Result<Report> {
@@ -544,13 +571,37 @@ impl Workspace {
     pub async fn explain(&self, name: &str, sql: &str, mode: ExplainMode, confirmed: bool) -> Result<Plan> {
         let info = self.connection(name)?;
         guard_execution(&info, sql, mode == ExplainMode::Analyze, confirmed)?;
-        self.forget_rejected(name, self.provider(name).await?.explain(sql, mode).await)
+        let mut plan = self.forget_rejected(name, self.provider(name).await?.explain(sql, mode).await)?;
+        culprit_core::insights::annotate(&mut plan);
+        Ok(plan)
     }
 
     /// A plan for a query from the latest report: the stored plan when the engine keeps them (Query Store), otherwise an
     /// estimated plan of the query text. Never executes the statement.
+    /// The actual plan of a query's last run as the engine kept it (SQL Server 2019+ with LAST_QUERY_PLAN_STATS).
+    /// Never runs the query; other engines say why they can't and how to measure it instead.
+    pub async fn last_actual_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
+        let provider = self.provider(name).await?;
+        self.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)
+    }
+
+    /// How far along a session's running statement is: per-operator progress on SQL Server, the estimated plan with
+    /// elapsed time and command/stage progress on Postgres and MySQL. Reads only; works on production too.
+    pub async fn query_progress(
+        &self,
+        name: &str,
+        session: &str,
+        with_plan: bool,
+    ) -> Result<culprit_core::QueryProgress> {
+        culprit_core::session_number(session)?;
+        let provider = self.provider(name).await?;
+        self.forget_rejected(name, provider.query_progress(session, with_plan).await)
+    }
+
     pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
-        self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id).await)
+        let mut plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id).await)?;
+        culprit_core::insights::annotate(&mut plan);
+        Ok(plan)
     }
 
     async fn query_plan_from(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
@@ -582,10 +633,31 @@ impl Workspace {
     }
 
     /// Sessions, blocking and waits, plus what Live may do to other sessions here (nothing on production).
+    /// Where the latest scan's database time went, by wait category, with the queries behind each. `None` when the scan
+    /// recorded no waits (PostgreSQL without track_io_timing, logins that can't read wait statistics).
+    pub fn waits(&self, name: &str, window_days: Option<u32>) -> Result<Option<culprit_core::WaitsReport>> {
+        let report = self.latest_report(name, window_days)?.ok_or_else(|| {
+            Error::not_found(format!("No report for {name} yet")).with_hint("Scan it first: culprit scan <connection>")
+        })?;
+        Ok(explain_waits(&report.snapshot))
+    }
+
+    /// What the server waits on right now: a sample `seconds` long (capped at 60). Reads statistics views only.
+    pub async fn wait_sample(&self, name: &str, seconds: u32) -> Result<culprit_core::WaitSample> {
+        let seconds = seconds.clamp(1, 60);
+        let provider = self.provider(name).await?;
+        self.forget_rejected(name, provider.wait_sample(seconds).await)
+    }
+
     pub async fn live(&self, name: &str) -> Result<LiveState> {
         let info = self.connection(name)?;
         let provider = self.provider(name).await?;
         let mut live = self.forget_rejected(name, provider.live().await)?;
+        // Lock details are read only when someone waits, so a quiet server costs one query per refresh.
+        if live.sessions.iter().any(|s| s.blocked_by.is_some()) {
+            let locks = provider.lock_waits().await.unwrap_or_default();
+            live.blocking = culprit_core::blocking::analyze(info.engine, &live.sessions, &locks);
+        }
         if info.environment.is_production() {
             live.session_actions = Vec::new();
             live.session_actions_note = Some(PRODUCTION_SESSIONS.to_string());
@@ -593,6 +665,55 @@ impl Workspace {
             live.session_actions = provider.session_actions();
         }
         Ok(live)
+    }
+
+    /// Recent deadlocks on `name` (newest first, explained), with fixes linked to the latest report's findings.
+    pub async fn deadlocks(&self, name: &str, since_hours: f64) -> Result<DeadlockReport> {
+        let provider = self.provider(name).await?;
+        let mut report = self.forget_rejected(name, provider.deadlocks(since_hours.clamp(1.0, 24.0 * 30.0)).await)?;
+        let latest = self.latest_report(name, None).ok().flatten();
+        deadlocks::link_findings(&mut report, latest.as_ref());
+        Ok(report)
+    }
+
+    /// What changed between two periods: each query's runs and time per run before and after, judged with the same
+    /// rules everywhere. Query Store answers from its own intervals (any period it still keeps); sources that only keep
+    /// running totals answer from Culprit's saved scans, so periods snap to the scans nearest to what was asked.
+    pub async fn changes(&self, name: &str, request: &changes::ChangeRequest) -> Result<culprit_core::Changes> {
+        let info = self.connection(name)?;
+        let latest = self.latest_report(name, None)?;
+        let options = changes::options(request);
+        let now = chrono::Utc::now().timestamp() as f64;
+        let workload = latest.as_ref().and_then(|r| r.snapshot.workload.as_ref());
+        let windowed = workload.map(|w| w.windowed).unwrap_or(info.engine == Engine::Mssql);
+        if windowed {
+            let since = workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch);
+            let (baseline, recent) = changes::resolve(request, (since.unwrap_or(now - 86_400.0), now))?;
+            let provider = self.provider(name).await?;
+            if let Some(data) = self.forget_rejected(name, provider.period_stats(&baseline, &recent).await)? {
+                let mut out = culprit_core::changes::compare(name, info.engine, data, &options);
+                changes::describe_switches(&mut out, provider.as_ref(), 5).await;
+                return Ok(out);
+            }
+        }
+        // Running totals only: the difference between two scans is what ran in between.
+        let latest_counters = latest.as_ref().and_then(trends::Counters::of);
+        let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let history: Vec<trends::Counters> = reports::counters_history(&self.paths.reports_dir(name), &at)
+            .into_iter()
+            .filter(|c| latest_counters.as_ref().is_none_or(|l| l.source == c.source && l.database == c.database))
+            .collect();
+        let times: Vec<f64> = history.iter().filter_map(|c| culprit_core::changes::epoch(&c.taken_at)).collect();
+        let first = times.iter().copied().fold(f64::INFINITY, f64::min);
+        let last = times.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let (first, last) = if first.is_finite() && last > first { (first, last) } else { (now - 86_400.0, now) };
+        let defaults = request.is_default().then(|| changes::default_scan_periods(&history)).flatten();
+        let (baseline, recent) = match defaults {
+            Some(periods) => periods,
+            None => changes::resolve(request, (first, last))?,
+        };
+        let data = changes::from_scans(&history, &baseline, &recent);
+        Ok(culprit_core::changes::compare(name, info.engine, data, &options))
     }
 
     /// Cancel another session's statement or end the session. Refused on production connections, whatever the caller says.
@@ -733,6 +854,11 @@ pub fn drift_reports(a: &Report, b: &Report) -> Result<Drift> {
         )));
     }
     Ok(culprit_checks::drift(a, b))
+}
+
+/// Where a snapshot's database time went, by wait category with the queries behind each (saved files, fixtures).
+pub fn explain_waits(snapshot: &culprit_core::Snapshot) -> Option<culprit_core::WaitsReport> {
+    culprit_checks::waits::explain(snapshot)
 }
 
 /// Postgres and MySQL providers already run reads inside a read-only transaction. SQL Server has no read-only
@@ -960,6 +1086,7 @@ mod tests {
                 waits: Vec::new(),
                 session_actions: Vec::new(),
                 session_actions_note: None,
+                blocking: None,
             })
         }
         async fn run(&self, _: &str, _: usize) -> Result<ResultSet> {

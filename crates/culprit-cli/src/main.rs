@@ -1,6 +1,9 @@
 mod agents;
+mod locks;
 mod output;
 mod plan_cmd;
+mod share_cmd;
+mod waits_cmd;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -33,6 +36,53 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Args)]
+struct ChangesArgs {
+    connection: String,
+    /// Compare everything since this moment (RFC 3339, e.g. a deploy) with the same length of time before it.
+    #[arg(long)]
+    since: Option<String>,
+    /// The recent period as the last N hours: `6h`, `90m` or `2d` (default: the last hour, or since the previous scan).
+    #[arg(long, value_parser = parse_hours)]
+    recent: Option<f64>,
+    /// Runs a query needs in each period before its averages are compared (default 10).
+    #[arg(long)]
+    min_runs: Option<f64>,
+    /// How much slower or faster counts as a change (default 1.5).
+    #[arg(long)]
+    threshold: Option<f64>,
+}
+
+impl ChangesArgs {
+    fn request(&self) -> culprit_engine::changes::ChangeRequest {
+        culprit_engine::changes::ChangeRequest {
+            since: self.since.clone(),
+            recent_hours: self.recent,
+            min_executions: self.min_runs,
+            threshold: self.threshold,
+            ..Default::default()
+        }
+    }
+}
+
+/// `6h`, `90m`, `2d`, or a bare number of hours.
+fn parse_hours(text: &str) -> Result<f64, String> {
+    let text = text.trim();
+    let wrong = || format!("'{text}' isn't a duration like 6h, 90m or 2d");
+    let (number, unit) = match text.chars().last() {
+        Some(c) if c.is_ascii_alphabetic() => (&text[..text.len() - 1], c.to_ascii_lowercase()),
+        _ => (text, 'h'),
+    };
+    let value: f64 = number.trim().parse().map_err(|_| wrong())?;
+    let hours = match unit {
+        'm' => value / 60.0,
+        'h' => value,
+        'd' => value * 24.0,
+        _ => return Err(wrong()),
+    };
+    if hours > 0.0 && hours.is_finite() { Ok(hours) } else { Err("the recent period must be longer than zero".into()) }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Manage saved connections. Secrets go to the OS keychain; commands refer to connections by name.
@@ -61,8 +111,21 @@ enum Command {
     /// Read plans saved by other tools (.sqlplan, EXPLAIN JSON or text) and compare any two plans.
     #[command(subcommand)]
     Plan(plan_cmd::PlanCommand),
+    /// Did the fix work? Re-scan and report each finding as fixed, still present or can't tell, plus new findings.
+    /// Exits 2 when a finding you named is still present.
+    Verify(share_cmd::VerifyArgs),
+    /// A finding (--finding <id>) or the whole latest scan as Markdown for a pull request, or a self-contained HTML page
+    /// (--html). Literal values are redacted unless --no-redact; connection names and hosts are never included.
+    Export(share_cmd::ExportArgs),
     /// Current sessions, blocking and waits. On non-production connections, --cancel or --kill acts on one session.
     Live(LiveArgs),
+    /// Who blocks whom right now: chains under each head blocker, how long, on what, and what to do.
+    Blocking { connection: String },
+    /// Recent deadlocks, explained: the pattern, both statements and the fix. --file explains a saved one.
+    Deadlocks(locks::DeadlocksArgs),
+    /// Where database time goes: waits by category with the queries behind each, and pressure signals. --now samples
+    /// what the server waits on right now.
+    Waits(waits_cmd::WaitsArgs),
     /// Run a statement and print up to --limit rows. Reads run in a read-only transaction; anything that changes data
     /// commits, and on production needs --yes-execute-on-production.
     Run(RunArgs),
@@ -71,9 +134,17 @@ enum Command {
     Saved(SavedCommand),
     /// List every check with the engines and capabilities it needs.
     Checks,
+    /// Databases, tables, views and columns as the editor's completion sees them (read live, read-only).
+    Catalog { connection: String },
     /// What differs between two databases (latest scans): tables, columns, indexes, settings and version, with SQL to align
     /// missing indexes. Each side is a connection name or a saved report file.
     Drift { a: String, b: String },
+    /// What changed between two periods: queries that got slower, new ones, ones that got faster or stopped, and the
+    /// plan changes behind them. Query Store answers from its intervals; Postgres and MySQL from Culprit's earlier scans.
+    Changes(ChangesArgs),
+    /// The index advisor: indexes to add (ordered by the database time of the queries that need them), indexes to
+    /// clean up, and tables whose shape costs reads or writes. Takes a connection or a saved report file.
+    Indexes { connection: String },
     /// Re-run every check on a saved snapshot or report file, offline. Prints the full report.
     Analyze {
         file: PathBuf,
@@ -246,15 +317,20 @@ struct ExplainArgs {
     sql: Option<String>,
     #[arg(long, conflicts_with = "query_id")]
     file: Option<PathBuf>,
-    /// Explain a query from the latest report by its id (its stored plan when the engine keeps one).
-    #[arg(long)]
+    /// Explain a query from the latest report by its id (its stored plan when the engine keeps one). Postgres ids can
+    /// be negative, e.g. --query-id -1973449073115120133.
+    #[arg(long, allow_hyphen_values = true)]
     query_id: Option<String>,
     /// With --query-id: a specific stored plan, e.g. one of the plans Query Store kept for the query.
-    #[arg(long, requires = "query_id")]
+    #[arg(long, requires = "query_id", allow_hyphen_values = true)]
     plan_id: Option<String>,
     /// Execute the statement and report actual rows and timings.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "last_actual")]
     analyze: bool,
+    /// With --query-id: the actual plan of the query's last run as SQL Server kept it (2019+, LAST_QUERY_PLAN_STATS).
+    /// Never runs the query.
+    #[arg(long, requires = "query_id")]
+    last_actual: bool,
     #[arg(long)]
     yes_execute_on_production: bool,
 }
@@ -301,6 +377,13 @@ struct LiveArgs {
     /// End this session; its open transaction rolls back.
     #[arg(long, value_name = "SESSION")]
     kill: Option<String>,
+    /// How far along this session's running statement is: per-operator progress on SQL Server, the plan with elapsed
+    /// time and command progress on Postgres and MySQL.
+    #[arg(long, value_name = "SESSION", conflicts_with_all = ["cancel", "kill"])]
+    progress: Option<String>,
+    /// With --progress: keep refreshing every second until the statement finishes.
+    #[arg(long, requires = "progress")]
+    watch: bool,
 }
 
 #[derive(Args)]
@@ -447,6 +530,12 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.top(&report, args.by, args.limit);
             Ok(0)
         }
+        Command::Explain(args) if args.last_actual => {
+            let query_id = args.query_id.as_deref().unwrap_or_default();
+            let plan = ws.last_actual_plan(&args.connection, query_id, args.plan_id.as_deref()).await?;
+            out.plan(&plan);
+            Ok(0)
+        }
         Command::Explain(args) if args.query_id.is_some() && !args.analyze => {
             let query_id = args.query_id.as_deref().unwrap_or_default();
             let plan = ws.query_plan(&args.connection, query_id, args.plan_id.as_deref()).await?;
@@ -461,6 +550,9 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             Ok(0)
         }
         Command::Plan(command) => plan_cmd::run(&ws, command, out).await,
+        Command::Waits(args) => waits_cmd::run(&ws, args, out).await,
+        Command::Verify(args) => share_cmd::verify(&ws, args, out).await,
+        Command::Export(args) => share_cmd::export(&ws, args),
         Command::Live(args) => {
             let target = match (args.cancel, args.kill) {
                 (Some(id), _) => Some((id, SessionAction::Cancel)),
@@ -475,10 +567,24 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
                 });
                 return Ok(0);
             }
+            if let Some(session) = args.progress.as_deref() {
+                let mut first = true;
+                loop {
+                    let progress = ws.query_progress(&args.connection, session, first || !args.watch).await?;
+                    out.query_progress(&progress, !first);
+                    if !args.watch || !progress.running {
+                        return Ok(0);
+                    }
+                    first = false;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
             let live = ws.live(&args.connection).await?;
             out.live(&live);
             Ok(0)
         }
+        Command::Blocking { connection } => locks::blocking(&ws, &connection, out).await,
+        Command::Deadlocks(args) => locks::deadlocks(&ws, args, out).await,
         Command::Run(args) => {
             let rs = ws.run(&args.connection, &args.sql, args.limit, args.yes_execute_on_production).await?;
             out.result_set(&rs);
@@ -510,6 +616,10 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             }
             Ok(0)
         }
+        Command::Catalog { connection } => {
+            out.catalog(&ws.catalog(&connection).await?);
+            Ok(0)
+        }
         Command::Checks => {
             out.checks(&ws.checks());
             Ok(0)
@@ -529,6 +639,18 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
                 }
             };
             out.drift(&drift);
+            Ok(0)
+        }
+        Command::Changes(args) => {
+            out.changes(&ws.changes(&args.connection, &args.request()).await?);
+            Ok(0)
+        }
+        Command::Indexes { connection } => {
+            let advice = match report_file(&connection) {
+                Some(path) => ws.index_advice_for(reports::load(&path)?),
+                None => ws.index_advice(&connection)?,
+            };
+            out.index_advice(&advice);
             Ok(0)
         }
         Command::Analyze { file, connection } => {

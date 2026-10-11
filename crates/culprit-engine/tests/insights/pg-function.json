@@ -1,0 +1,36 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Gather",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 1000.00,
+      "Total Cost": 47284.97,
+      "Plan Rows": 10000,
+      "Plan Width": 8,
+      "Disabled": false,
+      "Output": ["id"],
+      "Workers Planned": 2,
+      "Single Copy": false,
+      "Plans": [
+        {
+          "Node Type": "Seq Scan",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": true,
+          "Async Capable": false,
+          "Relation Name": "orders",
+          "Schema": "public",
+          "Alias": "orders",
+          "Startup Cost": 0.00,
+          "Total Cost": 45284.97,
+          "Plan Rows": 4167,
+          "Plan Width": 8,
+          "Disabled": false,
+          "Output": ["id"],
+          "Filter": "(date_trunc('day'::text, orders.created_at) = '2026-03-01 00:00:00+00'::timestamp with time zone)"
+        }
+      ]
+    },
+    "Query Identifier": 4466153808025824852
+  }
+]

@@ -1,17 +1,24 @@
 //! SQL Server provider: reads Query Store, the plan cache and catalog/DMV statistics into a Culprit snapshot.
 //! Every statistics query is read-only and runs with a short lock timeout and low deadlock priority.
 
+mod actual;
 mod ado;
+mod advice;
 mod conn;
+pub mod deadlocks;
 mod live;
+mod periods;
 pub mod plan_xml;
+mod pressure;
 mod probe;
 mod schema;
+mod spread;
 mod statement;
 mod timeline;
 mod value;
 mod workload;
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::Instant;
 
@@ -107,7 +114,12 @@ struct SchemaPart {
 
 #[derive(Default)]
 struct MiscPart {
+    pressure: Option<culprit_core::Pressure>,
     missing_indexes: Vec<MissingIndex>,
+    forwarded: HashMap<(String, String), f64>,
+    query_families: Vec<culprit_core::QueryFamily>,
+    plan_cache: Option<culprit_core::PlanCacheUse>,
+    tuning: Option<culprit_core::TuningAdvice>,
     waits: Vec<WaitStat>,
     resources: Vec<ResourceSample>,
     settings: Vec<Setting>,
@@ -225,7 +237,7 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
     part
 }
 
-async fn collect_misc(client: &mut MsClient, probe: &Probe) -> MiscPart {
+async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOptions) -> MiscPart {
     let mut part = MiscPart::default();
     let dmv = probe.can_read_dmvs();
     if dmv {
@@ -243,6 +255,11 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe) -> MiscPart {
             }
             Err(err) => part.outcome.failed("waits", Capability::WaitStats, &err, probe),
         }
+        let (pressure, notes) = pressure::collect(client, probe).await;
+        part.outcome
+            .notes
+            .extend(notes.into_iter().map(|message| CollectorNote { collector: "pressure".into(), message }));
+        part.pressure = Some(pressure);
     } else {
         for capability in [Capability::MissingIndexes, Capability::WaitStats] {
             part.outcome.lacking(
@@ -259,6 +276,26 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe) -> MiscPart {
                 part.outcome.ok(Capability::ResourceUsage);
             }
             Err(err) => part.outcome.failed("resources", Capability::ResourceUsage, &err, probe),
+        }
+    }
+    if dmv {
+        // The index advisor and tuning checks: each is optional, a failure is only a note.
+        match advice::forwarded_fetches(client).await {
+            Ok(forwarded) => part.forwarded = forwarded,
+            Err(err) => part.notes_only("forwarded_fetches", &err),
+        }
+        let query_store = probe.query_store_readable();
+        match advice::query_families(client, options.window_days, query_store).await {
+            Ok(families) => part.query_families = families,
+            Err(err) => part.notes_only("query_families", &err),
+        }
+        match advice::plan_cache(client).await {
+            Ok(cache) => part.plan_cache = cache,
+            Err(err) => part.notes_only("plan_cache", &err),
+        }
+        match advice::tuning(client, query_store).await {
+            Ok(tuning) => part.tuning = Some(tuning),
+            Err(err) => part.notes_only("tuning", &err),
         }
     }
     let query_store_options = probe.query_store.as_ref().map(|qs| &qs.options);
@@ -327,7 +364,7 @@ impl Provider for MssqlProvider {
                 (part, c)
             }),
             self.on_session(move |mut c| async move {
-                let part = collect_misc(&mut c, probe_ref).await;
+                let part = collect_misc(&mut c, probe_ref, options).await;
                 (part, c)
             }),
         );
@@ -354,6 +391,10 @@ impl Provider for MssqlProvider {
         outcome.have.sort();
 
         let waits = if workload_part.waits.is_empty() { misc_part.waits } else { workload_part.waits };
+        let mut tables = schema_part.tables;
+        for t in &mut tables {
+            t.forwarded_fetches = misc_part.forwarded.get(&(t.schema.to_lowercase(), t.name.to_lowercase())).copied();
+        }
         Ok(Snapshot {
             format: SNAPSHOT_FORMAT,
             id: taken_at.format("%Y%m%dT%H%M%SZ").to_string(),
@@ -363,7 +404,7 @@ impl Provider for MssqlProvider {
             duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
             server: probe::server_info(&probe, outcome.have, outcome.missing),
             workload: workload_part.workload,
-            tables: schema_part.tables,
+            tables,
             indexes: schema_part.indexes,
             columns: schema_part.columns,
             foreign_keys: schema_part.foreign_keys,
@@ -372,8 +413,13 @@ impl Provider for MssqlProvider {
             waits,
             resources: misc_part.resources,
             settings: misc_part.settings,
+            pressure: misc_part.pressure,
             notes: outcome.notes,
             options: Some(options.clone()),
+            query_families: misc_part.query_families,
+            plan_cache: misc_part.plan_cache,
+            tuning: misc_part.tuning,
+            deadlocks: None,
         })
     }
 
@@ -389,12 +435,46 @@ impl Provider for MssqlProvider {
         self.pool.with(|c| Box::pin(live::collect(c))).await
     }
 
+    async fn lock_waits(&self) -> Result<Vec<culprit_core::LockWait>> {
+        self.pool.with(|c| Box::pin(deadlocks::lock_waits(c))).await
+    }
+
+    async fn deadlocks(&self, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
+        self.pool.with(move |c| Box::pin(deadlocks::recent(c, since_hours))).await
+    }
+
+    async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
+        let probe = self.pool.with(|c| Box::pin(probe::run(c))).await?;
+        if !probe.can_read_dmvs() {
+            return Err(culprit_core::Error::new(
+                culprit_core::ErrorCode::PermissionDenied,
+                "Sampling waits needs permission to read the server's wait statistics",
+            )
+            .with_hint(probe.grant_hint()));
+        }
+        let azure = probe.is_azure_sql_database();
+        self.pool.with(move |c| Box::pin(pressure::sample(c, azure, seconds))).await
+    }
+
     fn session_actions(&self) -> Vec<SessionAction> {
         vec![SessionAction::Terminate]
     }
 
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
         live::interrupt(&self.pool, session, action).await
+    }
+
+    async fn period_stats(
+        &self,
+        baseline: &culprit_core::changes::Period,
+        recent: &culprit_core::changes::Period,
+    ) -> Result<Option<culprit_core::changes::PeriodData>> {
+        self.pool
+            .with(|c| {
+                let (baseline, recent) = (baseline.clone(), recent.clone());
+                Box::pin(async move { periods::collect(c, &baseline, &recent).await })
+            })
+            .await
     }
 
     async fn stored_plan(&self, query_id: &str, plan_id: &str) -> Result<Option<Plan>> {
@@ -418,6 +498,14 @@ impl Provider for MssqlProvider {
         xml.map(|x| plan_xml::parse(&x)).transpose()
     }
 
+    async fn last_actual_plan(&self, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
+        actual::last_actual_plan(&self.pool, query_id, plan_id).await
+    }
+
+    async fn query_progress(&self, session: &str, _with_plan: bool) -> Result<culprit_core::QueryProgress> {
+        actual::query_progress(&self.pool, session).await
+    }
+
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let mut client = self.user_session().await?;
         statement::run(&mut client, sql, limit).await
@@ -427,7 +515,11 @@ impl Provider for MssqlProvider {
     /// sends statements here that the classifier proved read, or that the person confirmed.
     async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let mut client = self.user_session().await?;
-        let mut result = statement::run(&mut client, sql, limit).await?;
+        let mut result = if statement::returns_rows(sql) {
+            statement::run(&mut client, sql, limit).await?
+        } else {
+            statement::run_changes(&mut client, sql).await?
+        };
         result.messages.push("Committed.".to_string());
         Ok(result)
     }

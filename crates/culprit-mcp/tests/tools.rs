@@ -48,6 +48,7 @@ impl Provider for Replay {
             waits: vec![],
             session_actions: vec![],
             session_actions_note: None,
+            blocking: None,
         })
     }
 
@@ -268,4 +269,29 @@ async fn audit_records_every_call_and_sql_only_where_sent() {
         ]
     );
     assert!(log.iter().all(|e| e.connection.as_deref() == Some("replay-demo")));
+}
+
+#[tokio::test]
+async fn verify_and_export_close_the_loop() {
+    let f = fixture("verify");
+    let s = server(&f, Options::default());
+    let (err, body) = call(&s, "findings", json!({ "connection": "replay-demo" })).await;
+    assert!(!err, "{body}");
+    let id = body["findings"][0]["id"].as_str().unwrap().to_string();
+
+    let (err, body) = call(&s, "export_finding", json!({ "connection": "replay-demo", "finding_id": id })).await;
+    assert!(!err, "{body}");
+    let md = body["markdown"].as_str().unwrap();
+    assert!(md.starts_with("## ") && md.contains("How to verify") || md.contains("**Fix.**"), "{md}");
+    assert!(!md.contains("replay-demo") && !md.contains("localhost"), "no connection names or hosts in exports");
+    assert_eq!(body["redacted"], true);
+
+    // The replayed scan reports the same findings, so the one asked about is still present.
+    let (err, body) = call(&s, "verify", json!({ "connection": "replay-demo", "finding_ids": [id] })).await;
+    assert!(!err, "{body}");
+    assert_eq!(body["findings"][0]["status"], "still-present");
+    assert!(body["summary"].as_str().unwrap().starts_with("Still present"));
+
+    let (err, body) = call(&s, "verify", json!({ "connection": "replay-hidden" })).await;
+    assert!(err, "agent access off applies to verify too: {body}");
 }

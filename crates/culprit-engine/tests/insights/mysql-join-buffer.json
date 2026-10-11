@@ -1,0 +1,52 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "3980371633.02"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 498573,
+          "rows_produced_per_join": 49857,
+          "filtered": "10.00",
+          "cost_info": {
+            "read_cost": "46635.57",
+            "eval_cost": "4985.73",
+            "prefix_cost": "51621.30",
+            "data_read_per_join": "10M"
+          },
+          "used_columns": [
+            "id",
+            "promo_code",
+            "total"
+          ],
+          "attached_condition": "(`shop`.`o`.`promo_code` = 'SPRING3')"
+        }
+      },
+      {
+        "table": {
+          "table_name": "i",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 798336,
+          "rows_produced_per_join": 3980287863,
+          "filtered": "10.00",
+          "using_join_buffer": "hash join",
+          "cost_info": {
+            "read_cost": "32207.13",
+            "eval_cost": "398028786.39",
+            "prefix_cost": "3980371633.02",
+            "data_read_per_join": "88G"
+          },
+          "used_columns": [
+            "quantity",
+            "price"
+          ],
+          "attached_condition": "(`shop`.`i`.`price` = `shop`.`o`.`total`)"
+        }
+      }
+    ]
+  }
+}

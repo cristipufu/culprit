@@ -1,4 +1,6 @@
-use culprit_core::{Engine, Error, NodeKind, Plan, PlanIndexHint, PlanKind, PlanNode, PlanWarning, Properties, Result};
+use culprit_core::{
+    Engine, Error, NodeKind, NodeRuntime, Plan, PlanIndexHint, PlanKind, PlanNode, PlanWarning, Properties, Result,
+};
 use roxmltree::{Document, Node, ParsingOptions};
 
 /// RelOp children that describe the operator rather than being the operator itself.
@@ -42,13 +44,25 @@ const RESIDUAL_MIN_ROWS_READ: f64 = 1_000.0;
 const MAX_LIST_PROP_LEN: usize = 600;
 
 pub fn parse(xml: &str) -> Result<Plan> {
+    parse_statement(xml, None)
+}
+
+/// Parse the statement whose `QueryHash` matches (a batch or procedure plan holds every statement), or the most
+/// expensive statement when none matches.
+pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
     let options = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
     let doc = Document::parse_with_options(xml, options)
         .map_err(|e| Error::internal(format!("Could not read the SQL Server plan XML: {e}")))?;
-    let statement = doc
-        .descendants()
-        .filter(|n| n.has_tag_name_local("StmtSimple") && child(*n, "QueryPlan").is_some())
-        .max_by(|a, b| attr_f64(*a, "StatementSubTreeCost").total_cmp(&attr_f64(*b, "StatementSubTreeCost")))
+    let candidates =
+        || doc.descendants().filter(|n| n.has_tag_name_local("StmtSimple") && child(*n, "QueryPlan").is_some());
+    let matching = query_hash.and_then(|hash| {
+        candidates().find(|n| n.attribute("QueryHash").is_some_and(|h| h.eq_ignore_ascii_case(hash.trim())))
+    });
+    let statement = matching
+        .or_else(|| {
+            candidates()
+                .max_by(|a, b| attr_f64(*a, "StatementSubTreeCost").total_cmp(&attr_f64(*b, "StatementSubTreeCost")))
+        })
         .ok_or_else(|| Error::internal("The plan XML contains no statement with a query plan"))?;
     let query_plan = child(statement, "QueryPlan").expect("filtered on QueryPlan above");
     let root_op = child(query_plan, "RelOp").ok_or_else(|| Error::internal("The query plan has no operators"))?;
@@ -64,13 +78,25 @@ pub fn parse(xml: &str) -> Result<Plan> {
     if let Some(grant) = child(query_plan, "MemoryGrantInfo") {
         for (attr, key) in [
             ("SerialDesiredMemory", "MemoryDesiredKB"),
+            ("RequestedMemory", "MemoryRequestedKB"),
             ("GrantedMemory", "MemoryGrantedKB"),
             ("MaxUsedMemory", "MemoryMaxUsedKB"),
+            ("GrantWaitTime", "MemoryGrantWaitMs"),
         ] {
             if let Some(v) = grant.attribute(attr) {
                 props.insert(key.into(), v.into());
             }
         }
+    }
+    if let Some(time) = child(query_plan, "QueryTimeStats") {
+        for (attr, key) in [("ElapsedTime", "ElapsedMs"), ("CpuTime", "CpuMs")] {
+            if let Some(v) = time.attribute(attr) {
+                props.insert(key.into(), v.into());
+            }
+        }
+    }
+    if let Some(threads) = child(query_plan, "ThreadStat").and_then(|t| t.attribute("UsedThreads")) {
+        props.insert("UsedThreads".into(), threads.into());
     }
     if let Some(params) = child(query_plan, "ParameterList") {
         let list: Vec<String> = children(params, "ColumnReference")
@@ -91,6 +117,12 @@ pub fn parse(xml: &str) -> Result<Plan> {
     if let Some(converts) = child(query_plan, "Warnings").and_then(convert_issues) {
         props.insert("PlanAffectingConvert".into(), converts);
     }
+    if let Some(kind) = child(query_plan, "Warnings")
+        .and_then(|w| child(w, "MemoryGrantWarning"))
+        .and_then(|g| g.attribute("GrantWarningKind"))
+    {
+        props.insert("MemoryGrantWarning".into(), kind.into());
+    }
     if is_actual {
         flag_misestimates(&mut root);
     }
@@ -105,6 +137,7 @@ pub fn parse(xml: &str) -> Result<Plan> {
         index_hints: index_hints(query_plan),
         props,
         raw: Some(xml.to_string()),
+        insights: None,
     };
     plan.compute_self_costs();
     Ok(plan)
@@ -122,7 +155,16 @@ fn parse_relop(relop: Node) -> PlanNode {
     let mut props = Properties::new();
     copy_attrs(relop, RELOP_PROPS, &mut props);
     if let Some(o) = operator {
-        for attr in ["Ordered", "ScanDirection", "ForcedIndex", "ForceSeek", "ForceScan", "NoExpandHint", "Storage"] {
+        for attr in [
+            "Ordered",
+            "ScanDirection",
+            "ForcedIndex",
+            "ForceSeek",
+            "ForceScan",
+            "NoExpandHint",
+            "Storage",
+            "ManyToMany",
+        ] {
             if let Some(v) = o.attribute(attr) {
                 props.insert(attr.into(), v.into());
             }
@@ -135,6 +177,39 @@ fn parse_relop(relop: Node) -> PlanNode {
         }
     }
 
+    // Scalar functions this operator calls (not those of operators below it): each one runs once per row.
+    let functions: Vec<String> = relop
+        .descendants()
+        .filter(|n| n.has_tag_name_local("UserDefinedFunction"))
+        .filter(|n| n.ancestors().skip(1).find(|a| a.has_tag_name_local("RelOp")) == Some(relop))
+        .filter_map(|n| n.attribute("FunctionName"))
+        .map(|name| {
+            // [db].[schema].[function] → schema.function
+            let parts: Vec<String> = name.split("].[").map(unbracket).collect();
+            parts[parts.len().saturating_sub(2)..].join(".")
+        })
+        .collect();
+    if !functions.is_empty() {
+        props.insert("UserDefinedFunctions".into(), truncate(functions.join(", ")));
+    }
+    if let Some(w) = child(relop, "Warnings") {
+        // Pages a spill wrote to tempdb (8 KB each), summed over sort, hash and exchange spills.
+        let pages: f64 = w
+            .children()
+            .filter(|d| matches!(d.tag_name().name(), "SortSpillDetails" | "HashSpillDetails" | "ExchangeSpillDetails"))
+            .map(|d| attr_f64(d, "WritesToTempDb"))
+            .sum();
+        if pages > 0.0 {
+            props.insert("TempdbWritesPages".into(), pages.to_string());
+        }
+    }
+    if let Some(columns) = child(relop, "Warnings").and_then(|w| child(w, "ColumnsWithNoStatistics")) {
+        let names: Vec<String> = children(columns, "ColumnReference").map(column_name).map(|c| unbracket(&c)).collect();
+        if !names.is_empty() {
+            props.insert("ColumnsWithNoStatistics".into(), truncate(names.join(", ")));
+        }
+    }
+
     let (object, index) = operator.and_then(object_of).unwrap_or((None, None));
     let seek_predicate = operator.and_then(seek_predicate_of);
     let predicate = operator.and_then(predicate_of);
@@ -144,10 +219,19 @@ fn parse_relop(relop: Node) -> PlanNode {
     let rows_read = relop.attribute("EstimatedRowsRead").and_then(|v| v.parse().ok());
     let table_rows = relop.attribute("TableCardinality").and_then(|v| v.parse().ok());
 
-    let (act_rows, act_executions, act_time_ms) = match child(relop, "RunTimeInformation") {
+    let (act_rows, act_executions, act_time_ms, mut runtime) = match child(relop, "RunTimeInformation") {
         Some(rt) => runtime_counters(rt, &mut props),
-        None => (None, None, None),
+        None => (None, None, None, None),
     };
+    // Sort/hash/exchange spill details say how many pages went to tempdb.
+    let spilled: f64 = child(relop, "Warnings")
+        .map(|w| {
+            w.descendants().filter_map(|d| d.attribute("WritesToTempDb")).filter_map(|v| v.parse::<f64>().ok()).sum()
+        })
+        .unwrap_or(0.0);
+    if spilled > 0.0 {
+        runtime.get_or_insert_with(NodeRuntime::default).spill_pages = Some(spilled);
+    }
 
     let mut warnings = child(relop, "Warnings").map(warnings_of).unwrap_or_default();
     let read_compared = props.get("ActualRowsRead").and_then(|v| v.parse::<f64>().ok()).or(rows_read);
@@ -182,6 +266,7 @@ fn parse_relop(relop: Node) -> PlanNode {
         subtree_cost: attr_f64(relop, "EstimatedTotalSubtreeCost"),
         self_cost: 0.0,
         act_time_ms,
+        runtime,
         warnings,
         props,
         children: child_ops.into_iter().map(parse_relop).collect(),
@@ -259,7 +344,8 @@ fn object_of(operator: Node) -> Option<(Option<String>, Option<String>)> {
 }
 
 fn seek_predicate_of(operator: Node) -> Option<String> {
-    let seeks = child(operator, "SeekPredicates")?;
+    // Index Spools keep their keys in SeekPredicateNew directly, without the SeekPredicates wrapper.
+    let seeks = child(operator, "SeekPredicates").or_else(|| child(operator, "SeekPredicateNew"))?;
     let mut parts = Vec::new();
     for keys in seeks.descendants().filter(|n| n.has_tag_name_local("SeekKeys")) {
         for range in keys.children().filter(Node::is_element) {
@@ -320,30 +406,66 @@ fn column_name(column_ref: Node) -> String {
     format!("[{}]", unbracket(column))
 }
 
-fn runtime_counters(rt: Node, props: &mut Properties) -> (Option<f64>, Option<f64>, Option<f64>) {
+type Counters = (Option<f64>, Option<f64>, Option<f64>, Option<NodeRuntime>);
+
+/// Totals across threads: rows, executions, reads and CPU add up; elapsed is the slowest thread.
+fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
     let mut rows = 0.0;
     let mut executions = 0.0;
     let mut rows_read = 0.0;
     let mut elapsed: Option<f64> = None;
     let mut seen = false;
+    let mut runtime = NodeRuntime::default();
+    let add = |total: &mut Option<f64>, value: Option<f64>| {
+        if let Some(v) = value {
+            *total = Some(total.unwrap_or(0.0) + v);
+        }
+    };
+    let opt = |node: Node, name: &str| node.attribute(name).and_then(|v| v.parse::<f64>().ok());
+    // Worker threads (thread 0 coordinates a parallel zone): how evenly the rows were spread.
+    let mut workers = 0.0;
+    let mut busiest: f64 = 0.0;
     for thread in children(rt, "RunTimeCountersPerThread") {
         seen = true;
-        rows += attr_f64(thread, "ActualRows");
+        let thread_rows = attr_f64(thread, "ActualRows");
+        rows += thread_rows;
+        if thread.attribute("Thread").is_some_and(|t| t != "0") {
+            workers += 1.0;
+            busiest = busiest.max(thread_rows);
+        }
         executions += attr_f64(thread, "ActualExecutions");
         rows_read += attr_f64(thread, "ActualRowsRead");
-        if let Some(ms) = thread.attribute("ActualElapsedms").and_then(|v| v.parse::<f64>().ok()) {
+        if let Some(ms) = opt(thread, "ActualElapsedms") {
             elapsed = Some(elapsed.map_or(ms, |e: f64| e.max(ms)));
+        }
+        add(&mut runtime.cpu_ms, opt(thread, "ActualCPUms"));
+        add(&mut runtime.logical_reads, opt(thread, "ActualLogicalReads"));
+        add(&mut runtime.physical_reads, opt(thread, "ActualPhysicalReads"));
+        add(&mut runtime.physical_reads, opt(thread, "ActualReadAheads"));
+        // Thread 0 coordinates a parallel plan; the workers are 1..n.
+        if attr_f64(thread, "Thread") > 0.0 {
+            runtime.thread_rows.push(thread_rows);
+        }
+        if let Some(mode) = thread.attribute("ActualExecutionMode") {
+            props.insert("ActualExecutionMode".into(), mode.into());
         }
     }
     if !seen {
-        return (None, None, None);
+        return (None, None, None, None);
+    }
+    if runtime.thread_rows.len() < 2 {
+        runtime.thread_rows.clear();
     }
     props.insert("ActualRows".into(), rows.to_string());
     props.insert("ActualExecutions".into(), executions.to_string());
+    if workers >= 2.0 {
+        props.insert("ThreadCount".into(), workers.to_string());
+        props.insert("ThreadRowsMax".into(), busiest.to_string());
+    }
     if rows_read > 0.0 {
         props.insert("ActualRowsRead".into(), rows_read.to_string());
     }
-    (Some(rows), Some(executions), elapsed)
+    (Some(rows), Some(executions), elapsed, (!runtime.is_empty()).then_some(runtime))
 }
 
 /// `Seek Plan: CONVERT_IMPLICIT(nvarchar(255),[db].[dbo].[orders].[status],0)=[@P1]`, one per line.
@@ -574,14 +696,20 @@ mod tests {
     #[test]
     fn reads_runtime_counters_from_actual_plans() {
         let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
-          <StmtSimple StatementText="SELECT 1" StatementSubTreeCost="1">
+          <StmtSimple StatementText="SELECT 1" StatementSubTreeCost="1" QueryHash="0xAB12">
             <QueryPlan>
+              <ThreadStat Branches="1" UsedThreads="2" />
+              <MemoryGrantInfo SerialDesiredMemory="1024" GrantedMemory="1024" MaxUsedMemory="1024" />
+              <QueryTimeStats CpuTime="80" ElapsedTime="61" />
               <RelOp NodeId="0" PhysicalOp="Sort" LogicalOp="Sort" EstimateRows="10" EstimatedTotalSubtreeCost="1">
                 <OutputList />
-                <Warnings><SpillToTempDb SpillLevel="1" SpilledThreadCount="1" /></Warnings>
+                <Warnings>
+                  <SpillToTempDb SpillLevel="1" SpilledThreadCount="1" />
+                  <SortSpillDetails GrantedMemoryKb="1024" UsedMemoryKb="1024" WritesToTempDb="96" ReadsFromTempDb="96" />
+                </Warnings>
                 <RunTimeInformation>
-                  <RunTimeCountersPerThread Thread="1" ActualRows="6000" ActualExecutions="1" ActualElapsedms="40" />
-                  <RunTimeCountersPerThread Thread="2" ActualRows="4000" ActualExecutions="1" ActualElapsedms="55" />
+                  <RunTimeCountersPerThread Thread="1" ActualRows="6000" ActualExecutions="1" ActualElapsedms="40" ActualCPUms="38" ActualLogicalReads="10" ActualPhysicalReads="1" ActualReadAheads="2" />
+                  <RunTimeCountersPerThread Thread="2" ActualRows="4000" ActualExecutions="1" ActualElapsedms="55" ActualCPUms="41" ActualLogicalReads="12" ActualPhysicalReads="0" ActualReadAheads="0" />
                 </RunTimeInformation>
                 <Sort Distinct="0" />
               </RelOp>
@@ -597,6 +725,32 @@ mod tests {
         assert_eq!(sort.act_time_ms, Some(55.0));
         assert!(sort.warnings.contains(&PlanWarning::Spill));
         assert!(sort.warnings.contains(&PlanWarning::Misestimate));
+        let runtime = sort.runtime.as_ref().unwrap();
+        assert_eq!(runtime.cpu_ms, Some(79.0));
+        assert_eq!(runtime.logical_reads, Some(22.0));
+        assert_eq!(runtime.physical_reads, Some(3.0));
+        assert_eq!(runtime.thread_rows, vec![6000.0, 4000.0]);
+        assert_eq!(runtime.spill_pages, Some(96.0));
+        assert_eq!(plan.props.get("ElapsedMs").map(String::as_str), Some("61"));
+        assert_eq!(plan.props.get("CpuMs").map(String::as_str), Some("80"));
+        assert_eq!(plan.props.get("UsedThreads").map(String::as_str), Some("2"));
+        let summary = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!((summary.elapsed_ms, summary.cpu_ms, summary.spilled), (Some(61.0), Some(80.0), true));
+    }
+
+    #[test]
+    fn picks_the_statement_a_query_hash_names() {
+        let batch = r#"<ShowPlanXML><BatchSequence><Batch><Statements>
+          <StmtSimple StatementText="SELECT big" StatementSubTreeCost="9" QueryHash="0x01">
+            <QueryPlan><RelOp NodeId="0" PhysicalOp="Table Scan" LogicalOp="Table Scan" EstimateRows="1" EstimatedTotalSubtreeCost="9"><TableScan /></RelOp></QueryPlan>
+          </StmtSimple>
+          <StmtSimple StatementText="SELECT small" StatementSubTreeCost="1" QueryHash="0x02">
+            <QueryPlan><RelOp NodeId="0" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="1" EstimatedTotalSubtreeCost="1"><IndexScan /></RelOp></QueryPlan>
+          </StmtSimple>
+        </Statements></Batch></BatchSequence></ShowPlanXML>"#;
+        assert_eq!(parse(batch).unwrap().statement.as_deref(), Some("SELECT big"));
+        assert_eq!(parse_statement(batch, Some("0X02")).unwrap().statement.as_deref(), Some("SELECT small"));
+        assert_eq!(parse_statement(batch, Some("0x99")).unwrap().statement.as_deref(), Some("SELECT big"));
     }
 
     #[test]

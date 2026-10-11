@@ -1,0 +1,78 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 0.00,
+      "Total Cost": 0.13,
+      "Plan Rows": 10,
+      "Plan Width": 8,
+      "Disabled": false,
+      "Output": ["c.id", "p.id"],
+      "Plans": [
+        {
+          "Node Type": "Nested Loop",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 0.00,
+          "Total Cost": 25004304.00,
+          "Plan Rows": 2000000000,
+          "Plan Width": 8,
+          "Disabled": false,
+          "Output": ["c.id", "p.id"],
+          "Inner Unique": false,
+          "Plans": [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "customers",
+              "Schema": "public",
+              "Alias": "c",
+              "Startup Cost": 0.00,
+              "Total Cost": 4095.00,
+              "Plan Rows": 200000,
+              "Plan Width": 4,
+              "Disabled": false,
+              "Output": ["c.id", "c.email", "c.name", "c.region", "c.created_at"]
+            },
+            {
+              "Node Type": "Materialize",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 0.00,
+              "Total Cost": 234.00,
+              "Plan Rows": 10000,
+              "Plan Width": 4,
+              "Disabled": false,
+              "Output": ["p.id"],
+              "Plans": [
+                {
+                  "Node Type": "Seq Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "products",
+                  "Schema": "public",
+                  "Alias": "p",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 184.00,
+                  "Plan Rows": 10000,
+                  "Plan Width": 4,
+                  "Disabled": false,
+                  "Output": ["p.id"]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Query Identifier": -3212378401390969575
+  }
+]

@@ -283,7 +283,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 pub fn since_phrase(snapshot: &Snapshot) -> String {
     match counter_days(snapshot) {
         Some(days) if days >= 2.0 => format!("in the {} days since the server last restarted", days.round()),
-        Some(days) => format!("in the {} hours since the server last restarted", (days * 24.0).round().max(1.0)),
+        Some(days) if days * 24.0 < 1.5 => "in the hour since the server last restarted".to_string(),
+        Some(days) => format!("in the {} hours since the server last restarted", (days * 24.0).round()),
         None => "since the server last restarted".to_string(),
     }
 }
@@ -293,7 +294,12 @@ pub fn query_handle(q: &QueryStat) -> String {
     if let Some(object) = &q.object_name {
         return format!("a statement in {object}");
     }
-    let text = q.text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+    statement_handle(&q.text)
+}
+
+/// `query_handle` for bare statement text.
+pub fn statement_handle(text: &str) -> String {
+    let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
     let lower = text.to_ascii_lowercase();
     let verb = ["select", "insert", "update", "delete", "merge", "with"]
         .into_iter()
@@ -365,7 +371,7 @@ pub fn lower_set(items: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -414,6 +420,7 @@ mod tests {
             plan: None,
             waits: Vec::new(),
             trend: None,
+            spread: None,
         }
     }
 }

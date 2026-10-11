@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::actual::QueryProgress;
 use crate::error::{Error, ErrorCode, Result};
 use crate::model::{Engine, LiveState, ResultSet, ServerInfo, SessionAction, Snapshot};
 use crate::plan::Plan;
@@ -58,9 +59,52 @@ pub trait Provider: Send + Sync {
         Err(Error::new(ErrorCode::Unsupported, "This engine can't run statements that change data"))
     }
 
+    /// The lock each waiting session asked for (object, index, mode), to explain blocking chains. Read only when someone
+    /// is blocked. Empty when the engine can't tell.
+    async fn lock_waits(&self) -> Result<Vec<crate::blocking::LockWait>> {
+        Ok(Vec::new())
+    }
+
+    /// Recent deadlocks from wherever the engine keeps them, newest first, already classified.
+    async fn deadlocks(&self, _since_hours: f64) -> Result<crate::deadlock::DeadlockReport> {
+        Err(Error::new(ErrorCode::Unsupported, "This engine doesn't expose deadlocks"))
+    }
+
+    /// What the server waits on right now: two readings `seconds` apart (or sessions sampled every second). Reads
+    /// statistics views only; safe on production.
+    async fn wait_sample(&self, _seconds: u32) -> Result<crate::waits::WaitSample> {
+        Err(Error::new(ErrorCode::Unsupported, "This engine can't sample waits"))
+    }
+
+    /// Every query's runs and time in two periods, from a source that keeps history by interval (Query Store).
+    /// `None` when the engine only keeps running totals; callers then compare Culprit's own scans.
+    async fn period_stats(
+        &self,
+        _baseline: &crate::changes::Period,
+        _recent: &crate::changes::Period,
+    ) -> Result<Option<crate::changes::PeriodData>> {
+        Ok(None)
+    }
+
     /// A plan the engine kept for a query (Query Store keeps every plan a query used). `None` when the engine keeps no plans.
     async fn stored_plan(&self, _query_id: &str, _plan_id: &str) -> Result<Option<Plan>> {
         Ok(None)
+    }
+
+    /// The actual plan of a query's most recent run as the engine kept it, without running the query (SQL Server 2019+
+    /// with LAST_QUERY_PLAN_STATS). Ids are the workload's query and plan ids.
+    async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
+        Err(Error::new(ErrorCode::Unsupported, format!("{} doesn't keep the actual plan of past runs", self.engine())))
+    }
+
+    /// How far along another session's running statement is. `with_plan` asks for the plan as well; engines whose
+    /// plan doesn't change while it runs (Postgres, MySQL) only send it when asked, SQL Server always sends its live
+    /// counters.
+    async fn query_progress(&self, _session: &str, _with_plan: bool) -> Result<QueryProgress> {
+        Err(Error::new(
+            ErrorCode::Unsupported,
+            format!("{} can't report a running statement's progress", self.engine()),
+        ))
     }
 
     /// What `interrupt_session` supports on this engine.

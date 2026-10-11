@@ -1,10 +1,23 @@
 import { ChevronDown, ChevronRight, Flame, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Plan } from "../gen/Plan";
+import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
+import { planShares } from "../lib/actual";
 import { count, duration, percent } from "../lib/format";
+import { insightsByNode } from "../lib/plan-format";
+import { NodeDetails } from "./NodeDetails";
+import { OpIcon } from "./OpIcon";
+import { ActualSummary } from "./ActualSummary";
 
-type Props = { plan: Plan; focus?: number | null; compact?: boolean };
+type Props = {
+  plan: Plan;
+  focus?: number | null;
+  compact?: boolean;
+  /** Select (and reveal) this node when it changes, e.g. an insight picked in the list. */
+  selectedId?: number | null;
+  onSelect?: (id: number) => void;
+};
 
 const WARNING_LABEL: Record<string, string> = {
   "implicit-conversion": "Type conversion",
@@ -57,23 +70,33 @@ function misestimate(node: PlanNode): number | null {
   return act >= est ? act / est : -(est / act);
 }
 
-export function PlanView({ plan, focus, compact }: Props) {
+export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) {
   const nodes = useMemo(() => walk(plan.root), [plan]);
-  const hottest = useMemo(() => nodes.reduce((a, b) => (b.self_cost > a.self_cost ? b : a), plan.root), [nodes, plan.root]);
+  const flagged = useMemo(() => insightsByNode(plan), [plan]);
+  // Measured plans rank operators by their own time; estimated plans by cost (under a Postgres Limit, children's costs
+  // assume they run to completion and add up to more than the root's, which planShares accounts for).
+  const shares = useMemo(() => planShares(plan), [plan]);
+  const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
+  const hottest = useMemo(() => nodes.reduce((a, b) => (shareOf(b) > shareOf(a) ? b : a), plan.root), [nodes, plan.root, shares]);
   const target = focus ?? hottest.id;
   const hotPath = useMemo(() => new Set(pathTo(plan.root, target) ?? []), [plan.root, target]);
-  // Under a Postgres Limit, children's costs assume they run to completion and add up to more than the root's.
-  const total = Math.max(plan.total_cost, plan.root.subtree_cost, nodes.reduce((s, n) => s + n.self_cost, 0)) || 1;
 
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     const open = new Set<number>(hotPath);
     nodes.forEach((n) => {
-      if (n.subtree_cost / total >= 0.05) open.add(n.id);
+      if ((shares.subtree.get(n.id) ?? 0) >= 0.05) open.add(n.id);
     });
     return open;
   });
-  const [selected, setSelected] = useState<number | null>(target);
+  const [selected, setSelected] = useState<number | null>(selectedId ?? target);
   const selectedNode = nodes.find((n) => n.id === selected) ?? null;
+
+  useEffect(() => {
+    if (selectedId == null) return;
+    setSelected(selectedId);
+    const path = pathTo(plan.root, selectedId) ?? [];
+    setExpanded((prev) => new Set([...prev, ...path]));
+  }, [selectedId, plan.root]);
   const hasActuals = nodes.some((n) => n.act_rows != null);
 
   const toggle = (id: number) =>
@@ -106,20 +129,24 @@ export function PlanView({ plan, focus, compact }: Props) {
           </span>
         )}
       </div>
+      {plan.kind === "actual" && <ActualSummary plan={plan} onPick={setSelected} />}
       <div className="plan-cols">
         <span>Operator</span>
         <span>{hasActuals ? "Rows est → actual" : "Est. rows"}</span>
-        <span>Self cost</span>
+        <span>{shares.basis === "time" ? "Own time" : "Self cost"}</span>
       </div>
       <div style={compact ? { maxHeight: 340, overflowY: "auto" } : undefined}>
         {rows.map(({ node, depth }) => {
-          const share = node.self_cost / total;
+          const share = shareOf(node);
           const mis = misestimate(node);
           return (
             <button
               key={node.id}
               className={`pnode ${selected === node.id ? "sel" : ""} ${hotPath.has(node.id) ? "hot" : ""}`}
-              onClick={() => setSelected(node.id)}
+              onClick={() => {
+                setSelected(node.id);
+                onSelect?.(node.id);
+              }}
               onDoubleClick={() => toggle(node.id)}
             >
               <span className="label">
@@ -135,8 +162,16 @@ export function PlanView({ plan, focus, compact }: Props) {
                 </span>
                 <span className="lines">
                   <span className="line1">
+                    <span className="op-icon">
+                      <OpIcon node={node} size={13} />
+                    </span>
                     {node.id === hottest.id && share >= 0.05 && <Flame size={13} color="var(--heat-4)" className="flame" />}
                     <span className="opname">{node.op}</span>
+                    {flagged.get(node.id)?.[0] && (
+                      <span className={`tree-flag ${flagged.get(node.id)![0]!.severity}`} title={flagged.get(node.id)!.map((i) => i.title).join("\n")}>
+                        {flagged.get(node.id)!.length}
+                      </span>
+                    )}
                     {node.object && (
                       <span className="obj">
                         {node.object}
@@ -176,12 +211,20 @@ export function PlanView({ plan, focus, compact }: Props) {
           );
         })}
       </div>
-      {selectedNode && <NodeProps node={selectedNode} share={selectedNode.self_cost / total} />}
+      {selectedNode && (
+        <NodeDetails node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? 0} insights={flagged.get(selectedNode.id)} />
+      )}
     </div>
   );
 }
 
-export function NodeProps({ node, share }: { node: PlanNode; share: number }) {
+/** The operator detail panel; kept under this name for existing callers. */
+export function NodeProps({ node, share, insights }: { node: PlanNode; share: number; insights?: PlanInsight[] }) {
+  return <NodeDetails node={node} share={share} insights={insights} />;
+}
+
+/** The raw property list, for places that want the old compact dump. */
+export function RawNodeProps({ node, share }: { node: PlanNode; share: number }) {
   const entries: [string, string][] = [];
   if (node.detail) entries.push(["Detail", node.detail]);
   if (node.object) entries.push(["Object", node.object]);

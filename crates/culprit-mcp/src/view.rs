@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use culprit_core::{
-    Category, Error, Finding, LiveState, Plan, PlanNode, QueryStat, Report, Result, ResultSet, Severity, Workload,
-    format,
+    Category, Changes, Error, Finding, LiveState, Plan, PlanNode, QueryStat, Report, Result, ResultSet, Severity,
+    Workload, format,
 };
 use serde_json::{Value, json};
 
@@ -151,6 +151,9 @@ pub fn query(report: &Report, id: &str) -> Result<Value> {
     row["stddev_ms"] = json!(q.stddev_time_ms.map(|v| round(v, 3)));
     row["first_seen"] = json!(q.first_seen);
     row["last_seen"] = json!(q.last_seen);
+    // Fastest run and, where the engine keeps them (MySQL), percentiles, a run-time histogram and lock time.
+    row["spread"] = json!(q.spread);
+    let ms = |v: Option<f64>| v.map(|v| round(v, 3));
     row["plan_variants"] = json!(
         q.plans
             .iter()
@@ -158,6 +161,11 @@ pub fn query(report: &Report, id: &str) -> Result<Value> {
                 "plan_id": p.id,
                 "executions": p.executions,
                 "avg_ms": round(p.mean_time_ms, 3),
+                "min_ms": ms(p.min_time_ms),
+                "max_ms": ms(p.max_time_ms),
+                "stddev_ms": ms(p.stddev_time_ms),
+                "compiled_for": p.compiled,
+                "variant_query": p.variant_query,
                 "last_seen": p.last_seen,
                 "forced": p.is_forced.then_some(true),
             }))
@@ -197,7 +205,12 @@ fn warnings(plan: &Plan) -> Vec<&'static str> {
     all
 }
 
+/// Each operator's share of the time in actual plans that carry per-operator timing, of the estimated cost otherwise.
 fn share(plan: &Plan, node: &PlanNode) -> Option<f64> {
+    if let Some(own) = culprit_core::self_times(plan) {
+        let total: f64 = own.values().sum();
+        return (total > 0.0).then(|| own.get(&node.id).copied().unwrap_or(0.0) / total);
+    }
     (plan.total_cost > 0.0).then(|| node.self_cost / plan.total_cost)
 }
 
@@ -246,8 +259,97 @@ pub fn plan_tree(plan: &Plan) -> String {
     out
 }
 
-pub fn plan(plan: &Plan) -> Value {
+/// Insights for a plan, computed if the plan doesn't carry them yet.
+fn insight_set(plan: &Plan) -> culprit_core::insights::PlanInsights {
+    plan.insights.clone().unwrap_or_else(|| culprit_core::insights::PlanInsights {
+        items: culprit_core::insights::insights(plan),
+        note: culprit_core::insights::coverage_note(plan),
+    })
+}
+
+pub fn plan_insights(plan: &Plan) -> Value {
+    let found = insight_set(plan);
     json!({
+        "engine": plan.engine,
+        "kind": plan.kind,
+        "insights": found.items.iter().map(|i| json!({
+            "rule": i.rule,
+            "severity": i.severity,
+            "impact": round(i.impact, 3),
+            "operators": i.nodes,
+            "title": i.title,
+            "detail": i.detail,
+            "fix": i.fix,
+            "fix_sql": i.fix_sql,
+            "verify": i.verify,
+        })).collect::<Vec<_>>(),
+        "note": found.note,
+        "tree": plan_tree(plan),
+    })
+}
+
+pub fn plan(plan: &Plan) -> Value {
+    let mut value = plan_value(plan);
+    if let Some(summary) = culprit_core::actual_summary(plan) {
+        value["actual"] = json!({
+            "elapsed_ms": summary.elapsed_ms.map(|v| round(v, 1)),
+            "cpu_ms": summary.cpu_ms.map(|v| round(v, 1)),
+            "logical_reads": summary.logical_reads,
+            "physical_reads": summary.physical_reads,
+            "rows": summary.rows,
+            "memory_granted_kb": summary.memory_granted_kb,
+            "memory_used_kb": summary.memory_used_kb,
+            "spilled": summary.spilled,
+            "slowest_operator": summary.slowest_node,
+            "slowest_operator_ms": summary.slowest_ms.map(|v| round(v, 1)),
+            "worst_estimate_operator": summary.worst_estimate_node,
+            "worst_estimate_factor": summary.worst_estimate.map(|v| round(v, 1)),
+            "shares": if culprit_core::self_times(plan).is_some() { "share of the time" } else { "share of the estimated cost" },
+            "last_ran": plan.props.get("LastRunAt"),
+        });
+    }
+    value
+}
+
+/// A running statement for agents: elapsed, how far along, the busiest operator and per-operator rows so far.
+pub fn progress(progress: &culprit_core::QueryProgress) -> Value {
+    let label =
+        |id: u32| progress.plan.as_ref().and_then(|p| p.nodes().into_iter().find(|n| n.id == id).map(node_label));
+    json!({
+        "session": progress.session,
+        "running": progress.running,
+        "state": progress.state,
+        "wait": progress.wait,
+        "elapsed_ms": progress.elapsed_ms,
+        "cpu_ms": progress.cpu_ms,
+        "logical_reads": progress.logical_reads,
+        "rows_examined": progress.rows_examined,
+        "percent": progress.percent.map(|p| round(p * 100.0, 1)),
+        "percent_basis": progress.percent_basis,
+        "phase": progress.phase,
+        "busiest_operator": progress.hot_node.and_then(label),
+        "operators": progress.nodes.iter().map(|n| json!({
+            "id": n.node_id,
+            "operator": label(n.node_id),
+            "state": n.state,
+            "rows": n.rows,
+            "estimated_rows": round(n.est_rows, 0),
+        })).collect::<Vec<_>>(),
+        "plan": progress.plan.as_ref().map(plan_tree),
+        "note": progress.note,
+        "statement": progress.statement.as_deref().map(|s| clip(s, 2000)),
+    })
+}
+
+fn plan_value(plan: &Plan) -> Value {
+    let found = insight_set(plan);
+    json!({
+        "insights": found.items.iter().map(|i| json!({
+            "rule": i.rule,
+            "severity": i.severity,
+            "operators": i.nodes,
+            "title": i.title,
+        })).collect::<Vec<_>>(),
         "engine": plan.engine,
         "kind": plan.kind,
         "total_cost": round(plan.total_cost, 4),
@@ -444,6 +546,48 @@ pub fn result_set(rs: &ResultSet) -> Value {
         "truncated": rs.truncated,
         "elapsed_ms": round(rs.elapsed_ms, 1),
         "messages": rs.messages,
+    })
+}
+
+/// What changed between two periods, compact: statuses, runs and time per run on both sides, plan switches.
+pub fn changes(c: &Changes) -> Value {
+    let side = |s: &Option<culprit_core::PeriodStats>| {
+        s.as_ref().map(|s| {
+            json!({
+                "runs": s.executions,
+                "avg_ms": round(s.mean_ms, 3),
+                "total_ms": round(s.total_ms, 1),
+            })
+        })
+    };
+    json!({
+        "connection": c.connection,
+        "source": c.source,
+        "recent": c.recent,
+        "baseline": c.baseline,
+        "baseline_coverage": round(c.baseline_coverage, 2),
+        "summary": c.summary,
+        "min_runs": c.min_executions,
+        "threshold": c.threshold,
+        "notes": c.notes,
+        "unchanged": c.unchanged,
+        "queries": c
+            .queries
+            .iter()
+            .map(|q| json!({
+                "query_id": q.query_id,
+                "status": q.status,
+                "headline": q.headline,
+                "ratio": q.ratio.map(|r| round(r, 2)),
+                "impact_ms": round(q.impact_ms, 1),
+                "recent_db_time_pct": pct(q.recent_share),
+                "baseline": side(&q.baseline),
+                "recent": side(&q.recent),
+                "plan_switch": q.plan_switch,
+                "reason": q.reason,
+                "text": clip(&q.text, 400),
+            }))
+            .collect::<Vec<_>>(),
     })
 }
 

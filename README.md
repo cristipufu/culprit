@@ -2,7 +2,7 @@
 
 Connect to a database and see, in plain language, what is slowing it down and what to do about it.
 
-Culprit reads the statistics your database already keeps (Query Store, plan cache and DMVs on SQL Server; `pg_stat_statements` and the statistics views on Postgres), ranks what it finds by share of database time, and gives every finding the evidence, a production-safe fix and a way to verify it. It never runs your queries unless you ask, and never writes to the database.
+Culprit reads the statistics your database already keeps (Query Store, plan cache and DMVs on SQL Server; `pg_stat_statements` and the statistics views on Postgres; `performance_schema` on MySQL), ranks what it finds by share of database time, and gives every finding the evidence, a production-safe fix and a way to verify it. Scans never write and never run your queries; the editor runs what you ask, with production guarded.
 
 It ships as a fast desktop app (Tauri + React) and a CLI built on the same Rust core, so a coding agent sees exactly what you see.
 
@@ -60,6 +60,13 @@ On non-production connections, Live can cancel a session's statement or end the 
 
 The **Plans** view (⌘6, also without a connection) draws any plan you paste (⌘V anywhere), drop or open: SQL Server .sqlplan or showplan XML, Postgres `EXPLAIN` as text or `FORMAT JSON` (psql output included), MySQL `EXPLAIN FORMAT=JSON` or `EXPLAIN ANALYZE`. **Compare** puts two plans side by side and says what changed in plain words ("Plan 9 scans orders where Plan 7 seeks ix_orders_customer"), with every changed, added or removed operator marked in both diagrams. On a query with several Query Store plans, **Compare** in the Queries view opens the fastest and the slowest plan; **Open in Plans** keeps any plan to save it (.sqlplan opens again in SSMS) or compare it with another environment's.
 
+### Editor and saved queries
+
+The **Editor** keeps your query tabs across restarts (⌘T new, ⌘⇧W close, ⌘⇧[ / ⌘⇧] switch) and completes schemas, tables and columns as you type, read live from the connection (aliases included: after `o.` it offers only that table's columns, with their types). ⌘↵ runs the selection or the whole tab, ⌘E shows the plan without running it, ⌘S saves the tab as a named query.
+
+**Saved queries** live in the editor's side rail, the command palette (⌘K, "Run saved: …") and the CLI (`culprit saved list | add | show | run | rm`); each remembers the connection it was saved for and can run on any other.
+
+**What runs without asking:** a statement Culprit's classifier proves only reads runs anywhere, in a read-only transaction (rolled back on SQL Server, which has none). Anything else commits; on a **production** connection only after a confirmation that names what it does ("This UPDATE has no WHERE clause, so it changes every row in the table"), and statements that touch every row or drop objects need the connection's name typed. In the CLI, `--yes-execute-on-production` is that confirmation. `culprit catalog <conn>` prints what completion sees.
 
 Findings whose queries stopped running well before the end of the data window (relative to how often they used to run) move to a "Stopped running" group: usually a deploy changed or fixed them.
 
@@ -114,7 +121,8 @@ Reopening a connection renders its last report from disk immediately; a fresh SQ
 
 - Scans read statistics and catalog views only.
 - Postgres sessions are read-only with statement and lock timeouts. SQL Server sessions use a short lock timeout, low deadlock priority and read-uncommitted reads of the statistics views.
-- Estimated plans never execute anything. `Run` and `Explain analyze` on a production connection need explicit confirmation each time.
+- Estimated plans never execute anything. Reads run in a read-only transaction everywhere; on production, anything Culprit can't prove reads needs an explicit confirmation each time, and Explain Analyze only measures provable reads.
+- Statement text from a database's own history is lexed as exactly one statement before it reaches `EXPLAIN` (MySQL plans go through prepared statements). TLS certificates are verified for every non-local host unless the connection string asks for less.
 - Coding agents (`culprit mcp`) read statistics and estimated plans by default. They run statements only on connections you opt in, one approved read-only statement at a time, and every call is audited.
 - Fix scripts are shown and copied, never applied. They use `ONLINE = ON` / `CONCURRENTLY` where the server supports it.
 - Connection metadata (`~/.config/culprit/connections.toml`) and reports (`~/.local/share/culprit/reports/`) are readable by your user only. `CULPRIT_HOME` puts both in one directory.

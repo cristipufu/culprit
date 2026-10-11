@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Report } from "../gen/Report";
 import type { SavedQuery } from "../gen/SavedQuery";
@@ -19,6 +20,8 @@ export type State = {
   report: ReportState;
   finding: string | null;
   query: string | null;
+  /** "What changed" is open, comparing these periods. */
+  changes: ChangeRequest | null;
   palette: boolean;
   toast: string | null;
   editorSql: string | null;
@@ -29,6 +32,21 @@ export type State = {
   dismissed: Record<string, true>;
   windowDays: WindowDays;
 };
+
+/** A "What changed" request with only the given fields set; the rest fall back to the defaults. */
+export function changeRequest(fields: Partial<ChangeRequest> = {}): ChangeRequest {
+  return {
+    since: null,
+    recent_start: null,
+    recent_end: null,
+    baseline_start: null,
+    baseline_end: null,
+    recent_hours: null,
+    min_executions: null,
+    threshold: null,
+    ...fields,
+  };
+}
 
 export const WINDOW_OPTIONS = [1, 7, 30] as const;
 export type WindowDays = (typeof WINDOW_OPTIONS)[number];
@@ -64,6 +82,7 @@ let state: State = {
   report: { status: "none" },
   finding: null,
   query: null,
+  changes: null,
   palette: false,
   toast: null,
   editorSql: null,
@@ -125,7 +144,7 @@ export async function loadConnections(): Promise<ConnectionInfo[]> {
 export async function openConnection(name: string, options: { rescan?: boolean } = {}): Promise<void> {
   const rescan = options.rescan ?? true;
   const windowDays = rememberedWindow(name);
-  setState({ active: name, view: "overview", finding: null, query: null, report: { status: "loading" }, windowDays });
+  setState({ active: name, view: "overview", finding: null, query: null, changes: null, report: { status: "loading" }, windowDays });
   rememberLast(name);
   await showCachedThenScan(name, windowDays, rescan);
 }

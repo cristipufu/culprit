@@ -1,6 +1,7 @@
-import { Activity, ChevronsUpDown, Command, Gauge, GitCompareArrows, ListOrdered, Moon, RefreshCw, SquareTerminal, Sun, Table2 } from "lucide-react";
+import { Activity, ChevronsUpDown, Gauge, GitCompareArrows, ListOrdered, Monitor, Moon, RefreshCw, Search, SquareTerminal, Sun, Table2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ago } from "../lib/format";
+import { EngineBadge } from "./EngineBadge";
 import { groupByEnvironment } from "../lib/environments";
 import { currentReport, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { useTheme } from "../lib/theme";
@@ -20,7 +21,7 @@ function ConnectionList() {
             title={`${c.display} · ${c.environment}`}
             onClick={() => (c.name === active ? setState({ view: "overview" }) : openConnection(c.name))}
           >
-            <span className={`env-dot env-${c.environment}`} />
+            <EngineBadge engine={c.engine} environment={c.environment} />
             <span className="conn-name">{c.name}</span>
             {c.last_report && <span className="count">{c.last_report.opportunities}</span>}
           </button>
@@ -45,13 +46,13 @@ export function Sidebar() {
   const connection = useStore((s) => s.connections.find((c) => c.name === s.active));
   const report = useStore(currentReport);
   const scanning = useStore((s) => (s.report.status === "ready" && s.report.scanning) || s.report.status === "loading");
-  const [theme, cycleTheme] = useTheme();
+  const [theme, , setTheme] = useTheme();
 
   return (
     <aside className="sidebar">
       <div className="sidebar-drag" data-tauri-drag-region />
       <button className="conn-switch" onClick={() => setState({ view: "connections" })}>
-        {connection ? <span className={`env-dot env-${connection.environment}`} /> : <span className="env-dot" />}
+        {connection ? <EngineBadge engine={connection.engine} environment={connection.environment} size="md" /> : <span className="env-dot" />}
         <span style={{ minWidth: 0 }}>
           <div className="name">{active ?? "No connection"}</div>
           <div className="sub">
@@ -59,6 +60,9 @@ export function Sidebar() {
           </div>
         </span>
         <ChevronsUpDown size={14} className="chev" />
+      </button>
+      <button className="side-search" onClick={() => setState({ palette: true })} aria-label="Search or jump to (⌘K)">
+        <Search size={13} /> Search or jump to… <span className="kbd">⌘K</span>
       </button>
       {(
         <nav className="nav">
@@ -80,12 +84,22 @@ export function Sidebar() {
             {scanning ? "Scanning…" : report ? `Scanned ${ago(report.snapshot.taken_at)}` : "Scan"}
           </button>
         )}
-        <button className="scan-status" onClick={() => setState({ palette: true })}>
-          <Command size={13} /> Command palette <span className="kbd" style={{ marginLeft: "auto" }}>⌘K</span>
-        </button>
-        <button className="scan-status" onClick={cycleTheme}>
-          {theme === "dark" ? <Moon size={13} /> : <Sun size={13} />} Theme: {theme}
-        </button>
+        <div className="theme-row">
+          Theme
+          <span className="theme-seg" role="radiogroup" aria-label="Theme">
+            {(
+              [
+                ["system", <Monitor size={12} key="s" />, "Follow the system"],
+                ["light", <Sun size={12} key="l" />, "Light"],
+                ["dark", <Moon size={12} key="d" />, "Dark"],
+              ] as const
+            ).map(([value, icon, label]) => (
+              <button key={value} role="radio" aria-checked={theme === value} aria-label={label} title={label} className={theme === value ? "on" : ""} onClick={() => setTheme(value)}>
+                {icon}
+              </button>
+            ))}
+          </span>
+        </div>
       </div>
     </aside>
   );

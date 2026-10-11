@@ -1,53 +1,37 @@
-import { Flame, Maximize2, Minus, Plus, TriangleAlert } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import type { NodeKind } from "../gen/NodeKind";
+import { Flame, Maximize2, Minus, Plus, Scan, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Plan } from "../gen/Plan";
+import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
-import { count, duration, percent } from "../lib/format";
-import { NodeProps, shortPredicate } from "./PlanView";
+import { planShares } from "../lib/actual";
+import { duration, percent } from "../lib/format";
+import { allNodes, costBasis as basis, cost, insightsByNode, isWrapper, rowError, rows, rowsOut } from "../lib/plan-format";
+import { ActualSummary } from "./ActualSummary";
+import { NodeDetails } from "./NodeDetails";
+import { OpIcon } from "./OpIcon";
+import { shortPredicate } from "./PlanView";
 
-const CARD_W = 214;
-const CARD_H = 92;
-const GAP_X = 26;
-const GAP_Y = 64;
-const PAD = 28;
+const CARD_W = 196;
+const CARD_H = 74;
+const GAP_X = 28;
+const GAP_Y = 62;
+const PAD = 26;
 const CHEAP_SHARE = 0.005;
-
-const KIND: Record<NodeKind, { label: string; color: string }> = {
-  scan: { label: "Scan", color: "var(--medium)" },
-  seek: { label: "Seek", color: "var(--good)" },
-  lookup: { label: "Lookup", color: "#d9782d" },
-  join: { label: "Join", color: "var(--focus)" },
-  sort: { label: "Sort", color: "#8f3fbf" },
-  aggregate: { label: "Aggregate", color: "#1f9aa3" },
-  spool: { label: "Spool", color: "var(--text-3)" },
-  parallelism: { label: "Parallel", color: "var(--text-3)" },
-  modify: { label: "Write", color: "var(--high)" },
-  compute: { label: "Compute", color: "var(--text-3)" },
-  other: { label: "", color: "var(--text-3)" },
-};
+const MIN_FIT = 0.45;
 
 /** How a node differs from the other plan in a comparison. */
 export type Mark = "changed" | "added" | "removed";
 
 const MARK_LABEL: Record<Mark, string> = { changed: "changed", added: "only here", removed: "only here" };
 
-/** What operator shares are measured against: the plan's cost, or the sum of operator costs when that is larger
- * (under a Postgres Limit the children's costs assume they run to completion). */
-export function costBasis(plan: Plan): number {
-  const own = allNodes(plan.root).reduce((s, n) => s + n.self_cost, 0);
-  return Math.max(plan.total_cost, plan.root.subtree_cost, own) || 1;
-}
+export const costBasis = basis;
 
-type Box = { node: PlanNode; x: number; y: number; depth: number; folded: number };
+/** A card on the canvas: an operator, with the pass-through operators above it folded into its edge label. */
+type Box = { node: PlanNode; x: number; y: number; via: string[] };
 type Fold = { id: string; parent: number; count: number; share: number; x: number; y: number };
 
 function subtreeSize(n: PlanNode): number {
   return 1 + n.children.reduce((s, c) => s + subtreeSize(c), 0);
-}
-
-function rowsOut(n: PlanNode): number {
-  return n.act_rows ?? n.est_rows * Math.max(1, n.est_executions);
 }
 
 function heat(share: number): string {
@@ -70,72 +54,94 @@ function pathTo(node: PlanNode, id: number): Set<number> {
   return new Set(walk(node) ?? []);
 }
 
-function allNodes(n: PlanNode, out: PlanNode[] = []): PlanNode[] {
-  out.push(n);
-  n.children.forEach((c) => allNodes(c, out));
-  return out;
+/** Skip pass-through wrappers: the operator to draw and the names of the ones folded into its edge. */
+function drawn(n: PlanNode, total: number, keep: Set<number>): { node: PlanNode; via: string[] } {
+  const via: string[] = [];
+  let cur = n;
+  while (isWrapper(cur, total) && !keep.has(cur.id) && cur.children[0]) {
+    via.push(cur.op);
+    cur = cur.children[0];
+  }
+  return { node: cur, via };
 }
 
-/** Tidy top-down layout: leaves take consecutive slots, parents center over their children. Cheap subtrees fold into one pill. */
-function layout(root: PlanNode, total: number, expanded: Set<number>): { boxes: Box[]; folds: Fold[]; width: number; height: number } {
+/** Tidy top-down layout: leaves take consecutive slots, parents center over their children. Cheap subtrees fold into one
+ * pill; wrappers that only pass rows on become edge labels. */
+function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<number>) {
   const boxes: Box[] = [];
   const folds: Fold[] = [];
+  const parentOf = new Map<number, number>();
   let slot = 0;
-  const place = (n: PlanNode, depth: number): number => {
-    const visible = n.children.filter((c) => expanded.has(c.id) || c.subtree_cost / total >= CHEAP_SHARE);
-    const hidden = n.children.filter((c) => !visible.includes(c));
-    const xs = visible.map((c) => place(c, depth + 1));
-    let x: number;
+  const place = (n: PlanNode, via: string[], depth: number): number => {
+    const kids = n.children.map((c) => drawn(c, total, keep));
+    const visible = kids.filter((k) => expanded.has(k.node.id) || keep.has(k.node.id) || k.node.subtree_cost / total >= CHEAP_SHARE);
+    const hidden = kids.filter((k) => !visible.includes(k));
+    const xs = visible.map((k) => {
+      parentOf.set(k.node.id, n.id);
+      return place(k.node, k.via, depth + 1);
+    });
     if (hidden.length > 0) {
       const fx = slot++;
       folds.push({
         id: `fold-${n.id}`,
         parent: n.id,
-        count: hidden.reduce((s, c) => s + subtreeSize(c), 0),
-        share: hidden.reduce((s, c) => s + c.subtree_cost, 0) / total,
+        count: hidden.reduce((s, k) => s + subtreeSize(k.node) + k.via.length, 0),
+        share: hidden.reduce((s, k) => s + k.node.subtree_cost, 0) / total,
         x: fx,
         y: depth + 1,
       });
       xs.push(fx);
     }
-    x = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : slot++;
-    boxes.push({ node: n, x, y: depth, depth, folded: hidden.length });
+    const x = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : slot++;
+    boxes.push({ node: n, x, y: depth, via });
     return x;
   };
-  place(root, 0);
+  const top = drawn(root, total, keep);
+  place(top.node, top.via, 0);
   const maxX = Math.max(0, ...boxes.map((b) => b.x), ...folds.map((f) => f.x));
   const maxY = Math.max(0, ...boxes.map((b) => b.y), ...folds.map((f) => f.y));
   return {
     boxes,
     folds,
+    parentOf,
+    rootVia: top.via,
     width: PAD * 2 + (maxX + 1) * CARD_W + maxX * GAP_X,
-    height: PAD * 2 + 22 + (maxY + 1) * CARD_H + maxY * GAP_Y,
+    height: PAD * 2 + 24 + (maxY + 1) * CARD_H + maxY * GAP_Y,
   };
 }
 
 const px = (x: number) => PAD + x * (CARD_W + GAP_X);
-const py = (y: number) => PAD + 22 + y * (CARD_H + GAP_Y);
+const py = (y: number) => PAD + 24 + y * (CARD_H + GAP_Y);
 
 export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) => void }) {
-  const total = costBasis(plan);
+  // Actual plans with per-operator timing show where the time went; everything else, the optimizer's cost estimate.
+  const shares = useMemo(() => planShares(plan), [plan]);
+  const own = (n: PlanNode) => shares.own.get(n.id) ?? 0;
   const top = allNodes(plan.root)
-    .filter((n) => n.self_cost > 0)
-    .sort((a, b) => b.self_cost - a.self_cost)
+    .filter((n) => own(n) > 0)
+    .sort((a, b) => own(b) - own(a))
     .slice(0, 4);
-  const rest = Math.max(0, 1 - top.reduce((s, n) => s + n.self_cost / total, 0));
+  const rest = Math.max(0, 1 - top.reduce((s, n) => s + own(n), 0));
   return (
     <div className="cost-strip">
-      <div className="eyebrow">Where the cost goes</div>
+      <div className="eyebrow">{shares.basis === "time" ? `Where the ${duration(shares.total)} went` : "Where the cost goes"}</div>
       <div className="cost-bar">
-        {top.map((n) => (
-          <button key={n.id} style={{ flex: n.self_cost / total, background: heat(n.self_cost / total) === "transparent" ? "var(--sunken)" : heat(n.self_cost / total) }} title={`${n.op} ${percent(n.self_cost / total)}`} onClick={() => onPick(n.id)} />
+        {top.map((n, i) => (
+          <button
+            key={n.id}
+            className={i === 0 ? "hottest" : ""}
+            style={{ flex: own(n), background: heat(own(n)) === "transparent" ? "var(--sunken)" : heat(own(n)) }}
+            title={`${n.op} ${percent(own(n))}`}
+            onClick={() => onPick(n.id)}
+          />
         ))}
         {rest > 0.005 && <span style={{ flex: rest, background: "var(--sunken)" }} title={`Everything else ${percent(rest)}`} />}
       </div>
       <div className="cost-legend">
         {top.map((n) => (
           <button key={n.id} onClick={() => onPick(n.id)}>
-            <b>{percent(n.self_cost / total)}</b> {n.op}
+            <OpIcon node={n} size={12} />
+            <b>{percent(own(n))}</b> {n.op}
             {n.object && <span className="mono muted"> {n.object.split(".").pop()}</span>}
           </button>
         ))}
@@ -149,36 +155,79 @@ export function PlanDiagram(props: {
   focus?: number | null;
   /** Comparison marks by node id; marked nodes are never folded away. */
   marks?: Map<number, Mark>;
-  /** Select (and reveal) this node when it changes, e.g. a change picked in the comparison. */
+  /** Select (and reveal) this node when it changes, e.g. an insight or a change picked elsewhere. */
   selectedId?: number | null;
   onSelect?: (id: number) => void;
   initialZoom?: number;
   /** Shown before the operator count, e.g. "A" in a comparison. */
   badge?: string;
+  /** Hide the header and cost strip when a surrounding panel shows them. */
+  bare?: boolean;
+  /** Comparison regions by node id: cards in the same region get the same tint on both sides (`data-tint`). */
+  tints?: Map<number, number>;
+  /** Controlled zoom, e.g. kept in step across two diagrams. */
+  zoom?: number;
+  onZoomChange?: (zoom: number) => void;
+  /** Show the selected operator's properties under the diagram (a comparison shows them side by side instead). */
+  showProps?: boolean;
+  /** Replaces the plan-kind tag, e.g. "Running now" for a statement in flight. */
+  kindLabel?: string;
+  /** Drawn over each visible operator in the same coordinates as its card, e.g. live progress. */
+  overlay?: (node: PlanNode, box: { x: number; y: number; w: number; h: number }) => ReactNode;
 }) {
-  const { plan, focus, marks, selectedId, onSelect, initialZoom, badge } = props;
-  const total = costBasis(plan);
+  const { plan, focus, marks, selectedId, onSelect, initialZoom, badge, bare, tints, onZoomChange, overlay, kindLabel } = props;
+  const total = basis(plan);
+  // Measured plans rank operators by their own time; estimated plans by cost.
+  const shares = useMemo(() => planShares(plan), [plan]);
+  const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
   const planCost = plan.total_cost || plan.root.subtree_cost;
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
-  const hottest = useMemo(() => nodes.reduce((a, b) => (b.self_cost > a.self_cost ? b : a), plan.root), [nodes, plan.root]);
+  const flagged = useMemo(() => insightsByNode(plan), [plan]);
+  const hottest = useMemo(() => nodes.reduce((a, b) => (shareOf(b) > shareOf(a) ? b : a), plan.root), [nodes, plan.root, shares]);
   const target = selectedId ?? focus ?? hottest.id;
+  // Operators that must stay visible: marked in a comparison, or named by an insight.
+  const keep = useMemo(() => new Set<number>([...(marks?.keys() ?? []), ...flagged.keys()]), [marks, flagged]);
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     const open = pathTo(plan.root, target);
-    marks?.forEach((_, id) => pathTo(plan.root, id).forEach((n) => open.add(n)));
+    keep.forEach((id) => pathTo(plan.root, id).forEach((n) => open.add(n)));
     return open;
   });
   const [selected, setSelected] = useState<number>(target);
-  const [zoom, setZoom] = useState(initialZoom ?? 1);
+  const [ownZoom, setOwnZoom] = useState(initialZoom ?? 1);
+  const zoom = props.zoom ?? ownZoom;
+  const setZoom = (next: number | ((z: number) => number)) => {
+    const value = typeof next === "function" ? next(zoom) : next;
+    setOwnZoom(value);
+    onZoomChange?.(value);
+  };
+  const [fitted, setFitted] = useState(initialZoom != null || props.zoom != null);
+  const scroller = useRef<HTMLDivElement>(null);
   const hot = useMemo(() => pathTo(plan.root, target), [plan.root, target]);
-  const { boxes, folds, width, height } = useMemo(() => layout(plan.root, total, expanded), [plan.root, total, expanded]);
+  const { boxes, folds, parentOf, rootVia, width, height } = useMemo(() => layout(plan.root, total, expanded, keep), [plan.root, total, expanded, keep]);
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
   const maxRows = Math.max(1, ...nodes.map(rowsOut));
-  const stroke = (rows: number) => 1.5 + 5 * (Math.log10(rows + 1) / Math.log10(maxRows + 1));
+  const stroke = (r: number) => 1.5 + 4.5 * (Math.log10(r + 1) / Math.log10(maxRows + 1));
   const selectedNode = nodes.find((n) => n.id === selected) ?? null;
 
+  /** Fit the whole plan in the visible width (never above 100%), so small plans aren't lost in a corner. */
+  const fit = useCallback(() => {
+    const box = scroller.current?.getBoundingClientRect();
+    if (!box || box.width === 0) return;
+    setZoom(Math.max(MIN_FIT, Math.min(1, (box.width - 8) / width)));
+  }, [width]);
+
+  useLayoutEffect(() => {
+    if (fitted) return;
+    fit();
+    setFitted(true);
+  }, [fit, fitted]);
+
   const pick = (id: number) => {
-    setSelected(id);
-    setExpanded((prev) => new Set([...prev, ...pathTo(plan.root, id)]));
+    // A wrapper folded into an edge selects the operator it wraps.
+    const node = nodes.find((n) => n.id === id);
+    const visibleId = byId.has(id) || !node ? id : drawn(node, total, keep).node.id;
+    setSelected(visibleId);
+    setExpanded((prev) => new Set([...prev, ...pathTo(plan.root, visibleId)]));
   };
 
   useEffect(() => {
@@ -186,119 +235,168 @@ export function PlanDiagram(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
-  const edges: { from: Box | Fold; to: Box; rows: number; hot: boolean; key: string }[] = [];
+  // Keep the selected card in view, scrolling the canvas only (never the page around it).
+  useEffect(() => {
+    const canvas = scroller.current;
+    const el = canvas?.querySelector<HTMLElement>(`[data-node="${selected}"]`);
+    if (!canvas || !el) return;
+    const c = canvas.getBoundingClientRect();
+    const e = el.getBoundingClientRect();
+    if (e.top < c.top || e.bottom > c.bottom) canvas.scrollTop += e.top - c.top - (c.height - e.height) / 2;
+    if (e.left < c.left || e.right > c.right) canvas.scrollLeft += e.left - c.left - (c.width - e.width) / 2;
+  }, [selected, zoom]);
+
+  const edges: { from: Box | Fold; to: Box; rows: number; hot: boolean; key: string; via: string[] }[] = [];
   boxes.forEach((b) => {
-    b.node.children.forEach((c) => {
-      const child = byId.get(c.id);
-      if (child) edges.push({ from: child, to: b, rows: rowsOut(c), hot: hot.has(c.id) && hot.has(b.node.id), key: `${b.node.id}-${c.id}` });
-    });
+    const parent = parentOf.get(b.node.id);
+    const to = parent != null ? byId.get(parent) : undefined;
+    if (to) edges.push({ from: b, to, rows: rowsOut(b.node), hot: hot.has(b.node.id) && hot.has(to.node.id), key: `${to.node.id}-${b.node.id}`, via: b.via });
   });
   folds.forEach((f) => {
     const parent = byId.get(f.parent);
-    if (parent) edges.push({ from: f, to: parent, rows: 0, hot: false, key: f.id });
+    if (parent) edges.push({ from: f, to: parent, rows: 0, hot: false, key: f.id, via: [] });
   });
 
+  const select = (id: number) => {
+    setSelected(id);
+    onSelect?.(id);
+  };
+
   return (
-    <div className="plan">
-      <div className="plan-head">
-        {badge && <span className="side-badge">{badge}</span>}
-        <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
-        <span>
-          {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {planCost.toFixed(planCost < 10 ? 3 : 1)}
-        </span>
-        <span className="spacer" />
-        {plan.warnings.length > 0 && (
-          <span className="warn-chip">
-            <TriangleAlert size={11} /> {plan.warnings.length} plan warning{plan.warnings.length > 1 ? "s" : ""}
+    <div className={`plan ${bare ? "bare" : ""}`}>
+      {!bare && (
+        <div className="plan-head">
+          {badge && <span className="side-badge">{badge}</span>}
+          <span className="tag">{kindLabel ?? (plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan")}</span>
+          <span>
+            {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {cost(planCost)}
           </span>
+          <span className="spacer" />
+          {plan.warnings.length > 0 && (
+            <span className="warn-chip">
+              <TriangleAlert size={11} /> {plan.warnings.length} plan warning{plan.warnings.length > 1 ? "s" : ""}
+            </span>
+          )}
+          <ZoomControls zoom={zoom} setZoom={setZoom} fit={fit} />
+        </div>
+      )}
+      {!bare && plan.kind === "actual" && <ActualSummary plan={plan} onPick={select} />}
+      {!bare && <CostStrip plan={plan} onPick={select} />}
+      <div className="diagram-wrap">
+        {bare && (
+          <div className="diagram-float">
+            <ZoomControls zoom={zoom} setZoom={setZoom} fit={fit} />
+          </div>
         )}
-        <span className="zoom">
-          <button className="btn icon ghost" title="Zoom out" onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.15).toFixed(2)))}>
-            <Minus size={13} />
-          </button>
-          <button className="btn icon ghost" title="Actual size" onClick={() => setZoom(1)}>
-            <Maximize2 size={12} />
-          </button>
-          <button className="btn icon ghost" title="Zoom in" onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.15).toFixed(2)))}>
-            <Plus size={13} />
-          </button>
-        </span>
-      </div>
-      <CostStrip
-        plan={plan}
-        onPick={(id) => {
-          pick(id);
-          onSelect?.(id);
-        }}
-      />
-      <div className="diagram-scroll">
-        <div className="diagram" style={{ width: width * zoom, height: height * zoom }}>
-          <div style={{ width, height, transform: `scale(${zoom})`, transformOrigin: "0 0", position: "relative" }}>
-            <svg width={width} height={height} className="diagram-edges">
-              {edges.map((e) => {
-                const x1 = px(e.from.x) + CARD_W / 2;
-                const y1 = py(e.from.y);
-                const x2 = px(e.to.x) + CARD_W / 2;
-                const y2 = py(e.to.y) + CARD_H;
-                const mid = (y1 + y2) / 2;
-                return (
-                  <g key={e.key}>
-                    <path
-                      d={`M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`}
-                      fill="none"
-                      stroke={e.hot ? "var(--heat-4)" : "var(--border-strong)"}
-                      strokeOpacity={e.hot ? 0.75 : 1}
-                      strokeWidth={e.rows ? stroke(e.rows) : 1.5}
-                      strokeDasharray={e.rows ? undefined : "4 4"}
-                    />
-                    {e.rows > 0 && (
-                      <text x={x1 + 8} y={y1 - 8} className="edge-label">
-                        {count(e.rows)} rows
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
-            <div className="diagram-result" style={{ left: px(byId.get(plan.root.id)?.x ?? 0), top: PAD - 4, width: CARD_W }}>
-              result
+        <div className="diagram-scroll" ref={scroller}>
+          <div className="diagram" style={{ width: width * zoom, height: height * zoom }}>
+            <div style={{ width, height, transform: `scale(${zoom})`, transformOrigin: "0 0", position: "relative" }}>
+              <svg width={width} height={height} className="diagram-edges" aria-hidden="true">
+                <defs>
+                  <marker id="pd-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+                    <path d="M0,0 L8,4 L0,8 z" className="pd-arrow" />
+                  </marker>
+                  <marker id="pd-arrow-hot" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+                    <path d="M0,0 L8,4 L0,8 z" className="pd-arrow hot" />
+                  </marker>
+                </defs>
+                {edges.map((e) => {
+                  const x1 = px(e.from.x) + CARD_W / 2;
+                  const y1 = py(e.from.y);
+                  const x2 = px(e.to.x) + CARD_W / 2;
+                  const y2 = py(e.to.y) + CARD_H + 3;
+                  const mid = (y1 + y2) / 2;
+                  const label = e.rows > 0 ? `${rows(e.rows)} row${rows(e.rows) === "1" ? "" : "s"}` : "";
+                  const via = e.via.length ? `via ${e.via.join(", ")}` : "";
+                  const text = [label, via].filter(Boolean).join(" · ");
+                  const w = text.length * 5.9 + 12;
+                  // Beside the curve's midpoint, on the side away from the parent, so it never sits on the line.
+                  const lx = (x1 + x2) / 2 + (x1 <= x2 ? -w - 8 : 8);
+                  return (
+                    <g key={e.key}>
+                      <path
+                        d={`M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`}
+                        fill="none"
+                        className={`pd-edge ${e.hot ? "hot" : ""}`}
+                        strokeWidth={e.rows ? stroke(e.rows) : 1.5}
+                        strokeDasharray={e.rows ? undefined : "4 4"}
+                        markerEnd={`url(#${e.hot ? "pd-arrow-hot" : "pd-arrow"})`}
+                      />
+                      {text && (
+                        <g transform={`translate(${lx} ${mid - 9})`} className="edge-pill">
+                          <rect width={w} height={18} rx={9} />
+                          <text x={w / 2} y={12.5} textAnchor="middle">
+                            {text}
+                          </text>
+                        </g>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+              <div className="diagram-result" style={{ left: px(boxes.find((b) => !parentOf.has(b.node.id))?.x ?? 0), top: PAD - 4, width: CARD_W }}>
+                result{rootVia.length ? ` · via ${rootVia.join(", ")}` : ""}
+              </div>
+              {boxes.map((b) => (
+                <PlanCard
+                  key={b.node.id}
+                  node={b.node}
+                  share={shareOf(b.node)}
+                  ownMs={shares.ms.get(b.node.id)}
+                  x={px(b.x)}
+                  y={py(b.y)}
+                  hot={hot.has(b.node.id)}
+                  hottest={b.node.id === hottest.id && shareOf(b.node) >= 0.05}
+                  selected={b.node.id === selected}
+                  mark={marks?.get(b.node.id)}
+                  tint={tints?.get(b.node.id)}
+                  insights={flagged.get(b.node.id)}
+                  onSelect={() => select(b.node.id)}
+                />
+              ))}
+              {overlay && boxes.map((b) => <span key={`overlay-${b.node.id}`}>{overlay(b.node, { x: px(b.x), y: py(b.y), w: CARD_W, h: CARD_H })}</span>)}
+              {folds.map((f) => (
+                <button
+                  key={f.id}
+                  className="fold-pill"
+                  style={{ left: px(f.x) + CARD_W / 2 - 78, top: py(f.y) + CARD_H / 2 - 14 }}
+                  title="Show the cheap operators under this node"
+                  onClick={() => {
+                    const parent = nodes.find((n) => n.id === f.parent);
+                    if (parent) setExpanded((prev) => new Set([...prev, ...parent.children.map((c) => drawn(c, total, keep).node.id)]));
+                  }}
+                >
+                  +{f.count} cheap operator{f.count > 1 ? "s" : ""} · {percent(f.share)}
+                </button>
+              ))}
             </div>
-            {boxes.map((b) => (
-              <PlanCard
-                key={b.node.id}
-                node={b.node}
-                share={b.node.self_cost / total}
-                x={px(b.x)}
-                y={py(b.y)}
-                hot={hot.has(b.node.id)}
-                hottest={b.node.id === hottest.id && b.node.self_cost / total >= 0.05}
-                selected={b.node.id === selected}
-                mark={marks?.get(b.node.id)}
-                onSelect={() => {
-                  setSelected(b.node.id);
-                  onSelect?.(b.node.id);
-                }}
-              />
-            ))}
-            {folds.map((f) => (
-              <button
-                key={f.id}
-                className="fold-pill"
-                style={{ left: px(f.x) + CARD_W / 2 - 80, top: py(f.y) + CARD_H / 2 - 15 }}
-                title="Show the cheap operators under this node"
-                onClick={() => {
-                  const parent = nodes.find((n) => n.id === f.parent);
-                  if (parent) setExpanded((prev) => new Set([...prev, ...parent.children.map((c) => c.id)]));
-                }}
-              >
-                +{f.count} cheap operator{f.count > 1 ? "s" : ""} · {percent(f.share)}
-              </button>
-            ))}
           </div>
         </div>
       </div>
-      {selectedNode && <NodeProps node={selectedNode} share={selectedNode.self_cost / total} />}
+      {selectedNode && props.showProps !== false && (
+        <NodeDetails node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? selectedNode.subtree_cost / total} insights={flagged.get(selectedNode.id)} />
+      )}
     </div>
+  );
+}
+
+function ZoomControls({ zoom, setZoom, fit }: { zoom: number; setZoom: (f: (z: number) => number) => void; fit: () => void }) {
+  return (
+    <span className="zoom">
+      <button className="btn icon ghost" title="Zoom out" onClick={() => setZoom((z) => Math.max(0.3, +(z - 0.15).toFixed(2)))}>
+        <Minus size={13} />
+      </button>
+      <span className="zoom-level">{Math.round(zoom * 100)}%</span>
+      <button className="btn icon ghost" title="Zoom in" onClick={() => setZoom((z) => Math.min(1.6, +(z + 0.15).toFixed(2)))}>
+        <Plus size={13} />
+      </button>
+      <button className="btn icon ghost" title="Fit the whole plan" onClick={fit}>
+        <Scan size={13} />
+      </button>
+      <button className="btn icon ghost" title="Actual size" onClick={() => setZoom(() => 1)}>
+        <Maximize2 size={12} />
+      </button>
+    </span>
   );
 }
 
@@ -311,46 +409,62 @@ function PlanCard(props: {
   hottest: boolean;
   selected: boolean;
   mark?: Mark;
+  insights?: PlanInsight[];
+  tint?: number;
+  /** The operator's own time in a measured run (its inputs' time taken out). */
+  ownMs?: number;
   onSelect: () => void;
 }) {
-  const { node, share, x, y, hot, hottest, selected, mark, onSelect } = props;
-  const kind = KIND[node.kind];
-  const est = node.est_rows * Math.max(1, node.est_executions);
-  const act = node.act_rows;
-  const off = act != null ? Math.max(act, 1) / Math.max(est, 1) : null;
-  const misestimate = off != null && (off >= 10 || off <= 0.1) ? off : null;
+  const { node, share, x, y, hot, hottest, selected, mark, insights, tint, ownMs, onSelect } = props;
+  const err = rowError(node);
   const table = node.object?.split(".").pop();
+  const worst = insights?.[0];
+  const tip = [
+    node.op,
+    node.predicate ? `filter ${shortPredicate(node.predicate)}` : node.seek_predicate ? `seek ${shortPredicate(node.seek_predicate)}` : "",
+    ...(insights ?? []).map((i) => `• ${i.title}`),
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
     <button
-      className={`plan-card ${selected ? "sel" : ""} ${hot ? "hot" : ""} ${mark ? `mark-${mark}` : ""}`}
-      style={{ left: x, top: y, width: CARD_W, height: CARD_H, ["--heat" as string]: heat(share) }}
+      data-node={node.id}
+      data-tint={tint}
+      className={`plan-card ${selected ? "sel" : ""} ${hot ? "hot" : ""} ${mark ? `mark-${mark}` : ""} ${worst ? `flag-${worst.severity}` : ""}`}
+      style={{ left: x, top: y, width: CARD_W, height: CARD_H, ["--heat" as string]: heat(share), ["--share" as string]: `${Math.max(share > 0 ? 3 : 0, Math.min(100, share * 100))}%` }}
       onClick={onSelect}
-      title={node.predicate ? `filter ${shortPredicate(node.predicate)}` : node.seek_predicate ? `seek ${shortPredicate(node.seek_predicate)}` : node.op}
+      title={tip}
+      aria-label={`${node.op}${table ? ` on ${table}` : ""}, ${percent(share)} of the work${worst ? `, ${insights!.length} issue${insights!.length > 1 ? "s" : ""}` : ""}`}
     >
       <span className="pc-top">
-        <span className="pc-kind" style={{ color: kind.color }}>
-          {kind.label || node.op}
+        <span className="pc-icon">
+          <OpIcon node={node} size={14} />
         </span>
+        <span className="pc-op">{node.op}</span>
         <span className="pc-share">
           {mark && <span className={`pc-mark ${mark}`}>{MARK_LABEL[mark]}</span>}
-          {hottest && <Flame size={12} color="var(--heat-4)" />}
+          {hottest && <Flame size={11} color="var(--heat-4)" />}
           {percent(share)}
         </span>
       </span>
-      <span className="pc-op">{node.op}</span>
-      <span className="pc-obj mono">{table ? `${table}${node.index ? ` · ${node.index}` : ""}` : node.detail ?? ""}</span>
+      <span className="pc-obj mono">{table ? `${table}${node.index ? ` · ${node.index}` : ""}` : node.detail ?? " "}</span>
       <span className="pc-rows">
-        {act != null ? (
+        {node.act_rows != null ? (
           <>
-            {count(est)} → <b>{count(act)}</b> rows
-            {misestimate && <span className="mis">×{count(misestimate >= 1 ? misestimate : 1 / misestimate)}</span>}
+            {rows(node.est_rows * Math.max(1, node.est_executions))} → <b>{rows(node.act_rows)}</b>
+            {err && err.factor >= 10 && <span className="mis">×{rows(err.factor)}</span>}
           </>
         ) : (
-          <>{count(est)} rows est.</>
+          <>{rows(node.est_rows * Math.max(1, node.est_executions))} est.</>
         )}
-        {node.act_time_ms != null && <span className="muted"> · {duration(node.act_time_ms)}</span>}
-        {node.warnings.length > 0 && <TriangleAlert size={11} color="var(--medium)" style={{ marginLeft: 4 }} />}
+        {(ownMs ?? node.act_time_ms) != null && <span className="muted"> · {duration(ownMs ?? node.act_time_ms!)}</span>}
+        {node.warnings.length > 0 && !worst && <TriangleAlert size={11} color="var(--medium)" style={{ marginLeft: 3 }} />}
       </span>
+      {worst && (
+        <span className={`pc-flag ${worst.severity}`} title={insights!.map((i) => i.title).join("\n")}>
+          {insights!.length}
+        </span>
+      )}
     </button>
   );
 }

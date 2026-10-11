@@ -1,11 +1,21 @@
+mod actual;
+mod advisor;
 mod brief;
 mod config;
+mod config_health;
+mod deadlocks;
 pub mod drift;
+mod index_health;
 mod indexes;
+mod insights;
 mod maintenance;
+mod pressure;
 mod queries;
+mod sensitivity;
 pub(crate) mod support;
 mod trends;
+mod tuning;
+pub mod waits;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -15,6 +25,7 @@ use culprit_core::{
     Severity, SeverityCount, Snapshot, Summary, format,
 };
 
+pub use advisor::index_advice;
 pub use brief::agent_brief;
 pub use drift::drift;
 
@@ -40,18 +51,36 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Builtin { info: indexes::unused_index_info, run: indexes::unused_index },
         Builtin { info: indexes::duplicate_index_info, run: indexes::duplicate_index },
         Builtin { info: indexes::unindexed_fk_info, run: indexes::unindexed_fk },
+        Builtin { info: index_health::overlapping_index_info, run: index_health::overlapping_index },
+        Builtin { info: index_health::over_indexed_info, run: index_health::over_indexed },
+        Builtin { info: index_health::scan_heavy_info, run: index_health::scan_heavy },
+        Builtin { info: tuning::tuning_advice_info, run: tuning::tuning_advice },
+        Builtin { info: tuning::query_family_info, run: tuning::query_family },
         Builtin { info: queries::heavy_query_info, run: queries::heavy_query },
         Builtin { info: queries::chatty_query_info, run: queries::chatty_query },
         Builtin { info: queries::plan_warnings_info, run: queries::plan_warnings },
+        Builtin { info: insights::plan_insights_info, run: insights::plan_insights },
         Builtin { info: queries::plan_regression_info, run: queries::plan_regression },
         Builtin { info: trends::regression_info, run: trends::regression },
         Builtin { info: queries::unstable_query_info, run: queries::unstable_query },
+        Builtin { info: sensitivity::parameter_sensitive_info, run: sensitivity::parameter_sensitive },
         Builtin { info: queries::temp_spill_info, run: queries::temp_spill },
         Builtin { info: maintenance::stale_stats_info, run: maintenance::stale_stats },
         Builtin { info: maintenance::heap_table_info, run: maintenance::heap_table },
         Builtin { info: maintenance::dead_rows_info, run: maintenance::dead_rows },
         Builtin { info: maintenance::xid_age_info, run: maintenance::xid_age },
         Builtin { info: config::config_info, run: config::config },
+        Builtin { info: deadlocks::deadlocks_info, run: deadlocks::deadlocks },
+        Builtin { info: pressure::memory_grant_info, run: pressure::memory_grant },
+        Builtin { info: pressure::memory_queue_info, run: pressure::memory_queue },
+        Builtin { info: pressure::compile_pressure_info, run: pressure::compile_pressure },
+        Builtin { info: pressure::worker_pressure_info, run: pressure::worker_pressure },
+        Builtin { info: pressure::held_cleanup_info, run: pressure::held_cleanup },
+        Builtin { info: pressure::network_wait_info, run: pressure::network_wait },
+        Builtin { info: pressure::tier_limit_info, run: pressure::tier_limit },
+        Builtin { info: pressure::checkpoint_pressure_info, run: pressure::checkpoint_pressure },
+        Builtin { info: pressure::row_lock_waits_info, run: pressure::row_lock_waits },
+        Builtin { info: actual::last_actual_plans_info, run: actual::last_actual_plans },
     ];
     builtins.into_iter().map(|b| Box::new(b) as Box<dyn Check>).collect()
 }
@@ -132,6 +161,33 @@ pub fn analyze_with(snapshot: Snapshot, extra: &[Arc<dyn Check>]) -> Report {
 fn dedupe(findings: &mut Vec<Finding>) {
     merge_scans_into_missing_indexes(findings);
 
+    // A function or leading wildcard around the filtered column is why the scan happens; an index on the column
+    // (filtered-scan's advice) wouldn't be used until the query changes.
+    let rewrites: Vec<(String, Vec<String>)> = findings
+        .iter()
+        .filter(|f| {
+            f.id.starts_with("plan-insights:non-sargable:") || f.id.starts_with("plan-insights:leading-wildcard:")
+        })
+        .map(|f| (table_leaf(&f.subject.name), f.queries.iter().map(|q| q.id.clone()).collect()))
+        .collect();
+    findings.retain(|f| {
+        f.check != "filtered-scan"
+            || !rewrites.iter().any(|(table, queries)| {
+                *table == table_leaf(&f.subject.name) && f.queries.iter().any(|q| queries.contains(&q.id))
+            })
+    });
+
+    // A spill finding already explains a big sort in the same query, with the memory fix.
+    let spilled: BTreeSet<String> = findings
+        .iter()
+        .filter(|f| f.check == "temp-spill" || f.id.contains(":spill"))
+        .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
+        .collect();
+    findings.retain(|f| {
+        !(f.id.starts_with("plan-insights:big-sort:") || f.id.starts_with("plan-insights:temp-table-sort:"))
+            || !f.queries.iter().all(|q| spilled.contains(&q.id))
+    });
+
     let index_keys: Vec<(String, Vec<String>)> = findings
         .iter()
         .filter(|f| matches!(f.check.as_str(), "missing-index" | "filtered-scan"))
@@ -162,6 +218,10 @@ fn dedupe(findings: &mut Vec<Finding>) {
         .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
         .collect();
     findings.retain(|f| f.check != "heavy-query" || !f.queries.iter().any(|q| explained.contains(&q.id)));
+}
+
+fn table_leaf(name: &str) -> String {
+    name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase()
 }
 
 /// SQL Server reports the same gap twice: as a missing-index suggestion and as a scan in the plan. Keep the suggestion, which
@@ -216,8 +276,9 @@ fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
         let silence = end - last;
         (silence >= (interval * QUIET_INTERVALS).max(MIN_QUIET_SECONDS)).then_some((silence, last_text))
     };
-    const QUERY_DRIVEN: [&str; 8] = [
+    const QUERY_DRIVEN: [&str; 9] = [
         "plan-warnings",
+        "plan-insights",
         "filtered-scan",
         "heavy-query",
         "chatty-query",

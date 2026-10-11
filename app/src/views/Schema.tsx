@@ -1,5 +1,5 @@
-import { GitCompareArrows, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { GitCompareArrows, Lightbulb, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
 import { bytes, count } from "../lib/format";
@@ -7,6 +7,12 @@ import { useHotkeys } from "../lib/hotkeys";
 import { fuzzy, tableFindings, tableKey } from "../lib/schema-model";
 import { DriftPanel } from "../components/DriftPanel";
 import { SchemaTable } from "./SchemaTable";
+
+const IndexAdvisor = lazy(() => import("../components/IndexAdvisor"));
+
+/** Findings the advisor turns into "add" and "clean up" items, for the list entry's counts. */
+const ADD_CHECKS = ["missing-index", "filtered-scan", "unindexed-fk"];
+const CLEANUP_CHECKS = ["duplicate-index", "unused-index", "overlapping-index"];
 
 type SortKey = "size" | "rows" | "name" | "findings";
 
@@ -61,6 +67,9 @@ export function Schema({ report }: { report: Report }) {
   const [sort, setSort] = useState<SortKey>(() => remembered(SORT_KEY, (v) => (SORTS.some((s) => s.key === v) ? (v as SortKey) : null), "size"));
   const [selected, setSelected] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
+  const [advising, setAdvising] = useState(false);
+  const toAdd = report.findings.filter((f) => ADD_CHECKS.includes(f.check)).length;
+  const toClean = report.findings.filter((f) => CLEANUP_CHECKS.includes(f.check)).length;
   const [width, setWidth] = useState(() => remembered(WIDTH_KEY, (v) => Math.min(MAX_W, Math.max(MIN_W, Number(v) || DEFAULT_W)), DEFAULT_W));
   const [collapsed, setCollapsed] = useState(() => remembered(COLLAPSED_KEY, (v) => v === "1", false));
   const searchRef = useRef<HTMLInputElement>(null);
@@ -132,18 +141,21 @@ export function Schema({ report }: { report: Report }) {
       ordered.findIndex((e) => e.key === current?.key),
     );
     const next = ordered[Math.min(ordered.length - 1, Math.max(0, at + delta))];
-    if (next) setSelected(next.key);
+    if (next) (setSelected(next.key), setAdvising(false));
   };
   const toggleList = () =>
     setCollapsed((c) => {
       remember(COLLAPSED_KEY, c ? "0" : "1");
       return !c;
     });
+  // While the advisor is open, j/k and the arrows move through its items instead of the tables.
   useHotkeys({
-    j: () => move(1),
-    k: () => move(-1),
-    ArrowDown: () => move(1),
-    ArrowUp: () => move(-1),
+    j: () => !advising && move(1),
+    k: () => !advising && move(-1),
+    ArrowDown: () => !advising && move(1),
+    ArrowUp: () => !advising && move(-1),
+    a: () => setAdvising(true),
+    Escape: () => advising && setAdvising(false),
     "/": () => {
       if (collapsed) toggleList();
       requestAnimationFrame(() => searchRef.current?.focus());
@@ -267,7 +279,24 @@ export function Schema({ report }: { report: Report }) {
               <GitCompareArrows size={14} />
             </button>
           </div>
-          <div className="tl-scroll" ref={listRef} role="listbox" aria-activedescendant={current ? `tl-${current.key}` : undefined}>
+          <div className="tl-scroll" ref={listRef} role="listbox" aria-activedescendant={advising ? "tl-advisor" : current ? `tl-${current.key}` : undefined}>
+            {!query.trim() && (
+              <button
+                id="tl-advisor"
+                role="option"
+                aria-selected={advising}
+                className={`tl-row tl-advisor ${advising ? "on" : ""}`}
+                title="Index advisor: what to add, what to clean up ( a )"
+                onClick={() => setAdvising(true)}
+              >
+                <Lightbulb size={13} className="tl-advisor-icon" />
+                <span className="tl-name">Index advisor</span>
+                <span className="tl-badges">
+                  {toAdd > 0 && <span className="tl-count medium" title={`${toAdd} to add`}>{toAdd}</span>}
+                </span>
+                <span className="tl-metric">{toClean > 0 ? `${toClean} to clean` : toAdd > 0 ? "" : "all good"}</span>
+              </button>
+            )}
             {groups.map(([schema, list]) => (
               <div key={schema} className="tl-group">
                 {(schemas.size > 1 || query.trim() === "") && (
@@ -281,10 +310,10 @@ export function Schema({ report }: { report: Report }) {
                     key={e.key}
                     id={`tl-${e.key}`}
                     role="option"
-                    aria-selected={e.key === current?.key}
-                    className={`tl-row ${e.key === current?.key ? "on" : ""}`}
+                    aria-selected={!advising && e.key === current?.key}
+                    className={`tl-row ${!advising && e.key === current?.key ? "on" : ""}`}
                     title={`${e.key} · ${count(e.table.rows)} rows · ${bytes(e.table.total_bytes)}`}
-                    onClick={() => setSelected(e.key)}
+                    onClick={() => (setSelected(e.key), setAdvising(false))}
                   >
                     <span className="tl-name">{highlight(e.table.name, e.hits)}</span>
                     <span className="tl-badges">
@@ -323,7 +352,11 @@ export function Schema({ report }: { report: Report }) {
         />
       )}
       <section className="schema-main">
-        {current ? (
+        {advising ? (
+          <Suspense fallback={<div className="ia" aria-busy="true" />}>
+            <IndexAdvisor report={report} onOpenTable={(key) => (setQuery(""), setSelected(key), setAdvising(false))} />
+          </Suspense>
+        ) : current ? (
           <SchemaTable key={current.key} report={report} table={current.table} onOpenTable={(key) => (setQuery(""), setSelected(key))} />
         ) : (
           <div className="empty">No table matches “{query}”.</div>

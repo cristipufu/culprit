@@ -285,7 +285,13 @@ pub(crate) fn wait_type_category(wait_type: &str) -> &'static str {
     if w == "SOS_SCHEDULER_YIELD" || w == "THREADPOOL" || w.starts_with("RESOURCE_GOVERNOR") {
         return "CPU";
     }
-    if w.starts_with("CXPACKET") || w.starts_with("CXCONSUMER") || w.starts_with("CXSYNC") || w.starts_with("EXCHANGE")
+    // HT* and BMP* are batch-mode hash and bitmap work shared across a parallel query's threads.
+    if w.starts_with("CXPACKET")
+        || w.starts_with("CXCONSUMER")
+        || w.starts_with("CXSYNC")
+        || w.starts_with("EXCHANGE")
+        || w.starts_with("HT")
+        || w.starts_with("BMP")
     {
         return "Parallelism";
     }
@@ -336,6 +342,7 @@ fn table_of(r: &Rec) -> TableStat {
         last_vacuum: None,
         last_analyze: None,
         forwarded_records: None,
+        forwarded_fetches: None,
         xid_age: None,
     }
 }
@@ -625,6 +632,8 @@ mod tests {
         assert_eq!(wait_type_category("LCK_M_X"), "Lock");
         assert_eq!(wait_type_category("PAGEIOLATCH_SH"), "IO");
         assert_eq!(wait_type_category("WRITELOG"), "Log");
+        assert_eq!(wait_type_category("HTREPARTITION"), "Parallelism");
+        assert_eq!(wait_type_category("BMPBUILD"), "Parallelism");
         assert_eq!(wait_type_category("SOS_SCHEDULER_YIELD"), "CPU");
         assert_eq!(wait_type_category("CXPACKET"), "Parallelism");
         assert_eq!(wait_type_category("ASYNC_NETWORK_IO"), "Network");

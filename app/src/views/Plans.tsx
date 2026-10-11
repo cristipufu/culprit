@@ -1,13 +1,11 @@
-import { ArrowLeftRight, ClipboardPaste, Copy, Download, FileUp, GitCompareArrows, Trash2, TriangleAlert, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { PlanDiagram, type Mark } from "../components/PlanDiagram";
-import { PlanView } from "../components/PlanView";
+import { Braces, ClipboardCopy, ClipboardPaste, Copy, FileCode, FileDown, FileUp, GitCompareArrows, Trash2, TriangleAlert, X } from "lucide-react";
+import { useRef, useState, type DragEvent } from "react";
+import { ShareMenu } from "../components/ShareMenu";
+import { PlanCompare } from "./PlanCompare";
+import { LookToggle as PlanLookToggle, PlanSurface, rememberLook, rememberedLook as rememberedPlanLook, type PlanLook } from "../components/PlanSurface";
 import { Sql } from "../components/Sql";
-import type { ChangeKind } from "../gen/ChangeKind";
 import type { Plan } from "../gen/Plan";
-import type { PlanDiff } from "../gen/PlanDiff";
-import { api, copyText, errorMessage, type ApiError } from "../lib/api";
-import { duration } from "../lib/format";
+import { api, copyText, type ApiError } from "../lib/api";
 import { useHotkeys } from "../lib/hotkeys";
 import {
   dismissError,
@@ -20,25 +18,15 @@ import {
   setMode,
   setSide,
   swapSides,
+  trySample,
   usePlans,
   type LoadedPlan,
 } from "../lib/plans";
+import { deliver, exportOptions } from "../lib/share";
 import { toast } from "../lib/store";
 
 const ENGINE: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
-const LOOK_KEY = "culprit.plan.look";
-
-type Look = "diagram" | "tree";
-
-function rememberedLook(): Look {
-  try {
-    return localStorage.getItem(LOOK_KEY) === "tree" ? "tree" : "diagram";
-  } catch {
-    return "diagram";
-  }
-}
-
 function cost(value: number): string {
   if (value < 10) return value.toFixed(3);
   if (value < 100) return value.toFixed(1);
@@ -144,7 +132,7 @@ export function Plans() {
             </div>
             <div className="plans-hint">Drop .sqlplan, EXPLAIN JSON or text anywhere here</div>
           </aside>
-          <section className="plans-main">{mode === "compare" ? <Compare /> : current && <Single item={current} />}</section>
+          <section className="plans-main">{mode === "compare" ? <PlanCompare /> : current && <Single item={current} />}</section>
         </>
       )}
       {dragging && <div className="drop-veil">Drop to open the plan</div>}
@@ -177,6 +165,14 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
           <Format engine="SQL Server" what=".sqlplan or showplan XML (SSMS, Query Store)" />
           <Format engine="Postgres" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
           <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
+        </div>
+        <div className="welcome-samples">
+          <span className="muted">See it with a sample comparison:</span>
+          {(["mssql", "postgres", "mysql"] as const).map((e) => (
+            <button key={e} className="btn ghost small" onClick={() => trySample(e)}>
+              {ENGINE[e]}
+            </button>
+          ))}
         </div>
         <p className="muted small">From Queries, any plan opens here, and two plans of the same query open side by side.</p>
       </div>
@@ -238,34 +234,12 @@ function PlanRow({ item, active }: { item: LoadedPlan; active: boolean }) {
   );
 }
 
-function LookToggle({ look, onChange }: { look: Look; onChange: (look: Look) => void }) {
-  return (
-    <span className="seg">
-      <button className={look === "diagram" ? "on" : ""} onClick={() => onChange("diagram")}>
-        Diagram
-      </button>
-      <button className={look === "tree" ? "on" : ""} onClick={() => onChange("tree")}>
-        Tree
-      </button>
-    </span>
-  );
-}
-
-function useLook(): [Look, (look: Look) => void] {
-  const [look, setLook] = useState<Look>(rememberedLook);
-  return [
-    look,
-    (next) => {
-      setLook(next);
-      try {
-        localStorage.setItem(LOOK_KEY, next);
-      } catch {}
-    },
-  ];
-}
-
 function Single({ item }: { item: LoadedPlan }) {
-  const [look, setLook] = useLook();
+  const [look, setPlanLook] = useState<PlanLook>(rememberedPlanLook);
+  const setLook = (next: PlanLook) => {
+    setPlanLook(next);
+    rememberLook(next);
+  };
   const [showSql, setShowSql] = useState(false);
   const file = exportable(item);
   const plan = item.plan;
@@ -280,20 +254,53 @@ function Single({ item }: { item: LoadedPlan }) {
           </div>
         </div>
         <span className="spacer" />
-        <LookToggle look={look} onChange={setLook} />
-        {file.native && (
-          <button className="btn" title={`Save ${file.name} to Downloads`} onClick={() => savePlan(item, false)}>
-            <Download size={13} /> Save .{file.name.split(".").pop()}
-          </button>
-        )}
-        <button className="btn ghost" title="Save Culprit's plan JSON to Downloads" onClick={() => savePlan(item, true)}>
-          <Download size={13} /> JSON
-        </button>
-        <button
-          className="btn icon ghost"
-          title="Copy the plan text"
-          onClick={() => copyText(file.contents).then(() => toast("Plan copied"), () => toast("Couldn't copy"))}
-        >
+        <PlanLookToggle look={look} onChange={setLook} />
+        <ShareMenu
+          actions={[
+            {
+              id: "md",
+              icon: <ClipboardCopy size={15} />,
+              label: "Copy for a pull request",
+              hint: "Markdown: where the cost goes and every step",
+              redacts: true,
+              run: (redact) => deliver(api().then((c) => c.exportPlan(plan, item.name, "markdown", exportOptions(redact))), "copy", redact),
+            },
+            {
+              id: "html",
+              icon: <FileCode size={15} />,
+              label: "Save as an HTML page",
+              hint: "One file with the diagram; opens offline, prints cleanly",
+              redacts: true,
+              run: (redact) => deliver(api().then((c) => c.exportPlan(plan, item.name, "html", exportOptions(redact))), "save", redact),
+            },
+            {
+              id: "native",
+              icon: <FileDown size={15} />,
+              label: plan.engine === "mssql" ? "Save the .sqlplan" : "Save the original plan",
+              hint: plan.engine === "mssql" ? "Opens in SSMS and other plan viewers" : "EXPLAIN output, as it came from the database",
+              redacts: true,
+              unavailable: file.native || item.source ? undefined : "This plan was opened as Culprit JSON; there is no original text to save",
+              run: (redact) =>
+                deliver(
+                  api().then((c) =>
+                    file.native
+                      ? c.exportPlan(plan, item.name, "native", exportOptions(redact))
+                      : c.exportQueryPlan(item.source!.connection, item.source!.queryId, item.source!.planId, "native", exportOptions(redact)),
+                  ),
+                  "save",
+                  redact,
+                ),
+            },
+            {
+              id: "json",
+              icon: <Braces size={15} />,
+              label: "Save Culprit JSON",
+              hint: "Opens again in Plans; values as they are",
+              run: () => savePlan(item, true),
+            },
+          ]}
+        />
+        <button className="btn icon ghost" title="Copy the plan text" aria-label="Copy the plan text" onClick={() => copyText(file.contents).then(() => toast("Plan copied"), () => toast("Couldn't copy"))}>
           <Copy size={13} />
         </button>
         <button className="btn icon ghost" title="Close this plan" onClick={() => removePlan(item.id)}>
@@ -305,224 +312,7 @@ function Single({ item }: { item: LoadedPlan }) {
           <Sql text={plan.statement} />
         </div>
       )}
-      {look === "diagram" ? <PlanDiagram key={item.id} plan={plan} /> : <PlanView key={item.id} plan={plan} />}
+      <PlanSurface key={item.id} plan={plan} look={look} />
     </div>
   );
-}
-
-const CHANGE_ICON: Record<ChangeKind, string> = {
-  access: "~",
-  operator: "~",
-  added: "+",
-  removed: "−",
-  cost: "$",
-  rows: "#",
-  warning: "!",
-};
-
-function Compare() {
-  const items = usePlans((s) => s.items);
-  const aId = usePlans((s) => s.a);
-  const bId = usePlans((s) => s.b);
-  const a = items.find((p) => p.id === aId) ?? null;
-  const b = items.find((p) => p.id === bId) ?? null;
-  const [diff, setDiff] = useState<{ status: "idle" | "loading" } | { status: "ready"; diff: PlanDiff } | { status: "error"; error: ApiError }>({ status: "idle" });
-  const [pickA, setPickA] = useState<number | null>(null);
-  const [pickB, setPickB] = useState<number | null>(null);
-  const [active, setActive] = useState<number | null>(null);
-  const [look, setLook] = useLook();
-
-  const names = useMemo((): [string, string] => {
-    if (!a || !b || a.name === b.name) return ["plan A", "plan B"];
-    return [a.name, b.name];
-  }, [a, b]);
-
-  useEffect(() => {
-    setActive(null);
-    setPickA(null);
-    setPickB(null);
-    if (!a || !b) return setDiff({ status: "idle" });
-    let cancelled = false;
-    setDiff({ status: "loading" });
-    api()
-      .then((client) => client.diffPlans(a.plan, b.plan, names[0], names[1]))
-      .then((d) => !cancelled && setDiff({ status: "ready", diff: d }))
-      .catch((e) => !cancelled && setDiff({ status: "error", error: errorMessage(e) }));
-    return () => {
-      cancelled = true;
-    };
-  }, [a, b, names]);
-
-  const ready = diff.status === "ready" ? diff.diff : null;
-  const { marksA, marksB, aToB, bToA } = useMemo(() => {
-    const marksA = new Map<number, Mark>();
-    const marksB = new Map<number, Mark>();
-    const aToB = new Map<number, number>();
-    const bToA = new Map<number, number>();
-    if (ready) {
-      ready.matches.forEach((m) => {
-        aToB.set(m.a, m.b);
-        bToA.set(m.b, m.a);
-      });
-      ready.changes.forEach((c) => {
-        if (c.kind === "access" || c.kind === "operator") {
-          if (c.a != null) marksA.set(c.a, "changed");
-          if (c.b != null) marksB.set(c.b, "changed");
-        }
-      });
-      ready.only_a.forEach((id) => marksA.set(id, "removed"));
-      ready.only_b.forEach((id) => marksB.set(id, "added"));
-    }
-    return { marksA, marksB, aToB, bToA };
-  }, [ready]);
-
-  if (!a || !b) return <div className="empty">Pick two plans to compare.</div>;
-
-  return (
-    <div className="plans-compare">
-      <div className="compare-pickers">
-        <SidePicker side="A" value={a.id} onChange={(id) => setSide("a", id)} />
-        <button className="btn icon ghost" title="Swap A and B" onClick={swapSides}>
-          <ArrowLeftRight size={14} />
-        </button>
-        <SidePicker side="B" value={b.id} onChange={(id) => setSide("b", id)} />
-        <span className="spacer" />
-        <LookToggle look={look} onChange={setLook} />
-      </div>
-      {diff.status === "loading" && (
-        <div className="diff-summary">
-          <div className="skeleton" style={{ height: 22, width: "60%" }} />
-          <div className="skeleton" style={{ height: 16, width: "40%", marginTop: 8 }} />
-        </div>
-      )}
-      {diff.status === "error" && <ErrorNote error={diff.error} />}
-      {ready && (
-        <div className="diff-summary">
-          <div className="diff-headlines">
-            {ready.headlines.map((h, i) => (
-              <p key={i} className={i === 0 ? "lead" : ""}>
-                {h}
-              </p>
-            ))}
-          </div>
-          <div className="diff-figures">
-            <Figure label={`cost · ${names[0]}`} value={cost(ready.cost_a)} />
-            <Ratio ratio={ready.cost_ratio} />
-            <Figure label={`cost · ${names[1]}`} value={cost(ready.cost_b)} />
-            {ready.time_a_ms != null && ready.time_b_ms != null && (
-              <>
-                <span className="diff-sep" />
-                <Figure label="actual time A" value={duration(ready.time_a_ms)} />
-                <Figure label="actual time B" value={duration(ready.time_b_ms)} />
-              </>
-            )}
-          </div>
-          {ready.changes.length > 0 && (
-            <div className="diff-changes">
-              {ready.changes.map((c, i) => (
-                <button
-                  key={i}
-                  className={`diff-change ${c.kind} ${active === i ? "on" : ""}`}
-                  onClick={() => {
-                    setActive(i);
-                    setPickA(c.a ?? (c.b != null ? bToA.get(c.b) ?? null : null));
-                    setPickB(c.b ?? (c.a != null ? aToB.get(c.a) ?? null : null));
-                  }}
-                >
-                  <span className="dc-icon">{CHANGE_ICON[c.kind]}</span>
-                  <span className="dc-title">{c.title}</span>
-                  {c.detail && <span className="dc-detail">{c.detail}</span>}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-      <div className="compare-sides">
-        <Side label="A" item={a} look={look}>
-          {look === "diagram" ? (
-            <PlanDiagram
-              key={`a-${a.id}-${b.id}-${ready ? 1 : 0}`}
-              plan={a.plan}
-              marks={marksA}
-              selectedId={pickA}
-              initialZoom={0.8}
-              onSelect={(id) => {
-                setActive(null);
-                setPickB(aToB.get(id) ?? null);
-              }}
-            />
-          ) : (
-            <PlanView key={`a-${a.id}`} plan={a.plan} focus={pickA} />
-          )}
-        </Side>
-        <Side label="B" item={b} look={look}>
-          {look === "diagram" ? (
-            <PlanDiagram
-              key={`b-${a.id}-${b.id}-${ready ? 1 : 0}`}
-              plan={b.plan}
-              marks={marksB}
-              selectedId={pickB}
-              initialZoom={0.8}
-              onSelect={(id) => {
-                setActive(null);
-                setPickA(bToA.get(id) ?? null);
-              }}
-            />
-          ) : (
-            <PlanView key={`b-${b.id}`} plan={b.plan} focus={pickB} />
-          )}
-        </Side>
-      </div>
-    </div>
-  );
-}
-
-function SidePicker({ side, value, onChange }: { side: "A" | "B"; value: string; onChange: (id: string) => void }) {
-  const items = usePlans((s) => s.items);
-  return (
-    <label className="side-picker">
-      <span className="side-badge">{side}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        {items.map((p) => (
-          <option key={p.id} value={p.id}>
-            {p.origin === p.name ? p.name : `${p.name} — ${p.origin}`}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
-function Side({ label, item, look, children }: { label: string; item: LoadedPlan; look: Look; children: ReactNode }) {
-  return (
-    <div className={`compare-side ${look}`}>
-      <div className="compare-side-head">
-        <span className="side-badge">{label}</span>
-        <b>{item.name}</b>
-        <span className="muted">
-          {ENGINE[item.plan.engine]} · {KIND[item.plan.kind]}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function Figure({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="diff-figure">
-      <div className="value">{value}</div>
-      <div className="label">{label}</div>
-    </div>
-  );
-}
-
-function Ratio({ ratio }: { ratio: number | null }) {
-  if (ratio == null) return <span className="diff-ratio">→</span>;
-  const worse = ratio > 1;
-  const factor = worse ? ratio : 1 / ratio;
-  if (factor < 1.05) return <span className="diff-ratio same">≈ same</span>;
-  const text = factor >= 10 ? `${Math.round(factor).toLocaleString()}×` : `${factor.toFixed(1)}×`;
-  return <span className={`diff-ratio ${worse ? "worse" : "better"}`}>{worse ? `${text} costlier` : `${text} cheaper`}</span>;
 }

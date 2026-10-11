@@ -1,0 +1,33 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "51621.30"
+    },
+    "table": {
+      "table_name": "orders",
+      "access_type": "index",
+      "key": "ix_orders_status_created",
+      "used_key_parts": [
+        "status",
+        "created_at"
+      ],
+      "key_length": "71",
+      "rows_examined_per_scan": 498573,
+      "rows_produced_per_join": 498573,
+      "filtered": "100.00",
+      "using_index": true,
+      "cost_info": {
+        "read_cost": "1764.00",
+        "eval_cost": "49857.30",
+        "prefix_cost": "51621.30",
+        "data_read_per_join": "106M"
+      },
+      "used_columns": [
+        "id",
+        "created_at"
+      ],
+      "attached_condition": "(cast(`shop`.`orders`.`created_at` as date) = '2026-03-01')"
+    }
+  }
+}

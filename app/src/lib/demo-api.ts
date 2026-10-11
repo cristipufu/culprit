@@ -1,14 +1,27 @@
 import type { ApprovalRequest } from "../gen/ApprovalRequest";
+import type { Changes } from "../gen/Changes";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
+import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
+import type { IndexAdvice } from "../gen/IndexAdvice";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { LiveState } from "../gen/LiveState";
 import type { Session } from "../gen/Session";
 import type { Plan } from "../gen/Plan";
+import type { PlanVariant } from "../gen/PlanVariant";
+import type { QueryStat } from "../gen/QueryStat";
+import type { PlanInsights } from "../gen/PlanInsights";
+import type { PlanDiff } from "../gen/PlanDiff";
+import type { QueryProgress } from "../gen/QueryProgress";
 import type { Report } from "../gen/Report";
+import type { CheckInfo } from "../gen/CheckInfo";
 import type { SavedQuery } from "../gen/SavedQuery";
 import type { SaveQuery } from "../gen/SaveQuery";
+import type { Pressure } from "../gen/Pressure";
+import type { ResourceSample } from "../gen/ResourceSample";
+import type { WaitSample } from "../gen/WaitSample";
+import type { WaitsReport } from "../gen/WaitsReport";
 import type { Api } from "./api";
 import { demoRows } from "./demo-rows";
 
@@ -20,6 +33,78 @@ const discoverSample: () => Promise<DiscoveredDatabase[]> = import.meta.env.DEV
   ? () => import("../../../fixtures/discover.sample.json").then((m) => m.default as DiscoveredDatabase[])
   : async () => [];
 
+/** The advisor's output for each demo connection, made with `culprit indexes fixtures/<name>.report.json --json`. */
+const adviceSample: () => Promise<Record<string, IndexAdvice>> = import.meta.env.DEV
+  ? () => import("../../../fixtures/index-advice.sample.json").then((m) => m.default as unknown as Record<string, IndexAdvice>)
+  : async () => ({});
+
+/** Sessions and blocking chains captured from the demo databases with a planted chain, per engine. */
+const liveSample: () => Promise<Record<string, LiveState> | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/live.sample.json").then((m) => m.default as unknown as Record<string, LiveState>)
+  : async () => null;
+
+/** Deadlocks captured from the demo databases (and a key-lookup graph), per engine. */
+const deadlockSample: () => Promise<Record<string, DeadlockReport> | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/deadlocks.sample.json").then((m) => m.default as unknown as Record<string, DeadlockReport>)
+  : async () => null;
+
+/** "What changed" as the desktop app computed it on the demo databases (Query Store, and scans for Postgres/MySQL). */
+const changesSample: () => Promise<Record<string, Changes> | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/changes.sample.json").then((m) => m.default as unknown as Record<string, Changes>)
+  : async () => null;
+
+/** Runtime spread captured from the demo databases: fixture reports predate it. `extra` adds a planted
+ * parameter-sensitive query (SQL Server). */
+type SpreadPatch = Pick<QueryStat, "spread" | "max_time_ms" | "stddev_time_ms"> & {
+  plans?: Record<string, Pick<PlanVariant, "min_time_ms" | "max_time_ms" | "stddev_time_ms" | "compiled" | "variant_query">>;
+};
+type SpreadSample = Record<string, { queries: Record<string, SpreadPatch>; extra: QueryStat[] }>;
+const spreadSample: () => Promise<SpreadSample | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/spread.sample.json").then((m) => m.default as unknown as SpreadSample)
+  : async () => null;
+
+function withSpread(report: Report, sample: SpreadSample[string] | undefined): Report {
+  const workload = report.snapshot.workload;
+  if (!sample || !workload) return report;
+  const patched = workload.queries.map((q) => {
+    const patch = sample.queries[q.id];
+    if (!patch) return q;
+    const plans = q.plans.map((p) => ({ ...p, ...(patch.plans?.[p.id] ?? {}) }));
+    return { ...q, spread: patch.spread, max_time_ms: patch.max_time_ms ?? q.max_time_ms, stddev_time_ms: patch.stddev_time_ms ?? q.stddev_time_ms, plans };
+  });
+  const extra = sample.extra.filter((x) => !patched.some((q) => q.id === x.id));
+  const queries = [...patched, ...extra];
+  const added = extra.reduce((sum, q) => sum + q.total_time_ms, 0);
+  return {
+    ...report,
+    snapshot: {
+      ...report.snapshot,
+      workload: {
+        ...workload,
+        queries,
+        query_count: workload.query_count + extra.length,
+        total_time_ms: workload.total_time_ms + added,
+        total_executions: workload.total_executions + extra.reduce((sum, q) => sum + q.executions, 0),
+      },
+    },
+  };
+}
+
+/** Comparisons and exports the desktop app's Rust code made from plans captured on the demo databases. */
+export type ShareSample = {
+  compares: { engine: Plan["engine"]; names: [string, string]; a: Plan; b: Plan; diff: PlanDiff; reverse: PlanDiff; markdown: string; html: string; plan_markdown: [string, string] }[];
+  findings: Record<string, { markdown: string; html?: string }>;
+};
+
+export const shareSample: () => Promise<ShareSample | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/share.sample.json").then((m) => m.default as unknown as ShareSample)
+  : async () => null;
+
+/** Demo limitations are information, not errors: the UI shows them calmly. */
+function desktopOnly(message: string): Promise<never> {
+  return Promise.reject({ code: "unsupported", message, hint: "Open the desktop app or use the CLI for your own plans and scans." });
+}
+
 const driftSample: () => Promise<Drift | null> = import.meta.env.DEV
   ? () => import("../../../fixtures/drift.sample.json").then((m) => m.default as Drift)
   : async () => null;
@@ -29,6 +114,25 @@ function flipped(d: Drift): Drift {
   const presence = { "only-a": "only-b", "only-b": "only-a", different: "different", renamed: "renamed" } as const;
   return { ...d, a: d.b, b: d.a, items: d.items.map((i) => ({ ...i, presence: presence[i.presence], a: i.b, b: i.a })) };
 }
+
+/** Waits, pressure and samples captured from the demo databases (see fixtures/waits.sample.json). */
+type WaitsSidecar = {
+  reports: Record<string, WaitsReport | null>;
+  pressure: Record<string, Pressure | null>;
+  samples: Record<string, WaitSample>;
+  resources: Record<string, ResourceSample[]>;
+};
+
+const waitsSample: () => Promise<WaitsSidecar | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/waits.sample.json").then((m) => m.default as unknown as WaitsSidecar)
+  : async () => null;
+
+type ActualSample = { last_actual: Record<string, Record<string, Plan>>; progress: Record<string, QueryProgress[]> };
+
+/** Last actual plans captured from the demo SQL Server, and progress frames for the running "reports" session. */
+const actualSample: () => Promise<ActualSample | null> = import.meta.env.DEV
+  ? () => import("../../../fixtures/actual.sample.json").then((m) => m.default as unknown as ActualSample)
+  : async () => null;
 
 const importSample: () => Promise<ImportCandidate[]> = import.meta.env.DEV
   ? () => import("../../../fixtures/import.sample.json").then((m) => m.default as ImportCandidate[])
@@ -48,9 +152,20 @@ function nameOf(path: string): string {
   return path.split("/").pop()!.replace(".report.json", "");
 }
 
+/** The desktop app computes plan insights live; the demo reads the same output from a sidecar file. */
+const insightsSample: () => Promise<Record<string, Record<string, PlanInsights>>> = import.meta.env.DEV
+  ? () => import("../../../fixtures/insights.sample.json").then((m) => m.default as unknown as Record<string, Record<string, PlanInsights>>)
+  : async () => ({});
+
 async function load(name: string): Promise<Report | null> {
   const entry = Object.entries(reports).find(([path]) => nameOf(path) === name);
-  return entry ? entry[1]() : null;
+  if (!entry) return null;
+  const report = await entry[1]();
+  const insights = (await insightsSample())[report.snapshot.connection] ?? {};
+  report.snapshot.workload?.queries.forEach((q) => {
+    if (q.plan && !q.plan.insights && insights[q.id]) q.plan.insights = insights[q.id];
+  });
+  return report;
 }
 
 /** Saved queries in the browser demo live in this browser only. */
@@ -96,7 +211,22 @@ function unsupported(): Promise<never> {
 
 /** Demo backed by fixtures, for UI work and screenshots outside Tauri. Connection edits live in memory only. */
 export async function demoApi(): Promise<Api> {
-  const all = await Promise.all(Object.keys(reports).map((p) => load(nameOf(p))));
+  const loaded = await Promise.all(Object.keys(reports).map((p) => load(nameOf(p))));
+  // Fixture reports predate pressure signals; the waits sidecar fills them in.
+  const waits = await waitsSample();
+  const spread = await spreadSample();
+  const all = loaded.map((loadedReport) => {
+    const r = loadedReport && spread ? withSpread(loadedReport, spread[loadedReport.snapshot.connection]) : loadedReport;
+    if (!r || !waits) return r;
+    const name = r.snapshot.connection;
+    const resources = r.snapshot.resources.length ? r.snapshot.resources : (waits.resources[name] ?? []);
+    // Older fixtures carry no waits for engines that gained them later; the card and the panel must agree.
+    const report = waits.reports[name];
+    const recorded = r.snapshot.waits.length
+      ? r.snapshot.waits
+      : (report?.categories ?? []).map((c) => ({ category: c.key, wait_type: c.top_wait, wait_ms: c.wait_ms, tasks: null }));
+    return { ...r, snapshot: { ...r.snapshot, waits: recorded, pressure: r.snapshot.pressure ?? waits.pressure[name] ?? null, resources } };
+  });
   let connections: ConnectionInfo[] = all
     .filter((r): r is Report => r !== null)
     .map((r) => ({
@@ -241,6 +371,13 @@ export async function demoApi(): Promise<Api> {
       return added;
     },
     latestReport: async (name) => byConnection(name),
+    waits: async (name) => (await waitsSample())?.reports[reportName(name)] ?? null,
+    // The demo replays a sample captured from the demo database, at a tenth of the real time.
+    waitSample: async (name, seconds) => {
+      const sample = (await waitsSample())?.samples[reportName(name)];
+      await new Promise((r) => setTimeout(r, seconds * 100));
+      return sample ? { ...sample, taken_at: new Date().toISOString() } : unsupported();
+    },
     scan: async (name, windowDays) => {
       await new Promise((r) => setTimeout(r, 900));
       const report = byConnection(name);
@@ -250,9 +387,51 @@ export async function demoApi(): Promise<Api> {
     },
     brief: async (_, id) => `# ${id}\n\nThe agent brief is generated by the desktop app and the CLI (\`culprit show\`).`,
     explain: unsupported,
+    lastActualPlan: async (name, queryId) => {
+      const engine = connections.find((c) => c.name === name)?.engine;
+      if (engine === "postgres") {
+        return Promise.reject({
+          code: "unsupported",
+          message: "Postgres doesn't keep the actual plan of past runs",
+          hint: "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
+        });
+      }
+      if (engine === "mysql") {
+        return Promise.reject({ code: "unsupported", message: "MySQL doesn't keep the actual plan of past runs", hint: "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction." });
+      }
+      const plan = (await actualSample())?.last_actual[reportName(name)]?.[queryId];
+      return (
+        plan ??
+        Promise.reject({ code: "not_found", message: "This query's plan isn't in the plan cache right now", hint: "SQL Server keeps the last actual plan only while the plan is cached. It comes back the next time the query runs." })
+      );
+    },
+    queryProgress: async (name, session, withPlan) => {
+      const engine = connections.find((c) => c.name === name)?.engine ?? "mssql";
+      const frames = (await actualSample())?.progress[engine] ?? [];
+      const now = new Date().toISOString();
+      const live = demoSessions(engine).find((s) => s.id === session);
+      if (session === "64" && frames.length) {
+        const frame = frames[Math.floor(Date.now() / 1500) % frames.length]!;
+        return { ...frame, taken_at: now, plan: withPlan || engine === "mssql" ? frame.plan : null };
+      }
+      const idle: QueryProgress = {
+        session, engine, taken_at: now, running: false, state: live?.state ?? null, wait: null, wait_ms: null, elapsed_ms: null, cpu_ms: null,
+        logical_reads: null, rows_examined: null, statement: live?.sql ?? null, plan: null, nodes: [], percent: null, percent_basis: null,
+        hot_node: null, phase: null, phase_percent: null, note: null,
+      };
+      if (live?.state === "active") {
+        return { ...idle, running: true, state: engine === "mssql" ? "suspended" : "active", wait: live.wait, wait_ms: live.wait_ms, elapsed_ms: live.elapsed_ms, note: live.blocked_by ? `It is waiting for session ${live.blocked_by} to release a lock, so no step has started yet.` : null };
+      }
+      return idle;
+    },
     queryPlan: async (name, queryId) => {
       const plan = byConnection(name)?.snapshot.workload?.queries.find((q) => q.id === queryId)?.plan;
       return plan ?? unsupported();
+    },
+    indexAdvice: async (name) => {
+      const sample = (await adviceSample())[reportName(name)];
+      if (sample) return { ...sample, connection: name };
+      return Promise.reject({ code: "not_found", message: `No saved report for '${name}'`, hint: "Scan it first." });
     },
     drift: async (a, b) => {
       const sample = await driftSample();
@@ -271,8 +450,39 @@ export async function demoApi(): Promise<Api> {
         hint: "Open the desktop app to read .sqlplan files and EXPLAIN output.",
       });
     },
-    diffPlans: () =>
-      Promise.reject({ code: "unsupported", message: "Comparing plans runs in the desktop app and the CLI (`culprit plan diff`).", hint: null }),
+    diffPlans: async (a, b) => {
+      const sample = await shareSample();
+      for (const c of sample?.compares ?? []) {
+        if (c.a.total_cost === a.total_cost && c.b.total_cost === b.total_cost) return c.diff;
+        if (c.a.total_cost === b.total_cost && c.b.total_cost === a.total_cost) return c.reverse;
+      }
+      return desktopOnly("The demo compares its sample plans; comparing other plans runs in the desktop app.");
+    },
+    exportPlan: async (plan, title, format) => {
+      const sample = await shareSample();
+      for (const c of sample?.compares ?? []) {
+        const contents = c.a.total_cost === plan.total_cost ? c.plan_markdown[0] : c.b.total_cost === plan.total_cost ? c.plan_markdown[1] : null;
+        if (contents && format === "markdown") return { name: `${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.md`, contents, format };
+      }
+      return desktopOnly("The demo exports its sample plans as Markdown; HTML pages and .sqlplan files come from the desktop app.");
+    },
+    exportDiff: async (a, b, nameA, nameB, format) => {
+      const sample = await shareSample();
+      const c = sample?.compares.find((x) => x.a.total_cost === a.total_cost && x.b.total_cost === b.total_cost);
+      if (!c) return desktopOnly("The demo exports its sample comparisons; others come from the desktop app.");
+      const stem = `compare-${nameA}-${nameB}`.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      return format === "html" ? { name: `${stem}.html`, contents: c.html, format } : { name: `${stem}.md`, contents: c.markdown, format: "markdown" };
+    },
+    exportQueryPlan: () => desktopOnly("Exporting a query's stored plan reads it from the database."),
+    exportFinding: async (name, findingId, format) => {
+      const sample = await shareSample();
+      const entry = sample?.findings[`${reportName(name)}|${findingId}`];
+      const stem = findingId.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 60);
+      if (entry && format === "html" && entry.html) return { name: `${stem}.html`, contents: entry.html, format };
+      if (entry && format !== "html") return { name: `${stem}.md`, contents: entry.markdown, format: "markdown" };
+      return desktopOnly("The demo has HTML pages for the top findings only.");
+    },
+    verifyFindings: () => desktopOnly("Verifying re-scans the database to see whether the finding is gone."),
     savePlanFile: async (name, contents) => {
       const url = URL.createObjectURL(new Blob([contents], { type: "text/plain" }));
       const link = Object.assign(document.createElement("a"), { href: url, download: name });
@@ -284,12 +494,16 @@ export async function demoApi(): Promise<Api> {
       const c = connections.find((x) => x.name === name);
       const production = c?.environment === "production";
       const ended = endedSessions.get(name) ?? new Set<string>();
+      const captured = (await liveSample())?.[c?.engine ?? "postgres"];
+      // Ending the head blocker releases everyone behind it, as on a real server.
+      const chains = (captured?.blocking?.chains ?? []).filter((chain) => !ended.has(chain.head));
       const state: LiveState = {
         taken_at: new Date().toISOString(),
-        sessions: demoSessions(c?.engine ?? "postgres")
+        sessions: (captured?.sessions ?? demoSessions(c?.engine ?? "postgres"))
           .filter((s) => !ended.has(s.id))
-          .map((s) => (s.blocked_by && ended.has(s.blocked_by) ? { ...s, blocked_by: null, wait: null, wait_ms: null } : s)),
+          .map((s) => (s.blocked_by && (ended.has(s.blocked_by) || (captured && !chains.length)) ? { ...s, blocked_by: null, wait: null, wait_ms: null } : s)),
         waits: [],
+        blocking: chains.length ? { chains, waiting: chains.reduce((n, ch) => n + ch.waiters, 0) } : null,
         session_actions: production ? [] : c?.engine === "mssql" ? ["terminate"] : ["cancel", "terminate"],
         session_actions_note: production ? "Production connection: Culprit doesn't cancel or end sessions here." : null,
       };
@@ -299,6 +513,22 @@ export async function demoApi(): Promise<Api> {
       await new Promise((r) => setTimeout(r, 300));
       endedSessions.set(name, new Set([...(endedSessions.get(name) ?? []), session]));
     },
+    changes: async (name) => {
+      await new Promise((r) => setTimeout(r, 350));
+      const sample = (await changesSample())?.[reportName(name)];
+      return sample ?? unsupported();
+    },
+    deadlocks: async (name, sinceHours) => {
+      const c = connections.find((x) => x.name === name);
+      const sample = (await deadlockSample())?.[c?.engine ?? "postgres"];
+      return sample ? { ...sample, since_hours: sinceHours } : { deadlocks: [], source: "demo", since_hours: sinceHours, counted: null, counted_since: null, note: null };
+    },
+    parseDeadlock: () =>
+      Promise.reject({
+        code: "unsupported",
+        message: "Explaining a pasted deadlock runs in the desktop app and the CLI (`culprit deadlocks --file`).",
+        hint: null,
+      }),
     run: async (name, sql) => demoRows(byConnection(name), sql) ?? unsupported(),
     // The demo can't parse SQL like the desktop app; a leading SELECT/WITH is the only read it recognizes.
     checkStatement: async (_engine, sql) => {
@@ -318,6 +548,7 @@ export async function demoApi(): Promise<Api> {
       }));
       return { databases: [], tables, truncated: false };
     },
+    checks: async () => (import.meta.env.DEV ? (await import("../../../fixtures/checks.sample.json")).default as CheckInfo[] : []),
     savedQueries: async () => demoSaved.list(),
     saveQuery: async (query) => demoSaved.put(query),
     deleteSavedQuery: async (name) => demoSaved.remove(name),

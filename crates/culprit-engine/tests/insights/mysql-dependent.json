@@ -1,0 +1,60 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "20968.60"
+    },
+    "table": {
+      "table_name": "c",
+      "access_type": "index",
+      "key": "ix_customers_region",
+      "used_key_parts": [
+        "region"
+      ],
+      "key_length": "66",
+      "rows_examined_per_scan": 199116,
+      "rows_produced_per_join": 199116,
+      "filtered": "100.00",
+      "using_index": true,
+      "cost_info": {
+        "read_cost": "1057.00",
+        "eval_cost": "19911.60",
+        "prefix_cost": "20968.60",
+        "data_read_per_join": "167M"
+      },
+      "used_columns": [
+        "id",
+        "region"
+      ]
+    },
+    "select_list_subqueries": [
+      {
+        "dependent": true,
+        "cacheable": false,
+        "query_block": {
+          "select_id": 2,
+          "cost_info": {
+            "query_cost": "51621.30"
+          },
+          "table": {
+            "table_name": "o",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 498573,
+            "rows_produced_per_join": 49857,
+            "filtered": "10.00",
+            "cost_info": {
+              "read_cost": "1764.00",
+              "eval_cost": "4985.73",
+              "prefix_cost": "51621.30",
+              "data_read_per_join": "10M"
+            },
+            "used_columns": [
+              "promo_code"
+            ],
+            "attached_condition": "(`shop`.`o`.`promo_code` = `shop`.`c`.`region`)"
+          }
+        }
+      }
+    ]
+  }
+}

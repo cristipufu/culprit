@@ -1,13 +1,17 @@
-import { Search } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { GitCompareArrows, Search } from "lucide-react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { Category } from "../gen/Category";
+import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { Finding } from "../gen/Finding";
 import type { Report } from "../gen/Report";
-import type { WaitStat } from "../gen/WaitStat";
 import { ago, bytes, count, duration, percent, windowLabel } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { setState, useStore } from "../lib/store";
-import { trendNote, WorkloadTrend } from "../components/Trends";
+import { changeRequest, setState, useStore } from "../lib/store";
+import { planFlags, trendNote, WorkloadTrend } from "../components/Trends";
+import type { Flag, Range } from "../components/TimeChart";
+import { CheckedFine } from "../components/CheckedFine";
+import { WorkloadUnlock } from "../components/WorkloadUnlock";
+import { HealthLine, WaitsVital, type WaitsTab } from "../components/Waits";
 import { FindingDetail } from "./FindingDetail";
 
 const CATEGORY_LABEL: Record<Category, string> = {
@@ -17,16 +21,35 @@ const CATEGORY_LABEL: Record<Category, string> = {
   configuration: "Configuration",
 };
 
-const WAIT_COLORS = ["#e0484e", "#e8930c", "#3b6fe8", "#2f9e66", "#8f3fbf", "#8d8a84"];
+// The waits and "What changed" panels load on first use, so Overview's first paint stays as light as before.
+const WaitsPanel = lazy(() => import("../components/WaitsPanel"));
+const WhatChanged = lazy(() => import("../components/WhatChanged"));
+
+/** Compare everything since `at` (a plan change, a deploy) with the same length of time before it. */
+export function compareSince(at: number): void {
+  setState({ view: "overview", changes: changeRequest({ since: new Date(at).toISOString() }) });
+}
+
+/** The recent period a request asks for, to show on the chart. */
+function requestedRange(request: ChangeRequest | null, end: number): Range | null {
+  if (!request) return null;
+  if (request.recent_start && request.recent_end) return { from: Date.parse(request.recent_start), to: Date.parse(request.recent_end) };
+  if (request.since) return { from: Date.parse(request.since), to: end };
+  if (request.recent_hours) return { from: end - request.recent_hours * 3_600_000, to: end };
+  return null;
+}
 
 export function Overview({ report }: { report: Report }) {
   const selected = useStore((s) => s.finding);
   const dismissed = useStore((s) => s.dismissed);
+  const changes = useStore((s) => s.changes);
   const [category, setCategory] = useState<Category | "all">("all");
   const [filter, setFilter] = useState("");
   const [showDismissed, setShowDismissed] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const [waits, setWaits] = useState<{ tab: WaitsTab; category?: string } | null>(null);
+  const openWaits = (tab: WaitsTab, category?: string) => setWaits({ tab, category });
 
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -54,7 +77,9 @@ export function Overview({ report }: { report: Report }) {
     ArrowDown: () => move(1),
     ArrowUp: () => move(-1),
     "/": () => searchRef.current?.focus(),
-  });
+    // `c` copies the selected finding's fix; `v` reads "recent vs baseline".
+    v: () => setState({ changes: changeRequest() }),
+  }, !waits && !changes);
 
   useEffect(() => {
     listRef.current?.querySelector(".frow.selected")?.scrollIntoView({ block: "nearest" });
@@ -63,7 +88,7 @@ export function Overview({ report }: { report: Report }) {
   return (
     <div className="overview">
       <div className="ov-list">
-        <Header report={report} />
+        <Header report={report} onOpenWaits={openWaits} changes={changes} />
         <div className="filters">
           <button className={`chip ${category === "all" ? "on" : ""}`} onClick={() => setCategory("all")}>
             All <span className="n">{report.findings.length}</span>
@@ -90,6 +115,7 @@ export function Overview({ report }: { report: Report }) {
           </label>
         </div>
         <div className="list" ref={listRef}>
+          <WorkloadUnlock report={report} />
           {visible.map((f, i) => (
             <div key={f.id}>
               {f.inactive && !visible[i - 1]?.inactive && (
@@ -112,9 +138,19 @@ export function Overview({ report }: { report: Report }) {
             </button>
           )}
           {report.locked.length > 0 && <Locked report={report} />}
+          <CheckedFine report={report} />
         </div>
       </div>
-      {current ? (
+      {waits && (
+        <Suspense fallback={null}>
+          <WaitsPanel report={report} initialTab={waits.tab} initialCategory={waits.category} onClose={() => setWaits(null)} />
+        </Suspense>
+      )}
+      {changes ? (
+        <Suspense fallback={<div className="wc" />}>
+          <WhatChanged report={report} request={changes} onClose={() => setState({ changes: null })} />
+        </Suspense>
+      ) : current ? (
         <FindingDetail key={current.id} report={report} finding={current} />
       ) : (
         <div className="empty">
@@ -125,12 +161,24 @@ export function Overview({ report }: { report: Report }) {
   );
 }
 
-function Header({ report }: { report: Report }) {
+function Header({
+  report,
+  onOpenWaits,
+  changes,
+}: {
+  report: Report;
+  onOpenWaits: (tab: WaitsTab, category?: string) => void;
+  changes: ChangeRequest | null;
+}) {
   const { snapshot, summary } = report;
   const w = snapshot.workload;
-  const waits = topWaits(snapshot.waits);
-  const totalWait = waits.reduce((s, x) => s + x.wait_ms, 0);
-  const peakCpu = snapshot.resources.reduce<number | null>((m, r) => (r.cpu_pct != null ? Math.max(m ?? 0, r.cpu_pct) : m), null);
+  const compare = () => setState({ changes: changeRequest() });
+  const end = w?.timeline ? Date.parse(w.timeline.end) : Date.now();
+  const flags: Flag[] = w ? planFlags(w, compareSince) : [];
+  if (changes?.since) flags.push({ at: Date.parse(changes.since), label: "Since", tone: "anchor" });
+  // Under 20 hours of history a "per day" figure would be an extrapolation: show what was measured, and over how long.
+  const short = w != null && w.window_hours < 20;
+  const span = w ? (w.windowed ? `last ${compactSpan(w.window_hours)}` : `${compactSpan(w.window_hours)} since reset`) : "";
   return (
     <div className="ov-head">
       <h2>
@@ -139,35 +187,13 @@ function Header({ report }: { report: Report }) {
       <p>{headlineTail(report)}</p>
       <div className="vitals">
         <div className="vital">
-          <div className="label">Database time per day</div>
-          <div className="value">{w ? duration(perDay(w.total_time_ms, w.window_hours)) : "—"}</div>
-          <div className="hint">{w ? `${count(w.query_count)} queries · ${count(perDay(w.total_executions, w.window_hours))} runs/day` : "No workload data"}</div>
+          <div className="label">{short ? "Database time" : "Database time per day"}</div>
+          <div className="value">{w ? duration(short ? w.total_time_ms : perDay(w.total_time_ms, w.window_hours)) : "—"}</div>
+          <div className="hint" title={w ? `${count(w.query_count)} queries · ${count(w.total_executions)} runs` : undefined}>
+            {w ? (short ? span : `${count(w.query_count)} queries · ${count(perDay(w.total_executions, w.window_hours))} runs/day`) : "No workload data"}
+          </div>
         </div>
-        <div className="vital">
-          <div className="label">{totalWait > 0 ? "Mostly waiting on" : peakCpu != null ? "CPU, last hour" : "Data window"}</div>
-          {totalWait > 0 ? (
-            <>
-              <div className="value">
-                {waits[0]?.category} {percent((waits[0]?.wait_ms ?? 0) / totalWait)}
-              </div>
-              <div className="waitbar">
-                {waits.map((x, i) => (
-                  <span key={x.category} title={`${x.category} ${percent(x.wait_ms / totalWait)}`} style={{ flex: x.wait_ms, background: WAIT_COLORS[i % WAIT_COLORS.length] }} />
-                ))}
-              </div>
-            </>
-          ) : peakCpu != null ? (
-            <>
-              <div className="value">peak {Math.round(peakCpu)}%</div>
-              <div className="hint">from resource stats</div>
-            </>
-          ) : (
-            <>
-              <div className="value">{w ? windowLabel(w.window_hours).replace("last ", "") : "—"}</div>
-              <div className="hint">{w?.source ?? "statistics only"}</div>
-            </>
-          )}
-        </div>
+        <WaitsVital report={report} onOpen={onOpenWaits} />
         <div className="vital">
           <div className="label">Size</div>
           <div className="value">{bytes(snapshot.server.database_size_bytes)}</div>
@@ -176,9 +202,35 @@ function Header({ report }: { report: Report }) {
           </div>
         </div>
       </div>
-      {w?.timeline && w.timeline.starts.length >= 2 ? <WorkloadTrend timeline={w.timeline} /> : w && trendNote(w) ? <p className="trend-note">{trendNote(w)}</p> : null}
+      <HealthLine report={report} onOpen={onOpenWaits} />
+      {w?.timeline && w.timeline.starts.length >= 2 ? (
+        <WorkloadTrend
+          timeline={w.timeline}
+          windowStart={w.window_start}
+          flags={flags}
+          onSelect={(range) =>
+            setState({ changes: changeRequest({ recent_start: new Date(range.from).toISOString(), recent_end: new Date(range.to).toISOString() }) })
+          }
+          selection={requestedRange(changes, end)}
+          onCompare={compare}
+        />
+      ) : w && trendNote(w) ? (
+        <p className="trend-note">
+          {trendNote(w)}{" "}
+          <button className="link-button" onClick={compare} title="Compare two periods (V)">
+            <GitCompareArrows size={12} /> What changed?
+          </button>
+        </p>
+      ) : null}
     </div>
   );
+}
+
+/** "2 min", "5 h", "3 days": short enough for a card's hint line. */
+function compactSpan(hours: number): string {
+  if (hours >= 47) return `${Math.round(hours / 24)} days`;
+  if (hours >= 1.5) return `${Math.round(hours)} h`;
+  return `${Math.max(1, Math.round(hours * 60))} min`;
 }
 
 function perDay(value: number, hours: number): number {
@@ -195,21 +247,14 @@ function headlineTail(report: Report): string {
   return "Workload statistics are unavailable, so findings come from schema and index statistics.";
 }
 
-function topWaits(waits: WaitStat[]): WaitStat[] {
-  const byCategory = new Map<string, number>();
-  waits.forEach((w) => byCategory.set(w.category, (byCategory.get(w.category) ?? 0) + w.wait_ms));
-  return [...byCategory.entries()]
-    .map(([category, wait_ms]) => ({ category, wait_ms, wait_type: null, tasks: null }))
-    .filter((w) => w.wait_ms > 0)
-    .sort((a, b) => b.wait_ms - a.wait_ms)
-    .slice(0, 6);
-}
-
 function FindingRow({ finding, selected, dismissed }: { finding: Finding; selected: boolean; dismissed: boolean }) {
   const share = finding.impact.db_time_share;
   const fill = share != null ? Math.sqrt(share) : finding.impact.score / 100;
   return (
-    <button className={`frow ${selected ? "selected" : ""} ${dismissed || finding.inactive ? "dismissed" : ""}`} onClick={() => setState({ finding: finding.id })}>
+    <button
+      className={`frow ${selected ? "selected" : ""} ${dismissed || finding.inactive ? "dismissed" : ""}`}
+      onClick={() => setState({ finding: finding.id, changes: null })}
+    >
       <span className={`sev ${finding.severity}`} />
       <span className="title">{finding.title}</span>
       <span className="impact">

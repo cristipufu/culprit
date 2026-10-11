@@ -1,53 +1,38 @@
-import { useMemo, useState, type MouseEvent } from "react";
+import { useMemo } from "react";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Timeline } from "../gen/Timeline";
 import type { Workload } from "../gen/Workload";
 import { count, duration } from "../lib/format";
+import { isPartial, TimeChart, VH, VW, when, type Bucket, type Flag, type Range } from "./TimeChart";
 
-/** Charts are drawn in a fixed coordinate space and stretched; text lives in HTML so it never distorts. */
-const VW = 1000;
-const VH = 100;
+/** Colors that tell plans apart, the same in chips, flags and lanes. */
+export const PLAN_COLORS = ["var(--focus)", "#8b5cf6", "#0f9f95", "#d97706", "#db2777", "#64748b"];
 
-type Bucket = { start: number; end: number };
+export function planColor(index: number): string {
+  return PLAN_COLORS[index % PLAN_COLORS.length]!;
+}
 
-function buckets(t: Timeline): Bucket[] {
+function bucketsOf(t: Timeline, windowStart?: string | null): Bucket[] {
   const end = Date.parse(t.end);
+  const start = windowStart ? Date.parse(windowStart) : NaN;
   return t.starts.map((s, i) => {
     const next = t.starts[i + 1];
-    return { start: Date.parse(s), end: next ? Date.parse(next) : end };
+    const b: Bucket = { start: Date.parse(s), end: next ? Date.parse(next) : end };
+    // The window can begin inside the first bucket: that bucket only holds part of its time.
+    if (i === 0 && Number.isFinite(start) && start > b.start && start < b.end) b.covered = (b.end - start) / (b.end - b.start);
+    return b;
   });
 }
 
-function span(b: Bucket[]): [number, number] {
-  return [b[0]?.start ?? 0, b[b.length - 1]?.end ?? 1];
+/** Per hour when buckets are at least an hour wide, per minute otherwise: a rate never stretches a sliver into an hour. */
+function rateUnit(b: Bucket[]): { ms: number; label: string } {
+  const widths = b.map((x) => x.end - x.start).sort((a, c) => a - c);
+  const median = widths[Math.floor(widths.length / 2)] ?? 0;
+  return median >= 3_600_000 ? { ms: 3_600_000, label: "hour" } : { ms: 60_000, label: "minute" };
 }
 
-const utc = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat(undefined, { timeZone: "UTC", ...options });
-const timeFmt = utc({ hour: "2-digit", minute: "2-digit", hour12: false });
-const dayFmt = utc({ month: "short", day: "numeric" });
-
-/** Axis label: a clock time for spans up to a day and a half, a date beyond that. */
-function tick(ms: number, spanHours: number): string {
-  return spanHours <= 36 ? timeFmt.format(ms) : dayFmt.format(ms);
-}
-
-function range(b: Bucket | undefined, spanHours: number): string {
-  if (!b) return "";
-  const day = spanHours > 20 ? `${dayFmt.format(b.start)} ` : "";
-  return `${day}${timeFmt.format(b.start)}–${timeFmt.format(b.end)} UTC`;
-}
-
-/** Index of the bucket under the pointer. */
-function useHover(b: Bucket[]) {
-  const [hover, setHover] = useState<number | null>(null);
-  const [from, to] = span(b);
-  const onMove = (e: MouseEvent<HTMLElement>) => {
-    const box = e.currentTarget.getBoundingClientRect();
-    const at = from + ((e.clientX - box.left) / box.width) * (to - from);
-    const i = b.findIndex((x) => at >= x.start && at < x.end);
-    setHover(i >= 0 ? i : null);
-  };
-  return { hover, onMove, onLeave: () => setHover(null) };
+function coveredMs(b: Bucket): number {
+  return (b.end - b.start) * (b.covered ?? 1);
 }
 
 /** Why there is no trend, in one sentence. */
@@ -57,59 +42,105 @@ export function trendNote(workload: Workload): string | null {
   return `${workload.source} keeps running totals only, so Culprit draws trends from its own scans. Scan again later to see one.`;
 }
 
-/** Database time per hour across the window, as steps: each bucket is drawn exactly as wide as the time it covers. */
-export function WorkloadTrend({ timeline }: { timeline: Timeline }) {
-  const b = useMemo(() => buckets(timeline), [timeline]);
-  const { hover, onMove, onLeave } = useHover(b);
-  if (b.length < 2) return null;
-  const [from, to] = span(b);
-  const hours = (to - from) / 3_600_000;
-  const rate = b.map((x, i) => (timeline.time_ms[i] ?? 0) / Math.max((x.end - x.start) / 3_600_000, 1 / 60));
+/** Plan changes worth a flag on the workload chart: new plans of the queries that matter most. */
+export function planFlags(workload: Workload, onSince?: (at: number) => void): Flag[] {
+  const total = workload.total_time_ms || 1;
+  return workload.queries
+    .filter((q) => q.plans.length >= 2 && q.total_time_ms / total >= 0.02)
+    .flatMap((q) => {
+      const first = Math.min(...q.plans.map((p) => (p.first_seen ? Date.parse(p.first_seen) : Infinity)));
+      return q.plans
+        .filter((p) => p.first_seen && Date.parse(p.first_seen) > first)
+        .map((p) => ({ at: Date.parse(p.first_seen!), label: `Plan ${p.id}`, share: q.total_time_ms / total }));
+    })
+    .sort((a, b) => b.share - a.share)
+    .slice(0, 5)
+    .map((f) => ({ at: f.at, label: f.label, tone: "plan" as const, onClick: onSince ? () => onSince(f.at) : undefined }));
+}
+
+type WorkloadTrendProps = {
+  timeline: Timeline;
+  windowStart?: string | null;
+  flags?: Flag[];
+  /** Brushing a range compares it with the period before it. */
+  onSelect?: (range: Range) => void;
+  selection?: Range | null;
+  onCompare?: () => void;
+};
+
+/** Database time across the window as steps, each bucket exactly as wide as the time it covers. */
+export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selection, onCompare }: WorkloadTrendProps) {
+  const b = useMemo(() => bucketsOf(timeline, windowStart), [timeline, windowStart]);
+  const unit = useMemo(() => rateUnit(b), [b]);
+  const rate = useMemo(() => b.map((x, i) => ((timeline.time_ms[i] ?? 0) / Math.max(coveredMs(x), 1000)) * unit.ms), [b, timeline, unit]);
+  // Data that starts mid-bucket: the first bucket far below the rest is a partial one, not a quiet hour.
+  const buckets = useMemo(() => {
+    if (b.length <= 4 || !b[0] || isPartial(b[0])) return b;
+    const rest = [...rate.slice(1)].sort((p, q) => p - q);
+    const median = rest[Math.floor(rest.length / 2)] ?? 0;
+    return (rate[0] ?? 0) < median * 0.35 ? [{ ...b[0], partial: true }, ...b.slice(1)] : b;
+  }, [b, rate]);
+  if (buckets.length < 2) return null;
   const max = Math.max(...rate, 1e-9);
-  const x = (t: number) => ((t - from) / (to - from)) * VW;
-  const y = (v: number) => VH - (v / max) * (VH - 6);
-  let line = "";
-  b.forEach((bucket, i) => {
-    const v = y(rate[i] ?? 0);
-    line += `${i === 0 ? "M" : "L"}${x(bucket.start)},${v}L${x(bucket.end)},${v}`;
-  });
-  const area = `${line}L${x(to)},${VH}L${x(from)},${VH}Z`;
-  const peak = rate.indexOf(Math.max(...rate));
-  const shown = hover ?? peak;
+  const peakIndex = rate.indexOf(max);
   return (
     <div className="trend">
       <div className="trend-head">
-        <span className="label">Database time per hour</span>
-        <span className="readout">
-          {hover == null && <span className="muted">peak </span>}
-          <b>{duration(rate[shown])}</b>
-          <span className="muted">
-            {" "}
-            · {count(timeline.executions[shown])} runs · {range(b[shown], hours)}
+        <span className="label">Database time per {unit.label}</span>
+        {onCompare && (
+          <span className="trend-actions">
+            <span className="muted trend-hint">drag to compare</span>
+            <button className="btn small" onClick={onCompare} title="Compare two periods (V)">
+              What changed?
+            </button>
           </span>
-        </span>
+        )}
       </div>
-      <div className="trend-plot" style={{ height: 52 }} onMouseMove={onMove} onMouseLeave={onLeave}>
-        <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" aria-label="Database time per hour">
-          <path className="trend-area" d={area} />
-          <path className="trend-line" d={line} />
-        </svg>
-        <Cursor bucket={hover != null ? b[hover] : undefined} x={x} />
-      </div>
-      <div className="trend-axis">
-        <span>{tick(from, hours)}</span>
-        <span>{timeline.source === "scans" ? `between ${b.length + 1} scans` : ""}</span>
-        <span>{tick(to, hours)}</span>
-      </div>
+      <TimeChart
+        buckets={buckets}
+        max={max}
+        format={(v) => duration(v)}
+        height={92}
+        peak={{ index: peakIndex, value: max }}
+        flags={flags}
+        onSelect={onSelect}
+        selection={selection}
+        ariaLabel={`Database time per ${unit.label}; use arrow keys to move, Shift+arrows to select a period, Enter to compare it`}
+        footnote={timeline.source === "scans" ? `Between ${buckets.length + 1} of Culprit's scans: each step covers the time between two scans.` : undefined}
+        readout={(i) => (
+          <>
+            <b>{duration(rate[i] ?? 0)}</b> per {unit.label}
+            <span className="muted">
+              {" "}
+              · {count(timeline.executions[i] ?? 0)} runs{buckets[i] && isPartial(buckets[i]!) ? " · partial" : ""}
+            </span>
+          </>
+        )}
+      >
+        {({ x, y }) => {
+          // Partial edge buckets are drawn dashed and left out of the area, so they don't read as a cliff.
+          const edge = (i: number) => isPartial(buckets[i]!) && (i === 0 || i === buckets.length - 1);
+          const solid = buckets.map((bucket, i) => ({ bucket, i })).filter(({ i }) => !edge(i));
+          let line = "";
+          solid.forEach(({ bucket, i }, n) => {
+            const v = y(rate[i] ?? 0);
+            line += `${n === 0 ? "M" : "L"}${x(bucket.start)},${v}L${x(bucket.end)},${v}`;
+          });
+          const first = solid[0]?.bucket ?? buckets[0]!;
+          const last = solid[solid.length - 1]?.bucket ?? buckets[buckets.length - 1]!;
+          return (
+            <>
+              <path className="trend-area" d={`${line}L${x(last.end)},${VH}L${x(first.start)},${VH}Z`} />
+              <path className="trend-line" d={line} />
+              {buckets.map((bucket, i) =>
+                edge(i) ? <path key={bucket.start} className="trend-line partial" d={`M${x(bucket.start)},${y(rate[i] ?? 0)}L${x(bucket.end)},${y(rate[i] ?? 0)}`} /> : null,
+              )}
+            </>
+          );
+        }}
+      </TimeChart>
     </div>
   );
-}
-
-function Cursor({ bucket, x }: { bucket: Bucket | undefined; x: (t: number) => number }) {
-  if (!bucket) return null;
-  const left = (x(bucket.start) / VW) * 100;
-  const width = ((x(bucket.end) - x(bucket.start)) / VW) * 100;
-  return <div className="trend-cursor" style={{ left: `${left}%`, width: `max(1px, ${width}%)` }} />;
 }
 
 /** Average duration per run, bucket by bucket; gaps where the query didn't run or the source can't tell. */
@@ -141,11 +172,12 @@ function linePath(points: (number | null)[], b: Bucket[], x: (t: number) => numb
 
 /** A tiny line of the query's average duration over the window, for the Queries table. */
 export function Sparkline({ query, timeline, alert }: { query: QueryStat; timeline: Timeline | null | undefined; alert?: boolean }) {
-  const b = useMemo(() => (timeline ? buckets(timeline) : []), [timeline]);
+  const b = useMemo(() => (timeline ? bucketsOf(timeline) : []), [timeline]);
   const points = useMemo(() => meanPoints(query, b), [query, b]);
   const known = points.filter((p): p is number => p != null);
   if (known.length < 2) return <span className="spark-empty">—</span>;
-  const [from, to] = span(b);
+  const from = b[0]!.start;
+  const to = b[b.length - 1]!.end;
   const max = Math.max(...known);
   const x = (t: number) => ((t - from) / (to - from)) * VW;
   const y = (v: number) => VH - 8 - (v / max) * (VH - 16);
@@ -156,73 +188,91 @@ export function Sparkline({ query, timeline, alert }: { query: QueryStat; timeli
   );
 }
 
-/** The query's average duration per run (line) and how often it ran (bars), with markers where a new plan appeared. */
-export function QueryTrend({ query, timeline }: { query: QueryStat; timeline: Timeline }) {
-  const b = useMemo(() => buckets(timeline), [timeline]);
+/** The query's time per run and how often it ran, on one time axis, with a flag where each plan first ran. */
+export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; timeline: Timeline; onSince?: (at: number) => void }) {
+  const b = useMemo(() => bucketsOf(timeline), [timeline]);
   const points = useMemo(() => meanPoints(query, b), [query, b]);
-  const { hover, onMove, onLeave } = useHover(b);
   const known = points.filter((p): p is number => p != null);
   if (b.length < 2 || known.length < 2) return null;
-  const [from, to] = span(b);
-  const hours = (to - from) / 3_600_000;
   const runs = b.map((_, i) => query.trend?.executions[i] ?? null);
-  const runRate = b.map((x, i) => (runs[i] ?? 0) / Math.max((x.end - x.start) / 3_600_000, 1 / 60));
   const maxMean = Math.max(...known);
-  const maxRate = Math.max(...runRate, 1e-9);
-  const x = (t: number) => ((t - from) / (to - from)) * VW;
-  const y = (v: number) => VH - 4 - (v / maxMean) * (VH - 14);
-  const firstPlan = Math.min(...query.plans.map((p) => (p.first_seen ? Date.parse(p.first_seen) : Infinity)));
-  const markers = query.plans
-    .filter((p) => p.first_seen && Date.parse(p.first_seen) > from && Date.parse(p.first_seen) < to && Date.parse(p.first_seen) > firstPlan)
-    .map((p) => ({ id: p.id, at: Date.parse(p.first_seen!) }));
-  const shown = hover;
+  const maxRuns = Math.max(...runs.map((r) => r ?? 0), 1e-9);
+  const ordered = [...query.plans].sort((a, c) => (a.first_seen ?? "").localeCompare(c.first_seen ?? ""));
+  const firstPlan = ordered[0]?.first_seen ? Date.parse(ordered[0].first_seen) : -Infinity;
+  const flags: Flag[] = ordered
+    .map((p) => ({ p, color: planColor(query.plans.indexOf(p)) }))
+    .filter(({ p }) => p.first_seen && Date.parse(p.first_seen) > firstPlan)
+    .map(({ p, color }) => ({
+      at: Date.parse(p.first_seen!),
+      label: `Plan ${p.id}`,
+      tone: "plan" as const,
+      color,
+      onClick: onSince ? () => onSince(Date.parse(p.first_seen!)) : undefined,
+    }));
+  const peak = points.indexOf(maxMean);
   return (
     <section>
       <h3>Over time</h3>
-    <div className="trend">
-      <div className="trend-head">
-        <span className="legend">
-          <i className="key-line" /> average per run <i className="key-bar" /> runs
-        </span>
-        <span className="readout">
-          {shown != null ? (
-            <>
-              <b>{points[shown] != null ? duration(points[shown]) : "—"}</b>
-              <span className="muted">
-                {" "}
-                · {runs[shown] != null ? `${count(runs[shown])} runs` : "not tracked"} · {range(b[shown], hours)}
-              </span>
-            </>
-          ) : (
-            <span className="muted">
-              {duration(Math.min(...known))} – {duration(maxMean)} per run
+      {query.plans.length > 1 && (
+        <div className="plan-keys">
+          {query.plans.map((p, i) => (
+            <span key={p.id} className="plan-key">
+              <i style={{ background: planColor(i) }} />
+              Plan {p.id}
+              {p.first_seen && <span className="muted"> · from {when(Date.parse(p.first_seen))}</span>}
             </span>
+          ))}
+        </div>
+      )}
+      <div className="trend stacked">
+        <div className="trend-head">
+          <span className="label">Time per run</span>
+        </div>
+        <TimeChart
+          buckets={b}
+          max={maxMean}
+          format={(v) => duration(v)}
+          height={88}
+          peak={peak >= 0 ? { index: peak, value: maxMean } : null}
+          flags={flags}
+          showTimeAxis={false}
+          ariaLabel="Average time per run over the window"
+          readout={(i) => (
+            <>
+              <b>{points[i] != null ? duration(points[i]!) : "—"}</b> per run
+              <span className="muted"> · {runs[i] != null ? `${count(runs[i]!)} runs` : "not tracked"}</span>
+            </>
           )}
-        </span>
+        >
+          {({ x, y }) => <path className="trend-line" d={linePath(points, b, x, y)} />}
+        </TimeChart>
+        <div className="trend-head">
+          <span className="label">Runs</span>
+        </div>
+        <TimeChart
+          buckets={b}
+          max={maxRuns}
+          format={(v) => count(v)}
+          height={40}
+          ariaLabel="Runs per bucket over the window"
+          footnote={timeline.source === "scans" ? "From Culprit's scans: each bar covers the time between two scans." : "From Query Store."}
+          readout={(i) => (
+            <>
+              <b>{runs[i] != null ? count(runs[i]!) : "—"}</b> runs
+            </>
+          )}
+        >
+          {({ x, y }) =>
+            b.map((bucket, i) => {
+              const r = runs[i];
+              if (r == null) return null;
+              const x0 = x(bucket.start);
+              const w = Math.max(x(bucket.end) - x0 - 2, 1);
+              return <rect key={i} className="trend-bar" x={x0 + 1} y={y(r)} width={w} height={VH - y(r)} />;
+            })
+          }
+        </TimeChart>
       </div>
-      <div className="trend-plot" style={{ height: 120 }} onMouseMove={onMove} onMouseLeave={onLeave}>
-        <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" aria-label="Average duration and runs over time">
-          {b.map((bucket, i) => {
-            const h = ((runRate[i] ?? 0) / maxRate) * (VH * 0.42);
-            const x0 = x(bucket.start);
-            const w = Math.max(x(bucket.end) - x0 - 2, 1);
-            return runs[i] == null ? null : <rect key={i} className="trend-bar" x={x0 + 1} y={VH - h} width={w} height={h} />;
-          })}
-          <path className="trend-line" d={linePath(points, b, x, y)} />
-        </svg>
-        {markers.map((m) => (
-          <div key={m.id} className="trend-marker" style={{ left: `${(x(m.at) / VW) * 100}%` }}>
-            <span>Plan {m.id}</span>
-          </div>
-        ))}
-        <Cursor bucket={hover != null ? b[hover] : undefined} x={x} />
-      </div>
-      <div className="trend-axis">
-        <span>{tick(from, hours)}</span>
-        <span>{timeline.source === "scans" ? "between Culprit's scans" : "Query Store"}</span>
-        <span>{tick(to, hours)}</span>
-      </div>
-    </div>
     </section>
   );
 }

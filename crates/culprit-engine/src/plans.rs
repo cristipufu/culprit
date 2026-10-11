@@ -108,6 +108,7 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
     if format != PlanFormat::Culprit {
         plan.raw = Some(block.to_string());
     }
+    culprit_core::insights::annotate(&mut plan);
     Ok(plan)
 }
 
@@ -256,7 +257,7 @@ fn clean(text: &str) -> String {
 }
 
 /// Save plan text to the Downloads folder under a cleaned-up name, never overwriting a file. Returns where it went.
-/// Only `.sqlplan`, `.json` and `.txt` names are written; anything else in the name becomes `-`.
+/// Only `.sqlplan`, `.json`, `.txt`, `.html` and `.md` names are written; anything else in the name becomes `-`.
 pub fn save_to_downloads(name: &str, contents: &str) -> Result<PathBuf> {
     if contents.len() > MAX_PLAN_BYTES * 2 {
         return Err(too_large(contents.len()));
@@ -285,7 +286,10 @@ pub fn save_to_downloads(name: &str, contents: &str) -> Result<PathBuf> {
 /// A plain file name from whatever the UI suggested: no separators, no leading dots, a known extension.
 fn file_name(name: &str) -> (String, &'static str) {
     let lower = name.to_ascii_lowercase();
-    let extension = ["sqlplan", "json", "txt"].into_iter().find(|e| lower.ends_with(&format!(".{e}"))).unwrap_or("txt");
+    let extension = ["sqlplan", "json", "txt", "html", "md"]
+        .into_iter()
+        .find(|e| lower.ends_with(&format!(".{e}")))
+        .unwrap_or("txt");
     let stem = if lower.ends_with(&format!(".{extension}")) { &name[..name.len() - extension.len() - 1] } else { name };
     let stem: String = stem
         .chars()

@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use culprit_core::{QueryTrend, Report, Timeline, TimelineSource, Workload};
+use culprit_core::{Plan, QueryTrend, Report, Timeline, TimelineSource, Workload};
 use serde::{Deserialize, Serialize};
 
 /// Scans older than this don't shape the trend.
@@ -25,6 +25,51 @@ pub struct Counters {
     pub total_time_ms: f64,
     pub total_executions: f64,
     pub queries: BTreeMap<String, [f64; 2]>,
+    /// What "What changed" needs to name a query and notice a new plan without re-reading the report.
+    #[serde(default)]
+    pub meta: BTreeMap<String, QueryMeta>,
+}
+
+/// A tracked query as one scan saw it.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct QueryMeta {
+    pub text: String,
+    /// The captured plan's shape (operators and objects, in order); a different shape is a different plan.
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// Where that plan spends most of its effort, in words: "Seq Scan on orders".
+    #[serde(default)]
+    pub hot: Option<String>,
+    #[serde(default)]
+    pub first_seen: Option<String>,
+    #[serde(default)]
+    pub last_seen: Option<String>,
+}
+
+/// A plan's shape and its hottest step in words. Costs and row estimates are left out: they move with statistics
+/// while the plan stays the same.
+pub fn plan_mark(plan: &Plan) -> (String, String) {
+    let shape = plan
+        .nodes()
+        .iter()
+        .map(|n| match (n.object.as_deref(), n.index.as_deref()) {
+            (Some(o), Some(i)) => format!("{}({} {})", n.op, short_object(o), i),
+            (Some(o), None) => format!("{}({})", n.op, short_object(o)),
+            _ => n.op.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(">");
+    let hot = plan.hottest();
+    let words = match hot.object.as_deref() {
+        Some(o) => format!("{} on {}", hot.op, short_object(o)),
+        None => hot.op.clone(),
+    };
+    (shape, words)
+}
+
+/// `[shop].[dbo].[orders]` or `public.orders` → `orders`.
+fn short_object(name: &str) -> String {
+    name.rsplit('.').next().unwrap_or(name).trim_matches(|c| matches!(c, '[' | ']' | '"' | '`')).to_string()
 }
 
 impl Counters {
@@ -44,6 +89,21 @@ impl Counters {
             total_time_ms: workload.total_time_ms,
             total_executions: workload.total_executions,
             queries: workload.queries.iter().map(|q| (q.id.clone(), [q.total_time_ms, q.executions])).collect(),
+            meta: workload
+                .queries
+                .iter()
+                .map(|q| {
+                    let (shape, hot) = q.plan.as_ref().map(plan_mark).unzip();
+                    let meta = QueryMeta {
+                        text: q.text.chars().take(300).collect(),
+                        shape,
+                        hot,
+                        first_seen: q.first_seen.clone(),
+                        last_seen: q.last_seen.clone(),
+                    };
+                    (q.id.clone(), meta)
+                })
+                .collect(),
         }
     }
 }

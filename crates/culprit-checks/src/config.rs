@@ -16,21 +16,21 @@ pub fn config_info() -> CheckInfo {
 
 pub fn config(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
-        Engine::Mssql => mssql(snapshot),
-        Engine::Postgres => postgres(snapshot),
-        Engine::Mysql => mysql(snapshot),
+        Engine::Mssql => [mssql(snapshot), crate::config_health::mssql(snapshot)].concat(),
+        Engine::Postgres => [postgres(snapshot), crate::config_health::postgres(snapshot)].concat(),
+        Engine::Mysql => [mysql(snapshot), crate::config_health::mysql(snapshot)].concat(),
     }
 }
 
-fn value<'a>(snapshot: &'a Snapshot, names: &[&str]) -> Option<&'a str> {
+pub(crate) fn value<'a>(snapshot: &'a Snapshot, names: &[&str]) -> Option<&'a str> {
     names.iter().find_map(|n| snapshot.setting(n).map(|s| s.value.as_str()))
 }
 
-fn is_on(v: &str) -> bool {
+pub(crate) fn is_on(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes")
 }
 
-fn setting_finding(key: &str, severity: Severity, title: String, summary: String, fix: Fix) -> Finding {
+pub(crate) fn setting_finding(key: &str, severity: Severity, title: String, summary: String, fix: Fix) -> Finding {
     let mut f = finding("config", key, Category::Configuration, subject(SubjectKind::Setting, key));
     f.severity = severity;
     f.impact.score = base_score(severity) * 0.8;

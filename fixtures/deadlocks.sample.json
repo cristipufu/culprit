@@ -1,0 +1,327 @@
+{
+ "mssql": {
+  "counted": null,
+  "counted_since": null,
+  "deadlocks": [
+   {
+    "at": "2026-10-11T13:58:59Z",
+    "explanation": "Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
+    "fixes": [
+     {
+      "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
+      "finding": null,
+      "sql": null,
+      "title": "Touch tables and rows in the same order everywhere"
+     },
+     {
+      "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
+      "finding": null,
+      "sql": null,
+      "title": "Keep transactions short"
+     },
+     {
+      "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
+      "finding": null,
+      "sql": null,
+      "title": "Retry the victim"
+     }
+    ],
+    "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
+    "id": "8e8d0546690aef93",
+    "objects": [
+     "shop.customers",
+     "shop.orders"
+    ],
+    "pattern": "opposite-order",
+    "processes": [
+     {
+      "application": "SQLCMD",
+      "database": "culprit_demo",
+      "host": "web-1",
+      "id": "processa14d1e4e8",
+      "isolation": "read committed",
+      "log_used": 240.0,
+      "login": "sa",
+      "procedure": null,
+      "session": "75",
+      "statement": "BEGIN TRAN; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.orders SET total = total + 1 WHERE id = 2; ROLLBACK;",
+      "victim": true,
+      "wait_mode": "X"
+     },
+     {
+      "application": "SQLCMD",
+      "database": "culprit_demo",
+      "host": "web-1",
+      "id": "processa007b4ca8",
+      "isolation": "read committed",
+      "log_used": 244.0,
+      "login": "sa",
+      "procedure": null,
+      "session": "73",
+      "statement": "BEGIN TRAN; UPDATE shop.orders SET total = total + 1 WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; ROLLBACK;",
+      "victim": false,
+      "wait_mode": "X"
+     }
+    ],
+    "resources": [
+     {
+      "holders": [
+       {
+        "mode": "X",
+        "process": "processa007b4ca8"
+       }
+      ],
+      "id": "locka15a63500",
+      "index": "pk_orders",
+      "kind": "keylock",
+      "object": "shop.orders",
+      "waiters": [
+       {
+        "mode": "X",
+        "process": "processa14d1e4e8"
+       }
+      ]
+     },
+     {
+      "holders": [
+       {
+        "mode": "X",
+        "process": "processa14d1e4e8"
+       }
+      ],
+      "id": "locka08802980",
+      "index": "pk_customers",
+      "kind": "keylock",
+      "object": "shop.customers",
+      "waiters": [
+       {
+        "mode": "X",
+        "process": "processa007b4ca8"
+       }
+      ]
+     }
+    ],
+    "source": "system_health"
+   },
+   {
+    "at": "2026-10-11T11:42:17Z",
+    "explanation": "The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
+    "fixes": [
+     {
+      "detail": "Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns.",
+      "finding": null,
+      "sql": null,
+      "title": "Make the read skip the lookup"
+     },
+     {
+      "detail": "With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions.",
+      "finding": "config:read-committed-snapshot",
+      "sql": "ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
+      "title": "Let reads stop taking shared locks"
+     },
+     {
+      "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
+      "finding": null,
+      "sql": null,
+      "title": "Retry the victim"
+     }
+    ],
+    "headline": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back.",
+    "id": "948217a42dfae823",
+    "objects": [
+     "shop.customers"
+    ],
+    "pattern": "key-lookup",
+    "processes": [
+     {
+      "application": "orders-api",
+      "database": "culprit_demo",
+      "host": "web-1",
+      "id": "process61",
+      "isolation": "read committed",
+      "log_used": 0.0,
+      "login": "app",
+      "procedure": null,
+      "session": "61",
+      "statement": "SELECT id, name, segment FROM shop.customers WHERE email = @P1",
+      "victim": true,
+      "wait_mode": "S"
+     },
+     {
+      "application": "billing",
+      "database": "culprit_demo",
+      "host": "worker-2",
+      "id": "process64",
+      "isolation": "read committed",
+      "log_used": 1240.0,
+      "login": "app",
+      "procedure": null,
+      "session": "64",
+      "statement": "UPDATE shop.customers SET email = @P1 WHERE id = @P2",
+      "victim": false,
+      "wait_mode": "X"
+     }
+    ],
+    "resources": [
+     {
+      "holders": [
+       {
+        "mode": "X",
+        "process": "process64"
+       }
+      ],
+      "id": "lock1",
+      "index": "ix_customers_email",
+      "kind": "keylock",
+      "object": "shop.customers",
+      "waiters": [
+       {
+        "mode": "S",
+        "process": "process61"
+       }
+      ]
+     },
+     {
+      "holders": [
+       {
+        "mode": "S",
+        "process": "process61"
+       }
+      ],
+      "id": "lock2",
+      "index": "PK_customers",
+      "kind": "keylock",
+      "object": "shop.customers",
+      "waiters": [
+       {
+        "mode": "X",
+        "process": "process64"
+       }
+      ]
+     }
+    ],
+    "source": "system_health"
+   }
+  ],
+  "note": null,
+  "since_hours": 6.0,
+  "source": "system_health event files and ring buffer"
+ },
+ "postgres": {
+  "counted": 1.0,
+  "counted_since": "2026-10-11T07:01:50Z",
+  "deadlocks": [],
+  "note": "Postgres counted 1 deadlock in this database since statistics were reset (2026-10-11). It writes the details (who waited for whom, and the statements) only to the server log, which SQL can't read: paste those log lines here to have them explained. Turning on log_lock_waits also logs any lock wait longer than deadlock_timeout.",
+  "since_hours": 6.0,
+  "source": "pg_stat_database"
+ },
+ "mysql": {
+  "counted": null,
+  "counted_since": null,
+  "deadlocks": [
+   {
+    "at": "2026-10-11T13:48:08Z",
+    "explanation": "Session 74 held shop.orders and wanted shop.customers; session 75 held shop.customers and wanted shop.orders. With the same order in both, the second would simply wait instead of deadlocking.",
+    "fixes": [
+     {
+      "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
+      "finding": null,
+      "sql": null,
+      "title": "Touch tables and rows in the same order everywhere"
+     },
+     {
+      "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
+      "finding": null,
+      "sql": null,
+      "title": "Keep transactions short"
+     },
+     {
+      "detail": "A deadlock victim can be retried safely; the application should catch error 1213 and run the transaction again.",
+      "finding": null,
+      "sql": null,
+      "title": "Retry the victim"
+     }
+    ],
+    "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
+    "id": "60c5fc0c135a790f",
+    "objects": [
+     "shop.customers",
+     "shop.orders"
+    ],
+    "pattern": "opposite-order",
+    "processes": [
+     {
+      "application": null,
+      "database": null,
+      "host": "localhost",
+      "id": "(1)",
+      "isolation": null,
+      "log_used": null,
+      "login": "root",
+      "procedure": null,
+      "session": "74",
+      "statement": "UPDATE customers SET id = id WHERE id = 1",
+      "victim": false,
+      "wait_mode": null
+     },
+     {
+      "application": null,
+      "database": null,
+      "host": "localhost",
+      "id": "(2)",
+      "isolation": null,
+      "log_used": null,
+      "login": "root",
+      "procedure": null,
+      "session": "75",
+      "statement": "UPDATE orders SET id = id WHERE id = 1",
+      "victim": true,
+      "wait_mode": null
+     }
+    ],
+    "resources": [
+     {
+      "holders": [
+       {
+        "mode": "X (row)",
+        "process": "(1)"
+       }
+      ],
+      "id": "shop.orders/PRIMARY/6:8/2",
+      "index": "PRIMARY",
+      "kind": "RECORD",
+      "object": "shop.orders",
+      "waiters": [
+       {
+        "mode": "X (row)",
+        "process": "(2)"
+       }
+      ]
+     },
+     {
+      "holders": [
+       {
+        "mode": "X (row)",
+        "process": "(2)"
+       }
+      ],
+      "id": "shop.customers/PRIMARY/4:6/2",
+      "index": "PRIMARY",
+      "kind": "RECORD",
+      "object": "shop.customers",
+      "waiters": [
+       {
+        "mode": "X (row)",
+        "process": "(1)"
+       }
+      ]
+     }
+    ],
+    "source": "InnoDB status"
+   }
+  ],
+  "note": "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
+  "since_hours": 6.0,
+  "source": "InnoDB status"
+ }
+}

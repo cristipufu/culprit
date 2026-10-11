@@ -66,6 +66,18 @@ Query Store keeps history by time, so Overview, Queries and Schema carry a **Las
 - Below the vitals, **database time per hour** across the window (a step chart; hover for each bucket's time, runs and range). Query Store's intervals on SQL Server; for sources with running totals only (`pg_stat_statements`, `performance_schema`, the plan cache) the buckets are the gaps between Culprit's own scans, so a trend appears from the second scan on and the chart says "between N scans".
 - Findings whose queries stopped running (silent for 20× their usual interval, at least an hour, before the window ends) sink into a dimmed **Stopped running** group with "Last ran 7 h ago". A multi-day window otherwise keeps ranking yesterday's already-fixed problem first.
 
+### Where time goes (waits)
+
+The Overview's middle card always answers "where does the time go", on every engine: the biggest category in plain words, a bar you can click by segment, and a legend. When the scan recorded no waits (PostgreSQL without `track_io_timing`) it says "Not tracked" and offers a live sample instead of disappearing. Under it, one calm health line names the signal that most needs a look, or says all is healthy.
+
+Clicking either opens one panel with three tabs (`1`/`2`/`3`, `←`/`→`, `Esc`):
+
+- **Where time goes:** categories (CPU, disk reads, row access, locks, in-memory contention, log writes, sending results, parallel queries, memory grants, compiling plans, everything else), each with what it means, one sentence about this database ("3 queries return 50K+ rows per call"), and the queries behind it with their share and their wait per run. A row opens the query. Categories an engine can't attribute say so.
+- **Right now:** a 10/30/60-second sample. SQL Server and MySQL difference two readings of their wait counters; PostgreSQL samples busy sessions every second. It runs in the background (close the panel; it keeps going) and is compared with the scan's usual mix ("+64 pts vs history").
+- **Health:** pressure signals as tiles, each with when it was measured (now / since start) and what healthy looks like in words, the oldest open transaction, and on Azure SQL Database the last hour of CPU, data IO, log writes and workers against the tier's limit (gridlines, dashed limit, peak, cursor readout).
+
+Per engine: SQL Server attributes every Query Store wait category to queries; MySQL attributes lock time (table, metadata and InnoDB row locks) and reports the rest server-wide since startup; PostgreSQL keeps no wait history, so history is per-statement disk-read time plus WAL time when they're timed, and "right now" is session sampling. Short windows are never stretched into per-day or per-hour rates.
+
 ### Finding detail (the heart of the product)
 
 ```
@@ -88,6 +100,20 @@ Verify             how to confirm: re-scan after deploy, what-if plan, run on al
 - Query detail: numbers, an **Over time** chart (average per run as a line, runs as bars, dashed markers where a new plan first ran), linked findings, formatted SQL and the plan.
 - SQL Server: plan history from Query Store (several plans for one query is the regression story). Postgres: generic plan via `EXPLAIN (GENERIC_PLAN)` on 16+.
 
+### What changed and runtime spread
+
+"It was fast yesterday" is the most common performance question, so comparing two periods is one gesture, not a report to configure.
+
+- **Charts with context.** Every time chart (Overview's database time, a query's Over time) has value gridlines, local-time ticks, a peak marker, a readout that follows the pointer or the arrow keys, and flags where a plan first ran. A partial first bucket (data starting mid-bucket) is hatched and drawn dashed instead of reading as a cliff. Rates are per hour, or per minute when buckets are shorter than an hour.
+- **Compare by brushing.** Drag across the Overview chart (or Shift+arrows, then Enter) to compare that range with the same length of time before it. `V`, the **What changed?** button, presets (last hour, 6 h, 24 h), a **Since** time (a deploy) or a plan flag's click all open the same panel in the detail pane.
+- **The answer is a list of sentences, not a grid.** Groups: Got slower, New, Got faster, Stopped running, then Not comparable and Too few runs, with About the same folded away. Each row: verb · table · key predicate, a sentence ("Got 4.1× slower at Tue 14:05, when SQL Server switched from plan 815 to plan 685"), a before → after dumbbell on one log scale for every row, and a plan chip. Opening a row shows runs, average, fastest, slowest and database time per period, what differs between the plans, the SQL, and links to Queries and the editor.
+- **Rigor that doesn't need explaining.** Averages are weighted by runs; a query needs 10 runs in each period and a 1.5× change (and at least 1 ms per run) to count. A missing period is never zero: a query Culprit's earlier scans didn't track is *Not comparable*, with the reason. Periods snap to Query Store intervals or to the nearest scans, and the panel shows the snapped periods and how much of the baseline the source covers. Short periods report the totals measured, never a per-hour extrapolation.
+- **Every engine answers.** SQL Server compares Query Store intervals and names both plans, with what differs between them (Key Lookup → Clustered Index Scan). Postgres and MySQL compare Culprit's own scans (at least three) and notice a plan change from the plan shapes those scans captured.
+- **Runtime spread** (Queries → Summary): one lane per plan on a shared log scale, whisker from the fastest to the slowest run, a band of one standard deviation, a dot at the average or the median, and each plan's compiled parameter values (SQL Server). SQL Server 2022's parameter-sensitive plan variants get their own lanes; MySQL adds its run-time histogram and p95/p99 marks; Postgres shows one lane with fastest, average, slowest and spread, and says that's all it keeps.
+- **Parameter sensitivity** (`parameter-sensitive`): two plans used side by side where one is 5× slower (SQL Server), or a histogram whose slowest 1 in 100 runs take 10× the typical run (MySQL). The fix is a ladder to copy, lightest first: force the fast plan, RECOMPILE for this statement only, parameter-sensitive plan optimization, OPTIMIZE FOR UNKNOWN. Postgres's single-plan variance stays `unstable-query`, which shares the ladders.
+- **Honest numbers everywhere.** Under 20 hours of history, Queries, Overview and finding cards show runs *in the measured span*, not per day.
+- The Queries table's Query column reads verb · table · key predicate; Max, Rows/run and Reads/run step aside on narrow panes (then the Trend column), so the table never scrolls sideways.
+
 ### Plan viewer
 
 An indented tree, read top-down like a profiler call tree, instead of a box-and-arrow graph. It scales to large plans and is scannable.
@@ -97,17 +123,76 @@ An indented tree, read top-down like a profiler call tree, instead of a box-and-
 - Warnings are chips on the row: implicit conversion, spill, key lookup, no join predicate, missing index.
 - Selecting a node shows all its properties. A raw view shows the original XML / JSON.
 
+### Plan insights
+
+Every plan Culprit shows (Query Store, plan cache, Explain, Analyze, imported files) runs through one rules engine, `culprit_core::insights`: a pure function of the plan, so the diagram, the Operations table, findings, the CLI and the MCP server all say the same thing.
+
+- **What an insight is.** One plain sentence ("Looks up 20K rows in shop.orders one at a time"), the operators it is about, the share of the plan's work at those operators (the ranking key after severity), why it matters with the plan's own numbers, a fix (SQL to copy where there is a statement; Culprit never runs it) and a way to verify the fix worked.
+- **32 rules across the three engines.** SQL Server: key/RID lookups, implicit conversions, the optimizer's index hints, eager index spools, scalar UDFs, table variables, blocked parallelism, thread skew, spills, unused or waited-for memory grants, many-to-many merges, remote queries, missing statistics, optimizer timeouts, the legacy estimator, slow compiles. Postgres: heap fetches on index-only scans, lossy bitmaps, workers that didn't start, JIT overhead, per-row SubPlans, spills (sort, hash batches, hash aggregate). MySQL: join buffers, temporary-table grouping with filesort, dependent subqueries, ignored indexes. All engines: scans that throw most rows away, functions or casts around filtered columns, leading-wildcard LIKE, NOT IN, misestimates, repeated nested loops, big sorts, cross joins.
+- **Honest coverage.** When a plan can't show something (an estimated plan has no actual rows; MySQL records no memory grants), the rules that need it stay silent and one sentence under the list says so, so "no problems found" is never a false clean bill.
+- **No echoes.** One cause is reported once: a key lookup owns its covering-index fix (the optimizer's hint for the same index is dropped), NOT IN owns its spool and repeated loop, a function on a column owns the scan it causes, a cross join isn't also a loop problem.
+- **Where it shows.** An Insights list above every plan (severity, area icon, impact bar; expanding one shows why, the fix with Copy, the verify step, and selects the operator); a numbered severity badge on the operator's card in the diagram and its row in the tree; an Operations view (sortable table of every operator: self and inclusive share, estimated vs actual rows with an "off by" ratio, runs, rows read, time, issues; filter and keyboard navigation); and the operator panel lists the insights about the selected operator.
+- **Findings.** The `plan-insights` check turns medium and high insights on queries with at least 1% of database time into findings (one per problem and table, merged across queries; severity capped by the query's share), leaving to other checks what they already report (implicit conversions, spills, cross joins, missing statistics, filtered scans, missing indexes). A function or leading wildcard on the scanned column replaces filtered-scan's index advice for that query, since that index wouldn't be used until the query changes.
+
+**Diagram.** Operator icons (seek, scan, lookup, loop/hash/merge join, sort, aggregate, spool, parallelism, compute, filter, limit), compact cards with the operator's share as a bar along the bottom edge, auto-fit and centered on load with a Fit button, pass-through wrappers (MySQL's query block, a 0% Compute Scalar) folded into the edge label, row counts in pills beside the edges and arrowheads for data flow. **Operator panel:** what it does (seek and filter conditions), rows (estimated, actual with a ratio badge, runs, read, thrown away by the filter), cost (self and inclusive share, optimizer units, CPU/IO split), warnings, then every raw property collapsed and searchable with readable numbers.
+
+**Query detail** has Summary, Plan and History tabs (P toggles the plan; the last tab is remembered). Summary shows the top plan insight as a teaser that opens the plan.
+
+### Plan compare and sharing
+
+Two plans of the same statement (two Query Store plans, before and after an index, staging and production) side by side, explained rather than drawn:
+
+- **Verdict first.** A pill ("151× costlier", "2.0× faster", by actual time when both plans ran, else estimated cost) and one sentence that says why: "Plan 69 is estimated 151× more expensive because it scans customers (88% of its cost) where Plan 68 seeks ix_customers_email."
+- **What changed**: access, operator, added/removed branches, cost shifts, row changes, warnings; J/K step through them and select the step in both diagrams, centred like SSMS's compare.
+- **Why**: the conditions the optimizer saw that differ, in plain language: estimator version (compatibility level), compiled parameter values, row estimates (with stale statistics from the connection's latest scan), indexes per table, type conversions that stop a seek, parallelism, memory grants and spills. Each engine gets the scenarios its plans carry evidence for.
+- **Properties**: the selected step and its match, grouped (what it does, rows, cost, warnings, engine properties), with ≠ on every difference and identical engine properties folded away. Database names are ignored so prod and test plans line up.
+- Diagrams tint identical regions alike on both sides; changed steps are dashed amber, steps only one plan has are dashed grey. Zoom and scroll move together unless Sync is off.
+
+**Share** (plans, comparisons, findings): copy Markdown for a pull request, save a self-contained HTML page (inline SVG diagram, light and dark, prints cleanly, no scripts or network), or save the plan's own text (.sqlplan opens in SSMS). "Redact values" is on by default and remembered; exports never include connection names, hosts or credentials. **Verify fix** on a finding re-scans and answers in place: fixed, still present (with why, e.g. the window still holds earlier runs), or can't tell, plus any new findings.
+
 ### Live
 
-- If anything is blocked, a banner leads: *"2 sessions are blocked by session 57 for 34 s."* with the blocking tree.
-- Active sessions (idle hidden by default), long transactions, idle-in-transaction (Postgres).
-- Wait breakdown. Auto-refresh every 2 s, space to pause. Kill/cancel exists only on non-production connections.
+- A thin status strip leads: a live dot with freshness (*"Updated 2 s ago"*, *"Paused while hidden"*; polling stops when the window is hidden or paused), a five-minute sparkline of active and blocked sessions, and a Sessions / Deadlocks switch.
+- Active sessions (idle hidden by default), long transactions, idle-in-transaction (amber left stripe). Auto-refresh every 2.5 s, space to pause. Kill/cancel exists only on non-production connections.
+
+#### Blocking chains
+
+- Blocking is a tree, not a banner. Each chain is a calm card: a severity dot, one sentence (*"Session 57 has been idle in an open transaction for 12 min; 9 sessions wait behind it (an exclusive lock on shop.orders)."*), facts (transaction age, waiters, longest wait, the engine's wait type), what it usually means and what to do (two lines, *More* for the rest), and the tree of who waits behind whom.
+- Lock names are words: `LCK_M_U` → "an update lock", MySQL `X,REC_NOT_GAP` → "an exclusive row lock", a Postgres wait on a transaction id → "a row lock". The raw wait type stays visible as a small code chip.
+- Head kinds: idle in an open transaction (the classic: missing COMMIT, an error path, slow work inside the transaction), running while holding locks, idle but holding locks, not visible to this login. The advice is engine-specific (`SET XACT_ABORT ON`, `idle_in_transaction_session_timeout`, `innodb_lock_wait_timeout`).
+- The head row offers *End session* (and *Cancel its statement* where the engine can) with an inline confirm, on non-production only. Rows are focusable; arrow keys move, Enter (or a click) highlights the session in the table.
+- Lock details are read only when someone waits (one extra query): SQL Server `dm_os_waiting_tasks` + `dm_tran_locks` + partitions; Postgres `pg_locks` (row waits resolve to the table through the waiter's tuple lock); MySQL `performance_schema.data_lock_waits` + `data_locks`. MySQL idle heads show their last statement from `events_statements_current`.
+
+#### Deadlocks
+
+- Sources: SQL Server and Managed Instance read system_health (its event files *and* the ring buffer, merged, because files are written with a delay); MySQL reads the LATEST DETECTED DEADLOCK section of `SHOW ENGINE INNODB STATUS` (keeps only table, index and lock mode; the row contents InnoDB prints are dropped); Postgres only counts them (`pg_stat_database.deadlocks`), so the view shows the counter and asks for the log lines. Azure SQL Database says plainly why it can't read them without creating server objects.
+- Paste (⌘V) or drop any of the three formats (SQL Server .xdl XML with DTDs refused, InnoDB status, Postgres `deadlock detected` log lines) to have it explained.
+- Each deadlock gets a pattern (key lookup, read-then-update, opposite order, lock escalation, parallelism, lock cycle), a headline that names the tables and the victim, an exact story (*"Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers."*), numbered fixes with copy-only SQL and links to the same fix as an existing finding (e.g. RCSI), and both statements.
+- The graph: processes on the sides, locks in the middle; solid lines hold, dashed arrows want; the rolled-back process is tinted. Hover or focus a box to follow its locks.
+- Every scan records a day of deadlocks; the `deadlocks` check groups them by pattern and tables: *"Two queries deadlocked 6 times in the last day (key-lookup deadlock on shop.customers)"*, leading with the primary fix and offering RCSI as the alternative.
+
+### Actual runs and live progress
+
+What a query really did, never by running it behind your back.
+
+- **Last run** (Queries → a query → Plan → *Last run*). SQL Server 2019+ keeps the actual plan of each cached query's latest run when `LAST_QUERY_PLAN_STATS` is on; Culprit reads it from `sys.dm_exec_query_plan_stats` and shows real rows next to the estimates. That plan carries row counts only (no per-step time), and the view says so. When the setting is off, a calm card explains what it unlocks and shows the copy-only `ALTER DATABASE SCOPED CONFIGURATION` (also a `last-actual-plans` finding). Postgres and MySQL keep no actual plans; the card says so and offers *Measure it once* when the recorded text is runnable, or *Open in editor* to fill in real values.
+- **Measured runs** (Editor *Analyze*, *Measure it once*): SQL Server runs the statement inside a transaction that is always rolled back (`SET STATISTICS XML`), Postgres runs `EXPLAIN (ANALYZE, BUFFERS)` inside a read-only transaction on production and a rolled-back one elsewhere, MySQL runs `EXPLAIN ANALYZE` on reads only. On production only statements the classifier proves read are measured.
+- **Every actual plan reads by time, not cost.** When operators carry timing, shares, heat and "Where the 54 ms went" use each operator's *own* time (its inputs taken out: row-mode and Postgres/MySQL times include inputs, SQL Server batch mode doesn't, untimed operators such as Compute Scalar count as their inputs). The receipt above the diagram gives elapsed, CPU, reads (from disk), rows, memory used vs granted, and clickable callouts: the step that took the most time, where a row estimate first goes wrong ("Expected 288 rows, got 270K at Index Seek on support_tickets"), a worker doing most of the work, and spills.
+- **Live progress** (Live → click or Enter on a running session). SQL Server: per-operator progress from `sys.dm_exec_query_profiles` and the in-flight plan from `sys.dm_exec_query_statistics_xml`, drawn on the plan (progress strip per card, done ticks, dimmed waiting steps, a ring on the step doing the work, "still reading its input" for sorts and hashes), an overall percentage weighted by estimated cost and labelled as such, and SQL Server's own `percent_complete` for the commands that report it. Lightweight profiling leaves the open/close timestamps at zero, so state comes from rows, finished scans and re-executions. Postgres: elapsed time, waits in words, the estimated plan of the running text, and `pg_stat_progress_*` for CREATE INDEX, VACUUM, ANALYZE, CLUSTER and COPY. MySQL: elapsed time and the plan MySQL is actually executing (`EXPLAIN FOR CONNECTION`), plus stage progress when performance_schema stage events are on. The panel refreshes every second only while it is visible, shows its freshness ("Live · just now"), pauses with one click, and closes with Esc.
 
 ### Schema
 
 A health view, not a browser: tables by size with health badges (no clustered index, stale statistics, dead rows), indexes with reads vs writes, size, last use, unused / duplicate flags.
 
 **Compare with…** shows environment drift against another connection of the same engine, from both latest scans: indexes missing on one side (with the `CREATE INDEX` to add it, labelled with the connection it is for; *Open in editor* only when that is the current connection), the same index under different names, tables and columns present on one side or typed differently, and settings and versions that differ. Indexes match by table, key columns, included columns, uniqueness and filter, never by name.
+
+**Index advisor** (pinned at the top of the table list, `a`): one ranked plan for the whole database instead of per-table notes. Three tiles summarize it (to add, with the share of database time behind them; to clean up, with the space it frees; tables to look at), each a filter.
+
+- **Add** — ordered by the database time of the queries that need each index, never by the optimizer's own impact guess. Candidates come from SQL Server's missing-index requests (merged when one index serves several, linked to the asking queries by query_hash on 2019+), from captured plans that read a whole table and filter on columns no index leads with (every engine), and from foreign keys with no index. Each opens to the reason in one sentence, the queries behind it (click to open them), the optimizer requests it merges, copy-only DDL (or the existing index to widen), the table's writes per day, and how to verify.
+- **Clean up** — duplicates, indexes covered by a wider one, overlapping indexes that are barely read next to one with the same leading column, and indexes nothing reads. A covered or duplicate index whose keeper isn't read either is shown as unused, never as "keep the other one". The keys of both indexes are shown side by side with the shared prefix tinted. Fixes are reversible first: disable (SQL Server), invisible (MySQL); Postgres drops concurrently and keeps the definition in the finding.
+- **Tables** — tables read in full over and over (Postgres seq_scan, MySQL rows read without an index), heaps whose reads follow forwarding pointers (SQL Server), and write-heavy tables carrying many indexes.
+
+Keyboard: `j`/`k` move, `↵` opens, `c` copies the SQL, `o` opens the finding, `t` opens the table, `Esc` returns to the tables. Usage counters are stated with their window ("in the 6 days since the server last restarted"). What an engine can't tell the advisor is said in a calm note (Postgres and MySQL record no missing-index requests).
 
 ### Editor
 
@@ -117,6 +202,12 @@ CodeMirror (loaded lazily). Run (⌘↵, read-only transaction), Explain (⌘E, 
 
 Fuzzy search over views, findings, queries, tables, connections and actions (re-scan, switch connection, toggle theme, copy fix).
 
+### SQL Server tuning, statement families and health
+
+- **tuning-advice** (SQL Server): automatic tuning's plan-forcing recommendations ("SQL Server suggests forcing plan 815 for a read from orders (estimated 73% faster)") with the exact `sp_query_store_force_plan` to copy, forced plans that stopped applying (with the reason, e.g. NO_INDEX), Query Store hints that fail, and automatic plan correction that is off while fixes wait, or set but not running.
+- **query-family**: the same statement sent with different literals — Query Store queries sharing a query_hash (plan cache when Query Store is off), and pg_stat_statements entries that differ only in IN-list or VALUES length — plus plan caches filled with single-use plans. MySQL digests already merge literals; its counterpart is the digest table running out of room (config).
+- **config** health per engine: Query Store near full / capture mode ALL / waits not captured, legacy cardinality estimation, unlimited MAXDOP (SQL Server); autovacuum off or too lazy for big tables, pg_stat_statements not tracking or evicting, shared_buffers at the 128 MB default (Postgres); performance_schema off, the digest consumer disabled, digests lost, statement text cut at 1,024 characters (MySQL).
+
 ## Keyboard
 
 | Key | Action |
@@ -125,6 +216,7 @@ Fuzzy search over views, findings, queries, tables, connections and actions (re-
 | `⌘K` | Command palette |
 | `j` / `k`, `↑` / `↓` | Move in lists |
 | `/` | Filter current list |
+| `v` (Overview) | What changed: compare recent vs baseline |
 | `c` / `a` / `e` | Copy fix / copy for agent / open in editor |
 | `⌘R` | Re-scan |
 | `W` | Cycle the workload window: last 24 hours, 7 days, 30 days |

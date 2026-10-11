@@ -28,6 +28,44 @@ pub struct ConnectionArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct DeadlocksArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// How many hours back to look. 1 to 720, default 24.
+    pub since_hours: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WhatChangedArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// Compare everything since this moment (RFC 3339, e.g. a deploy time) with the same length of time before it.
+    pub since: Option<String>,
+    /// The recent period as the last N hours (default 1; Postgres and MySQL default to the time since the previous scan).
+    pub recent_hours: Option<f64>,
+    /// Runs a query needs in each period before its averages are compared (default 10).
+    pub min_runs: Option<f64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct VerifyArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// Finding ids to check (from `findings`). Omit to check every finding of the latest scan.
+    pub finding_ids: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ExportFindingArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// The finding id (from `findings`).
+    pub finding_id: String,
+    /// Replace literal values in query text and predicates with `?` (default true). Keep it on for anything posted.
+    pub redact: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ScanArgs {
     /// A connection name from list_connections.
     pub connection: String,
@@ -113,6 +151,26 @@ pub struct QueryPlanArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct PlanInsightsArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// A query id from top_queries or a finding; its stored plan is checked (never executed).
+    pub query_id: Option<String>,
+    /// With query_id: a specific stored plan from the query's `plans` list.
+    pub plan_id: Option<String>,
+    /// Instead of query_id: one SQL statement to plan (estimated; not executed) and check.
+    pub sql: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct ProgressArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// A session id from `live`.
+    pub session: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct SqlArgs {
     /// A connection name from list_connections.
     pub connection: String,
@@ -126,6 +184,16 @@ pub struct SchemaArgs {
     pub connection: String,
     /// `schema.table` or `table`. Omit to list tables.
     pub table: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct WaitsArgs {
+    /// A connection name from list_connections.
+    pub connection: String,
+    /// Sample what the server waits on right now (takes `seconds`) instead of reading the latest scan.
+    pub now: Option<bool>,
+    /// Length of the `now` sample, 1 to 30 seconds (default 10).
+    pub seconds: Option<u32>,
 }
 
 fn tool<T: JsonSchema + 'static>(name: &'static str, title: &'static str, description: String) -> Tool {
@@ -194,6 +262,34 @@ pub fn definitions() -> Vec<Tool> {
                  estimated plan; never executes the query.{DATA_NOTE}"
             ),
         ),
+        tool::<PlanInsightsArgs>(
+            "plan_insights",
+            "Plan insights",
+            format!(
+                "What's wrong in a query's plan, ranked by how much of the plan's work it affects: key lookups,                  functions on filtered columns, leading wildcards, NOT IN, scalar functions, spills, misestimates,                  repeated loops and more. Each insight has a plain sentence, the operator ids, a fix (often SQL to copy)                  and a verify step. Pass query_id for a query from the latest scan, or sql to check a statement                  (planned, never executed). `note` says what this engine's plan can't show.{DATA_NOTE}"
+            ),
+        ),
+        tool::<QueryPlanArgs>(
+            "last_actual_plan",
+            "Last actual plan",
+            format!(
+                "The actual plan of a query's most recent run as SQL Server kept it (2019+ with \
+                 LAST_QUERY_PLAN_STATS): actual rows per operator next to the estimates, so you can see which estimate \
+                 was wrong. Reads the plan cache; never runs the query. Postgres and MySQL don't keep these and say so.\
+                 {DATA_NOTE}"
+            ),
+        ),
+        tool::<WhatChangedArgs>(
+            "what_changed",
+            "What changed",
+            format!(
+                "What changed between two periods: queries that got slower, new ones, ones that got faster or stopped, \
+                 each with runs and time per run before and after and the plan change behind it. SQL Server answers \
+                 from Query Store's intervals; Postgres and MySQL from Culprit's saved scans (at least 3). A query with \
+                 no data in one period is `not-comparable`, never treated as zero. Pass `since` (a deploy, a plan \
+                 change) to compare what ran after it with the same length of time before.{DATA_NOTE}"
+            ),
+        ),
         tool::<SqlArgs>(
             "explain",
             "Explain",
@@ -207,12 +303,79 @@ pub fn definitions() -> Vec<Tool> {
             "Live sessions",
             format!("What is running right now: sessions, what they wait on, and who blocks whom.{DATA_NOTE}"),
         ),
+        tool::<ConnectionArgs>(
+            "blocking",
+            "Blocking chains",
+            format!(
+                "Who blocks whom right now, as a tree under each head blocker: how long the head has been idle or \
+                 running, how many sessions wait, on which table and lock, and what to do. Use it when the app hangs or \
+                 times out.{DATA_NOTE}"
+            ),
+        ),
+        tool::<DeadlocksArgs>(
+            "deadlocks",
+            "Deadlocks",
+            format!(
+                "Recent deadlocks, explained: the pattern (key lookup, opposite access order, read-then-update, lock \
+                 escalation, parallelism), both statements, which one was rolled back, and the fixes. SQL Server reads \
+                 system_health, MySQL the latest InnoDB report, Postgres only counts them.{DATA_NOTE}"
+            ),
+        ),
+        tool::<WaitsArgs>(
+            "waits",
+            "Waits",
+            format!(
+                "Where database time goes: wait categories (CPU, disk reads, locks, sending results, memory…) each \
+                 explained in plain words with the queries behind it, plus pressure signals (compiles, memory grants, \
+                 cache hits, connections, the oldest open transaction). With `now`, samples the server for a few \
+                 seconds instead. Reads statistics views only.{DATA_NOTE}"
+            ),
+        ),
+        tool::<ProgressArgs>(
+            "query_progress",
+            "Query progress",
+            format!(
+                "How far along a running statement is, for a session id from `live`: elapsed time, CPU, the busiest \
+                 operator and rows per operator against the estimates (SQL Server), or the plan, elapsed time and \
+                 command progress (Postgres CREATE INDEX/VACUUM/COPY…, MySQL stages). Call it again to watch it move.\
+                 {DATA_NOTE}"
+            ),
+        ),
         tool::<SchemaArgs>(
             "schema",
             "Schema",
             format!(
                 "Tables from the latest scan with rows and sizes. With `table`: its columns, indexes (reads, writes, \
                  size) and which captured query plans use each index, so you can spot unused or missing ones.{DATA_NOTE}"
+            ),
+        ),
+        tool::<ConnectionArgs>(
+            "index_advice",
+            "Index advisor",
+            format!(
+                "The consolidated index plan from the latest scan: indexes to add (ordered by the database time of the \
+                 queries that need them, with those queries, the merged optimizer requests, copy-only CREATE INDEX and \
+                 the write cost), indexes to clean up (duplicate, covered, overlapping, unused) and tables read in full \
+                 or carrying too many indexes. Culprit never runs the SQL.{DATA_NOTE}"
+            ),
+        ),
+        tool::<VerifyArgs>(
+            "verify",
+            "Verify a fix",
+            format!(
+                "After a fix ships, re-scan the connection and compare with its previous scan: each finding is \
+                 `fixed`, `still-present` or `unknown` (its check couldn't run), plus `new` findings the change may \
+                 have caused. Reads statistics views only. Findings measured over a workload window can stay until \
+                 that window moves past the change; the result says so.{DATA_NOTE}"
+            ),
+        ),
+        tool::<ExportFindingArgs>(
+            "export_finding",
+            "Export a finding",
+            format!(
+                "One finding as Markdown ready for a pull request or issue: what's happening, evidence, the query \
+                 (literal values redacted by default), the plan's key step, the fix and how to verify it. Never \
+                 includes connection names, hosts or credentials.{DATA_NOTE}"
             ),
         ),
         Tool::new(
@@ -294,6 +457,44 @@ impl CulpritMcp {
                 let plan = self.ws.query_plan(&a.connection, &a.query_id, a.plan_id.as_deref()).await?;
                 Ok(view::plan(&plan))
             }
+            "plan_insights" => {
+                let a: PlanInsightsArgs = args(value)?;
+                let info = self.allowed(&a.connection)?;
+                let plan = match (a.query_id.as_deref(), a.sql.as_deref()) {
+                    (Some(id), _) => self.ws.query_plan(&a.connection, id, a.plan_id.as_deref()).await?,
+                    (None, Some(text)) => {
+                        let statement = sql::single_statement(text, info.engine)?;
+                        self.ws.explain(&a.connection, statement, ExplainMode::Estimated, false).await?
+                    }
+                    (None, None) => {
+                        return Err(Error::invalid("Pass query_id or sql")
+                            .with_hint("query_id comes from top_queries or a finding's queries"));
+                    }
+                };
+                Ok(view::plan_insights(&plan))
+            }
+            "last_actual_plan" => {
+                let a: QueryPlanArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let plan = self.ws.last_actual_plan(&a.connection, &a.query_id, a.plan_id.as_deref()).await?;
+                Ok(view::plan(&plan))
+            }
+            "query_progress" => {
+                let a: ProgressArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                Ok(view::progress(&self.ws.query_progress(&a.connection, &a.session, true).await?))
+            }
+            "what_changed" => {
+                let a: WhatChangedArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let request = culprit_engine::changes::ChangeRequest {
+                    since: a.since,
+                    recent_hours: a.recent_hours,
+                    min_executions: a.min_runs,
+                    ..Default::default()
+                };
+                Ok(view::changes(&self.ws.changes(&a.connection, &request).await?))
+            }
             "explain" => {
                 let a: SqlArgs = args(value)?;
                 let info = self.allowed(&a.connection)?;
@@ -306,6 +507,26 @@ impl CulpritMcp {
                 self.allowed(&a.connection)?;
                 Ok(view::live(&self.ws.live(&a.connection).await?))
             }
+            "blocking" => {
+                let a: ConnectionArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                Ok(crate::locks::blocking(&self.ws.live(&a.connection).await?))
+            }
+            "deadlocks" => {
+                let a: DeadlocksArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                Ok(crate::locks::deadlocks(&self.ws.deadlocks(&a.connection, a.since_hours.unwrap_or(24.0)).await?))
+            }
+            "waits" => {
+                let a: WaitsArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                if a.now.unwrap_or(false) {
+                    let sample = self.ws.wait_sample(&a.connection, a.seconds.unwrap_or(10).clamp(1, 30)).await?;
+                    return Ok(crate::waits_view::sample(&sample));
+                }
+                let report = self.report(&a.connection)?;
+                Ok(crate::waits_view::report(&report))
+            }
             "schema" => {
                 let a: SchemaArgs = args(value)?;
                 self.allowed(&a.connection)?;
@@ -314,6 +535,30 @@ impl CulpritMcp {
                     Some(table) => view::table(&report, table),
                     None => Ok(view::tables(&report)),
                 }
+            }
+            "index_advice" => {
+                let a: ConnectionArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                Ok(serde_json::to_value(self.ws.index_advice(&a.connection)?).unwrap_or_default())
+            }
+            "verify" => {
+                let a: VerifyArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let v = self.ws.verify(&a.connection, &a.finding_ids.unwrap_or_default()).await?;
+                serde_json::to_value(&v).map_err(|e| Error::internal(e.to_string()))
+            }
+            "export_finding" => {
+                let a: ExportFindingArgs = args(value)?;
+                self.allowed(&a.connection)?;
+                let options =
+                    culprit_engine::export::ExportOptions { redact: a.redact.unwrap_or(true), notes: Vec::new() };
+                let file = self.ws.export_finding(
+                    &a.connection,
+                    &a.finding_id,
+                    culprit_engine::export::ExportFormat::Markdown,
+                    &options,
+                )?;
+                Ok(json!({ "markdown": file.contents, "redacted": options.redact }))
             }
             "run_query" => {
                 let a: SqlArgs = args(value)?;
@@ -427,9 +672,19 @@ mod tests {
                 "top_queries",
                 "query",
                 "query_plan",
+                "plan_insights",
+                "last_actual_plan",
+                "what_changed",
                 "explain",
                 "live",
+                "blocking",
+                "deadlocks",
+                "waits",
+                "query_progress",
                 "schema",
+                "index_advice",
+                "verify",
+                "export_finding",
                 "run_query"
             ]
         );

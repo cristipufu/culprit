@@ -2,11 +2,13 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use culprit_core::Verification;
 use culprit_core::{
     Drift, Error, ExplainMode, LiveState, Plan, PlanDiff, Report, Result, ResultSet, ServerInfo, SessionAction,
     SnapshotOptions,
 };
 use culprit_engine::entra::{DeviceCodePrompt, SignInEvent};
+use culprit_engine::export::{ExportFile, ExportFormat, ExportOptions};
 use culprit_engine::{
     AgentAccess, ApprovalRequest, ConnectionInfo, DiscoveredDatabase, ImportCandidate, ImportSource, NewConnection,
     ParsedConnection, Workspace,
@@ -119,6 +121,8 @@ fn for_ui(mut report: Report) -> Report {
     if let Some(workload) = report.snapshot.workload.as_mut() {
         for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
             plan.raw = None;
+            // Saved reports don't carry insights; the UI shows them on every plan.
+            culprit_core::insights::annotate(plan);
         }
     }
     report
@@ -162,15 +166,91 @@ async fn query_plan(ws: Ws<'_>, name: String, query_id: String, plan_id: Option<
     Ok(plan)
 }
 
+/// The actual plan of a query's last run as the engine kept it; never runs the query.
+#[tauri::command]
+async fn last_actual_plan(ws: Ws<'_>, name: String, query_id: String, plan_id: Option<String>) -> Result<Plan> {
+    let mut plan = ws.last_actual_plan(&name, &query_id, plan_id.as_deref()).await?;
+    plan.raw = None;
+    Ok(plan)
+}
+
+/// How far along a session's running statement is (polled about once a second while visible).
+#[tauri::command]
+async fn query_progress(
+    ws: Ws<'_>,
+    name: String,
+    session: String,
+    with_plan: bool,
+) -> Result<culprit_core::QueryProgress> {
+    ws.query_progress(&name, &session, with_plan).await
+}
+
 /// A plan pasted or opened in the Plans view (.sqlplan, EXPLAIN JSON or text, MySQL JSON or tree).
 #[tauri::command]
 async fn parse_plan(text: String) -> Result<Plan> {
     culprit_engine::plans::parse_plan(&text)
 }
 
+/// `connection`, when the plans came from one, lets scenarios name stale statistics from its latest scan.
 #[tauri::command]
-async fn diff_plans(a: Plan, b: Plan, name_a: String, name_b: String) -> Result<PlanDiff> {
-    Ok(culprit_core::plan_diff_named(&a, &name_a, &b, &name_b))
+async fn diff_plans(
+    ws: Ws<'_>,
+    a: Plan,
+    b: Plan,
+    name_a: String,
+    name_b: String,
+    connection: Option<String>,
+) -> Result<PlanDiff> {
+    Ok(ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref()))
+}
+
+#[tauri::command]
+async fn export_plan(plan: Plan, title: String, format: ExportFormat, options: ExportOptions) -> Result<ExportFile> {
+    culprit_engine::export_plan(&plan, &title, format, &options)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn export_diff(
+    ws: Ws<'_>,
+    a: Plan,
+    b: Plan,
+    name_a: String,
+    name_b: String,
+    format: ExportFormat,
+    options: ExportOptions,
+    connection: Option<String>,
+) -> Result<ExportFile> {
+    let diff = ws.diff_plans(&a, &name_a, &b, &name_b, connection.as_deref());
+    culprit_engine::export_diff(&a, &b, &diff, &name_a, &name_b, format, &options)
+}
+
+#[tauri::command]
+async fn export_query_plan(
+    ws: Ws<'_>,
+    name: String,
+    query_id: String,
+    plan_id: Option<String>,
+    format: ExportFormat,
+    options: ExportOptions,
+) -> Result<ExportFile> {
+    ws.export_query_plan(&name, &query_id, plan_id.as_deref(), format, &options).await
+}
+
+#[tauri::command]
+fn export_finding(
+    ws: Ws,
+    name: String,
+    finding_id: String,
+    format: ExportFormat,
+    options: ExportOptions,
+) -> Result<ExportFile> {
+    ws.export_finding(&name, &finding_id, format, &options)
+}
+
+#[tauri::command]
+async fn verify_findings(ws: Ws<'_>, name: String, ids: Vec<String>) -> Result<Verification> {
+    ws.verify(&name, &ids).await
 }
 
 #[tauri::command]
@@ -183,9 +263,27 @@ fn drift(ws: Ws, a: String, b: String) -> Result<Drift> {
     ws.drift(&a, &b)
 }
 
+/// The index advisor's plan from the connection's latest report.
+#[tauri::command]
+fn index_advice(ws: Ws, name: String) -> Result<culprit_core::IndexAdvice> {
+    ws.index_advice(&name)
+}
+
 #[tauri::command]
 async fn live(ws: Ws<'_>, name: String) -> Result<LiveState> {
     ws.live(&name).await
+}
+
+/// Where the latest scan's database time went, by wait category with the queries behind each.
+#[tauri::command]
+fn waits(ws: Ws<'_>, name: String, window_days: Option<u32>) -> Result<Option<culprit_core::WaitsReport>> {
+    ws.waits(&name, window_days)
+}
+
+/// What the server waits on right now, sampled for `seconds`.
+#[tauri::command]
+async fn wait_sample(ws: Ws<'_>, name: String, seconds: u32) -> Result<culprit_core::WaitSample> {
+    ws.wait_sample(&name, seconds).await
 }
 
 #[tauri::command]
@@ -193,9 +291,37 @@ async fn interrupt_session(ws: Ws<'_>, name: String, session: String, action: Se
     ws.interrupt_session(&name, &session, action).await
 }
 
+/// What changed between two periods on a connection (Query Store intervals, or Culprit's own scans).
+#[tauri::command]
+async fn changes(
+    ws: Ws<'_>,
+    name: String,
+    request: culprit_engine::changes::ChangeRequest,
+) -> Result<culprit_core::Changes> {
+    ws.changes(&name, &request).await
+}
+
+/// Recent deadlocks on a connection, explained (pattern, statements, fixes).
+#[tauri::command]
+async fn deadlocks(ws: Ws<'_>, name: String, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
+    ws.deadlocks(&name, since_hours).await
+}
+
+/// Deadlocks in pasted or dropped text: SQL Server .xdl XML, InnoDB status, Postgres log lines. No connection needed.
+#[tauri::command]
+fn parse_deadlock(text: String) -> Result<Vec<culprit_core::Deadlock>> {
+    culprit_engine::deadlocks::parse_deadlock(&text)
+}
+
 #[tauri::command]
 async fn run_sql(ws: Ws<'_>, name: String, sql: String, limit: usize, confirmed: bool) -> Result<ResultSet> {
     ws.run(&name, &sql, limit.min(10_000), confirmed).await
+}
+
+/// Every check Culprit can run, so the app can say what it looked at and found fine.
+#[tauri::command]
+fn checks(ws: Ws<'_>) -> Vec<culprit_core::CheckInfo> {
+    ws.checks()
 }
 
 /// What a statement does, for the question asked before it changes data on production. Pure; no connection.
@@ -311,13 +437,27 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             brief,
             explain,
             query_plan,
+            last_actual_plan,
+            query_progress,
             drift,
+            changes,
+            index_advice,
             parse_plan,
             diff_plans,
+            export_plan,
+            export_diff,
+            export_query_plan,
+            export_finding,
+            verify_findings,
             save_plan_file,
             live,
+            waits,
+            wait_sample,
             run_sql,
+            deadlocks,
+            parse_deadlock,
             check_statement,
+            checks,
             catalog,
             saved_queries,
             save_query,

@@ -18,17 +18,19 @@ pub fn missing_index_info() -> CheckInfo {
     }
 }
 
-struct Candidate {
-    schema: String,
-    table: String,
-    equality: Vec<String>,
-    inequality: Vec<String>,
-    include: Vec<String>,
-    seeks: f64,
-    scans: f64,
-    weight: f64,
-    impact_pct: f64,
-    query_hashes: Vec<String>,
+pub(crate) struct Candidate {
+    pub(crate) schema: String,
+    pub(crate) table: String,
+    pub(crate) equality: Vec<String>,
+    pub(crate) inequality: Vec<String>,
+    pub(crate) include: Vec<String>,
+    pub(crate) seeks: f64,
+    pub(crate) scans: f64,
+    pub(crate) weight: f64,
+    pub(crate) impact_pct: f64,
+    pub(crate) query_hashes: Vec<String>,
+    /// The optimizer requests merged into this candidate, its own first.
+    pub(crate) requests: Vec<MissingIndex>,
 }
 
 impl Candidate {
@@ -44,10 +46,11 @@ impl Candidate {
             weight: m.avg_query_cost * (m.avg_impact_pct / 100.0) * (m.seeks + m.scans),
             impact_pct: m.avg_impact_pct,
             query_hashes: m.query_hashes.clone(),
+            requests: vec![m.clone()],
         }
     }
 
-    fn keys(&self) -> Vec<String> {
+    pub(crate) fn keys(&self) -> Vec<String> {
         self.equality.iter().chain(self.inequality.iter()).cloned().collect()
     }
 
@@ -86,10 +89,11 @@ impl Candidate {
         self.weight += other.weight;
         self.impact_pct = self.impact_pct.max(other.impact_pct);
         self.query_hashes.extend(other.query_hashes);
+        self.requests.extend(other.requests);
     }
 }
 
-fn merge_candidates(snapshot: &Snapshot) -> Vec<Candidate> {
+pub(crate) fn merge_candidates(snapshot: &Snapshot) -> Vec<Candidate> {
     let mut all: Vec<Candidate> = snapshot
         .missing_indexes
         .iter()
@@ -108,7 +112,7 @@ fn merge_candidates(snapshot: &Snapshot) -> Vec<Candidate> {
 }
 
 /// An existing index whose leading keys already match the suggestion: the fix is to widen it, not add another.
-fn existing_match<'a>(snapshot: &'a Snapshot, c: &'a Candidate) -> Option<&'a IndexStat> {
+pub(crate) fn existing_match<'a>(snapshot: &'a Snapshot, c: &'a Candidate) -> Option<&'a IndexStat> {
     let keys = c.keys();
     snapshot.indexes_on(&c.schema, &c.table).find(|i| {
         let existing = i.key_names();
@@ -137,16 +141,7 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         Category::Indexes,
         subject(SubjectKind::Table, &table_name),
     );
-    let linked: Vec<&QueryStat> = queries
-        .iter()
-        .filter(|q| q.query_hash.as_ref().is_some_and(|h| c.query_hashes.iter().any(|x| x.eq_ignore_ascii_case(h))))
-        .chain(queries.iter().filter(|q| plan_asks_for(q, &c)))
-        .fold(Vec::new(), |mut acc, q| {
-            if !acc.iter().any(|a: &&QueryStat| a.id == q.id) {
-                acc.push(q);
-            }
-            acc
-        });
+    let linked = asking_queries(queries, &c);
     let table = snapshot.table(&c.schema, &c.table);
     let rows = table.and_then(|t| t.rows);
     let lookups = c.seeks + c.scans;
@@ -229,6 +224,20 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
     f
 }
 
+/// The queries behind a candidate: linked by query_hash (SQL Server 2019+), or whose plan carries the same request.
+pub(crate) fn asking_queries<'a>(queries: &'a [QueryStat], c: &Candidate) -> Vec<&'a QueryStat> {
+    queries
+        .iter()
+        .filter(|q| q.query_hash.as_ref().is_some_and(|h| c.query_hashes.iter().any(|x| x.eq_ignore_ascii_case(h))))
+        .chain(queries.iter().filter(|q| plan_asks_for(q, c)))
+        .fold(Vec::new(), |mut acc, q| {
+            if !acc.iter().any(|a: &&QueryStat| a.id == q.id) {
+                acc.push(q);
+            }
+            acc
+        })
+}
+
 fn plan_asks_for(q: &QueryStat, c: &Candidate) -> bool {
     q.plan.as_ref().is_some_and(|p| {
         p.index_hints.iter().any(|h| {
@@ -242,7 +251,7 @@ fn plan_asks_for(q: &QueryStat, c: &Candidate) -> bool {
     })
 }
 
-fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Fix {
+pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Fix {
     let engine = snapshot.server.engine;
     let keys: Vec<String> = existing.columns.clone();
     let mut all_include = existing.include.clone();
@@ -278,18 +287,24 @@ fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> F
     }
 }
 
-fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
-    let base = snapshot.indexes_on(schema, table).find(|i| i.is_clustered || i.is_primary_key).and_then(|i| i.writes);
-    let pg_writes = snapshot
-        .table(schema, table)
-        .and_then(|t| Some(t.inserts? + t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0)));
-    let writes = base.or(pg_writes)?;
-    let days = counter_days(snapshot).filter(|d| *d >= 0.5)?;
-    let per_day = writes / days;
+pub(crate) fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
+    let per_day = writes_per_day(snapshot, schema, table)?;
     Some(format!(
         "{schema}.{table} receives about {} writes a day; each one will also update this index.",
         format::count(per_day)
     ))
+}
+
+/// Inserts, updates and deletes a day on a table, from the clustered index's update counter (SQL Server) or the
+/// table's row counters (Postgres, MySQL), over the days the counters have been accumulating.
+pub(crate) fn writes_per_day(snapshot: &Snapshot, schema: &str, table: &str) -> Option<f64> {
+    let base = snapshot.indexes_on(schema, table).find(|i| i.is_clustered || i.is_primary_key).and_then(|i| i.writes);
+    let row_writes = snapshot
+        .table(schema, table)
+        .and_then(|t| Some(t.inserts? + t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0)));
+    let writes = base.or(row_writes)?;
+    let days = counter_days(snapshot).filter(|d| *d >= 0.5)?;
+    Some(writes / days)
 }
 
 pub fn unused_index_info() -> CheckInfo {
@@ -410,7 +425,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
 }
 
 /// The foreign key whose columns this index leads with, if any: dropping it would leave that foreign key unindexed.
-fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -> Option<&'a culprit_core::ForeignKey> {
+pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -> Option<&'a culprit_core::ForeignKey> {
     let keys: Vec<String> = index.key_names().iter().map(|k| k.to_ascii_lowercase()).collect();
     snapshot.foreign_keys.iter().find(|fk| {
         fk.schema.eq_ignore_ascii_case(&index.schema)
@@ -421,7 +436,7 @@ fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -> Option<&'
     })
 }
 
-fn is_unused(i: &IndexStat) -> bool {
+pub(crate) fn is_unused(i: &IndexStat) -> bool {
     let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled && i.filter.is_none();
     is_candidate && i.reads == Some(0.0) && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0
 }
@@ -506,7 +521,7 @@ pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
     out
 }
 
-fn same_keys(a: &IndexStat, b: &IndexStat) -> bool {
+pub(crate) fn same_keys(a: &IndexStat, b: &IndexStat) -> bool {
     a.columns.len() == b.columns.len() && a.columns.iter().zip(&b.columns).all(|(x, y)| x.eq_ignore_ascii_case(y))
 }
 
@@ -609,16 +624,21 @@ pub fn filtered_scan_info() -> CheckInfo {
     }
 }
 
-struct ScanGroup<'a> {
-    schema: String,
-    table: String,
-    keys: Vec<String>,
-    predicate: String,
-    rows: f64,
-    queries: Vec<(&'a QueryStat, u32)>,
+pub(crate) struct ScanGroup<'a> {
+    pub(crate) schema: String,
+    pub(crate) table: String,
+    pub(crate) keys: Vec<String>,
+    pub(crate) predicate: String,
+    pub(crate) rows: f64,
+    pub(crate) queries: Vec<(&'a QueryStat, u32)>,
 }
 
 pub fn filtered_scan(snapshot: &Snapshot) -> Vec<Finding> {
+    scan_groups(snapshot).into_iter().map(|g| filtered_scan_finding(snapshot, g)).collect()
+}
+
+/// Full scans of large tables that keep only rows matching a filter no index leads with, grouped by table and keys.
+pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
     let mut groups: Vec<ScanGroup> = Vec::new();
     for q in app_queries(snapshot) {
         let Some(plan) = &q.plan else { continue };
@@ -661,7 +681,7 @@ pub fn filtered_scan(snapshot: &Snapshot) -> Vec<Finding> {
             }
         }
     }
-    groups.into_iter().map(|g| filtered_scan_finding(snapshot, g)).collect()
+    groups
 }
 
 fn split_object(object: &str) -> Option<(String, String)> {
@@ -755,7 +775,9 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
         let keeper = snapshot
             .indexes_on(&a.schema, &a.table)
             .filter(|b| b.name != a.name && !b.is_disabled && b.filter == a.filter && b.kind == a.kind)
-            .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)));
+            .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)))
+            // A read index isn't redundant to one nothing reads: drop the unread one instead (the unused check says so).
+            .filter(|b| !(is_unused(b) && a.reads.is_some_and(|r| r > 0.0)));
         if let Some(b) = keeper {
             out.push((a, b));
         }

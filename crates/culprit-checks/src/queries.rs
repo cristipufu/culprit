@@ -491,15 +491,15 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics.push(Metric::new("Average", q.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Slowest", max, Unit::Ms));
             f.metrics.push(Metric::new("Std deviation", stddev, Unit::Ms));
-            f.fix = Some(Fix {
-                summary: match snapshot.server.engine {
-                    Engine::Mssql => "If the slow runs use unusual parameter values, try OPTION (RECOMPILE) on this statement, or compatibility level 160 for parameter-sensitive plan optimization. If they wait on locks, see Live.".into(),
-                    Engine::Postgres => "If the slow runs use unusual parameter values, compare their plans with EXPLAIN on those values; plan_cache_mode = force_custom_plan for this statement can help. If they wait on locks, see Live.".into(),
-                    Engine::Mysql => "If the slow runs use unusual parameter values, compare their EXPLAIN output with a typical run; an index hint or a histogram on the skewed column (ANALYZE TABLE … UPDATE HISTOGRAM) can help. If they wait on locks, see Live.".into(),
-                },
-                sql: None,
-                cost: None,
+            // The same ladders as `parameter-sensitive`: the cause is usually the same, only the evidence is coarser.
+            f.fix = Some(match snapshot.server.engine {
+                Engine::Mssql => crate::sensitivity::mssql_fix(q, None),
+                Engine::Postgres => crate::sensitivity::postgres_fix(),
+                Engine::Mysql => crate::sensitivity::mysql_fix(0.0),
             });
+            if snapshot.server.engine == Engine::Postgres {
+                f.caveats.push("Postgres keeps one minimum, average, maximum and standard deviation per statement, so Culprit can't tell which values were slow or how many calls were.".into());
+            }
             Some(f)
         })
         .collect()

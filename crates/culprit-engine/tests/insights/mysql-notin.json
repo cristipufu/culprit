@@ -1,0 +1,74 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "421454.40"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "customers",
+          "access_type": "index",
+          "key": "ix_customers_region",
+          "used_key_parts": [
+            "region"
+          ],
+          "key_length": "66",
+          "rows_examined_per_scan": 199116,
+          "rows_produced_per_join": 199116,
+          "filtered": "100.00",
+          "using_index": true,
+          "cost_info": {
+            "read_cost": "1057.00",
+            "eval_cost": "19911.60",
+            "prefix_cost": "20968.60",
+            "data_read_per_join": "167M"
+          },
+          "used_columns": [
+            "id"
+          ]
+        }
+      },
+      {
+        "table": {
+          "table_name": "<subquery2>",
+          "access_type": "eq_ref",
+          "key": "<auto_distinct_key>",
+          "key_length": "5",
+          "ref": [
+            "shop.customers.id"
+          ],
+          "rows_examined_per_scan": 1,
+          "not_exists": true,
+          "attached_condition": "<if>(is_not_null_compl(<subquery2>), <if>(found_match(<subquery2>), false, true), true)",
+          "materialized_from_subquery": {
+            "using_temporary_table": true,
+            "query_block": {
+              "table": {
+                "table_name": "orders",
+                "access_type": "ALL",
+                "possible_keys": [
+                  "fk_orders_customer"
+                ],
+                "rows_examined_per_scan": 498573,
+                "rows_produced_per_join": 498573,
+                "filtered": "100.00",
+                "cost_info": {
+                  "read_cost": "1764.00",
+                  "eval_cost": "49857.30",
+                  "prefix_cost": "51621.30",
+                  "data_read_per_join": "106M"
+                },
+                "used_columns": [
+                  "customer_id",
+                  "promo_code"
+                ],
+                "attached_condition": "(`shop`.`orders`.`promo_code` is not null)"
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

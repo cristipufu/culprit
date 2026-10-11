@@ -1,0 +1,280 @@
+[
+  {
+    "category": "indexes",
+    "description": "Index suggestions recorded by SQL Server's optimizer, merged with each other and checked against existing indexes.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "missing-index",
+    "requires": [
+      "missing-indexes"
+    ],
+    "title": "Missing indexes"
+  },
+  {
+    "category": "indexes",
+    "description": "Heavy queries whose plan reads a large table in full and keeps only the rows matching a filter that no index supports.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "filtered-scan",
+    "requires": [
+      "query-plans"
+    ],
+    "title": "Scans an index would avoid"
+  },
+  {
+    "category": "indexes",
+    "description": "Indexes that are maintained on every write but no query has read since usage counters were reset.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "unused-index",
+    "requires": [
+      "index-usage"
+    ],
+    "title": "Unused indexes"
+  },
+  {
+    "category": "indexes",
+    "description": "Indexes with the same keys as another index, or whose keys are a leading part of a wider one.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "duplicate-index",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Duplicate and redundant indexes"
+  },
+  {
+    "category": "indexes",
+    "description": "Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "unindexed-fk",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Foreign keys without an index"
+  },
+  {
+    "category": "indexes",
+    "description": "Two indexes that lead with the same column where one is barely read: queries that use it can almost always use the other.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "overlapping-index",
+    "requires": [
+      "index-usage"
+    ],
+    "title": "Overlapping indexes"
+  },
+  {
+    "category": "indexes",
+    "description": "Tables with many secondary indexes that are written a lot: every insert updates each index.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "over-indexed",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Many indexes on write-heavy tables"
+  },
+  {
+    "category": "indexes",
+    "description": "Large tables that queries read in full many times a day, from the table scan counters.",
+    "engines": [
+      "postgres",
+      "mysql"
+    ],
+    "id": "scan-heavy",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Tables read in full over and over"
+  },
+  {
+    "category": "queries",
+    "description": "Plan-forcing recommendations from automatic tuning, forced plans and Query Store hints that stopped applying, and automatic plan correction left off.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "tuning-advice",
+    "requires": [
+      "query-store"
+    ],
+    "title": "SQL Server's own tuning advice"
+  },
+  {
+    "category": "queries",
+    "description": "The same statement sent many times with different literal values (or value-list lengths), so the database compiles and tracks each copy separately; and plan caches filled with single-use plans.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "query-family",
+    "requires": [],
+    "title": "Statements with literals baked in"
+  },
+  {
+    "category": "queries",
+    "description": "Single queries that take a large share of database time, with what their plan spends it on.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "heavy-query",
+    "requires": [],
+    "title": "Queries that dominate database time"
+  },
+  {
+    "category": "queries",
+    "description": "Tiny queries executed so often that the round trips cost more than the work, typically a loop in application code.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "chatty-query",
+    "requires": [],
+    "title": "Chatty queries (N+1)"
+  },
+  {
+    "category": "queries",
+    "description": "Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "plan-warnings",
+    "requires": [
+      "query-plans"
+    ],
+    "title": "Plan warnings"
+  },
+  {
+    "category": "queries",
+    "description": "Queries whose current plan is much slower than a plan they used before.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "plan-regression",
+    "requires": [
+      "query-store"
+    ],
+    "title": "Plan regressions"
+  },
+  {
+    "category": "queries",
+    "description": "Queries whose runs became much slower at some point in the window, with when it started and whether a plan change coincides. Needs Query Store history or a few earlier scans.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "regression",
+    "requires": [],
+    "title": "Queries that got slower"
+  },
+  {
+    "category": "queries",
+    "description": "Queries whose duration swings wildly between runs with the same plan, a sign of parameter sensitivity or blocking.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "unstable-query",
+    "requires": [],
+    "title": "Unstable queries"
+  },
+  {
+    "category": "queries",
+    "description": "Statements whose sorts, hashes or temporary tables outgrow memory and spill to disk.",
+    "engines": [
+      "postgres",
+      "mysql"
+    ],
+    "id": "temp-spill",
+    "requires": [],
+    "title": "Queries writing temp files"
+  },
+  {
+    "category": "maintenance",
+    "description": "Tables whose optimizer statistics are far behind their data, which leads to bad row estimates and plans.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "stale-stats",
+    "requires": [
+      "statistics"
+    ],
+    "title": "Stale statistics"
+  },
+  {
+    "category": "maintenance",
+    "description": "Heaps grow forwarded records and can't be read in key order; most OLTP tables should be clustered.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "heap-table",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Large tables without a clustered index"
+  },
+  {
+    "category": "maintenance",
+    "description": "Tables carrying many dead tuples, which bloat storage and slow scans.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "dead-rows",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Dead rows and lagging autovacuum"
+  },
+  {
+    "category": "maintenance",
+    "description": "Transaction ID age approaching the point where Postgres stops accepting writes to protect data.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "xid-age",
+    "requires": [
+      "table-stats"
+    ],
+    "title": "Transaction ID wraparound risk"
+  },
+  {
+    "category": "configuration",
+    "description": "Database and server settings that commonly hurt performance or hide the data needed to diagnose it.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "config",
+    "requires": [],
+    "title": "Configuration"
+  }
+]

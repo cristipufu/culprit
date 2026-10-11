@@ -5,8 +5,10 @@
 //! that exact statement in the desktop app. Every call is written to the audit log.
 
 mod init;
+mod locks;
 mod tools;
 mod view;
+mod waits_view;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

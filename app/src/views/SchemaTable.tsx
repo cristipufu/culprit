@@ -480,8 +480,15 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                           <span className="muted"> · {[...new Set(uses.flatMap((u) => u.ops))].slice(0, 2).join(", ").toLowerCase()}</span>
                         </button>
                       ) : (
-                        <span className="muted" title={`None of the plans Culprit captured (the ${planned} heaviest queries) use it`}>
-                          none captured
+                        <span
+                          className="muted"
+                          title={
+                            planned === 0
+                              ? "Culprit has no query plans for this database yet, so it can't tell which queries use each index. Its read count is on the right."
+                              : `None of the ${planned} plans Culprit captured (the heaviest queries) use it; lighter queries may still read it, as the read count shows.`
+                          }
+                        >
+                          {planned === 0 ? "no plans yet" : (i.reads ?? 0) > 0 ? "lighter queries" : "no query"}
                         </span>
                       )}
                     </td>

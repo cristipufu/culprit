@@ -1,0 +1,464 @@
+{
+ "mssql-demo": {
+  "baseline": {
+   "end": "2026-10-11T14:00:00Z",
+   "start": "2026-10-11T13:40:00Z"
+  },
+  "baseline_coverage": 0.75,
+  "baseline_total": {
+   "executions": 471.0,
+   "max_ms": null,
+   "mean_ms": 162.80727600849258,
+   "min_ms": null,
+   "total_ms": 76682.227
+  },
+  "connection": "mssql-demo",
+  "engine": "mssql",
+  "min_executions": 10.0,
+  "notes": [
+   "Query Store has data for 75% of the baseline period; queries missing from it may not have been recorded."
+  ],
+  "queries": [
+   {
+    "baseline": {
+     "executions": 400.0,
+     "max_ms": 0.406,
+     "mean_ms": 0.023762500000000002,
+     "min_ms": 0.014,
+     "total_ms": 9.505
+    },
+    "headline": "Got 293\u00d7 slower (0.02 ms \u2192 7.0 ms per run) on Sun 14:00 UTC, when SQL Server switched from plan 163 to plan 198 (events: Key Lookup (primary key) \u2192 Clustered Index Scan (primary key)).",
+    "impact_ms": 2572.7321125,
+    "object_name": null,
+    "plan_switch": {
+     "at": "2026-10-11T14:00:00Z",
+     "from": "163",
+     "from_label": "Key Lookup",
+     "to": "198",
+     "to_label": "Clustered Index Scan",
+     "what": "events: Key Lookup (primary key) \u2192 Clustered Index Scan (primary key)"
+    },
+    "query_id": "146",
+    "ratio": 292.82905436349995,
+    "reason": null,
+    "recent": {
+     "executions": 371.0,
+     "max_ms": 39.105,
+     "mean_ms": 6.958350404312668,
+     "min_ms": 0.012,
+     "total_ms": 2581.548
+    },
+    "recent_share": 0.023215047603451732,
+    "same_plan": false,
+    "status": "regressed",
+    "text": "SELECT @c = COUNT(*) FROM culprit_lab.events WHERE tenant = @t AND payload <> 'y'"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 600 runs averaging 19 ms, 10% of recent database time.",
+    "impact_ms": 11262.406,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "7",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 600.0,
+     "max_ms": 30.02,
+     "mean_ms": 18.770676666666667,
+     "min_ms": 17.796,
+     "total_ms": 11262.406
+    },
+    "recent_share": 0.10127926787315225,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT [id], [name], [segment] FROM [shop].[customers] WHERE [email] = @P1"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 300 runs averaging 11 ms, 3% of recent database time.",
+    "impact_ms": 3266.931,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "9",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 300.0,
+     "max_ms": 23.356,
+     "mean_ms": 10.88977,
+     "min_ms": 6.919,
+     "total_ms": 3266.931
+    },
+    "recent_share": 0.02937848092779688,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 2.0K runs averaging 1.4 ms, 3% of recent database time.",
+    "impact_ms": 2861.132,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "10",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 2005.0,
+     "max_ms": 341.517,
+     "mean_ms": 1.4269985037406485,
+     "min_ms": 0.521,
+     "total_ms": 2861.132
+    },
+    "recent_share": 0.025729258406103264,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 150 runs averaging 15 ms, 2% of recent database time.",
+    "impact_ms": 2263.114,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "8",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 150.0,
+     "max_ms": 48.289,
+     "mean_ms": 15.087426666666667,
+     "min_ms": 9.287,
+     "total_ms": 2263.114
+    },
+    "recent_share": 0.020351470994162443,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 255 runs averaging 6.2 ms, 1% of recent database time.",
+    "impact_ms": 1592.676,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "179",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 255.0,
+     "max_ms": 24.308,
+     "mean_ms": 6.245788235294118,
+     "min_ms": 3.094,
+     "total_ms": 1592.676
+    },
+    "recent_share": 0.014322433344983357,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT COUNT(*) FROM shop.order_items a JOIN shop.orders o ON o.id = a.order_id WHERE o.status = 'shipped'"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 30K runs averaging 0.01 ms, <1% of recent database time.",
+    "impact_ms": 414.516,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "6",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 30000.0,
+     "max_ms": 0.548,
+     "mean_ms": 0.0138172,
+     "min_ms": 0.006,
+     "total_ms": 414.516
+    },
+    "recent_share": 0.0037276117555793656,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT [id], [name], [price] FROM [shop].[products] WHERE [id] = @P1"
+   },
+   {
+    "baseline": null,
+    "headline": "Started running: 2.0K runs averaging 0.04 ms, <1% of recent database time.",
+    "impact_ms": 80.409,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "5",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 2000.0,
+     "max_ms": 0.209,
+     "mean_ms": 0.040204500000000004,
+     "min_ms": 0.024,
+     "total_ms": 80.409
+    },
+    "recent_share": 0.0007230927965491832,
+    "same_plan": false,
+    "status": "new",
+    "text": "SELECT TOP (20) [id], [status], [total], [created_at] FROM [shop].[orders] WHERE [customer_id] = @P1 ORDER BY [created_at] DESC"
+   },
+   {
+    "baseline": {
+     "executions": 2.0,
+     "max_ms": 43269.849,
+     "mean_ms": 21635.161,
+     "min_ms": 0.473,
+     "total_ms": 43270.322
+    },
+    "headline": "Too few runs to compare: 2 before and 1 after (Culprit needs 10 in each).",
+    "impact_ms": 43351.597,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "138",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 1.0,
+     "max_ms": 43351.597,
+     "mean_ms": 43351.597,
+     "min_ms": 43351.597,
+     "total_ms": 43351.597
+    },
+    "recent_share": 0.3898472498054096,
+    "same_plan": true,
+    "status": "low-sample",
+    "text": "UPDATE [shop].[orders] set [status] = [status]  WHERE [id]=@1"
+   },
+   {
+    "baseline": {
+     "executions": 1.0,
+     "max_ms": 0.239,
+     "mean_ms": 0.239,
+     "min_ms": 0.239,
+     "total_ms": 0.239
+    },
+    "headline": "Too few runs to compare: 1 before and 1 after (Culprit needs 10 in each).",
+    "impact_ms": 43348.858,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "143",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 1.0,
+     "max_ms": 43348.858,
+     "mean_ms": 43348.858,
+     "min_ms": 43348.858,
+     "total_ms": 43348.858
+    },
+    "recent_share": 0.38982261884159025,
+    "same_plan": true,
+    "status": "low-sample",
+    "text": "SELECT [status] FROM [shop].[orders] WHERE [id]=@1"
+   },
+   {
+    "baseline": {
+     "executions": 2.0,
+     "max_ms": 2403.944,
+     "mean_ms": 1202.073,
+     "min_ms": 0.202,
+     "total_ms": 2404.146
+    },
+    "headline": "Too few runs to compare: 2 before and 1 after (Culprit needs 10 in each).",
+    "impact_ms": 0.193,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "161",
+    "ratio": null,
+    "reason": null,
+    "recent": {
+     "executions": 1.0,
+     "max_ms": 0.193,
+     "mean_ms": 0.193,
+     "min_ms": 0.193,
+     "total_ms": 0.193
+    },
+    "recent_share": 1.7355881771193814e-06,
+    "same_plan": true,
+    "status": "low-sample",
+    "text": "UPDATE [shop].[orders] set [total] = [total]+@1  WHERE [id]=@2"
+   }
+  ],
+  "recent": {
+   "end": "2026-10-11T14:15:19Z",
+   "start": "2026-10-11T14:00:00Z"
+  },
+  "recent_total": {
+   "executions": 35695.0,
+   "max_ms": null,
+   "mean_ms": 3.1153241350329175,
+   "min_ms": null,
+   "total_ms": 111201.495
+  },
+  "source": "query-store",
+  "summary": "Database time rose 1.9\u00d7 for the time covered: 1 min over 20 min before, 2 min over 15 min since. 1 query got slower and 7 queries are new.",
+  "threshold": 1.5,
+  "unchanged": 0
+ },
+ "pg-demo": {
+  "baseline": {
+   "end": "2026-10-11T13:58:40Z",
+   "start": "2026-10-11T13:58:38Z"
+  },
+  "baseline_coverage": 1.0,
+  "baseline_total": {
+   "executions": 300.0,
+   "max_ms": null,
+   "mean_ms": 0.00522233666658091,
+   "min_ms": null,
+   "total_ms": 1.5667009999742731
+  },
+  "connection": "pg-demo",
+  "engine": "postgres",
+  "min_executions": 10.0,
+  "notes": [
+   "Periods follow Culprit's scans: 3 scans between Sun 13:58 UTC and Sun 13:58 UTC."
+  ],
+  "queries": [
+   {
+    "baseline": {
+     "executions": 300.0,
+     "max_ms": null,
+     "mean_ms": 0.005222336666666661,
+     "min_ms": null,
+     "total_ms": 1.5667009999999983
+    },
+    "headline": "Got 791\u00d7 slower (0.01 ms \u2192 4.1 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index Scan on items \u2192 Seq Scan on items).",
+    "impact_ms": 495.17235560000006,
+    "object_name": null,
+    "plan_switch": {
+     "at": "2026-10-11T13:58:43Z",
+     "from": "7a33ef",
+     "from_label": "Index Scan on items",
+     "to": "8eb0c6",
+     "to_label": "Seq Scan on items",
+     "what": "Index Scan on items \u2192 Seq Scan on items"
+    },
+    "query_id": "1712252730045240109",
+    "ratio": 791.1513364707123,
+    "reason": null,
+    "recent": {
+     "executions": 120.0,
+     "max_ms": null,
+     "mean_ms": 4.131658633333334,
+     "min_ms": null,
+     "total_ms": 495.7990360000001
+    },
+    "recent_share": 0.9980772059593973,
+    "same_plan": false,
+    "status": "regressed",
+    "text": "SELECT count(*), max(note) FROM culprit_lab.items WHERE grp = $1"
+   }
+  ],
+  "recent": {
+   "end": "2026-10-11T13:58:43Z",
+   "start": "2026-10-11T13:58:40Z"
+  },
+  "recent_total": {
+   "executions": 121.0,
+   "max_ms": null,
+   "mean_ms": 4.105406545454729,
+   "min_ms": null,
+   "total_ms": 496.75419200002216
+  },
+  "source": "scans",
+  "summary": "Database time rose 211\u00d7 for the time covered: 2 ms over 2.0 s before, 497 ms over 3.0 s since. 1 query got slower.",
+  "threshold": 1.5,
+  "unchanged": 0
+ },
+ "mysql-demo": {
+  "baseline": {
+   "end": "2026-10-11T13:58:45Z",
+   "start": "2026-10-11T13:58:43Z"
+  },
+  "baseline_coverage": 1.0,
+  "baseline_total": {
+   "executions": 400.0,
+   "max_ms": null,
+   "mean_ms": 0.40314898500000707,
+   "min_ms": null,
+   "total_ms": 161.25959400000283
+  },
+  "connection": "mysql-demo",
+  "engine": "mysql",
+  "min_executions": 10.0,
+  "notes": [
+   "Periods follow Culprit's scans: 3 scans between Sun 13:58 UTC and Sun 13:58 UTC."
+  ],
+  "queries": [
+   {
+    "baseline": {
+     "executions": 400.0,
+     "max_ms": null,
+     "mean_ms": 0.40314898499999996,
+     "min_ms": null,
+     "total_ms": 161.259594
+    },
+    "headline": "Got 17\u00d7 slower (0.40 ms \u2192 6.9 ms per run) on Sun 13:58 UTC, when the plan Culprit captured for it changed (Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items).",
+    "impact_ms": 972.9237272500002,
+    "object_name": null,
+    "plan_switch": {
+     "at": "2026-10-11T13:58:48Z",
+     "from": "a525b0",
+     "from_label": "Index lookup on culprit_lab_items",
+     "to": "772a34",
+     "to_label": "Table scan on culprit_lab_items",
+     "what": "Index lookup on culprit_lab_items \u2192 Table scan on culprit_lab_items"
+    },
+    "query_id": "93a584c5a6ac9536",
+    "ratio": 17.08873747174799,
+    "reason": null,
+    "recent": {
+     "executions": 150.0,
+     "max_ms": null,
+     "mean_ms": 6.889307166666668,
+     "min_ms": null,
+     "total_ms": 1033.396075
+    },
+    "recent_share": 0.9861288267808871,
+    "same_plan": false,
+    "status": "regressed",
+    "text": "SELECT COUNT ( * ) , MAX ( `note` ) FROM `culprit_lab_items` WHERE `grp` = ?"
+   },
+   {
+    "baseline": null,
+    "headline": "Ran once recently, but can't be compared: Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then).",
+    "impact_ms": 14.536048,
+    "object_name": null,
+    "plan_switch": null,
+    "query_id": "ad78bacd6db2b9c3",
+    "ratio": null,
+    "reason": "Culprit's earlier scans didn't track it (it wasn't among the heaviest queries then)",
+    "recent": {
+     "executions": 1.0,
+     "max_ms": null,
+     "mean_ms": 14.536048,
+     "min_ms": null,
+     "total_ms": 14.536048
+    },
+    "recent_share": 0.013871173219107356,
+    "same_plan": false,
+    "status": "not-comparable",
+    "text": "ALTER TABLE `culprit_lab_items` DROP INDEX `ix_grp`"
+   }
+  ],
+  "recent": {
+   "end": "2026-10-11T13:58:48Z",
+   "start": "2026-10-11T13:58:45Z"
+  },
+  "recent_total": {
+   "executions": 151.0,
+   "max_ms": null,
+   "mean_ms": 6.939947834437126,
+   "min_ms": null,
+   "total_ms": 1047.932123000006
+  },
+  "source": "scans",
+  "summary": "Database time rose 4.3\u00d7 for the time covered: 161 ms over 2.0 s before, 1.0 s over 3.0 s since. 1 query got slower.",
+  "threshold": 1.5,
+  "unchanged": 0
+ }
+}

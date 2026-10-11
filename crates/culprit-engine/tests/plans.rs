@@ -188,7 +188,9 @@ fn compares_a_seek_with_the_scan_an_implicit_conversion_forces() {
     let access = diff.changes.iter().find(|c| c.kind == ChangeKind::Access).expect("an access change");
     assert_eq!(access.title, "customers: Index Seek (ix_customers_email) → Index Scan (ix_customers_email)");
     assert!(
-        diff.headlines.iter().any(|h| h == "Plan B scans customers where plan A seeks ix_customers_email."),
+        diff.headlines.iter().any(|h| h
+            == "Plan B is estimated 151× more expensive because it scans customers (88% of its cost) where plan A seeks \
+                ix_customers_email."),
         "{:?}",
         diff.headlines
     );
@@ -198,7 +200,12 @@ fn compares_a_seek_with_the_scan_an_implicit_conversion_forces() {
     );
 
     let named = plan_diff_named(&seek, "Plan 815", &scan, "Plan 685");
-    assert!(named.headlines.iter().any(|h| h.starts_with("Plan 685 scans customers")), "{:?}", named.headlines);
+    assert!(
+        named.headlines[0].starts_with("Plan 685 is estimated")
+            && named.headlines[0].contains("because it scans customers"),
+        "{:?}",
+        named.headlines
+    );
 }
 
 #[test]

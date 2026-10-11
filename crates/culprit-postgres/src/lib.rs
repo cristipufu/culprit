@@ -2,7 +2,11 @@
 
 mod collect;
 mod connect;
+pub mod deadlocks;
+mod generic;
 pub mod plan_json;
+mod pressure;
+mod progress;
 mod rows;
 mod sessions;
 
@@ -10,8 +14,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    ConnectionSpec, Engine, Environment, Error, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet,
-    ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
+    ConnectionSpec, Engine, Environment, Error, ErrorCode, ExplainMode, LiveState, Plan, PlanKind, Provider, Result,
+    ResultSet, ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use serde_json::Value;
 use tokio_postgres::types::Type;
@@ -65,16 +69,18 @@ impl Provider for PostgresProvider {
             ExplainMode::Estimated => {
                 let client = self.connector.connect(INTERACTIVE).await?;
                 let parameters = parameter_count(&client, statement).await?;
-                let (options, kind) = if parameters == 0 {
-                    ("FORMAT JSON, VERBOSE", PlanKind::Estimated)
-                } else if server_version(&client).await? >= 160_000 {
-                    ("FORMAT JSON, VERBOSE, GENERIC_PLAN", PlanKind::Generic)
-                } else {
-                    return Err(Error::invalid("This statement has $n parameters").with_hint(
-                        "Replace them with sample values; planning with placeholders needs PostgreSQL 16 or newer.",
-                    ));
-                };
-                explain_text(&client, &format!("EXPLAIN ({options}) {statement}"), kind, statement).await
+                if parameters == 0 {
+                    return explain_text(
+                        &client,
+                        &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
+                        PlanKind::Estimated,
+                        statement,
+                    )
+                    .await;
+                }
+                // Placeholders ($1, $2… as pg_stat_statements records statements): the generic plan, never run.
+                let json = generic::plan_json(&client, statement, server_version(&client).await?).await?;
+                plan_json::parse(&json, PlanKind::Generic, Some(statement))
             }
             ExplainMode::Analyze => {
                 let client = self.connector.connect(EXECUTION).await?;
@@ -109,6 +115,50 @@ impl Provider for PostgresProvider {
 
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
         sessions::interrupt(&self.connector, session, action).await
+    }
+
+    async fn lock_waits(&self) -> Result<Vec<culprit_core::LockWait>> {
+        let client = self.connector.connect(INTERACTIVE).await?;
+        deadlocks::lock_waits(&client).await
+    }
+
+    async fn deadlocks(&self, since_hours: f64) -> Result<culprit_core::DeadlockReport> {
+        let client = self.connector.connect(INTERACTIVE).await?;
+        deadlocks::recent(&client, since_hours).await
+    }
+
+    async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
+        let client = self.connector.connect(INTERACTIVE).await?;
+        crate::pressure::sample(&client, seconds).await
+    }
+
+    async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
+        Err(Error::new(ErrorCode::Unsupported, "Postgres doesn't keep the actual plan of past runs").with_hint(
+            "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the \
+             editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
+        ))
+    }
+
+    async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
+        let mut progress = progress::query_progress(&self.connector, session).await?;
+        if with_plan
+            && progress.running
+            && let Some(statement) = progress.statement.clone()
+        {
+            // EXPLAIN without ANALYZE: plans the statement's text again, never runs it.
+            match self.explain(&statement, ExplainMode::Estimated).await {
+                Ok(mut plan) => {
+                    plan.raw = None;
+                    progress.plan = Some(plan);
+                }
+                Err(e) => {
+                    let base = progress.note.take().unwrap_or_default();
+                    progress.note =
+                        Some(format!("{base} Its plan couldn't be shown: {}", e.message).trim().to_string());
+                }
+            }
+        }
+        Ok(progress)
     }
 
     async fn live(&self) -> Result<LiveState> {
@@ -172,7 +222,14 @@ impl Provider for PostgresProvider {
             }
         }
         waits.sort_by(|a, b| b.tasks.unwrap_or(0.0).total_cmp(&a.tasks.unwrap_or(0.0)));
-        Ok(LiveState { taken_at: now, sessions, waits, session_actions: Vec::new(), session_actions_note: None })
+        Ok(LiveState {
+            taken_at: now,
+            sessions,
+            waits,
+            session_actions: Vec::new(),
+            session_actions_note: None,
+            blocking: None,
+        })
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {

@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use culprit_core::{
     Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind,
-    QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat,
-    WaitStat, Workload,
+    QueryFamily, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
+    StatisticsInfo, TableStat, WaitStat, Workload,
 };
 use tokio_postgres::Client;
 
@@ -25,6 +25,11 @@ pub struct Probe {
     pub privileged: bool,
     pub cloud: Option<String>,
     pub statements: StatementsAccess,
+    /// The server already loads pg_stat_statements (shared_preload_libraries), so it has been recording all along and
+    /// only the extension's view is missing.
+    pub preloaded: bool,
+    /// This login can create the extension (superuser, a cloud admin role, or CREATE on the database).
+    pub can_create_extension: bool,
 }
 
 pub enum StatementsAccess {
@@ -41,7 +46,7 @@ impl Probe {
     }
 
     pub fn generic_plans(&self) -> bool {
-        self.version_num >= 160_000
+        self.version_num >= crate::generic::MIN_VERSION
     }
 
     fn statements_usable(&self) -> bool {
@@ -89,11 +94,11 @@ impl Probe {
             }
         } else {
             let reason = format!(
-                "Planning the heaviest queries without running them needs EXPLAIN (GENERIC_PLAN), added in PostgreSQL 16. This server runs {}.",
+                "Planning the heaviest queries without running them needs PostgreSQL 12 or newer. This server runs {}.",
                 self.version.split_whitespace().next().unwrap_or(&self.version)
             );
             let fix = Some(
-                "Upgrade to PostgreSQL 16 or newer, or explain a query with sample values in the editor.".to_string(),
+                "Upgrade to PostgreSQL 12 or newer, or explain a query with sample values in the editor.".to_string(),
             );
             missing.push(MissingCapability {
                 capability: Capability::GenericPlans,
@@ -127,6 +132,17 @@ impl Probe {
     }
 
     fn statements_fix(&self) -> String {
+        if self.preloaded {
+            let who = if self.can_create_extension {
+                String::new()
+            } else {
+                " as a user who can create extensions (an admin role, or the database owner)".to_string()
+            };
+            return format!(
+                "Run CREATE EXTENSION pg_stat_statements; in this database{who}. The server already loads it, so no restart is \
+                 needed and the statistics it has been recording since the last restart appear right away."
+            );
+        }
         match self.cloud.as_deref() {
             Some("Amazon RDS" | "Amazon Aurora") => "Add pg_stat_statements to shared_preload_libraries in the DB parameter group, reboot, then run CREATE EXTENSION pg_stat_statements; in this database.".into(),
             Some("Azure Database for PostgreSQL") => "Add PG_STAT_STATEMENTS to shared_preload_libraries and azure.extensions in the server parameters, restart, then run CREATE EXTENSION pg_stat_statements; in this database.".into(),
@@ -151,7 +167,12 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
                   WHERE e.extname = 'pg_stat_statements') AS pgss_schema,
                 (SELECT string_agg(DISTINCT split_part(name, '.', 1), ',') FROM pg_settings
                   WHERE name ~ '^(rds|azure|cloudsql|alloydb|neon)\\.') AS cloud_settings,
-                EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'aurora_version') AS aurora",
+                EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'aurora_version') AS aurora,
+                'pg_stat_statements' = ANY (string_to_array(replace(current_setting('shared_preload_libraries'), ' ', ''), ',')) AS preloaded,
+                (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
+                  OR EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN ('rds_superuser', 'azure_pg_admin', 'cloudsqlsuperuser')
+                               AND pg_has_role(current_user, r.oid, 'MEMBER'))
+                  OR has_database_privilege(current_database(), 'CREATE') AS can_create_extension",
         started = iso("pg_postmaster_start_time()"),
         now = iso("now()"),
     );
@@ -169,6 +190,8 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
         privileged: row.flag("privileged"),
         cloud,
         statements: StatementsAccess::NotInstalled,
+        preloaded: row.flag("preloaded"),
+        can_create_extension: row.flag("can_create_extension"),
     };
     if let Some(schema) = row.text("pgss_schema") {
         probe.statements = statements_access(client, &schema, version_num).await;
@@ -252,7 +275,7 @@ pub async fn snapshot(
         },
         async {
             let client = connector.connect(COLLECTOR).await?;
-            Ok::<_, culprit_core::Error>((settings(&client).await, waits(&client, &probe).await))
+            Ok::<_, culprit_core::Error>((settings(&client).await, crate::pressure::collect(&client, &probe).await))
         },
     );
 
@@ -261,11 +284,19 @@ pub async fn snapshot(
     let mut note =
         |collector: &str, message: String| notes.push(CollectorNote { collector: collector.into(), message });
 
+    let mut families = Vec::new();
+    let mut statement_status = Vec::new();
+    let (statements_ms, statements_io_ms) = match &workload {
+        Ok(Some(c)) => (c.workload.total_time_ms, c.io_ms),
+        _ => (0.0, 0.0),
+    };
     let workload = match workload {
         Ok(Some(collected)) => {
             if let Some(message) = collected.plan_note {
                 note("plans", message);
             }
+            families = collected.families;
+            statement_status = collected.status;
             if collected.workload.queries.iter().all(|q| q.plan.is_none()) {
                 server.capabilities.retain(|c| *c != Capability::QueryPlans);
             }
@@ -339,22 +370,28 @@ pub async fn snapshot(
         }
     }
 
-    let (mut settings_out, mut waits_out) = (Vec::new(), Vec::new());
+    let mut settings_out = Vec::new();
+    let mut pressure_out = None;
     match misc {
-        Ok((settings, waits)) => {
+        Ok((settings, (pressure, pressure_notes))) => {
             match settings {
                 Ok(s) => settings_out = s,
                 Err(e) => note("settings", e.message),
             }
-            match waits {
-                Ok(w) => waits_out = w,
-                Err(e) => {
-                    note("waits", e.message.clone());
-                    mark_missing(&mut server, Capability::WaitStats, e.message, e.hint);
-                }
+            for message in pressure_notes {
+                note("pressure", message);
             }
+            pressure_out = Some(pressure);
         }
         Err(e) => note("settings", e.message),
+    }
+    settings_out.extend(statement_status);
+    // PostgreSQL keeps no wait history: time by category comes from statement and WAL timing, when they are on.
+    let waits_out = crate::pressure::history_waits(&primary, &probe, statements_ms, statements_io_ms).await;
+    if waits_out.is_empty() {
+        server.capabilities.retain(|c| *c != Capability::WaitStats);
+    } else if !server.capabilities.contains(&Capability::WaitStats) {
+        server.capabilities.push(Capability::WaitStats);
     }
 
     let statistics = tables_out
@@ -389,8 +426,13 @@ pub async fn snapshot(
         waits: waits_out,
         resources: Vec::new(),
         settings: settings_out,
+        pressure: pressure_out,
         notes,
         options: Some(options.clone()),
+        query_families: families,
+        plan_cache: None,
+        tuning: None,
+        deadlocks: None,
     })
 }
 
@@ -405,6 +447,11 @@ fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String,
 struct CollectedWorkload {
     workload: Workload,
     plan_note: Option<String>,
+    families: Vec<QueryFamily>,
+    /// pg_stat_statements' own counters (entries evicted since reset), surfaced as status settings.
+    status: Vec<Setting>,
+    /// Disk read/write time across all statements (zero unless track_io_timing is on).
+    io_ms: f64,
 }
 
 async fn collect_workload(
@@ -434,11 +481,18 @@ async fn collect_with_base(
 ) -> Result<Option<CollectedWorkload>> {
     let totals = query_one(
         client,
-        &format!("SELECT coalesce(sum(total_ms), 0) AS total_ms, coalesce(sum(calls), 0) AS calls, count(*) AS n FROM ({base}) s"),
+        &format!("SELECT coalesce(sum(total_ms), 0) AS total_ms, coalesce(sum(calls), 0) AS calls, count(*) AS n, coalesce(sum(io_ms), 0) AS io_ms FROM ({base}) s"),
     )
     .await?;
-    let (total_ms, total_calls, count) = totals
-        .map(|r| (r.number("total_ms").unwrap_or(0.0), r.number("calls").unwrap_or(0.0), r.number("n").unwrap_or(0.0)))
+    let (total_ms, total_calls, count, io_ms) = totals
+        .map(|r| {
+            (
+                r.number("total_ms").unwrap_or(0.0),
+                r.number("calls").unwrap_or(0.0),
+                r.number("n").unwrap_or(0.0),
+                r.number("io_ms").unwrap_or(0.0),
+            )
+        })
         .unwrap_or_default();
 
     let start = match reset {
@@ -492,12 +546,44 @@ async fn collect_with_base(
             last_seen: None,
             plans: Vec::new(),
             plan: None,
-            waits: Vec::new(),
+            // Disk time is the only part of a statement's time PostgreSQL measures per statement.
+            waits: r
+                .number("io_ms")
+                .filter(|ms| *ms > 0.0)
+                .map(|ms| {
+                    vec![WaitStat {
+                        category: "IO".into(),
+                        wait_type: Some("data file reads and writes".into()),
+                        wait_ms: ms,
+                        tasks: None,
+                    }]
+                })
+                .unwrap_or_default(),
             trend: None,
+            spread: r.number("min_ms").map(|min_ms| Spread { min_ms: Some(min_ms), ..Default::default() }),
         })
         .collect();
 
-    let plan_note = if probe.generic_plans() { attach_plans(client, &mut queries, options.plans).await } else { None };
+    let plan_note = if probe.generic_plans() {
+        attach_plans(client, &mut queries, options.plans, probe.version_num).await
+    } else {
+        None
+    };
+    // Families and eviction counts are extras: a failure leaves them out, never the workload.
+    let families = query_families(client, base).await.unwrap_or_default();
+    let mut status = Vec::new();
+    if reset.is_some()
+        && let Some(info) = base_relation(base).map(|r| format!("{r}_info"))
+        && let Ok(Some(row)) = query_one(client, &format!("SELECT dealloc FROM {info}")).await
+        && let Some(dealloc) = row.number("dealloc")
+    {
+        status.push(Setting {
+            name: "pg_stat_statements.dealloc".into(),
+            value: format!("{dealloc:.0}"),
+            default_value: None,
+            scope: "status".into(),
+        });
+    }
 
     Ok(Some(CollectedWorkload {
         workload: Workload {
@@ -514,33 +600,77 @@ async fn collect_with_base(
             timeline: None,
         },
         plan_note,
+        families,
+        status,
+        io_ms,
     }))
+}
+
+/// The pg_stat_statements relation a base query reads (`"public".pg_stat_statements`).
+fn base_relation(base: &str) -> Option<&str> {
+    let from = base.find(" FROM ")? + " FROM ".len();
+    base[from..].split_whitespace().next()
+}
+
+/// Statements pg_stat_statements keeps apart only because a value list has a different length (`IN ($1, $2)` vs
+/// `IN ($1, $2, $3)`) or a VALUES clause a different number of rows: each is planned and tracked on its own.
+async fn query_families(client: &Client, base: &str) -> Result<Vec<QueryFamily>> {
+    let sql = format!(
+        r#"WITH s AS ({base}),
+         n AS (
+           SELECT id, calls, total_ms, query,
+             regexp_replace(
+               regexp_replace(
+                 regexp_replace(regexp_replace(query, '\$\d+', '$N', 'g'), '\$N(\s*,\s*\$N)+', '$N', 'g'),
+                 '(\(\$N\)\s*,\s*)+\(\$N\)', '($N), …', 'g'),
+               '\s+', ' ', 'g') AS family
+           FROM s WHERE id IS NOT NULL AND query <> '<insufficient privilege>')
+         SELECT md5(family) AS key, count(*) AS variants, sum(calls) AS executions, sum(total_ms) AS total_ms,
+                (array_agg(query ORDER BY total_ms DESC))[1] AS sample,
+                array_to_string((array_agg(id::text ORDER BY total_ms DESC))[1:5], ',') AS ids
+         FROM n GROUP BY family HAVING count(*) >= 5
+         ORDER BY count(*) DESC LIMIT 15"#
+    );
+    Ok(query(client, &sql)
+        .await?
+        .iter()
+        .map(|r| QueryFamily {
+            key: r.string("key"),
+            sample: r.string("sample"),
+            variants: r.number("variants").unwrap_or(0.0),
+            executions: r.number("executions").unwrap_or(0.0),
+            total_time_ms: r.number("total_ms").unwrap_or(0.0),
+            cached_bytes: None,
+            query_ids: r.string("ids").split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        })
+        .collect())
 }
 
 fn statements_base(relation: &str, version_num: u32) -> String {
     let names = if version_num >= 130_000 {
-        ("total_exec_time", "mean_exec_time", "max_exec_time", "stddev_exec_time")
+        ("total_exec_time", "mean_exec_time", "max_exec_time", "stddev_exec_time", "min_exec_time")
     } else {
-        ("total_time", "mean_time", "max_time", "stddev_time")
+        ("total_time", "mean_time", "max_time", "stddev_time", "min_time")
     };
     let toplevel = if version_num >= 140_000 { " AND toplevel" } else { "" };
     let first_seen = if version_num >= 170_000 { iso("stats_since") } else { "NULL::text".to_string() };
+    let io = crate::pressure::statements_io_column(version_num);
     format!(
-        "SELECT queryid::text AS id, query, calls, {} AS total_ms, {} AS mean_ms, {} AS max_ms, {} AS stddev_ms, rows,
+        "SELECT queryid::text AS id, query, calls, {} AS total_ms, {} AS mean_ms, {} AS max_ms, {} AS stddev_ms, {} AS min_ms, rows,
                 shared_blks_hit + shared_blks_read AS reads, shared_blks_read AS phys, temp_blks_written AS temp,
-                {first_seen} AS first_seen
+                {io} AS io_ms, {first_seen} AS first_seen
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
            AND query NOT LIKE '%{TAG}'",
-        names.0, names.1, names.2, names.3
+        names.0, names.1, names.2, names.3, names.4
     )
 }
 
 fn statements_base_legacy(relation: &str) -> String {
     format!(
         "SELECT queryid::text AS id, query, calls, total_time AS total_ms, mean_time AS mean_ms, max_time AS max_ms,
-                stddev_time AS stddev_ms, rows, shared_blks_hit + shared_blks_read AS reads, shared_blks_read AS phys,
-                temp_blks_written AS temp, NULL::text AS first_seen
+                stddev_time AS stddev_ms, min_time AS min_ms, rows, shared_blks_hit + shared_blks_read AS reads, shared_blks_read AS phys,
+                temp_blks_written AS temp, (blk_read_time + blk_write_time) AS io_ms, NULL::text AS first_seen
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
            AND query NOT LIKE '%{TAG}'"
@@ -548,7 +678,7 @@ fn statements_base_legacy(relation: &str) -> String {
 }
 
 /// Attach generic plans to the heaviest plannable statements. Returns a note when some could not be planned.
-async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32) -> Option<String> {
+async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, version_num: u32) -> Option<String> {
     let mut order: Vec<usize> = (0..queries.len()).collect();
     order.sort_by(|a, b| queries[*b].total_time_ms.total_cmp(&queries[*a].total_time_ms));
     let (mut attempted, mut planned) = (0u32, 0u32);
@@ -558,7 +688,7 @@ async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32) -
         }
         let Some(statement) = plannable(&queries[index].text) else { continue };
         attempted += 1;
-        let Some(json) = generic_plan_json(client, statement).await else { continue };
+        let Some(json) = generic_plan_json(client, statement, version_num).await else { continue };
         if let Ok(plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
             queries[index].plan = Some(plan);
             planned += 1;
@@ -571,20 +701,17 @@ async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32) -
     })
 }
 
-async fn generic_plan_json(client: &Client, statement: &str) -> Option<String> {
+async fn generic_plan_json(client: &Client, statement: &str, version_num: u32) -> Option<String> {
     // Statement text was written by whoever ran it; it must lex as exactly one statement before it reaches EXPLAIN.
     let statement = culprit_core::sql::single_statement(statement, Engine::Postgres).ok()?;
-    let explain = |text: &str| format!("EXPLAIN (FORMAT JSON, VERBOSE, GENERIC_PLAN) {text}");
-    let first = query(client, &explain(statement)).await;
-    let rows = match first {
-        Ok(rows) => rows,
+    match crate::generic::plan_json(client, statement, version_num).await {
+        Ok(json) => Some(json),
         Err(_) => {
             let rewritten = cast_typed_placeholders(statement)?;
             let rewritten = culprit_core::sql::single_statement(&rewritten, Engine::Postgres).ok()?;
-            query(client, &explain(rewritten)).await.ok()?
+            crate::generic::plan_json(client, rewritten, version_num).await.ok()
         }
-    };
-    rows.first().and_then(|r| r.text("QUERY PLAN"))
+    }
 }
 
 const TYPED_LITERAL_TYPES: &[&str] =
@@ -703,6 +830,7 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
             last_vacuum: r.text("last_vacuum"),
             last_analyze: r.text("last_analyze"),
             forwarded_records: None,
+            forwarded_fetches: None,
             xid_age: r.number("xid_age"),
         })
         .collect())
@@ -841,6 +969,8 @@ async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
 }
 
 const SETTINGS: &[&str] = &[
+    "pg_stat_statements.max",
+    "pg_stat_statements.track",
     "shared_buffers",
     "work_mem",
     "maintenance_work_mem",
@@ -887,30 +1017,6 @@ async fn settings(client: &Client) -> Result<Vec<Setting>> {
         });
     }
     Ok(out)
-}
-
-async fn waits(client: &Client, probe: &Probe) -> Result<Vec<WaitStat>> {
-    if !probe.privileged {
-        return Ok(Vec::new());
-    }
-    let rows = query(
-        client,
-        "SELECT coalesce(wait_event_type, 'CPU') AS category, coalesce(wait_event, 'Running') AS wait, count(*) AS n
-         FROM pg_stat_activity
-         WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' AND state = 'active'
-           AND application_name <> 'culprit'
-         GROUP BY 1, 2 ORDER BY 3 DESC",
-    )
-    .await?;
-    Ok(rows
-        .iter()
-        .map(|r| WaitStat {
-            category: r.string("category"),
-            wait_type: r.text("wait"),
-            wait_ms: 0.0,
-            tasks: r.number("n"),
-        })
-        .collect())
 }
 
 /// Render a pg_settings value with its unit the way Postgres displays it (`4MB`, `200ms`).

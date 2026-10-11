@@ -1,0 +1,199 @@
+{
+  "mssql-demo": {
+    "10": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "35": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "5": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "6": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "7": {
+      "items": [
+        {
+          "area": "query",
+          "detail": "The value it's compared with has a different type, so SQL Server converts customers.email on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and can't seek the index. The usual cause is an application sending strings as nvarchar to a varchar column.",
+          "fix": "Send the parameter with the column's exact type: VarChar instead of NVarChar (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM).",
+          "fix_sql": null,
+          "impact": 0.88,
+          "nodes": [
+            2
+          ],
+          "rule": "implicit-conversion",
+          "severity": "high",
+          "title": "A type mismatch on customers.email stops SQL Server from seeking an index",
+          "verify": "Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek."
+        }
+      ],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "8": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.",
+          "fix": "Create the index on shipped_at and include total.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "impact": 0.974,
+          "nodes": [
+            1
+          ],
+          "rule": "missing-index-hint",
+          "severity": "high",
+          "title": "SQL Server estimates an index on shop.orders (shipped_at) would make this 81% cheaper",
+          "verify": "Explain again: the suggestion is gone and the read of orders becomes a seek."
+        }
+      ],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "9": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
+          "fix": "Create the index on order_id.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "impact": 0.979,
+          "nodes": [
+            1
+          ],
+          "rule": "missing-index-hint",
+          "severity": "high",
+          "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 99% cheaper",
+          "verify": "Explain again: the suggestion is gone and the read of order_items becomes a seek."
+        }
+      ],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    }
+  },
+  "mssql-demo-staging": {},
+  "mysql-demo": {
+    "04cd7be9c366fadc": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
+          "fix": "An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
+          "fix_sql": null,
+          "impact": 1.0,
+          "nodes": [
+            2
+          ],
+          "rule": "temp-table-sort",
+          "severity": "high",
+          "title": "Collects 499K rows in an internal temporary table",
+          "verify": "Explain again: no \"using temporary table\" on the grouping."
+        }
+      ],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "17f97e6ec7a22e0a": {
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "19bd4ff468839ea3": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "As planned, the Table scan checks `(shop.o.promo_code = 'SPRING0')` on every row it reads because no index starts with promo_code, so most of the reading is thrown away. 100% of this plan's work.",
+          "fix": "Add an index on promo_code so the database can go straight to the matching rows.",
+          "fix_sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM = INPLACE, LOCK = NONE;",
+          "impact": 1.0,
+          "nodes": [
+            2
+          ],
+          "rule": "scan-filter",
+          "severity": "high",
+          "title": "Reads 499K rows of shop.orders to keep 50K",
+          "verify": "Explain again: orders reads about as many rows as it keeps."
+        }
+      ],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "9b30e6ad79d940fe": {
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "b4c0f3861e32013e": {
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "c7b5ac9bb4bcecfe": {
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    }
+  },
+  "pg-demo": {
+    "-3722457391793582113": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "-6576252161252119529": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "-8886085649470066503": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "2004611025554862962": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "2169115237613314459": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "2885972271926804069": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "3432126458605143571": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "4911431806993420100": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "5306524445554315840": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "5308963031944094559": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "8465053948014496855": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "9065391607317686058": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The rows arrive in a different order than the query needs (sort key: orders.note), so they're all collected and sorted before the first one comes out.",
+          "fix": "An index whose key order matches the ORDER BY (with the WHERE equality columns first) returns rows already sorted; or sort fewer rows by filtering earlier or limiting the result.",
+          "fix_sql": null,
+          "impact": 0.233,
+          "nodes": [
+            1
+          ],
+          "rule": "big-sort",
+          "severity": "medium",
+          "title": "Sorting 278K rows is 23% of this plan's work",
+          "verify": "Explain again: no Sort, or one over far fewer rows."
+        }
+      ],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. Postgres plans never carry index suggestions; Culprit reads filters instead."
+    }
+  }
+}

@@ -1,24 +1,37 @@
 import type { Catalog } from "../gen/Catalog";
+import type { ChangeRequest } from "../gen/ChangeRequest";
+import type { Changes } from "../gen/Changes";
+import type { CheckInfo } from "../gen/CheckInfo";
 import type { AgentAccess } from "../gen/AgentAccess";
 import type { ApprovalRequest } from "../gen/ApprovalRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
+import type { Deadlock } from "../gen/Deadlock";
+import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
+import type { IndexAdvice } from "../gen/IndexAdvice";
 import type { ExplainMode } from "../gen/ExplainMode";
+import type { ExportFile } from "../gen/ExportFile";
+import type { ExportFormat } from "../gen/ExportFormat";
+import type { ExportOptions } from "../gen/ExportOptions";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { ImportSource } from "../gen/ImportSource";
 import type { LiveState } from "../gen/LiveState";
 import type { NewConnection } from "../gen/NewConnection";
 import type { ParsedConnection } from "../gen/ParsedConnection";
 import type { Plan } from "../gen/Plan";
+import type { QueryProgress } from "../gen/QueryProgress";
 import type { PlanDiff } from "../gen/PlanDiff";
 import type { Report } from "../gen/Report";
 import type { ResultSet } from "../gen/ResultSet";
 import type { SavedQuery } from "../gen/SavedQuery";
 import type { SaveQuery } from "../gen/SaveQuery";
 import type { ServerInfo } from "../gen/ServerInfo";
+import type { WaitSample } from "../gen/WaitSample";
+import type { WaitsReport } from "../gen/WaitsReport";
 import type { Engine } from "../gen/Engine";
 import type { StatementCheck } from "../gen/StatementCheck";
+import type { Verification } from "../gen/Verification";
 import type { SessionAction } from "../gen/SessionAction";
 import type { SignInEvent } from "../gen/SignInEvent";
 
@@ -47,16 +60,41 @@ export interface Api {
   brief(name: string, findingId: string, windowDays: number | null): Promise<string>;
   explain(name: string, sql: string, mode: ExplainMode, confirmed: boolean): Promise<Plan>;
   queryPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
+  /** The actual plan of the query's last run as the engine kept it (SQL Server 2019+); never runs the query. */
+  lastActualPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
+  /** How far along a session's running statement is; `withPlan` asks for the plan too. */
+  queryProgress(name: string, session: string, withPlan: boolean): Promise<QueryProgress>;
   /** What differs between the latest scans of two connections of the same engine. */
   drift(a: string, b: string): Promise<Drift>;
+  /** The index advisor's plan from the latest report: indexes to add, to clean up, and tables to look at. */
+  indexAdvice(name: string): Promise<IndexAdvice>;
   parsePlan(text: string): Promise<Plan>;
-  diffPlans(a: Plan, b: Plan, nameA: string, nameB: string): Promise<PlanDiff>;
+  /** `connection`: where the plans came from, so scenarios can use its latest scan's statistics. */
+  diffPlans(a: Plan, b: Plan, nameA: string, nameB: string, connection?: string | null): Promise<PlanDiff>;
+  exportPlan(plan: Plan, title: string, format: ExportFormat, options: ExportOptions): Promise<ExportFile>;
+  exportDiff(a: Plan, b: Plan, nameA: string, nameB: string, format: ExportFormat, options: ExportOptions, connection?: string | null): Promise<ExportFile>;
+  /** A plan of a query from the latest scan, with its original text when the engine keeps it (.sqlplan). */
+  exportQueryPlan(name: string, queryId: string, planId: string | null, format: ExportFormat, options: ExportOptions): Promise<ExportFile>;
+  exportFinding(name: string, findingId: string, format: ExportFormat, options: ExportOptions): Promise<ExportFile>;
+  /** Re-scan and compare with the latest scan, finding by finding. */
+  verifyFindings(name: string, ids: string[]): Promise<Verification>;
   /** Writes into the Downloads folder and returns the path; the browser demo downloads instead. */
   savePlanFile(name: string, contents: string): Promise<string>;
   live(name: string): Promise<LiveState>;
+  /** Where the latest scan's database time went, by wait category with the queries behind each. */
+  waits(name: string, windowDays: number | null): Promise<WaitsReport | null>;
+  /** What the server waits on right now, sampled for `seconds`. */
+  waitSample(name: string, seconds: number): Promise<WaitSample>;
   interruptSession(name: string, session: string, action: SessionAction): Promise<void>;
   run(name: string, sql: string, limit: number, confirmed: boolean): Promise<ResultSet>;
+  /** What changed between two periods: Query Store intervals, or Culprit's own scans. */
+  changes(name: string, request: ChangeRequest): Promise<Changes>;
+  /** Recent deadlocks on a connection, explained. */
+  deadlocks(name: string, sinceHours: number): Promise<DeadlockReport>;
+  /** Deadlocks in pasted text: SQL Server .xdl XML, InnoDB status, Postgres log lines. */
+  parseDeadlock(text: string): Promise<Deadlock[]>;
   checkStatement(engine: Engine, sql: string): Promise<StatementCheck>;
+  checks(): Promise<CheckInfo[]>;
   catalog(name: string): Promise<Catalog>;
   savedQueries(): Promise<SavedQuery[]>;
   saveQuery(query: SaveQuery): Promise<SavedQuery>;
@@ -108,14 +146,30 @@ async function desktopApi(): Promise<Api> {
     brief: (name, findingId, windowDays) => invoke("brief", { name, findingId, windowDays }),
     explain: (name, sql, mode, confirmed) => invoke("explain", { name, sql, mode, confirmed }),
     queryPlan: (name, queryId, planId) => invoke("query_plan", { name, queryId, planId }),
+    lastActualPlan: (name, queryId, planId) => invoke("last_actual_plan", { name, queryId, planId }),
+    queryProgress: (name, session, withPlan) => invoke("query_progress", { name, session, withPlan }),
     drift: (a, b) => invoke("drift", { a, b }),
+    indexAdvice: (name) => invoke("index_advice", { name }),
     parsePlan: (text) => invoke("parse_plan", { text }),
-    diffPlans: (a, b, nameA, nameB) => invoke("diff_plans", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB }),
+    diffPlans: (a, b, nameA, nameB, connection) =>
+      invoke("diff_plans", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB, connection: connection ?? null }),
+    exportPlan: (plan, title, format, options) => invoke("export_plan", { plan: format === "native" ? plan : { ...plan, raw: null }, title, format, options }),
+    exportDiff: (a, b, nameA, nameB, format, options, connection) =>
+      invoke("export_diff", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB, format, options, connection: connection ?? null }),
+    exportQueryPlan: (name, queryId, planId, format, options) => invoke("export_query_plan", { name, queryId, planId, format, options }),
+    exportFinding: (name, findingId, format, options) => invoke("export_finding", { name, findingId, format, options }),
+    verifyFindings: (name, ids) => invoke("verify_findings", { name, ids }),
     savePlanFile: (name, contents) => invoke("save_plan_file", { name, contents }),
     live: (name) => invoke("live", { name }),
+    waits: (name, windowDays) => invoke("waits", { name, windowDays }),
+    waitSample: (name, seconds) => invoke("wait_sample", { name, seconds }),
     interruptSession: (name, session, action) => invoke("interrupt_session", { name, session, action }),
     run: (name, sql, limit, confirmed) => invoke("run_sql", { name, sql, limit, confirmed }),
+    changes: (name, request) => invoke("changes", { name, request }),
+    deadlocks: (name, sinceHours) => invoke("deadlocks", { name, sinceHours }),
+    parseDeadlock: (text) => invoke("parse_deadlock", { text }),
     checkStatement: (engine, sql) => invoke("check_statement", { engine, sql }),
+    checks: () => invoke("checks"),
     catalog: (name) => invoke("catalog", { name }),
     savedQueries: () => invoke("saved_queries"),
     saveQuery: (query) => invoke("save_query", { query }),

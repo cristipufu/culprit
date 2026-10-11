@@ -22,12 +22,12 @@ function apply(theme: Theme): void {
   } catch {}
 }
 
-export function useTheme(): [Theme, () => void] {
+export function useTheme(): [Theme, () => void, (theme: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(read);
-  const cycle = () => {
-    const next: Theme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+  const choose = (next: Theme) => {
     apply(next);
     setTheme(next);
   };
-  return [theme, cycle];
+  const cycle = () => choose(theme === "system" ? "light" : theme === "light" ? "dark" : "system");
+  return [theme, cycle, choose];
 }

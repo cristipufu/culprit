@@ -1,0 +1,2871 @@
+{
+ "note": "Browser-demo data for the Waits panel. Reports and pressure come from scans of the three demo databases, samples from 30-second runs under a small read load; the staging connection's resource samples are synthetic, to show the tier-limit chart.",
+ "reports": {
+  "mssql-demo": {
+   "categories": [
+    {
+     "attribution": null,
+     "detail": "A read from order_items accounts for 57% of it.",
+     "key": "latch",
+     "label": "In-memory contention",
+     "meaning": "Short waits on the server's own memory structures (page latches, mutexes). Hot spots such as an ever-increasing key or busy temporary space cause most of it.",
+     "queries": [
+      {
+       "executions": 600.0,
+       "id": "9",
+       "rows_per_run": 1.51,
+       "share_of_category": 0.5708446040198445,
+       "share_of_query": 1.0,
+       "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1",
+       "wait_ms": 47061.0
+      },
+      {
+       "executions": 300.0,
+       "id": "8",
+       "rows_per_run": 3283.2,
+       "share_of_category": 0.4269477565774311,
+       "share_of_query": 1.0,
+       "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')",
+       "wait_ms": 35198.0
+      }
+     ],
+     "share": 0.7741593186278652,
+     "top_wait": "Latch",
+     "wait_ms": 82441.0
+    },
+    {
+     "attribution": null,
+     "detail": "A read from order_items accounts for 48% of it. Check its plan for a large scan an index would avoid.",
+     "key": "parallelism",
+     "label": "Parallel queries",
+     "meaning": "Threads of a parallel query waiting for each other. Often a big scan that an index would avoid, or work split unevenly across threads.",
+     "queries": [
+      {
+       "executions": 600.0,
+       "id": "9",
+       "rows_per_run": 1.51,
+       "share_of_category": 0.4848570619869799,
+       "share_of_query": 1.0,
+       "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1",
+       "wait_ms": 8565.0
+      },
+      {
+       "executions": 300.0,
+       "id": "8",
+       "rows_per_run": 3283.2,
+       "share_of_category": 0.32697424285309934,
+       "share_of_query": 1.0,
+       "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')",
+       "wait_ms": 5776.0
+      }
+     ],
+     "share": 0.16588256284568648,
+     "top_wait": "Parallelism",
+     "wait_ms": 17665.0
+    },
+    {
+     "attribution": null,
+     "detail": "A read from order_items accounts for 27% of it.",
+     "key": "memory",
+     "label": "Memory grants",
+     "meaning": "Queries waiting for memory to sort or hash. A few queries that reserve far more than they use can make everyone else queue.",
+     "queries": [
+      {
+       "executions": 600.0,
+       "id": "9",
+       "rows_per_run": 1.51,
+       "share_of_category": 0.27408777534891543,
+       "share_of_query": 0.24174672240387007,
+       "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1",
+       "wait_ms": 1630.0
+      }
+     ],
+     "share": 0.05584509489064804,
+     "top_wait": "Memory",
+     "wait_ms": 5947.0
+    },
+    {
+     "attribution": null,
+     "detail": "A read from orders accounts for 8% of it.",
+     "key": "cpu",
+     "label": "CPU",
+     "meaning": "Running on a processor, or queued for one. When CPU dominates, queries usually do more work than they need to: scans, conversions, functions evaluated on every row.",
+     "queries": [
+      {
+       "executions": 300.0,
+       "id": "8",
+       "rows_per_run": 3283.2,
+       "share_of_category": 0.08274231678486997,
+       "share_of_query": 0.00702843423353519,
+       "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')",
+       "wait_ms": 35.0
+      },
+      {
+       "executions": 1200.0,
+       "id": "7",
+       "rows_per_run": 1.0,
+       "share_of_category": 0.026004728132387706,
+       "share_of_query": 0.0004962736167591059,
+       "text": "SELECT [id], [name], [segment] FROM [shop].[customers] WHERE [email] = @P1",
+       "wait_ms": 11.0
+      },
+      {
+       "executions": 600.0,
+       "id": "9",
+       "rows_per_run": 1.51,
+       "share_of_category": 0.01182033096926714,
+       "share_of_query": 0.0007415543632020555,
+       "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1",
+       "wait_ms": 5.0
+      }
+     ],
+     "share": 0.003972166661971434,
+     "top_wait": "CPU",
+     "wait_ms": 423.0
+    },
+    {
+     "attribution": "Query Store didn't record this wait for individual queries in the window.",
+     "detail": null,
+     "key": "lock",
+     "label": "Locks",
+     "meaning": "Waiting for another transaction to release a row or table lock. Long transactions, and missing indexes on the columns updates filter by, make it worse.",
+     "queries": [],
+     "share": 0.00014085697382877426,
+     "top_wait": "Lock",
+     "wait_ms": 15.0
+    }
+   ],
+   "engine": "mssql",
+   "notes": [],
+   "scope": "window",
+   "source": "Query Store, last 5 hours",
+   "total_ms": 106491.0
+  },
+  "pg-demo": {
+   "categories": [
+    {
+     "attribution": "PostgreSQL doesn't time this per statement. Right now samples what sessions wait on.",
+     "detail": null,
+     "key": "other",
+     "label": "Everything else",
+     "meaning": "Statement time PostgreSQL doesn't break down: running on CPU, or waiting on locks and events it doesn't time per statement.",
+     "queries": [],
+     "share": 0.9497011666319195,
+     "top_wait": "CPU, locks and untimed waits",
+     "wait_ms": 237026.6467629999
+    },
+    {
+     "attribution": null,
+     "detail": "A read from orders accounts for 56% of it, reading 16K pages from disk per run.",
+     "key": "io",
+     "label": "Disk reads",
+     "meaning": "Waiting for data to come from disk because it wasn't in memory. Usually scans of large tables, or memory too small for the data the workload keeps touching.",
+     "queries": [
+      {
+       "executions": 852.0,
+       "id": "5308963031944094559",
+       "rows_per_run": 10.13849765258216,
+       "share_of_category": 0.5642463164148575,
+       "share_of_query": 0.18799375058993675,
+       "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2",
+       "wait_ms": 7083.319732000004
+      },
+      {
+       "executions": 214.0,
+       "id": "9065391607317686058",
+       "rows_per_run": 246582.89719626168,
+       "share_of_category": 0.31100436412741006,
+       "share_of_query": 0.05497177507411115,
+       "text": "SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note",
+       "wait_ms": 3904.222828
+      },
+      {
+       "executions": 397.0,
+       "id": "-3722457391793582113",
+       "rows_per_run": 1.0,
+       "share_of_category": 0.05498390576084947,
+       "share_of_query": 0.1016885321716194,
+       "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1",
+       "wait_ms": 690.245684
+      },
+      {
+       "executions": 1738.0,
+       "id": "2885972271926804069",
+       "rows_per_run": 1.7238204833141542,
+       "share_of_category": 0.007632440751916847,
+       "share_of_query": 0.7378423420169006,
+       "text": "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind",
+       "wait_ms": 95.81457000000006
+      },
+      {
+       "executions": 204.0,
+       "id": "2004611025554862962",
+       "rows_per_run": 5.0,
+       "share_of_category": 0.007473040277289838,
+       "share_of_query": 0.03947208911756852,
+       "text": "SELECT status, count(*), sum(total) FROM orders WHERE created_at > now() - interval $1 GROUP BY status",
+       "wait_ms": 93.81352100000002
+      }
+     ],
+     "share": 0.05029883336808056,
+     "top_wait": "data file reads and writes",
+     "wait_ms": 12553.594992000002
+    }
+   ],
+   "engine": "postgres",
+   "notes": [
+    "PostgreSQL keeps no history of what sessions waited on. These totals come from per-statement timing; use Right now to sample what sessions wait on at this moment."
+   ],
+   "scope": "statements",
+   "source": "Statement timing from pg_stat_statements, the 7 hours since statistics were reset",
+   "total_ms": 249580.2417549999
+  },
+  "mysql-demo": {
+   "categories": [
+    {
+     "attribution": "MySQL doesn't attribute this wait to statements; it is a server-wide total.",
+     "detail": null,
+     "key": "rows",
+     "label": "Row access",
+     "meaning": "Time inside InnoDB fetching and changing rows. MySQL's table I/O instrument counts rows served from memory too, so this is storage-engine work, not only disk.",
+     "queries": [],
+     "share": 0.8488149541458491,
+     "top_wait": "wait/io/table/sql/handler",
+     "wait_ms": 137212.516776522
+    },
+    {
+     "attribution": "MySQL doesn't attribute this wait to statements; it is a server-wide total.",
+     "detail": null,
+     "key": "io",
+     "label": "Disk reads",
+     "meaning": "Waiting for data to come from disk because it wasn't in memory. Usually scans of large tables, or memory too small for the data the workload keeps touching.",
+     "queries": [],
+     "share": 0.14544064895999675,
+     "top_wait": "wait/io/file/innodb/innodb_temp_file",
+     "wait_ms": 23510.751534170995
+    },
+    {
+     "attribution": "MySQL doesn't attribute this wait to statements; it is a server-wide total.",
+     "detail": null,
+     "key": "log",
+     "label": "Log writes",
+     "meaning": "Commits waiting for InnoDB's redo log to reach disk. Many tiny transactions, or slow log storage.",
+     "queries": [],
+     "share": 0.005696412274777469,
+     "top_wait": "wait/io/file/innodb/innodb_log_file",
+     "wait_ms": 920.83564386
+    },
+    {
+     "attribution": null,
+     "detail": "A read from orders accounts for 50% of it. Live shows who blocks whom right now.",
+     "key": "lock",
+     "label": "Locks",
+     "meaning": "Waiting for another transaction to release a row or table lock. Long transactions, and missing indexes on the columns updates filter by, make it worse.",
+     "queries": [
+      {
+       "executions": 1.0,
+       "id": "4167fe7f2c20deb7",
+       "rows_per_run": 1.0,
+       "share_of_category": 0.4980427125376354,
+       "share_of_query": 0.9999880263418839,
+       "text": "SELECT `id` FROM `orders` WHERE `id` = ? FOR UPDATE",
+       "wait_ms": 43406.432
+      },
+      {
+       "executions": 5.0,
+       "id": "fc709554a9248878",
+       "rows_per_run": 0.0,
+       "share_of_category": 0.49800187679205,
+       "share_of_query": 0.9999628922667694,
+       "text": "UPDATE `orders` SET `id` = `id` WHERE `id` = ?",
+       "wait_ms": 43402.873
+      }
+     ],
+     "share": 4.798461937678062e-05,
+     "top_wait": "wait/lock/table/sql/handler",
+     "wait_ms": 7.75680301
+    }
+   ],
+   "engine": "mysql",
+   "notes": [
+    "MySQL counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total."
+   ],
+   "scope": "since-startup",
+   "source": "performance_schema totals since MySQL started 80 minutes ago",
+   "total_ms": 161651.860757563
+  }
+ },
+ "pressure": {
+  "mssql-demo": {
+   "grants": [
+    {
+     "avg_granted_kb": 14904.0,
+     "avg_used_kb": 596.551724137931,
+     "executions": 58.0,
+     "max_granted_kb": 14904.0,
+     "query_hash": "0x538D93CAC1A21CF3"
+    },
+    {
+     "avg_granted_kb": 97448.0,
+     "avg_used_kb": 16800.0,
+     "executions": 1.0,
+     "max_granted_kb": 97448.0,
+     "query_hash": "0xB93AFEAC88B87A44"
+    },
+    {
+     "avg_granted_kb": 10274.0,
+     "avg_used_kb": 1260.0,
+     "executions": 4.0,
+     "max_granted_kb": 11688.0,
+     "query_hash": "0x7DD3A80BED46C41C"
+    },
+    {
+     "avg_granted_kb": 10266.666666666666,
+     "avg_used_kb": 1197.3333333333333,
+     "executions": 3.0,
+     "max_granted_kb": 13336.0,
+     "query_hash": "0xCA2A071DE2E5CB4E"
+    },
+    {
+     "avg_granted_kb": 38872.0,
+     "avg_used_kb": 13560.0,
+     "executions": 1.0,
+     "max_granted_kb": 38872.0,
+     "query_hash": "0x26B5AF33C3FE80E4"
+    },
+    {
+     "avg_granted_kb": 5464.0,
+     "avg_used_kb": 1096.0,
+     "executions": 5.0,
+     "max_granted_kb": 5464.0,
+     "query_hash": "0xB7580776ABAF5C89"
+    },
+    {
+     "avg_granted_kb": 2672.0,
+     "avg_used_kb": 329.77777777777777,
+     "executions": 9.0,
+     "max_granted_kb": 2672.0,
+     "query_hash": "0x2E70EF6C50F8B425"
+    },
+    {
+     "avg_granted_kb": 3760.0,
+     "avg_used_kb": 392.0,
+     "executions": 4.0,
+     "max_granted_kb": 3760.0,
+     "query_hash": "0x79A740AB01010E76"
+    },
+    {
+     "avg_granted_kb": 6296.0,
+     "avg_used_kb": 960.0,
+     "executions": 2.0,
+     "max_granted_kb": 6408.0,
+     "query_hash": "0xA82DBA5F031BB8DE"
+    },
+    {
+     "avg_granted_kb": 8704.0,
+     "avg_used_kb": 1408.0,
+     "executions": 1.0,
+     "max_granted_kb": 8704.0,
+     "query_hash": "0xC6BEBE5FF49E8119"
+    },
+    {
+     "avg_granted_kb": 3312.0,
+     "avg_used_kb": 912.0,
+     "executions": 3.0,
+     "max_granted_kb": 3312.0,
+     "query_hash": "0x111E3E5969A5D833"
+    },
+    {
+     "avg_granted_kb": 3232.0,
+     "avg_used_kb": 960.0,
+     "executions": 3.0,
+     "max_granted_kb": 3232.0,
+     "query_hash": "0x499E6D8549462667"
+    },
+    {
+     "avg_granted_kb": 2112.0,
+     "avg_used_kb": 442.0,
+     "executions": 4.0,
+     "max_granted_kb": 2112.0,
+     "query_hash": "0x851AB8B7F8AA5975"
+    },
+    {
+     "avg_granted_kb": 6528.0,
+     "avg_used_kb": 32.0,
+     "executions": 1.0,
+     "max_granted_kb": 6528.0,
+     "query_hash": "0x2A6AABAD09433795"
+    },
+    {
+     "avg_granted_kb": 6240.0,
+     "avg_used_kb": 1264.0,
+     "executions": 1.0,
+     "max_granted_kb": 6240.0,
+     "query_hash": "0x9ED977B68BF6BDF8"
+    },
+    {
+     "avg_granted_kb": 7528.0,
+     "avg_used_kb": 2592.0,
+     "executions": 1.0,
+     "max_granted_kb": 7528.0,
+     "query_hash": "0x3DF2B9A646FEB7F0"
+    },
+    {
+     "avg_granted_kb": 3392.0,
+     "avg_used_kb": 960.0,
+     "executions": 2.0,
+     "max_granted_kb": 3432.0,
+     "query_hash": "0x1E1D244420C4CF14"
+    },
+    {
+     "avg_granted_kb": 6328.0,
+     "avg_used_kb": 1584.0,
+     "executions": 1.0,
+     "max_granted_kb": 6328.0,
+     "query_hash": "0x618F4B31843C5BC7"
+    },
+    {
+     "avg_granted_kb": 5624.0,
+     "avg_used_kb": 960.0,
+     "executions": 1.0,
+     "max_granted_kb": 5624.0,
+     "query_hash": "0x447B66D0CE677154"
+    },
+    {
+     "avg_granted_kb": 3104.0,
+     "avg_used_kb": 784.0,
+     "executions": 2.0,
+     "max_granted_kb": 3104.0,
+     "query_hash": "0xCC3150A6157C7C1A"
+    },
+    {
+     "avg_granted_kb": 1088.0,
+     "avg_used_kb": 16.0,
+     "executions": 4.0,
+     "max_granted_kb": 1088.0,
+     "query_hash": "0x243C1C62E0CA19B4"
+    },
+    {
+     "avg_granted_kb": 6456.0,
+     "avg_used_kb": 2240.0,
+     "executions": 1.0,
+     "max_granted_kb": 6456.0,
+     "query_hash": "0x8908531C5A846D44"
+    },
+    {
+     "avg_granted_kb": 1024.0,
+     "avg_used_kb": 0.0,
+     "executions": 4.0,
+     "max_granted_kb": 1024.0,
+     "query_hash": "0x484FA8388BE0B441"
+    },
+    {
+     "avg_granted_kb": 1024.0,
+     "avg_used_kb": 16.0,
+     "executions": 4.0,
+     "max_granted_kb": 1024.0,
+     "query_hash": "0x5E54E6762DCA7E03"
+    },
+    {
+     "avg_granted_kb": 1024.0,
+     "avg_used_kb": 16.0,
+     "executions": 4.0,
+     "max_granted_kb": 1024.0,
+     "query_hash": "0xD4C09FC424B514A4"
+    },
+    {
+     "avg_granted_kb": 1024.0,
+     "avg_used_kb": 16.0,
+     "executions": 4.0,
+     "max_granted_kb": 1024.0,
+     "query_hash": "0xF5C3CFD762D1282A"
+    },
+    {
+     "avg_granted_kb": 5712.0,
+     "avg_used_kb": 1928.0,
+     "executions": 1.0,
+     "max_granted_kb": 5712.0,
+     "query_hash": "0xD02C0FE32C192DC3"
+    },
+    {
+     "avg_granted_kb": 3240.0,
+     "avg_used_kb": 672.0,
+     "executions": 1.0,
+     "max_granted_kb": 3240.0,
+     "query_hash": "0x52EE73CE6AAD32B5"
+    },
+    {
+     "avg_granted_kb": 3408.0,
+     "avg_used_kb": 960.0,
+     "executions": 1.0,
+     "max_granted_kb": 3408.0,
+     "query_hash": "0xA7A4F409DDE32082"
+    },
+    {
+     "avg_granted_kb": 3208.0,
+     "avg_used_kb": 888.0,
+     "executions": 1.0,
+     "max_granted_kb": 3208.0,
+     "query_hash": "0x320D04EAEE594F1A"
+    }
+   ],
+   "oldest_transaction": null,
+   "signals": [
+    {
+     "healthy": null,
+     "key": "batch-requests",
+     "label": "Batch requests",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-second",
+     "value": 0.1928606841844323
+    },
+    {
+     "healthy": "too few batches to judge; under 10% is healthy under load",
+     "key": "compiles-per-batch",
+     "label": "Plans compiled",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "percent",
+     "value": 45.88688946015424
+    },
+    {
+     "healthy": "minutes, not seconds: a drop means a big scan pushed data out of memory",
+     "key": "page-life",
+     "label": "Page life expectancy",
+     "scope": "now",
+     "status": "good",
+     "unit": "seconds",
+     "value": 4032.0
+    },
+    {
+     "healthy": "0 is healthy",
+     "key": "memory-grants-pending",
+     "label": "Waiting for memory",
+     "scope": "now",
+     "status": "good",
+     "unit": "count",
+     "value": 0.0
+    },
+    {
+     "healthy": "under 20% of waiting is healthy; more means queries queue for a processor",
+     "key": "signal-wait",
+     "label": "Waiting for CPU",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "percent",
+     "value": 1.7635830724973312
+    },
+    {
+     "healthy": "under a second an hour is healthy",
+     "key": "threadpool-waits",
+     "label": "Waiting for workers, per hour",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "milliseconds",
+     "value": 972.7317798710956
+    },
+    {
+     "healthy": "0 is healthy",
+     "key": "threadpool-waiting",
+     "label": "Tasks without a worker",
+     "scope": "now",
+     "status": "good",
+     "unit": "count",
+     "value": 0.0
+    },
+    {
+     "healthy": "small, and shrinking when transactions end",
+     "key": "version-store",
+     "label": "Version store",
+     "scope": "now",
+     "status": "good",
+     "unit": "bytes",
+     "value": 0.0
+    }
+   ],
+   "uptime_hours": 1.1205555555555555
+  },
+  "pg-demo": {
+   "grants": [],
+   "oldest_transaction": {
+    "held_bytes": null,
+    "held_versions": null,
+    "program": "psql",
+    "seconds": 4.189612,
+    "session": "869",
+    "state": "idle in transaction"
+   },
+   "signals": [
+    {
+     "healthy": "above 99% is healthy for most workloads",
+     "key": "cache-hit",
+     "label": "Reads served from memory",
+     "scope": "since-startup",
+     "status": "bad",
+     "unit": "percent",
+     "value": 55.28549966457573
+    },
+    {
+     "healthy": "near zero an hour: queries that sort or hash in memory",
+     "key": "temp-bytes",
+     "label": "Temporary files written",
+     "scope": "since-startup",
+     "status": "watch",
+     "unit": "bytes",
+     "value": 692606779.3109461
+    },
+    {
+     "healthy": null,
+     "key": "commits",
+     "label": "Commits",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-second",
+     "value": 0.7230282232065369
+    },
+    {
+     "healthy": "under 5% is healthy",
+     "key": "rollbacks",
+     "label": "Transactions rolled back",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "percent",
+     "value": 0.25252525252525254
+    },
+    {
+     "healthy": "0 is healthy",
+     "key": "deadlocks",
+     "label": "Deadlocks",
+     "scope": "since-startup",
+     "status": "watch",
+     "unit": "count",
+     "value": 1.0
+    },
+    {
+     "healthy": null,
+     "key": "checkpoints",
+     "label": "Checkpoints",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "count",
+     "value": 32.0
+    },
+    {
+     "healthy": "under 10% is healthy; more means max_wal_size is too small",
+     "key": "checkpoints-requested",
+     "label": "Checkpoints forced early",
+     "scope": "since-startup",
+     "status": "watch",
+     "unit": "percent",
+     "value": 15.625
+    },
+    {
+     "healthy": "under 80% of max_connections is healthy",
+     "key": "connections",
+     "label": "Connections in use",
+     "scope": "now",
+     "status": "good",
+     "unit": "percent",
+     "value": 6.185567010309279
+    },
+    {
+     "healthy": "seconds or minutes, not hours",
+     "key": "oldest-transaction",
+     "label": "Oldest open transaction",
+     "scope": "now",
+     "status": "good",
+     "unit": "seconds",
+     "value": 4.189612
+    }
+   ],
+   "uptime_hours": 6.9806711
+  },
+  "mysql-demo": {
+   "grants": [],
+   "oldest_transaction": {
+    "held_bytes": null,
+    "held_versions": 0.0,
+    "program": "mysql",
+    "seconds": 5.0,
+    "session": "104",
+    "state": "idle in transaction"
+   },
+   "signals": [
+    {
+     "healthy": "above 99% is healthy for most workloads",
+     "key": "buffer-pool-hit",
+     "label": "Reads served from memory",
+     "scope": "since-startup",
+     "status": "watch",
+     "unit": "percent",
+     "value": 98.143429560048
+    },
+    {
+     "healthy": "under 10% of temporary tables is healthy",
+     "key": "tmp-disk-tables",
+     "label": "Temporary tables on disk",
+     "scope": "since-startup",
+     "status": "bad",
+     "unit": "percent",
+     "value": 67.94871794871796
+    },
+    {
+     "healthy": null,
+     "key": "questions",
+     "label": "Statements",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-second",
+     "value": 8.666805932734489
+    },
+    {
+     "healthy": null,
+     "key": "threads-running",
+     "label": "Statements running now",
+     "scope": "now",
+     "status": "info",
+     "unit": "count",
+     "value": 5.0
+    },
+    {
+     "healthy": null,
+     "key": "row-lock-waits",
+     "label": "Row-lock waits",
+     "scope": "since-startup",
+     "status": "info",
+     "unit": "per-hour",
+     "value": 4.512220597451431
+    },
+    {
+     "healthy": "under 50 ms is healthy",
+     "key": "row-lock-avg",
+     "label": "Average row-lock wait",
+     "scope": "since-startup",
+     "status": "bad",
+     "unit": "milliseconds",
+     "value": 14523.0
+    },
+    {
+     "healthy": "under 80% of max_connections is healthy",
+     "key": "connections",
+     "label": "Connections in use",
+     "scope": "now",
+     "status": "good",
+     "unit": "percent",
+     "value": 4.635761589403973
+    },
+    {
+     "healthy": "under 90% of max_connections is healthy",
+     "key": "max-used-connections",
+     "label": "Busiest moment",
+     "scope": "since-startup",
+     "status": "good",
+     "unit": "percent",
+     "value": 4.635761589403973
+    },
+    {
+     "healthy": "under 100K old row versions is healthy",
+     "key": "history-length",
+     "label": "Undo history",
+     "scope": "now",
+     "status": "good",
+     "unit": "count",
+     "value": 0.0
+    },
+    {
+     "healthy": "seconds or minutes, not hours",
+     "key": "oldest-transaction",
+     "label": "Oldest open transaction",
+     "scope": "now",
+     "status": "good",
+     "unit": "seconds",
+     "value": 5.0
+    }
+   ],
+   "uptime_hours": 1.3297222222222222
+  }
+ },
+ "samples": {
+  "mssql-demo": {
+   "active_sessions": null,
+   "categories": [
+    {
+     "category": "Parallelism",
+     "tasks": 22187.0,
+     "wait_ms": 8253.0,
+     "wait_type": "HTREPARTITION"
+    },
+    {
+     "category": "Other",
+     "tasks": 17343.0,
+     "wait_ms": 1595.0,
+     "wait_type": "PREEMPTIVE_OS_AUTHENTICATIONOPS"
+    },
+    {
+     "category": "Latch",
+     "tasks": 897.0,
+     "wait_ms": 393.0,
+     "wait_type": "LATCH_SH"
+    },
+    {
+     "category": "Memory",
+     "tasks": 190.0,
+     "wait_ms": 23.0,
+     "wait_type": "CMEMTHREAD"
+    },
+    {
+     "category": "CPU",
+     "tasks": 13.0,
+     "wait_ms": 1.0,
+     "wait_type": "SOS_SCHEDULER_YIELD"
+    }
+   ],
+   "engine": "mssql",
+   "method": "Difference of two readings of sys.dm_os_wait_stats 30 s apart",
+   "notes": [],
+   "seconds": 30.049601167,
+   "signals": [
+    {
+     "healthy": null,
+     "key": "batch-requests",
+     "label": "Batch requests",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-second",
+     "value": 18.236514919266384
+    },
+    {
+     "healthy": "under 10% of batches is healthy",
+     "key": "compiles-per-batch",
+     "label": "Plans compiled",
+     "scope": "sampled",
+     "status": "good",
+     "unit": "percent",
+     "value": 0.0
+    },
+    {
+     "healthy": null,
+     "key": "recompiles",
+     "label": "Recompiles",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-second",
+     "value": 0.0
+    },
+    {
+     "healthy": "under 20% of waiting is healthy; more means queries queue for a processor",
+     "key": "signal-wait",
+     "label": "Waiting for CPU",
+     "scope": "sampled",
+     "status": "watch",
+     "unit": "percent",
+     "value": 33.969800292255236
+    }
+   ],
+   "taken_at": "2026-10-11T14:05:00Z",
+   "total_ms": 10265.0
+  },
+  "pg-demo": {
+   "active_sessions": 0.6333333333333333,
+   "categories": [
+    {
+     "category": "CPU",
+     "tasks": 18.0,
+     "wait_ms": 18000.0,
+     "wait_type": "Running"
+    },
+    {
+     "category": "IO",
+     "tasks": 1.0,
+     "wait_ms": 1000.0,
+     "wait_type": "IO: AioIoCompletion"
+    }
+   ],
+   "engine": "postgres",
+   "method": "pg_stat_activity sampled every second for 30 s; each busy session seen counts as one second of its time",
+   "notes": [],
+   "seconds": 29.115185458,
+   "signals": [
+    {
+     "healthy": null,
+     "key": "commits",
+     "label": "Transactions",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-second",
+     "value": 43.27638585086838
+    }
+   ],
+   "taken_at": "2026-10-11T14:05:00Z",
+   "total_ms": 19000.0
+  },
+  "mysql-demo": {
+   "active_sessions": 2.0,
+   "categories": [
+    {
+     "category": "Table IO",
+     "tasks": 191500000.0,
+     "wait_ms": 13685.309994422016,
+     "wait_type": "wait/io/table/sql/handler"
+    },
+    {
+     "category": "Lock",
+     "tasks": 384.0,
+     "wait_ms": 0.3638829259999996,
+     "wait_type": "wait/lock/table/sql/handler"
+    }
+   ],
+   "engine": "mysql",
+   "method": "Difference of two readings of performance_schema.events_waits_summary_global_by_event_name 30 s apart",
+   "notes": [],
+   "seconds": 30.011549291,
+   "signals": [
+    {
+     "healthy": null,
+     "key": "questions",
+     "label": "Statements",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-second",
+     "value": 51.213617301020925
+    },
+    {
+     "healthy": null,
+     "key": "row-lock-waits",
+     "label": "Row-lock waits",
+     "scope": "sampled",
+     "status": "info",
+     "unit": "per-hour",
+     "value": 0.0
+    }
+   ],
+   "taken_at": "2026-10-11T14:05:00Z",
+   "total_ms": 13685.673877348016
+  }
+ },
+ "resources": {
+  "mssql-demo-staging": [
+   {
+    "at": "2026-10-11T11:00:00Z",
+    "cpu_pct": 35.89,
+    "data_io_pct": 11.21,
+    "log_write_pct": 48.41,
+    "memory_pct": 72.29,
+    "workers_pct": 6.07
+   },
+   {
+    "at": "2026-10-11T11:00:15Z",
+    "cpu_pct": 37.55,
+    "data_io_pct": 10.75,
+    "log_write_pct": 47.75,
+    "memory_pct": 72.15,
+    "workers_pct": 6.0
+   },
+   {
+    "at": "2026-10-11T11:00:30Z",
+    "cpu_pct": 35.15,
+    "data_io_pct": 11.31,
+    "log_write_pct": 48.05,
+    "memory_pct": 75.31,
+    "workers_pct": 5.51
+   },
+   {
+    "at": "2026-10-11T11:00:45Z",
+    "cpu_pct": 38.14,
+    "data_io_pct": 15.89,
+    "log_write_pct": 58.01,
+    "memory_pct": 74.31,
+    "workers_pct": 6.18
+   },
+   {
+    "at": "2026-10-11T11:01:00Z",
+    "cpu_pct": 48.31,
+    "data_io_pct": 11.53,
+    "log_write_pct": 58.14,
+    "memory_pct": 73.16,
+    "workers_pct": 5.81
+   },
+   {
+    "at": "2026-10-11T11:01:15Z",
+    "cpu_pct": 39.14,
+    "data_io_pct": 13.91,
+    "log_write_pct": 58.96,
+    "memory_pct": 72.72,
+    "workers_pct": 6.81
+   },
+   {
+    "at": "2026-10-11T11:01:30Z",
+    "cpu_pct": 46.5,
+    "data_io_pct": 14.71,
+    "log_write_pct": 56.1,
+    "memory_pct": 72.25,
+    "workers_pct": 5.89
+   },
+   {
+    "at": "2026-10-11T11:01:45Z",
+    "cpu_pct": 42.39,
+    "data_io_pct": 17.46,
+    "log_write_pct": 55.54,
+    "memory_pct": 73.26,
+    "workers_pct": 7.07
+   },
+   {
+    "at": "2026-10-11T11:02:00Z",
+    "cpu_pct": 60.43,
+    "data_io_pct": 14.7,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.18,
+    "workers_pct": 7.42
+   },
+   {
+    "at": "2026-10-11T11:02:15Z",
+    "cpu_pct": 58.96,
+    "data_io_pct": 17.17,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.1,
+    "workers_pct": 7.89
+   },
+   {
+    "at": "2026-10-11T11:02:30Z",
+    "cpu_pct": 65.81,
+    "data_io_pct": 15.16,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.92,
+    "workers_pct": 6.5
+   },
+   {
+    "at": "2026-10-11T11:02:45Z",
+    "cpu_pct": 63.05,
+    "data_io_pct": 19.18,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.61,
+    "workers_pct": 7.36
+   },
+   {
+    "at": "2026-10-11T11:03:00Z",
+    "cpu_pct": 59.46,
+    "data_io_pct": 18.74,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.06,
+    "workers_pct": 7.64
+   },
+   {
+    "at": "2026-10-11T11:03:15Z",
+    "cpu_pct": 70.41,
+    "data_io_pct": 16.17,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.78,
+    "workers_pct": 7.8
+   },
+   {
+    "at": "2026-10-11T11:03:30Z",
+    "cpu_pct": 67.74,
+    "data_io_pct": 17.58,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.36,
+    "workers_pct": 8.6
+   },
+   {
+    "at": "2026-10-11T11:03:45Z",
+    "cpu_pct": 67.31,
+    "data_io_pct": 19.5,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.24,
+    "workers_pct": 8.22
+   },
+   {
+    "at": "2026-10-11T11:04:00Z",
+    "cpu_pct": 70.18,
+    "data_io_pct": 22.39,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.29,
+    "workers_pct": 7.49
+   },
+   {
+    "at": "2026-10-11T11:04:15Z",
+    "cpu_pct": 67.79,
+    "data_io_pct": 20.04,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.09,
+    "workers_pct": 7.94
+   },
+   {
+    "at": "2026-10-11T11:04:30Z",
+    "cpu_pct": 65.88,
+    "data_io_pct": 15.87,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.24,
+    "workers_pct": 8.65
+   },
+   {
+    "at": "2026-10-11T11:04:45Z",
+    "cpu_pct": 66.06,
+    "data_io_pct": 17.16,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.56,
+    "workers_pct": 8.95
+   },
+   {
+    "at": "2026-10-11T11:05:00Z",
+    "cpu_pct": 66.08,
+    "data_io_pct": 19.01,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.2,
+    "workers_pct": 9.06
+   },
+   {
+    "at": "2026-10-11T11:05:15Z",
+    "cpu_pct": 75.49,
+    "data_io_pct": 22.55,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.11,
+    "workers_pct": 8.2
+   },
+   {
+    "at": "2026-10-11T11:05:30Z",
+    "cpu_pct": 70.46,
+    "data_io_pct": 22.94,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.83,
+    "workers_pct": 7.75
+   },
+   {
+    "at": "2026-10-11T11:05:45Z",
+    "cpu_pct": 54.7,
+    "data_io_pct": 17.94,
+    "log_write_pct": 57.35,
+    "memory_pct": 73.94,
+    "workers_pct": 8.7
+   },
+   {
+    "at": "2026-10-11T11:06:00Z",
+    "cpu_pct": 56.12,
+    "data_io_pct": 16.33,
+    "log_write_pct": 59.45,
+    "memory_pct": 73.48,
+    "workers_pct": 8.73
+   },
+   {
+    "at": "2026-10-11T11:06:15Z",
+    "cpu_pct": 64.73,
+    "data_io_pct": 22.02,
+    "log_write_pct": 59.99,
+    "memory_pct": 74.47,
+    "workers_pct": 9.01
+   },
+   {
+    "at": "2026-10-11T11:06:30Z",
+    "cpu_pct": 54.2,
+    "data_io_pct": 23.89,
+    "log_write_pct": 63.11,
+    "memory_pct": 75.5,
+    "workers_pct": 9.31
+   },
+   {
+    "at": "2026-10-11T11:06:45Z",
+    "cpu_pct": 58.46,
+    "data_io_pct": 20.08,
+    "log_write_pct": 51.07,
+    "memory_pct": 74.54,
+    "workers_pct": 7.89
+   },
+   {
+    "at": "2026-10-11T11:07:00Z",
+    "cpu_pct": 54.7,
+    "data_io_pct": 18.74,
+    "log_write_pct": 50.7,
+    "memory_pct": 73.36,
+    "workers_pct": 7.92
+   },
+   {
+    "at": "2026-10-11T11:07:15Z",
+    "cpu_pct": 53.98,
+    "data_io_pct": 18.45,
+    "log_write_pct": 48.34,
+    "memory_pct": 73.45,
+    "workers_pct": 7.91
+   },
+   {
+    "at": "2026-10-11T11:07:30Z",
+    "cpu_pct": 64.49,
+    "data_io_pct": 22.33,
+    "log_write_pct": 47.62,
+    "memory_pct": 73.01,
+    "workers_pct": 8.59
+   },
+   {
+    "at": "2026-10-11T11:07:45Z",
+    "cpu_pct": 58.33,
+    "data_io_pct": 18.56,
+    "log_write_pct": 57.3,
+    "memory_pct": 75.97,
+    "workers_pct": 8.86
+   },
+   {
+    "at": "2026-10-11T11:08:00Z",
+    "cpu_pct": 59.66,
+    "data_io_pct": 18.41,
+    "log_write_pct": 43.78,
+    "memory_pct": 73.37,
+    "workers_pct": 8.48
+   },
+   {
+    "at": "2026-10-11T11:08:15Z",
+    "cpu_pct": 63.64,
+    "data_io_pct": 19.16,
+    "log_write_pct": 40.91,
+    "memory_pct": 75.8,
+    "workers_pct": 9.03
+   },
+   {
+    "at": "2026-10-11T11:08:30Z",
+    "cpu_pct": 55.24,
+    "data_io_pct": 22.35,
+    "log_write_pct": 39.34,
+    "memory_pct": 74.11,
+    "workers_pct": 9.94
+   },
+   {
+    "at": "2026-10-11T11:08:45Z",
+    "cpu_pct": 63.56,
+    "data_io_pct": 23.71,
+    "log_write_pct": 41.45,
+    "memory_pct": 73.47,
+    "workers_pct": 8.33
+   },
+   {
+    "at": "2026-10-11T11:09:00Z",
+    "cpu_pct": 62.12,
+    "data_io_pct": 22.52,
+    "log_write_pct": 48.11,
+    "memory_pct": 73.32,
+    "workers_pct": 8.45
+   },
+   {
+    "at": "2026-10-11T11:09:15Z",
+    "cpu_pct": 62.2,
+    "data_io_pct": 26.25,
+    "log_write_pct": 47.68,
+    "memory_pct": 75.22,
+    "workers_pct": 9.63
+   },
+   {
+    "at": "2026-10-11T11:09:30Z",
+    "cpu_pct": 60.88,
+    "data_io_pct": 20.28,
+    "log_write_pct": 40.74,
+    "memory_pct": 73.42,
+    "workers_pct": 8.05
+   },
+   {
+    "at": "2026-10-11T11:09:45Z",
+    "cpu_pct": 51.83,
+    "data_io_pct": 20.8,
+    "log_write_pct": 35.07,
+    "memory_pct": 74.77,
+    "workers_pct": 9.89
+   },
+   {
+    "at": "2026-10-11T11:10:00Z",
+    "cpu_pct": 56.3,
+    "data_io_pct": 26.14,
+    "log_write_pct": 45.26,
+    "memory_pct": 75.82,
+    "workers_pct": 8.69
+   },
+   {
+    "at": "2026-10-11T11:10:15Z",
+    "cpu_pct": 52.96,
+    "data_io_pct": 20.54,
+    "log_write_pct": 31.2,
+    "memory_pct": 72.82,
+    "workers_pct": 9.18
+   },
+   {
+    "at": "2026-10-11T11:10:30Z",
+    "cpu_pct": 60.45,
+    "data_io_pct": 25.51,
+    "log_write_pct": 34.4,
+    "memory_pct": 74.61,
+    "workers_pct": 9.5
+   },
+   {
+    "at": "2026-10-11T11:10:45Z",
+    "cpu_pct": 49.95,
+    "data_io_pct": 24.13,
+    "log_write_pct": 40.06,
+    "memory_pct": 75.13,
+    "workers_pct": 9.37
+   },
+   {
+    "at": "2026-10-11T11:11:00Z",
+    "cpu_pct": 53.91,
+    "data_io_pct": 20.33,
+    "log_write_pct": 37.0,
+    "memory_pct": 73.33,
+    "workers_pct": 9.43
+   },
+   {
+    "at": "2026-10-11T11:11:15Z",
+    "cpu_pct": 59.02,
+    "data_io_pct": 22.1,
+    "log_write_pct": 29.79,
+    "memory_pct": 75.79,
+    "workers_pct": 9.23
+   },
+   {
+    "at": "2026-10-11T11:11:30Z",
+    "cpu_pct": 48.56,
+    "data_io_pct": 19.98,
+    "log_write_pct": 24.89,
+    "memory_pct": 75.62,
+    "workers_pct": 9.34
+   },
+   {
+    "at": "2026-10-11T11:11:45Z",
+    "cpu_pct": 47.38,
+    "data_io_pct": 25.6,
+    "log_write_pct": 37.4,
+    "memory_pct": 74.63,
+    "workers_pct": 8.37
+   },
+   {
+    "at": "2026-10-11T11:12:00Z",
+    "cpu_pct": 65.28,
+    "data_io_pct": 20.05,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.06,
+    "workers_pct": 9.55
+   },
+   {
+    "at": "2026-10-11T11:12:15Z",
+    "cpu_pct": 65.53,
+    "data_io_pct": 23.21,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.73,
+    "workers_pct": 8.41
+   },
+   {
+    "at": "2026-10-11T11:12:30Z",
+    "cpu_pct": 67.2,
+    "data_io_pct": 25.6,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.84,
+    "workers_pct": 7.97
+   },
+   {
+    "at": "2026-10-11T11:12:45Z",
+    "cpu_pct": 59.23,
+    "data_io_pct": 20.9,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.35,
+    "workers_pct": 7.91
+   },
+   {
+    "at": "2026-10-11T11:13:00Z",
+    "cpu_pct": 59.69,
+    "data_io_pct": 20.0,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.64,
+    "workers_pct": 8.02
+   },
+   {
+    "at": "2026-10-11T11:13:15Z",
+    "cpu_pct": 59.09,
+    "data_io_pct": 23.58,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.62,
+    "workers_pct": 8.07
+   },
+   {
+    "at": "2026-10-11T11:13:30Z",
+    "cpu_pct": 63.5,
+    "data_io_pct": 22.88,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.13,
+    "workers_pct": 8.19
+   },
+   {
+    "at": "2026-10-11T11:13:45Z",
+    "cpu_pct": 51.6,
+    "data_io_pct": 22.34,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.73,
+    "workers_pct": 7.05
+   },
+   {
+    "at": "2026-10-11T11:14:00Z",
+    "cpu_pct": 59.84,
+    "data_io_pct": 20.13,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.89,
+    "workers_pct": 8.4
+   },
+   {
+    "at": "2026-10-11T11:14:15Z",
+    "cpu_pct": 55.78,
+    "data_io_pct": 21.29,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.07,
+    "workers_pct": 7.96
+   },
+   {
+    "at": "2026-10-11T11:14:30Z",
+    "cpu_pct": 57.37,
+    "data_io_pct": 19.45,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.24,
+    "workers_pct": 7.24
+   },
+   {
+    "at": "2026-10-11T11:14:45Z",
+    "cpu_pct": 50.12,
+    "data_io_pct": 24.69,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.03,
+    "workers_pct": 7.76
+   },
+   {
+    "at": "2026-10-11T11:15:00Z",
+    "cpu_pct": 54.76,
+    "data_io_pct": 25.71,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.77,
+    "workers_pct": 7.75
+   },
+   {
+    "at": "2026-10-11T11:15:15Z",
+    "cpu_pct": 50.55,
+    "data_io_pct": 22.4,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.77,
+    "workers_pct": 7.32
+   },
+   {
+    "at": "2026-10-11T11:15:30Z",
+    "cpu_pct": 49.73,
+    "data_io_pct": 22.01,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.77,
+    "workers_pct": 7.69
+   },
+   {
+    "at": "2026-10-11T11:15:45Z",
+    "cpu_pct": 38.71,
+    "data_io_pct": 25.6,
+    "log_write_pct": 32.65,
+    "memory_pct": 74.24,
+    "workers_pct": 8.06
+   },
+   {
+    "at": "2026-10-11T11:16:00Z",
+    "cpu_pct": 37.13,
+    "data_io_pct": 19.02,
+    "log_write_pct": 31.87,
+    "memory_pct": 73.77,
+    "workers_pct": 6.2
+   },
+   {
+    "at": "2026-10-11T11:16:15Z",
+    "cpu_pct": 28.82,
+    "data_io_pct": 18.37,
+    "log_write_pct": 42.13,
+    "memory_pct": 75.14,
+    "workers_pct": 7.72
+   },
+   {
+    "at": "2026-10-11T11:16:30Z",
+    "cpu_pct": 26.68,
+    "data_io_pct": 23.36,
+    "log_write_pct": 43.53,
+    "memory_pct": 72.57,
+    "workers_pct": 7.57
+   },
+   {
+    "at": "2026-10-11T11:16:45Z",
+    "cpu_pct": 35.35,
+    "data_io_pct": 19.23,
+    "log_write_pct": 49.8,
+    "memory_pct": 73.59,
+    "workers_pct": 6.65
+   },
+   {
+    "at": "2026-10-11T11:17:00Z",
+    "cpu_pct": 34.56,
+    "data_io_pct": 23.97,
+    "log_write_pct": 38.76,
+    "memory_pct": 73.73,
+    "workers_pct": 6.58
+   },
+   {
+    "at": "2026-10-11T11:17:15Z",
+    "cpu_pct": 25.72,
+    "data_io_pct": 18.7,
+    "log_write_pct": 42.91,
+    "memory_pct": 74.89,
+    "workers_pct": 5.46
+   },
+   {
+    "at": "2026-10-11T11:17:30Z",
+    "cpu_pct": 27.29,
+    "data_io_pct": 20.48,
+    "log_write_pct": 39.74,
+    "memory_pct": 73.33,
+    "workers_pct": 6.54
+   },
+   {
+    "at": "2026-10-11T11:17:45Z",
+    "cpu_pct": 25.81,
+    "data_io_pct": 17.28,
+    "log_write_pct": 56.83,
+    "memory_pct": 75.15,
+    "workers_pct": 7.11
+   },
+   {
+    "at": "2026-10-11T11:18:00Z",
+    "cpu_pct": 19.98,
+    "data_io_pct": 18.7,
+    "log_write_pct": 43.3,
+    "memory_pct": 75.12,
+    "workers_pct": 5.57
+   },
+   {
+    "at": "2026-10-11T11:18:15Z",
+    "cpu_pct": 19.37,
+    "data_io_pct": 19.75,
+    "log_write_pct": 58.81,
+    "memory_pct": 75.28,
+    "workers_pct": 5.42
+   },
+   {
+    "at": "2026-10-11T11:18:30Z",
+    "cpu_pct": 18.75,
+    "data_io_pct": 23.52,
+    "log_write_pct": 54.86,
+    "memory_pct": 74.8,
+    "workers_pct": 4.95
+   },
+   {
+    "at": "2026-10-11T11:18:45Z",
+    "cpu_pct": 16.82,
+    "data_io_pct": 21.46,
+    "log_write_pct": 53.98,
+    "memory_pct": 72.29,
+    "workers_pct": 6.52
+   },
+   {
+    "at": "2026-10-11T11:19:00Z",
+    "cpu_pct": 22.96,
+    "data_io_pct": 22.14,
+    "log_write_pct": 49.88,
+    "memory_pct": 75.42,
+    "workers_pct": 4.65
+   },
+   {
+    "at": "2026-10-11T11:19:15Z",
+    "cpu_pct": 24.97,
+    "data_io_pct": 19.13,
+    "log_write_pct": 55.25,
+    "memory_pct": 74.21,
+    "workers_pct": 6.24
+   },
+   {
+    "at": "2026-10-11T11:19:30Z",
+    "cpu_pct": 17.15,
+    "data_io_pct": 16.3,
+    "log_write_pct": 59.44,
+    "memory_pct": 72.95,
+    "workers_pct": 4.48
+   },
+   {
+    "at": "2026-10-11T11:19:45Z",
+    "cpu_pct": 15.23,
+    "data_io_pct": 15.43,
+    "log_write_pct": 55.31,
+    "memory_pct": 73.25,
+    "workers_pct": 4.74
+   },
+   {
+    "at": "2026-10-11T11:20:00Z",
+    "cpu_pct": 21.83,
+    "data_io_pct": 17.11,
+    "log_write_pct": 61.05,
+    "memory_pct": 72.71,
+    "workers_pct": 4.7
+   },
+   {
+    "at": "2026-10-11T11:20:15Z",
+    "cpu_pct": 12.4,
+    "data_io_pct": 16.54,
+    "log_write_pct": 54.12,
+    "memory_pct": 74.93,
+    "workers_pct": 4.99
+   },
+   {
+    "at": "2026-10-11T11:20:30Z",
+    "cpu_pct": 13.98,
+    "data_io_pct": 18.08,
+    "log_write_pct": 69.54,
+    "memory_pct": 72.43,
+    "workers_pct": 5.4
+   },
+   {
+    "at": "2026-10-11T11:20:45Z",
+    "cpu_pct": 16.47,
+    "data_io_pct": 17.99,
+    "log_write_pct": 68.5,
+    "memory_pct": 73.57,
+    "workers_pct": 4.66
+   },
+   {
+    "at": "2026-10-11T11:21:00Z",
+    "cpu_pct": 19.18,
+    "data_io_pct": 21.63,
+    "log_write_pct": 61.06,
+    "memory_pct": 75.33,
+    "workers_pct": 4.95
+   },
+   {
+    "at": "2026-10-11T11:21:15Z",
+    "cpu_pct": 18.26,
+    "data_io_pct": 16.74,
+    "log_write_pct": 61.42,
+    "memory_pct": 72.22,
+    "workers_pct": 3.68
+   },
+   {
+    "at": "2026-10-11T11:21:30Z",
+    "cpu_pct": 11.23,
+    "data_io_pct": 19.16,
+    "log_write_pct": 60.08,
+    "memory_pct": 72.65,
+    "workers_pct": 3.48
+   },
+   {
+    "at": "2026-10-11T11:21:45Z",
+    "cpu_pct": 20.29,
+    "data_io_pct": 19.92,
+    "log_write_pct": 66.7,
+    "memory_pct": 73.13,
+    "workers_pct": 3.69
+   },
+   {
+    "at": "2026-10-11T11:22:00Z",
+    "cpu_pct": 27.59,
+    "data_io_pct": 16.36,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.63,
+    "workers_pct": 3.99
+   },
+   {
+    "at": "2026-10-11T11:22:15Z",
+    "cpu_pct": 27.17,
+    "data_io_pct": 20.1,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.89,
+    "workers_pct": 4.1
+   },
+   {
+    "at": "2026-10-11T11:22:30Z",
+    "cpu_pct": 26.94,
+    "data_io_pct": 19.85,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.24,
+    "workers_pct": 3.62
+   },
+   {
+    "at": "2026-10-11T11:22:45Z",
+    "cpu_pct": 24.08,
+    "data_io_pct": 14.89,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.9,
+    "workers_pct": 3.82
+   },
+   {
+    "at": "2026-10-11T11:23:00Z",
+    "cpu_pct": 26.6,
+    "data_io_pct": 15.59,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.02,
+    "workers_pct": 3.26
+   },
+   {
+    "at": "2026-10-11T11:23:15Z",
+    "cpu_pct": 25.44,
+    "data_io_pct": 14.47,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.17,
+    "workers_pct": 2.69
+   },
+   {
+    "at": "2026-10-11T11:23:30Z",
+    "cpu_pct": 28.26,
+    "data_io_pct": 12.84,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.34,
+    "workers_pct": 3.63
+   },
+   {
+    "at": "2026-10-11T11:23:45Z",
+    "cpu_pct": 33.91,
+    "data_io_pct": 15.95,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.86,
+    "workers_pct": 4.25
+   },
+   {
+    "at": "2026-10-11T11:24:00Z",
+    "cpu_pct": 29.94,
+    "data_io_pct": 13.01,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.94,
+    "workers_pct": 2.72
+   },
+   {
+    "at": "2026-10-11T11:24:15Z",
+    "cpu_pct": 34.37,
+    "data_io_pct": 15.26,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.18,
+    "workers_pct": 4.03
+   },
+   {
+    "at": "2026-10-11T11:24:30Z",
+    "cpu_pct": 36.85,
+    "data_io_pct": 14.84,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.94,
+    "workers_pct": 3.93
+   },
+   {
+    "at": "2026-10-11T11:24:45Z",
+    "cpu_pct": 28.35,
+    "data_io_pct": 13.72,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.02,
+    "workers_pct": 3.92
+   },
+   {
+    "at": "2026-10-11T11:25:00Z",
+    "cpu_pct": 36.91,
+    "data_io_pct": 15.85,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.34,
+    "workers_pct": 3.98
+   },
+   {
+    "at": "2026-10-11T11:25:15Z",
+    "cpu_pct": 36.08,
+    "data_io_pct": 14.5,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.92,
+    "workers_pct": 2.22
+   },
+   {
+    "at": "2026-10-11T11:25:30Z",
+    "cpu_pct": 30.16,
+    "data_io_pct": 11.55,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.42,
+    "workers_pct": 3.79
+   },
+   {
+    "at": "2026-10-11T11:25:45Z",
+    "cpu_pct": 22.0,
+    "data_io_pct": 13.4,
+    "log_write_pct": 49.12,
+    "memory_pct": 74.72,
+    "workers_pct": 3.06
+   },
+   {
+    "at": "2026-10-11T11:26:00Z",
+    "cpu_pct": 16.11,
+    "data_io_pct": 14.48,
+    "log_write_pct": 49.44,
+    "memory_pct": 74.01,
+    "workers_pct": 3.12
+   },
+   {
+    "at": "2026-10-11T11:26:15Z",
+    "cpu_pct": 24.81,
+    "data_io_pct": 8.34,
+    "log_write_pct": 47.62,
+    "memory_pct": 73.01,
+    "workers_pct": 2.18
+   },
+   {
+    "at": "2026-10-11T11:26:30Z",
+    "cpu_pct": 20.94,
+    "data_io_pct": 13.37,
+    "log_write_pct": 37.5,
+    "memory_pct": 74.96,
+    "workers_pct": 3.97
+   },
+   {
+    "at": "2026-10-11T11:26:45Z",
+    "cpu_pct": 24.59,
+    "data_io_pct": 10.31,
+    "log_write_pct": 40.3,
+    "memory_pct": 74.73,
+    "workers_pct": 3.54
+   },
+   {
+    "at": "2026-10-11T11:27:00Z",
+    "cpu_pct": 27.0,
+    "data_io_pct": 12.12,
+    "log_write_pct": 32.34,
+    "memory_pct": 72.59,
+    "workers_pct": 2.51
+   },
+   {
+    "at": "2026-10-11T11:27:15Z",
+    "cpu_pct": 29.49,
+    "data_io_pct": 9.14,
+    "log_write_pct": 38.7,
+    "memory_pct": 72.05,
+    "workers_pct": 2.12
+   },
+   {
+    "at": "2026-10-11T11:27:30Z",
+    "cpu_pct": 24.8,
+    "data_io_pct": 11.82,
+    "log_write_pct": 39.28,
+    "memory_pct": 74.7,
+    "workers_pct": 2.59
+   },
+   {
+    "at": "2026-10-11T11:27:45Z",
+    "cpu_pct": 28.81,
+    "data_io_pct": 9.89,
+    "log_write_pct": 34.34,
+    "memory_pct": 72.47,
+    "workers_pct": 3.81
+   },
+   {
+    "at": "2026-10-11T11:28:00Z",
+    "cpu_pct": 26.06,
+    "data_io_pct": 13.74,
+    "log_write_pct": 40.62,
+    "memory_pct": 72.07,
+    "workers_pct": 2.95
+   },
+   {
+    "at": "2026-10-11T11:28:15Z",
+    "cpu_pct": 34.59,
+    "data_io_pct": 13.4,
+    "log_write_pct": 31.69,
+    "memory_pct": 73.07,
+    "workers_pct": 2.48
+   },
+   {
+    "at": "2026-10-11T11:28:30Z",
+    "cpu_pct": 37.2,
+    "data_io_pct": 7.09,
+    "log_write_pct": 32.78,
+    "memory_pct": 72.57,
+    "workers_pct": 3.14
+   },
+   {
+    "at": "2026-10-11T11:28:45Z",
+    "cpu_pct": 38.41,
+    "data_io_pct": 6.22,
+    "log_write_pct": 35.69,
+    "memory_pct": 74.03,
+    "workers_pct": 3.9
+   },
+   {
+    "at": "2026-10-11T11:29:00Z",
+    "cpu_pct": 36.55,
+    "data_io_pct": 6.77,
+    "log_write_pct": 36.16,
+    "memory_pct": 73.94,
+    "workers_pct": 2.21
+   },
+   {
+    "at": "2026-10-11T11:29:15Z",
+    "cpu_pct": 29.29,
+    "data_io_pct": 8.61,
+    "log_write_pct": 28.36,
+    "memory_pct": 73.21,
+    "workers_pct": 2.49
+   },
+   {
+    "at": "2026-10-11T11:29:30Z",
+    "cpu_pct": 34.53,
+    "data_io_pct": 6.98,
+    "log_write_pct": 34.09,
+    "memory_pct": 72.01,
+    "workers_pct": 3.76
+   },
+   {
+    "at": "2026-10-11T11:29:45Z",
+    "cpu_pct": 41.63,
+    "data_io_pct": 5.18,
+    "log_write_pct": 35.1,
+    "memory_pct": 74.85,
+    "workers_pct": 4.12
+   },
+   {
+    "at": "2026-10-11T11:30:00Z",
+    "cpu_pct": 36.2,
+    "data_io_pct": 6.98,
+    "log_write_pct": 26.35,
+    "memory_pct": 76.0,
+    "workers_pct": 3.55
+   },
+   {
+    "at": "2026-10-11T11:30:15Z",
+    "cpu_pct": 38.2,
+    "data_io_pct": 7.21,
+    "log_write_pct": 24.4,
+    "memory_pct": 72.19,
+    "workers_pct": 2.64
+   },
+   {
+    "at": "2026-10-11T11:30:30Z",
+    "cpu_pct": 45.04,
+    "data_io_pct": 5.87,
+    "log_write_pct": 35.05,
+    "memory_pct": 73.0,
+    "workers_pct": 3.04
+   },
+   {
+    "at": "2026-10-11T11:30:45Z",
+    "cpu_pct": 42.3,
+    "data_io_pct": 4.9,
+    "log_write_pct": 26.28,
+    "memory_pct": 75.82,
+    "workers_pct": 4.35
+   },
+   {
+    "at": "2026-10-11T11:31:00Z",
+    "cpu_pct": 47.04,
+    "data_io_pct": 8.24,
+    "log_write_pct": 35.3,
+    "memory_pct": 75.76,
+    "workers_pct": 3.76
+   },
+   {
+    "at": "2026-10-11T11:31:15Z",
+    "cpu_pct": 47.05,
+    "data_io_pct": 3.4,
+    "log_write_pct": 32.92,
+    "memory_pct": 73.8,
+    "workers_pct": 4.25
+   },
+   {
+    "at": "2026-10-11T11:31:30Z",
+    "cpu_pct": 47.24,
+    "data_io_pct": 5.11,
+    "log_write_pct": 22.65,
+    "memory_pct": 75.71,
+    "workers_pct": 3.09
+   },
+   {
+    "at": "2026-10-11T11:31:45Z",
+    "cpu_pct": 46.25,
+    "data_io_pct": 5.4,
+    "log_write_pct": 27.42,
+    "memory_pct": 74.96,
+    "workers_pct": 4.88
+   },
+   {
+    "at": "2026-10-11T11:32:00Z",
+    "cpu_pct": 58.76,
+    "data_io_pct": 7.74,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.2,
+    "workers_pct": 4.14
+   },
+   {
+    "at": "2026-10-11T11:32:15Z",
+    "cpu_pct": 61.4,
+    "data_io_pct": 3.67,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.65,
+    "workers_pct": 3.54
+   },
+   {
+    "at": "2026-10-11T11:32:30Z",
+    "cpu_pct": 68.54,
+    "data_io_pct": 6.16,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.88,
+    "workers_pct": 5.04
+   },
+   {
+    "at": "2026-10-11T11:32:45Z",
+    "cpu_pct": 70.59,
+    "data_io_pct": 5.64,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.56,
+    "workers_pct": 3.72
+   },
+   {
+    "at": "2026-10-11T11:33:00Z",
+    "cpu_pct": 60.65,
+    "data_io_pct": 4.65,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.36,
+    "workers_pct": 3.93
+   },
+   {
+    "at": "2026-10-11T11:33:15Z",
+    "cpu_pct": 63.55,
+    "data_io_pct": 6.35,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.55,
+    "workers_pct": 5.06
+   },
+   {
+    "at": "2026-10-11T11:33:30Z",
+    "cpu_pct": 66.26,
+    "data_io_pct": 4.99,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.1,
+    "workers_pct": 4.43
+   },
+   {
+    "at": "2026-10-11T11:33:45Z",
+    "cpu_pct": 66.17,
+    "data_io_pct": 2.07,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.11,
+    "workers_pct": 5.73
+   },
+   {
+    "at": "2026-10-11T11:34:00Z",
+    "cpu_pct": 64.39,
+    "data_io_pct": 5.5,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.52,
+    "workers_pct": 5.64
+   },
+   {
+    "at": "2026-10-11T11:34:15Z",
+    "cpu_pct": 66.19,
+    "data_io_pct": 3.55,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.99,
+    "workers_pct": 4.84
+   },
+   {
+    "at": "2026-10-11T11:34:30Z",
+    "cpu_pct": 69.62,
+    "data_io_pct": 8.94,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.39,
+    "workers_pct": 5.91
+   },
+   {
+    "at": "2026-10-11T11:34:45Z",
+    "cpu_pct": 65.15,
+    "data_io_pct": 1.49,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.84,
+    "workers_pct": 6.08
+   },
+   {
+    "at": "2026-10-11T11:35:00Z",
+    "cpu_pct": 71.14,
+    "data_io_pct": 5.87,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.0,
+    "workers_pct": 5.2
+   },
+   {
+    "at": "2026-10-11T11:35:15Z",
+    "cpu_pct": 77.09,
+    "data_io_pct": 7.73,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.42,
+    "workers_pct": 6.49
+   },
+   {
+    "at": "2026-10-11T11:35:30Z",
+    "cpu_pct": 69.41,
+    "data_io_pct": 1.95,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.62,
+    "workers_pct": 5.72
+   },
+   {
+    "at": "2026-10-11T11:35:45Z",
+    "cpu_pct": 61.01,
+    "data_io_pct": 8.58,
+    "log_write_pct": 57.11,
+    "memory_pct": 74.59,
+    "workers_pct": 6.33
+   },
+   {
+    "at": "2026-10-11T11:36:00Z",
+    "cpu_pct": 58.66,
+    "data_io_pct": 5.43,
+    "log_write_pct": 47.65,
+    "memory_pct": 75.13,
+    "workers_pct": 5.4
+   },
+   {
+    "at": "2026-10-11T11:36:15Z",
+    "cpu_pct": 64.5,
+    "data_io_pct": 6.17,
+    "log_write_pct": 53.25,
+    "memory_pct": 72.51,
+    "workers_pct": 5.57
+   },
+   {
+    "at": "2026-10-11T11:36:30Z",
+    "cpu_pct": 61.32,
+    "data_io_pct": 6.59,
+    "log_write_pct": 51.48,
+    "memory_pct": 72.28,
+    "workers_pct": 6.24
+   },
+   {
+    "at": "2026-10-11T11:36:45Z",
+    "cpu_pct": 60.84,
+    "data_io_pct": 4.11,
+    "log_write_pct": 54.46,
+    "memory_pct": 74.4,
+    "workers_pct": 5.34
+   },
+   {
+    "at": "2026-10-11T11:37:00Z",
+    "cpu_pct": 57.57,
+    "data_io_pct": 4.7,
+    "log_write_pct": 67.31,
+    "memory_pct": 74.58,
+    "workers_pct": 7.22
+   },
+   {
+    "at": "2026-10-11T11:37:15Z",
+    "cpu_pct": 59.7,
+    "data_io_pct": 2.92,
+    "log_write_pct": 56.89,
+    "memory_pct": 75.84,
+    "workers_pct": 6.99
+   },
+   {
+    "at": "2026-10-11T11:37:30Z",
+    "cpu_pct": 57.67,
+    "data_io_pct": 1.25,
+    "log_write_pct": 61.76,
+    "memory_pct": 74.7,
+    "workers_pct": 6.55
+   },
+   {
+    "at": "2026-10-11T11:37:45Z",
+    "cpu_pct": 56.99,
+    "data_io_pct": 6.45,
+    "log_write_pct": 69.31,
+    "memory_pct": 72.91,
+    "workers_pct": 5.9
+   },
+   {
+    "at": "2026-10-11T11:38:00Z",
+    "cpu_pct": 57.82,
+    "data_io_pct": 4.53,
+    "log_write_pct": 66.01,
+    "memory_pct": 72.79,
+    "workers_pct": 7.55
+   },
+   {
+    "at": "2026-10-11T11:38:15Z",
+    "cpu_pct": 62.44,
+    "data_io_pct": 5.26,
+    "log_write_pct": 58.82,
+    "memory_pct": 75.88,
+    "workers_pct": 6.71
+   },
+   {
+    "at": "2026-10-11T11:38:30Z",
+    "cpu_pct": 63.15,
+    "data_io_pct": 3.14,
+    "log_write_pct": 59.37,
+    "memory_pct": 75.04,
+    "workers_pct": 6.79
+   },
+   {
+    "at": "2026-10-11T11:38:45Z",
+    "cpu_pct": 64.41,
+    "data_io_pct": 5.34,
+    "log_write_pct": 58.98,
+    "memory_pct": 72.89,
+    "workers_pct": 7.15
+   },
+   {
+    "at": "2026-10-11T11:39:00Z",
+    "cpu_pct": 60.6,
+    "data_io_pct": 9.05,
+    "log_write_pct": 58.32,
+    "memory_pct": 73.57,
+    "workers_pct": 6.86
+   },
+   {
+    "at": "2026-10-11T11:39:15Z",
+    "cpu_pct": 63.87,
+    "data_io_pct": 2.69,
+    "log_write_pct": 56.66,
+    "memory_pct": 72.24,
+    "workers_pct": 7.34
+   },
+   {
+    "at": "2026-10-11T11:39:30Z",
+    "cpu_pct": 62.47,
+    "data_io_pct": 8.73,
+    "log_write_pct": 67.26,
+    "memory_pct": 75.99,
+    "workers_pct": 8.52
+   },
+   {
+    "at": "2026-10-11T11:39:45Z",
+    "cpu_pct": 55.1,
+    "data_io_pct": 3.25,
+    "log_write_pct": 70.08,
+    "memory_pct": 74.99,
+    "workers_pct": 6.83
+   },
+   {
+    "at": "2026-10-11T11:40:00Z",
+    "cpu_pct": 58.53,
+    "data_io_pct": 4.92,
+    "log_write_pct": 60.5,
+    "memory_pct": 73.33,
+    "workers_pct": 7.21
+   },
+   {
+    "at": "2026-10-11T11:40:15Z",
+    "cpu_pct": 49.94,
+    "data_io_pct": 4.26,
+    "log_write_pct": 59.43,
+    "memory_pct": 75.82,
+    "workers_pct": 7.22
+   },
+   {
+    "at": "2026-10-11T11:40:30Z",
+    "cpu_pct": 60.78,
+    "data_io_pct": 3.82,
+    "log_write_pct": 58.66,
+    "memory_pct": 75.29,
+    "workers_pct": 8.71
+   },
+   {
+    "at": "2026-10-11T11:40:45Z",
+    "cpu_pct": 53.66,
+    "data_io_pct": 2.7,
+    "log_write_pct": 59.56,
+    "memory_pct": 73.49,
+    "workers_pct": 9.0
+   },
+   {
+    "at": "2026-10-11T11:41:00Z",
+    "cpu_pct": 49.99,
+    "data_io_pct": 5.38,
+    "log_write_pct": 65.25,
+    "memory_pct": 72.12,
+    "workers_pct": 8.07
+   },
+   {
+    "at": "2026-10-11T11:41:15Z",
+    "cpu_pct": 56.59,
+    "data_io_pct": 8.76,
+    "log_write_pct": 50.36,
+    "memory_pct": 72.14,
+    "workers_pct": 7.46
+   },
+   {
+    "at": "2026-10-11T11:41:30Z",
+    "cpu_pct": 57.01,
+    "data_io_pct": 4.85,
+    "log_write_pct": 60.37,
+    "memory_pct": 75.59,
+    "workers_pct": 8.09
+   },
+   {
+    "at": "2026-10-11T11:41:45Z",
+    "cpu_pct": 48.32,
+    "data_io_pct": 10.63,
+    "log_write_pct": 56.91,
+    "memory_pct": 73.05,
+    "workers_pct": 8.92
+   },
+   {
+    "at": "2026-10-11T11:42:00Z",
+    "cpu_pct": 61.9,
+    "data_io_pct": 5.36,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.02,
+    "workers_pct": 9.07
+   },
+   {
+    "at": "2026-10-11T11:42:15Z",
+    "cpu_pct": 68.12,
+    "data_io_pct": 8.42,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.77,
+    "workers_pct": 7.67
+   },
+   {
+    "at": "2026-10-11T11:42:30Z",
+    "cpu_pct": 58.91,
+    "data_io_pct": 7.35,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.83,
+    "workers_pct": 9.59
+   },
+   {
+    "at": "2026-10-11T11:42:45Z",
+    "cpu_pct": 59.7,
+    "data_io_pct": 5.76,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.72,
+    "workers_pct": 8.73
+   },
+   {
+    "at": "2026-10-11T11:43:00Z",
+    "cpu_pct": 65.14,
+    "data_io_pct": 5.43,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.21,
+    "workers_pct": 9.27
+   },
+   {
+    "at": "2026-10-11T11:43:15Z",
+    "cpu_pct": 62.78,
+    "data_io_pct": 10.37,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.43,
+    "workers_pct": 8.49
+   },
+   {
+    "at": "2026-10-11T11:43:30Z",
+    "cpu_pct": 55.64,
+    "data_io_pct": 7.3,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.13,
+    "workers_pct": 8.03
+   },
+   {
+    "at": "2026-10-11T11:43:45Z",
+    "cpu_pct": 53.05,
+    "data_io_pct": 10.66,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.99,
+    "workers_pct": 8.04
+   },
+   {
+    "at": "2026-10-11T11:44:00Z",
+    "cpu_pct": 49.95,
+    "data_io_pct": 9.3,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.3,
+    "workers_pct": 9.9
+   },
+   {
+    "at": "2026-10-11T11:44:15Z",
+    "cpu_pct": 58.99,
+    "data_io_pct": 13.02,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.06,
+    "workers_pct": 8.13
+   },
+   {
+    "at": "2026-10-11T11:44:30Z",
+    "cpu_pct": 48.4,
+    "data_io_pct": 9.35,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.84,
+    "workers_pct": 8.87
+   },
+   {
+    "at": "2026-10-11T11:44:45Z",
+    "cpu_pct": 48.89,
+    "data_io_pct": 8.95,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.48,
+    "workers_pct": 9.34
+   },
+   {
+    "at": "2026-10-11T11:45:00Z",
+    "cpu_pct": 53.9,
+    "data_io_pct": 12.65,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.66,
+    "workers_pct": 8.24
+   },
+   {
+    "at": "2026-10-11T11:45:15Z",
+    "cpu_pct": 53.86,
+    "data_io_pct": 8.48,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.27,
+    "workers_pct": 8.75
+   },
+   {
+    "at": "2026-10-11T11:45:30Z",
+    "cpu_pct": 51.48,
+    "data_io_pct": 7.99,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.99,
+    "workers_pct": 8.49
+   },
+   {
+    "at": "2026-10-11T11:45:45Z",
+    "cpu_pct": 29.32,
+    "data_io_pct": 13.74,
+    "log_write_pct": 32.84,
+    "memory_pct": 73.31,
+    "workers_pct": 8.78
+   },
+   {
+    "at": "2026-10-11T11:46:00Z",
+    "cpu_pct": 38.27,
+    "data_io_pct": 10.99,
+    "log_write_pct": 26.37,
+    "memory_pct": 75.23,
+    "workers_pct": 9.27
+   },
+   {
+    "at": "2026-10-11T11:46:15Z",
+    "cpu_pct": 37.14,
+    "data_io_pct": 8.03,
+    "log_write_pct": 29.47,
+    "memory_pct": 75.28,
+    "workers_pct": 9.63
+   },
+   {
+    "at": "2026-10-11T11:46:30Z",
+    "cpu_pct": 35.13,
+    "data_io_pct": 7.81,
+    "log_write_pct": 25.91,
+    "memory_pct": 72.48,
+    "workers_pct": 8.3
+   },
+   {
+    "at": "2026-10-11T11:46:45Z",
+    "cpu_pct": 34.76,
+    "data_io_pct": 12.43,
+    "log_write_pct": 35.58,
+    "memory_pct": 73.49,
+    "workers_pct": 9.62
+   },
+   {
+    "at": "2026-10-11T11:47:00Z",
+    "cpu_pct": 27.43,
+    "data_io_pct": 10.13,
+    "log_write_pct": 32.76,
+    "memory_pct": 75.78,
+    "workers_pct": 8.06
+   },
+   {
+    "at": "2026-10-11T11:47:15Z",
+    "cpu_pct": 28.17,
+    "data_io_pct": 13.29,
+    "log_write_pct": 23.57,
+    "memory_pct": 73.47,
+    "workers_pct": 8.09
+   },
+   {
+    "at": "2026-10-11T11:47:30Z",
+    "cpu_pct": 22.48,
+    "data_io_pct": 10.66,
+    "log_write_pct": 29.59,
+    "memory_pct": 74.61,
+    "workers_pct": 8.16
+   },
+   {
+    "at": "2026-10-11T11:47:45Z",
+    "cpu_pct": 19.21,
+    "data_io_pct": 11.52,
+    "log_write_pct": 30.92,
+    "memory_pct": 72.74,
+    "workers_pct": 8.33
+   },
+   {
+    "at": "2026-10-11T11:48:00Z",
+    "cpu_pct": 20.6,
+    "data_io_pct": 15.56,
+    "log_write_pct": 29.05,
+    "memory_pct": 72.25,
+    "workers_pct": 7.84
+   },
+   {
+    "at": "2026-10-11T11:48:15Z",
+    "cpu_pct": 22.02,
+    "data_io_pct": 13.88,
+    "log_write_pct": 30.86,
+    "memory_pct": 72.36,
+    "workers_pct": 7.9
+   },
+   {
+    "at": "2026-10-11T11:48:30Z",
+    "cpu_pct": 24.78,
+    "data_io_pct": 13.05,
+    "log_write_pct": 25.67,
+    "memory_pct": 73.23,
+    "workers_pct": 9.41
+   },
+   {
+    "at": "2026-10-11T11:48:45Z",
+    "cpu_pct": 19.39,
+    "data_io_pct": 14.6,
+    "log_write_pct": 27.5,
+    "memory_pct": 73.67,
+    "workers_pct": 9.16
+   },
+   {
+    "at": "2026-10-11T11:49:00Z",
+    "cpu_pct": 26.85,
+    "data_io_pct": 13.26,
+    "log_write_pct": 25.71,
+    "memory_pct": 74.91,
+    "workers_pct": 7.76
+   },
+   {
+    "at": "2026-10-11T11:49:15Z",
+    "cpu_pct": 14.26,
+    "data_io_pct": 17.86,
+    "log_write_pct": 30.24,
+    "memory_pct": 75.28,
+    "workers_pct": 8.09
+   },
+   {
+    "at": "2026-10-11T11:49:30Z",
+    "cpu_pct": 24.13,
+    "data_io_pct": 14.62,
+    "log_write_pct": 27.08,
+    "memory_pct": 72.06,
+    "workers_pct": 8.29
+   },
+   {
+    "at": "2026-10-11T11:49:45Z",
+    "cpu_pct": 20.62,
+    "data_io_pct": 18.5,
+    "log_write_pct": 27.04,
+    "memory_pct": 74.49,
+    "workers_pct": 7.84
+   },
+   {
+    "at": "2026-10-11T11:50:00Z",
+    "cpu_pct": 18.43,
+    "data_io_pct": 12.68,
+    "log_write_pct": 31.39,
+    "memory_pct": 74.08,
+    "workers_pct": 8.85
+   },
+   {
+    "at": "2026-10-11T11:50:15Z",
+    "cpu_pct": 13.19,
+    "data_io_pct": 15.72,
+    "log_write_pct": 41.06,
+    "memory_pct": 75.87,
+    "workers_pct": 7.29
+   },
+   {
+    "at": "2026-10-11T11:50:30Z",
+    "cpu_pct": 12.96,
+    "data_io_pct": 19.62,
+    "log_write_pct": 45.2,
+    "memory_pct": 73.93,
+    "workers_pct": 6.9
+   },
+   {
+    "at": "2026-10-11T11:50:45Z",
+    "cpu_pct": 22.17,
+    "data_io_pct": 15.46,
+    "log_write_pct": 45.54,
+    "memory_pct": 74.48,
+    "workers_pct": 8.34
+   },
+   {
+    "at": "2026-10-11T11:51:00Z",
+    "cpu_pct": 12.66,
+    "data_io_pct": 18.92,
+    "log_write_pct": 36.16,
+    "memory_pct": 73.62,
+    "workers_pct": 8.27
+   },
+   {
+    "at": "2026-10-11T11:51:15Z",
+    "cpu_pct": 20.42,
+    "data_io_pct": 14.38,
+    "log_write_pct": 37.68,
+    "memory_pct": 73.6,
+    "workers_pct": 7.5
+   },
+   {
+    "at": "2026-10-11T11:51:30Z",
+    "cpu_pct": 14.86,
+    "data_io_pct": 14.17,
+    "log_write_pct": 39.76,
+    "memory_pct": 74.9,
+    "workers_pct": 8.15
+   },
+   {
+    "at": "2026-10-11T11:51:45Z",
+    "cpu_pct": 10.6,
+    "data_io_pct": 17.96,
+    "log_write_pct": 49.55,
+    "memory_pct": 72.15,
+    "workers_pct": 7.91
+   },
+   {
+    "at": "2026-10-11T11:52:00Z",
+    "cpu_pct": 25.44,
+    "data_io_pct": 18.52,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.2,
+    "workers_pct": 7.37
+   },
+   {
+    "at": "2026-10-11T11:52:15Z",
+    "cpu_pct": 27.67,
+    "data_io_pct": 17.35,
+    "log_write_pct": 99.6,
+    "memory_pct": 74.33,
+    "workers_pct": 6.85
+   },
+   {
+    "at": "2026-10-11T11:52:30Z",
+    "cpu_pct": 31.94,
+    "data_io_pct": 17.82,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.75,
+    "workers_pct": 5.92
+   },
+   {
+    "at": "2026-10-11T11:52:45Z",
+    "cpu_pct": 31.56,
+    "data_io_pct": 18.41,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.94,
+    "workers_pct": 7.27
+   },
+   {
+    "at": "2026-10-11T11:53:00Z",
+    "cpu_pct": 33.65,
+    "data_io_pct": 18.41,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.72,
+    "workers_pct": 6.56
+   },
+   {
+    "at": "2026-10-11T11:53:15Z",
+    "cpu_pct": 25.79,
+    "data_io_pct": 16.02,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.72,
+    "workers_pct": 5.67
+   },
+   {
+    "at": "2026-10-11T11:53:30Z",
+    "cpu_pct": 30.09,
+    "data_io_pct": 19.31,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.16,
+    "workers_pct": 6.63
+   },
+   {
+    "at": "2026-10-11T11:53:45Z",
+    "cpu_pct": 26.11,
+    "data_io_pct": 21.33,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.11,
+    "workers_pct": 6.25
+   },
+   {
+    "at": "2026-10-11T11:54:00Z",
+    "cpu_pct": 26.16,
+    "data_io_pct": 19.72,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.51,
+    "workers_pct": 7.0
+   },
+   {
+    "at": "2026-10-11T11:54:15Z",
+    "cpu_pct": 27.6,
+    "data_io_pct": 22.77,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.98,
+    "workers_pct": 6.43
+   },
+   {
+    "at": "2026-10-11T11:54:30Z",
+    "cpu_pct": 36.25,
+    "data_io_pct": 17.68,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.93,
+    "workers_pct": 5.82
+   },
+   {
+    "at": "2026-10-11T11:54:45Z",
+    "cpu_pct": 38.51,
+    "data_io_pct": 23.67,
+    "log_write_pct": 99.6,
+    "memory_pct": 72.66,
+    "workers_pct": 6.29
+   },
+   {
+    "at": "2026-10-11T11:55:00Z",
+    "cpu_pct": 38.81,
+    "data_io_pct": 17.06,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.4,
+    "workers_pct": 6.09
+   },
+   {
+    "at": "2026-10-11T11:55:15Z",
+    "cpu_pct": 30.21,
+    "data_io_pct": 23.91,
+    "log_write_pct": 99.6,
+    "memory_pct": 73.1,
+    "workers_pct": 6.08
+   },
+   {
+    "at": "2026-10-11T11:55:30Z",
+    "cpu_pct": 30.74,
+    "data_io_pct": 20.94,
+    "log_write_pct": 99.6,
+    "memory_pct": 75.68,
+    "workers_pct": 4.74
+   },
+   {
+    "at": "2026-10-11T11:55:45Z",
+    "cpu_pct": 18.93,
+    "data_io_pct": 21.16,
+    "log_write_pct": 60.91,
+    "memory_pct": 72.15,
+    "workers_pct": 4.56
+   },
+   {
+    "at": "2026-10-11T11:56:00Z",
+    "cpu_pct": 18.51,
+    "data_io_pct": 24.77,
+    "log_write_pct": 66.85,
+    "memory_pct": 75.58,
+    "workers_pct": 4.41
+   },
+   {
+    "at": "2026-10-11T11:56:15Z",
+    "cpu_pct": 26.84,
+    "data_io_pct": 18.37,
+    "log_write_pct": 64.48,
+    "memory_pct": 74.55,
+    "workers_pct": 4.67
+   },
+   {
+    "at": "2026-10-11T11:56:30Z",
+    "cpu_pct": 28.79,
+    "data_io_pct": 22.05,
+    "log_write_pct": 65.14,
+    "memory_pct": 75.53,
+    "workers_pct": 4.04
+   },
+   {
+    "at": "2026-10-11T11:56:45Z",
+    "cpu_pct": 31.15,
+    "data_io_pct": 22.8,
+    "log_write_pct": 61.89,
+    "memory_pct": 75.19,
+    "workers_pct": 4.24
+   },
+   {
+    "at": "2026-10-11T11:57:00Z",
+    "cpu_pct": 32.08,
+    "data_io_pct": 22.52,
+    "log_write_pct": 60.92,
+    "memory_pct": 75.06,
+    "workers_pct": 4.48
+   },
+   {
+    "at": "2026-10-11T11:57:15Z",
+    "cpu_pct": 23.31,
+    "data_io_pct": 23.99,
+    "log_write_pct": 55.37,
+    "memory_pct": 75.28,
+    "workers_pct": 3.99
+   },
+   {
+    "at": "2026-10-11T11:57:30Z",
+    "cpu_pct": 29.88,
+    "data_io_pct": 26.04,
+    "log_write_pct": 63.27,
+    "memory_pct": 74.65,
+    "workers_pct": 3.99
+   },
+   {
+    "at": "2026-10-11T11:57:45Z",
+    "cpu_pct": 23.28,
+    "data_io_pct": 18.55,
+    "log_write_pct": 55.45,
+    "memory_pct": 74.46,
+    "workers_pct": 4.12
+   },
+   {
+    "at": "2026-10-11T11:58:00Z",
+    "cpu_pct": 30.49,
+    "data_io_pct": 25.55,
+    "log_write_pct": 54.21,
+    "memory_pct": 72.91,
+    "workers_pct": 4.46
+   },
+   {
+    "at": "2026-10-11T11:58:15Z",
+    "cpu_pct": 25.7,
+    "data_io_pct": 18.51,
+    "log_write_pct": 56.71,
+    "memory_pct": 72.43,
+    "workers_pct": 3.77
+   },
+   {
+    "at": "2026-10-11T11:58:30Z",
+    "cpu_pct": 29.24,
+    "data_io_pct": 23.25,
+    "log_write_pct": 59.27,
+    "memory_pct": 72.82,
+    "workers_pct": 4.2
+   },
+   {
+    "at": "2026-10-11T11:58:45Z",
+    "cpu_pct": 33.37,
+    "data_io_pct": 19.74,
+    "log_write_pct": 63.55,
+    "memory_pct": 72.97,
+    "workers_pct": 3.16
+   },
+   {
+    "at": "2026-10-11T11:59:00Z",
+    "cpu_pct": 29.96,
+    "data_io_pct": 23.85,
+    "log_write_pct": 61.14,
+    "memory_pct": 75.13,
+    "workers_pct": 3.58
+   },
+   {
+    "at": "2026-10-11T11:59:15Z",
+    "cpu_pct": 33.13,
+    "data_io_pct": 18.9,
+    "log_write_pct": 56.08,
+    "memory_pct": 74.25,
+    "workers_pct": 3.39
+   },
+   {
+    "at": "2026-10-11T11:59:30Z",
+    "cpu_pct": 38.87,
+    "data_io_pct": 22.41,
+    "log_write_pct": 59.25,
+    "memory_pct": 74.93,
+    "workers_pct": 3.1
+   },
+   {
+    "at": "2026-10-11T11:59:45Z",
+    "cpu_pct": 43.12,
+    "data_io_pct": 19.26,
+    "log_write_pct": 51.2,
+    "memory_pct": 73.62,
+    "workers_pct": 3.01
+   }
+  ]
+ }
+}

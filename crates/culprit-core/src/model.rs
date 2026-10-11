@@ -191,6 +191,26 @@ pub struct QueryStat {
     /// This query's part of each bucket of the workload's timeline (only the heaviest queries carry one).
     #[serde(default)]
     pub trend: Option<QueryTrend>,
+    /// How run times spread beyond the average, as far as the engine keeps it.
+    #[serde(default)]
+    pub spread: Option<Spread>,
+}
+
+/// How a statement's run times spread. Every engine keeps something different: SQL Server and Postgres the fastest
+/// run, MySQL percentiles and a run-time histogram (8.0.19+). Missing values are `None`, never zero.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct Spread {
+    pub min_ms: Option<f64>,
+    pub p50_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub p99_ms: Option<f64>,
+    /// `[low_ms, high_ms, runs]` per bucket, fastest first (MySQL).
+    #[serde(default)]
+    pub histogram: Vec<[f64; 3]>,
+    /// Time spent waiting for locks across all runs (MySQL).
+    #[serde(default)]
+    pub lock_ms: Option<f64>,
 }
 
 /// Where a timeline's buckets come from.
@@ -273,6 +293,18 @@ pub struct PlanVariant {
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub is_forced: bool,
+    #[serde(default)]
+    pub min_time_ms: Option<f64>,
+    #[serde(default)]
+    pub max_time_ms: Option<f64>,
+    #[serde(default)]
+    pub stddev_time_ms: Option<f64>,
+    /// The parameter values this plan was compiled for, as the engine reports them (SQL Server showplan).
+    #[serde(default)]
+    pub compiled: Option<String>,
+    /// SQL Server 2022 parameter-sensitive plans: the variant query this plan belongs to.
+    #[serde(default)]
+    pub variant_query: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
@@ -298,6 +330,10 @@ pub struct TableStat {
     pub last_analyze: Option<String>,
     pub forwarded_records: Option<f64>,
     pub xid_age: Option<f64>,
+    /// Reads of a heap that followed a forwarding pointer to the row's new page, since the table's metadata was cached
+    /// (SQL Server).
+    #[serde(default)]
+    pub forwarded_fetches: Option<f64>,
 }
 
 impl TableStat {
@@ -458,9 +494,24 @@ pub struct Snapshot {
     pub resources: Vec<ResourceSample>,
     pub settings: Vec<Setting>,
     pub notes: Vec<CollectorNote>,
+    /// Pressure signals from cheap counters (compiles, memory grants, cache hits, open transactions).
+    #[serde(default)]
+    pub pressure: Option<crate::waits::Pressure>,
     /// What the scan asked for; the workload's own window says what the source could actually cover.
     #[serde(default)]
     pub options: Option<SnapshotOptions>,
+    /// Statements that differ only in literal values (Query Store query_hash, pg_stat_statements entries).
+    #[serde(default)]
+    pub query_families: Vec<crate::advice::QueryFamily>,
+    /// Single-use plans in the plan cache (SQL Server).
+    #[serde(default)]
+    pub plan_cache: Option<crate::advice::PlanCacheUse>,
+    /// Query Store's tuning recommendations, forced plans and hints (SQL Server).
+    #[serde(default)]
+    pub tuning: Option<crate::advice::TuningAdvice>,
+    /// Deadlocks the engine recorded in the last day (graphs on SQL Server and MySQL, a counter on Postgres).
+    #[serde(default)]
+    pub deadlocks: Option<crate::deadlock::DeadlockReport>,
 }
 
 impl Snapshot {
@@ -515,6 +566,9 @@ pub struct LiveState {
     /// Why `session_actions` is empty, in plain language.
     #[serde(default)]
     pub session_actions_note: Option<String>,
+    /// Who blocks whom, as chains under each head blocker, when anyone waits on a lock.
+    #[serde(default)]
+    pub blocking: Option<crate::blocking::Blocking>,
 }
 
 /// A numeric session id from `live()` (SQL Server spid, Postgres pid, MySQL thread id). Ids are spliced into `KILL`, so

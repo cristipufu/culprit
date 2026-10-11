@@ -46,6 +46,11 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
         root.children.push(sibling);
     }
     fill_missing_costs(&mut root);
+    let mut props = Properties::new();
+    // The root's time is the statement's: the same name every engine uses.
+    if let Some(ms) = root.act_time_ms.or_else(|| root.children.iter().filter_map(|c| c.act_time_ms).reduce(f64::max)) {
+        props.insert("ElapsedMs".into(), ms.to_string());
+    }
     let mut plan = Plan {
         engine: Engine::Mysql,
         kind: PlanKind::Actual,
@@ -54,8 +59,9 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
         root,
         warnings: Vec::new(),
         index_hints: Vec::new(),
-        props: Properties::new(),
+        props,
         raw: Some(tree.to_string()),
+        insights: None,
     };
     plan.compute_self_costs();
     Ok(plan)
@@ -112,6 +118,7 @@ fn blank(id: u32, op: &str, kind: NodeKind) -> PlanNode {
         subtree_cost: 0.0,
         self_cost: 0.0,
         act_time_ms: None,
+        runtime: None,
         warnings: Vec::new(),
         props: Properties::new(),
         children: Vec::new(),

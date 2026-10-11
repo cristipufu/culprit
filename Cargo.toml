@@ -7,7 +7,7 @@ default-members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/cristipufu/culprit"
+repository = "https://github.com/cristipufu/culprit-sql-studio"
 
 [workspace.dependencies]
 culprit-core = { path = "crates/culprit-core" }

@@ -10,7 +10,12 @@ export type LoadedPlan = {
   /** Where it came from, shown under the name: a file name, "Pasted", "mssql-demo · query 7". */
   origin: string;
   plan: Plan;
+  /** The scan the plan came from, when it came from one: scenarios read that scan's statistics, and exports can fetch
+   * the plan's original text (.sqlplan). */
+  source?: PlanSource;
 };
+
+export type PlanSource = { connection: string; queryId: string; planId: string | null };
 
 export type PlansState = {
   items: LoadedPlan[];
@@ -46,10 +51,10 @@ export function usePlans<T>(select: (s: PlansState) => T): T {
 }
 
 /** Add a plan and show it. The same plan object sent twice (e.g. "Open in Plans" again) is not duplicated. */
-export function addPlan(plan: Plan, name: string, origin: string, options: { show?: boolean } = {}): string {
+export function addPlan(plan: Plan, name: string, origin: string, options: { show?: boolean; source?: PlanSource } = {}): string {
   const existing = state.items.find((p) => p.plan === plan || (p.name === name && p.origin === origin));
   const id = existing?.id ?? `p${++counter}`;
-  if (!existing) update({ items: [...state.items, { id, name, origin, plan }] });
+  if (!existing) update({ items: [...state.items, { id, name, origin, plan, source: options.source }] });
   if (options.show ?? true) {
     update({ selected: id, mode: "single", error: null });
     setState({ view: "plans" });
@@ -97,9 +102,11 @@ export function swapSides(): void {
 }
 
 /** Open two plans side by side (from Queries' plan variants). */
-export function compare(a: { plan: Plan; name: string; origin: string }, b: { plan: Plan; name: string; origin: string }): void {
-  const idA = addPlan(a.plan, a.name, a.origin, { show: false });
-  const idB = addPlan(b.plan, b.name, b.origin, { show: false });
+type Side = { plan: Plan; name: string; origin: string; source?: PlanSource };
+
+export function compare(a: Side, b: Side): void {
+  const idA = addPlan(a.plan, a.name, a.origin, { show: false, source: a.source });
+  const idB = addPlan(b.plan, b.name, b.origin, { show: false, source: b.source });
   update({ mode: "compare", a: idA, b: idB, selected: idB, error: null });
   setState({ view: "plans" });
 }
@@ -185,4 +192,18 @@ export async function savePlan(item: LoadedPlan, asJson: boolean): Promise<void>
   } catch (e) {
     toast(errorMessage(e).message);
   }
+}
+
+const ENGINE_NAME: Record<Plan["engine"], string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+
+/** Compare two sample plans captured on the demo databases (a seek that became a scan), to see what Plans does. */
+export async function trySample(engine: Plan["engine"] = "mssql"): Promise<void> {
+  const { shareSample } = await import("./demo-api");
+  const sample = (await shareSample())?.compares.find((c) => c.engine === engine);
+  if (!sample) {
+    toast("The sample plans ship with the browser demo; paste or open a plan instead");
+    return;
+  }
+  const origin = `Sample · ${ENGINE_NAME[engine]}`;
+  compare({ plan: sample.a, name: sample.names[0], origin }, { plan: sample.b, name: sample.names[1], origin });
 }

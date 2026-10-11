@@ -8,6 +8,7 @@ use ts_rs::TS;
 
 use crate::format;
 use crate::plan::{NodeKind, Plan, PlanNode, PlanWarning};
+use crate::plan_compare::{CompareContext, Scenario, scenarios};
 
 /// A cost-share move smaller than this (10 points of the plan's cost) is noise.
 const SHARE_SHIFT: f64 = 0.10;
@@ -65,6 +66,15 @@ pub struct NodeMatch {
     pub b: u32,
 }
 
+/// Operators that do the same thing in both plans: the same step on the same table and index, connected to each other.
+/// Diagrams tint each region alike on both sides, the way SSMS highlights similar operations.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct PlanRegion {
+    pub a: Vec<u32>,
+    pub b: Vec<u32>,
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct PlanDiff {
@@ -88,6 +98,13 @@ pub struct PlanDiff {
     pub only_b: Vec<u32>,
     pub warnings_added: Vec<PlanWarning>,
     pub warnings_removed: Vec<PlanWarning>,
+    /// Identical parts of the two plans, largest first.
+    #[serde(default)]
+    pub regions: Vec<PlanRegion>,
+    /// Conditions that differ between the plans (estimator, parameter values, statistics, memory, parallelism), each in
+    /// plain language: why the optimizer may have chosen differently.
+    #[serde(default)]
+    pub scenarios: Vec<Scenario>,
 }
 
 /// Compare plan `b` against plan `a` (the baseline), naming them "plan A" and "plan B" in the headlines.
@@ -97,6 +114,12 @@ pub fn plan_diff(a: &Plan, b: &Plan) -> PlanDiff {
 
 /// Compare plan `b` against plan `a` (the baseline); headlines refer to them by the given names ("Plan 815", "staging").
 pub fn plan_diff_named(a: &Plan, name_a: &str, b: &Plan, name_b: &str) -> PlanDiff {
+    plan_diff_in(a, name_a, b, name_b, &CompareContext::default())
+}
+
+/// [`plan_diff_named`] with what Culprit knows about the database (statistics from its latest scan), so scenarios can
+/// say "statistics on orders are 23% behind its data".
+pub fn plan_diff_in(a: &Plan, name_a: &str, b: &Plan, name_b: &str, context: &CompareContext) -> PlanDiff {
     let fa = Flat::new(a);
     let fb = Flat::new(b);
     let mut m = Matching { a: vec![None; fa.nodes.len()], b: vec![None; fb.nodes.len()] };
@@ -195,8 +218,11 @@ pub fn plan_diff_named(a: &Plan, name_a: &str, b: &Plan, name_b: &str) -> PlanDi
         only_b: only_b.iter().map(|&j| fb.nodes[j].id).collect(),
         warnings_added,
         warnings_removed,
+        regions: regions(&fa, &fb, &m),
+        scenarios: Vec::new(),
     };
     diff.headlines = headlines(&diff, a, b, &fa, &fb, name_a, name_b);
+    diff.scenarios = scenarios(a, b, &diff, name_a, name_b, context);
     diff
 }
 
@@ -205,6 +231,38 @@ pub fn plan_diff_named(a: &Plan, name_a: &str, b: &Plan, name_b: &str) -> PlanDi
 pub fn plan_cost_basis(plan: &Plan) -> f64 {
     let own: f64 = plan.nodes().iter().map(|n| n.self_cost).sum();
     [plan.total_cost, plan.root.subtree_cost, own].into_iter().fold(0.0, f64::max).max(f64::MIN_POSITIVE)
+}
+
+/// Connected groups of matched operators that are identical on both sides (same operator, table and index), where a
+/// child joins its parent's group when the parents are matched to each other too.
+fn regions(fa: &Flat, fb: &Flat, m: &Matching) -> Vec<PlanRegion> {
+    let identical = |i: usize| {
+        m.a[i].is_some_and(|j| {
+            same_step(fa.nodes[i], fb.nodes[j]) && same_name(fa.nodes[i].index.as_deref(), fb.nodes[j].index.as_deref())
+        })
+    };
+    let mut group: Vec<Option<usize>> = vec![None; fa.nodes.len()];
+    let mut out: Vec<PlanRegion> = Vec::new();
+    // Pre-order: a parent is grouped before its children.
+    for i in 0..fa.nodes.len() {
+        if !identical(i) {
+            continue;
+        }
+        let j = m.a[i].expect("identical implies matched");
+        let joined = fa.parent[i].and_then(|p| {
+            let same_parents = identical(p) && fb.parent[j].is_some_and(|q| m.a[p] == Some(q));
+            if same_parents { group[p] } else { None }
+        });
+        let g = joined.unwrap_or_else(|| {
+            out.push(PlanRegion { a: Vec::new(), b: Vec::new() });
+            out.len() - 1
+        });
+        group[i] = Some(g);
+        out[g].a.push(fa.nodes[i].id);
+        out[g].b.push(fb.nodes[j].id);
+    }
+    out.sort_by_key(|r| std::cmp::Reverse(r.a.len()));
+    out
 }
 
 /// The plan as a pre-order list, so a node's descendants are the `size - 1` entries after it.
@@ -371,7 +429,12 @@ fn match_top_down(fa: &Flat, fb: &Flat, m: &mut Matching) {
 type PairRule = fn(&PlanNode, &PlanNode) -> bool;
 
 fn same_step(x: &PlanNode, y: &PlanNode) -> bool {
-    x.op == y.op && same_name(x.object.as_deref(), y.object.as_deref())
+    x.op == y.op
+        && match (x.object.as_deref(), y.object.as_deref()) {
+            (Some(a), Some(b)) => same_object(a, b),
+            (None, None) => true,
+            _ => false,
+        }
 }
 
 fn same_kind(x: &PlanNode, y: &PlanNode) -> bool {
@@ -382,8 +445,8 @@ fn reshape_change(na: &PlanNode, nb: &PlanNode, sa: f64, sb: f64, comparable: bo
     let access = na.object.is_some() && nb.object.is_some();
     let title =
         if access { format!("{}: {} → {}", table(nb), how(na), how(nb)) } else { format!("{} → {}", na.op, nb.op) };
-    let detail =
-        comparable.then(|| format!("{} of the plan's cost in A, {} in B", format::percent(sa), format::percent(sb)));
+    let detail = (comparable && sa.max(sb) >= 0.01)
+        .then(|| format!("{} of the plan's cost in A, {} in B", format::percent(sa), format::percent(sb)));
     PlanChange {
         kind: if access { ChangeKind::Access } else { ChangeKind::Operator },
         a: Some(na.id),
@@ -503,15 +566,54 @@ fn headlines(diff: &PlanDiff, a: &Plan, b: &Plan, fa: &Flat, fb: &Flat, name_a: 
             b.engine.label()
         ));
     }
-    if let Some(sentence) = magnitude(diff, name_a, name_b) {
-        out.push(sentence);
-    }
     let node_a = |id: Option<u32>| id.and_then(|id| fa.nodes.iter().find(|n| n.id == id).copied());
     let node_b = |id: Option<u32>| id.and_then(|id| fb.nodes.iter().find(|n| n.id == id).copied());
     let mut explained: Vec<String> = Vec::new();
-    for change in diff.changes.iter().filter(|c| c.weight >= HEADLINE_WEIGHT) {
+
+    // The lead sentence says how much slower (or faster) B is and, when one change carries it, why.
+    let lead = diff.changes.first().filter(|c| {
+        c.weight >= HEADLINE_WEIGHT
+            && matches!(c.kind, ChangeKind::Access | ChangeKind::Operator)
+            && node_a(c.a).is_some()
+            && node_b(c.b).is_some()
+    });
+    let mut used_lead = false;
+    match (magnitude_of(diff), lead) {
+        (Some(m), Some(change)) => {
+            let (x, y) = (node_a(change.a).expect("filtered"), node_b(change.b).expect("filtered"));
+            let because = if change.kind == ChangeKind::Access {
+                explained.push(normalize(&table(x)));
+                if m.b_worse {
+                    format!(
+                        "because it {} ({} of its cost) where {name_a} {}",
+                        verb(y, &fb.nodes),
+                        format::percent(fb.share(y)),
+                        verb(x, &fa.nodes)
+                    )
+                } else {
+                    format!(
+                        "because it {} where {name_a} {} ({} of {name_a}'s cost)",
+                        verb(y, &fb.nodes),
+                        verb(x, &fa.nodes),
+                        format::percent(fa.share(x))
+                    )
+                }
+            } else {
+                format!("because it uses {} where {name_a} uses {}", y.op, x.op)
+            };
+            out.push(format!("{name_b} {} {because}.", m.phrase));
+            used_lead = true;
+        }
+        (Some(m), None) => out.push(format!("{name_b} {} than {name_a} {}.", m.phrase, m.numbers)),
+        _ => {}
+    }
+
+    for (index, change) in diff.changes.iter().enumerate().filter(|(_, c)| c.weight >= HEADLINE_WEIGHT) {
         if out.len() >= MAX_HEADLINES {
             break;
+        }
+        if used_lead && index == 0 {
+            continue;
         }
         let sentence = match (change.kind, node_a(change.a), node_b(change.b)) {
             (ChangeKind::Access, Some(x), Some(y)) => {
@@ -566,31 +668,38 @@ fn headlines(diff: &PlanDiff, a: &Plan, b: &Plan, fa: &Flat, fb: &Flat, name_a: 
     out.into_iter().map(capitalize).collect()
 }
 
-fn magnitude(diff: &PlanDiff, name_a: &str, name_b: &str) -> Option<String> {
+/// How much slower or faster B is: by actual time when both plans ran, else by estimated cost.
+struct Magnitude {
+    b_worse: bool,
+    /// "took 3.4× longer", "is estimated 6.7× more expensive".
+    phrase: String,
+    /// "(12 ms → 41 ms)", "(cost 0.600 → 4.000)".
+    numbers: String,
+}
+
+fn magnitude_of(diff: &PlanDiff) -> Option<Magnitude> {
     if let (Some(ta), Some(tb)) = (diff.time_a_ms, diff.time_b_ms)
         && ta > 0.0
         && tb > 0.0
         && ratio(ta, tb) >= COST_RATIO
     {
         let (word, r) = if tb > ta { ("longer", tb / ta) } else { ("less time", ta / tb) };
-        return Some(format!(
-            "{name_b} took {} {word} than {name_a} ({} → {}).",
-            times(r),
-            format::duration(ta),
-            format::duration(tb)
-        ));
+        return Some(Magnitude {
+            b_worse: tb > ta,
+            phrase: format!("took {} {word}", times(r)),
+            numbers: format!("({} → {})", format::duration(ta), format::duration(tb)),
+        });
     }
     let r = diff.cost_ratio?;
     if ratio(1.0, r) < COST_RATIO {
         return None;
     }
-    let (word, r) = if r > 1.0 { ("more expensive", r) } else { ("cheaper", 1.0 / r) };
-    Some(format!(
-        "{name_b} is estimated {} {word} than {name_a} (cost {} → {}).",
-        times(r),
-        cost(diff.cost_a),
-        cost(diff.cost_b)
-    ))
+    let (word, factor) = if r > 1.0 { ("more expensive", r) } else { ("cheaper", 1.0 / r) };
+    Some(Magnitude {
+        b_worse: r > 1.0,
+        phrase: format!("is estimated {} {word}", times(factor)),
+        numbers: format!("(cost {} → {})", cost(diff.cost_a), cost(diff.cost_b)),
+    })
 }
 
 /// How an operator reads its table, as a verb phrase: "seeks ix_orders_customer", "scans orders". A lookup names the
@@ -662,9 +771,13 @@ fn same_object(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    // One side may name the schema and the other not (an imported plan, another tool's output).
+    // One side may name the schema and the other not (an imported plan, another tool's output), and database names are
+    // ignored so plans from two environments (shop_prod.dbo.orders, shop_test.dbo.orders) line up.
     let (sa, sb) = (a.split('.').collect::<Vec<_>>(), b.split('.').collect::<Vec<_>>());
-    (sa.len() == 1 || sb.len() == 1) && sa.last() == sb.last()
+    if sa.len() == 1 || sb.len() == 1 {
+        return sa.last() == sb.last();
+    }
+    sa[sa.len() - 2..] == sb[sb.len() - 2..]
 }
 
 fn same_name(a: Option<&str>, b: Option<&str>) -> bool {
@@ -744,6 +857,7 @@ mod tests {
             subtree_cost: cost + children.iter().map(|c| c.subtree_cost).sum::<f64>(),
             self_cost: 0.0,
             act_time_ms: None,
+            runtime: None,
             warnings: Vec::new(),
             props: Properties::new(),
             children,
@@ -761,6 +875,7 @@ mod tests {
             index_hints: Vec::new(),
             props: Properties::new(),
             raw: None,
+            insights: None,
         };
         fn number(n: &mut PlanNode, next: &mut u32) {
             n.id = *next;
@@ -804,10 +919,10 @@ mod tests {
             node("Clustered Index Scan", NodeKind::Scan, Some("shop.orders"), Some("pk_orders"), 4.0, vec![]),
         );
         let diff = plan_diff_named(&seek_plan(), "Plan 815", &scan, "Plan 685");
-        assert_eq!(diff.headlines[0], "Plan 685 is estimated 6.7× more expensive than Plan 815 (cost 0.600 → 4.000).");
         assert_eq!(
-            diff.headlines[1],
-            "Plan 685 scans orders where Plan 815 seeks ix_orders_customer and looks up the rows in orders."
+            diff.headlines[0],
+            "Plan 685 is estimated 6.7× more expensive because it scans orders (100% of its cost) where Plan 815 seeks \
+             ix_orders_customer and looks up the rows in orders."
         );
         assert_eq!(diff.changes[0].kind, ChangeKind::Access);
         assert_eq!(diff.changes[0].title, "orders: Key Lookup (pk_orders) → Clustered Index Scan (pk_orders)");

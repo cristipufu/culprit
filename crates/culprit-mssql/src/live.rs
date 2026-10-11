@@ -73,6 +73,7 @@ pub(crate) async fn collect(client: &mut MsClient) -> tiberius::Result<LiveState
         sessions,
         session_actions: Vec::new(),
         session_actions_note: None,
+        blocking: None,
     })
 }
 

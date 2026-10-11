@@ -1,0 +1,6 @@
+-> Group aggregate: count(0)  (cost=216486 rows=4) (actual time=129..676 rows=5 loops=1)
+    -> Nested loop inner join  (cost=194753 rows=217325) (actual time=0.184..669 rows=125000 loops=1)
+        -> Covering index scan on c using ix_customers_region  (cost=20969 rows=199116) (actual time=0.107..18.4 rows=200000 loops=1)
+        -> Filter: (o.`status` = 'paid')  (cost=0.623 rows=1.09) (actual time=0.00313..0.00318 rows=0.625 loops=200000)
+            -> Index lookup on o using fk_orders_customer (customer_id=c.id)  (cost=0.623 rows=2.49) (actual time=0.00289..0.00302 rows=2.5 loops=200000)
+

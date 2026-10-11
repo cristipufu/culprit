@@ -26,11 +26,14 @@ fn modes(engine: Engine) -> &'static [Backslash] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Token<'a> {
     Word(&'a str),
+    /// A quoted identifier's raw text between its delimiters (`"name"`, `[name]`, `` `name` ``). The server treats it
+    /// like a word (it can name a function), so the read check must see it.
+    Quoted(&'a str, u8),
     Semicolon(usize),
     Punct(char),
 }
 
-/// Top-level tokens, with literals, quoted identifiers and comments skipped. Errors on text it can't lex safely.
+/// Top-level tokens, with literals and comments skipped. Errors on text it can't lex safely.
 fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<Vec<Token<'_>>, &'static str> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
@@ -62,11 +65,23 @@ fn lex(text: &str, engine: Engine, backslash: Backslash) -> std::result::Result<
             b'\'' => i = quoted_end(bytes, i, b'\'', backslash == Backslash::Escapes)?,
             b'"' => {
                 // A string in MySQL's default mode (backslashes escape), an identifier elsewhere and under ANSI_QUOTES.
-                let escapes = engine == Engine::Mysql && backslash == Backslash::Escapes;
-                i = quoted_end(bytes, i, b'"', escapes)?;
+                let string = engine == Engine::Mysql && backslash == Backslash::Escapes;
+                let end = quoted_end(bytes, i, b'"', string)?;
+                if !string {
+                    tokens.push(Token::Quoted(&text[i + 1..end - 1], b'"'));
+                }
+                i = end;
             }
-            b'`' if engine == Engine::Mysql => i = quoted_end(bytes, i, b'`', false)?,
-            b'[' if engine == Engine::Mssql => i = quoted_end(bytes, i, b']', false)?,
+            b'`' if engine == Engine::Mysql => {
+                let end = quoted_end(bytes, i, b'`', false)?;
+                tokens.push(Token::Quoted(&text[i + 1..end - 1], b'`'));
+                i = end;
+            }
+            b'[' if engine == Engine::Mssql => {
+                let end = quoted_end(bytes, i, b']', false)?;
+                tokens.push(Token::Quoted(&text[i + 1..end - 1], b']'));
+                i = end;
+            }
             b'$' if engine == Engine::Postgres => match dollar_tag(bytes, i) {
                 Some(tag) => i = dollar_quoted_end(bytes, i, tag)?,
                 None => {
@@ -289,14 +304,31 @@ pub fn reads_only(text: &str, engine: Engine) -> bool {
             return false;
         }
         let functions = side_effect_functions(engine);
-        words.iter().enumerate().all(|(n, (at, word))| {
+        let unsafe_call = |name: &str| functions.iter().any(|f| f.eq_ignore_ascii_case(name)) || advisory(name);
+        let keywords_ok = words.iter().enumerate().all(|(n, (at, word))| {
             let previous = n.checked_sub(1).map(|p| words[p].1.as_str());
             let calls = matches!(tokens.get(at + 1), Some(Token::Punct('(')));
-            let locking = word == "SHARE" && matches!(previous, Some("FOR") | Some("IN"));
+            let locking = word == "SHARE" && matches!(previous, Some("FOR") | Some("IN") | Some("KEY"));
             let sequence = engine == Engine::Mssql && word == "VALUE" && previous == Some("NEXT");
-            let function = calls && (functions.iter().any(|f| f.eq_ignore_ascii_case(word)) || advisory(word));
-            !(WRITES.contains(&word.as_str()) || locking || sequence || function)
-        })
+            !(WRITES.contains(&word.as_str()) || locking || sequence || (calls && unsafe_call(word)))
+        });
+        // A quoted name can call a function too ("pg_terminate_backend"(…), [openquery](…), `get_lock`(…)). Compare its
+        // unescaped name; a name the lexer can't decode (escapes, Postgres U&"…") is treated as unsafe.
+        let quoted_ok = tokens.iter().enumerate().all(|(at, token)| {
+            let Token::Quoted(raw, close) = token else { return true };
+            if !matches!(tokens.get(at + 1), Some(Token::Punct('('))) {
+                return true;
+            }
+            let unicode = at >= 2
+                && matches!(tokens[at - 1], Token::Punct('&'))
+                && matches!(tokens[at - 2], Token::Word(w) if w.eq_ignore_ascii_case("u"));
+            if unicode || raw.contains('\\') {
+                return false;
+            }
+            let doubled = String::from_utf8(vec![*close, *close]).unwrap_or_default();
+            !unsafe_call(&raw.replace(&doubled, &(*close as char).to_string()))
+        });
+        keywords_ok && quoted_ok
     })
 }
 
@@ -463,5 +495,15 @@ mod tests {
         assert!(reads_only("SELECT nextval_count FROM stats", Engine::Postgres));
         assert!(reads_only("SELECT `update` FROM t", Engine::Mysql));
         assert!(!reads_only("SELECT 1 /*!80000 , (DELETE FROM t) */", Engine::Mysql));
+        // Quoted names call functions too.
+        assert!(!reads_only(r#"SELECT "pg_terminate_backend"(123)"#, Engine::Postgres));
+        assert!(!reads_only(r#"SELECT pg_catalog."set_config"('a', 'b', false)"#, Engine::Postgres));
+        assert!(!reads_only(r#"SELECT U&"pg_terminate_backend"(1)"#, Engine::Postgres));
+        assert!(!reads_only("SELECT * FROM [openquery](remote, 'DELETE FROM t')", Engine::Mssql));
+        assert!(!reads_only("SELECT `get_lock`('a', 1)", Engine::Mysql));
+        assert!(!reads_only(r#"SELECT "get_lock"('a', 1)"#, Engine::Mysql), "an identifier under ANSI_QUOTES");
+        assert!(reads_only(r#"SELECT "Name", [Order] FROM t"#, Engine::Mssql));
+        assert!(reads_only(r#"SELECT "name" FROM "orders" WHERE "id" = 1"#, Engine::Postgres));
+        assert!(!reads_only("SELECT * FROM t FOR KEY SHARE", Engine::Postgres));
     }
 }

@@ -1,4 +1,4 @@
-use culprit_core::{Engine, Error, NodeKind, Plan, PlanKind, PlanNode, PlanWarning, Properties, Result};
+use culprit_core::{Engine, Error, NodeKind, NodeRuntime, Plan, PlanKind, PlanNode, PlanWarning, Properties, Result};
 use serde_json::{Map, Value};
 
 /// Fields mapped onto `PlanNode` directly, or too bulky to keep as properties.
@@ -48,6 +48,13 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
             props.insert(key.clone(), text);
         }
     }
+    // The same names every engine uses for the statement's own timing.
+    if let Some(ms) = number(top, "Execution Time") {
+        props.insert("ElapsedMs".into(), ms.to_string());
+    }
+    if let Some(ms) = number(top, "Planning Time") {
+        props.insert("PlanningMs".into(), ms.to_string());
+    }
     let mut plan = Plan {
         engine: Engine::Postgres,
         kind,
@@ -58,9 +65,49 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         index_hints: Vec::new(),
         props,
         raw: None,
+        insights: None,
     };
     plan.compute_self_costs();
     Ok(plan)
+}
+
+/// Buffer counts (with BUFFERS), temp-file spills and per-worker rows. Postgres reports buffers including the operator's
+/// inputs; Culprit keeps each operator's own share so they add up across the plan.
+fn runtime(map: &Map<String, Value>) -> Option<NodeRuntime> {
+    let blocks = |m: &Map<String, Value>, keys: &[&str]| -> Option<f64> {
+        let values: Vec<f64> = keys.iter().filter_map(|k| number(m, k)).collect();
+        (!values.is_empty()).then(|| values.iter().sum())
+    };
+    const LOGICAL: &[&str] = &["Shared Hit Blocks", "Shared Read Blocks", "Local Hit Blocks", "Local Read Blocks"];
+    const PHYSICAL: &[&str] = &["Shared Read Blocks", "Local Read Blocks"];
+    const TEMP: &[&str] = &["Temp Written Blocks"];
+    let children: Vec<&Map<String, Value>> = map
+        .get("Plans")
+        .and_then(Value::as_array)
+        .map(|p| p.iter().filter_map(Value::as_object).collect())
+        .unwrap_or_default();
+    let own = |keys: &[&str]| {
+        blocks(map, keys).map(|total| (total - children.iter().filter_map(|c| blocks(c, keys)).sum::<f64>()).max(0.0))
+    };
+    let thread_rows: Vec<f64> = map
+        .get("Workers")
+        .and_then(Value::as_array)
+        .map(|workers| {
+            workers
+                .iter()
+                .filter_map(Value::as_object)
+                .filter_map(|w| number(w, "Actual Rows").map(|r| r * number(w, "Actual Loops").unwrap_or(1.0).max(1.0)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let runtime = NodeRuntime {
+        cpu_ms: None,
+        logical_reads: own(LOGICAL),
+        physical_reads: own(PHYSICAL),
+        thread_rows: if thread_rows.len() >= 2 { thread_rows } else { Vec::new() },
+        spill_pages: own(TEMP).filter(|p| *p > 0.0),
+    };
+    (!runtime.is_empty()).then_some(runtime)
 }
 
 fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
@@ -80,12 +127,19 @@ fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
     let seek_predicate = text(map, "Index Cond").or_else(|| text(map, "Recheck Cond"));
     let predicate = ["Filter", "Join Filter", "Hash Cond", "Merge Cond"].iter().find_map(|key| text(map, key));
 
+    // Buffer counters include the node's children, so only temp blocks this node wrote itself count as its spill.
+    let child_temp: f64 = map
+        .get("Plans")
+        .and_then(Value::as_array)
+        .map(|plans| plans.iter().filter_map(|p| p.get("Temp Written Blocks").and_then(Value::as_f64)).sum())
+        .unwrap_or(0.0);
+    let own_temp = number(map, "Temp Written Blocks").map(|b| b - child_temp).unwrap_or(0.0);
     let mut warnings = Vec::new();
     if text(map, "Sort Space Type").as_deref() == Some("Disk")
         || number(map, "Hash Batches").is_some_and(|b| b > 1.0)
         || number(map, "Original Hash Batches").is_some_and(|b| b > 1.0)
-        || number(map, "Temp Written Blocks").is_some_and(|b| b > 0.0)
-            && matches!(op.as_str(), "Sort" | "Hash" | "Incremental Sort" | "Aggregate")
+        || number(map, "HashAgg Batches").is_some_and(|b| b > 1.0)
+        || own_temp > 0.0 && matches!(op.as_str(), "Sort" | "Hash" | "Incremental Sort" | "Aggregate")
     {
         warnings.push(PlanWarning::Spill);
     }
@@ -130,6 +184,7 @@ fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
         subtree_cost: number(map, "Total Cost").unwrap_or(0.0),
         self_cost: 0.0,
         act_time_ms: number(map, "Actual Total Time").map(|t| t * loops_or_one),
+        runtime: runtime(map),
         warnings,
         props,
         children,
@@ -220,6 +275,26 @@ fn prop_text(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buffers_are_each_operators_own_share() {
+        let json = r#"[{"Plan": {"Node Type": "Hash Join", "Total Cost": 10, "Plan Rows": 5, "Actual Rows": 5, "Actual Loops": 1,
+            "Actual Total Time": 30.0, "Shared Hit Blocks": 120, "Shared Read Blocks": 30, "Temp Written Blocks": 0,
+            "Plans": [
+              {"Node Type": "Seq Scan", "Relation Name": "orders", "Total Cost": 8, "Plan Rows": 100, "Actual Rows": 100,
+               "Actual Loops": 1, "Actual Total Time": 25.0, "Shared Hit Blocks": 100, "Shared Read Blocks": 30,
+               "Workers": [{"Worker Number": 0, "Actual Rows": 70, "Actual Loops": 1}, {"Worker Number": 1, "Actual Rows": 10, "Actual Loops": 1}]}
+            ]}, "Planning Time": 0.4, "Execution Time": 31.5}]"#;
+        let plan = parse(json, PlanKind::Actual, None).unwrap();
+        let join = plan.root.runtime.as_ref().unwrap();
+        assert_eq!((join.logical_reads, join.physical_reads), (Some(20.0), Some(0.0)));
+        let scan = plan.root.children[0].runtime.as_ref().unwrap();
+        assert_eq!((scan.logical_reads, scan.physical_reads), (Some(130.0), Some(30.0)));
+        assert_eq!(scan.thread_rows, vec![70.0, 10.0]);
+        assert_eq!(plan.props.get("ElapsedMs").map(String::as_str), Some("31.5"));
+        let summary = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!((summary.elapsed_ms, summary.logical_reads), (Some(31.5), Some(150.0)));
+    }
 
     const GENERIC: &str = r#"[{"Plan": {
         "Node Type": "Nested Loop", "Join Type": "Inner", "Startup Cost": 0.43, "Total Cost": 1250.5,

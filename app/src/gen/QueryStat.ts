@@ -2,6 +2,7 @@
 import type { Plan } from "./Plan";
 import type { PlanVariant } from "./PlanVariant";
 import type { QueryTrend } from "./QueryTrend";
+import type { Spread } from "./Spread";
 import type { WaitStat } from "./WaitStat";
 
 export type QueryStat = { id: string, query_hash: string | null, text: string, 
@@ -12,4 +13,8 @@ parameters: string | null, object_name: string | null, executions: number, total
 /**
  * This query's part of each bucket of the workload's timeline (only the heaviest queries carry one).
  */
-trend: QueryTrend | null, };
+trend: QueryTrend | null, 
+/**
+ * How run times spread beyond the average, as far as the engine keeps it.
+ */
+spread: Spread | null, };

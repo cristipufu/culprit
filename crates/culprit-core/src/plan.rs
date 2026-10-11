@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::insights::PlanInsights;
 use crate::model::{Engine, Properties};
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +77,9 @@ pub struct PlanNode {
     pub subtree_cost: f64,
     pub self_cost: f64,
     pub act_time_ms: Option<f64>,
+    /// CPU, reads, per-thread rows and spills, when the plan carries runtime counters (actual plans, live progress).
+    #[serde(default)]
+    pub runtime: Option<crate::actual::NodeRuntime>,
     pub warnings: Vec<PlanWarning>,
     pub props: Properties,
     pub children: Vec<PlanNode>,
@@ -125,6 +129,11 @@ pub struct Plan {
     pub index_hints: Vec<PlanIndexHint>,
     pub props: Properties,
     pub raw: Option<String>,
+    /// Problems found in this plan, attached where plans leave the engine (`insights::annotate`). Absent in saved
+    /// reports and older files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub insights: Option<PlanInsights>,
 }
 
 impl Plan {
