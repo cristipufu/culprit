@@ -13,6 +13,9 @@ pub enum AuthKind {
     Password,
     /// Microsoft Entra ID through the Azure CLI's signed-in account. No secret is stored.
     Entra,
+    /// Amazon RDS IAM database authentication: a short-lived token from the AWS CLI's signed-in account. No secret is stored.
+    #[serde(rename = "aws-iam")]
+    AwsIam,
     None,
 }
 
@@ -54,8 +57,19 @@ pub fn entra_host_allowed(engine: Engine, host: &str) -> bool {
             ".postgres.database.usgovcloudapi.net",
             ".postgres.database.chinacloudapi.cn",
         ],
+        Engine::Mysql => {
+            &[".mysql.database.azure.com", ".mysql.database.usgovcloudapi.net", ".mysql.database.chinacloudapi.cn"]
+        }
     };
     suffixes.iter().any(|suffix| host.len() > suffix.len() && host.ends_with(suffix))
+}
+
+/// Hosts that may receive an Amazon RDS IAM authentication token: RDS and Aurora endpoints (including RDS Proxy).
+pub fn aws_iam_host_allowed(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    [".rds.amazonaws.com", ".rds.amazonaws.com.cn"]
+        .iter()
+        .any(|suffix| host.len() > suffix.len() && host.ends_with(suffix))
 }
 
 impl ConnectionSpec {
@@ -100,5 +114,18 @@ mod tests {
         assert!(!entra_host_allowed(Engine::Mssql, "127.0.0.1"));
         assert!(entra_host_allowed(Engine::Postgres, "shop.postgres.database.azure.com"));
         assert!(!entra_host_allowed(Engine::Postgres, "shop.database.windows.net"));
+        assert!(entra_host_allowed(Engine::Mysql, "shop.mysql.database.azure.com"));
+        assert!(!entra_host_allowed(Engine::Mysql, "shop.postgres.database.azure.com"));
+    }
+
+    #[test]
+    fn iam_tokens_only_go_to_rds_hosts() {
+        assert!(aws_iam_host_allowed("shop.abc123.us-east-1.rds.amazonaws.com"));
+        assert!(aws_iam_host_allowed("shop.cluster-ro-abc123.eu-central-1.rds.amazonaws.com."));
+        assert!(aws_iam_host_allowed("shop.abc123.cn-north-1.rds.amazonaws.com.cn"));
+        assert!(!aws_iam_host_allowed("rds.amazonaws.com"));
+        assert!(!aws_iam_host_allowed("shop.rds.amazonaws.com.attacker.example"));
+        assert!(!aws_iam_host_allowed("evilrds.amazonaws.com.example"));
+        assert!(!aws_iam_host_allowed("shop.database.windows.net"));
     }
 }

@@ -56,10 +56,12 @@ Every command prints JSON when stdout isn't a terminal, finding ids are stable, 
 
 Measured on an Apple-silicon MacBook (macOS 26), release build, empty profile, three launches each, time from process start to the first on-screen window:
 
-| | Launch → window (cold / warm / warm) | Memory after 4 s | App size |
+| | Launch → window (cold / warm / warm) | Physical memory after 4 s | App size |
 |---|---|---|---|
-| Culprit (Tauri) | 857 / 277 / 250 ms | 203 MB incl. WebKit helpers | 8.9 MB |
-| A popular native macOS database client | 1009 / 267 / 271 ms | ~124 MB | 383 MB |
+| Culprit (Tauri) | 857 / 277 / 250 ms | ~99 MB across 4 processes | 8.9 MB |
+| A popular native macOS database client | 1009 / 267 / 271 ms | ~44 MB in 1 process | 383 MB |
+
+Memory is `phys_footprint` (what macOS charges the app), not RSS, which double-counts shared system frameworks. Culprit's own process is ~28 MB; the rest is the system WebKit that renders the UI (web content ~41 MB, GPU ~23 MB, networking ~7 MB), the fixed cost of a webview UI over a native one.
 
 Reopening a connection renders its last report from disk immediately; a fresh SQL Server scan takes 0.1–0.5 s locally and 2.5–4.5 s against Azure SQL over the internet (1.4K queries, 30 days of Query Store). `CULPRIT_TRACE_STARTUP=1` prints the app's own window-shown time.
 

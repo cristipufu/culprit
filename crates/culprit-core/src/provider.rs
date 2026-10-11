@@ -50,4 +50,9 @@ pub trait Provider: Send + Sync {
 
     /// Run a statement and return up to `limit` rows. Callers enforce environment rules before calling.
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet>;
+
+    /// A plan the engine kept for a query (Query Store keeps every plan a query used). `None` when the engine keeps no plans.
+    async fn stored_plan(&self, _query_id: &str, _plan_id: &str) -> Result<Option<Plan>> {
+        Ok(None)
+    }
 }

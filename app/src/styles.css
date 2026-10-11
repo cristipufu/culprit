@@ -1376,6 +1376,207 @@ textarea {
   user-select: text;
 }
 
+/* ───────── plan diagram ───────── */
+
+.plan-variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.variant {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  font-size: 12px;
+}
+
+.variant:hover {
+  border-color: var(--border-strong);
+}
+
+.variant.on {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus) 18%, transparent);
+}
+
+.variant .v-name {
+  font-weight: 600;
+}
+
+.variant .v-stats {
+  color: var(--text-2);
+}
+
+.variant .slow {
+  color: var(--high);
+}
+
+.plan-head .zoom {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.cost-strip {
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cost-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  gap: 2px;
+  margin: 7px 0 8px;
+  background: var(--sunken);
+}
+
+.cost-bar > * {
+  min-width: 3px;
+  height: 100%;
+  border: 0;
+}
+
+.cost-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.cost-legend button:hover {
+  color: var(--text);
+}
+
+.diagram-scroll {
+  overflow: auto;
+  max-height: 560px;
+  background:
+    radial-gradient(circle, var(--border) 1px, transparent 1px) 0 0 / 18px 18px,
+    var(--surface);
+}
+
+.diagram {
+  position: relative;
+}
+
+.diagram-edges {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.edge-label {
+  font: 500 10.5px var(--font);
+  fill: var(--text-3);
+}
+
+.diagram-result {
+  position: absolute;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.plan-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px 8px 12px;
+  text-align: left;
+  border-radius: 9px;
+  border: 1px solid var(--border-strong);
+  background:
+    linear-gradient(90deg, var(--heat) 0 4px, transparent 4px),
+    var(--raised);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  overflow: hidden;
+}
+
+.plan-card:hover {
+  border-color: var(--text-3);
+}
+
+.plan-card.hot {
+  border-color: var(--select-border);
+}
+
+.plan-card.sel {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.pc-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.pc-share {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.pc-op {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-obj {
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-rows {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fold-pill {
+  position: absolute;
+  width: 160px;
+  height: 30px;
+  border-radius: 15px;
+  border: 1px dashed var(--border-strong);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+
+.fold-pill:hover {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+
 /* ───────── tables ───────── */
 
 .table-wrap {
@@ -1460,6 +1661,17 @@ table.grid td.sqlcell {
   grid-template-columns: minmax(0, 1fr) minmax(480px, 54%);
   flex: 1;
   min-height: 0;
+}
+
+.schema-split {
+  grid-template-columns: minmax(340px, 36%) minmax(0, 1fr);
+}
+
+table.grid td.wrap {
+  white-space: normal;
+  line-height: 1.35;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .split > .pane {

@@ -1,9 +1,12 @@
 import { Search, SquarePen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { PlanDiagram } from "../components/PlanDiagram";
 import { PlanView } from "../components/PlanView";
 import { Sql } from "../components/Sql";
+import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
+import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, oneLine, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { setState, useStore } from "../lib/store";
@@ -181,38 +184,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
           <Sql text={query.text} />
         </div>
       </section>
-      {query.plans.length > 1 && (
-        <section>
-          <h3>Plan history</h3>
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Plan</th>
-                <th className="r">Runs</th>
-                <th className="r">Avg</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {query.plans.map((p) => (
-                <tr key={p.id} className="row">
-                  <td className="mono">
-                    {p.id}
-                    {p.is_forced ? " (forced)" : ""}
-                  </td>
-                  <td className="r">{count(p.executions)}</td>
-                  <td className="r">{duration(p.mean_time_ms)}</td>
-                  <td className="muted">{p.last_seen?.slice(0, 16).replace("T", " ") ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-      <section>
-        <h3>Plan</h3>
-        {query.plan ? <PlanView key={query.id} plan={query.plan} focus={focus} /> : <div className="notice">No plan was captured for this query. Open it in the editor and press Explain.</div>}
-      </section>
+      <QueryPlans key={query.id} report={report} query={query} focus={focus} />
     </div>
   );
 }
@@ -223,5 +195,113 @@ function Metric({ value, label }: { value: string; label: string }) {
       <div className="value">{value}</div>
       <div className="label">{label}</div>
     </div>
+  );
+}
+
+type PlanState = { status: "idle" } | { status: "loading" } | { status: "ready"; plan: Plan } | { status: "error"; error: ApiError };
+type PlanLook = "diagram" | "tree";
+const LOOK_KEY = "culprit.plan.look";
+
+function rememberedLook(): PlanLook {
+  try {
+    return localStorage.getItem(LOOK_KEY) === "tree" ? "tree" : "diagram";
+  } catch {
+    return "diagram";
+  }
+}
+
+/** Every plan the engine kept for the query, its numbers, and the selected one drawn as a diagram or a tree. */
+function QueryPlans({ report, query, focus }: { report: Report; query: QueryStat; focus: number | null }) {
+  const variants = query.plans;
+  const dominant = variants[0]?.id ?? null;
+  const [planId, setPlanId] = useState<string | null>(dominant);
+  const [look, setLook] = useState<PlanLook>(rememberedLook);
+  const [state, setPlan] = useState<PlanState>(() => (query.plan ? { status: "ready", plan: query.plan } : { status: "idle" }));
+  const connection = report.snapshot.connection;
+
+  useEffect(() => {
+    const captured = query.plan && (planId === dominant || planId === null);
+    if (captured) {
+      setPlan({ status: "ready", plan: query.plan! });
+      return;
+    }
+    let cancelled = false;
+    setPlan({ status: "loading" });
+    api()
+      .then((client) => client.queryPlan(connection, query.id, planId))
+      .then((plan) => !cancelled && setPlan({ status: "ready", plan }))
+      .catch((e) => !cancelled && setPlan({ status: "error", error: errorMessage(e) }));
+    return () => {
+      cancelled = true;
+    };
+  }, [planId, query, dominant, connection]);
+
+  const chooseLook = (next: PlanLook) => {
+    setLook(next);
+    try {
+      localStorage.setItem(LOOK_KEY, next);
+    } catch {}
+  };
+  const best = variants.length > 1 ? Math.min(...variants.map((v) => v.mean_time_ms)) : null;
+
+  return (
+    <section>
+      <h3>
+        {variants.length > 1 ? (
+          <>
+            Plans <span className="muted">{variants.length}</span>
+          </>
+        ) : (
+          "Plan"
+        )}
+        <span className="actions">
+          <span className="seg">
+            <button className={look === "diagram" ? "on" : ""} onClick={() => chooseLook("diagram")}>
+              Diagram
+            </button>
+            <button className={look === "tree" ? "on" : ""} onClick={() => chooseLook("tree")}>
+              Tree
+            </button>
+          </span>
+        </span>
+      </h3>
+      {variants.length > 1 && (
+        <div className="plan-variants">
+          {variants.map((v, i) => (
+            <button key={v.id} className={`variant ${planId === v.id ? "on" : ""}`} onClick={() => setPlanId(v.id)}>
+              <span className="v-name">
+                Plan {v.id}
+                {i === 0 && <span className="tag" style={{ marginLeft: 6 }}>most time</span>}
+                {v.is_forced && <span className="tag medium" style={{ marginLeft: 6 }}>forced</span>}
+              </span>
+              <span className="v-stats">
+                <b className={best != null && v.mean_time_ms > best * 2 ? "slow" : ""}>{duration(v.mean_time_ms)}</b> avg · {count(v.executions)} runs
+                {v.last_seen && <span className="muted"> · last {v.last_seen.slice(0, 16).replace("T", " ")}</span>}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {state.status === "loading" && (
+        <div className="empty" style={{ padding: 30 }}>
+          <div className="spinner" />
+          Loading the plan…
+        </div>
+      )}
+      {state.status === "error" && (
+        <div className="notice">
+          <div>
+            <b>No plan for this query.</b> {state.error.message}
+            {state.error.hint && <div className="muted">{state.error.hint}</div>}
+          </div>
+        </div>
+      )}
+      {state.status === "ready" &&
+        (look === "diagram" ? (
+          <PlanDiagram key={`${query.id}-${planId}`} plan={state.plan} focus={planId === dominant ? focus : null} />
+        ) : (
+          <PlanView key={`${query.id}-${planId}`} plan={state.plan} focus={planId === dominant ? focus : null} />
+        ))}
+    </section>
   );
 }

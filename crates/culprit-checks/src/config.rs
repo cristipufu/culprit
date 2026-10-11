@@ -7,7 +7,7 @@ pub fn config_info() -> CheckInfo {
         id: "config".into(),
         title: "Configuration".into(),
         category: Category::Configuration,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
         description:
             "Database and server settings that commonly hurt performance or hide the data needed to diagnose it.".into(),
@@ -18,6 +18,7 @@ pub fn config(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
         Engine::Mssql => mssql(snapshot),
         Engine::Postgres => postgres(snapshot),
+        Engine::Mysql => mysql(snapshot),
     }
 }
 
@@ -183,6 +184,47 @@ fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             "I/O timing isn't tracked".into(),
             "With track_io_timing off, pg_stat_statements and EXPLAIN (BUFFERS) can't tell how much of a query's time is spent waiting on disk.".into(),
             Fix { summary: "Turn it on; the overhead is negligible on modern systems.".into(), sql: Some("ALTER SYSTEM SET track_io_timing = on;\nSELECT pg_reload_conf();".into()), cost: None },
+        );
+        f.impact.score = 4.0;
+        out.push(f);
+    }
+    out
+}
+
+fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let pool = value(snapshot, &["innodb_buffer_pool_size"]).and_then(|v| v.parse::<f64>().ok());
+    let data: f64 = snapshot.tables.iter().filter_map(|t| t.total_bytes).sum();
+    if let Some(pool) = pool.filter(|p| *p > 0.0 && data >= 1024.0 * 1024.0 * 1024.0 && *p < data * 0.5) {
+        let mut f = setting_finding(
+            "innodb_buffer_pool_size",
+            Severity::Medium,
+            "The InnoDB buffer pool holds less than half of the data".into(),
+            format!(
+                "innodb_buffer_pool_size is {}, but this database has {} of tables and indexes. Queries that touch the rest read from disk.",
+                culprit_core::format::bytes(pool),
+                culprit_core::format::bytes(data)
+            ),
+            Fix {
+                summary: "Give the buffer pool most of the server's memory (often 60–75% on a dedicated host); it can be resized online.".into(),
+                sql: Some(format!("SET GLOBAL innodb_buffer_pool_size = {};", (data * 1.2).ceil() as u64)),
+                cost: Some("Uses that much RAM; leave room for connections and the OS.".into()),
+            },
+        );
+        f.confidence = Confidence::Medium;
+        out.push(f);
+    }
+    if value(snapshot, &["slow_query_log"]).is_some_and(|v| !is_on(v)) {
+        let mut f = setting_finding(
+            "slow_query_log",
+            Severity::Low,
+            "The slow query log is off".into(),
+            "Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests.".into(),
+            Fix {
+                summary: "Turn it on with a threshold that matches your latency budget.".into(),
+                sql: Some("SET GLOBAL slow_query_log = ON;\nSET GLOBAL long_query_time = 1;".into()),
+                cost: None,
+            },
         );
         f.impact.score = 4.0;
         out.push(f);

@@ -3,8 +3,8 @@ use std::path::Path;
 
 use clap::ValueEnum;
 use culprit_core::{
-    CheckInfo, Error, Finding, LiveState, LockedCheck, Plan, PlanNode, QueryStat, Report, ResultSet, ServerInfo,
-    Severity, format,
+    AuthKind, CheckInfo, Error, Finding, LiveState, LockedCheck, Plan, PlanNode, QueryStat, Report, ResultSet,
+    ServerInfo, Severity, format,
 };
 use culprit_engine::{ConnectionInfo, DiscoveredDatabase};
 use serde_json::{Value, json};
@@ -124,23 +124,31 @@ impl Out {
             return self.json(&json!({ "databases": found, "saved": saved }));
         }
         if found.is_empty() {
-            println!("No Azure SQL databases match. Try a different --match.");
+            println!("No databases match. Try a different --match (or --region for AWS).");
             return;
         }
         for d in found {
             let env = format!("{:?}", d.environment).to_lowercase();
+            let auth = match d.auth {
+                AuthKind::Entra => "Entra ID",
+                AuthKind::AwsIam => "AWS IAM",
+                AuthKind::Password => "password",
+                AuthKind::None => "no auth",
+            };
             let status = match (&d.saved_as, saved.iter().any(|s| s.name == d.alias)) {
                 (Some(name), _) => self.paint(DIM, &format!("saved as {name}")),
                 (None, true) => self.paint(GREEN, "saved"),
                 (None, false) => String::new(),
             };
             println!(
-                "{}  {}  {}/{} ({})  {}",
+                "{}  {}  {:<10}  {}/{} ({}, {})  {}",
                 self.paint(BOLD, &format!("{:<28}", d.alias)),
                 self.paint(DIM, &format!("{:<11}", env)),
+                d.engine.label(),
                 d.server,
-                d.database,
+                if d.database.is_empty() { "—" } else { &d.database },
                 d.location,
+                auth,
                 status
             );
         }

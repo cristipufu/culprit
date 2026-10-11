@@ -180,13 +180,13 @@ export function PlanView({ plan, focus, compact }: Props) {
   );
 }
 
-function NodeProps({ node, share }: { node: PlanNode; share: number }) {
+export function NodeProps({ node, share }: { node: PlanNode; share: number }) {
   const entries: [string, string][] = [];
   if (node.detail) entries.push(["Detail", node.detail]);
   if (node.object) entries.push(["Object", node.object]);
   if (node.index) entries.push(["Index", node.index]);
-  if (node.seek_predicate) entries.push(["Seek / index condition", node.seek_predicate]);
-  if (node.predicate) entries.push(["Filter", node.predicate]);
+  if (node.seek_predicate) entries.push(["Seek / index condition", shortPredicate(node.seek_predicate)]);
+  if (node.predicate) entries.push(["Filter", shortPredicate(node.predicate)]);
   entries.push(["Estimated rows", count(node.est_rows)]);
   if (node.est_executions > 1) entries.push(["Estimated executions", count(node.est_executions)]);
   if (node.act_rows != null) entries.push(["Actual rows", count(node.act_rows)]);
@@ -195,8 +195,9 @@ function NodeProps({ node, share }: { node: PlanNode; share: number }) {
   if (node.table_rows != null) entries.push(["Rows in table", count(node.table_rows)]);
   if (node.act_time_ms != null) entries.push(["Actual time", duration(node.act_time_ms)]);
   entries.push(["Self cost", `${percent(share)} (${node.self_cost.toFixed(4)})`]);
+  const noise = (v: string) => v === "0" || v === "false" || v === "False" || v === "";
   Object.entries(node.props).forEach(([k, v]) => {
-    if (v != null && !entries.some(([e]) => e === k)) entries.push([k, v]);
+    if (v != null && !noise(v) && !entries.some(([e]) => e === k)) entries.push([k, v]);
   });
   return (
     <div className="node-props">

@@ -20,6 +20,9 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
     if let Some(rest) = strip_any(&lower, input, &["mssql://", "sqlserver://"]) {
         return parse_url(Engine::Mssql, rest);
     }
+    if let Some(rest) = strip_any(&lower, input, &["mysql://", "mariadb://", "jdbc:mysql://", "jdbc:mariadb://"]) {
+        return parse_url(Engine::Mysql, rest);
+    }
     if input.contains(';') && input.contains('=') {
         return parse_ado(input);
     }
@@ -175,6 +178,9 @@ fn guess_engine(host: &str, port: Option<u16>) -> Option<Engine> {
     if host.contains(".postgres.") || host.contains("postgres") || port == Some(5432) {
         return Some(Engine::Postgres);
     }
+    if host.ends_with(".mysql.database.azure.com") || host.contains("mysql") || port == Some(3306) {
+        return Some(Engine::Mysql);
+    }
     None
 }
 
@@ -195,7 +201,7 @@ fn split_host_port(raw: &str, separator: char) -> Result<(String, Option<u16>)> 
 }
 
 fn absorb_option(spec: &mut ConnectionSpec, key: &str, value: &str) {
-    let normalized = key.to_ascii_lowercase().replace([' ', '_'], "");
+    let normalized = key.to_ascii_lowercase().replace([' ', '_', '-'], "");
     match normalized.as_str() {
         "authentication" => {
             let v = value.to_ascii_lowercase();
@@ -211,6 +217,9 @@ fn absorb_option(spec: &mut ConnectionSpec, key: &str, value: &str) {
         }
         "sslmode" => {
             spec.options.insert("sslmode".into(), value.to_string());
+        }
+        "sslrootcert" | "sslca" => {
+            spec.options.insert("sslrootcert".into(), value.to_string());
         }
         "applicationintent" => {
             spec.options.insert("applicationIntent".into(), value.to_string());
@@ -314,6 +323,25 @@ mod tests {
     fn percent_signs_before_multibyte_characters_never_panic() {
         let s = parse("postgres://app:p%aé%20x@h:5432/db").unwrap();
         assert_eq!(s.password.as_deref(), Some("p%aé x"));
+    }
+
+    #[test]
+    fn mysql_urls() {
+        let s = parse("mysql://app:secret@db.example.com:3307/shop?ssl-mode=REQUIRED").unwrap();
+        assert_eq!(s.engine, Some(Engine::Mysql));
+        assert_eq!(s.port, Some(3307));
+        assert_eq!(s.database.as_deref(), Some("shop"));
+        assert_eq!(parse("db.example.com:3306/shop").unwrap().engine, Some(Engine::Mysql));
+    }
+
+    #[test]
+    fn tls_options_survive_any_spelling() {
+        let s = parse("mysql://app@db.example.com/shop?ssl-mode=DISABLED&ssl-ca=/etc/ca.pem").unwrap();
+        assert_eq!(s.option("sslmode"), Some("DISABLED"));
+        assert_eq!(s.option("sslrootcert"), Some("/etc/ca.pem"));
+        let p = parse("postgres://app@db.example.com/shop?sslmode=verify-full&sslrootcert=/etc/ca.pem").unwrap();
+        assert_eq!(p.option("sslmode"), Some("verify-full"));
+        assert_eq!(p.option("sslrootcert"), Some("/etc/ca.pem"));
     }
 
     #[test]

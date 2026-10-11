@@ -16,9 +16,9 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    Capability, CollectorNote, ConnectionSpec, Engine, Environment, ExplainMode, ForeignKey, IndexStat, LiveState,
-    MissingCapability, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT, ServerInfo,
-    Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
+    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Environment, ExplainMode, ForeignKey, IndexStat,
+    LiveState, MissingCapability, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT,
+    ServerInfo, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
 };
 
 pub use ado::parse_ado;
@@ -98,6 +98,7 @@ struct WorkloadPart {
 struct SchemaPart {
     tables: Vec<TableStat>,
     indexes: Vec<IndexStat>,
+    columns: Vec<ColumnInfo>,
     foreign_keys: Vec<ForeignKey>,
     statistics: Vec<StatisticsInfo>,
     outcome: Outcome,
@@ -204,6 +205,10 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
             }
         }
         Err(err) => part.outcome.failed("indexes", Capability::IndexUsage, &err, probe),
+    }
+    match schema::columns(client).await {
+        Ok(columns) => part.columns = columns,
+        Err(err) => part.outcome.failed("columns", Capability::TableStats, &err, probe),
     }
     match schema::foreign_keys(client).await {
         Ok(fks) => part.foreign_keys = fks,
@@ -359,6 +364,7 @@ impl Provider for MssqlProvider {
             workload: workload_part.workload,
             tables: schema_part.tables,
             indexes: schema_part.indexes,
+            columns: schema_part.columns,
             foreign_keys: schema_part.foreign_keys,
             missing_indexes: misc_part.missing_indexes,
             statistics: schema_part.statistics,
@@ -380,6 +386,27 @@ impl Provider for MssqlProvider {
 
     async fn live(&self) -> Result<LiveState> {
         self.pool.with(|c| Box::pin(live::collect(c))).await
+    }
+
+    async fn stored_plan(&self, query_id: &str, plan_id: &str) -> Result<Option<Plan>> {
+        let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
+        if !numeric(query_id) || !numeric(plan_id) {
+            return Err(culprit_core::Error::invalid("Query Store ids are numbers"));
+        }
+        let sql = format!(
+            "SELECT query_plan FROM sys.query_store_plan WHERE plan_id = {plan_id} AND query_id = {query_id} /* culprit */"
+        );
+        let xml = self
+            .pool
+            .with(|c| {
+                let sql = sql.clone();
+                Box::pin(async move { conn::query(c, &sql).await })
+            })
+            .await?
+            .into_iter()
+            .next()
+            .and_then(|r| r.str("query_plan"));
+        xml.map(|x| plan_xml::parse(&x)).transpose()
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {

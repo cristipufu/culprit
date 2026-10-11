@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use culprit_core::{AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, entra_host_allowed};
+use culprit_core::{
+    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed,
+};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -71,6 +73,19 @@ impl Connector {
                 })?;
                 config.password(token.as_bytes());
             }
+            AuthKind::AwsIam => {
+                if !aws_iam_host_allowed(&spec.host) {
+                    return Err(Error::new(
+                        ErrorCode::PermissionDenied,
+                        "AWS IAM authentication tokens are only sent to Amazon RDS hosts",
+                    ));
+                }
+                let token = spec.token.as_ref().ok_or_else(|| {
+                    Error::new(ErrorCode::AuthFailed, "No AWS IAM token was resolved for this connection")
+                        .with_hint("Sign in with `aws login`, then try again.")
+                })?;
+                config.password(token.as_bytes());
+            }
             AuthKind::None => {}
         }
         let (ssl_mode, tls) = tls_for(spec)?;
@@ -100,8 +115,8 @@ impl Connector {
 
 fn tls_for(spec: &ConnectionSpec) -> Result<(SslMode, MakeRustlsConnect)> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    // An Entra token is a bearer credential for every Azure database the person can reach: never send it over unverified TLS.
-    let mode = if spec.auth == AuthKind::Entra {
+    // Entra and IAM tokens are bearer credentials: never send them over unverified TLS.
+    let mode = if matches!(spec.auth, AuthKind::Entra | AuthKind::AwsIam) {
         "verify-full".to_string()
     } else {
         spec.option("sslmode").unwrap_or("prefer").to_ascii_lowercase()
@@ -385,6 +400,19 @@ mod tests {
         s.host = "shop.postgres.database.azure.com".into();
         let error = Connector::new(&s).err().unwrap();
         assert_eq!(error.code, ErrorCode::AuthFailed);
+    }
+
+    #[test]
+    fn iam_tokens_stay_on_verified_rds_hosts() {
+        let mut s = spec(Some("disable"));
+        s.auth = AuthKind::AwsIam;
+        s.token = Some("t".into());
+        s.host = "collector.attacker.example".into();
+        assert_eq!(Connector::new(&s).err().unwrap().code, ErrorCode::PermissionDenied);
+        s.host = "shop.abc123.us-east-1.rds.amazonaws.com".into();
+        assert!(matches!(tls_for(&s).unwrap().0, SslMode::Require));
+        s.token = None;
+        assert_eq!(Connector::new(&s).err().unwrap().code, ErrorCode::AuthFailed);
     }
 
     #[test]

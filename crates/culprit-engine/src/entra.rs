@@ -7,7 +7,7 @@ use tokio::process::Command;
 fn resource(engine: Engine) -> &'static str {
     match engine {
         Engine::Mssql => "https://database.windows.net/",
-        Engine::Postgres => "https://ossrdbms-aad.database.windows.net",
+        Engine::Postgres | Engine::Mysql => "https://ossrdbms-aad.database.windows.net",
     }
 }
 

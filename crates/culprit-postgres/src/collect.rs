@@ -1,9 +1,9 @@
 use std::time::Instant;
 
 use culprit_core::{
-    Capability, CollectorNote, ConnectionSpec, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind, QueryStat,
-    Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat,
-    Workload,
+    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind,
+    QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat,
+    WaitStat, Workload,
 };
 use tokio_postgres::Client;
 
@@ -247,6 +247,7 @@ pub async fn snapshot(
                 tables(&client).await,
                 indexes(&client, &probe).await,
                 foreign_keys(&client).await,
+                columns(&client).await,
             ))
         },
         async {
@@ -292,9 +293,14 @@ pub async fn snapshot(
         );
     }
 
-    let (mut tables_out, mut indexes_out, mut fks_out) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut tables_out, mut indexes_out, mut fks_out, mut columns_out) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     match schema {
-        Ok((tables, indexes, fks)) => {
+        Ok((tables, indexes, fks, cols)) => {
+            match cols {
+                Ok(c) => columns_out = c,
+                Err(e) => note("columns", e.message),
+            }
             match tables {
                 Ok(t) => tables_out = t,
                 Err(e) => {
@@ -376,6 +382,7 @@ pub async fn snapshot(
         workload,
         tables: tables_out,
         indexes: indexes_out,
+        columns: columns_out,
         foreign_keys: fks_out,
         missing_indexes: Vec::new(),
         statistics,
@@ -771,6 +778,33 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
         }
     }
     Ok(indexes)
+}
+
+async fn columns(client: &Client) -> Result<Vec<ColumnInfo>> {
+    let sql = "SELECT n.nspname AS schema_name, c.relname AS table_name, a.attname AS column_name, a.attnum AS ordinal,
+                      format_type(a.atttypid, a.atttypmod) AS data_type, NOT a.attnotnull AS nullable,
+                      pg_get_expr(d.adbin, d.adrelid) AS default_value,
+                      (a.attidentity <> '' OR a.attgenerated <> '' OR coalesce(pg_get_expr(d.adbin, d.adrelid), '') LIKE 'nextval(%') AS generated
+               FROM pg_attribute a
+               JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+               LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+               WHERE c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped
+                 AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_toast%'
+               ORDER BY 1, 2, 4";
+    let rows = query(client, sql).await?;
+    Ok(rows
+        .iter()
+        .map(|r| ColumnInfo {
+            schema: r.string("schema_name"),
+            table: r.string("table_name"),
+            name: r.string("column_name"),
+            data_type: r.string("data_type"),
+            nullable: r.flag("nullable"),
+            default: r.text("default_value"),
+            generated: r.flag("generated"),
+            ordinal: r.number("ordinal").unwrap_or(0.0) as u32,
+        })
+        .collect())
 }
 
 async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {

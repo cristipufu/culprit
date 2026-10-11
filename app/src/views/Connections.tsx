@@ -1,8 +1,11 @@
-import { ArrowRight, Cloud, Database, Pencil, Plus, Search } from "lucide-react";
+import { ArrowRight, Cloud, Database, KeyRound, Pencil, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Logo } from "../components/Logo";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
+import type { AuthKind } from "../gen/AuthKind";
+import type { Cloud as CloudKind } from "../gen/Cloud";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
+import type { Engine } from "../gen/Engine";
 import type { Environment } from "../gen/Environment";
 import type { ParsedConnection } from "../gen/ParsedConnection";
 import { api, errorMessage, type ApiError } from "../lib/api";
@@ -12,11 +15,15 @@ import { loadConnections, openConnection, useStore } from "../lib/store";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
+const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "Postgres", mysql: "MySQL" };
+
+const AUTH_LABEL: Partial<Record<AuthKind, string>> = { entra: "Entra ID", "aws-iam": "AWS IAM" };
+
 type TestState = { status: "idle" } | { status: "busy" } | { status: "ok"; label: string } | { status: "error"; error: ApiError };
 
 export function Connections() {
   const connections = useStore((s) => s.connections);
-  const [panel, setPanel] = useState<"none" | "new" | "discover">("none");
+  const [panel, setPanel] = useState<"none" | "new" | CloudKind>("none");
   const active = connections.length === 0 && panel === "none" ? "new" : panel;
 
   return (
@@ -43,12 +50,15 @@ export function Connections() {
           <button className={`btn ${active === "new" ? "primary" : ""}`} onClick={() => setPanel(active === "new" ? "none" : "new")}>
             <Plus size={14} /> New connection
           </button>
-          <button className={`btn ${active === "discover" ? "primary" : ""}`} onClick={() => setPanel(active === "discover" ? "none" : "discover")}>
+          <button className={`btn ${active === "azure" ? "primary" : ""}`} onClick={() => setPanel(active === "azure" ? "none" : "azure")}>
             <Cloud size={14} /> Find Azure SQL databases
+          </button>
+          <button className={`btn ${active === "aws" ? "primary" : ""}`} onClick={() => setPanel(active === "aws" ? "none" : "aws")}>
+            <Cloud size={14} /> Find AWS databases
           </button>
         </div>
         {active === "new" && <NewConnectionForm onDone={() => setPanel("none")} canCancel={connections.length > 0} />}
-        {active === "discover" && <DiscoverPanel onDone={() => setPanel("none")} />}
+        {(active === "azure" || active === "aws") && <DiscoverPanel key={active} cloud={active} onDone={() => setPanel("none")} />}
       </div>
     </div>
   );
@@ -87,7 +97,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
           onBlur={save}
         />
         <span className="last muted">Enter to save</span>
-        <span className="sub">{error ?? `${c.engine === "mssql" ? "SQL Server" : "Postgres"} · ${c.display}`}</span>
+        <span className="sub">{error ?? `${ENGINE_LABEL[c.engine]} · ${c.display}`}</span>
       </div>
     );
   }
@@ -121,47 +131,122 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
         )}
       </span>
       <span className="sub">
-        {c.engine === "mssql" ? "SQL Server" : "Postgres"} · {c.auth === "entra" ? "Entra ID · " : ""}
+        {ENGINE_LABEL[c.engine]} · {AUTH_LABEL[c.auth] ? `${AUTH_LABEL[c.auth]} · ` : ""}
         {c.display}
+        {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
       </span>
     </div>
   );
 }
 
-const TERMS_KEY = "culprit.discover.terms";
+/** Discovered password-auth databases arrive without a secret; this stores one in the OS keychain. */
+function SetPassword({ name }: { name: string }) {
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      await (await api()).setPassword(name, password);
+      setPassword("");
+      setOpen(false);
+      await loadConnections();
+    } catch (e) {
+      setError(errorMessage(e).message);
+    }
+  };
+  if (!open) {
+    return (
+      <button
+        className="btn ghost"
+        style={{ marginLeft: 8, height: 22 }}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(true);
+        }}
+      >
+        <KeyRound size={12} /> Set password
+      </button>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+      <input
+        className="alias-input"
+        type="password"
+        autoFocus
+        value={password}
+        placeholder="Stored in the OS keychain"
+        onChange={(e) => setPassword(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") setOpen(false);
+        }}
+      />
+      <button className="btn" disabled={!password} onClick={save}>
+        Save
+      </button>
+      {error && <span className="muted">{error}</span>}
+    </span>
+  );
+}
+
+const TERMS_KEY: Record<CloudKind, string> = { azure: "culprit.discover.terms", aws: "culprit.discover.aws.terms" };
+const REGIONS_KEY = "culprit.discover.aws.regions";
 /** Tick results for the person only when a search has narrowed the list down; never pre-tick a whole subscription. */
 const PRESELECT_LIMIT = 10;
 
-function rememberedTerms(): string {
+function remembered(key: string): string {
   try {
-    return localStorage.getItem(TERMS_KEY) ?? "";
+    return localStorage.getItem(key) ?? "";
   } catch {
     return "";
   }
 }
 
-function rememberTerms(terms: string): void {
+function remember(key: string, value: string): void {
   try {
-    localStorage.setItem(TERMS_KEY, terms);
+    localStorage.setItem(key, value);
   } catch {}
 }
 
+const words = (text: string) => text.split(/[\s,]+/).filter(Boolean);
+
+const CLOUD_COPY: Record<CloudKind, { heading: string; login: string; busy: string; note: string }> = {
+  azure: {
+    heading: "Azure SQL databases your",
+    login: "az login",
+    busy: "Asking Azure Resource Graph…",
+    note: "Saved with Microsoft Entra ID through your Azure CLI login; no passwords are stored.",
+  },
+  aws: {
+    heading: "Amazon RDS and Aurora databases your",
+    login: "aws login",
+    busy: "Asking AWS…",
+    note: "IAM-enabled databases sign in through your AWS CLI login; the others ask for their password once (kept in the OS keychain).",
+  },
+};
+
 type DiscoverState = { status: "idle" } | { status: "busy" } | { status: "done"; items: DiscoveredDatabase[] } | { status: "error"; error: ApiError };
 
-function DiscoverPanel({ onDone }: { onDone: () => void }) {
-  const [terms, setTerms] = useState(rememberedTerms);
+function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () => void }) {
+  const copy = CLOUD_COPY[cloud];
+  const [terms, setTerms] = useState(() => remembered(TERMS_KEY[cloud]));
+  const [regions, setRegions] = useState(() => (cloud === "aws" ? remembered(REGIONS_KEY) : ""));
   const [state, setDiscover] = useState<DiscoverState>({ status: "idle" });
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [aliases, setAliases] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState(false);
 
-  const keyOf = (d: DiscoveredDatabase) => `${d.server}/${d.database}`;
+  const keyOf = (d: DiscoveredDatabase) => `${d.cloud}/${d.host}/${d.database}`;
 
   const search = async () => {
-    rememberTerms(terms);
+    remember(TERMS_KEY[cloud], terms);
+    if (cloud === "aws") remember(REGIONS_KEY, regions);
     setDiscover({ status: "busy" });
     try {
-      const items = await (await api()).discoverAzure(terms.split(/\s+/).filter(Boolean));
+      const client = await api();
+      const items = cloud === "aws" ? await client.discoverAws(words(terms), words(regions)) : await client.discoverAzure(words(terms));
       setDiscover({ status: "done", items });
       const candidates = items.filter((d) => !d.saved_as && d.environment !== "production");
       const narrowedDown = terms.trim() !== "" && candidates.length <= PRESELECT_LIMIT;
@@ -194,11 +279,21 @@ function DiscoverPanel({ onDone }: { onDone: () => void }) {
   return (
     <div style={{ marginTop: 18 }}>
       <div className="eyebrow" style={{ marginBottom: 8 }}>
-        Azure SQL databases your <span className="mono">az login</span> can see
+        {copy.heading} <span className="mono">{copy.login}</span> can see
       </div>
       <label className="smart-input">
         <Search size={16} color="var(--text-3)" />
         <input value={terms} placeholder="Words in the database or server name, e.g. shop stg" onChange={(e) => setTerms(e.target.value)} onKeyDown={(e) => e.key === "Enter" && search()} />
+        {cloud === "aws" && (
+          <input
+            value={regions}
+            style={{ flex: "0 0 190px", borderLeft: "1px solid var(--border)", paddingLeft: 10 }}
+            placeholder="All enabled regions"
+            title="Regions to search, e.g. us-east-1 eu-central-1"
+            onChange={(e) => setRegions(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && search()}
+          />
+        )}
         <button className="btn" onClick={search}>
           Search
         </button>
@@ -206,7 +301,7 @@ function DiscoverPanel({ onDone }: { onDone: () => void }) {
       {state.status === "busy" && (
         <div className="empty" style={{ padding: 24 }}>
           <div className="spinner" />
-          Asking Azure Resource Graph…
+          {copy.busy}
         </div>
       )}
       {state.status === "error" && (
@@ -231,8 +326,10 @@ function DiscoverPanel({ onDone }: { onDone: () => void }) {
                 ) : (
                   <input className="alias-input" value={aliases[key] ?? d.alias} onChange={(e) => setAliases((a) => ({ ...a, [key]: e.target.value }))} />
                 )}
-                <span className="where muted">
-                  {d.server} / {d.database} · {d.location}
+                <span className="where muted" title={d.host}>
+                  {d.cloud === "aws"
+                    ? `${d.server} · ${ENGINE_LABEL[d.engine]} · ${d.location} · ${d.auth === "aws-iam" ? "IAM" : "password"}`
+                    : `${d.server} / ${d.database} · ${d.location}`}
                 </span>
                 <span className="muted">{d.saved_as ? "saved" : d.environment}</span>
               </label>
@@ -243,7 +340,7 @@ function DiscoverPanel({ onDone }: { onDone: () => void }) {
               <button className="btn primary" disabled={selected.length === 0 || adding} onClick={add}>
                 Add {selected.length} {selected.length === 1 ? "connection" : "connections"}
               </button>
-              <span className="muted">Saved with Microsoft Entra ID through your Azure CLI login; no passwords are stored.</span>
+              <span className="muted">{copy.note}</span>
             </div>
           )}
         </div>
@@ -343,7 +440,7 @@ function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; canCance
         <div className="form-grid">
           <label>Detected</label>
           <div>
-            <b>{parsed.engine === "mssql" ? "SQL Server" : parsed.engine === "postgres" ? "Postgres" : "Unknown engine"}</b>
+            <b>{parsed.engine ? ENGINE_LABEL[parsed.engine] : "Unknown engine"}</b>
             <span className="muted"> · {parsed.display}{parsed.auth === "entra" ? " · Microsoft Entra ID (Azure CLI)" : ""}</span>
           </div>
           <label>Name</label>

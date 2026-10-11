@@ -12,7 +12,7 @@ pub fn heavy_query_info() -> CheckInfo {
         id: "heavy-query".into(),
         title: "Queries that dominate database time".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
         description: "Single queries that take a large share of database time, with what their plan spends it on."
             .into(),
@@ -46,17 +46,20 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     };
     let hot = q.plan.as_ref().map(|p| (p, p.hottest()));
     f.title = match reads_per_row {
+        Some(r) if r >= 1000.0 && snapshot.server.engine == Engine::Mysql => {
+            format!("{} examines {} rows for every row it returns", capitalize(&handle), format::count(r))
+        }
         Some(r) if r >= 1000.0 => {
             format!("{} reads {} pages for every row it returns", capitalize(&handle), format::count(r))
         }
         _ => format!("{} takes {} of database time", capitalize(&handle), format::percent(impact.share)),
     };
     let mut summary = format!(
-        "It runs about {} times a day at {} on average, which adds up to {} of database time per day ({} of the total).",
-        format::count(per_day_runs),
+        "It ran {} at {} on average: {} of all database time in {}.",
+        runs_phrase(snapshot, q.executions),
         format::duration(q.mean_time_ms),
-        format::duration(impact.per_day_ms),
-        format::percent(impact.share)
+        format::percent(impact.share),
+        snapshot.workload.as_ref().map(window_phrase).unwrap_or_default()
     );
     if let Some((plan, node)) = hot {
         let pct = if plan.total_cost > 0.0 { node.self_cost / plan.total_cost } else { 0.0 };
@@ -68,7 +71,9 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     f.metrics.push(Metric::new("Runs per day", per_day_runs, Unit::Count));
     f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
     if let Some(r) = q.reads_per_execution() {
-        f.metrics.push(Metric::new("Pages read per run", r, Unit::Pages));
+        let label =
+            if snapshot.server.engine == Engine::Mysql { "Rows examined per run" } else { "Pages read per run" };
+        f.metrics.push(Metric::new(label, r, Unit::Pages));
     }
     if let Some(r) = q.rows_per_execution() {
         f.metrics.push(Metric::new("Rows returned per run", r, Unit::Rows));
@@ -123,7 +128,7 @@ pub fn chatty_query_info() -> CheckInfo {
         id: "chatty-query".into(),
         title: "Chatty queries (N+1)".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
         description: "Tiny queries executed so often that the round trips cost more than the work, typically a loop in application code.".into(),
     }
@@ -152,11 +157,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             let per_day_runs = workload.per_day(q.executions);
             let impact = query_impact(snapshot, &[q]).expect("workload present");
             let mut f = finding("chatty-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
-            f.title = format!(
-                "{} runs {} times a day, one row at a time",
-                capitalize(&query_handle(q)),
-                format::count(per_day_runs)
-            );
+            f.title = format!("{} runs {}, one row at a time", capitalize(&query_handle(q)), runs_phrase(snapshot, q.executions));
             f.summary = format!(
                 "This statement is {} of every statement the database executes, and each run returns about {} row{}. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small ({}), but each call costs a network round trip and a connection.",
                 format::percent(exec_share),
@@ -191,7 +192,7 @@ pub fn plan_warnings_info() -> CheckInfo {
         id: "plan-warnings".into(),
         title: "Plan warnings".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::QueryPlans],
         description: "Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.".into(),
     }
@@ -325,6 +326,7 @@ fn plan_warning_finding(
                 summary: match snapshot.server.engine {
                     Engine::Mssql => "Update statistics on the tables involved; if the estimate is still far off, add an index that delivers rows in the needed order so the sort disappears.".into(),
                     Engine::Postgres => "Raise work_mem for this workload (per role or per session), or add an index that delivers rows in the needed order so the sort disappears.".into(),
+                    Engine::Mysql => "Raise tmp_table_size and max_heap_table_size for this workload so the temporary table stays in memory, or add an index that returns rows already ordered or grouped.".into(),
                 },
                 sql: None,
                 cost: None,
@@ -452,7 +454,7 @@ pub fn unstable_query_info() -> CheckInfo {
         id: "unstable-query".into(),
         title: "Unstable queries".into(),
         category: Category::Queries,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
         description: "Queries whose duration swings wildly between runs with the same plan, a sign of parameter sensitivity or blocking.".into(),
     }
@@ -493,6 +495,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 summary: match snapshot.server.engine {
                     Engine::Mssql => "If the slow runs use unusual parameter values, try OPTION (RECOMPILE) on this statement, or compatibility level 160 for parameter-sensitive plan optimization. If they wait on locks, see Live.".into(),
                     Engine::Postgres => "If the slow runs use unusual parameter values, compare their plans with EXPLAIN on those values; plan_cache_mode = force_custom_plan for this statement can help. If they wait on locks, see Live.".into(),
+                    Engine::Mysql => "If the slow runs use unusual parameter values, compare their EXPLAIN output with a typical run; an index hint or a histogram on the skewed column (ANALYZE TABLE … UPDATE HISTOGRAM) can help. If they wait on locks, see Live.".into(),
                 },
                 sql: None,
                 cost: None,
@@ -507,15 +510,17 @@ pub fn temp_spill_info() -> CheckInfo {
         id: "temp-spill".into(),
         title: "Queries writing temp files".into(),
         category: Category::Queries,
-        engines: vec![Engine::Postgres],
-        requires: vec![Capability::PgStatStatements],
-        description: "Statements whose sorts or hashes exceed work_mem and write temporary files.".into(),
+        engines: vec![Engine::Postgres, Engine::Mysql],
+        requires: vec![],
+        description: "Statements whose sorts, hashes or temporary tables outgrow memory and spill to disk.".into(),
     }
 }
 
 pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
-    if snapshot.server.engine != Engine::Postgres {
-        return Vec::new();
+    match snapshot.server.engine {
+        Engine::Postgres => {}
+        Engine::Mysql => return mysql_disk_temp_tables(snapshot),
+        Engine::Mssql => return Vec::new(),
     }
     let work_mem = snapshot.setting("work_mem").map(|s| s.value.clone()).unwrap_or_else(|| "4MB".into());
     app_queries(snapshot)
@@ -544,6 +549,47 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
                     suggested_work_mem(per_run)
                 )),
                 cost: Some("work_mem is per sort/hash node per connection; size it with your connection count in mind.".into()),
+            });
+            Some(f)
+        })
+        .collect()
+}
+
+/// MySQL counts on-disk temporary tables per digest: a GROUP BY, DISTINCT or ORDER BY whose temporary table outgrew memory.
+fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
+    let limit = |name: &str| snapshot.setting(name).and_then(|s| s.value.parse::<f64>().ok());
+    let memory_limit = match (limit("tmp_table_size"), limit("max_heap_table_size")) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    app_queries(snapshot)
+        .filter(|q| q.temp_writes.is_some_and(|t| t > 0.0))
+        .filter_map(|q| {
+            let impact = query_impact(snapshot, &[q])?;
+            if impact.share < 0.01 {
+                return None;
+            }
+            let share_of_runs = (q.temp_writes? / q.executions.max(1.0)).min(1.0);
+            let mut f = finding("temp-spill", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
+            apply_query_impact(&mut f, &impact);
+            f.severity = severity_for_share(impact.share);
+            f.confidence = Confidence::High;
+            f.title = format!(
+                "{} builds an on-disk temporary table on {} of its runs",
+                capitalize(&query_handle(q)),
+                format::percent(share_of_runs)
+            );
+            f.summary = format!(
+                "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit{} and moves to disk, which is many times slower.",
+                memory_limit.map(|b| format!(" ({})", format::bytes(b))).unwrap_or_default()
+            );
+            f.queries = query_refs(&[q]);
+            f.metrics.push(Metric::new("Runs that spilled", share_of_runs, Unit::Ratio));
+            f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
+            f.fix = Some(Fix {
+                summary: "Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit (both variables; the smaller one wins).".into(),
+                sql: Some("SET GLOBAL tmp_table_size = 64 * 1024 * 1024;\nSET GLOBAL max_heap_table_size = 64 * 1024 * 1024;".into()),
+                cost: Some("The limit is per temporary table per connection; size it with your connection count in mind.".into()),
             });
             Some(f)
         })

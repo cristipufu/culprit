@@ -12,6 +12,8 @@ pub fn provider(spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
         Engine::Mssql => Ok(Box::new(culprit_mssql::MssqlProvider::new(spec)?)),
         #[cfg(feature = "postgres")]
         Engine::Postgres => Ok(Box::new(culprit_postgres::PostgresProvider::new(spec)?)),
+        #[cfg(feature = "mysql")]
+        Engine::Mysql => Ok(Box::new(culprit_mysql::MysqlProvider::new(spec)?)),
         #[allow(unreachable_patterns)]
         other => Err(Error::new(ErrorCode::Unsupported, format!("This build of Culprit has no {other} support"))),
     }

@@ -77,12 +77,26 @@ enum ConnCommand {
     Rm { name: String },
     /// Rename a connection (its alias). Keychain secret and report history move with it.
     Rename { old: String, new: String },
-    /// Find Azure SQL databases your `az login` can see and optionally save them (Entra ID auth, no secrets).
+    /// Find databases your cloud CLI can see (Azure SQL via `az login`, Amazon RDS/Aurora via `aws login`) and optionally save them.
     Discover(DiscoverArgs),
+    /// Store the password for a password-authenticated connection in the OS keychain. Reads it from stdin (hidden when typed).
+    SetPassword { name: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CloudArg {
+    Azure,
+    Aws,
 }
 
 #[derive(Args)]
 struct DiscoverArgs {
+    /// Which cloud to search.
+    #[arg(long, value_enum, default_value = "azure")]
+    cloud: CloudArg,
+    /// AWS region to search (repeatable). Defaults to every enabled region.
+    #[arg(long = "region", value_name = "REGION")]
+    regions: Vec<String>,
     /// Keep databases whose database or server name contains this word. Repeat to narrow down (all must match). Omit to list everything.
     #[arg(long = "match", value_name = "WORD")]
     terms: Vec<String>,
@@ -169,9 +183,12 @@ struct ExplainArgs {
     sql: Option<String>,
     #[arg(long, conflicts_with = "query_id")]
     file: Option<PathBuf>,
-    /// Explain a query from the latest report by its id.
+    /// Explain a query from the latest report by its id (its stored plan when the engine keeps one).
     #[arg(long)]
     query_id: Option<String>,
+    /// With --query-id: a specific stored plan, e.g. one of the plans Query Store kept for the query.
+    #[arg(long, requires = "query_id")]
+    plan_id: Option<String>,
     /// Execute the statement and report actual rows and timings.
     #[arg(long)]
     analyze: bool,
@@ -202,12 +219,14 @@ enum EnvArg {
 enum EngineArg {
     Postgres,
     Mssql,
+    Mysql,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
 enum AuthArg {
     Password,
     Entra,
+    AwsIam,
     None,
 }
 
@@ -301,6 +320,12 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.top(&report, args.by, args.limit);
             Ok(0)
         }
+        Command::Explain(args) if args.query_id.is_some() && !args.analyze => {
+            let query_id = args.query_id.as_deref().unwrap_or_default();
+            let plan = ws.query_plan(&args.connection, query_id, args.plan_id.as_deref()).await?;
+            out.plan(&plan);
+            Ok(0)
+        }
         Command::Explain(args) => {
             let sql = explain_sql(&ws, &args)?;
             let mode = if args.analyze { ExplainMode::Analyze } else { ExplainMode::Estimated };
@@ -385,8 +410,24 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
             Ok(0)
         }
         ConnCommand::Discover(args) => {
-            out.progress("Searching Azure Resource Graph…");
-            let found = ws.discover_azure(&args.terms).await?;
+            let found = match args.cloud {
+                CloudArg::Azure => {
+                    if !args.regions.is_empty() {
+                        return Err(Error::invalid("--region only applies to --cloud aws"));
+                    }
+                    out.progress("Searching Azure Resource Graph…");
+                    ws.discover_azure(&args.terms).await?
+                }
+                CloudArg::Aws => {
+                    let message = if args.regions.is_empty() {
+                        "Searching Amazon RDS in every enabled region…".to_string()
+                    } else {
+                        format!("Searching Amazon RDS in {}…", args.regions.join(", "))
+                    };
+                    out.progress(&message);
+                    ws.discover_aws(&args.regions, &args.terms).await?
+                }
+            };
             let mut saved = Vec::new();
             if args.save {
                 for d in found.iter().filter(|d| d.saved_as.is_none()) {
@@ -397,6 +438,12 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 }
             }
             out.discovered(&found, &saved);
+            Ok(0)
+        }
+        ConnCommand::SetPassword { name } => {
+            let password = read_password(&format!("Password for {name}: "))?;
+            let info = ws.set_password(&name, &password)?;
+            out.done(&format!("Stored the password for {} in the OS keychain", info.name));
             Ok(0)
         }
         ConnCommand::Rm { name } => {
@@ -424,6 +471,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 engine: args.engine.map(|e| match e {
                     EngineArg::Postgres => Engine::Postgres,
                     EngineArg::Mssql => Engine::Mssql,
+                    EngineArg::Mysql => Engine::Mysql,
                 }),
                 database: args.database,
                 user: args.user,
@@ -432,6 +480,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 auth: args.auth.map(|a| match a {
                     AuthArg::Password => AuthKind::Password,
                     AuthArg::Entra => AuthKind::Entra,
+                    AuthArg::AwsIam => AuthKind::AwsIam,
                     AuthArg::None => AuthKind::None,
                 }),
             };
@@ -444,4 +493,28 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
             Ok(0)
         }
     }
+}
+
+/// One line from stdin. When stdin is a terminal the typed characters are hidden (Unix) and a prompt goes to stderr.
+fn read_password(prompt: &str) -> culprit_core::Result<String> {
+    use std::io::{BufRead, Write};
+    let interactive = std::io::stdin().is_terminal();
+    let hide = |on: bool| {
+        if cfg!(unix) && interactive {
+            let _ = std::process::Command::new("stty").arg(if on { "-echo" } else { "echo" }).status();
+        }
+    };
+    if interactive {
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+    }
+    hide(true);
+    let mut line = String::new();
+    let read = std::io::stdin().lock().read_line(&mut line);
+    hide(false);
+    if interactive {
+        eprintln!();
+    }
+    read.map_err(|e| Error::invalid(e.to_string()))?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_string())
 }

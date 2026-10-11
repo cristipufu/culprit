@@ -31,6 +31,7 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
     let mut stale = match snapshot.server.engine {
         Engine::Mssql => mssql_stale(&snapshot.statistics),
         Engine::Postgres => pg_stale(snapshot),
+        Engine::Mysql => Vec::new(),
     };
     stale.sort_by(|a, b| (b.modifications / b.rows.max(1.0)).total_cmp(&(a.modifications / a.rows.max(1.0))));
     stale
@@ -73,6 +74,11 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                         "ANALYZE {target};\nALTER TABLE {target} SET (autovacuum_analyze_scale_factor = 0.02);"
                     )),
                     cost: Some("ANALYZE reads a sample of the table and does not block reads or writes.".into()),
+                },
+                Engine::Mysql => Fix {
+                    summary: "Recompute the table's statistics.".into(),
+                    sql: Some(format!("ANALYZE TABLE {target};")),
+                    cost: None,
                 },
             });
             f

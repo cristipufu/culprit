@@ -145,6 +145,7 @@ pub fn quote(engine: Engine, ident: &str) -> String {
                 && !ident.starts_with(|c: char| c.is_ascii_digit());
             if simple { ident.to_string() } else { format!("\"{}\"", ident.replace('"', "\"\"")) }
         }
+        Engine::Mysql => format!("`{}`", ident.replace('`', "``")),
     }
 }
 
@@ -202,6 +203,13 @@ pub fn create_index_sql(snapshot: &Snapshot, schema: &str, table: &str, keys: &[
             sql.push(';');
             sql
         }
+        Engine::Mysql => {
+            // InnoDB has no INCLUDE: secondary indexes already carry the primary key, so extra columns would have to become keys.
+            format!(
+                "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM=INPLACE, LOCK=NONE;",
+                quote(engine, &name.to_ascii_lowercase())
+            )
+        }
     }
 }
 
@@ -209,6 +217,11 @@ pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) ->
     match engine {
         Engine::Mssql => format!("DROP INDEX {} ON {};", quote(engine, index), qualified(engine, schema, table)),
         Engine::Postgres => format!("DROP INDEX CONCURRENTLY {};", qualified(engine, schema, index)),
+        Engine::Mysql => format!(
+            "DROP INDEX {} ON {} ALGORITHM=INPLACE, LOCK=NONE;",
+            quote(engine, index),
+            qualified(engine, schema, table)
+        ),
     }
 }
 
@@ -310,6 +323,34 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
         rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '"' | '`')).collect();
     let name = token.rsplit('.').next()?.trim_matches(|c| matches!(c, '[' | ']' | '"' | '`')).to_string();
     (!name.is_empty() && name != "(").then_some(name)
+}
+
+/// "about 48K times a day" over a day or more of history, otherwise the real count: extrapolating 35 minutes to a day misleads.
+pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
+    match &snapshot.workload {
+        Some(w) if w.window_hours >= 20.0 => format!("about {} times a day", format::count(w.per_day(executions))),
+        Some(w) => format!("{} times in {}", format::count(executions), span(w.window_hours)),
+        None => format!("{} times", format::count(executions)),
+    }
+}
+
+/// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
+pub fn window_phrase(workload: &culprit_core::Workload) -> String {
+    if workload.windowed {
+        return format!("the last {}", span(workload.window_hours));
+    }
+    format!("the {} since statistics were reset", span(workload.window_hours))
+}
+
+fn span(hours: f64) -> String {
+    if hours >= 47.0 {
+        return format!("{} days", (hours / 24.0).round());
+    }
+    if hours >= 1.5 {
+        return format!("{} hours", hours.round());
+    }
+    let minutes = (hours * 60.0).round().max(1.0);
+    if minutes == 1.0 { "1 minute".into() } else { format!("{minutes} minutes") }
 }
 
 pub fn per_day(snapshot: &Snapshot, value: f64) -> f64 {

@@ -55,6 +55,9 @@ pub(crate) fn build_config(spec: &ConnectionSpec) -> Result<Config> {
     if trust_any_certificate {
         config.trust_cert();
     }
+    if let Some(path) = spec.option("trustServerCertificateCA").filter(|p| !p.is_empty()) {
+        config.trust_cert_ca(path);
+    }
     if let Some(name) = spec.option("hostNameInCertificate") {
         config.hostname_in_certificate(name);
     }
@@ -87,6 +90,11 @@ fn auth_method(spec: &ConnectionSpec) -> Result<AuthMethod> {
             })?;
             Ok(AuthMethod::aad_token(token))
         }
+        AuthKind::AwsIam => Err(Error::new(
+            ErrorCode::Unsupported,
+            "Amazon RDS for SQL Server does not support IAM database authentication",
+        )
+        .with_hint("Use password authentication for this connection")),
         AuthKind::None => Err(Error::invalid("SQL Server needs either password or Microsoft Entra ID authentication")),
     }
 }

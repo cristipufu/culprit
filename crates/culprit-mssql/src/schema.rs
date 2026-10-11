@@ -1,4 +1,6 @@
-use culprit_core::{ForeignKey, IndexStat, MissingIndex, ResourceSample, Setting, StatisticsInfo, TableStat, WaitStat};
+use culprit_core::{
+    ColumnInfo, ForeignKey, IndexStat, MissingIndex, ResourceSample, Setting, StatisticsInfo, TableStat, WaitStat,
+};
 
 use crate::conn::{MsClient, query};
 use crate::value::Rec;
@@ -76,6 +78,19 @@ WHERE t.is_ms_shipped = 0 AND i.type > 0 AND i.is_hypothetical = 0
 "#
     )
 }
+
+const COLUMNS_SQL: &str = r#"
+SELECT s.name AS schema_name, t.name AS table_name, c.name AS column_name, c.column_id AS ordinal,
+  ty.name AS type_name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, c.is_computed,
+  dc.definition AS default_value
+FROM sys.columns c
+JOIN sys.tables t ON t.object_id = c.object_id
+JOIN sys.schemas s ON s.schema_id = t.schema_id
+JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+LEFT JOIN sys.default_constraints dc ON dc.object_id = c.default_object_id
+WHERE t.is_ms_shipped = 0
+ORDER BY s.name, t.name, c.column_id
+"#;
 
 const FOREIGN_KEYS_SQL: &str = r#"
 SELECT fk.name AS fk_name, s.name AS schema_name, t.name AS table_name, rs.name AS ref_schema, rt.name AS ref_table,
@@ -361,6 +376,42 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
         last_read: r.str("last_read"),
         definition: None,
     }
+}
+
+/// `varchar(20)`, `nvarchar(max)`, `decimal(12,2)`, `datetime2(3)`: the type as it is declared.
+fn declared_type(name: &str, max_length: f64, precision: f64, scale: f64) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "varchar" | "char" | "varbinary" | "binary" if max_length < 0.0 => format!("{name}(max)"),
+        "varchar" | "char" | "varbinary" | "binary" => format!("{name}({max_length:.0})"),
+        "nvarchar" | "nchar" if max_length < 0.0 => format!("{name}(max)"),
+        "nvarchar" | "nchar" => format!("{name}({:.0})", max_length / 2.0),
+        "decimal" | "numeric" => format!("{name}({precision:.0},{scale:.0})"),
+        "datetime2" | "datetimeoffset" | "time" => format!("{name}({scale:.0})"),
+        _ => name.to_string(),
+    }
+}
+
+pub(crate) async fn columns(client: &mut MsClient) -> tiberius::Result<Vec<ColumnInfo>> {
+    let rows = query(client, COLUMNS_SQL).await?;
+    Ok(rows
+        .iter()
+        .map(|r| ColumnInfo {
+            schema: r.string("schema_name"),
+            table: r.string("table_name"),
+            name: r.string("column_name"),
+            data_type: declared_type(
+                &r.string("type_name"),
+                r.f64_or_zero("max_length"),
+                r.f64_or_zero("precision"),
+                r.f64_or_zero("scale"),
+            ),
+            nullable: r.bool("is_nullable"),
+            default: r.str("default_value"),
+            generated: r.bool("is_identity") || r.bool("is_computed"),
+            ordinal: r.f64_or_zero("ordinal") as u32,
+        })
+        .collect())
 }
 
 pub(crate) async fn foreign_keys(client: &mut MsClient) -> tiberius::Result<Vec<ForeignKey>> {

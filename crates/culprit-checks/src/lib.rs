@@ -284,12 +284,12 @@ fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     });
 
     let n = findings.iter().filter(|f| !f.inactive).count();
-    let window = snapshot.workload.as_ref().map(|w| window_phrase(w.window_hours));
+    let window = snapshot.workload.as_ref().map(support::window_phrase);
     let headline = match (n, top_share, &window) {
-        (0, _, Some(window)) => format!("Nothing stands out over the {window}."),
+        (0, _, Some(window)) => format!("Nothing stands out over {window}."),
         (0, _, None) => "Nothing stands out.".to_string(),
         (n, Some(share), Some(window)) if share >= 0.05 => format!(
-            "{} {}. The top ones touch {} of database time over the {window}.",
+            "{} {}. The top ones touch {} of database time over {window}.",
             n,
             plural(n, "opportunity", "opportunities"),
             format::percent(share)
@@ -303,16 +303,6 @@ fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         k => format!("{headline} {k} more stopped running, likely changed by a deploy."),
     };
     Summary { opportunities: n as u32, by_category, by_severity, top_share, headline }
-}
-
-fn window_phrase(hours: f64) -> String {
-    if hours >= 47.0 {
-        return format!("last {} days", (hours / 24.0).round());
-    }
-    if hours >= 1.5 {
-        return format!("last {} hours", hours.round());
-    }
-    "last hour".to_string()
 }
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {

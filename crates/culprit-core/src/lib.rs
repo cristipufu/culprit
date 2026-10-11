@@ -8,7 +8,7 @@ pub mod plan;
 pub mod provider;
 
 pub use check::Check;
-pub use connection::{AuthKind, ConnectionSpec, entra_host_allowed};
+pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed};
 pub use error::{Error, ErrorCode, Result};
 pub use finding::*;
 pub use model::*;

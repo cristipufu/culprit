@@ -4,4 +4,8 @@ import type { Engine } from "./Engine";
 import type { Environment } from "./Environment";
 import type { ReportSummary } from "./ReportSummary";
 
-export type ConnectionInfo = { name: string, engine: Engine, environment: Environment, host: string, port: number | null, database: string | null, user: string | null, auth: AuthKind, display: string, last_report: ReportSummary | null, };
+export type ConnectionInfo = { name: string, engine: Engine, environment: Environment, host: string, port: number | null, database: string | null, user: string | null, auth: AuthKind, 
+/**
+ * A password is available (keychain or environment variable). Only meaningful for password authentication.
+ */
+has_secret: boolean, display: string, last_report: ReportSummary | null, };

@@ -186,9 +186,10 @@ function perDay(value: number, hours: number): number {
 function headlineTail(report: Report): string {
   const w = report.snapshot.workload;
   const share = report.summary.top_share;
-  if (report.summary.opportunities === 0) return w ? `Nothing stands out over the ${windowLabel(w.window_hours)}.` : "Nothing stands out.";
-  if (w && share != null && share >= 0.05) return `The top ones touch ${percent(share)} of database time over the ${windowLabel(w.window_hours)}.`;
-  if (w) return `Based on ${w.source}, ${windowLabel(w.window_hours)}.`;
+  const span = w ? (w.windowed ? `the ${windowLabel(w.window_hours)}` : `the ${windowLabel(w.window_hours).replace("last ", "")} since statistics were reset`) : "";
+  if (report.summary.opportunities === 0) return w ? `Nothing stands out over ${span}.` : "Nothing stands out.";
+  if (w && share != null && share >= 0.05) return `The top ones touch ${percent(share)} of database time over ${span}.`;
+  if (w) return `Based on ${w.source}, ${span}.`;
   return "Workload statistics are unavailable, so findings come from schema and index statistics.";
 }
 

@@ -20,11 +20,14 @@ export interface Api {
   removeConnection(name: string): Promise<void>;
   renameConnection(old: string, next: string): Promise<ConnectionInfo>;
   discoverAzure(terms: string[]): Promise<DiscoveredDatabase[]>;
+  discoverAws(terms: string[], regions: string[]): Promise<DiscoveredDatabase[]>;
+  setPassword(name: string, password: string): Promise<ConnectionInfo>;
   addDiscovered(items: DiscoveredDatabase[]): Promise<ConnectionInfo[]>;
   latestReport(name: string, windowDays: number | null): Promise<Report | null>;
   scan(name: string, windowDays: number | null): Promise<Report>;
   brief(name: string, findingId: string, windowDays: number | null): Promise<string>;
   explain(name: string, sql: string, mode: ExplainMode, confirmed: boolean): Promise<Plan>;
+  queryPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
   live(name: string): Promise<LiveState>;
   run(name: string, sql: string, limit: number, confirmed: boolean): Promise<ResultSet>;
 }
@@ -54,11 +57,14 @@ async function desktopApi(): Promise<Api> {
     removeConnection: (name) => invoke("remove_connection", { name }),
     renameConnection: (old, next) => invoke("rename_connection", { old, new: next }),
     discoverAzure: (terms) => invoke("discover_azure", { terms }),
+    discoverAws: (terms, regions) => invoke("discover_aws", { terms, regions }),
+    setPassword: (name, password) => invoke("set_password", { name, password }),
     addDiscovered: (items) => invoke("add_discovered", { items }),
     latestReport: (name, windowDays) => invoke("latest_report", { name, windowDays }),
     scan: (name, windowDays) => invoke("scan", { name, windowDays }),
     brief: (name, findingId, windowDays) => invoke("brief", { name, findingId, windowDays }),
     explain: (name, sql, mode, confirmed) => invoke("explain", { name, sql, mode, confirmed }),
+    queryPlan: (name, queryId, planId) => invoke("query_plan", { name, queryId, planId }),
     live: (name) => invoke("live", { name }),
     run: (name, sql, limit, confirmed) => invoke("run_sql", { name, sql, limit, confirmed }),
   };

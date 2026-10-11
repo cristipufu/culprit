@@ -1,10 +1,10 @@
 {
   "format": 1,
-  "id": "20261011T070221Z",
-  "connection": "postgres-demo",
+  "id": "20261011T115421.485Z",
+  "connection": "pg-demo",
   "environment": "local",
-  "taken_at": "2026-10-11T07:02:21Z",
-  "duration_ms": 105.12,
+  "taken_at": "2026-10-11T11:54:21Z",
+  "duration_ms": 132.211333,
   "server": {
     "engine": "postgres",
     "product": "PostgreSQL 18.6",
@@ -13,7 +13,7 @@
     "cloud": null,
     "database": "demo",
     "database_size_bytes": 596555455.0,
-    "started_at": "2026-10-11T06:57:54Z",
+    "started_at": "2026-10-11T11:54:02Z",
     "read_only_session": true,
     "capabilities": [
       "table-stats",
@@ -30,18 +30,20 @@
   },
   "workload": {
     "source": "pg_stat_statements",
+    "windowed": false,
     "window_start": "2026-10-11T07:01:50Z",
-    "window_end": "2026-10-11T07:02:21Z",
-    "window_hours": 0.008763405833333333,
-    "total_time_ms": 118124.35556799997,
+    "window_end": "2026-10-11T11:54:21Z",
+    "window_hours": 4.87542468,
+    "total_time_ms": 157151.39308999997,
     "total_cpu_ms": null,
-    "total_executions": 11600.0,
-    "query_count": 8.0,
+    "total_executions": 11608.0,
+    "query_count": 16.0,
     "queries": [
       {
         "id": "9065391607317686058",
         "query_hash": null,
         "text": "SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note",
+        "parameters": null,
         "object_name": null,
         "executions": 214.0,
         "total_time_ms": 71022.31686599995,
@@ -167,6 +169,7 @@
         "id": "5308963031944094559",
         "query_hash": null,
         "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2",
+        "parameters": null,
         "object_name": null,
         "executions": 852.0,
         "total_time_ms": 37678.48510800003,
@@ -319,9 +322,167 @@
         "waits": []
       },
       {
+        "id": "-8886085649470066503",
+        "query_hash": null,
+        "text": "SELECT pg_sleep($1)",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 20020.476877,
+        "mean_time_ms": 20020.476877,
+        "max_time_ms": 20020.476877,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 1.0,
+        "logical_reads": 0.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:03:16Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "postgres",
+          "kind": "generic",
+          "statement": "SELECT pg_sleep($1)",
+          "total_cost": 0.01,
+          "root": {
+            "id": 0,
+            "op": "Result",
+            "kind": "compute",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 0.01,
+            "self_cost": 0.01,
+            "act_time_ms": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Disabled": "false",
+              "Parallel Aware": "false",
+              "Plan Width": "4",
+              "Startup Cost": "0.0"
+            },
+            "children": []
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Query Identifier": "3411573856342672671"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 4,\n      \"Disabled\": false,\n      \"Output\": [\"pg_sleep($1)\"]\n    },\n    \"Query Identifier\": 3411573856342672671\n  }\n]"
+        },
+        "waits": []
+      },
+      {
+        "id": "4911431806993420100",
+        "query_hash": null,
+        "text": "UPDATE products SET name = name WHERE id = $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 18957.566422,
+        "mean_time_ms": 18957.566422,
+        "max_time_ms": 18957.566422,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 1.0,
+        "logical_reads": 15.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:03:17Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "postgres",
+          "kind": "generic",
+          "statement": "UPDATE products SET name = name WHERE id = $1",
+          "total_cost": 8.3,
+          "root": {
+            "id": 0,
+            "op": "ModifyTable",
+            "kind": "modify",
+            "detail": "Update",
+            "object": "public.products",
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 0.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 8.3,
+            "self_cost": 0.0,
+            "act_time_ms": null,
+            "warnings": [],
+            "props": {
+              "Alias": "products",
+              "Async Capable": "false",
+              "Disabled": "false",
+              "Operation": "Update",
+              "Parallel Aware": "false",
+              "Plan Width": "0",
+              "Startup Cost": "0.29"
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Index Scan",
+                "kind": "seek",
+                "detail": null,
+                "object": "public.products",
+                "index": "products_pkey",
+                "seek_predicate": "(products.id = $1)",
+                "predicate": null,
+                "est_rows": 1.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 8.3,
+                "self_cost": 8.3,
+                "act_time_ms": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "products",
+                  "Async Capable": "false",
+                  "Disabled": "false",
+                  "Index Cond": "(products.id = $1)",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "18",
+                  "Scan Direction": "Forward",
+                  "Startup Cost": "0.29"
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Query Identifier": "-8336599228220240425"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"ModifyTable\",\n      \"Operation\": \"Update\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Relation Name\": \"products\",\n      \"Schema\": \"public\",\n      \"Alias\": \"products\",\n      \"Startup Cost\": 0.29,\n      \"Total Cost\": 8.30,\n      \"Plan Rows\": 0,\n      \"Plan Width\": 0,\n      \"Disabled\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Index Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Scan Direction\": \"Forward\",\n          \"Index Name\": \"products_pkey\",\n          \"Relation Name\": \"products\",\n          \"Schema\": \"public\",\n          \"Alias\": \"products\",\n          \"Startup Cost\": 0.29,\n          \"Total Cost\": 8.30,\n          \"Plan Rows\": 1,\n          \"Plan Width\": 18,\n          \"Disabled\": false,\n          \"Output\": [\"name\", \"ctid\"],\n          \"Index Cond\": \"(products.id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -8336599228220240425\n  }\n]"
+        },
+        "waits": []
+      },
+      {
         "id": "-3722457391793582113",
         "query_hash": null,
         "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1",
+        "parameters": null,
         "object_name": null,
         "executions": 397.0,
         "total_time_ms": 6787.841944999999,
@@ -480,6 +641,7 @@
         "id": "2004611025554862962",
         "query_hash": null,
         "text": "SELECT status, count(*), sum(total) FROM orders WHERE created_at > now() - interval $1 GROUP BY status",
+        "parameters": null,
         "object_name": null,
         "executions": 204.0,
         "total_time_ms": 2376.705239000001,
@@ -503,7 +665,7 @@
             "id": 0,
             "op": "Aggregate",
             "kind": "aggregate",
-            "detail": "Sorted · group key: orders.status",
+            "detail": "Sorted \u00b7 group key: orders.status",
             "object": null,
             "index": null,
             "seek_predicate": null,
@@ -591,7 +753,7 @@
                         "id": 3,
                         "op": "Aggregate",
                         "kind": "aggregate",
-                        "detail": "Hashed · group key: orders.status",
+                        "detail": "Hashed \u00b7 group key: orders.status",
                         "object": null,
                         "index": null,
                         "seek_predicate": null,
@@ -671,6 +833,7 @@
         "id": "2885972271926804069",
         "query_hash": null,
         "text": "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind",
+        "parameters": null,
         "object_name": null,
         "executions": 1738.0,
         "total_time_ms": 129.85778199999993,
@@ -694,7 +857,7 @@
             "id": 0,
             "op": "Aggregate",
             "kind": "aggregate",
-            "detail": "Sorted · group key: events.kind",
+            "detail": "Sorted \u00b7 group key: events.kind",
             "object": null,
             "index": null,
             "seek_predicate": null,
@@ -798,6 +961,7 @@
         "id": "3432126458605143571",
         "query_hash": null,
         "text": "SELECT name, email FROM customers WHERE id = $1",
+        "parameters": null,
         "object_name": null,
         "executions": 8193.0,
         "total_time_ms": 129.0606290000006,
@@ -858,9 +1022,128 @@
         "waits": []
       },
       {
+        "id": "4237762245898133153",
+        "query_hash": null,
+        "text": "CREATE DATABASE bare",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 48.613977,
+        "mean_time_ms": 48.613977,
+        "max_time_ms": 48.613977,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 0.0,
+        "logical_reads": 1042.0,
+        "physical_reads": 954.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:02:31Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": null,
+        "waits": []
+      },
+      {
+        "id": "8465053948014496855",
+        "query_hash": null,
+        "text": "UPDATE products SET price = price WHERE id = $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 0.31157999999999997,
+        "mean_time_ms": 0.31157999999999997,
+        "max_time_ms": 0.31157999999999997,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 1.0,
+        "logical_reads": 19.0,
+        "physical_reads": 10.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:03:16Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "postgres",
+          "kind": "generic",
+          "statement": "UPDATE products SET price = price WHERE id = $1",
+          "total_cost": 8.3,
+          "root": {
+            "id": 0,
+            "op": "ModifyTable",
+            "kind": "modify",
+            "detail": "Update",
+            "object": "public.products",
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 0.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 8.3,
+            "self_cost": 0.0,
+            "act_time_ms": null,
+            "warnings": [],
+            "props": {
+              "Alias": "products",
+              "Async Capable": "false",
+              "Disabled": "false",
+              "Operation": "Update",
+              "Parallel Aware": "false",
+              "Plan Width": "0",
+              "Startup Cost": "0.29"
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Index Scan",
+                "kind": "seek",
+                "detail": null,
+                "object": "public.products",
+                "index": "products_pkey",
+                "seek_predicate": "(products.id = $1)",
+                "predicate": null,
+                "est_rows": 1.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 8.3,
+                "self_cost": 8.3,
+                "act_time_ms": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "products",
+                  "Async Capable": "false",
+                  "Disabled": "false",
+                  "Index Cond": "(products.id = $1)",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "13",
+                  "Scan Direction": "Forward",
+                  "Startup Cost": "0.29"
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Query Identifier": "-796694400354061278"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"ModifyTable\",\n      \"Operation\": \"Update\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Relation Name\": \"products\",\n      \"Schema\": \"public\",\n      \"Alias\": \"products\",\n      \"Startup Cost\": 0.29,\n      \"Total Cost\": 8.30,\n      \"Plan Rows\": 0,\n      \"Plan Width\": 0,\n      \"Disabled\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Index Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Scan Direction\": \"Forward\",\n          \"Index Name\": \"products_pkey\",\n          \"Relation Name\": \"products\",\n          \"Schema\": \"public\",\n          \"Alias\": \"products\",\n          \"Startup Cost\": 0.29,\n          \"Total Cost\": 8.30,\n          \"Plan Rows\": 1,\n          \"Plan Width\": 13,\n          \"Disabled\": false,\n          \"Output\": [\"price\", \"ctid\"],\n          \"Index Cond\": \"(products.id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -796694400354061278\n  }\n]"
+        },
+        "waits": []
+      },
+      {
         "id": "-6576252161252119529",
         "query_hash": null,
         "text": "SELECT pg_stat_statements_reset()",
+        "parameters": null,
         "object_name": null,
         "executions": 1.0,
         "total_time_ms": 0.06691599999999999,
@@ -918,9 +1201,107 @@
         "waits": []
       },
       {
+        "id": "5306524445554315840",
+        "query_hash": null,
+        "text": "select count(*), sum(calls) from pg_stat_statements where query like $1",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 0.055082,
+        "mean_time_ms": 0.055082,
+        "max_time_ms": 0.055082,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 1.0,
+        "logical_reads": 0.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:02:21Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": {
+          "engine": "postgres",
+          "kind": "generic",
+          "statement": "select count(*), sum(calls) from pg_stat_statements where query like $1",
+          "total_cost": 12.54,
+          "root": {
+            "id": 0,
+            "op": "Aggregate",
+            "kind": "aggregate",
+            "detail": null,
+            "object": null,
+            "index": null,
+            "seek_predicate": null,
+            "predicate": null,
+            "est_rows": 1.0,
+            "est_executions": 1.0,
+            "act_rows": null,
+            "act_executions": null,
+            "rows_read": null,
+            "table_rows": null,
+            "subtree_cost": 12.54,
+            "self_cost": 0.03999999999999915,
+            "act_time_ms": null,
+            "warnings": [],
+            "props": {
+              "Async Capable": "false",
+              "Disabled": "false",
+              "Parallel Aware": "false",
+              "Partial Mode": "Simple",
+              "Plan Width": "40",
+              "Startup Cost": "12.53",
+              "Strategy": "Plain"
+            },
+            "children": [
+              {
+                "id": 1,
+                "op": "Function Scan",
+                "kind": "scan",
+                "detail": null,
+                "object": null,
+                "index": null,
+                "seek_predicate": null,
+                "predicate": "(pg_stat_statements.query ~~ $1)",
+                "est_rows": 5.0,
+                "est_executions": 1.0,
+                "act_rows": null,
+                "act_executions": null,
+                "rows_read": null,
+                "table_rows": null,
+                "subtree_cost": 12.5,
+                "self_cost": 12.5,
+                "act_time_ms": null,
+                "warnings": [],
+                "props": {
+                  "Alias": "pg_stat_statements",
+                  "Async Capable": "false",
+                  "Disabled": "false",
+                  "Filter": "(pg_stat_statements.query ~~ $1)",
+                  "Function Call": "pg_stat_statements(true)",
+                  "Function Name": "pg_stat_statements",
+                  "Parallel Aware": "false",
+                  "Parent Relationship": "Outer",
+                  "Plan Width": "8",
+                  "Startup Cost": "0.0"
+                },
+                "children": []
+              }
+            ]
+          },
+          "warnings": [],
+          "index_hints": [],
+          "props": {
+            "Query Identifier": "-3224020964755723897"
+          },
+          "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Simple\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 12.53,\n      \"Total Cost\": 12.54,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 40,\n      \"Disabled\": false,\n      \"Output\": [\"count(*)\", \"sum(pg_stat_statements.calls)\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Function Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Function Name\": \"pg_stat_statements\",\n          \"Schema\": \"public\",\n          \"Alias\": \"pg_stat_statements\",\n          \"Startup Cost\": 0.00,\n          \"Total Cost\": 12.50,\n          \"Plan Rows\": 5,\n          \"Plan Width\": 8,\n          \"Disabled\": false,\n          \"Output\": [\"pg_stat_statements.userid\", \"pg_stat_statements.dbid\", \"pg_stat_statements.toplevel\", \"pg_stat_statements.queryid\", \"pg_stat_statements.query\", \"pg_stat_statements.plans\", \"pg_stat_statements.total_plan_time\", \"pg_stat_statements.min_plan_time\", \"pg_stat_statements.max_plan_time\", \"pg_stat_statements.mean_plan_time\", \"pg_stat_statements.stddev_plan_time\", \"pg_stat_statements.calls\", \"pg_stat_statements.total_exec_time\", \"pg_stat_statements.min_exec_time\", \"pg_stat_statements.max_exec_time\", \"pg_stat_statements.mean_exec_time\", \"pg_stat_statements.stddev_exec_time\", \"pg_stat_statements.rows\", \"pg_stat_statements.shared_blks_hit\", \"pg_stat_statements.shared_blks_read\", \"pg_stat_statements.shared_blks_dirtied\", \"pg_stat_statements.shared_blks_written\", \"pg_stat_statements.local_blks_hit\", \"pg_stat_statements.local_blks_read\", \"pg_stat_statements.local_blks_dirtied\", \"pg_stat_statements.local_blks_written\", \"pg_stat_statements.temp_blks_read\", \"pg_stat_statements.temp_blks_written\", \"pg_stat_statements.shared_blk_read_time\", \"pg_stat_statements.shared_blk_write_time\", \"pg_stat_statements.local_blk_read_time\", \"pg_stat_statements.local_blk_write_time\", \"pg_stat_statements.temp_blk_read_time\", \"pg_stat_statements.temp_blk_write_time\", \"pg_stat_statements.wal_records\", \"pg_stat_statements.wal_fpi\", \"pg_stat_statements.wal_bytes\", \"pg_stat_statements.wal_buffers_full\", \"pg_stat_statements.jit_functions\", \"pg_stat_statements.jit_generation_time\", \"pg_stat_statements.jit_inlining_count\", \"pg_stat_statements.jit_inlining_time\", \"pg_stat_statements.jit_optimization_count\", \"pg_stat_statements.jit_optimization_time\", \"pg_stat_statements.jit_emission_count\", \"pg_stat_statements.jit_emission_time\", \"pg_stat_statements.jit_deform_count\", \"pg_stat_statements.jit_deform_time\", \"pg_stat_statements.parallel_workers_to_launch\", \"pg_stat_statements.parallel_workers_launched\", \"pg_stat_statements.stats_since\", \"pg_stat_statements.minmax_stats_since\"],\n          \"Function Call\": \"pg_stat_statements(true)\",\n          \"Filter\": \"(pg_stat_statements.query ~~ $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -3224020964755723897\n  }\n]"
+        },
+        "waits": []
+      },
+      {
         "id": "2169115237613314459",
         "query_hash": null,
         "text": "SELECT pg_stat_reset()",
+        "parameters": null,
         "object_name": null,
         "executions": 1.0,
         "total_time_ms": 0.021083,
@@ -976,6 +1357,72 @@
           "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 4,\n      \"Disabled\": false,\n      \"Output\": [\"pg_stat_reset()\"]\n    },\n    \"Query Identifier\": 2169115237613314459\n  }\n]"
         },
         "waits": []
+      },
+      {
+        "id": "-8017746645856686016",
+        "query_hash": null,
+        "text": "DROP DATABASE IF EXISTS bare",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 0.009417,
+        "mean_time_ms": 0.009417,
+        "max_time_ms": 0.009417,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 0.0,
+        "logical_reads": 1.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:02:31Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": null,
+        "waits": []
+      },
+      {
+        "id": "6097083398544187049",
+        "query_hash": null,
+        "text": "COMMIT",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 0.002167,
+        "mean_time_ms": 0.002167,
+        "max_time_ms": 0.002167,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 0.0,
+        "logical_reads": 0.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:03:36Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": null,
+        "waits": []
+      },
+      {
+        "id": "4854991825702068830",
+        "query_hash": null,
+        "text": "BEGIN",
+        "parameters": null,
+        "object_name": null,
+        "executions": 1.0,
+        "total_time_ms": 0.002,
+        "mean_time_ms": 0.002,
+        "max_time_ms": 0.002,
+        "stddev_time_ms": 0.0,
+        "cpu_time_ms": null,
+        "rows": 0.0,
+        "logical_reads": 0.0,
+        "physical_reads": 0.0,
+        "temp_writes": 0.0,
+        "first_seen": "2026-10-11T07:03:16Z",
+        "last_seen": null,
+        "plans": [],
+        "plan": null,
+        "waits": []
       }
     ]
   },
@@ -1000,7 +1447,7 @@
       "last_vacuum": null,
       "last_analyze": null,
       "forwarded_records": null,
-      "xid_age": 75.0
+      "xid_age": 78.0
     },
     {
       "schema": "public",
@@ -1022,7 +1469,7 @@
       "last_vacuum": null,
       "last_analyze": null,
       "forwarded_records": null,
-      "xid_age": 77.0
+      "xid_age": 80.0
     },
     {
       "schema": "public",
@@ -1044,7 +1491,7 @@
       "last_vacuum": null,
       "last_analyze": null,
       "forwarded_records": null,
-      "xid_age": 74.0
+      "xid_age": 77.0
     },
     {
       "schema": "public",
@@ -1057,16 +1504,16 @@
       "is_heap": null,
       "seq_scans": 0.0,
       "seq_rows_read": 0.0,
-      "index_scans": 0.0,
+      "index_scans": 2.0,
       "inserts": 0.0,
-      "updates": 0.0,
+      "updates": 2.0,
       "deletes": 0.0,
-      "dead_rows": 0.0,
-      "modifications_since_analyze": 0.0,
+      "dead_rows": 2.0,
+      "modifications_since_analyze": 2.0,
       "last_vacuum": null,
       "last_analyze": null,
       "forwarded_records": null,
-      "xid_age": 76.0
+      "xid_age": 79.0
     },
     {
       "schema": "public",
@@ -1088,7 +1535,7 @@
       "last_vacuum": null,
       "last_analyze": null,
       "forwarded_records": null,
-      "xid_age": 73.0
+      "xid_age": 76.0
     }
   ],
   "indexes": [
@@ -1130,12 +1577,12 @@
       "is_clustered": false,
       "is_disabled": false,
       "size_bytes": 245760.0,
-      "reads": 0.0,
+      "reads": 2.0,
       "writes": null,
       "seeks": null,
-      "scans": 0.0,
+      "scans": 2.0,
       "lookups": null,
-      "last_read": null,
+      "last_read": "2026-10-11T07:03:36Z",
       "definition": "CREATE UNIQUE INDEX products_pkey ON public.products USING btree (id)"
     },
     {
@@ -1347,6 +1794,258 @@
       "definition": "CREATE INDEX customers_region_idx ON public.customers USING btree (region)"
     }
   ],
+  "columns": [
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "email",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "name",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "region",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "public",
+      "table": "customers",
+      "name": "created_at",
+      "data_type": "timestamp with time zone",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "public",
+      "table": "events",
+      "name": "id",
+      "data_type": "bigint",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "events",
+      "name": "customer_id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "events",
+      "name": "kind",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "events",
+      "name": "payload",
+      "data_type": "jsonb",
+      "nullable": true,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "public",
+      "table": "events",
+      "name": "created_at",
+      "data_type": "timestamp with time zone",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "public",
+      "table": "order_items",
+      "name": "id",
+      "data_type": "bigint",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "order_items",
+      "name": "order_id",
+      "data_type": "bigint",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "order_items",
+      "name": "product_id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "order_items",
+      "name": "quantity",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "public",
+      "table": "order_items",
+      "name": "price",
+      "data_type": "numeric(10,2)",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "id",
+      "data_type": "bigint",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "customer_id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "status",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "total",
+      "data_type": "numeric(12,2)",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "note",
+      "data_type": "text",
+      "nullable": true,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "public",
+      "table": "orders",
+      "name": "created_at",
+      "data_type": "timestamp with time zone",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 6
+    },
+    {
+      "schema": "public",
+      "table": "products",
+      "name": "id",
+      "data_type": "integer",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "public",
+      "table": "products",
+      "name": "sku",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "public",
+      "table": "products",
+      "name": "name",
+      "data_type": "text",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "public",
+      "table": "products",
+      "name": "price",
+      "data_type": "numeric(10,2)",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    }
+  ],
   "foreign_keys": [
     {
       "name": "orders_customer_id_fkey",
@@ -1427,7 +2126,7 @@
       "last_updated": null,
       "rows": 10000.0,
       "rows_sampled": null,
-      "modifications": 0.0,
+      "modifications": 2.0,
       "auto_created": false
     },
     {
@@ -1530,10 +2229,15 @@
     },
     {
       "name": "datfrozenxid_age",
-      "value": "87",
+      "value": "90",
       "default_value": null,
       "scope": "database"
     }
   ],
-  "notes": []
+  "notes": [],
+  "options": {
+    "window_days": 7,
+    "top_queries": 60,
+    "plans": 25
+  }
 }

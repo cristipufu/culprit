@@ -27,6 +27,9 @@ pub struct StoredConnection {
     /// Read the password from this environment variable instead of the OS keychain (CI, agents).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_env: Option<String>,
+    /// Whether a password was stored in the keychain; `None` for connections saved before Culprit tracked it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_saved: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }

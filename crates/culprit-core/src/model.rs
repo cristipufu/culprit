@@ -15,6 +15,7 @@ pub const SNAPSHOT_FORMAT: u32 = 1;
 pub enum Engine {
     Mssql,
     Postgres,
+    Mysql,
 }
 
 impl Engine {
@@ -22,6 +23,7 @@ impl Engine {
         match self {
             Engine::Mssql => "SQL Server",
             Engine::Postgres => "Postgres",
+            Engine::Mysql => "MySQL",
         }
     }
 }
@@ -56,6 +58,7 @@ pub enum Capability {
     QueryStore,
     PlanCache,
     PgStatStatements,
+    PerformanceSchema,
     QueryPlans,
     GenericPlans,
     TableStats,
@@ -74,6 +77,7 @@ impl Capability {
             Capability::QueryStore => "Query Store",
             Capability::PlanCache => "Plan cache statistics",
             Capability::PgStatStatements => "pg_stat_statements",
+            Capability::PerformanceSchema => "performance_schema statement digests",
             Capability::QueryPlans => "Query plans",
             Capability::GenericPlans => "Generic plans (Postgres 16+)",
             Capability::TableStats => "Table statistics",
@@ -277,6 +281,21 @@ pub fn strip_direction(column: &str) -> &str {
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
+pub struct ColumnInfo {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    /// Engine type as the database spells it, with length/precision: `varchar(20)`, `numeric(12,2)`, `timestamptz`.
+    pub data_type: String,
+    pub nullable: bool,
+    pub default: Option<String>,
+    /// Identity / auto-increment / serial-backed column.
+    pub generated: bool,
+    pub ordinal: u32,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[ts(export)]
 pub struct ForeignKey {
     pub name: String,
     pub schema: String,
@@ -365,6 +384,8 @@ pub struct Snapshot {
     pub workload: Option<Workload>,
     pub tables: Vec<TableStat>,
     pub indexes: Vec<IndexStat>,
+    #[serde(default)]
+    pub columns: Vec<ColumnInfo>,
     pub foreign_keys: Vec<ForeignKey>,
     pub missing_indexes: Vec<MissingIndex>,
     pub statistics: Vec<StatisticsInfo>,

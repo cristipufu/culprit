@@ -297,7 +297,7 @@ pub fn unused_index_info() -> CheckInfo {
         id: "unused-index".into(),
         title: "Unused indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::IndexUsage],
         description:
             "Indexes that are maintained on every write but no query has read since usage counters were reset.".into(),
@@ -309,7 +309,14 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
     let days = counter_days(snapshot);
     let mut by_table: Vec<(String, String, Vec<&IndexStat>)> = Vec::new();
     let redundant: Vec<&str> = redundant_indexes(snapshot).iter().map(|(a, _)| a.name.as_str()).collect();
-    for i in snapshot.indexes.iter().filter(|i| is_unused(i) && !redundant.contains(&i.name.as_str())) {
+    let mysql = snapshot.server.engine == Engine::Mysql;
+    // InnoDB refuses to drop the index a foreign key relies on.
+    for i in snapshot
+        .indexes
+        .iter()
+        .filter(|i| is_unused(i) && !redundant.contains(&i.name.as_str()))
+        .filter(|i| !(mysql && backs_foreign_key(snapshot, i).is_some()))
+    {
         match by_table.iter_mut().find(|(s, t, _)| *s == i.schema && *t == i.table) {
             Some((_, _, list)) => list.push(i),
             None => by_table.push((i.schema.clone(), i.table.clone(), vec![i])),
@@ -363,6 +370,11 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                         qualified(engine, &i.schema, &i.table)
                     ),
                     Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+                    Engine::Mysql => format!(
+                        "ALTER TABLE {} ALTER INDEX {} INVISIBLE;",
+                        qualified(engine, &i.schema, &i.table),
+                        quote(engine, &i.name)
+                    ),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -370,6 +382,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 summary: match engine {
                     Engine::Mssql => "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints.".into(),
                     Engine::Postgres => "Drop it concurrently so writes aren't blocked. Save the definition first so you can recreate it.".into(),
+                    Engine::Mysql => "Make it invisible first: the optimizer stops using it but it stays maintained, and `ALTER INDEX … VISIBLE` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
                 },
                 sql: Some(sql),
                 cost: Some(format!("Frees {} and makes writes to {} cheaper.", format::bytes(total_size), table_name)),
@@ -377,12 +390,35 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             f.verify = vec!["Watch the queries on this table for a week after disabling; none should get slower.".into()];
             f.caveats.push("Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.".into());
             f.caveats.push("Reads on read replicas or secondaries are not counted here. Check them before dropping.".into());
+            let fk_backers: Vec<String> = list
+                .iter()
+                .filter_map(|i| backs_foreign_key(snapshot, i).map(|fk| format!("{} (foreign key {})", i.name, fk.name)))
+                .collect();
+            if !fk_backers.is_empty() {
+                f.caveats.push(format!(
+                    "{} also {} a foreign key: without it, deleting or updating parent rows scans this table.",
+                    format::list(&fk_backers),
+                    if fk_backers.len() == 1 { "supports" } else { "support" }
+                ));
+            }
             if let Some(defs) = definitions(&list) {
                 f.caveats.push(format!("Definitions, to recreate if needed:\n{defs}"));
             }
             f
         })
         .collect()
+}
+
+/// The foreign key whose columns this index leads with, if any: dropping it would leave that foreign key unindexed.
+fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -> Option<&'a culprit_core::ForeignKey> {
+    let keys: Vec<String> = index.key_names().iter().map(|k| k.to_ascii_lowercase()).collect();
+    snapshot.foreign_keys.iter().find(|fk| {
+        fk.schema.eq_ignore_ascii_case(&index.schema)
+            && fk.table.eq_ignore_ascii_case(&index.table)
+            && !fk.columns.is_empty()
+            && keys.len() >= fk.columns.len()
+            && lower_set(&keys[..fk.columns.len()]) == lower_set(&fk.columns)
+    })
 }
 
 fn is_unused(i: &IndexStat) -> bool {
@@ -408,7 +444,7 @@ pub fn duplicate_index_info() -> CheckInfo {
         id: "duplicate-index".into(),
         title: "Duplicate and redundant indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::TableStats],
         description: "Indexes with the same keys as another index, or whose keys are a leading part of a wider one."
             .into(),
@@ -502,7 +538,7 @@ pub fn unindexed_fk_info() -> CheckInfo {
         id: "unindexed-fk".into(),
         title: "Foreign keys without an index".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::TableStats],
         description: "Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.".into(),
     }
@@ -567,7 +603,7 @@ pub fn filtered_scan_info() -> CheckInfo {
         id: "filtered-scan".into(),
         title: "Scans an index would avoid".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::QueryPlans],
         description: "Heavy queries whose plan reads a large table in full and keeps only the rows matching a filter that no index supports.".into(),
     }

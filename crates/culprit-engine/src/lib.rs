@@ -1,3 +1,4 @@
+pub mod aws;
 pub mod connstr;
 pub mod discover;
 pub mod entra;
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use culprit_checks::agent_brief;
-pub use discover::DiscoveredDatabase;
+pub use discover::{Cloud, DiscoveredDatabase};
 pub use reports::ReportSummary;
 use store::{Paths, Store, StoredConnection};
 
@@ -32,6 +33,8 @@ pub struct ConnectionInfo {
     pub database: Option<String>,
     pub user: Option<String>,
     pub auth: AuthKind,
+    /// A password is available (keychain or environment variable). Only meaningful for password authentication.
+    pub has_secret: bool,
     pub display: String,
     pub last_report: Option<ReportSummary>,
 }
@@ -156,6 +159,8 @@ impl Workspace {
             database: stored.database.clone(),
             user: stored.user.clone(),
             auth: stored.auth,
+            has_secret: stored.auth == AuthKind::Password
+                && (stored.password_env.is_some() || stored.password_saved.unwrap_or(true)),
             display: connstr::describe(&stored.spec()),
             last_report: reports::latest_summary(&self.paths.reports_dir(name), None),
         }
@@ -169,9 +174,11 @@ impl Workspace {
                 .with_hint("Choose Postgres or SQL Server explicitly")
         })?;
         let password_env = new.password_env.clone().filter(|v| !v.is_empty());
-        if let Some(password) = spec.password.as_deref().filter(|p| !p.is_empty() && password_env.is_none()) {
+        let password = spec.password.as_deref().filter(|p| !p.is_empty() && password_env.is_none());
+        if let Some(password) = password {
             store::set_secret(&new.name, password)?;
         }
+        let password_saved = Some(password.is_some());
         let stored = StoredConnection {
             engine,
             environment: new.environment,
@@ -181,10 +188,27 @@ impl Workspace {
             user: spec.user,
             auth: spec.auth,
             password_env,
+            password_saved,
             options: spec.options,
         };
         self.store.put(&new.name, stored)?;
         self.connection(&new.name)
+    }
+
+    /// Store the password for a password-authenticated connection in the OS keychain.
+    pub fn set_password(&self, name: &str, password: &str) -> Result<ConnectionInfo> {
+        let mut stored = self.store.get(name)?;
+        if stored.auth != AuthKind::Password {
+            return Err(Error::invalid(format!("'{name}' does not use password authentication")));
+        }
+        if password.is_empty() {
+            return Err(Error::invalid("The password is empty"));
+        }
+        store::set_secret(name, password)?;
+        stored.password_saved = Some(true);
+        stored.password_env = None;
+        self.store.put(name, stored)?;
+        self.connection(name)
     }
 
     pub fn remove_connection(&self, name: &str) -> Result<()> {
@@ -204,32 +228,107 @@ impl Workspace {
     /// Azure SQL databases the signed-in Azure CLI account can see, marked with the saved connection that already points at each.
     pub async fn discover_azure(&self, terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
         let mut found = discover::azure_sql(terms).await?;
+        self.mark_saved(&mut found)?;
+        Ok(found)
+    }
+
+    /// RDS instances and Aurora clusters the signed-in AWS CLI can see (all enabled regions when `regions` is empty).
+    pub async fn discover_aws(&self, regions: &[String], terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+        let mut found = discover::aws_rds(regions, terms).await?;
+        self.mark_saved(&mut found)?;
+        Ok(found)
+    }
+
+    fn mark_saved(&self, found: &mut [DiscoveredDatabase]) -> Result<()> {
         let saved = self.store.list()?;
-        for d in &mut found {
+        for d in found {
             d.saved_as = saved
                 .iter()
                 .find(|(_, c)| {
                     c.host.eq_ignore_ascii_case(&d.host)
-                        && c.database.as_deref().is_some_and(|db| db.eq_ignore_ascii_case(&d.database))
+                        && c.database.as_deref().unwrap_or_default().eq_ignore_ascii_case(&d.database)
                 })
                 .map(|(name, _)| name.clone());
         }
-        Ok(found)
+        Ok(())
     }
 
-    /// Save a discovered database as an Entra ID connection; nothing secret is stored.
+    /// Save a discovered database. Azure: Entra ID. AWS: IAM when the instance allows it, otherwise password auth with the
+    /// password set later (`set_password`). Nothing secret is stored here.
     pub fn add_discovered(&self, d: &DiscoveredDatabase) -> Result<ConnectionInfo> {
-        self.add_connection(NewConnection {
-            name: d.alias.clone(),
-            input: format!(
-                "Server=tcp:{},1433;Database={};Authentication=Active Directory Default;Encrypt=True",
-                d.host, d.database
-            ),
+        match d.cloud {
+            discover::Cloud::Azure => self.add_connection(NewConnection {
+                name: d.alias.clone(),
+                input: format!(
+                    "Server=tcp:{},1433;Database={};Authentication=Active Directory Default;Encrypt=True",
+                    d.host, d.database
+                ),
+                environment: d.environment,
+                engine: Some(d.engine),
+                auth: Some(AuthKind::Entra),
+                ..Default::default()
+            }),
+            discover::Cloud::Aws => self.add_rds(d),
+        }
+    }
+
+    fn add_rds(&self, d: &DiscoveredDatabase) -> Result<ConnectionInfo> {
+        store::validate_name(&d.alias)?;
+        let auth =
+            if d.auth == AuthKind::AwsIam && d.engine != Engine::Mssql { AuthKind::AwsIam } else { AuthKind::Password };
+        let mut options = std::collections::BTreeMap::new();
+        if let Some(region) = d.region.as_deref().filter(|r| aws::valid_region(r)) {
+            options.insert("region".to_string(), region.to_string());
+        }
+        match d.engine {
+            Engine::Postgres => {
+                options.insert("sslmode".into(), "verify-full".into());
+                options.insert("sslrootcert".into(), aws::RDS_CA.into());
+            }
+            Engine::Mysql => {
+                options.insert("ssl-mode".into(), "VERIFY_IDENTITY".into());
+                options.insert("ssl-ca".into(), aws::RDS_CA.into());
+            }
+            Engine::Mssql => {
+                options.insert("encrypt".into(), "true".into());
+                options.insert("trustServerCertificateCA".into(), aws::RDS_CA.into());
+            }
+        }
+        let stored = StoredConnection {
+            engine: d.engine,
             environment: d.environment,
-            engine: Some(d.engine),
-            auth: Some(AuthKind::Entra),
-            ..Default::default()
-        })
+            host: d.host.clone(),
+            port: d.port,
+            database: Some(d.database.clone()).filter(|db| !db.is_empty()),
+            user: d.user.clone(),
+            auth,
+            password_env: None,
+            password_saved: (auth == AuthKind::Password).then_some(false),
+            options,
+        };
+        self.store.put(&d.alias, stored)?;
+        self.connection(&d.alias)
+    }
+
+    /// Replace the `rds` placeholder in certificate-authority options with the bundled RDS authorities on disk.
+    fn materialize_certificates(&self, spec: &mut ConnectionSpec) -> Result<()> {
+        let keys: Vec<String> = spec
+            .options
+            .iter()
+            .filter(|(k, v)| {
+                matches!(k.to_ascii_lowercase().as_str(), "sslrootcert" | "ssl-ca" | "trustservercertificateca")
+                    && v.as_str() == aws::RDS_CA
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let path = aws::rds_ca_file(&self.paths.data)?.to_string_lossy().into_owned();
+        for key in keys {
+            spec.options.insert(key, path.clone());
+        }
+        Ok(())
     }
 
     /// Open a provider for a saved connection, resolving the password from the keychain or a fresh Entra token.
@@ -237,6 +336,7 @@ impl Workspace {
         let stored = self.store.get(name)?;
         let mut spec = stored.spec();
         resolve_secrets(name, stored.password_env.as_deref(), &mut spec).await?;
+        self.materialize_certificates(&mut spec)?;
         self.open_provider(&spec)
     }
 
@@ -244,10 +344,8 @@ impl Workspace {
     pub async fn provider_for(&self, new: &NewConnection) -> Result<Box<dyn Provider>> {
         let mut spec = merge(new)?;
         spec.environment = new.environment;
-        if spec.auth == AuthKind::Entra {
-            let engine = spec.engine.ok_or_else(|| Error::invalid("Can't tell which database engine this is"))?;
-            spec.token = Some(entra::token_for(engine, &spec.host).await?);
-        }
+        resolve_token(&mut spec).await?;
+        self.materialize_certificates(&mut spec)?;
         self.open_provider(&spec)
     }
 
@@ -285,6 +383,36 @@ impl Workspace {
         self.provider(name).await?.explain(sql, mode).await
     }
 
+    /// A plan for a query from the latest report: the stored plan when the engine keeps them (Query Store), otherwise an
+    /// estimated plan of the query text. Never executes the statement.
+    pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
+        let provider = self.provider(name).await?;
+        if let Some(plan_id) = plan_id
+            && let Some(plan) = provider.stored_plan(query_id, plan_id).await?
+        {
+            return Ok(plan);
+        }
+        let report =
+            self.latest_report(name, None)?.ok_or_else(|| Error::not_found(format!("No report for {name}")))?;
+        let query = report
+            .snapshot
+            .workload
+            .as_ref()
+            .and_then(|w| w.query(query_id))
+            .ok_or_else(|| Error::not_found(format!("No query {query_id} in the latest report for {name}")))?;
+        if let Some(plan_id) = query.plans.first().map(|p| p.id.clone())
+            && plan_id.chars().all(|c| c.is_ascii_digit())
+            && let Some(plan) = provider.stored_plan(query_id, &plan_id).await?
+        {
+            return Ok(plan);
+        }
+        provider.explain(&query.text, ExplainMode::Estimated).await.map_err(|e| {
+            let hint =
+                "The statement text may need parameter values; open it in the editor to explain it with real values";
+            Error { hint: Some(e.hint.clone().unwrap_or_else(|| hint.into())), ..e }
+        })
+    }
+
     pub async fn live(&self, name: &str) -> Result<LiveState> {
         self.provider(name).await?.live().await
     }
@@ -308,12 +436,43 @@ fn guard_execution(info: &ConnectionInfo, executes: bool, confirmed: bool) -> Re
     .with_hint("Confirm explicitly (--yes-execute-on-production in the CLI) or use an estimated plan instead"))
 }
 
-async fn resolve_secrets(name: &str, password_env: Option<&str>, spec: &mut ConnectionSpec) -> Result<()> {
-    match (spec.auth, password_env) {
-        (AuthKind::Entra, _) => {
-            let engine = spec.engine.ok_or_else(|| Error::invalid("Can't tell which database engine this is"))?;
+/// Fetch a fresh token for token-based auth (Entra ID, AWS IAM); a no-op for other kinds.
+async fn resolve_token(spec: &mut ConnectionSpec) -> Result<()> {
+    let engine = || spec.engine.ok_or_else(|| Error::invalid("Can't tell which database engine this is"));
+    match spec.auth {
+        AuthKind::Entra => {
+            let engine = engine()?;
             spec.token = Some(entra::token_for(engine, &spec.host).await?);
         }
+        AuthKind::AwsIam => {
+            let engine = engine()?;
+            let user = spec
+                .user
+                .clone()
+                .filter(|u| !u.is_empty())
+                .ok_or_else(|| Error::invalid("AWS IAM authentication needs a database user name"))?;
+            let port = spec.port.unwrap_or(match engine {
+                Engine::Postgres => 5432,
+                Engine::Mysql => 3306,
+                Engine::Mssql => 1433,
+            });
+            let region =
+                spec.option("region").map(str::to_string).or_else(|| aws::region_from_host(&spec.host)).ok_or_else(
+                    || {
+                        Error::invalid("Can't tell which AWS region this RDS endpoint is in")
+                            .with_hint("Add ?region=… to the connection")
+                    },
+                )?;
+            spec.token = Some(aws::iam_token(engine, &spec.host, port, &user, &region).await?);
+        }
+        AuthKind::Password | AuthKind::None => {}
+    }
+    Ok(())
+}
+
+async fn resolve_secrets(name: &str, password_env: Option<&str>, spec: &mut ConnectionSpec) -> Result<()> {
+    match (spec.auth, password_env) {
+        (AuthKind::Entra | AuthKind::AwsIam, _) => resolve_token(spec).await?,
         (AuthKind::Password, Some(var)) => {
             let value = std::env::var(var).map_err(|_| {
                 Error::new(ErrorCode::AuthFailed, format!("Environment variable {var} is not set"))
@@ -376,4 +535,62 @@ fn suggest_name(spec: &ConnectionSpec) -> String {
         _ => host.to_string(),
     };
     store::safe_file_name(&base.to_ascii_lowercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rds_row(alias: &str, engine: Engine, auth: AuthKind) -> DiscoveredDatabase {
+        DiscoveredDatabase {
+            alias: alias.into(),
+            cloud: discover::Cloud::Aws,
+            engine,
+            environment: Environment::Staging,
+            server: alias.into(),
+            host: format!("{alias}.abc123.eu-central-1.rds.amazonaws.com"),
+            database: if engine == Engine::Mysql { String::new() } else { "shop".into() },
+            location: "eu-central-1".into(),
+            subscription: "111122223333".into(),
+            resource_group: String::new(),
+            port: Some(if engine == Engine::Mysql { 3306 } else { 5432 }),
+            user: Some("app".into()),
+            region: Some("eu-central-1".into()),
+            auth,
+            saved_as: None,
+        }
+    }
+
+    #[test]
+    fn discovered_rds_databases_save_with_verified_tls_and_no_secret() {
+        let home = std::env::temp_dir().join(format!("culprit-aws-test-{}", std::process::id()));
+        let ws = Workspace::open_in(&home);
+
+        let iam = ws.add_discovered(&rds_row("shop-api", Engine::Postgres, AuthKind::AwsIam)).unwrap();
+        assert_eq!((iam.auth, iam.has_secret, iam.port), (AuthKind::AwsIam, false, Some(5432)));
+        let stored = ws.store.get("shop-api").unwrap();
+        assert_eq!(stored.options.get("region").map(String::as_str), Some("eu-central-1"));
+        assert_eq!(stored.options.get("sslmode").map(String::as_str), Some("verify-full"));
+
+        let mut spec = stored.spec();
+        ws.materialize_certificates(&mut spec).unwrap();
+        let ca = std::path::PathBuf::from(spec.option("sslrootcert").unwrap());
+        assert!(std::fs::read_to_string(&ca).unwrap().contains("BEGIN CERTIFICATE"));
+
+        let password = ws.add_discovered(&rds_row("events", Engine::Mysql, AuthKind::Password)).unwrap();
+        assert_eq!(
+            (password.auth, password.has_secret, password.database.as_deref()),
+            (AuthKind::Password, false, None)
+        );
+        assert_eq!(
+            ws.store.get("events").unwrap().options.get("ssl-mode").map(String::as_str),
+            Some("VERIFY_IDENTITY")
+        );
+
+        let sqlserver = ws.add_discovered(&rds_row("reports", Engine::Mssql, AuthKind::AwsIam)).unwrap();
+        assert_eq!(sqlserver.auth, AuthKind::Password, "RDS for SQL Server has no IAM database auth");
+
+        assert_eq!(ws.set_password("shop-api", "x").unwrap_err().code, ErrorCode::InvalidInput);
+        let _ = std::fs::remove_dir_all(home);
+    }
 }
