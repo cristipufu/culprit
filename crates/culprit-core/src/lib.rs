@@ -1,16 +1,21 @@
 pub mod check;
 pub mod connection;
+pub mod drift;
 pub mod error;
 pub mod finding;
 pub mod format;
 pub mod model;
 pub mod plan;
+pub mod plan_diff;
 pub mod provider;
+pub mod sql;
 
 pub use check::Check;
-pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed};
+pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, is_local_host};
+pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
 pub use error::{Error, ErrorCode, Result};
 pub use finding::*;
 pub use model::*;
 pub use plan::*;
+pub use plan_diff::{ChangeKind, NodeMatch, PlanChange, PlanDiff, plan_cost_basis, plan_diff, plan_diff_named};
 pub use provider::{ExplainMode, Provider, SnapshotOptions};

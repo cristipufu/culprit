@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed,
+    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed, is_local_host,
 };
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -119,7 +119,10 @@ fn tls_for(spec: &ConnectionSpec) -> Result<(SslMode, MakeRustlsConnect)> {
     let mode = if matches!(spec.auth, AuthKind::Entra | AuthKind::AwsIam) {
         "verify-full".to_string()
     } else {
-        spec.option("sslmode").unwrap_or("prefer").to_ascii_lowercase()
+        // libpq defaults to `prefer`; Culprit only does that for a local server and verifies every other host's
+        // certificate unless the connection string asks for less.
+        let default = if is_local_host(&spec.host) { "prefer" } else { "verify-full" };
+        spec.option("sslmode").unwrap_or(default).to_ascii_lowercase()
     };
     let root_cert = spec.option("sslrootcert").filter(|p| !p.is_empty() && *p != "system");
     let (ssl_mode, verification) = match mode.as_str() {
@@ -386,7 +389,10 @@ mod tests {
 
     #[test]
     fn sslmodes_follow_libpq() {
-        assert!(matches!(tls_for(&spec(None)).unwrap().0, SslMode::Prefer));
+        // No sslmode: a remote host must present a verifying certificate; a local one stays opportunistic.
+        assert!(matches!(tls_for(&spec(None)).unwrap().0, SslMode::Require));
+        let local = ConnectionSpec { host: "localhost".into(), ..Default::default() };
+        assert!(matches!(tls_for(&local).unwrap().0, SslMode::Prefer));
         assert!(matches!(tls_for(&spec(Some("disable"))).unwrap().0, SslMode::Disable));
         assert!(matches!(tls_for(&spec(Some("require"))).unwrap().0, SslMode::Require));
         assert!(matches!(tls_for(&spec(Some("verify-full"))).unwrap().0, SslMode::Require));

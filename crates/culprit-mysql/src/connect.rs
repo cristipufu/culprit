@@ -3,7 +3,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 use culprit_core::{
-    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed,
+    AuthKind, ConnectionSpec, Engine, Error, ErrorCode, Result, aws_iam_host_allowed, entra_host_allowed, is_local_host,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, DriverError, IoError, OptsBuilder, SslOpts};
@@ -80,7 +80,10 @@ impl Connector {
                 .with_hint("Add one to the connection string, e.g. mysql://app@host/db")
         })?;
         let mode = ["sslmode", "ssl-mode", "ssl_mode"].iter().find_map(|k| spec.option(k));
-        let mut tls = mode.map(Tls::parse).transpose()?.unwrap_or(Tls::Preferred);
+        // Like the mysql client, a local server gets TLS when it offers it; anything else must present a certificate that
+        // verifies, unless the connection string asks for less (ssl-mode=REQUIRED encrypts without verifying).
+        let default = if is_local_host(&host) { Tls::Preferred } else { Tls::VerifyIdentity };
+        let mut tls = mode.map(Tls::parse).transpose()?.unwrap_or(default);
         let mut base = OptsBuilder::default()
             .ip_or_hostname(host.clone())
             .tcp_port(port)
@@ -237,8 +240,13 @@ pub fn map_error(error: mysql_async::Error) -> Error {
         }
         mysql_async::Error::Io(io) => {
             let message = io.to_string();
-            if message.to_ascii_lowercase().contains("timed out") {
+            let lower = message.to_ascii_lowercase();
+            if lower.contains("timed out") {
                 return Error::new(ErrorCode::Timeout, message);
+            }
+            if lower.contains("certificate") {
+                return Error::new(ErrorCode::ConnectionFailed, format!("The server's TLS certificate didn't verify: {message}"))
+                    .with_hint("Point ssl-ca at the server's CA bundle (ssl-ca=rds for Amazon RDS), or add ssl-mode=REQUIRED to encrypt without verifying the certificate.");
             }
             Error::new(ErrorCode::ConnectionFailed, message)
         }
@@ -274,7 +282,13 @@ mod tests {
         assert_eq!(Tls::parse("verify_ca").unwrap(), Tls::VerifyCa);
         assert_eq!(Tls::parse("require").unwrap(), Tls::Required);
         assert!(Tls::parse("bogus").is_err());
-        assert_eq!(Connector::new(&spec()).unwrap().tls, Tls::Preferred);
+        // Remote hosts verify the certificate unless the connection string asks for less; local ones stay opportunistic.
+        assert_eq!(Connector::new(&spec()).unwrap().tls, Tls::VerifyIdentity);
+        let local = ConnectionSpec { host: "127.0.0.1".into(), ..spec() };
+        assert_eq!(Connector::new(&local).unwrap().tls, Tls::Preferred);
+        let mut relaxed = spec();
+        relaxed.options.insert("ssl-mode".into(), "REQUIRED".into());
+        assert_eq!(Connector::new(&relaxed).unwrap().tls, Tls::Required);
     }
 
     #[test]

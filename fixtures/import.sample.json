@@ -1,0 +1,123 @@
+[
+  {
+    "alias": "shop-staging",
+    "source": "ads",
+    "origin": "Shop (staging)",
+    "file": "~/Library/Application Support/azuredatastudio/User/settings.json",
+    "engine": "mssql",
+    "environment": "staging",
+    "host": "shop-sql-stg.database.windows.net",
+    "port": 1433,
+    "database": "shop",
+    "user": null,
+    "auth": "entra",
+    "options": {
+      "encrypt": "true"
+    },
+    "note": null,
+    "saved_as": null
+  },
+  {
+    "alias": "shop-prod",
+    "source": "ads",
+    "origin": "Shop (prod)",
+    "file": "~/Library/Application Support/azuredatastudio/User/settings.json",
+    "engine": "mssql",
+    "environment": "production",
+    "host": "shop-sql-prd.database.windows.net",
+    "port": 1433,
+    "database": "shop",
+    "user": null,
+    "auth": "entra",
+    "options": {
+      "encrypt": "true"
+    },
+    "note": null,
+    "saved_as": null
+  },
+  {
+    "alias": "billing",
+    "source": "vscode",
+    "origin": "billing",
+    "file": "~/Library/Application Support/Code/User/settings.json",
+    "engine": "mssql",
+    "environment": "development",
+    "host": "build-box",
+    "port": 1533,
+    "database": "billing",
+    "user": "ci",
+    "auth": "password",
+    "options": {
+      "encrypt": "false",
+      "trustServerCertificate": "true"
+    },
+    "note": null,
+    "saved_as": null
+  },
+  {
+    "alias": "orders-local",
+    "source": "dbeaver",
+    "origin": "orders local",
+    "file": "~/Library/DBeaverData/workspace6/General/.dbeaver/data-sources.json",
+    "engine": "postgres",
+    "environment": "local",
+    "host": "localhost",
+    "port": 5433,
+    "database": "orders",
+    "user": "app",
+    "auth": "password",
+    "options": {
+      "sslmode": "disable"
+    },
+    "note": null,
+    "saved_as": null
+  },
+  {
+    "alias": "events",
+    "source": "dbeaver",
+    "origin": "events",
+    "file": "~/Library/DBeaverData/workspace6/General/.dbeaver/data-sources.json",
+    "engine": "mysql",
+    "environment": "development",
+    "host": "events.example",
+    "port": 3306,
+    "database": "events",
+    "user": "events_ro",
+    "auth": "password",
+    "options": {},
+    "note": null,
+    "saved_as": null
+  },
+  {
+    "alias": "reports",
+    "source": "datagrip",
+    "origin": "reports",
+    "file": "~/DataGripProjects/analytics/.idea/dataSources.xml",
+    "engine": "mssql",
+    "environment": "development",
+    "host": "10.0.0.5",
+    "port": null,
+    "database": "reports",
+    "user": null,
+    "auth": "password",
+    "options": {},
+    "note": "Uses Windows authentication there; Culprit needs a SQL login and asks for its password.",
+    "saved_as": null
+  },
+  {
+    "alias": "shop-localhost",
+    "source": "datagrip",
+    "origin": "shop@localhost",
+    "file": "~/DataGripProjects/analytics/.idea/dataSources.xml",
+    "engine": "postgres",
+    "environment": "local",
+    "host": "localhost",
+    "port": 55432,
+    "database": "demo",
+    "user": "postgres",
+    "auth": "password",
+    "options": {},
+    "note": null,
+    "saved_as": null
+  }
+]

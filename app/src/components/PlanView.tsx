@@ -62,7 +62,8 @@ export function PlanView({ plan, focus, compact }: Props) {
   const hottest = useMemo(() => nodes.reduce((a, b) => (b.self_cost > a.self_cost ? b : a), plan.root), [nodes, plan.root]);
   const target = focus ?? hottest.id;
   const hotPath = useMemo(() => new Set(pathTo(plan.root, target) ?? []), [plan.root, target]);
-  const total = plan.total_cost || plan.root.subtree_cost || 1;
+  // Under a Postgres Limit, children's costs assume they run to completion and add up to more than the root's.
+  const total = Math.max(plan.total_cost, plan.root.subtree_cost, nodes.reduce((s, n) => s + n.self_cost, 0)) || 1;
 
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     const open = new Set<number>(hotPath);
@@ -95,7 +96,7 @@ export function PlanView({ plan, focus, compact }: Props) {
       <div className="plan-head">
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
-          {nodes.length} operators · cost {total.toFixed(total < 10 ? 3 : 1)}
+          {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {(plan.total_cost || plan.root.subtree_cost).toFixed((plan.total_cost || plan.root.subtree_cost) < 10 ? 3 : 1)}
         </span>
         <span className="spacer" />
         {plan.warnings.length > 0 && (

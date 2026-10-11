@@ -87,6 +87,17 @@ pub async fn query_one(conn: &mut Conn, sql: &str) -> Result<Option<Rec>> {
     Ok(query(conn, sql).await?.into_iter().next())
 }
 
+/// EXPLAIN through the binary protocol: a prepared statement can only ever hold one statement, whatever the text says.
+/// Servers that can't prepare EXPLAIN (ER_UNSUPPORTED_PS) get the text protocol; callers have already checked the text
+/// is a single statement.
+pub async fn explain_one(conn: &mut Conn, sql: &str) -> Result<Option<Rec>> {
+    match conn.exec_first::<Row, _, _>(tagged(sql), ()).await {
+        Ok(row) => Ok(row.map(Rec::from_row)),
+        Err(mysql_async::Error::Server(e)) if e.code == 1295 => query_one(conn, sql).await,
+        Err(e) => Err(map_error(e)),
+    }
+}
+
 /// A query with bound parameters (the schema name, mostly), so names are never spliced into SQL.
 pub async fn query_with(conn: &mut Conn, sql: &str, params: Vec<Value>) -> Result<Vec<Rec>> {
     let rows: Vec<Row> = conn.exec(tagged(sql), params).await.map_err(map_error)?;

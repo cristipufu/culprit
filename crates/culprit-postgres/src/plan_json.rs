@@ -20,9 +20,16 @@ const CONSUMED: &[&str] = &[
 pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan> {
     let value: Value = serde_json::from_str(json)
         .map_err(|e| Error::internal(format!("Postgres returned a plan Culprit cannot read: {e}")))?;
-    let top = match &value {
+    let mut plan = from_value(&value, kind, statement)?;
+    plan.raw = Some(json.to_string());
+    Ok(plan)
+}
+
+/// The same, from JSON already parsed (an imported plan, or text EXPLAIN rebuilt as JSON). `raw` is left empty.
+pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Result<Plan> {
+    let top = match value {
         Value::Array(items) => items.first(),
-        Value::Object(_) => Some(&value),
+        Value::Object(_) => Some(value),
         _ => None,
     }
     .and_then(Value::as_object)
@@ -50,7 +57,7 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan
         warnings: Vec::new(),
         index_hints: Vec::new(),
         props,
-        raw: Some(json.to_string()),
+        raw: None,
     };
     plan.compute_self_costs();
     Ok(plan)

@@ -72,6 +72,16 @@ pub fn aws_iam_host_allowed(host: &str) -> bool {
         .any(|suffix| host.len() > suffix.len() && host.ends_with(suffix))
 }
 
+/// A database on this machine (loopback or a local socket). Only these default to opportunistic TLS; every other host
+/// gets a verified certificate unless the connection string explicitly asks for less.
+pub fn is_local_host(host: &str) -> bool {
+    let host = host.trim().trim_end_matches('.').trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") || host.starts_with('/') {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 impl ConnectionSpec {
     pub fn option(&self, key: &str) -> Option<&str> {
         self.options.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v.as_str())
@@ -116,6 +126,18 @@ mod tests {
         assert!(!entra_host_allowed(Engine::Postgres, "shop.database.windows.net"));
         assert!(entra_host_allowed(Engine::Mysql, "shop.mysql.database.azure.com"));
         assert!(!entra_host_allowed(Engine::Mysql, "shop.postgres.database.azure.com"));
+    }
+
+    #[test]
+    fn only_loopback_is_local() {
+        for host in
+            ["localhost", "127.0.0.1", "127.8.0.1", "::1", "[::1]", "api.localhost", "/var/run/mysqld/mysqld.sock"]
+        {
+            assert!(is_local_host(host), "{host}");
+        }
+        for host in ["db.example.com", "10.0.0.5", "192.168.1.10", "localhost.example.com", "0.0.0.0"] {
+            assert!(!is_local_host(host), "{host}");
+        }
     }
 
     #[test]

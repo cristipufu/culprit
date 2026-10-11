@@ -63,6 +63,7 @@ Query Store keeps history by time, so Overview, Queries and Schema carry a **Las
 - Filter chips: All · Indexes · Queries · Maintenance · Config · Health, with counts.
 - Ranked list. Each row: impact bar, severity dot, human headline, subject (table / query), confidence.
 - Detail pane on the right; the first finding is selected on open. `j`/`k` move, `Enter` focuses detail.
+- Below the vitals, **database time per hour** across the window (a step chart; hover for each bucket's time, runs and range). Query Store's intervals on SQL Server; for sources with running totals only (`pg_stat_statements`, `performance_schema`, the plan cache) the buckets are the gaps between Culprit's own scans, so a trend appears from the second scan on and the chart says "between N scans".
 - Findings whose queries stopped running (silent for 20× their usual interval, at least an hour, before the window ends) sink into a dimmed **Stopped running** group with "Last ran 7 h ago". A multi-day window otherwise keeps ranking yesterday's already-fixed problem first.
 
 ### Finding detail (the heart of the product)
@@ -83,7 +84,8 @@ Verify             how to confirm: re-scan after deploy, what-if plan, run on al
 ### Queries
 
 - Dense table: share of DB time (bar), total time, executions, average, max, rows/exec, reads/exec, CPU, plan count. Sort by any column, `/` to filter.
-- Query detail: formatted SQL, numbers, linked findings, and the plan.
+- A **Trend** sparkline per query: average duration per run across the window, red when the `regression` check flagged it.
+- Query detail: numbers, an **Over time** chart (average per run as a line, runs as bars, dashed markers where a new plan first ran), linked findings, formatted SQL and the plan.
 - SQL Server: plan history from Query Store (several plans for one query is the regression story). Postgres: generic plan via `EXPLAIN (GENERIC_PLAN)` on 16+.
 
 ### Plan viewer
@@ -104,6 +106,8 @@ An indented tree, read top-down like a profiler call tree, instead of a box-and-
 ### Schema
 
 A health view, not a browser: tables by size with health badges (no clustered index, stale statistics, dead rows), indexes with reads vs writes, size, last use, unused / duplicate flags.
+
+**Compare with…** shows environment drift against another connection of the same engine, from both latest scans: indexes missing on one side (with the `CREATE INDEX` to add it, labelled with the connection it is for; *Open in editor* only when that is the current connection), the same index under different names, tables and columns present on one side or typed differently, and settings and versions that differ. Indexes match by table, key columns, included columns, uniqueness and filter, never by name.
 
 ### Editor
 
@@ -134,11 +138,22 @@ Fuzzy search over views, findings, queries, tables, connections and actions (re-
 | Explain (estimated) | Allowed | Allowed |
 | Explain Analyze / Run | Explicit confirmation each time | Allowed |
 | Kill session | Not available | Confirmation |
+| Coding agents (`culprit mcp`) | Statistics and estimated plans by default; statements only with `query` access and a per-statement approval in the app | Same |
 | Fix scripts | Copied, never applied | Copied, never applied (v1) |
 
 Postgres sessions: `default_transaction_read_only=on`, `statement_timeout`, `lock_timeout`, `application_name=culprit`.
 SQL Server sessions: `ApplicationIntent=ReadOnly`, `SET LOCK_TIMEOUT`, `SET DEADLOCK_PRIORITY LOW`, `READ UNCOMMITTED` for statistics views.
 Expensive collectors (exact bloat, physical index stats) are opt-in.
+
+### Coding agents
+
+Agents connect through `culprit mcp` (stdio, so no port and no token). What they may do is a per-connection setting, `off | stats | query`, defaulting to `stats`: findings, statistics, schema, live sessions and estimated plans, nothing that runs application SQL. `query` adds `run_query`, which:
+
+1. accepts only a single read-only statement (engine-aware classifier, `culprit_core::sql`);
+2. queues an approval request in the data directory; the desktop app polls the queue while open (which also tells the server someone can answer), shows the agent, the connection, its environment and the exact SQL in a modal with Deny focused, and denies automatically after 60 seconds;
+3. runs only on a decision whose hash matches the connection and SQL the agent sent, inside a transaction that is never committed (read-only on Postgres and MySQL), at most 200 rows, cancelled after 30 seconds.
+
+Every tool call is appended to a private `audit.jsonl`, with the SQL text for `explain` and `run_query`. Tool descriptions and the server instructions tell agents that database-sourced text is data, not instructions.
 
 ## What it finds (v0.1)
 
@@ -153,6 +168,7 @@ Expensive collectors (exact bloat, physical index stats) are opt-in.
 | `chatty-query` | both | N+1 shape: very high executions, ~1 row each, tiny duration |
 | `plan-warnings` | SQL Server | Implicit conversions, spills, key lookups, no join predicate in cached plans |
 | `plan-regression` | SQL Server | Query Store: a newer plan is markedly slower than a previous one |
+| `regression` | all | The query's average duration stepped up at least 2× (and 2 ms) at a point in the timeline and stayed up; says when, and the plan change if one coincides (then it replaces `plan-regression` for that query, with the force-plan fix) |
 | `unstable-query` | SQL Server | Same plan, wildly different durations (parameter sensitivity) |
 | `stale-stats` | both | Statistics with many modifications since last update |
 | `heap-table` | SQL Server | Large tables without a clustered index |
@@ -170,14 +186,16 @@ crates/
   culprit-mssql      Provider for SQL Server (tiberius): probe, snapshot, explain, live
   culprit-postgres   Provider for Postgres (tokio-postgres): same contract
   culprit-engine     connection store (TOML + OS keychain), connection-string parsing,
-                     provider registry, scan orchestration, snapshot storage
+                     provider registry, scan orchestration, snapshot storage,
+                     agent access, approval queue, audit log
+  culprit-mcp        MCP server for coding agents (rmcp, stdio) and `culprit agent init`
   culprit-cli        `culprit` binary
 app/
   src/               React UI
   src-tauri/         Tauri shell; commands call culprit-engine
 ```
 
-**Checks run on snapshots, never on live connections.** A snapshot is a normalized, serializable picture of the database (queries, plans, tables, indexes, foreign keys, waits, settings). This makes every check a pure, unit-testable function, lets analysis run offline, lets a snapshot be shared with someone who has no database access, and makes the app, the CLI and future integrations (MCP) produce identical results.
+**Checks run on snapshots, never on live connections.** A snapshot is a normalized, serializable picture of the database (queries, plans, tables, indexes, foreign keys, waits, settings). This makes every check a pure, unit-testable function, lets analysis run offline, lets a snapshot be shared with someone who has no database access, and makes the app, the CLI and the MCP server produce identical results.
 
 **Pluggable at the seams that matter.**
 
@@ -201,16 +219,25 @@ app/
 ```
 culprit conn add <name> --url <url> | --ado <ado> [--env production|staging|development|local] [--auth password|entra]
 culprit conn list | test <name> | rm <name> | rename <old> <new>
-culprit conn discover [--match <text>]… [--save] [--include-production]   Azure SQL via Resource Graph
+culprit conn discover [--cloud azure|aws] [--match <text>]… [--save] [--include-production]
+                                      Azure SQL + PostgreSQL/MySQL flexible servers (Resource Graph), RDS/Aurora
+culprit conn import [--from ads|vscode|dbeaver|datagrip] [--file <path>]… [--match <text>]… [--dry-run]
+                                      metadata only; never passwords or credential stores
+culprit auth logout                   forget device-code Entra sign-ins
 culprit doctor <conn>                 server, capabilities, permissions, locked checks
 culprit scan <conn>                   snapshot + findings (saved)
 culprit findings [<conn>]             findings from the latest snapshot
 culprit show <finding-id>             one finding in full, including the agent brief
 culprit top <conn> [--by time|cpu|reads|executions] [-n 20]
 culprit explain <conn> (--sql <sql> | --file <path> | --query-id <id>) [--analyze]
-culprit live <conn>
+culprit live <conn> [--cancel <id> | --kill <id>]   actions refused on production
+culprit drift <a> <b>                 indexes, columns, settings that differ between two connections (or report files)
 culprit checks                        every check with id, engines, requires
 culprit analyze <file>                re-run the checks on a saved snapshot or report, offline
+culprit mcp [--connection <name>]…    MCP server on stdio for coding agents
+culprit conn set <name> --agent off|stats|query
+culprit audit [--limit N]             what agents did through `culprit mcp`
+culprit agent init [--dir .] [--connection <name>]… [--no-mcp]
 ```
 
 Conventions:
@@ -224,4 +251,4 @@ Conventions:
 
 ## Out of scope for v0.1
 
-MySQL, applying fixes from the app, HypoPG what-if, prod ⇄ alpha pairing and plan diff, scheduled scans, MCP server, declarative checks. The architecture leaves room for each.
+MySQL, applying fixes from the app, HypoPG what-if, prod ⇄ alpha pairing and plan diff, scheduled scans, declarative checks. The architecture leaves room for each.

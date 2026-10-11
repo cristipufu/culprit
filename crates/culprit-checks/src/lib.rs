@@ -1,9 +1,11 @@
 mod brief;
 mod config;
+pub mod drift;
 mod indexes;
 mod maintenance;
 mod queries;
 pub(crate) mod support;
+mod trends;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use culprit_core::{
 };
 
 pub use brief::agent_brief;
+pub use drift::drift;
 
 struct Builtin {
     info: fn() -> CheckInfo,
@@ -41,6 +44,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Builtin { info: queries::chatty_query_info, run: queries::chatty_query },
         Builtin { info: queries::plan_warnings_info, run: queries::plan_warnings },
         Builtin { info: queries::plan_regression_info, run: queries::plan_regression },
+        Builtin { info: trends::regression_info, run: trends::regression },
         Builtin { info: queries::unstable_query_info, run: queries::unstable_query },
         Builtin { info: queries::temp_spill_info, run: queries::temp_spill },
         Builtin { info: maintenance::stale_stats_info, run: maintenance::stale_stats },
@@ -144,6 +148,14 @@ fn dedupe(findings: &mut Vec<Finding>) {
             .any(|(t, keys)| *t == table && fk_cols.iter().all(|c| keys.iter().take(fk_cols.len()).any(|k| k == c)))
     });
 
+    // A regression finding says when the query got slower and carries the plan change; the plan-only finding repeats it.
+    let regressed: BTreeSet<String> = findings
+        .iter()
+        .filter(|f| f.check == "regression")
+        .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
+        .collect();
+    findings.retain(|f| f.check != "plan-regression" || !f.queries.iter().any(|q| regressed.contains(&q.id)));
+
     let explained: BTreeSet<String> = findings
         .iter()
         .filter(|f| !matches!(f.check.as_str(), "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats"))
@@ -204,13 +216,14 @@ fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
         let silence = end - last;
         (silence >= (interval * QUIET_INTERVALS).max(MIN_QUIET_SECONDS)).then_some((silence, last_text))
     };
-    const QUERY_DRIVEN: [&str; 7] = [
+    const QUERY_DRIVEN: [&str; 8] = [
         "plan-warnings",
         "filtered-scan",
         "heavy-query",
         "chatty-query",
         "unstable-query",
         "plan-regression",
+        "regression",
         "temp-spill",
     ];
     for f in findings.iter_mut().filter(|f| !f.queries.is_empty() && QUERY_DRIVEN.contains(&f.check.as_str())) {

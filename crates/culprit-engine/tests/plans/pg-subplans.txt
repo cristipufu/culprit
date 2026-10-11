@@ -1,0 +1,53 @@
+                                                                         QUERY PLAN                                                                         
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+ GroupAggregate  (cost=44218.60..44218.62 rows=1 width=12) (actual time=0.048..0.050 rows=0.00 loops=1)
+   Output: customers.region, count(*)
+   Group Key: customers.region
+   Buffers: shared hit=3 read=3
+   I/O Timings: shared read=0.032
+   InitPlan 1
+     ->  Finalize Aggregate  (cost=44201.85..44201.86 rows=1 width=4) (never executed)
+           Output: min(orders_1.customer_id)
+           ->  Gather  (cost=44201.64..44201.85 rows=2 width=4) (never executed)
+                 Output: (PARTIAL min(orders_1.customer_id))
+                 Workers Planned: 2
+                 Workers Launched: 0
+                 ->  Partial Aggregate  (cost=43201.64..43201.65 rows=1 width=4) (never executed)
+                       Output: PARTIAL min(orders_1.customer_id)
+                       ->  Parallel Seq Scan on public.orders orders_1  (cost=0.00..41118.31 rows=833331 width=4) (never executed)
+                             Output: orders_1.id, orders_1.customer_id, orders_1.status, orders_1.total, orders_1.note, orders_1.created_at
+   ->  Sort  (cost=16.74..16.74 rows=1 width=4) (actual time=0.047..0.048 rows=0.00 loops=1)
+         Output: customers.region
+         Sort Key: customers.region
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=3 read=3
+         I/O Timings: shared read=0.032
+         ->  Nested Loop  (cost=8.70..16.73 rows=1 width=4) (actual time=0.039..0.039 rows=0.00 loops=1)
+               Output: customers.region
+               Inner Unique: true
+               Buffers: shared read=3
+               I/O Timings: shared read=0.032
+               ->  HashAggregate  (cost=8.28..8.29 rows=1 width=4) (actual time=0.039..0.039 rows=0.00 loops=1)
+                     Output: orders.customer_id
+                     Group Key: orders.customer_id
+                     Batches: 1  Memory Usage: 32kB
+                     Buffers: shared read=3
+                     I/O Timings: shared read=0.032
+                     ->  Index Scan using orders_status_idx on public.orders  (cost=0.43..8.27 rows=1 width=4) (actual time=0.038..0.038 rows=0.00 loops=1)
+                           Output: orders.id, orders.customer_id, orders.status, orders.total, orders.note, orders.created_at
+                           Index Cond: (orders.status = 'returned'::text)
+                           Index Searches: 1
+                           Buffers: shared read=3
+                           I/O Timings: shared read=0.032
+               ->  Index Scan using customers_pkey on public.customers  (cost=0.42..8.44 rows=1 width=8) (never executed)
+                     Output: customers.id, customers.email, customers.name, customers.region, customers.created_at
+                     Index Cond: ((customers.id = orders.customer_id) AND (customers.id > (InitPlan 1).col1))
+                     Index Searches: 0
+ Query Identifier: 3745480306935942570
+ Planning:
+   Buffers: shared hit=289 read=1
+   I/O Timings: shared read=0.016
+ Planning Time: 0.383 ms
+ Execution Time: 0.096 ms
+(49 rows)
+

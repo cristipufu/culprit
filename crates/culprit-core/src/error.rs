@@ -14,6 +14,8 @@ pub enum ErrorCode {
     Unsupported,
     QueryFailed,
     Internal,
+    /// The statement changes data on a production connection: ask the person, then retry with confirmation.
+    ConfirmationRequired,
 }
 
 #[derive(Serialize, TS, Clone, Debug, thiserror::Error)]

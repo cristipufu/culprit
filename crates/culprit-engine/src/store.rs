@@ -1,15 +1,13 @@
-//! Saved connections: metadata in `connections.toml`, secrets in the OS keychain.
+//! Saved connections: metadata in `connections.toml`. Secrets live in a `secrets::SecretStore` (the OS keychain).
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use culprit_core::{AuthKind, ConnectionSpec, Engine, Environment, Error, ErrorCode, Result};
+use culprit_core::{AuthKind, ConnectionSpec, Engine, Environment, Error, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::private_fs;
-
-const KEYCHAIN_SERVICE: &str = "culprit";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct StoredConnection {
@@ -32,6 +30,9 @@ pub struct StoredConnection {
     pub password_saved: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
+    /// What coding agents may do with this connection (`culprit mcp`); `stats` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<crate::agent::AgentAccess>,
 }
 
 impl StoredConnection {
@@ -160,11 +161,7 @@ impl Store {
         let connection =
             file.connections.remove(old).ok_or_else(|| Error::not_found(format!("No connection named '{old}'")))?;
         file.connections.insert(new.to_string(), connection);
-        if let Some(secret) = get_secret(old)? {
-            set_secret(new, &secret)?;
-        }
-        self.save(&file)?;
-        delete_secret(old)
+        self.save(&file)
     }
 
     pub fn remove(&self, name: &str) -> Result<()> {
@@ -172,36 +169,10 @@ impl Store {
         if file.connections.remove(name).is_none() {
             return Err(Error::not_found(format!("No connection named '{name}'")));
         }
-        self.save(&file)?;
-        delete_secret(name)
+        self.save(&file)
     }
 }
 
 fn io_error(path: &Path, error: std::io::Error) -> Error {
     Error::internal(format!("{}: {error}", path.display()))
-}
-
-fn keychain_error(error: keyring::Error) -> Error {
-    Error::new(ErrorCode::Internal, format!("OS keychain: {error}"))
-}
-
-pub fn set_secret(name: &str, secret: &str) -> Result<()> {
-    keyring::Entry::new(KEYCHAIN_SERVICE, name).and_then(|e| e.set_password(secret)).map_err(keychain_error)
-}
-
-pub fn get_secret(name: &str) -> Result<Option<String>> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(keychain_error)?;
-    match entry.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(keychain_error(e)),
-    }
-}
-
-pub fn delete_secret(name: &str) -> Result<()> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, name).map_err(keychain_error)?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(keychain_error(e)),
-    }
 }

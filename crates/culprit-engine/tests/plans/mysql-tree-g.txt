@@ -1,0 +1,6 @@
+*************************** 1. row ***************************
+EXPLAIN: -> Limit: 20 row(s)  (cost=261703 rows=20)
+    -> Nested loop inner join  (cost=261703 rows=217916)
+        -> Index lookup on o using ix_orders_status_created (status='shipped') (reverse)  (cost=25188 rows=217916)
+        -> Single-row index lookup on c using PRIMARY (id=o.customer_id)  (cost=0.985 rows=1)
+

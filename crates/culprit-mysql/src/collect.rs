@@ -11,7 +11,7 @@ use mysql_async::{Conn, Value};
 
 use crate::connect::{Connector, Scope, TAG};
 use crate::plan_json;
-use crate::rows::{Rec, query, query_one, query_with, tagged};
+use crate::rows::{Rec, explain_one, query, query_one, query_with, tagged};
 
 const PS_GRANT: &str = "GRANT SELECT ON performance_schema.* TO";
 const PS_ENABLE: &str = "Set performance_schema = ON in the server configuration and restart MySQL.";
@@ -419,6 +419,7 @@ async fn collect_workload(
             total_executions,
             query_count,
             queries,
+            timeline: None,
         },
         plan_note,
     }))
@@ -450,6 +451,7 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
             plans: Vec::new(),
             plan: None,
             waits: Vec::new(),
+            trend: None,
         },
         sample: r.text("query_sample_text"),
         rows_examined: r.number("rows_examined").unwrap_or(0.0),
@@ -508,12 +510,15 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
     let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
     let (mut planned, mut skipped, mut failed) = (0, 0, 0);
     for digest in queries.iter_mut().take(limit) {
-        let Some(sample) = digest.sample.as_deref().filter(|s| plannable(s)) else {
+        // Sample text was written by whoever ran the statement: it must lex as exactly one statement, and EXPLAIN goes
+        // through a prepared statement, which can't hold a second one.
+        let sample = digest.sample.as_deref().filter(|s| plannable(s));
+        let Some(sample) = sample.and_then(|s| culprit_core::sql::single_statement(s, Engine::Mysql).ok()) else {
             skipped += 1;
             continue;
         };
         let sql = format!("EXPLAIN FORMAT=JSON {sample}");
-        match query_one(&mut conn, &sql).await {
+        match explain_one(&mut conn, &sql).await {
             Ok(Some(row)) => {
                 let json = row.text("explain").or_else(|| row.text("EXPLAIN")).unwrap_or_default();
                 match plan_json::parse(&json, PlanKind::Estimated, Some(sample), Some(database)) {
@@ -938,6 +943,7 @@ mod tests {
                 plans: Vec::new(),
                 plan: None,
                 waits: Vec::new(),
+                trend: None,
             },
             sample: None,
             rows_examined: examined,

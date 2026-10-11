@@ -1,0 +1,60 @@
+{
+  "limit": 20,
+  "query": "/* select#1 */ select `o`.`id` AS `id`,`c`.`name` AS `name`,`o`.`total` AS `total` from `shop`.`orders` `o` join `shop`.`customers` `c` where ((`c`.`id` = `o`.`customer_id`) and (`o`.`status` = 'shipped')) order by `o`.`created_at` desc limit 20",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "alias": "o",
+          "reverse": true,
+          "covering": false,
+          "operation": "Index lookup on o using ix_orders_status_created (status='shipped') (reverse)",
+          "index_name": "ix_orders_status_created",
+          "table_name": "orders",
+          "access_type": "index",
+          "schema_name": "shop",
+          "used_columns": [
+            "id",
+            "customer_id",
+            "status",
+            "total",
+            "created_at"
+          ],
+          "estimated_rows": 217916.0,
+          "lookup_condition": "status='shipped'",
+          "index_access_type": "index_lookup",
+          "estimated_total_cost": 25187.8893666473
+        },
+        {
+          "alias": "c",
+          "covering": false,
+          "operation": "Single-row index lookup on c using PRIMARY (id=o.customer_id)",
+          "index_name": "PRIMARY",
+          "table_name": "customers",
+          "access_type": "index",
+          "schema_name": "shop",
+          "used_columns": [
+            "id",
+            "name"
+          ],
+          "estimated_rows": 1.0,
+          "lookup_condition": "id=o.customer_id",
+          "index_access_type": "index_lookup",
+          "estimated_total_cost": 0.9853520213924173
+        }
+      ],
+      "join_type": "inner join",
+      "operation": "Nested loop inner join",
+      "access_type": "join",
+      "estimated_rows": 217916.0,
+      "join_algorithm": "nested_loop",
+      "estimated_total_cost": 261703.3604603973
+    }
+  ],
+  "operation": "Limit: 20 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "limit_offset": 0,
+  "estimated_rows": 20.0,
+  "estimated_total_cost": 261703.3604603973
+}

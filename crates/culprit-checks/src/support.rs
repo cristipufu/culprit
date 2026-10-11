@@ -413,6 +413,7 @@ mod tests {
             plans: Vec::new(),
             plan: None,
             waits: Vec::new(),
+            trend: None,
         }
     }
 }

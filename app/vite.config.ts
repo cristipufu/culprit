@@ -6,6 +6,9 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // CodeMirror breaks when two copies of its core load (instanceof checks); keep one of each.
+  resolve: { dedupe: ["@codemirror/state", "@codemirror/view", "@codemirror/language", "@codemirror/autocomplete"] },
+  optimizeDeps: { include: ["codemirror", "@codemirror/state", "@codemirror/view", "@codemirror/lang-sql", "@codemirror/autocomplete"] },
   server: {
     port: 1420,
     strictPort: true,

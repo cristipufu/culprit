@@ -1,5 +1,5 @@
 import { Flame, Maximize2, Minus, Plus, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { NodeKind } from "../gen/NodeKind";
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
@@ -26,6 +26,18 @@ const KIND: Record<NodeKind, { label: string; color: string }> = {
   compute: { label: "Compute", color: "var(--text-3)" },
   other: { label: "", color: "var(--text-3)" },
 };
+
+/** How a node differs from the other plan in a comparison. */
+export type Mark = "changed" | "added" | "removed";
+
+const MARK_LABEL: Record<Mark, string> = { changed: "changed", added: "only here", removed: "only here" };
+
+/** What operator shares are measured against: the plan's cost, or the sum of operator costs when that is larger
+ * (under a Postgres Limit the children's costs assume they run to completion). */
+export function costBasis(plan: Plan): number {
+  const own = allNodes(plan.root).reduce((s, n) => s + n.self_cost, 0);
+  return Math.max(plan.total_cost, plan.root.subtree_cost, own) || 1;
+}
 
 type Box = { node: PlanNode; x: number; y: number; depth: number; folded: number };
 type Fold = { id: string; parent: number; count: number; share: number; x: number; y: number };
@@ -105,7 +117,7 @@ const px = (x: number) => PAD + x * (CARD_W + GAP_X);
 const py = (y: number) => PAD + 22 + y * (CARD_H + GAP_Y);
 
 export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) => void }) {
-  const total = plan.total_cost || plan.root.subtree_cost || 1;
+  const total = costBasis(plan);
   const top = allNodes(plan.root)
     .filter((n) => n.self_cost > 0)
     .sort((a, b) => b.self_cost - a.self_cost)
@@ -132,14 +144,31 @@ export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) =
   );
 }
 
-export function PlanDiagram({ plan, focus }: { plan: Plan; focus?: number | null }) {
-  const total = plan.total_cost || plan.root.subtree_cost || 1;
+export function PlanDiagram(props: {
+  plan: Plan;
+  focus?: number | null;
+  /** Comparison marks by node id; marked nodes are never folded away. */
+  marks?: Map<number, Mark>;
+  /** Select (and reveal) this node when it changes, e.g. a change picked in the comparison. */
+  selectedId?: number | null;
+  onSelect?: (id: number) => void;
+  initialZoom?: number;
+  /** Shown before the operator count, e.g. "A" in a comparison. */
+  badge?: string;
+}) {
+  const { plan, focus, marks, selectedId, onSelect, initialZoom, badge } = props;
+  const total = costBasis(plan);
+  const planCost = plan.total_cost || plan.root.subtree_cost;
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
   const hottest = useMemo(() => nodes.reduce((a, b) => (b.self_cost > a.self_cost ? b : a), plan.root), [nodes, plan.root]);
-  const target = focus ?? hottest.id;
-  const [expanded, setExpanded] = useState<Set<number>>(() => pathTo(plan.root, target));
+  const target = selectedId ?? focus ?? hottest.id;
+  const [expanded, setExpanded] = useState<Set<number>>(() => {
+    const open = pathTo(plan.root, target);
+    marks?.forEach((_, id) => pathTo(plan.root, id).forEach((n) => open.add(n)));
+    return open;
+  });
   const [selected, setSelected] = useState<number>(target);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(initialZoom ?? 1);
   const hot = useMemo(() => pathTo(plan.root, target), [plan.root, target]);
   const { boxes, folds, width, height } = useMemo(() => layout(plan.root, total, expanded), [plan.root, total, expanded]);
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
@@ -151,6 +180,11 @@ export function PlanDiagram({ plan, focus }: { plan: Plan; focus?: number | null
     setSelected(id);
     setExpanded((prev) => new Set([...prev, ...pathTo(plan.root, id)]));
   };
+
+  useEffect(() => {
+    if (selectedId != null && nodes.some((n) => n.id === selectedId)) pick(selectedId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const edges: { from: Box | Fold; to: Box; rows: number; hot: boolean; key: string }[] = [];
   boxes.forEach((b) => {
@@ -167,9 +201,10 @@ export function PlanDiagram({ plan, focus }: { plan: Plan; focus?: number | null
   return (
     <div className="plan">
       <div className="plan-head">
+        {badge && <span className="side-badge">{badge}</span>}
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
-          {nodes.length} operators · cost {total.toFixed(total < 10 ? 3 : 1)}
+          {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {planCost.toFixed(planCost < 10 ? 3 : 1)}
         </span>
         <span className="spacer" />
         {plan.warnings.length > 0 && (
@@ -189,7 +224,13 @@ export function PlanDiagram({ plan, focus }: { plan: Plan; focus?: number | null
           </button>
         </span>
       </div>
-      <CostStrip plan={plan} onPick={pick} />
+      <CostStrip
+        plan={plan}
+        onPick={(id) => {
+          pick(id);
+          onSelect?.(id);
+        }}
+      />
       <div className="diagram-scroll">
         <div className="diagram" style={{ width: width * zoom, height: height * zoom }}>
           <div style={{ width, height, transform: `scale(${zoom})`, transformOrigin: "0 0", position: "relative" }}>
@@ -232,7 +273,11 @@ export function PlanDiagram({ plan, focus }: { plan: Plan; focus?: number | null
                 hot={hot.has(b.node.id)}
                 hottest={b.node.id === hottest.id && b.node.self_cost / total >= 0.05}
                 selected={b.node.id === selected}
-                onSelect={() => setSelected(b.node.id)}
+                mark={marks?.get(b.node.id)}
+                onSelect={() => {
+                  setSelected(b.node.id);
+                  onSelect?.(b.node.id);
+                }}
               />
             ))}
             {folds.map((f) => (
@@ -265,9 +310,10 @@ function PlanCard(props: {
   hot: boolean;
   hottest: boolean;
   selected: boolean;
+  mark?: Mark;
   onSelect: () => void;
 }) {
-  const { node, share, x, y, hot, hottest, selected, onSelect } = props;
+  const { node, share, x, y, hot, hottest, selected, mark, onSelect } = props;
   const kind = KIND[node.kind];
   const est = node.est_rows * Math.max(1, node.est_executions);
   const act = node.act_rows;
@@ -276,7 +322,7 @@ function PlanCard(props: {
   const table = node.object?.split(".").pop();
   return (
     <button
-      className={`plan-card ${selected ? "sel" : ""} ${hot ? "hot" : ""}`}
+      className={`plan-card ${selected ? "sel" : ""} ${hot ? "hot" : ""} ${mark ? `mark-${mark}` : ""}`}
       style={{ left: x, top: y, width: CARD_W, height: CARD_H, ["--heat" as string]: heat(share) }}
       onClick={onSelect}
       title={node.predicate ? `filter ${shortPredicate(node.predicate)}` : node.seek_predicate ? `seek ${shortPredicate(node.seek_predicate)}` : node.op}
@@ -286,6 +332,7 @@ function PlanCard(props: {
           {kind.label || node.op}
         </span>
         <span className="pc-share">
+          {mark && <span className={`pc-mark ${mark}`}>{MARK_LABEL[mark]}</span>}
           {hottest && <Flame size={12} color="var(--heat-4)" />}
           {percent(share)}
         </span>

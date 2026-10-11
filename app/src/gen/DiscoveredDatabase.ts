@@ -6,7 +6,7 @@ import type { Environment } from "./Environment";
 
 export type DiscoveredDatabase = { alias: string, cloud: Cloud, engine: Engine, environment: Environment, 
 /**
- * Azure SQL server name, or RDS instance / Aurora cluster identifier.
+ * Azure SQL or flexible server name, or RDS instance / Aurora cluster identifier.
  */
 server: string, host: string, 
 /**

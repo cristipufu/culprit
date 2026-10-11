@@ -7,6 +7,7 @@ import type { WaitStat } from "../gen/WaitStat";
 import { ago, bytes, count, duration, percent, windowLabel } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { setState, useStore } from "../lib/store";
+import { trendNote, WorkloadTrend } from "../components/Trends";
 import { FindingDetail } from "./FindingDetail";
 
 const CATEGORY_LABEL: Record<Category, string> = {
@@ -175,6 +176,7 @@ function Header({ report }: { report: Report }) {
           </div>
         </div>
       </div>
+      {w?.timeline && w.timeline.starts.length >= 2 ? <WorkloadTrend timeline={w.timeline} /> : w && trendNote(w) ? <p className="trend-note">{trendNote(w)}</p> : null}
     </div>
   );
 }

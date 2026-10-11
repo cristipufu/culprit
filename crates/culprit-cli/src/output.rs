@@ -3,10 +3,10 @@ use std::path::Path;
 
 use clap::ValueEnum;
 use culprit_core::{
-    AuthKind, CheckInfo, Error, Finding, LiveState, LockedCheck, Plan, PlanNode, QueryStat, Report, ResultSet,
-    ServerInfo, Severity, format,
+    AuthKind, ChangeKind, CheckInfo, Drift, DriftKind, DriftPresence, Error, Finding, LiveState, LockedCheck, Plan,
+    PlanDiff, PlanNode, QueryStat, Report, ResultSet, ServerInfo, Severity, format,
 };
-use culprit_engine::{ConnectionInfo, DiscoveredDatabase};
+use culprit_engine::{ConnectionInfo, DiscoveredDatabase, ImportCandidate};
 use serde_json::{Value, json};
 
 use crate::TopBy;
@@ -43,6 +43,15 @@ impl Out {
             return text.to_string();
         }
         format!("\x1b[{}m{text}\x1b[0m", style.0)
+    }
+
+    pub fn format(&self) -> Format {
+        self.format
+    }
+
+    /// Print a value as JSON (for commands whose output is already the right shape).
+    pub fn value(&self, value: &Value) {
+        self.json(value)
     }
 
     fn json(&self, value: &Value) {
@@ -157,6 +166,54 @@ impl Out {
             println!(
                 "{}",
                 self.paint(DIM, "Add --save to save the unsaved ones (production only with --include-production).")
+            );
+        }
+    }
+
+    pub fn imported(&self, found: &[ImportCandidate], saved: &[ConnectionInfo], dry_run: bool) {
+        if self.format == Format::Json {
+            return self.json(&json!({ "connections": found, "saved": saved, "dry_run": dry_run }));
+        }
+        if found.is_empty() {
+            println!(
+                "No connections found in Azure Data Studio, VS Code, DBeaver or DataGrip. Point --file at a settings file."
+            );
+            return;
+        }
+        for c in found {
+            let env = format!("{:?}", c.environment).to_lowercase();
+            let status = match (&c.saved_as, saved.iter().any(|s| s.name == c.alias)) {
+                (Some(name), _) => self.paint(DIM, &format!("already saved as {name}")),
+                (None, true) => self.paint(GREEN, "imported"),
+                (None, false) => String::new(),
+            };
+            let target = format!(
+                "{}{}{}",
+                c.host,
+                c.port.map(|p| format!(":{p}")).unwrap_or_default(),
+                c.database.as_deref().map(|d| format!("/{d}")).unwrap_or_default()
+            );
+            println!(
+                "{}  {}  {:<10}  {}  {}  {}",
+                self.paint(BOLD, &format!("{:<28}", c.alias)),
+                self.paint(DIM, &format!("{:<11}", env)),
+                c.engine.label(),
+                target,
+                self.paint(DIM, &format!("({})", c.source.label())),
+                status
+            );
+            if let Some(note) = &c.note {
+                println!("    {}", self.paint(YELLOW, note));
+            }
+        }
+        if dry_run && found.iter().any(|c| c.saved_as.is_none()) {
+            println!();
+            println!("{}", self.paint(DIM, "Nothing saved (--dry-run). Run again without it to import."));
+        } else if saved.iter().any(|s| s.auth == AuthKind::Password) {
+            println!();
+            println!(
+                "{}",
+                self.paint(DIM, "Passwords were not imported; set each once with `culprit conn set-password <name>`.")
             );
         }
     }
@@ -393,6 +450,42 @@ impl Out {
         }
     }
 
+    pub fn plan_diff(&self, diff: &PlanDiff, name_a: &str, name_b: &str) {
+        if self.format == Format::Json {
+            let mut value = json!(diff);
+            value["a"] = json!(name_a);
+            value["b"] = json!(name_b);
+            return self.json(&value);
+        }
+        for headline in &diff.headlines {
+            println!("{}", self.paint(BOLD, headline));
+        }
+        let cost = |c: f64| if c < 10.0 { format!("{c:.3}") } else { format::count(c) };
+        println!(
+            "{}",
+            self.paint(
+                DIM,
+                &format!("A = {name_a} · cost {}   B = {name_b} · cost {}", cost(diff.cost_a), cost(diff.cost_b))
+            )
+        );
+        if diff.changes.is_empty() {
+            return;
+        }
+        println!();
+        for change in &diff.changes {
+            let mark = match change.kind {
+                ChangeKind::Access | ChangeKind::Operator => self.paint(YELLOW, "~"),
+                ChangeKind::Added => self.paint(GREEN, "+"),
+                ChangeKind::Removed => self.paint(RED, "-"),
+                ChangeKind::Cost => self.paint(BLUE, "$"),
+                ChangeKind::Rows => self.paint(BLUE, "#"),
+                ChangeKind::Warning => self.paint(YELLOW, "!"),
+            };
+            let detail = change.detail.as_deref().map(|d| self.paint(DIM, &format!("  {d}"))).unwrap_or_default();
+            println!("{mark} {}{detail}", change.title);
+        }
+    }
+
     pub fn live(&self, live: &LiveState) {
         if self.format == Format::Json {
             return self.json(&json!(live));
@@ -438,18 +531,79 @@ impl Out {
                 .collect();
             println!("{}", cells.join("\t"));
         }
-        println!(
-            "{}",
-            self.paint(
-                DIM,
-                &format!(
-                    "{} rows{} · {}",
-                    rs.rows.len(),
-                    if rs.truncated { " (truncated)" } else { "" },
-                    format::duration(rs.elapsed_ms)
-                )
-            )
-        );
+        let tail = if rs.columns.is_empty() {
+            rs.messages.join(" ")
+        } else {
+            format!("{} rows{}", rs.rows.len(), if rs.truncated { " (truncated)" } else { "" })
+        };
+        println!("{}", self.paint(DIM, &format!("{tail} · {}", format::duration(rs.elapsed_ms))));
+    }
+
+    pub fn saved_queries(&self, queries: &[culprit_engine::saved::SavedQuery]) {
+        if self.format == Format::Json {
+            return self.json(&json!({ "queries": queries }));
+        }
+        if queries.is_empty() {
+            println!("No saved queries yet. Save one with `culprit saved add <name> --sql \"…\"`.");
+        }
+        for q in queries {
+            let first = q.sql.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            let target = q.connection.as_deref().map(|c| format!("  ·  {c}")).unwrap_or_default();
+            println!("{}{}", self.paint(BOLD, &q.name), self.paint(DIM, &target));
+            let first: String = first.chars().take(100).collect();
+            println!("  {}", self.paint(DIM, &first));
+        }
+    }
+
+    pub fn saved_query(&self, query: &culprit_engine::saved::SavedQuery) {
+        if self.format == Format::Json {
+            return self.json(&json!(query));
+        }
+        println!("{}", self.paint(BOLD, &query.name));
+        if let Some(description) = &query.description {
+            println!("{}", self.paint(DIM, description));
+        }
+        println!("{}", query.sql.trim());
+    }
+
+    pub fn drift(&self, drift: &Drift) {
+        if self.format == Format::Json {
+            return self.json(&json!(drift));
+        }
+        let side = |s: &culprit_core::DriftSide| {
+            format!("{} ({}, {})", s.connection, format!("{:?}", s.environment).to_lowercase(), s.server())
+        };
+        println!("{}  vs  {}", self.paint(BOLD, &side(&drift.a)), self.paint(BOLD, &side(&drift.b)));
+        println!("{}\n", drift.summary);
+        for (kind, heading) in [
+            (DriftKind::Index, "Indexes"),
+            (DriftKind::Table, "Tables"),
+            (DriftKind::Column, "Columns"),
+            (DriftKind::Setting, "Settings"),
+            (DriftKind::Version, "Version"),
+        ] {
+            let items: Vec<_> = drift.items.iter().filter(|i| i.kind == kind).collect();
+            if items.is_empty() {
+                continue;
+            }
+            println!("{}", self.paint(BOLD, heading));
+            for item in items {
+                let mark = match item.presence {
+                    DriftPresence::OnlyA => self.paint(YELLOW, "◀"),
+                    DriftPresence::OnlyB => self.paint(YELLOW, "▶"),
+                    DriftPresence::Different => self.paint(RED, "≠"),
+                    DriftPresence::Renamed => self.paint(DIM, "~"),
+                };
+                println!("  {mark} {}", item.title);
+                if let (Some(sql), Some(target)) = (&item.sql, &item.sql_for) {
+                    println!("{}", self.paint(DIM, &format!("      -- on {target}")));
+                    for line in sql.lines() {
+                        println!("      {}", self.paint(GREEN, line));
+                    }
+                }
+            }
+            println!();
+        }
     }
 
     pub fn checks(&self, checks: &[CheckInfo]) {
@@ -490,6 +644,10 @@ fn query_json(report: &Report, q: &QueryStat) -> Value {
         "reads_per_run": q.reads_per_execution(),
         "plans": q.plans.len(),
         "hottest_operator": hot,
+        // Average duration per run in each timeline bucket (null where it didn't run or the source can't tell).
+        "trend_mean_ms": q.trend.as_ref().map(|t| {
+            (0..t.time_ms.len()).map(|i| t.mean_ms(i).map(|m| (m * 100.0).round() / 100.0)).collect::<Vec<_>>()
+        }),
     })
 }
 

@@ -18,6 +18,9 @@ pub(crate) fn utc_local_iso(expr: &str) -> String {
     )
 }
 
+/// The heaviest queries get a trend line; the rest would only grow the report.
+const TREND_QUERIES: usize = 40;
+
 /// Query Store wait categories that are not the database working: idle sessions, WAITFOR, tracing.
 const IGNORED_WAIT_CATEGORIES: &[&str] = &["Idle", "User Wait", "Tracing", "Service Broker", "Unknown"];
 
@@ -166,7 +169,7 @@ WHERE end_time >= @since
     )
 }
 
-fn id_list(ids: &[String]) -> String {
+pub(crate) fn id_list(ids: &[String]) -> String {
     let numeric: Vec<&str> =
         ids.iter().map(String::as_str).filter(|id| id.chars().all(|c| c.is_ascii_digit())).collect();
     if numeric.is_empty() {
@@ -274,6 +277,16 @@ GROUP BY ws.wait_category_desc
         Err(_) => Vec::new(),
     };
 
+    let window_hours = window.f64("window_hours").unwrap_or(f64::from(days) * 24.0);
+    let window_end = window.str("window_end");
+    let trend_ids: Vec<String> = selected.iter().take(TREND_QUERIES).map(|q| q.query_id.clone()).collect();
+    // Trends are a bonus: a failure here must not cost the scan its workload.
+    let (timeline, mut trends) =
+        match crate::timeline::collect(client, days, window_hours, window_end.as_deref(), &trend_ids).await {
+            Ok(Some((timeline, trends))) => (Some(timeline), trends),
+            _ => (None, HashMap::new()),
+        };
+
     let mut plans_parsed = 0;
     let mut plan_errors = 0;
     let queries = selected
@@ -293,7 +306,9 @@ GROUP BY ws.wait_category_desc
             let text = texts.get(&q.query_id);
             let query_waits =
                 fold_waits(q.plans.iter().flat_map(|p| plan_waits.get(&p.plan_id).cloned().unwrap_or_default()));
-            to_query_stat(q, text, plan, query_waits)
+            let mut stat = to_query_stat(q, text, plan, query_waits);
+            stat.trend = trends.remove(&q.query_id);
+            stat
         })
         .collect();
 
@@ -301,13 +316,14 @@ GROUP BY ws.wait_category_desc
         source: "Query Store".into(),
         windowed: true,
         window_start: window.str("window_start"),
-        window_end: window.str("window_end"),
-        window_hours: window.f64("window_hours").unwrap_or(f64::from(days) * 24.0),
+        window_end,
+        window_hours,
         total_time_ms,
         total_cpu_ms: Some(total_cpu_ms),
         total_executions,
         query_count: all.len() as f64,
         queries,
+        timeline,
     };
     Ok(WorkloadResult { workload, waits, plans_parsed, plan_errors })
 }
@@ -356,6 +372,7 @@ fn to_query_stat(
         plans: variants,
         plan,
         waits,
+        trend: None,
     }
 }
 
@@ -579,6 +596,7 @@ pub(crate) async fn from_plan_cache(
         total_executions,
         query_count: all.len() as f64,
         queries,
+        timeline: None,
     };
     Ok(WorkloadResult { workload, waits: Vec::new(), plans_parsed, plan_errors })
 }

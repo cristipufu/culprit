@@ -1,4 +1,4 @@
-import { Activity, ChevronsUpDown, Command, Gauge, ListOrdered, Moon, RefreshCw, SquareTerminal, Sun, Table2 } from "lucide-react";
+import { Activity, ChevronsUpDown, Command, Gauge, GitCompareArrows, ListOrdered, Moon, RefreshCw, SquareTerminal, Sun, Table2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ago } from "../lib/format";
 import { groupByEnvironment } from "../lib/environments";
@@ -36,6 +36,7 @@ const NAV: { view: View; label: string; key: string; icon: ReactNode }[] = [
   { view: "live", label: "Live", key: "3", icon: <Activity size={15} /> },
   { view: "schema", label: "Schema", key: "4", icon: <Table2 size={15} /> },
   { view: "editor", label: "Editor", key: "5", icon: <SquareTerminal size={15} /> },
+  { view: "plans", label: "Plans", key: "6", icon: <GitCompareArrows size={15} /> },
 ];
 
 export function Sidebar() {
@@ -59,9 +60,9 @@ export function Sidebar() {
         </span>
         <ChevronsUpDown size={14} className="chev" />
       </button>
-      {active && (
+      {(
         <nav className="nav">
-          {NAV.map((n) => (
+          {NAV.filter((n) => active || n.view === "plans").map((n) => (
             <button key={n.view} className={`nav-item ${view === n.view ? "active" : ""}`} onClick={() => setState({ view: n.view })}>
               {n.icon}
               {n.label}

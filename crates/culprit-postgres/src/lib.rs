@@ -4,13 +4,14 @@ mod collect;
 mod connect;
 pub mod plan_json;
 mod rows;
+mod sessions;
 
 use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
     ConnectionSpec, Engine, Environment, Error, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet,
-    ServerInfo, Session, Snapshot, SnapshotOptions, WaitStat,
+    ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use serde_json::Value;
 use tokio_postgres::types::Type;
@@ -102,6 +103,14 @@ impl Provider for PostgresProvider {
         }
     }
 
+    fn session_actions(&self) -> Vec<SessionAction> {
+        vec![SessionAction::Cancel, SessionAction::Terminate]
+    }
+
+    async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
+        sessions::interrupt(&self.connector, session, action).await
+    }
+
     async fn live(&self) -> Result<LiveState> {
         let client = self.connector.connect(INTERACTIVE).await?;
         let sql = "SELECT pid::text AS id, usename AS username, application_name,
@@ -163,7 +172,7 @@ impl Provider for PostgresProvider {
             }
         }
         waits.sort_by(|a, b| b.tasks.unwrap_or(0.0).total_cmp(&a.tasks.unwrap_or(0.0)));
-        Ok(LiveState { taken_at: now, sessions, waits })
+        Ok(LiveState { taken_at: now, sessions, waits, session_actions: Vec::new(), session_actions_note: None })
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
@@ -171,22 +180,32 @@ impl Provider for PostgresProvider {
         let client = self.connector.connect(EXECUTION).await?;
         let started = Instant::now();
         client.batch_execute(&tagged("BEGIN READ ONLY")).await.map_err(map_error)?;
-        let result = run_in_transaction(&client, statement, limit).await;
+        let result = run_in_transaction(&client, statement, limit, true).await;
         let rollback = client.batch_execute(&tagged("ROLLBACK")).await;
         let mut result = result?;
         rollback.map_err(map_error)?;
         result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         Ok(result)
     }
+
+    async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        let statement = single_statement(sql)?;
+        let client = self.connector.connect(EXECUTION).await?;
+        let started = Instant::now();
+        // Sessions open read-only; a write the person chose to run gets a read-write session and commits on its own,
+        // so statements that can't run in a transaction block (CREATE INDEX CONCURRENTLY, VACUUM) work too.
+        client.batch_execute(&tagged("SET default_transaction_read_only = off")).await.map_err(map_error)?;
+        let mut result = run_in_transaction(&client, statement, limit, false).await?;
+        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        result.messages.push("Committed.".to_string());
+        Ok(result)
+    }
 }
 
 /// Trim and reject empty input. Single-statement enforcement happens when the server parses it.
+/// One statement, checked by Culprit's lexer under both standard_conforming_strings settings.
 fn single_statement(sql: &str) -> Result<&str> {
-    let statement = sql.trim().trim_end_matches(';').trim_end();
-    if statement.is_empty() {
-        return Err(Error::invalid("There is no statement to run"));
-    }
-    Ok(statement)
+    culprit_core::sql::single_statement(sql, Engine::Postgres)
 }
 
 /// Parse the statement on the server without running it. This also rejects several statements in one string.
@@ -220,14 +239,16 @@ async fn explain_text(client: &Client, sql: &str, kind: PlanKind, statement: &st
     plan_json::parse(&json, kind, Some(statement))
 }
 
-async fn run_in_transaction(client: &Client, statement: &str, limit: usize) -> Result<ResultSet> {
+/// Run one statement and collect up to `limit` rows; `cursor` fetches reads through a cursor (needs a transaction block).
+async fn run_in_transaction(client: &Client, statement: &str, limit: usize, cursor: bool) -> Result<ResultSet> {
     let prepared = client.prepare(statement).await.map_err(single_statement_error)?;
     if !prepared.params().is_empty() {
         return Err(Error::invalid("This statement has $n parameters").with_hint("Replace them with values to run it."));
     }
     let columns: Vec<String> = prepared.columns().iter().map(|c| c.name().to_string()).collect();
     let types: Vec<Type> = prepared.columns().iter().map(|c| c.type_().clone()).collect();
-    let cursor_friendly = !columns.is_empty()
+    let cursor_friendly = cursor
+        && !columns.is_empty()
         && leading_keyword(statement).is_some_and(|k| matches!(k.as_str(), "select" | "with" | "values" | "table"));
 
     let messages = if cursor_friendly {

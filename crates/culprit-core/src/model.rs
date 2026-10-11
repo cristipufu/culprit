@@ -138,6 +138,10 @@ pub struct Workload {
     pub total_executions: f64,
     pub query_count: f64,
     pub queries: Vec<QueryStat>,
+    /// Database time across the window, oldest first. `None` when the source keeps no history and Culprit has no
+    /// earlier scans of this connection to compare with.
+    #[serde(default)]
+    pub timeline: Option<Timeline>,
 }
 
 impl Workload {
@@ -184,6 +188,67 @@ pub struct QueryStat {
     pub plans: Vec<PlanVariant>,
     pub plan: Option<Plan>,
     pub waits: Vec<WaitStat>,
+    /// This query's part of each bucket of the workload's timeline (only the heaviest queries carry one).
+    #[serde(default)]
+    pub trend: Option<QueryTrend>,
+}
+
+/// Where a timeline's buckets come from.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum TimelineSource {
+    /// Query Store's runtime-stats intervals, folded into equal buckets.
+    #[default]
+    QueryStore,
+    /// Differences between Culprit's own saved scans of a source that only keeps running totals.
+    Scans,
+}
+
+/// Database time and executions per bucket. Buckets are equal for Query Store and fall between scans otherwise.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default)]
+#[ts(export)]
+pub struct Timeline {
+    pub source: TimelineSource,
+    /// Start of each bucket (UTC, ISO 8601). Bucket `i` ends where bucket `i + 1` starts; the last one ends at `end`.
+    pub starts: Vec<String>,
+    pub end: String,
+    pub time_ms: Vec<f64>,
+    pub executions: Vec<f64>,
+}
+
+impl Timeline {
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.starts.is_empty()
+    }
+
+    /// Start and end of bucket `i`.
+    pub fn bounds(&self, i: usize) -> (&str, &str) {
+        let end = self.starts.get(i + 1).unwrap_or(&self.end);
+        (self.starts[i].as_str(), end.as_str())
+    }
+}
+
+/// One query's database time and executions in each bucket of the workload timeline. `None` marks a bucket the
+/// source can't account for (an earlier scan didn't track this query, or its counters were reset).
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default)]
+#[ts(export)]
+pub struct QueryTrend {
+    pub time_ms: Vec<Option<f64>>,
+    pub executions: Vec<Option<f64>>,
+}
+
+impl QueryTrend {
+    /// Average duration in bucket `i`, when the query ran in it.
+    pub fn mean_ms(&self, i: usize) -> Option<f64> {
+        let time = (*self.time_ms.get(i)?)?;
+        let runs = (*self.executions.get(i)?)?;
+        (runs > 0.0).then(|| time / runs)
+    }
 }
 
 impl QueryStat {
@@ -444,6 +509,33 @@ pub struct LiveState {
     pub taken_at: String,
     pub sessions: Vec<Session>,
     pub waits: Vec<WaitStat>,
+    /// What Live may do to other sessions on this connection; empty on production connections.
+    #[serde(default)]
+    pub session_actions: Vec<SessionAction>,
+    /// Why `session_actions` is empty, in plain language.
+    #[serde(default)]
+    pub session_actions_note: Option<String>,
+}
+
+/// A numeric session id from `live()` (SQL Server spid, Postgres pid, MySQL thread id). Ids are spliced into `KILL`, so
+/// anything but digits is refused.
+pub fn session_number(session: &str) -> crate::error::Result<u64> {
+    let session = session.trim();
+    if session.is_empty() || session.len() > 19 || !session.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(crate::error::Error::invalid(format!("'{session}' is not a session id")));
+    }
+    session.parse().map_err(|_| crate::error::Error::invalid(format!("'{session}' is not a session id")))
+}
+
+/// Something Live can do to another session. Never offered on production connections.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
+pub enum SessionAction {
+    /// Stop the statement the session is running; the session stays connected.
+    Cancel,
+    /// Close the session; its open transaction rolls back.
+    Terminate,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]

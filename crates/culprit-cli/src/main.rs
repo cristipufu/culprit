@@ -1,12 +1,17 @@
+mod agents;
 mod output;
+mod plan_cmd;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use culprit_core::{AuthKind, Engine, Environment, Error, ExplainMode, Report, Severity, SnapshotOptions};
-use culprit_engine::{NewConnection, Workspace, reports};
+use culprit_core::{
+    AuthKind, Engine, Environment, Error, ExplainMode, Report, SessionAction, Severity, SnapshotOptions,
+};
+use culprit_engine::entra::SignInEvent;
+use culprit_engine::{ImportSource, NewConnection, Workspace, reports};
 use output::{Format, Out};
 
 #[derive(Parser)]
@@ -15,7 +20,7 @@ use output::{Format, Out};
     version,
     about = "Find what is slowing your database down.",
     long_about = "Find what is slowing your database down.\n\nCulprit reads statistics views only (safe on production), ranks what it finds by share of database time, and gives each finding a stable id, a fix and a way to verify it. Output is JSON when stdout is not a terminal.",
-    after_help = "Examples:\n  culprit conn add shop-staging --url 'Server=tcp:shop-staging.database.windows.net;Database=shop;Authentication=Active Directory Default' --env staging\n  culprit scan shop-staging\n  culprit show shop-staging 'missing-index:dbo.Orders(CustomerId)'\n  culprit top shop-staging --by cpu -n 10 --format json\n  culprit explain shop-staging --sql 'SELECT * FROM dbo.Orders WHERE CustomerId = 1'"
+    after_help = "Examples:\n  culprit conn add shop-staging --url 'Server=tcp:shop-staging.database.windows.net;Database=shop;Authentication=Active Directory Default' --env staging\n  culprit scan shop-staging\n  culprit show shop-staging 'missing-index:dbo.Orders(CustomerId)'\n  culprit top shop-staging --by cpu -n 10 --format json\n  culprit explain shop-staging --sql 'SELECT * FROM dbo.Orders WHERE CustomerId = 1'\n  claude mcp add culprit -- culprit mcp     # serve Culprit to coding agents"
 )]
 struct Cli {
     /// Output format. Defaults to text in a terminal, JSON otherwise.
@@ -33,6 +38,9 @@ enum Command {
     /// Manage saved connections. Secrets go to the OS keychain; commands refer to connections by name.
     #[command(subcommand)]
     Conn(ConnCommand),
+    /// Microsoft Entra ID sign-ins made with a device code (used when the Azure CLI is missing or signed out).
+    #[command(subcommand)]
+    Auth(AuthCommand),
     /// Show the server, what this login can see, and which checks are locked and why.
     Doctor { connection: String },
     /// Take a snapshot, run every check, save the report and print the findings.
@@ -50,12 +58,22 @@ enum Command {
     Top(TopArgs),
     /// Show a statement's plan. Estimated plans never execute the statement.
     Explain(ExplainArgs),
-    /// Current sessions, blocking and waits.
-    Live { connection: String },
-    /// Run a statement and print up to --limit rows.
+    /// Read plans saved by other tools (.sqlplan, EXPLAIN JSON or text) and compare any two plans.
+    #[command(subcommand)]
+    Plan(plan_cmd::PlanCommand),
+    /// Current sessions, blocking and waits. On non-production connections, --cancel or --kill acts on one session.
+    Live(LiveArgs),
+    /// Run a statement and print up to --limit rows. Reads run in a read-only transaction; anything that changes data
+    /// commits, and on production needs --yes-execute-on-production.
     Run(RunArgs),
+    /// Named queries you can rerun: list, show, add, rm, run.
+    #[command(subcommand)]
+    Saved(SavedCommand),
     /// List every check with the engines and capabilities it needs.
     Checks,
+    /// What differs between two databases (latest scans): tables, columns, indexes, settings and version, with SQL to align
+    /// missing indexes. Each side is a connection name or a saved report file.
+    Drift { a: String, b: String },
     /// Re-run every check on a saved snapshot or report file, offline. Prints the full report.
     Analyze {
         file: PathBuf,
@@ -63,6 +81,14 @@ enum Command {
         #[arg(long)]
         connection: Option<String>,
     },
+    /// Serve Culprit to coding agents over MCP (stdio). Findings, statistics, schema and estimated plans; statements
+    /// only on connections with `--agent query` and after approval in the desktop app. Every call is audited.
+    Mcp(agents::McpArgs),
+    /// What coding agents did through `culprit mcp`, most recent last.
+    Audit(agents::AuditArgs),
+    /// Set up a repository for coding agents.
+    #[command(subcommand)]
+    Agent(agents::AgentCommand),
 }
 
 #[derive(Subcommand)]
@@ -77,10 +103,47 @@ enum ConnCommand {
     Rm { name: String },
     /// Rename a connection (its alias). Keychain secret and report history move with it.
     Rename { old: String, new: String },
-    /// Find databases your cloud CLI can see (Azure SQL via `az login`, Amazon RDS/Aurora via `aws login`) and optionally save them.
+    /// Find databases your cloud CLI can see (Azure SQL and PostgreSQL/MySQL flexible servers via `az login`, Amazon
+    /// RDS/Aurora via `aws login`) and optionally save them.
     Discover(DiscoverArgs),
     /// Store the password for a password-authenticated connection in the OS keychain. Reads it from stdin (hidden when typed).
     SetPassword { name: String },
+    /// Change a connection's settings, e.g. what coding agents may do with it (`--agent off|stats|query`).
+    Set(agents::SetArgs),
+    /// Bring in connections saved in Azure Data Studio, VS Code (mssql), DBeaver or DataGrip. Reads names, hosts, databases
+    /// and user names only, never passwords; password connections ask once with `culprit conn set-password`.
+    Import(ImportArgs),
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ImportFrom {
+    Auto,
+    Ads,
+    Vscode,
+    Dbeaver,
+    Datagrip,
+}
+
+#[derive(Args)]
+struct ImportArgs {
+    /// Which tool to read. `auto` reads every tool found on this machine.
+    #[arg(long, value_enum, default_value = "auto")]
+    from: ImportFrom,
+    /// Read this file instead of the tool's usual location (repeatable): settings.json, data-sources.json, dataSources.xml.
+    #[arg(long = "file", value_name = "PATH")]
+    files: Vec<PathBuf>,
+    /// Keep connections whose alias, host or database contains this word (repeatable; all must match).
+    #[arg(long = "match", value_name = "WORD")]
+    terms: Vec<String>,
+    /// List what would be imported without saving anything.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Forget device-code sign-ins: stored refresh tokens and cached access tokens. `az logout` signs the Azure CLI out.
+    Logout,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -196,6 +259,50 @@ struct ExplainArgs {
     yes_execute_on_production: bool,
 }
 
+#[derive(Subcommand)]
+enum SavedCommand {
+    /// Saved queries, most recently run first.
+    List,
+    /// Print one saved query's SQL.
+    Show { name: String },
+    /// Save (or overwrite) a query under a name.
+    Add {
+        name: String,
+        #[arg(long, conflicts_with = "file")]
+        sql: Option<String>,
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// The connection it runs on by default.
+        #[arg(long)]
+        connection: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Forget a saved query.
+    Rm { name: String },
+    /// Run a saved query (on --connection, or the one it was saved for).
+    Run {
+        name: String,
+        #[arg(long)]
+        connection: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long)]
+        yes_execute_on_production: bool,
+    },
+}
+
+#[derive(Args)]
+struct LiveArgs {
+    connection: String,
+    /// Stop the statement this session is running; the session stays connected (Postgres, MySQL).
+    #[arg(long, value_name = "SESSION", conflicts_with = "kill")]
+    cancel: Option<String>,
+    /// End this session; its open transaction rolls back.
+    #[arg(long, value_name = "SESSION")]
+    kill: Option<String>,
+}
+
 #[derive(Args)]
 struct RunArgs {
     connection: String,
@@ -283,9 +390,29 @@ fn main() -> ExitCode {
 }
 
 async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
-    let ws = Workspace::open()?;
+    let mut ws = Workspace::open()?;
+    // A device-code sign-in needs a person to read the code; scripts and agents get an error with a hint instead.
+    if std::io::stderr().is_terminal() {
+        ws = ws.with_sign_in_handler(std::sync::Arc::new(|event| match event {
+            SignInEvent::Code { prompt } => eprintln!(
+                "To sign in to Microsoft Entra ID, open {} and enter the code {}  (waiting; Ctrl+C stops)",
+                prompt.verification_uri, prompt.user_code
+            ),
+            SignInEvent::Done => eprintln!("Signed in."),
+            SignInEvent::Failed { message } => eprintln!("{message}"),
+        }));
+    }
     match command {
         Command::Conn(c) => conn(&ws, c, out).await,
+        Command::Auth(AuthCommand::Logout) => {
+            let removed = ws.sign_out()?;
+            out.done(&match removed {
+                0 => "No device-code sign-ins were stored".to_string(),
+                1 => "Forgot 1 device-code sign-in".to_string(),
+                n => format!("Forgot {n} device-code sign-ins"),
+            });
+            Ok(0)
+        }
         Command::Doctor { connection } => {
             let info = ws.connection(&connection)?;
             let server = ws.probe(&connection).await?;
@@ -333,8 +460,22 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.plan(&plan);
             Ok(0)
         }
-        Command::Live { connection } => {
-            let live = ws.live(&connection).await?;
+        Command::Plan(command) => plan_cmd::run(&ws, command, out).await,
+        Command::Live(args) => {
+            let target = match (args.cancel, args.kill) {
+                (Some(id), _) => Some((id, SessionAction::Cancel)),
+                (None, Some(id)) => Some((id, SessionAction::Terminate)),
+                (None, None) => None,
+            };
+            if let Some((id, action)) = target {
+                ws.interrupt_session(&args.connection, &id, action).await?;
+                out.done(&match action {
+                    SessionAction::Cancel => format!("Cancelled the statement in session {id}"),
+                    SessionAction::Terminate => format!("Ended session {id}"),
+                });
+                return Ok(0);
+            }
+            let live = ws.live(&args.connection).await?;
             out.live(&live);
             Ok(0)
         }
@@ -343,8 +484,51 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.result_set(&rs);
             Ok(0)
         }
+        Command::Saved(command) => {
+            match command {
+                SavedCommand::List => out.saved_queries(&ws.saved_queries()?),
+                SavedCommand::Show { name } => out.saved_query(&ws.saved_query(&name)?),
+                SavedCommand::Add { name, sql, file, connection, description } => {
+                    let sql = match (sql, file) {
+                        (Some(sql), _) => sql,
+                        (None, Some(path)) => std::fs::read_to_string(&path)
+                            .map_err(|e| culprit_core::Error::invalid(format!("{}: {e}", path.display())))?,
+                        (None, None) => return Err(culprit_core::Error::invalid("Pass the SQL with --sql or --file")),
+                    };
+                    let query =
+                        culprit_engine::saved::SaveQuery { name, sql, connection, description, previous_name: None };
+                    out.saved_query(&ws.save_query(query)?);
+                }
+                SavedCommand::Rm { name } => {
+                    ws.delete_saved_query(&name)?;
+                    out.done(&format!("Forgot '{name}'"));
+                }
+                SavedCommand::Run { name, connection, limit, yes_execute_on_production } => {
+                    let rs = ws.run_saved(&name, connection.as_deref(), limit, yes_execute_on_production).await?;
+                    out.result_set(&rs);
+                }
+            }
+            Ok(0)
+        }
         Command::Checks => {
             out.checks(&ws.checks());
+            Ok(0)
+        }
+        Command::Drift { a, b } => {
+            let drift = match (report_file(&a), report_file(&b)) {
+                (None, None) => ws.drift(&a, &b)?,
+                (fa, fb) => {
+                    let side = |name: &str, file: Option<PathBuf>| match file {
+                        Some(path) => reports::load(&path),
+                        None => load(&ws, name, None).map(|mut r| {
+                            r.snapshot.connection = name.to_string();
+                            r
+                        }),
+                    };
+                    culprit_engine::drift_reports(&side(&a, fa)?, &side(&b, fb)?)?
+                }
+            };
+            out.drift(&drift);
             Ok(0)
         }
         Command::Analyze { file, connection } => {
@@ -355,6 +539,9 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             out.analyzed(&report);
             Ok(0)
         }
+        Command::Mcp(args) => agents::mcp(ws, args).await,
+        Command::Audit(args) => agents::audit(&ws, args, out),
+        Command::Agent(command) => agents::agent(&ws, command, out),
     }
 }
 
@@ -371,6 +558,12 @@ fn load(ws: &Workspace, connection: &str, path: Option<&PathBuf>) -> culprit_cor
         Error::not_found(format!("No saved report for '{connection}'"))
             .with_hint(format!("Run `culprit scan {connection}` first"))
     })
+}
+
+/// `arg` names a saved report file rather than a connection.
+fn report_file(arg: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(arg);
+    (arg.ends_with(".json") && path.is_file()).then_some(path)
 }
 
 fn explain_sql(ws: &Workspace, args: &ExplainArgs) -> culprit_core::Result<String> {
@@ -440,12 +633,41 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
             out.discovered(&found, &saved);
             Ok(0)
         }
+        ConnCommand::Import(args) => {
+            let source = match args.from {
+                ImportFrom::Auto => None,
+                ImportFrom::Ads => Some(ImportSource::Ads),
+                ImportFrom::Vscode => Some(ImportSource::Vscode),
+                ImportFrom::Dbeaver => Some(ImportSource::Dbeaver),
+                ImportFrom::Datagrip => Some(ImportSource::Datagrip),
+            };
+            let mut found = if args.files.is_empty() {
+                ws.import_candidates(source)?
+            } else {
+                let mut all = Vec::new();
+                for file in &args.files {
+                    all.extend(ws.import_file(file, source)?);
+                }
+                all
+            };
+            let terms: Vec<String> = args.terms.iter().map(|t| t.to_ascii_lowercase()).collect();
+            found.retain(|c| {
+                let text =
+                    format!("{} {} {}", c.alias, c.host, c.database.as_deref().unwrap_or("")).to_ascii_lowercase();
+                terms.iter().all(|t| text.contains(t.as_str()))
+            });
+            let new: Vec<_> = found.iter().filter(|c| c.saved_as.is_none()).cloned().collect();
+            let saved = if args.dry_run || new.is_empty() { Vec::new() } else { ws.import_connections(&new)? };
+            out.imported(&found, &saved, args.dry_run);
+            Ok(0)
+        }
         ConnCommand::SetPassword { name } => {
             let password = read_password(&format!("Password for {name}: "))?;
             let info = ws.set_password(&name, &password)?;
             out.done(&format!("Stored the password for {} in the OS keychain", info.name));
             Ok(0)
         }
+        ConnCommand::Set(args) => agents::set(ws, args, out),
         ConnCommand::Rm { name } => {
             ws.remove_connection(&name)?;
             out.done(&format!("Removed {name}"));

@@ -1,18 +1,23 @@
-//! Find databases the signed-in cloud CLI can see: Azure SQL through Azure Resource Graph, Amazon RDS and Aurora through
-//! `aws rds describe-*`. Only resource metadata is read; nothing secret is involved.
+//! Find databases the signed-in cloud CLI can see: Azure SQL and Azure Database for PostgreSQL / MySQL flexible servers
+//! through Azure Resource Graph and Resource Manager, Amazon RDS and Aurora through `aws rds describe-*`. Only resource
+//! metadata is read; nothing secret is involved.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use culprit_core::{AuthKind, Engine, Environment, Error, ErrorCode, Result};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use ts_rs::TS;
 
-use crate::aws;
+use crate::{aws, http};
 
 const RESOURCE_GRAPH: &str =
     "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01";
 const MAX_RESULTS: u32 = 500;
+const MANAGEMENT: &str = "https://management.azure.com";
+/// Database listings per flexible server run in parallel, this many at a time.
+const LISTING_CONCURRENCY: usize = 16;
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -31,7 +36,7 @@ pub struct DiscoveredDatabase {
     pub cloud: Cloud,
     pub engine: Engine,
     pub environment: Environment,
-    /// Azure SQL server name, or RDS instance / Aurora cluster identifier.
+    /// Azure SQL or flexible server name, or RDS instance / Aurora cluster identifier.
     pub server: String,
     pub host: String,
     /// Empty when the engine connects without a default database (MySQL).
@@ -66,11 +71,6 @@ struct Row {
     fqdn: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct GraphResponse {
-    data: Vec<Row>,
-}
-
 /// Every term must appear in the database or server name. Terms are restricted to identifier characters because they are embedded in a KQL query.
 pub fn validate_terms(terms: &[String]) -> Result<()> {
     let ok = terms.iter().all(|t| {
@@ -97,10 +97,14 @@ fn query(terms: &[String]) -> String {
     )
 }
 
-pub async fn azure_sql(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
-    validate_terms(terms)?;
-    let body = serde_json::json!({ "query": query(terms), "options": { "$top": MAX_RESULTS } }).to_string();
-    let output = Command::new(if cfg!(windows) { "az.cmd" } else { "az" })
+/// Run a Resource Graph query through the Azure CLI's signed-in account.
+async fn resource_graph<T: serde::de::DeserializeOwned>(query: &str) -> Result<Vec<T>> {
+    #[derive(Deserialize)]
+    struct Response<T> {
+        data: Vec<T>,
+    }
+    let body = serde_json::json!({ "query": query, "options": { "$top": MAX_RESULTS } }).to_string();
+    let output = Command::new(az())
         .args(["rest", "--method", "post", "--url", RESOURCE_GRAPH, "--body", &body, "--output", "json"])
         .output()
         .await
@@ -116,10 +120,37 @@ pub async fn azure_sql(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
         )
         .with_hint("Run `az login` and retry"));
     }
-    let response: GraphResponse = serde_json::from_slice(&output.stdout)
+    let response: Response<T> = serde_json::from_slice(&output.stdout)
         .map_err(|e| Error::internal(format!("Unexpected Resource Graph response: {e}")))?;
-    let mut out: Vec<DiscoveredDatabase> = response
-        .data
+    Ok(response.data)
+}
+
+fn az() -> &'static str {
+    if cfg!(windows) { "az.cmd" } else { "az" }
+}
+
+/// Azure SQL databases and PostgreSQL / MySQL flexible-server databases, in one list.
+pub async fn azure(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    validate_terms(terms)?;
+    let (sql, flexible) = tokio::join!(azure_sql(terms), azure_flexible(terms));
+    let mut out = match (sql, flexible) {
+        (Ok(mut a), Ok(b)) => {
+            a.extend(b);
+            a
+        }
+        (Ok(a), Err(_)) => a,
+        (Err(_), Ok(b)) => b,
+        (Err(e), Err(_)) => return Err(e),
+    };
+    out.sort_by(|a, b| a.database.cmp(&b.database).then(a.server.cmp(&b.server)));
+    assign_aliases(&mut out);
+    Ok(out)
+}
+
+pub async fn azure_sql(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    validate_terms(terms)?;
+    let rows: Vec<Row> = resource_graph(&query(terms)).await?;
+    let mut out: Vec<DiscoveredDatabase> = rows
         .into_iter()
         .map(|r| {
             let host = r.fqdn.clone().unwrap_or_else(|| format!("{}.database.windows.net", r.server));
@@ -147,6 +178,169 @@ pub async fn azure_sql(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
         .collect();
     assign_aliases(&mut out);
     Ok(out)
+}
+
+#[derive(Deserialize)]
+struct FlexibleServer {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+    location: String,
+    #[serde(rename = "resourceGroup")]
+    resource_group: String,
+    #[serde(rename = "subscriptionId")]
+    subscription: String,
+    fqdn: Option<String>,
+    /// PostgreSQL: `Enabled` when Microsoft Entra ID sign-in is on.
+    entra: Option<String>,
+    admin: Option<String>,
+    state: Option<String>,
+}
+
+const FLEXIBLE_QUERY: &str = "resources \
+     | where type in~ ('microsoft.dbforpostgresql/flexibleservers', 'microsoft.dbformysql/flexibleservers') \
+     | project id, name, type, location, resourceGroup, subscriptionId, \
+         fqdn = tostring(properties.fullyQualifiedDomainName), \
+         entra = tostring(properties.authConfig.activeDirectoryAuth), \
+         admin = tostring(properties.administratorLogin), state = tostring(properties.state) \
+     | order by name asc";
+
+/// Databases that come with every server and hold nothing of the application's.
+fn system_database(engine: Engine, name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    match engine {
+        Engine::Postgres => matches!(name.as_str(), "azure_maintenance" | "azure_sys" | "template0" | "template1"),
+        Engine::Mysql => matches!(name.as_str(), "information_schema" | "mysql" | "performance_schema" | "sys"),
+        Engine::Mssql => name == "master",
+    }
+}
+
+/// Resource ids from Resource Graph become Resource Manager URLs; anything but a plain flexible-server id is refused.
+fn flexible_server_url(id: &str, child: &str, engine: Engine) -> Option<String> {
+    let provider = match engine {
+        Engine::Postgres => "/providers/microsoft.dbforpostgresql/flexibleservers/",
+        Engine::Mysql => "/providers/microsoft.dbformysql/flexibleservers/",
+        Engine::Mssql => return None,
+    };
+    let version = if engine == Engine::Postgres { "2024-08-01" } else { "2023-12-30" };
+    let plain = id.starts_with("/subscriptions/")
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '(' | ')'))
+        && id.to_ascii_lowercase().contains(provider);
+    plain.then(|| format!("{MANAGEMENT}{id}/{child}?api-version={version}"))
+}
+
+/// A Resource Manager token from the Azure CLI. Only ever sent to management.azure.com.
+async fn management_token() -> Result<String> {
+    let output = Command::new(az())
+        .args(["account", "get-access-token", "--resource", "https://management.azure.com/", "--query", "accessToken"])
+        .args(["--output", "tsv"])
+        .output()
+        .await
+        .map_err(|e| Error::new(ErrorCode::AuthFailed, format!("Could not run the Azure CLI: {e}")))?;
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || token.is_empty() {
+        return Err(Error::new(ErrorCode::AuthFailed, "The Azure CLI could not issue a Resource Manager token"));
+    }
+    Ok(token)
+}
+
+/// Names under a flexible server's `databases` or `administrators`; `None` when they can't be listed.
+async fn list_children(url: String, token: String) -> Option<Vec<String>> {
+    let reply = http::get_bearer(url, token, "Listing Azure databases").await.ok()?;
+    if reply.status != 200 {
+        return None;
+    }
+    let names = reply.json.get("value")?.as_array()?.iter().filter_map(|v| v.get("name")?.as_str().map(str::to_string));
+    Some(names.collect())
+}
+
+/// Azure Database for PostgreSQL and MySQL flexible servers, one row per application database. Servers whose databases
+/// can't be listed (stopped, no permission) get one row for the server.
+pub async fn azure_flexible(terms: &[String]) -> Result<Vec<DiscoveredDatabase>> {
+    validate_terms(terms)?;
+    let servers: Vec<FlexibleServer> = resource_graph(FLEXIBLE_QUERY).await?;
+    if servers.is_empty() {
+        return Ok(Vec::new());
+    }
+    let token = management_token().await.ok();
+    let gate = Arc::new(tokio::sync::Semaphore::new(LISTING_CONCURRENCY));
+    let mut tasks = tokio::task::JoinSet::new();
+    for (i, server) in servers.iter().enumerate() {
+        let engine = flexible_engine(&server.kind);
+        let ready = server.state.as_deref().is_none_or(|s| s.eq_ignore_ascii_case("ready"));
+        let (Some(token), Some(engine), true) = (token.clone(), engine, ready) else { continue };
+        let Some(databases) = flexible_server_url(&server.id, "databases", engine) else { continue };
+        let admins =
+            (engine == Engine::Mysql).then(|| flexible_server_url(&server.id, "administrators", engine)).flatten();
+        let gate = gate.clone();
+        tasks.spawn(async move {
+            let _permit = gate.acquire_owned().await.ok()?;
+            let names = list_children(databases, token.clone()).await;
+            let entra = match admins {
+                Some(url) => Some(list_children(url, token).await.is_some_and(|a| !a.is_empty())),
+                None => None,
+            };
+            Some((i, names, entra))
+        });
+    }
+    let mut listed: BTreeMap<usize, (Option<Vec<String>>, Option<bool>)> = BTreeMap::new();
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok(Some((i, names, entra))) = joined {
+            listed.insert(i, (names, entra));
+        }
+    }
+    let mut out = Vec::new();
+    for (i, server) in servers.into_iter().enumerate() {
+        let Some(engine) = flexible_engine(&server.kind) else { continue };
+        let (names, mysql_entra) = listed.remove(&i).unwrap_or((None, None));
+        let entra = match engine {
+            Engine::Postgres => server.entra.as_deref().is_some_and(|e| e.eq_ignore_ascii_case("enabled")),
+            _ => mysql_entra.unwrap_or(false),
+        };
+        let suffix =
+            if engine == Engine::Postgres { "postgres.database.azure.com" } else { "mysql.database.azure.com" };
+        let host = server.fqdn.clone().filter(|h| !h.is_empty()).unwrap_or_else(|| format!("{}.{suffix}", server.name));
+        let mut databases: Vec<String> =
+            names.unwrap_or_default().into_iter().filter(|d| !system_database(engine, d)).collect();
+        if databases.len() > 1 {
+            databases.retain(|d| d != "postgres");
+        }
+        if databases.is_empty() {
+            databases.push(default_database(engine).to_string());
+        }
+        for database in databases {
+            out.push(DiscoveredDatabase {
+                alias: String::new(),
+                cloud: Cloud::Azure,
+                engine,
+                environment: infer_environment(&format!("{database} {}", server.name)),
+                server: server.name.clone(),
+                host: host.clone(),
+                database,
+                location: server.location.clone(),
+                subscription: server.subscription.clone(),
+                resource_group: server.resource_group.clone(),
+                port: Some(if engine == Engine::Postgres { 5432 } else { 3306 }),
+                user: if entra { None } else { server.admin.clone().filter(|a| !a.is_empty()) },
+                region: None,
+                auth: if entra { AuthKind::Entra } else { AuthKind::Password },
+                saved_as: None,
+            });
+        }
+    }
+    out.retain(|d| terms.iter().all(|t| matches_term(&d.database, t) || matches_term(&d.server, t)));
+    assign_aliases(&mut out);
+    Ok(out)
+}
+
+fn flexible_engine(kind: &str) -> Option<Engine> {
+    match kind.to_ascii_lowercase().as_str() {
+        "microsoft.dbforpostgresql/flexibleservers" => Some(Engine::Postgres),
+        "microsoft.dbformysql/flexibleservers" => Some(Engine::Mysql),
+        _ => None,
+    }
 }
 
 /// `shop` matches `shop-alp-db` but not `tenant_t_kjrshopbj3g236fv8_db`: plain terms match whole name segments, terms with separators match anywhere.
@@ -181,9 +375,10 @@ pub fn infer_environment(text: &str) -> Environment {
 /// `shop-alp-db` becomes `shop-alpha-db`; a database that also lives on a failover server gets `-failover`. On AWS the
 /// instance or cluster identifier names the database better than its DBName, which is often just `postgres`.
 fn alias_for(d: &DiscoveredDatabase) -> String {
+    let default = d.database.is_empty() || d.database == default_database(d.engine);
     let name = match d.cloud {
-        Cloud::Azure => &d.database,
-        Cloud::Aws => &d.server,
+        Cloud::Azure if !default => &d.database,
+        _ => &d.server,
     };
     let base: Vec<String> = tokens(name)
         .into_iter()

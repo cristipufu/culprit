@@ -1,0 +1,93 @@
+{
+  "a": {
+    "connection": "mssql-demo",
+    "database": "culprit_demo",
+    "engine": "mssql",
+    "environment": "local",
+    "product": "SQL Server 2022",
+    "taken_at": "2026-10-11T12:13:47Z",
+    "version": "16.0.4295.3"
+  },
+  "b": {
+    "connection": "mssql-demo-staging",
+    "database": "culprit_demo",
+    "engine": "mssql",
+    "environment": "staging",
+    "product": "SQL Server 2022",
+    "taken_at": "2026-10-11T12:15:12Z",
+    "version": "16.0.4175.1"
+  },
+  "items": [
+    {
+      "a": null,
+      "b": "ix_order_items_order_id (order_id)",
+      "kind": "index",
+      "presence": "only-b",
+      "sql": "CREATE NONCLUSTERED INDEX [ix_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
+      "sql_for": "mssql-demo",
+      "subject": "shop.order_items.ix_order_items_order_id",
+      "title": "shop.order_items has an index on (order_id) in mssql-demo-staging that mssql-demo lacks."
+    },
+    {
+      "a": "ix_support_tickets_priority (priority)",
+      "b": null,
+      "kind": "index",
+      "presence": "only-a",
+      "sql": "CREATE NONCLUSTERED INDEX [ix_support_tickets_priority]\n    ON [shop].[support_tickets] ([priority])\n    WITH (ONLINE = ON);",
+      "sql_for": "mssql-demo-staging",
+      "subject": "shop.support_tickets.ix_support_tickets_priority",
+      "title": "shop.support_tickets has an index on (priority) in mssql-demo that mssql-demo-staging lacks."
+    },
+    {
+      "a": "ix_orders_channel (channel)",
+      "b": "ix_orders_by_channel (channel)",
+      "kind": "index",
+      "presence": "renamed",
+      "sql": null,
+      "sql_for": null,
+      "subject": "shop.orders.ix_orders_channel",
+      "title": "shop.orders has the same index under different names: ix_orders_channel in mssql-demo, ix_orders_by_channel in mssql-demo-staging."
+    },
+    {
+      "a": "varchar(200) NOT NULL",
+      "b": "nvarchar(200) NOT NULL",
+      "kind": "column",
+      "presence": "different",
+      "sql": null,
+      "sql_for": null,
+      "subject": "shop.customers.email",
+      "title": "shop.customers.email is varchar(200) in mssql-demo and nvarchar(200) in mssql-demo-staging."
+    },
+    {
+      "a": "160",
+      "b": "150",
+      "kind": "setting",
+      "presence": "different",
+      "sql": null,
+      "sql_for": null,
+      "subject": "compatibility_level",
+      "title": "compatibility_level is 160 in mssql-demo and 150 in mssql-demo-staging."
+    },
+    {
+      "a": "0",
+      "b": "1",
+      "kind": "setting",
+      "presence": "different",
+      "sql": null,
+      "sql_for": null,
+      "subject": "is_read_committed_snapshot_on",
+      "title": "is_read_committed_snapshot_on is 0 in mssql-demo and 1 in mssql-demo-staging."
+    },
+    {
+      "a": "SQL Server 2022 16.0.4295.3",
+      "b": "SQL Server 2022 16.0.4175.1",
+      "kind": "version",
+      "presence": "different",
+      "sql": null,
+      "sql_for": null,
+      "subject": "version",
+      "title": "mssql-demo runs SQL Server 2022 16.0.4295.3 and mssql-demo-staging runs SQL Server 2022 16.0.4175.1."
+    }
+  ],
+  "summary": "6 differences: 2 indexes, 1 column, 2 settings and 1 version. One index only differs by name."
+}

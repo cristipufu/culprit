@@ -1540,6 +1540,26 @@
           "temp_writes": 543988.0,
           "text": "SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note",
           "total_time_ms": 71022.31686599995,
+          "trend": {
+            "executions": [
+              27.0,
+              34.0,
+              36.0,
+              29.0,
+              35.0,
+              15.0,
+              25.0
+            ],
+            "time_ms": [
+              10247.08,
+              12513.84,
+              12650.91,
+              8934.77,
+              11151.28,
+              4480.94,
+              8973.88
+            ]
+          },
           "waits": []
         },
         {
@@ -1696,6 +1716,26 @@
           "temp_writes": 0.0,
           "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2",
           "total_time_ms": 37678.48510800003,
+          "trend": {
+            "executions": [
+              127.0,
+              115.0,
+              117.0,
+              107.0,
+              143.0,
+              85.0,
+              105.0
+            ],
+            "time_ms": [
+              6132.11,
+              5571.4,
+              5546.5,
+              4344.01,
+              6357.44,
+              3596.12,
+              3987.32
+            ]
+          },
           "waits": []
         },
         {
@@ -1757,6 +1797,26 @@
           "temp_writes": 0.0,
           "text": "SELECT pg_sleep($1)",
           "total_time_ms": 20020.476877,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              18379.87,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -1853,6 +1913,26 @@
           "temp_writes": 0.0,
           "text": "UPDATE products SET name = name WHERE id = $1",
           "total_time_ms": 18957.566422,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              20563.1,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2012,6 +2092,26 @@
           "temp_writes": 0.0,
           "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1",
           "total_time_ms": 6787.841944999999,
+          "trend": {
+            "executions": [
+              53.0,
+              54.0,
+              73.0,
+              54.0,
+              54.0,
+              38.0,
+              46.0
+            ],
+            "time_ms": [
+              816.47,
+              819.98,
+              1117.52,
+              1035.42,
+              1008.18,
+              580.75,
+              863.54
+            ]
+          },
           "waits": []
         },
         {
@@ -2204,6 +2304,26 @@
           "temp_writes": 0.0,
           "text": "SELECT status, count(*), sum(total) FROM orders WHERE created_at > now() - interval $1 GROUP BY status",
           "total_time_ms": 2376.705239000001,
+          "trend": {
+            "executions": [
+              38.0,
+              27.0,
+              29.0,
+              32.0,
+              25.0,
+              13.0,
+              27.0
+            ],
+            "time_ms": [
+              462.6,
+              317.07,
+              381.82,
+              365.41,
+              323.75,
+              166.28,
+              287.3
+            ]
+          },
           "waits": []
         },
         {
@@ -2332,6 +2452,26 @@
           "temp_writes": 0.0,
           "text": "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind",
           "total_time_ms": 129.85778199999993,
+          "trend": {
+            "executions": [
+              260.0,
+              214.0,
+              265.0,
+              307.0,
+              257.0,
+              155.0,
+              172.0
+            ],
+            "time_ms": [
+              21.82,
+              15.29,
+              19.55,
+              23.51,
+              21.53,
+              11.31,
+              14.46
+            ]
+          },
           "waits": []
         },
         {
@@ -2396,6 +2536,26 @@
           "temp_writes": 0.0,
           "text": "SELECT name, email FROM customers WHERE id = $1",
           "total_time_ms": 129.0606290000006,
+          "trend": {
+            "executions": [
+              1382.0,
+              1132.0,
+              1434.0,
+              1041.0,
+              1322.0,
+              634.0,
+              739.0
+            ],
+            "time_ms": [
+              23.72,
+              16.08,
+              22.41,
+              17.51,
+              21.18,
+              9.47,
+              11.71
+            ]
+          },
           "waits": []
         },
         {
@@ -2418,6 +2578,26 @@
           "temp_writes": 0.0,
           "text": "CREATE DATABASE bare",
           "total_time_ms": 48.613977,
+          "trend": {
+            "executions": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              48.73,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2514,6 +2694,26 @@
           "temp_writes": 0.0,
           "text": "UPDATE products SET price = price WHERE id = $1",
           "total_time_ms": 0.31157999999999997,
+          "trend": {
+            "executions": [
+              null,
+              null,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              null,
+              null,
+              0.0,
+              0.32,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2575,6 +2775,26 @@
           "temp_writes": 0.0,
           "text": "SELECT pg_stat_statements_reset()",
           "total_time_ms": 0.06691599999999999,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.07,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2672,6 +2892,26 @@
           "temp_writes": 0.0,
           "text": "select count(*), sum(calls) from pg_stat_statements where query like $1",
           "total_time_ms": 0.055082,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.05,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2733,6 +2973,26 @@
           "temp_writes": 0.0,
           "text": "SELECT pg_stat_reset()",
           "total_time_ms": 0.021083,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.02,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2755,6 +3015,26 @@
           "temp_writes": 0.0,
           "text": "DROP DATABASE IF EXISTS bare",
           "total_time_ms": 0.009417,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.01,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2777,6 +3057,26 @@
           "temp_writes": 0.0,
           "text": "COMMIT",
           "total_time_ms": 0.002167,
+          "trend": {
+            "executions": [
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         },
         {
@@ -2799,11 +3099,62 @@
           "temp_writes": 0.0,
           "text": "BEGIN",
           "total_time_ms": 0.002,
+          "trend": {
+            "executions": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "time_ms": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
           "waits": []
         }
       ],
       "query_count": 16.0,
       "source": "pg_stat_statements",
+      "timeline": {
+        "end": "2026-10-11T11:54:21Z",
+        "executions": [
+          1889.0,
+          1576.0,
+          1955.0,
+          1574.0,
+          1839.0,
+          940.0,
+          1114.0
+        ],
+        "source": "scans",
+        "starts": [
+          "2026-10-11T07:20:00Z",
+          "2026-10-11T08:05:12Z",
+          "2026-10-11T08:41:40Z",
+          "2026-10-11T09:28:03Z",
+          "2026-10-11T10:12:55Z",
+          "2026-10-11T10:57:31Z",
+          "2026-10-11T11:22:10Z"
+        ],
+        "time_ms": [
+          17752.53,
+          19253.66,
+          40301.81,
+          14721.03,
+          37263.3,
+          8844.87,
+          14138.21
+        ]
+      },
       "total_cpu_ms": null,
       "total_executions": 11608.0,
       "total_time_ms": 157151.39308999997,

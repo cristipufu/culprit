@@ -493,6 +493,7 @@ async fn collect_with_base(
             plans: Vec::new(),
             plan: None,
             waits: Vec::new(),
+            trend: None,
         })
         .collect();
 
@@ -510,6 +511,7 @@ async fn collect_with_base(
             total_executions: total_calls,
             query_count: count,
             queries,
+            timeline: None,
         },
         plan_note,
     }))
@@ -570,13 +572,16 @@ async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32) -
 }
 
 async fn generic_plan_json(client: &Client, statement: &str) -> Option<String> {
+    // Statement text was written by whoever ran it; it must lex as exactly one statement before it reaches EXPLAIN.
+    let statement = culprit_core::sql::single_statement(statement, Engine::Postgres).ok()?;
     let explain = |text: &str| format!("EXPLAIN (FORMAT JSON, VERBOSE, GENERIC_PLAN) {text}");
     let first = query(client, &explain(statement)).await;
     let rows = match first {
         Ok(rows) => rows,
         Err(_) => {
             let rewritten = cast_typed_placeholders(statement)?;
-            query(client, &explain(&rewritten)).await.ok()?
+            let rewritten = culprit_core::sql::single_statement(&rewritten, Engine::Postgres).ok()?;
+            query(client, &explain(rewritten)).await.ok()?
         }
     };
     rows.first().and_then(|r| r.text("QUERY PLAN"))

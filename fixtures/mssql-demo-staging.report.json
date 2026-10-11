@@ -1,0 +1,2022 @@
+{
+  "findings": [
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "unindexed-fk",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]\n    ON [shop].[ticket_events] ([ticket_id])\n    WITH (ONLINE = ON);",
+        "summary": "Index the foreign key column on shop.ticket_events."
+      },
+      "id": "unindexed-fk:shop.ticket_events(ticket_id)",
+      "impact": {
+        "db_time_share": null,
+        "label": "800K rows unindexed",
+        "score": 11.806179973983888,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 800000.0
+        },
+        {
+          "label": "Foreign key",
+          "text": "fk_ticket_events_ticket",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.ticket_events"
+      },
+      "summary": "Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.",
+      "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
+      "verify": [
+        "Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
+        "Reads on read replicas or secondaries are not counted here. Check them before dropping."
+      ],
+      "check": "unused-index",
+      "confidence": "low",
+      "fix": {
+        "cost": "Frees 32.3 MB and makes writes to shop.orders cheaper.",
+        "sql": "ALTER INDEX [ix_orders_status_created] ON [shop].[orders] DISABLE;",
+        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
+      },
+      "id": "unused-index:shop.orders",
+      "impact": {
+        "db_time_share": null,
+        "label": "32.3 MB unused",
+        "score": 8.031562805175781,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 33890304.0
+        },
+        {
+          "label": "Writes to the table",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "label": "Counting for",
+          "text": null,
+          "unit": "days",
+          "value": 0.0014930555555555556
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.orders"
+      },
+      "summary": "No query has read ix_orders_status_created in the 1 hours since the server last restarted, while shop.orders was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 32.3 MB of storage and buffer memory.",
+      "title": "ix_orders_status_created on orders is never read",
+      "verify": [
+        "Watch the queries on this table for a week after disabling; none should get slower."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
+      ],
+      "check": "duplicate-index",
+      "confidence": "medium",
+      "fix": {
+        "cost": "Frees 26.5 MB.",
+        "sql": "DROP INDEX [ix_orders_status] ON [shop].[orders];",
+        "summary": "Drop ix_orders_status and keep ix_orders_status_created."
+      },
+      "id": "duplicate-index:shop.orders.ix_orders_status",
+      "impact": {
+        "db_time_share": null,
+        "label": "26.5 MB redundant",
+        "score": 8.025886535644531,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 27795456.0
+        },
+        {
+          "label": "Reads of ix_orders_status",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "shop.orders.ix_orders_status"
+      },
+      "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
+      "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
+      "verify": []
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
+        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
+        "ix_order_items_product_id (foreign key fk_order_items_product) also supports a foreign key: without it, deleting or updating parent rows scans this table."
+      ],
+      "check": "unused-index",
+      "confidence": "low",
+      "fix": {
+        "cost": "Frees 26.4 MB and makes writes to shop.order_items cheaper.",
+        "sql": "ALTER INDEX [ix_order_items_product_id] ON [shop].[order_items] DISABLE;",
+        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
+      },
+      "id": "unused-index:shop.order_items",
+      "impact": {
+        "db_time_share": null,
+        "label": "26.4 MB unused",
+        "score": 8.025825500488281,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 27729920.0
+        },
+        {
+          "label": "Writes to the table",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "label": "Counting for",
+          "text": null,
+          "unit": "days",
+          "value": 0.0014930555555555556
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.order_items"
+      },
+      "summary": "No query has read ix_order_items_product_id in the 1 hours since the server last restarted, while shop.order_items was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 26.4 MB of storage and buffer memory.",
+      "title": "ix_order_items_product_id on order_items is never read",
+      "verify": [
+        "Watch the queries on this table for a week after disabling; none should get slower."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
+        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
+        "ix_support_tickets_customer_id (foreign key fk_support_tickets_customer) also supports a foreign key: without it, deleting or updating parent rows scans this table."
+      ],
+      "check": "unused-index",
+      "confidence": "low",
+      "fix": {
+        "cost": "Frees 4.3 MB and makes writes to shop.support_tickets cheaper.",
+        "sql": "ALTER INDEX [ix_support_tickets_customer_id] ON [shop].[support_tickets] DISABLE;",
+        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
+      },
+      "id": "unused-index:shop.support_tickets",
+      "impact": {
+        "db_time_share": null,
+        "label": "4.3 MB unused",
+        "score": 8.004158020019531,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 4464640.0
+        },
+        {
+          "label": "Writes to the table",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        },
+        {
+          "label": "Counting for",
+          "text": null,
+          "unit": "days",
+          "value": 0.0014930555555555556
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.support_tickets"
+      },
+      "summary": "No query has read ix_support_tickets_customer_id in the 1 hours since the server last restarted, while shop.support_tickets was written 0 times. It still has to be updated on every insert, and on updates that touch its columns, and it takes 4.3 MB of storage and buffer memory.",
+      "title": "ix_support_tickets_customer_id on support_tickets is never read",
+      "verify": [
+        "Watch the queries on this table for a week after disabling; none should get slower."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "duplicate-index",
+      "confidence": "high",
+      "fix": {
+        "cost": "Frees 648 KB.",
+        "sql": "DROP INDEX [ix_products_sku] ON [shop].[products];",
+        "summary": "Drop ix_products_sku and keep uq_products_sku."
+      },
+      "id": "duplicate-index:shop.products.ix_products_sku",
+      "impact": {
+        "db_time_share": null,
+        "label": "648 KB redundant",
+        "score": 8.000617980957031,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 663552.0
+        },
+        {
+          "label": "Reads of ix_products_sku",
+          "text": null,
+          "unit": "count",
+          "value": 1.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "shop.products.ix_products_sku"
+      },
+      "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
+      "title": "ix_products_sku duplicates uq_products_sku on products",
+      "verify": []
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50; RECONFIGURE;",
+        "summary": "A common starting point is 50; adjust with your workload."
+      },
+      "id": "config:cost-threshold-for-parallelism",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "cost-threshold-for-parallelism"
+      },
+      "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
+      "title": "Cost threshold for parallelism is still the 1990s default of 5",
+      "verify": []
+    }
+  ],
+  "locked": [
+    {
+      "check": {
+        "category": "indexes",
+        "description": "Heavy queries whose plan reads a large table in full and keeps only the rows matching a filter that no index supports.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql"
+        ],
+        "id": "filtered-scan",
+        "requires": [
+          "query-plans"
+        ],
+        "title": "Scans an index would avoid"
+      },
+      "missing": [
+        "query-plans"
+      ]
+    },
+    {
+      "check": {
+        "category": "queries",
+        "description": "Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql"
+        ],
+        "id": "plan-warnings",
+        "requires": [
+          "query-plans"
+        ],
+        "title": "Plan warnings"
+      },
+      "missing": [
+        "query-plans"
+      ]
+    },
+    {
+      "check": {
+        "category": "queries",
+        "description": "Queries whose current plan is much slower than a plan they used before.",
+        "engines": [
+          "mssql"
+        ],
+        "id": "plan-regression",
+        "requires": [
+          "query-store"
+        ],
+        "title": "Plan regressions"
+      },
+      "missing": [
+        "query-store"
+      ]
+    }
+  ],
+  "snapshot": {
+    "columns": [
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "nvarchar(200)",
+        "default": null,
+        "generated": false,
+        "name": "email",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "nvarchar(100)",
+        "default": null,
+        "generated": false,
+        "name": "name",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "char(2)",
+        "default": null,
+        "generated": false,
+        "name": "country_code",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "varchar(20)",
+        "default": null,
+        "generated": false,
+        "name": "segment",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "ordinal": 6,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "data_type": "bigint",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "bigint",
+        "default": null,
+        "generated": false,
+        "name": "order_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": false,
+        "name": "product_id",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": false,
+        "name": "quantity",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "decimal(10,2)",
+        "default": null,
+        "generated": false,
+        "name": "unit_price",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "data_type": "bigint",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": false,
+        "name": "customer_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "varchar(20)",
+        "default": null,
+        "generated": false,
+        "name": "status",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "varchar(20)",
+        "default": null,
+        "generated": false,
+        "name": "channel",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "decimal(12,2)",
+        "default": null,
+        "generated": false,
+        "name": "total",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "ordinal": 6,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "shipped_at",
+        "nullable": true,
+        "ordinal": 7,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "varchar(32)",
+        "default": null,
+        "generated": false,
+        "name": "sku",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "nvarchar(200)",
+        "default": null,
+        "generated": false,
+        "name": "name",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "varchar(40)",
+        "default": null,
+        "generated": false,
+        "name": "category",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "decimal(10,2)",
+        "default": null,
+        "generated": false,
+        "name": "price",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "bit",
+        "default": null,
+        "generated": false,
+        "name": "is_active",
+        "nullable": false,
+        "ordinal": 6,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": false,
+        "name": "customer_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "tinyint",
+        "default": null,
+        "generated": false,
+        "name": "priority",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "varchar(20)",
+        "default": null,
+        "generated": false,
+        "name": "status",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "nvarchar(200)",
+        "default": null,
+        "generated": false,
+        "name": "subject",
+        "nullable": false,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "opened_at",
+        "nullable": false,
+        "ordinal": 6,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "closed_at",
+        "nullable": true,
+        "ordinal": 7,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "data_type": "bigint",
+        "default": null,
+        "generated": true,
+        "name": "id",
+        "nullable": false,
+        "ordinal": 1,
+        "schema": "shop",
+        "table": "ticket_events"
+      },
+      {
+        "data_type": "int",
+        "default": null,
+        "generated": false,
+        "name": "ticket_id",
+        "nullable": false,
+        "ordinal": 2,
+        "schema": "shop",
+        "table": "ticket_events"
+      },
+      {
+        "data_type": "varchar(30)",
+        "default": null,
+        "generated": false,
+        "name": "event_type",
+        "nullable": false,
+        "ordinal": 3,
+        "schema": "shop",
+        "table": "ticket_events"
+      },
+      {
+        "data_type": "datetime2(0)",
+        "default": null,
+        "generated": false,
+        "name": "created_at",
+        "nullable": false,
+        "ordinal": 4,
+        "schema": "shop",
+        "table": "ticket_events"
+      },
+      {
+        "data_type": "nvarchar(200)",
+        "default": null,
+        "generated": false,
+        "name": "note",
+        "nullable": true,
+        "ordinal": 5,
+        "schema": "shop",
+        "table": "ticket_events"
+      }
+    ],
+    "connection": "mssql-demo-staging",
+    "duration_ms": 456.244667,
+    "environment": "staging",
+    "foreign_keys": [
+      {
+        "columns": [
+          "order_id"
+        ],
+        "name": "fk_order_items_order",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "orders",
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "columns": [
+          "product_id"
+        ],
+        "name": "fk_order_items_product",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "products",
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "name": "fk_orders_customer",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "customers",
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "name": "fk_support_tickets_customer",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "customers",
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "columns": [
+          "ticket_id"
+        ],
+        "name": "fk_ticket_events_ticket",
+        "ref_columns": [
+          "id"
+        ],
+        "ref_schema": "shop",
+        "ref_table": "support_tickets",
+        "schema": "shop",
+        "table": "ticket_events"
+      }
+    ],
+    "format": 1,
+    "id": "20261011T121512.204Z",
+    "indexes": [
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": "2026-10-11T12:13:36Z",
+        "lookups": 600.0,
+        "name": "pk_customers",
+        "reads": 600.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 17506304.0,
+        "table": "customers",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "email"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": "2026-10-11T12:13:36Z",
+        "lookups": 0.0,
+        "name": "ix_customers_email",
+        "reads": 602.0,
+        "scans": 602.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 7413760.0,
+        "table": "customers",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": "2026-10-11T12:13:25Z",
+        "lookups": 0.0,
+        "name": "pk_products",
+        "reads": 30000.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 30000.0,
+        "size_bytes": 1646592.0,
+        "table": "products",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": true,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "uq_products_sku",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
+        "table": "products",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "sku"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": "2026-10-11T12:13:19Z",
+        "lookups": 0.0,
+        "name": "ix_products_sku",
+        "reads": 1.0,
+        "scans": 1.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
+        "table": "products",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": "2026-10-11T12:13:40Z",
+        "lookups": 2000.0,
+        "name": "pk_orders",
+        "reads": 2150.0,
+        "scans": 150.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 62070784.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "customer_id",
+          "created_at"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": "2026-10-11T12:13:20Z",
+        "lookups": 0.0,
+        "name": "ix_orders_customer_id",
+        "reads": 2000.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 2000.0,
+        "size_bytes": 24649728.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "status"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "ix_orders_status",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 27795456.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "status",
+          "created_at"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "ix_orders_status_created",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 33890304.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "channel"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": "2026-10-11T12:13:19Z",
+        "lookups": 0.0,
+        "name": "ix_orders_by_channel",
+        "reads": 1.0,
+        "scans": 1.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 22290432.0,
+        "table": "orders",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": "2026-10-11T12:13:44Z",
+        "lookups": 0.0,
+        "name": "pk_order_items",
+        "reads": 300.0,
+        "scans": 300.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 64495616.0,
+        "table": "order_items",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "product_id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "ix_order_items_product_id",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 27729920.0,
+        "table": "order_items",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": "2026-10-11T12:13:47Z",
+        "lookups": 2005.0,
+        "name": "pk_support_tickets",
+        "reads": 2005.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 27992064.0,
+        "table": "support_tickets",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "customer_id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "ix_support_tickets_customer_id",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 4464640.0,
+        "table": "support_tickets",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": true,
+        "is_disabled": false,
+        "is_primary_key": true,
+        "is_unique": true,
+        "kind": "clustered",
+        "last_read": null,
+        "lookups": 0.0,
+        "name": "pk_ticket_events",
+        "reads": 0.0,
+        "scans": 0.0,
+        "schema": "shop",
+        "seeks": 0.0,
+        "size_bytes": 39460864.0,
+        "table": "ticket_events",
+        "writes": 0.0
+      },
+      {
+        "columns": [
+          "order_id"
+        ],
+        "definition": null,
+        "filter": null,
+        "include": [],
+        "is_clustered": false,
+        "is_disabled": false,
+        "is_primary_key": false,
+        "is_unique": false,
+        "kind": "nonclustered",
+        "last_read": null,
+        "lookups": null,
+        "name": "ix_order_items_order_id",
+        "reads": null,
+        "scans": null,
+        "schema": "shop",
+        "seeks": null,
+        "size_bytes": 27729920.0,
+        "table": "order_items",
+        "writes": null
+      }
+    ],
+    "missing_indexes": [],
+    "notes": [],
+    "options": {
+      "plans": 25,
+      "top_queries": 60,
+      "window_days": 7
+    },
+    "resources": [],
+    "server": {
+      "capabilities": [
+        "table-stats",
+        "index-usage",
+        "missing-indexes",
+        "statistics",
+        "wait-stats",
+        "sessions",
+        "showplan"
+      ],
+      "cloud": null,
+      "database": "culprit_demo",
+      "database_size_bytes": 411041792.0,
+      "edition": "Developer Edition (64-bit)",
+      "engine": "mssql",
+      "missing": [
+        {
+          "capability": "query-store",
+          "fix": "ALTER DATABASE CURRENT SET QUERY_STORE = ON;",
+          "reason": "Query Store is OFF on this database."
+        }
+      ],
+      "product": "SQL Server 2022",
+      "read_only_session": false,
+      "started_at": "2026-10-11T12:13:03Z",
+      "version": "16.0.4175.1"
+    },
+    "settings": [
+      {
+        "default_value": null,
+        "name": "compatibility_level",
+        "scope": "database",
+        "value": "150"
+      },
+      {
+        "default_value": null,
+        "name": "is_read_committed_snapshot_on",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "snapshot_isolation_state_desc",
+        "scope": "database",
+        "value": "OFF"
+      },
+      {
+        "default_value": null,
+        "name": "is_auto_create_stats_on",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "is_auto_update_stats_on",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "is_auto_update_stats_async_on",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": null,
+        "name": "is_parameterization_forced",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": null,
+        "name": "is_query_store_on",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "page_verify_option_desc",
+        "scope": "database",
+        "value": "CHECKSUM"
+      },
+      {
+        "default_value": null,
+        "name": "recovery_model_desc",
+        "scope": "database",
+        "value": "SIMPLE"
+      },
+      {
+        "default_value": null,
+        "name": "target_recovery_time_in_seconds",
+        "scope": "database",
+        "value": "60"
+      },
+      {
+        "default_value": "0",
+        "name": "MAXDOP",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "0",
+        "name": "LEGACY_CARDINALITY_ESTIMATION",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "PARAMETER_SNIFFING",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "0",
+        "name": "QUERY_OPTIMIZER_HOTFIXES",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "IDENTITY_CACHE",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "INTERLEAVED_EXECUTION_TVF",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "BATCH_MODE_MEMORY_GRANT_FEEDBACK",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "BATCH_MODE_ADAPTIVE_JOINS",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "TSQL_SCALAR_UDF_INLINING",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "OFF",
+        "name": "ELEVATE_ONLINE",
+        "scope": "database",
+        "value": "OFF"
+      },
+      {
+        "default_value": "OFF",
+        "name": "ELEVATE_RESUMABLE",
+        "scope": "database",
+        "value": "OFF"
+      },
+      {
+        "default_value": "0",
+        "name": "OPTIMIZE_FOR_AD_HOC_WORKLOADS",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "0",
+        "name": "XTP_PROCEDURE_EXECUTION_STATISTICS",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "0",
+        "name": "XTP_QUERY_EXECUTION_STATISTICS",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "ROW_MODE_MEMORY_GRANT_FEEDBACK",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "0",
+        "name": "ISOLATE_SECURITY_POLICY_CARDINALITY",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "BATCH_MODE_ON_ROWSTORE",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "DEFERRED_COMPILATION_TV",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "ACCELERATED_PLAN_FORCING",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "GLOBAL_TEMPORARY_TABLE_AUTO_DROP",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "LIGHTWEIGHT_QUERY_PROFILING",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "VERBOSE_TRUNCATION_WARNINGS",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "0",
+        "name": "LAST_QUERY_PLAN_STATS",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1440",
+        "name": "PAUSED_RESUMABLE_INDEX_ABORT_DURATION_MINUTES",
+        "scope": "database",
+        "value": "1440"
+      },
+      {
+        "default_value": "0",
+        "name": "DW_COMPATIBILITY_LEVEL",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "EXEC_QUERY_STATS_FOR_SCALAR_FUNCTIONS",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "PARAMETER_SENSITIVE_PLAN_OPTIMIZATION",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "0",
+        "name": "ASYNC_STATS_UPDATE_WAIT_AT_LOW_PRIORITY",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "1",
+        "name": "CE_FEEDBACK",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "MEMORY_GRANT_FEEDBACK_PERSISTENCE",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "MEMORY_GRANT_FEEDBACK_PERCENTILE_GRANT",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "1",
+        "name": "OPTIMIZED_PLAN_FORCING",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": "0",
+        "name": "DOP_FEEDBACK",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "OFF",
+        "name": "LEDGER_DIGEST_STORAGE_ENDPOINT",
+        "scope": "database",
+        "value": "OFF"
+      },
+      {
+        "default_value": "0",
+        "name": "FORCE_SHOWPLAN_RUNTIME_PARAMETER_COLLECTION",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": "5",
+        "name": "cost threshold for parallelism",
+        "scope": "server",
+        "value": "5"
+      },
+      {
+        "default_value": "0",
+        "name": "max degree of parallelism",
+        "scope": "server",
+        "value": "0"
+      },
+      {
+        "default_value": "2147483647",
+        "name": "max server memory (MB)",
+        "scope": "server",
+        "value": "2147483647"
+      },
+      {
+        "default_value": "0",
+        "name": "optimize for ad hoc workloads",
+        "scope": "server",
+        "value": "0"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.desired_state",
+        "scope": "database",
+        "value": "2"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.desired_state_desc",
+        "scope": "database",
+        "value": "READ_WRITE"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.actual_state",
+        "scope": "database",
+        "value": "2"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.actual_state_desc",
+        "scope": "database",
+        "value": "READ_WRITE"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.readonly_reason",
+        "scope": "database",
+        "value": "0"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.current_storage_size_mb",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.flush_interval_seconds",
+        "scope": "database",
+        "value": "60"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.interval_length_minutes",
+        "scope": "database",
+        "value": "5"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.max_storage_size_mb",
+        "scope": "database",
+        "value": "1000"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.stale_query_threshold_days",
+        "scope": "database",
+        "value": "30"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.max_plans_per_query",
+        "scope": "database",
+        "value": "200"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.query_capture_mode",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.query_capture_mode_desc",
+        "scope": "database",
+        "value": "ALL"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.size_based_cleanup_mode",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.size_based_cleanup_mode_desc",
+        "scope": "database",
+        "value": "AUTO"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.wait_stats_capture_mode",
+        "scope": "database",
+        "value": "1"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.wait_stats_capture_mode_desc",
+        "scope": "database",
+        "value": "ON"
+      },
+      {
+        "default_value": null,
+        "name": "query_store_options.actual_state_additional_info",
+        "scope": "database",
+        "value": ""
+      }
+    ],
+    "statistics": [
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:06Z",
+        "modifications": 0.0,
+        "name": "pk_customers",
+        "rows": 200000.0,
+        "rows_sampled": 110814.0,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T12:13:25Z",
+        "modifications": 0.0,
+        "name": "ix_customers_email",
+        "rows": 200000.0,
+        "rows_sampled": 111593.0,
+        "schema": "shop",
+        "table": "customers"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T12:13:20Z",
+        "modifications": 0.0,
+        "name": "pk_products",
+        "rows": 20000.0,
+        "rows_sampled": 20000.0,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": null,
+        "name": "uq_products_sku",
+        "rows": null,
+        "rows_sampled": null,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": null,
+        "name": "ix_products_sku",
+        "rows": null,
+        "rows_sampled": null,
+        "schema": "shop",
+        "table": "products"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "pk_orders",
+        "rows": 1000000.0,
+        "rows_sampled": 175627.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "ix_orders_customer_id",
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "ix_orders_status",
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "ix_orders_status_created",
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "ix_orders_channel",
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": true,
+        "last_updated": "2026-10-11T07:44:27Z",
+        "modifications": 0.0,
+        "name": "_WA_Sys_00000006_3A81B327",
+        "rows": 1000000.0,
+        "rows_sampled": 178273.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": true,
+        "last_updated": "2026-10-11T07:44:45Z",
+        "modifications": 0.0,
+        "name": "_WA_Sys_00000007_3A81B327",
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
+        "schema": "shop",
+        "table": "orders"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:47Z",
+        "modifications": 0.0,
+        "name": "pk_order_items",
+        "rows": 1500000.0,
+        "rows_sampled": 243358.0,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:47Z",
+        "modifications": 0.0,
+        "name": "ix_order_items_product_id",
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "auto_created": true,
+        "last_updated": "2026-10-11T07:44:47Z",
+        "modifications": 0.0,
+        "name": "_WA_Sys_00000002_3D5E1FD2",
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
+        "schema": "shop",
+        "table": "order_items"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:50Z",
+        "modifications": 0.0,
+        "name": "pk_support_tickets",
+        "rows": 300000.0,
+        "rows_sampled": 100832.0,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:50Z",
+        "modifications": 0.0,
+        "name": "ix_support_tickets_customer_id",
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "auto_created": false,
+        "last_updated": "2026-10-11T07:44:50Z",
+        "modifications": 0.0,
+        "name": "ix_support_tickets_priority",
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
+        "schema": "shop",
+        "table": "support_tickets"
+      },
+      {
+        "auto_created": false,
+        "last_updated": null,
+        "modifications": null,
+        "name": "pk_ticket_events",
+        "rows": null,
+        "rows_sampled": null,
+        "schema": "shop",
+        "table": "ticket_events"
+      }
+    ],
+    "tables": [
+      {
+        "data_bytes": 17506304.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 7413760.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "customers",
+        "rows": 200000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 24920064.0,
+        "updates": null,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 64495616.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 27729920.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "order_items",
+        "rows": 1500000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 92225536.0,
+        "updates": null,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 62070784.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 108625920.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "orders",
+        "rows": 1000000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 170696704.0,
+        "updates": null,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 1646592.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 1327104.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "products",
+        "rows": 20000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 2973696.0,
+        "updates": null,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 27992064.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 7946240.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "support_tickets",
+        "rows": 300000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 35938304.0,
+        "updates": null,
+        "xid_age": null
+      },
+      {
+        "data_bytes": 39460864.0,
+        "dead_rows": null,
+        "deletes": null,
+        "forwarded_records": null,
+        "has_primary_key": true,
+        "index_bytes": 0.0,
+        "index_scans": null,
+        "inserts": null,
+        "is_heap": false,
+        "last_analyze": null,
+        "last_vacuum": null,
+        "modifications_since_analyze": null,
+        "name": "ticket_events",
+        "rows": 800000.0,
+        "schema": "shop",
+        "seq_rows_read": null,
+        "seq_scans": null,
+        "total_bytes": 39460864.0,
+        "updates": null,
+        "xid_age": null
+      }
+    ],
+    "taken_at": "2026-10-11T12:15:12Z",
+    "waits": [
+      {
+        "category": "Latch",
+        "tasks": null,
+        "wait_ms": 82441.0,
+        "wait_type": "Latch"
+      },
+      {
+        "category": "Parallelism",
+        "tasks": null,
+        "wait_ms": 17665.0,
+        "wait_type": "Parallelism"
+      },
+      {
+        "category": "Memory",
+        "tasks": null,
+        "wait_ms": 5947.0,
+        "wait_type": "Memory"
+      },
+      {
+        "category": "CPU",
+        "tasks": null,
+        "wait_ms": 423.0,
+        "wait_type": "CPU"
+      },
+      {
+        "category": "Lock",
+        "tasks": null,
+        "wait_ms": 15.0,
+        "wait_type": "Lock"
+      }
+    ],
+    "workload": null
+  },
+  "summary": {
+    "by_category": [
+      {
+        "category": "indexes",
+        "count": 6
+      },
+      {
+        "category": "configuration",
+        "count": 1
+      }
+    ],
+    "by_severity": [
+      {
+        "count": 7,
+        "severity": "low"
+      }
+    ],
+    "headline": "7 opportunities.",
+    "opportunities": 7,
+    "top_share": null
+  }
+}

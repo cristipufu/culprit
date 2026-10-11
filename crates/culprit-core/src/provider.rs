@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::error::Result;
-use crate::model::{Engine, LiveState, ResultSet, ServerInfo, Snapshot};
+use crate::error::{Error, ErrorCode, Result};
+use crate::model::{Engine, LiveState, ResultSet, ServerInfo, SessionAction, Snapshot};
 use crate::plan::Plan;
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
@@ -48,11 +48,29 @@ pub trait Provider: Send + Sync {
 
     async fn live(&self) -> Result<LiveState>;
 
-    /// Run a statement and return up to `limit` rows. Callers enforce environment rules before calling.
+    /// Run a statement that reads and return up to `limit` rows, inside a read-only transaction where the engine has one.
+    /// Callers enforce environment rules before calling.
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet>;
+
+    /// Run a statement that changes data (or that Culprit can't prove only reads) in a read-write session and commit it.
+    /// Callers have already asked for confirmation where the environment requires it.
+    async fn execute(&self, _sql: &str, _limit: usize) -> Result<ResultSet> {
+        Err(Error::new(ErrorCode::Unsupported, "This engine can't run statements that change data"))
+    }
 
     /// A plan the engine kept for a query (Query Store keeps every plan a query used). `None` when the engine keeps no plans.
     async fn stored_plan(&self, _query_id: &str, _plan_id: &str) -> Result<Option<Plan>> {
         Ok(None)
+    }
+
+    /// What `interrupt_session` supports on this engine.
+    fn session_actions(&self) -> Vec<SessionAction> {
+        Vec::new()
+    }
+
+    /// Cancel another session's statement or end the session. `session` is an id from `live()`. Implementations refuse
+    /// Culprit's own sessions and system sessions; callers enforce environment rules (never on production).
+    async fn interrupt_session(&self, _session: &str, _action: SessionAction) -> Result<()> {
+        Err(Error::new(ErrorCode::Unsupported, format!("{} sessions can't be ended from Culprit", self.engine())))
     }
 }

@@ -1,7 +1,8 @@
-import { Search, SquarePen } from "lucide-react";
+import { GitCompareArrows, Search, SquareArrowOutUpRight, SquarePen } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PlanDiagram } from "../components/PlanDiagram";
 import { PlanView } from "../components/PlanView";
+import { QueryTrend, Sparkline } from "../components/Trends";
 import { Sql } from "../components/Sql";
 import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
@@ -9,7 +10,8 @@ import type { Report } from "../gen/Report";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, oneLine, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { setState, useStore } from "../lib/store";
+import { addPlan, compare } from "../lib/plans";
+import { setState, toast, useStore } from "../lib/store";
 
 type SortKey = "share" | "runs" | "avg" | "max" | "rows" | "reads" | "cpu";
 
@@ -57,6 +59,7 @@ export function Queries({ report }: { report: Report }) {
   }, [workload, sort, filter]);
 
   const current = rows.find((q) => q.id === selected) ?? rows[0] ?? null;
+  const regressed = useMemo(() => new Set(report.findings.filter((f) => f.check === "regression").flatMap((f) => f.queries.map((r) => r.id))), [report.findings]);
 
   const move = (delta: number) => {
     const index = Math.max(0, rows.findIndex((q) => q.id === current?.id));
@@ -101,6 +104,7 @@ export function Queries({ report }: { report: Report }) {
                   DB time
                 </th>
                 <th>Query</th>
+                <th title="Average duration per run over the window">Trend</th>
                 {COLUMNS.map((c) => (
                   <th key={c.key} className={`r sortable ${sort === c.key ? "sorted" : ""}`} onClick={() => setSort(c.key)}>
                     {c.label}
@@ -122,6 +126,9 @@ export function Queries({ report }: { report: Report }) {
                       </span>
                     </td>
                     <td className="sqlcell">{q.object_name ? `${q.object_name}: ` : ""}{oneLine(q.text)}</td>
+                    <td className="trendcell">
+                      <Sparkline query={q} timeline={workload.timeline} alert={regressed.has(q.id)} />
+                    </td>
                     <td className="r">{count(perDay(q.executions))}</td>
                     <td className="r">{duration(q.mean_time_ms)}</td>
                     <td className="r">{duration(q.max_time_ms)}</td>
@@ -166,6 +173,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
           {query.logical_reads != null && <Metric value={count(query.logical_reads / Math.max(1, query.executions))} label="pages read per run" />}
         </div>
       </section>
+      {w.timeline && query.trend && <QueryTrend query={query} timeline={w.timeline} />}
       {related.length > 0 && (
         <section>
           <h3>Findings</h3>
@@ -243,6 +251,32 @@ function QueryPlans({ report, query, focus }: { report: Report; query: QueryStat
     } catch {}
   };
   const best = variants.length > 1 ? Math.min(...variants.map((v) => v.mean_time_ms)) : null;
+  const [comparing, setComparing] = useState(false);
+  const origin = `${connection} · query ${query.id}`;
+  const nameOf = (id: string | null) => (id ? `Plan ${id}` : `Query ${query.id}`);
+
+  /** The dominant plan next to the selected one (or the runner-up when the dominant one is selected), faster one first. */
+  const compareVariants = async () => {
+    const other = planId && planId !== dominant ? planId : variants[1]?.id;
+    if (!dominant || !other) return;
+    setComparing(true);
+    try {
+      const client = await api();
+      const load = (id: string) =>
+        id === dominant && query.plan ? Promise.resolve(query.plan) : state.status === "ready" && id === planId ? Promise.resolve(state.plan) : client.queryPlan(connection, query.id, id);
+      const [first, second] = await Promise.all([load(dominant), load(other)]);
+      // The faster plan is the baseline, so the comparison reads "the slow plan does X where the fast one does Y".
+      const speed = (id: string) => variants.find((v) => v.id === id)?.mean_time_ms ?? 0;
+      const a = { plan: first, name: nameOf(dominant), origin };
+      const b = { plan: second, name: nameOf(other), origin };
+      if (speed(dominant) <= speed(other)) compare(a, b);
+      else compare(b, a);
+    } catch (e) {
+      toast(errorMessage(e).message);
+    } finally {
+      setComparing(false);
+    }
+  };
 
   return (
     <section>
@@ -255,6 +289,16 @@ function QueryPlans({ report, query, focus }: { report: Report; query: QueryStat
           "Plan"
         )}
         <span className="actions">
+          {variants.length > 1 && (
+            <button className="btn ghost" disabled={comparing} title="Compare the plan that took the most time with the selected one" onClick={compareVariants}>
+              {comparing ? <span className="spinner" style={{ width: 11, height: 11 }} /> : <GitCompareArrows size={13} />} Compare
+            </button>
+          )}
+          {state.status === "ready" && (
+            <button className="btn ghost" title="Open this plan in Plans to save it or compare it with another" onClick={() => addPlan(state.plan, nameOf(planId), origin)}>
+              <SquareArrowOutUpRight size={13} /> Open in Plans
+            </button>
+          )}
           <span className="seg">
             <button className={look === "diagram" ? "on" : ""} onClick={() => chooseLook("diagram")}>
               Diagram

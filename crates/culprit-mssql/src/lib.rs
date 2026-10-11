@@ -8,6 +8,7 @@ pub mod plan_xml;
 mod probe;
 mod schema;
 mod statement;
+mod timeline;
 mod value;
 mod workload;
 
@@ -18,7 +19,7 @@ use async_trait::async_trait;
 use culprit_core::{
     Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Environment, ExplainMode, ForeignKey, IndexStat,
     LiveState, MissingCapability, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT,
-    ServerInfo, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
+    ServerInfo, SessionAction, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
 };
 
 pub use ado::parse_ado;
@@ -388,6 +389,14 @@ impl Provider for MssqlProvider {
         self.pool.with(|c| Box::pin(live::collect(c))).await
     }
 
+    fn session_actions(&self) -> Vec<SessionAction> {
+        vec![SessionAction::Terminate]
+    }
+
+    async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
+        live::interrupt(&self.pool, session, action).await
+    }
+
     async fn stored_plan(&self, query_id: &str, plan_id: &str) -> Result<Option<Plan>> {
         let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
         if !numeric(query_id) || !numeric(plan_id) {
@@ -412,5 +421,14 @@ impl Provider for MssqlProvider {
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
         let mut client = self.user_session().await?;
         statement::run(&mut client, sql, limit).await
+    }
+
+    /// SQL Server has no read-only transactions, so reads and writes share one path (autocommit); the Workspace only
+    /// sends statements here that the classifier proved read, or that the person confirmed.
+    async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        let mut client = self.user_session().await?;
+        let mut result = statement::run(&mut client, sql, limit).await?;
+        result.messages.push("Committed.".to_string());
+        Ok(result)
     }
 }

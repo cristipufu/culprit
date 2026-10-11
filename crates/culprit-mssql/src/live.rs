@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use culprit_core::{LiveState, Session, WaitStat};
+use culprit_core::{Error, ErrorCode, LiveState, Result, Session, SessionAction, WaitStat, session_number};
 
-use crate::conn::{MsClient, query};
+use crate::conn::{MsClient, Pool, execute, query};
 use crate::schema::{BENIGN_WAITS, wait_type_category};
 use crate::value::Rec;
 
@@ -71,7 +71,42 @@ pub(crate) async fn collect(client: &mut MsClient) -> tiberius::Result<LiveState
         taken_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         waits: current_waits(&sessions),
         sessions,
+        session_actions: Vec::new(),
+        session_actions_note: None,
     })
+}
+
+/// SQL Server has no way to stop another session's statement short of `KILL`, which ends the session and rolls back its
+/// transaction. Culprit's own sessions and system sessions are refused.
+pub(crate) async fn interrupt(pool: &Pool, session: &str, action: SessionAction) -> Result<()> {
+    let id = session_number(session)?;
+    if action == SessionAction::Cancel {
+        return Err(Error::new(
+            ErrorCode::Unsupported,
+            "SQL Server can't stop another session's statement without ending the session",
+        )
+        .with_hint("End the session instead; its open transaction rolls back."));
+    }
+    let target = format!(
+        "SELECT CAST(is_user_process AS int) AS user_process, program_name, CASE WHEN session_id = @@SPID THEN 1 ELSE 0 END AS own \
+         FROM sys.dm_exec_sessions WHERE session_id = {id}"
+    );
+    let rows = pool
+        .with(|c| {
+            let sql = target.clone();
+            Box::pin(async move { query(c, &sql).await })
+        })
+        .await?;
+    let Some(row) = rows.first() else {
+        return Err(Error::not_found(format!("Session {id} is gone")));
+    };
+    if row.f64("own") == Some(1.0) || row.str("program_name").is_some_and(|p| p.eq_ignore_ascii_case("culprit")) {
+        return Err(Error::invalid(format!("Session {id} is Culprit's own")));
+    }
+    if row.f64("user_process") != Some(1.0) {
+        return Err(Error::invalid(format!("Session {id} is a SQL Server system session")));
+    }
+    pool.with(|c| Box::pin(async move { execute(c, &format!("KILL {id}")).await })).await
 }
 
 fn session_of(r: &Rec) -> Session {

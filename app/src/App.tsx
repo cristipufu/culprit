@@ -1,8 +1,10 @@
 import { lazy, Suspense, useEffect } from "react";
 import { CommandPalette } from "./components/CommandPalette";
+import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WindowPicker } from "./components/WindowPicker";
 import { useHotkeys } from "./lib/hotkeys";
+import { installPlanPaste } from "./lib/plans";
 import { getState, lastConnection, loadConnections, openConnection, scan, setState, useStore, type View } from "./lib/store";
 import { Connections } from "./views/Connections";
 import { Live } from "./views/Live";
@@ -11,6 +13,9 @@ import { Queries } from "./views/Queries";
 import { Schema } from "./views/Schema";
 
 const Editor = lazy(() => import("./views/Editor"));
+// Statements coding agents want to run; loaded after first paint, polls only in the desktop app.
+const ApprovalDialog = lazy(() => import("./components/ApprovalDialog"));
+const Plans = lazy(() => import("./views/Plans").then((m) => ({ default: m.Plans })));
 
 const TITLES: Record<View, string> = {
   overview: "Overview",
@@ -18,16 +23,19 @@ const TITLES: Record<View, string> = {
   live: "Live",
   schema: "Schema",
   editor: "Editor",
+  plans: "Plans",
   connections: "Connections",
 };
 
-const VIEW_KEYS: View[] = ["overview", "queries", "live", "schema", "editor"];
+const VIEW_KEYS: View[] = ["overview", "queries", "live", "schema", "editor", "plans"];
 
 export function App() {
   const view = useStore((s) => s.view);
   const active = useStore((s) => s.active);
   const palette = useStore((s) => s.palette);
   const toast = useStore((s) => s.toast);
+
+  useEffect(() => installPlanPaste(() => getState().view), []);
 
   useEffect(() => {
     loadConnections().then((connections) => {
@@ -46,7 +54,7 @@ export function App() {
       VIEW_KEYS.map((v, i) => [
         String(i + 1),
         () => {
-          if (getState().active) setState({ view: v });
+          if (getState().active || v === "plans") setState({ view: v });
         },
       ]),
     ),
@@ -60,10 +68,24 @@ export function App() {
       <Sidebar />
       <main className="main">
         {view !== "connections" && <TopBar />}
-        <div className="view">{view === "connections" || !active ? <Connections /> : <Workspace view={view} name={active} />}</div>
+        <div className="view">
+          {view === "plans" ? (
+            <Suspense fallback={<div className="empty"><div className="spinner" /></div>}>
+              <Plans />
+            </Suspense>
+          ) : view === "connections" || !active ? (
+            <Connections />
+          ) : (
+            <Workspace view={view} name={active} />
+          )}
+        </div>
       </main>
       {palette && <CommandPalette />}
+      <SignInDialog />
       {toast && <div className="toast">{toast}</div>}
+      <Suspense fallback={null}>
+        <ApprovalDialog />
+      </Suspense>
     </div>
   );
 }
@@ -75,6 +97,14 @@ function TopBar() {
   const w = report?.report.snapshot.workload;
   const windowed = w ? w.windowed : engine === "mssql";
   const showsWorkload = view === "overview" || view === "queries" || view === "schema";
+  if (view === "plans") {
+    return (
+      <header className="topbar" data-tauri-drag-region>
+        <h1>{TITLES[view]}</h1>
+        <span className="context">Paste, drop or open plans · compare any two</span>
+      </header>
+    );
+  }
   return (
     <header className="topbar" data-tauri-drag-region>
       <h1>{TITLES[view]}</h1>

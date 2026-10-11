@@ -1,0 +1,19 @@
+[package]
+name = "culprit-mcp"
+description = "Culprit's Model Context Protocol server: findings, queries and plans for coding agents over stdio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+culprit-core.workspace = true
+culprit-engine.workspace = true
+chrono.workspace = true
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true

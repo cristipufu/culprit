@@ -1,0 +1,79 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "266329.96"
+    },
+    "ordering_operation": {
+      "using_filesort": false,
+      "nested_loop": [
+        {
+          "table": {
+            "table_name": "o",
+            "access_type": "ref",
+            "possible_keys": [
+              "ix_orders_status",
+              "ix_orders_status_created",
+              "fk_orders_customer"
+            ],
+            "key": "ix_orders_status_created",
+            "used_key_parts": [
+              "status"
+            ],
+            "key_length": "66",
+            "ref": [
+              "const"
+            ],
+            "rows_examined_per_scan": 217916,
+            "rows_produced_per_join": 217916,
+            "filtered": "100.00",
+            "backward_index_scan": true,
+            "cost_info": {
+              "read_cost": "4830.76",
+              "eval_cost": "21791.60",
+              "prefix_cost": "26622.36",
+              "data_read_per_join": "46M"
+            },
+            "used_columns": [
+              "id",
+              "customer_id",
+              "status",
+              "total",
+              "created_at"
+            ]
+          }
+        },
+        {
+          "table": {
+            "table_name": "c",
+            "access_type": "eq_ref",
+            "possible_keys": [
+              "PRIMARY"
+            ],
+            "key": "PRIMARY",
+            "used_key_parts": [
+              "id"
+            ],
+            "key_length": "4",
+            "ref": [
+              "shop.o.customer_id"
+            ],
+            "rows_examined_per_scan": 1,
+            "rows_produced_per_join": 217916,
+            "filtered": "100.00",
+            "cost_info": {
+              "read_cost": "217916.00",
+              "eval_cost": "21791.60",
+              "prefix_cost": "266329.96",
+              "data_read_per_join": "182M"
+            },
+            "used_columns": [
+              "id",
+              "name"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

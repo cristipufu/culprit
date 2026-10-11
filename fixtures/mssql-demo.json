@@ -227,7 +227,51 @@
             "wait_ms": 11.0,
             "tasks": null
           }
-        ]
+        ],
+        "trend": {
+          "time_ms": [
+            36.86,
+            1543.5,
+            1347.61,
+            1685.39,
+            1550.44,
+            1427.3,
+            1296.73,
+            1362.59,
+            1332.84,
+            1049.19,
+            974.37,
+            911.46,
+            878.09,
+            1022.59,
+            809.81,
+            907.97,
+            1144.69,
+            1543.94,
+            1339.81
+          ],
+          "executions": [
+            2.0,
+            71.0,
+            82.0,
+            80.0,
+            87.0,
+            84.0,
+            77.0,
+            76.0,
+            64.0,
+            61.0,
+            50.0,
+            46.0,
+            48.0,
+            53.0,
+            49.0,
+            55.0,
+            66.0,
+            77.0,
+            72.0
+          ]
+        }
       },
       {
         "id": "9",
@@ -398,7 +442,51 @@
             "wait_ms": 5.0,
             "tasks": null
           }
-        ]
+        ],
+        "trend": {
+          "time_ms": [
+            10.62,
+            403.94,
+            454.86,
+            423.05,
+            526.58,
+            500.81,
+            394.76,
+            437.13,
+            362.79,
+            375.56,
+            300.67,
+            242.34,
+            308.96,
+            269.0,
+            263.42,
+            339.37,
+            332.56,
+            437.39,
+            358.78
+          ],
+          "executions": [
+            1.0,
+            35.0,
+            41.0,
+            40.0,
+            43.0,
+            42.0,
+            38.0,
+            38.0,
+            32.0,
+            30.0,
+            25.0,
+            23.0,
+            24.0,
+            27.0,
+            24.0,
+            28.0,
+            33.0,
+            39.0,
+            37.0
+          ]
+        }
       },
       {
         "id": "10",
@@ -590,7 +678,51 @@
             "wait_ms": 2.0,
             "tasks": null
           }
-        ]
+        ],
+        "trend": {
+          "time_ms": [
+            2.93,
+            356.69,
+            391.85,
+            415.78,
+            381.77,
+            413.29,
+            367.06,
+            361.22,
+            293.09,
+            311.92,
+            267.08,
+            214.44,
+            234.08,
+            214.27,
+            241.02,
+            269.34,
+            355.33,
+            394.48,
+            318.23
+          ],
+          "executions": [
+            2.0,
+            237.0,
+            275.0,
+            268.0,
+            290.0,
+            280.0,
+            256.0,
+            253.0,
+            213.0,
+            203.0,
+            169.0,
+            155.0,
+            160.0,
+            177.0,
+            163.0,
+            185.0,
+            222.0,
+            258.0,
+            244.0
+          ]
+        }
       },
       {
         "id": "8",
@@ -612,12 +744,21 @@
         "last_seen": "2026-10-11T12:13:40Z",
         "plans": [
           {
-            "id": "8",
-            "executions": 300.0,
-            "total_time_ms": 4979.772,
-            "mean_time_ms": 16.599239999999998,
-            "first_seen": "2026-10-11T07:44:45Z",
+            "id": "47",
+            "executions": 93.0,
+            "total_time_ms": 3009.11,
+            "mean_time_ms": 32.35602150537635,
+            "first_seen": "2026-10-11T10:46:12Z",
             "last_seen": "2026-10-11T12:13:40Z",
+            "is_forced": false
+          },
+          {
+            "id": "8",
+            "executions": 207.0,
+            "total_time_ms": 1970.67,
+            "mean_time_ms": 9.520144927536233,
+            "first_seen": "2026-10-11T07:44:45Z",
+            "last_seen": "2026-10-11T10:44:51Z",
             "is_forced": false
           }
         ],
@@ -763,7 +904,51 @@
             "wait_ms": 14.0,
             "tasks": null
           }
-        ]
+        ],
+        "trend": {
+          "time_ms": [
+            0.0,
+            183.82,
+            178.72,
+            196.07,
+            202.91,
+            191.57,
+            171.15,
+            197.77,
+            146.35,
+            140.71,
+            125.63,
+            127.36,
+            108.61,
+            407.63,
+            382.36,
+            469.74,
+            564.88,
+            635.63,
+            548.87
+          ],
+          "executions": [
+            0.0,
+            18.0,
+            20.0,
+            20.0,
+            22.0,
+            21.0,
+            19.0,
+            19.0,
+            16.0,
+            15.0,
+            13.0,
+            12.0,
+            12.0,
+            13.0,
+            12.0,
+            14.0,
+            17.0,
+            19.0,
+            18.0
+          ]
+        }
       },
       {
         "id": "6",
@@ -863,7 +1048,51 @@
           },
           "raw": "<ShowPlanXML xmlns=\"http://schemas.microsoft.com/sqlserver/2004/07/showplan\" Version=\"1.564\" Build=\"16.0.4295.3\"><BatchSequence><Batch><Statements><StmtSimple StatementText=\"SELECT [id], [name], [price] FROM [shop].[products] WHERE [id] = @P1\" StatementId=\"1\" StatementCompId=\"1\" StatementType=\"SELECT\" StatementSqlHandle=\"0x0900290CDFFA066575948C2BF3AD81CFCD0B0000000000000000000000000000000000000000000000000000\" DatabaseContextSettingsId=\"1\" ParentObjectId=\"0\" StatementParameterizationType=\"1\" RetrievedFromCache=\"false\" StatementSubTreeCost=\"0.0032831\" StatementEstRows=\"1\" SecurityPolicyApplied=\"false\" StatementOptmLevel=\"TRIVIAL\" QueryHash=\"0xBD30C1112C2A5560\" QueryPlanHash=\"0x6A27EBEDF37979E4\" CardinalityEstimationModelVersion=\"160\"><StatementSetOptions QUOTED_IDENTIFIER=\"true\" ARITHABORT=\"false\" CONCAT_NULL_YIELDS_NULL=\"true\" ANSI_NULLS=\"true\" ANSI_PADDING=\"true\" ANSI_WARNINGS=\"true\" NUMERIC_ROUNDABORT=\"false\"></StatementSetOptions><QueryPlan CachedPlanSize=\"24\" CompileTime=\"1\" CompileCPU=\"1\" CompileMemory=\"120\"><MemoryGrantInfo SerialRequiredMemory=\"0\" SerialDesiredMemory=\"0\" GrantedMemory=\"0\" MaxUsedMemory=\"0\"></MemoryGrantInfo><OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant=\"14979\" EstimatedPagesCached=\"13107\" EstimatedAvailableDegreeOfParallelism=\"7\" MaxCompileMemory=\"797616\"></OptimizerHardwareDependentProperties><OptimizerStatsUsage><StatisticsInfo LastUpdate=\"2026-10-11T07:44:16.82\" ModificationCount=\"0\" SamplingPercent=\"100\" Statistics=\"[pk_products]\" Table=\"[products]\" Schema=\"[shop]\" Database=\"[culprit_demo]\"></StatisticsInfo></OptimizerStatsUsage><RelOp NodeId=\"0\" PhysicalOp=\"Clustered Index Seek\" LogicalOp=\"Clustered Index Seek\" EstimateRows=\"1\" EstimatedRowsRead=\"1\" EstimateIO=\"0.003125\" EstimateCPU=\"0.0001581\" AvgRowSize=\"224\" EstimatedTotalSubtreeCost=\"0.0032831\" TableCardinality=\"20000\" Parallel=\"0\" EstimateRebinds=\"0\" EstimateRewinds=\"0\" EstimatedExecutionMode=\"Row\"><OutputList><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"id\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"name\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"price\"></ColumnReference></OutputList><IndexScan Ordered=\"1\" ScanDirection=\"FORWARD\" ForcedIndex=\"0\" ForceSeek=\"0\" ForceScan=\"0\" NoExpandHint=\"0\" Storage=\"RowStore\"><DefinedValues><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"id\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"name\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"price\"></ColumnReference></DefinedValue></DefinedValues><Object Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Index=\"[pk_products]\" IndexKind=\"Clustered\" Storage=\"RowStore\"></Object><SeekPredicates><SeekPredicateNew><SeekKeys><Prefix ScanType=\"EQ\"><RangeColumns><ColumnReference Database=\"[culprit_demo]\" Schema=\"[shop]\" Table=\"[products]\" Column=\"id\"></ColumnReference></RangeColumns><RangeExpressions><ScalarOperator ScalarString=\"[@P1]\"><Identifier><ColumnReference Column=\"@P1\"></ColumnReference></Identifier></ScalarOperator></RangeExpressions></Prefix></SeekKeys></SeekPredicateNew></SeekPredicates></IndexScan></RelOp><ParameterList><ColumnReference Column=\"@P1\" ParameterDataType=\"int\" ParameterCompiledValue=\"(12148)\"></ColumnReference></ParameterList></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>"
         },
-        "waits": []
+        "waits": [],
+        "trend": {
+          "time_ms": [
+            1.57,
+            46.85,
+            63.38,
+            62.99,
+            53.66,
+            52.26,
+            48.73,
+            48.17,
+            43.82,
+            43.15,
+            32.48,
+            27.24,
+            32.27,
+            35.11,
+            34.27,
+            43.33,
+            48.52,
+            53.52,
+            50.93
+          ],
+          "executions": [
+            117.0,
+            3542.0,
+            4115.0,
+            4010.0,
+            4340.0,
+            4191.0,
+            3837.0,
+            3791.0,
+            3187.0,
+            3043.0,
+            2532.0,
+            2317.0,
+            2395.0,
+            2646.0,
+            2433.0,
+            2762.0,
+            3323.0,
+            3857.0,
+            3562.0
+          ]
+        }
       },
       {
         "id": "5",
@@ -1086,7 +1315,51 @@
             "wait_ms": 22.0,
             "tasks": null
           }
-        ]
+        ],
+        "trend": {
+          "time_ms": [
+            0.51,
+            12.34,
+            18.52,
+            17.47,
+            19.4,
+            18.41,
+            14.95,
+            14.81,
+            11.33,
+            12.75,
+            8.86,
+            8.14,
+            8.81,
+            9.55,
+            9.31,
+            9.61,
+            11.39,
+            13.89,
+            12.54
+          ],
+          "executions": [
+            8.0,
+            236.0,
+            274.0,
+            267.0,
+            289.0,
+            280.0,
+            256.0,
+            253.0,
+            213.0,
+            203.0,
+            169.0,
+            155.0,
+            160.0,
+            176.0,
+            162.0,
+            184.0,
+            222.0,
+            257.0,
+            236.0
+          ]
+        }
       },
       {
         "id": "35",
@@ -1185,9 +1458,120 @@
           },
           "raw": "<ShowPlanXML xmlns=\"http://schemas.microsoft.com/sqlserver/2004/07/showplan\" Version=\"1.564\" Build=\"16.0.4295.3\"><BatchSequence><Batch><Statements><StmtSimple StatementText=\"select table_id, item_guid, oplsn_fseqno, oplsn_bOffset, oplsn_slotid&#xa; from [culprit_demo].[sys].[filetable_updates_2105058535] with (readpast) order by table_id\" StatementId=\"1\" StatementCompId=\"0\" StatementType=\"SELECT\" StatementSqlHandle=\"0x0900B8A164E68F89E5E534E37336A2634D7A0000000000000000000000000000000000000000000000000000\" DatabaseContextSettingsId=\"2\" ParentObjectId=\"0\" StatementParameterizationType=\"1\" RetrievedFromCache=\"false\" StatementSubTreeCost=\"0.0032831\" StatementEstRows=\"1\" SecurityPolicyApplied=\"false\" StatementOptmLevel=\"TRIVIAL\" QueryHash=\"0x80E844211996BFCC\" QueryPlanHash=\"0x9FD963714B0FAAF0\" CardinalityEstimationModelVersion=\"160\"><StatementSetOptions QUOTED_IDENTIFIER=\"true\" ARITHABORT=\"true\" CONCAT_NULL_YIELDS_NULL=\"true\" ANSI_NULLS=\"true\" ANSI_PADDING=\"true\" ANSI_WARNINGS=\"true\" NUMERIC_ROUNDABORT=\"false\"></StatementSetOptions><QueryPlan CachedPlanSize=\"16\" CompileTime=\"11\" CompileCPU=\"11\" CompileMemory=\"96\"><MemoryGrantInfo SerialRequiredMemory=\"0\" SerialDesiredMemory=\"0\" GrantedMemory=\"0\" MaxUsedMemory=\"0\"></MemoryGrantInfo><OptimizerHardwareDependentProperties EstimatedAvailableMemoryGrant=\"14979\" EstimatedPagesCached=\"13107\" EstimatedAvailableDegreeOfParallelism=\"7\" MaxCompileMemory=\"848136\"></OptimizerHardwareDependentProperties><RelOp NodeId=\"0\" PhysicalOp=\"Clustered Index Scan\" LogicalOp=\"Clustered Index Scan\" EstimateRows=\"1\" EstimatedRowsRead=\"1\" EstimateIO=\"0.003125\" EstimateCPU=\"0.0001581\" AvgRowSize=\"43\" EstimatedTotalSubtreeCost=\"0.0032831\" TableCardinality=\"0\" Parallel=\"0\" EstimateRebinds=\"0\" EstimateRewinds=\"0\" EstimatedExecutionMode=\"Row\"><OutputList><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"table_id\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_fseqno\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_bOffset\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_slotid\"></ColumnReference><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"item_guid\"></ColumnReference></OutputList><IndexScan Ordered=\"1\" ScanDirection=\"FORWARD\" ForcedIndex=\"0\" ForceSeek=\"0\" ForceScan=\"0\" NoExpandHint=\"0\" Storage=\"RowStore\"><DefinedValues><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"table_id\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_fseqno\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_bOffset\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"oplsn_slotid\"></ColumnReference></DefinedValue><DefinedValue><ColumnReference Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Column=\"item_guid\"></ColumnReference></DefinedValue></DefinedValues><Object Database=\"[culprit_demo]\" Schema=\"[sys]\" Table=\"[filetable_updates_2105058535]\" Index=\"[FFtUpdateIdx]\" IndexKind=\"Clustered\" Storage=\"RowStore\"></Object></IndexScan></RelOp></QueryPlan></StmtSimple></Statements></Batch></BatchSequence></ShowPlanXML>"
         },
-        "waits": []
+        "waits": [],
+        "trend": {
+          "time_ms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.19,
+            0.15
+          ],
+          "executions": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0
+          ]
+        }
       }
-    ]
+    ],
+    "timeline": {
+      "source": "query-store",
+      "starts": [
+        "2026-10-11T07:30:00Z",
+        "2026-10-11T07:45:00Z",
+        "2026-10-11T08:00:00Z",
+        "2026-10-11T08:15:00Z",
+        "2026-10-11T08:30:00Z",
+        "2026-10-11T08:45:00Z",
+        "2026-10-11T09:00:00Z",
+        "2026-10-11T09:15:00Z",
+        "2026-10-11T09:30:00Z",
+        "2026-10-11T09:45:00Z",
+        "2026-10-11T10:00:00Z",
+        "2026-10-11T10:15:00Z",
+        "2026-10-11T10:30:00Z",
+        "2026-10-11T10:45:00Z",
+        "2026-10-11T11:00:00Z",
+        "2026-10-11T11:15:00Z",
+        "2026-10-11T11:30:00Z",
+        "2026-10-11T11:45:00Z",
+        "2026-10-11T12:00:00Z"
+      ],
+      "end": "2026-10-11T12:13:47Z",
+      "time_ms": [
+        52.49,
+        2547.14,
+        2454.94,
+        2800.75,
+        2734.76,
+        2603.64,
+        2293.38,
+        2421.69,
+        2190.22,
+        1933.28,
+        1709.09,
+        1530.98,
+        1570.82,
+        1958.15,
+        1740.19,
+        2039.36,
+        2457.37,
+        3079.04,
+        2629.31
+      ],
+      "executions": [
+        130.0,
+        4139.0,
+        4807.0,
+        4685.0,
+        5071.0,
+        4898.0,
+        4483.0,
+        4430.0,
+        3725.0,
+        3555.0,
+        2958.0,
+        2708.0,
+        2799.0,
+        3092.0,
+        2843.0,
+        3228.0,
+        3883.0,
+        4508.0,
+        4170.0
+      ]
+    }
   },
   "tables": [
     {

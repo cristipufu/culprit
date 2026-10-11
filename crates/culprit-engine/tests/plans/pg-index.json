@@ -1,0 +1,78 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Limit",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 0.86,
+      "Total Cost": 15.52,
+      "Plan Rows": 20,
+      "Plan Width": 37,
+      "Disabled": false,
+      "Plans": [
+        {
+          "Node Type": "Nested Loop",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 0.86,
+          "Total Cost": 292890.46,
+          "Plan Rows": 399599,
+          "Plan Width": 37,
+          "Disabled": false,
+          "Inner Unique": true,
+          "Plans": [
+            {
+              "Node Type": "Index Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Scan Direction": "Backward",
+              "Index Name": "orders_status_created_idx",
+              "Relation Name": "orders",
+              "Alias": "o",
+              "Startup Cost": 0.43,
+              "Total Cost": 141997.27,
+              "Plan Rows": 399599,
+              "Plan Width": 26,
+              "Disabled": false,
+              "Index Cond": "(status = 'shipped'::text)"
+            },
+            {
+              "Node Type": "Memoize",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 0.43,
+              "Total Cost": 0.47,
+              "Plan Rows": 1,
+              "Plan Width": 19,
+              "Disabled": false,
+              "Cache Key": "o.customer_id",
+              "Cache Mode": "logical",
+              "Plans": [
+                {
+                  "Node Type": "Index Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Scan Direction": "Forward",
+                  "Index Name": "customers_pkey",
+                  "Relation Name": "customers",
+                  "Alias": "c",
+                  "Startup Cost": 0.42,
+                  "Total Cost": 0.46,
+                  "Plan Rows": 1,
+                  "Plan Width": 19,
+                  "Disabled": false,
+                  "Index Cond": "(id = o.customer_id)"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

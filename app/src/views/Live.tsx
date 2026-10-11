@@ -1,10 +1,12 @@
-import { Pause, Play } from "lucide-react";
+import { Lock, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { LiveState } from "../gen/LiveState";
 import type { Session } from "../gen/Session";
+import type { SessionAction } from "../gen/SessionAction";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { count, duration, oneLine } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
+import { toast } from "../lib/store";
 
 const REFRESH_MS = 2500;
 
@@ -13,6 +15,7 @@ export function Live({ connection }: { connection: string }) {
   const [error, setError] = useState<ApiError | null>(null);
   const [paused, setPaused] = useState(false);
   const [showIdle, setShowIdle] = useState(false);
+  const [refresh, setRefresh] = useState(0);
 
   useHotkeys({ " ": () => setPaused((p) => !p) });
 
@@ -36,7 +39,14 @@ export function Live({ connection }: { connection: string }) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [connection, paused]);
+  }, [connection, paused, refresh]);
+
+  const interrupt = async (session: Session, action: SessionAction) => {
+    await (await api()).interruptSession(connection, session.id, action);
+    toast(action === "cancel" ? `Cancelled the statement in session ${session.id}` : `Ended session ${session.id}`);
+    setRefresh((n) => n + 1);
+  };
+  const actions = state?.session_actions ?? [];
 
   const sessions = state?.sessions ?? [];
   const blocked = sessions.filter((s) => s.blocked_by);
@@ -66,6 +76,11 @@ export function Live({ connection }: { connection: string }) {
           <input type="checkbox" checked={showIdle} onChange={(e) => setShowIdle(e.target.checked)} /> Show idle sessions
         </label>
         <span className="spacer" />
+        {state?.session_actions_note && (
+          <span className="muted live-note" title="Cancelling statements and ending sessions is only offered on non-production connections.">
+            <Lock size={12} /> {state.session_actions_note}
+          </span>
+        )}
         <span className="muted">{state ? `Updated ${new Date(state.taken_at).toLocaleTimeString()}` : "Loading…"}</span>
       </div>
       <div className="table-wrap">
@@ -81,11 +96,12 @@ export function Live({ connection }: { connection: string }) {
               <th className="r">Reads</th>
               <th>Statement</th>
               <th>Application</th>
+              {actions.length > 0 && <th className="r" />}
             </tr>
           </thead>
           <tbody>
             {visible.map((s) => (
-              <SessionRow key={s.id} session={s} isHead={heads.includes(s.id)} />
+              <SessionRow key={s.id} session={s} isHead={heads.includes(s.id)} actions={actions} onInterrupt={interrupt} />
             ))}
           </tbody>
         </table>
@@ -100,9 +116,37 @@ export function Live({ connection }: { connection: string }) {
   );
 }
 
-function SessionRow({ session: s, isHead }: { session: Session; isHead: boolean }) {
+const ACTION_COPY: Record<SessionAction, { button: string; confirm: string; explain: string }> = {
+  cancel: { button: "Cancel", confirm: "Cancel statement", explain: "Stops the running statement; the session stays connected." },
+  terminate: { button: "End", confirm: "End session", explain: "Closes the session; its open transaction rolls back." },
+};
+
+type RowAction = { status: "idle" } | { status: "confirm"; action: SessionAction } | { status: "busy" } | { status: "error"; message: string };
+
+function SessionRow({
+  session: s,
+  isHead,
+  actions,
+  onInterrupt,
+}: {
+  session: Session;
+  isHead: boolean;
+  actions: SessionAction[];
+  onInterrupt: (session: Session, action: SessionAction) => Promise<void>;
+}) {
+  const [row, setRow] = useState<RowAction>({ status: "idle" });
+  const offered = actions.filter((a) => a !== "cancel" || s.state === "active");
+  const run = async (action: SessionAction) => {
+    setRow({ status: "busy" });
+    try {
+      await onInterrupt(s, action);
+      setRow({ status: "idle" });
+    } catch (e) {
+      setRow({ status: "error", message: errorMessage(e).message });
+    }
+  };
   return (
-    <tr className="row">
+    <tr className={`row ${row.status === "confirm" ? "confirming" : ""}`}>
       <td className="mono">
         {s.id}
         {isHead && <span className="tag high" style={{ marginLeft: 6 }}>blocking</span>}
@@ -117,6 +161,37 @@ function SessionRow({ session: s, isHead }: { session: Session; isHead: boolean 
         {s.sql ? oneLine(s.sql) : ""}
       </td>
       <td className="muted">{s.application ?? ""}</td>
+      {actions.length > 0 && (
+        <td className="r session-actions">
+          {row.status === "idle" &&
+            offered.map((a) => (
+              <button key={a} className="btn ghost small" title={ACTION_COPY[a].explain} onClick={() => setRow({ status: "confirm", action: a })}>
+                {ACTION_COPY[a].button}
+              </button>
+            ))}
+          {row.status === "confirm" && (
+            <span className="inline-confirm" onKeyDown={(e) => e.key === "Escape" && setRow({ status: "idle" })}>
+              <button className="btn danger small" autoFocus title={ACTION_COPY[row.action].explain} onClick={() => run(row.action)}>
+                {ACTION_COPY[row.action].confirm} {s.id}
+              </button>
+              <button className="btn ghost small" onClick={() => setRow({ status: "idle" })}>
+                Keep
+              </button>
+            </span>
+          )}
+          {row.status === "busy" && <span className="spinner" />}
+          {row.status === "error" && (
+            <span className="inline-confirm">
+              <span className="error-text" title={row.message}>
+                {row.message}
+              </span>
+              <button className="btn ghost small" onClick={() => setRow({ status: "idle" })}>
+                OK
+              </button>
+            </span>
+          )}
+        </td>
+      )}
     </tr>
   );
 }

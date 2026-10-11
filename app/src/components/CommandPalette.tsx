@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useHotkeys } from "../lib/hotkeys";
-import { currentReport, openConnection, scan, setState, useStore, type View } from "../lib/store";
+import { currentReport, loadSaved, openConnection, scan, setState, useStore, type View } from "../lib/store";
 
 type Item = { id: string; section: string; title: string; hint?: string; run: () => void };
 
@@ -34,7 +34,12 @@ export function CommandPalette() {
   const connections = useStore((s) => s.connections);
   const report = useStore(currentReport);
   const active = useStore((s) => s.active);
+  const saved = useStore((s) => s.saved);
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (saved === null) void loadSaved();
+  }, [saved]);
   const [index, setIndex] = useState(0);
 
   const items = useMemo<Item[]>(() => {
@@ -44,6 +49,10 @@ export function CommandPalette() {
       list.push({ id: "rescan", section: "Actions", title: "Re-scan", hint: "⌘R", run: () => (close(), scan(active)) });
       VIEWS.forEach((v) => list.push({ id: `view:${v.view}`, section: "Go to", title: v.title, run: () => setState({ view: v.view, palette: false }) }));
     }
+    saved?.forEach((q) => {
+      const where = q.connection ? ` · ${q.connection}` : "";
+      list.push({ id: `s:${q.name}`, section: "Saved queries", title: q.name, hint: `run${where}`, run: () => setState({ view: "editor", editorSaved: { name: q.name, run: true }, palette: false }) });
+    });
     report?.findings.forEach((f) =>
       list.push({ id: `f:${f.id}`, section: "Findings", title: f.title, hint: f.impact.label, run: () => setState({ view: "overview", finding: f.id, palette: false }) }),
     );
@@ -53,7 +62,7 @@ export function CommandPalette() {
     connections.forEach((c) => list.push({ id: `c:${c.name}`, section: "Connections", title: c.name, hint: c.display, run: () => (close(), openConnection(c.name)) }));
     list.push({ id: "new", section: "Actions", title: "New connection", run: () => setState({ view: "connections", palette: false }) });
     return list;
-  }, [connections, report, active]);
+  }, [connections, report, active, saved]);
 
   const results = useMemo(() => {
     const scored = items.map((item) => ({ item, s: score(`${item.title} ${item.hint ?? ""}`, query) })).filter((x) => x.s > 0);

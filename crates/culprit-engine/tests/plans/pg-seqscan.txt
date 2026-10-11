@@ -1,0 +1,11 @@
+Limit  (cost=53811.30..53813.63 rows=20 width=37)
+  ->  Gather Merge  (cost=53811.30..100351.31 rows=399600 width=37)
+        Workers Planned: 2
+        ->  Sort  (cost=52811.28..53227.53 rows=166500 width=37)
+              Sort Key: o.created_at DESC
+              ->  Parallel Hash Join  (cost=4742.06..48380.77 rows=166500 width=37)
+                    Hash Cond: (o.customer_id = c.id)
+                    ->  Parallel Seq Scan on orders o  (cost=0.00..43201.64 rows=166500 width=26)
+                          Filter: (status = 'shipped'::text)
+                    ->  Parallel Hash  (cost=3271.47..3271.47 rows=117647 width=19)
+                          ->  Parallel Seq Scan on customers c  (cost=0.00..3271.47 rows=117647 width=19)

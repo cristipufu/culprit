@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Report } from "../gen/Report";
+import type { SavedQuery } from "../gen/SavedQuery";
 import { api, errorMessage, type ApiError } from "./api";
 
-export type View = "overview" | "queries" | "live" | "schema" | "editor" | "connections";
+export type View = "overview" | "queries" | "live" | "schema" | "editor" | "plans" | "connections";
 
 export type ReportState =
   | { status: "none" }
@@ -21,6 +22,10 @@ export type State = {
   palette: boolean;
   toast: string | null;
   editorSql: string | null;
+  /** A saved query to open in the editor (and run, from the palette). */
+  editorSaved: { name: string; run: boolean } | null;
+  /** Saved queries, loaded on first use. */
+  saved: SavedQuery[] | null;
   dismissed: Record<string, true>;
   windowDays: WindowDays;
 };
@@ -62,6 +67,8 @@ let state: State = {
   palette: false,
   toast: null,
   editorSql: null,
+  editorSaved: null,
+  saved: null,
   dismissed: loadDismissed(),
   windowDays: DEFAULT_WINDOW,
 };
@@ -89,6 +96,18 @@ export function useStore<T>(select: (s: State) => T): T {
 }
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Load (or reload) the saved queries into the store. */
+export async function loadSaved(): Promise<SavedQuery[]> {
+  try {
+    const saved = await (await api()).savedQueries();
+    setState({ saved });
+    return saved;
+  } catch {
+    setState({ saved: [] });
+    return [];
+  }
+}
 
 export function toast(message: string): void {
   clearTimeout(toastTimer);

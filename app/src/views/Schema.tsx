@@ -1,305 +1,353 @@
-import { Search } from "lucide-react";
-import { Fragment, useMemo, useState } from "react";
-import type { Finding } from "../gen/Finding";
-import type { IndexStat } from "../gen/IndexStat";
+import { GitCompareArrows, PanelLeftClose, PanelLeftOpen, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
-import { ago, bytes, count, oneLine } from "../lib/format";
-import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
-import { setState } from "../lib/store";
+import { bytes, count } from "../lib/format";
+import { useHotkeys } from "../lib/hotkeys";
+import { fuzzy, tableFindings, tableKey } from "../lib/schema-model";
+import { DriftPanel } from "../components/DriftPanel";
+import { SchemaTable } from "./SchemaTable";
+
+type SortKey = "size" | "rows" | "name" | "findings";
+
+const SORTS: { key: SortKey; label: string }[] = [
+  { key: "size", label: "Size" },
+  { key: "rows", label: "Rows" },
+  { key: "findings", label: "Findings" },
+  { key: "name", label: "Name" },
+];
+
+const SORT_KEY = "culprit.schema.sort";
+const WIDTH_KEY = "culprit.schema.listWidth";
+const COLLAPSED_KEY = "culprit.schema.listCollapsed";
+const MIN_W = 220;
+const MAX_W = 460;
+const DEFAULT_W = 290;
+
+function remembered<T>(key: string, parse: (v: string) => T | null, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return (v == null ? null : parse(v)) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {}
+}
+
+type Facts = {
+  findings: number;
+  titles: string[];
+  worst: "high" | "medium" | "low" | null;
+};
+
+type Entry = {
+  table: TableStat;
+  key: string;
+  hits: number[];
+  score: number;
+  facts: Facts;
+};
+
+const SEVERITY_RANK = { high: 3, medium: 2, low: 1 } as const;
 
 export function Schema({ report }: { report: Report }) {
   const { snapshot } = report;
-  const [filter, setFilter] = useState("");
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortKey>(() => remembered(SORT_KEY, (v) => (SORTS.some((s) => s.key === v) ? (v as SortKey) : null), "size"));
   const [selected, setSelected] = useState<string | null>(null);
-  const tables = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    return snapshot.tables
-      .filter((t) => !q || `${t.schema}.${t.name}`.toLowerCase().includes(q))
-      .sort((a, b) => (b.total_bytes ?? 0) - (a.total_bytes ?? 0));
-  }, [snapshot.tables, filter]);
-  const maxBytes = Math.max(1, ...tables.map((t) => t.total_bytes ?? 0));
-  const current = tables.find((t) => `${t.schema}.${t.name}` === selected) ?? tables[0] ?? null;
-  const findingsBySubject = (name: string) => report.findings.filter((f) => f.subject.name.toLowerCase().startsWith(name.toLowerCase()));
+  const [comparing, setComparing] = useState(false);
+  const [width, setWidth] = useState(() => remembered(WIDTH_KEY, (v) => Math.min(MAX_W, Math.max(MIN_W, Number(v) || DEFAULT_W)), DEFAULT_W));
+  const [collapsed, setCollapsed] = useState(() => remembered(COLLAPSED_KEY, (v) => v === "1", false));
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  return (
-    <div className="split schema-split">
-      <div className="pane">
-        <div className="toolbar">
-          <label className="search">
-            <Search size={13} />
-            <input value={filter} placeholder="Filter tables" onChange={(e) => setFilter(e.target.value)} />
-          </label>
-          <span className="spacer" />
-          <span className="muted">
-            {snapshot.tables.length} tables · {bytes(snapshot.server.database_size_bytes)}
-          </span>
-        </div>
-        <div className="table-wrap">
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Table</th>
-                <th>Size</th>
-                <th className="r">Rows</th>
-                <th className="r">Indexes</th>
-                <th>Health</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tables.map((t) => {
-                const name = `${t.schema}.${t.name}`;
-                const issues = findingsBySubject(name);
-                return (
-                  <tr key={name} className={`row ${current === t ? "selected" : ""}`} onClick={() => setSelected(name)}>
-                    <td className="mono">{name}</td>
-                    <td>
-                      <span className="sharecell">
-                        <span className="bar">
-                          <span style={{ width: `${Math.max(2, ((t.total_bytes ?? 0) / maxBytes) * 100)}%` }} />
-                        </span>
-                        <span className="num">{bytes(t.total_bytes)}</span>
-                      </span>
-                    </td>
-                    <td className="r">{count(t.rows)}</td>
-                    <td className="r">{snapshot.indexes.filter((i) => i.schema === t.schema && i.table === t.name).length}</td>
-                    <td>
-                      {badges(t).map((b) => (
-                        <span key={b} className="tag medium" style={{ marginRight: 4 }}>
-                          {b}
-                        </span>
-                      ))}
-                      {issues.length > 0 && <span className="tag high">{issues.length} finding{issues.length > 1 ? "s" : ""}</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="pane">{current && <TableDetail report={report} table={current} />}</div>
-    </div>
-  );
-}
+  const facts = useMemo(() => {
+    const out = new Map<string, Facts>();
+    for (const table of snapshot.tables) {
+      const findings = tableFindings(report, table);
+      const worst = findings.reduce<Facts["worst"]>((w, f) => (w == null || SEVERITY_RANK[f.severity] > SEVERITY_RANK[w] ? f.severity : w), null);
+      out.set(tableKey(table), {
+        findings: findings.length,
+        titles: findings.map((f) => f.title),
+        worst,
+      });
+    }
+    return out;
+  }, [report, snapshot.tables]);
 
-function badges(t: TableStat): string[] {
-  const out: string[] = [];
-  if (t.is_heap) out.push("no clustered index");
-  if (!t.has_primary_key) out.push("no primary key");
-  if (t.dead_rows != null && t.rows != null && t.dead_rows > Math.max(10_000, t.rows * 0.2)) out.push("dead rows");
-  return out;
-}
+  const entries = useMemo(() => {
+    const out: Entry[] = [];
+    for (const table of snapshot.tables) {
+      const key = tableKey(table);
+      // Prefer matches inside the table name (what the row shows); fall back to `schema.table`.
+      const own = fuzzy(table.name, query);
+      const wide = own ? null : fuzzy(key, query);
+      if (!own && !wide) continue;
+      const offset = table.schema.length + 1;
+      out.push({
+        table,
+        key,
+        hits: own ? own.hits : wide!.hits.filter((h) => h >= offset).map((h) => h - offset),
+        score: own ? own.score + 500 : wide!.score,
+        facts: facts.get(key)!,
+      });
+    }
+    const by: Record<SortKey, (a: Entry, b: Entry) => number> = {
+      size: (a, b) => (b.table.total_bytes ?? 0) - (a.table.total_bytes ?? 0),
+      rows: (a, b) => (b.table.rows ?? 0) - (a.table.rows ?? 0),
+      findings: (a, b) =>
+        b.facts.findings - a.facts.findings ||
+        (SEVERITY_RANK[b.facts.worst ?? "low"] ?? 0) - (SEVERITY_RANK[a.facts.worst ?? "low"] ?? 0) ||
+        (b.table.total_bytes ?? 0) - (a.table.total_bytes ?? 0),
+      name: (a, b) => a.table.name.localeCompare(b.table.name),
+    };
+    return out.sort((a, b) => (query.trim() ? b.score - a.score : 0) || by[sort](a, b));
+  }, [snapshot.tables, query, sort, facts]);
 
-function TableDetail({ report, table }: { report: Report; table: TableStat }) {
-  const name = `${table.schema}.${table.name}`;
-  const indexes = report.snapshot.indexes.filter((i) => i.schema === table.schema && i.table === table.name);
-  const related = report.findings.filter((f) => f.subject.name.toLowerCase().startsWith(name.toLowerCase()));
-  const flagged = (index: string) => report.findings.find((f) => (f.check === "unused-index" || f.check === "duplicate-index") && f.subject.name.toLowerCase().startsWith(name.toLowerCase()) && f.summary.includes(index));
-  return (
-    <div className="detail" style={{ padding: "18px 20px 30px" }}>
-      <div className="eyebrow">Table</div>
-      <h2 className="mono" style={{ fontSize: 17 }}>
-        {name}
-      </h2>
-      <div className="metrics">
-        <div className="metric">
-          <div className="value">{count(table.rows)}</div>
-          <div className="label">rows</div>
-        </div>
-        <div className="metric">
-          <div className="value">{bytes(table.data_bytes)}</div>
-          <div className="label">data</div>
-        </div>
-        <div className="metric">
-          <div className="value">{bytes(table.index_bytes)}</div>
-          <div className="label">indexes</div>
-        </div>
-        {table.seq_scans != null && (
-          <div className="metric">
-            <div className="value">{count(table.seq_scans)}</div>
-            <div className="label">full scans</div>
-          </div>
-        )}
-        {table.last_analyze !== undefined && (
-          <div className="metric">
-            <div className="value">{ago(table.last_analyze)}</div>
-            <div className="label">statistics updated</div>
-          </div>
-        )}
-      </div>
-      {related.length > 0 && (
-        <section>
-          <h3>Findings</h3>
-          {related.map((f) => (
-            <button key={f.id} className="frow" onClick={() => setState({ view: "overview", finding: f.id })}>
-              <span className={`sev ${f.severity}`} />
-              <span className="title">{f.title}</span>
-              <span />
-            </button>
-          ))}
-        </section>
-      )}
-      <ColumnsSection report={report} table={table} indexes={indexes} />
-      <IndexesSection report={report} indexes={indexes} flagged={flagged} />
-    </div>
-  );
-}
+  const groups = useMemo(() => {
+    const map = new Map<string, Entry[]>();
+    entries.forEach((e) => map.set(e.table.schema, [...(map.get(e.table.schema) ?? []), e]));
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  }, [entries]);
+  // Flattened in display order, for keyboard movement.
+  const ordered = useMemo(() => groups.flatMap(([, list]) => list), [groups]);
+  // A search that hides the selected table doesn't blank the detail: it keeps showing what you were looking at.
+  const kept = useMemo(() => {
+    const table = snapshot.tables.find((t) => tableKey(t) === selected);
+    return table ? { table, key: tableKey(table), hits: [], score: 0, facts: facts.get(tableKey(table))! } : null;
+  }, [snapshot.tables, selected, facts]);
+  const current = ordered.find((e) => e.key === selected) ?? (query.trim() ? kept : null) ?? ordered[0] ?? kept;
+  const maxBytes = Math.max(1, ...snapshot.tables.map((t) => t.total_bytes ?? 0));
+  const schemas = new Set(snapshot.tables.map((t) => t.schema));
 
-function ColumnsSection({ report, table, indexes }: { report: Report; table: TableStat; indexes: IndexStat[] }) {
-  const columns = report.snapshot.columns
-    .filter((c) => c.schema === table.schema && c.table === table.name)
-    .sort((a, b) => a.ordinal - b.ordinal);
-  if (columns.length === 0) {
+  const move = (delta: number) => {
+    if (!ordered.length) return;
+    const at = Math.max(
+      0,
+      ordered.findIndex((e) => e.key === current?.key),
+    );
+    const next = ordered[Math.min(ordered.length - 1, Math.max(0, at + delta))];
+    if (next) setSelected(next.key);
+  };
+  const toggleList = () =>
+    setCollapsed((c) => {
+      remember(COLLAPSED_KEY, c ? "0" : "1");
+      return !c;
+    });
+  useHotkeys({
+    j: () => move(1),
+    k: () => move(-1),
+    ArrowDown: () => move(1),
+    ArrowUp: () => move(-1),
+    "/": () => {
+      if (collapsed) toggleList();
+      requestAnimationFrame(() => searchRef.current?.focus());
+    },
+    "[": toggleList,
+  });
+
+  useEffect(() => {
+    listRef.current?.querySelector(".tl-row.on")?.scrollIntoView({ block: "nearest" });
+  }, [current?.key]);
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = width;
+    let last = startW;
+    const onMove = (ev: PointerEvent) => {
+      last = Math.min(MAX_W, Math.max(MIN_W, startW + ev.clientX - startX));
+      setWidth(last);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("resizing");
+      remember(WIDTH_KEY, String(last));
+    };
+    document.body.classList.add("resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
+  const metric = (t: TableStat, f: Facts) => {
+    switch (sort) {
+      case "rows":
+        return count(t.rows);
+      case "findings":
+        return f.findings ? `${f.findings}` : "—";
+      default:
+        return bytes(t.total_bytes);
+    }
+  };
+
+  if (snapshot.tables.length === 0) {
     return (
-      <section>
-        <h3>Columns</h3>
-        <div className="notice">This scan has no column metadata. Re-scan to collect it.</div>
-      </section>
+      <div className="empty">
+        <h3>No tables</h3>
+        <p>This login can't see any tables in the database, or the database is empty.</p>
+      </div>
     );
   }
-  const membership = (column: string) =>
-    indexes.flatMap((i) => {
-      const keys = i.columns.map((k) => k.replace(/ DESC$/, "").toLowerCase());
-      const position = keys.indexOf(column.toLowerCase());
-      if (position >= 0) return [{ index: i, label: i.is_primary_key ? "PK" : position === 0 ? i.name : `${i.name} · key ${position + 1}`, leading: position === 0 }];
-      if (i.include.some((c) => c.toLowerCase() === column.toLowerCase())) return [{ index: i, label: `${i.name} · included`, leading: false }];
-      return [];
-    });
+
+  if (comparing) return <DriftPanel report={report} onClose={() => setComparing(false)} />;
+
   return (
-    <section>
-      <h3>
-        Columns <span className="muted">{columns.length}</span>
-      </h3>
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>Column</th>
-            <th>Type</th>
-            <th>Null</th>
-            <th>Default</th>
-            <th>Indexed by</th>
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((c) => (
-            <tr key={c.name} className="row">
-              <td className="mono">
-                {c.name}
-                {c.generated && <span className="tag" style={{ marginLeft: 6 }}>generated</span>}
-              </td>
-              <td className="mono muted">{c.data_type}</td>
-              <td>{c.nullable ? "yes" : <span className="muted">no</span>}</td>
-              <td className="mono muted" title={c.default ?? ""} style={{ maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" }}>
-                {c.default ?? ""}
-              </td>
-              <td>
-                {membership(c.name).map((m) => (
-                  <span key={m.index.name} className={`tag ${m.leading ? "good" : ""}`} style={{ marginRight: 4 }} title={m.leading ? "Leading key: searches on this column can seek" : ""}>
-                    {m.label}
-                  </span>
+    <div className={`schema ${collapsed ? "collapsed" : ""}`} style={{ "--list-w": `${width}px` } as React.CSSProperties}>
+      {collapsed ? (
+        <div className="schema-rail">
+          <button className="btn ghost icon" title="Show tables ( [ )" onClick={toggleList}>
+            <PanelLeftOpen size={15} />
+          </button>
+        </div>
+      ) : (
+        <aside className="schema-list" aria-label="Tables">
+          <div className="tl-tools">
+            <label className="search">
+              <Search size={13} />
+              <input
+                ref={searchRef}
+                value={query}
+                placeholder="Find a table"
+                spellCheck={false}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    move(e.key === "ArrowDown" ? 1 : -1);
+                  } else if (e.key === "Enter") {
+                    // Enter opens the best match when the current table isn't in the results.
+                    const top = ordered[0];
+                    if (top && !ordered.some((x) => x.key === current?.key)) setSelected(top.key);
+                    e.currentTarget.blur();
+                  } else if (e.key === "Escape") {
+                    setQuery("");
+                    e.currentTarget.blur();
+                  }
+                }}
+              />
+              {query && (
+                <button className="clear" title="Clear" onClick={() => setQuery("")}>
+                  <X size={12} />
+                </button>
+              )}
+              {!query && <span className="kbd">/</span>}
+            </label>
+            <button className="btn ghost icon" title="Hide tables ( [ )" onClick={toggleList}>
+              <PanelLeftClose size={15} />
+            </button>
+          </div>
+          <div className="tl-sort">
+            <span className="muted">
+              {query.trim() ? `${entries.length} of ${snapshot.tables.length}` : `${snapshot.tables.length} tables`} ·{" "}
+              {bytes(snapshot.server.database_size_bytes)}
+            </span>
+            <span className="spacer" />
+            <label className="mini-select" title="Sort tables">
+              <select
+                value={sort}
+                onChange={(e) => {
+                  setSort(e.target.value as SortKey);
+                  remember(SORT_KEY, e.target.value);
+                }}
+              >
+                {SORTS.map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                  </option>
                 ))}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+              </select>
+            </label>
+            <button className="icon-btn" title="Compare with another connection: indexes, columns and settings that differ" onClick={() => setComparing(true)}>
+              <GitCompareArrows size={14} />
+            </button>
+          </div>
+          <div className="tl-scroll" ref={listRef} role="listbox" aria-activedescendant={current ? `tl-${current.key}` : undefined}>
+            {groups.map(([schema, list]) => (
+              <div key={schema} className="tl-group">
+                {(schemas.size > 1 || query.trim() === "") && (
+                  <div className="tl-group-head">
+                    <span>{schema}</span>
+                    <span className="muted">{list.length}</span>
+                  </div>
+                )}
+                {list.map((e) => (
+                  <button
+                    key={e.key}
+                    id={`tl-${e.key}`}
+                    role="option"
+                    aria-selected={e.key === current?.key}
+                    className={`tl-row ${e.key === current?.key ? "on" : ""}`}
+                    title={`${e.key} · ${count(e.table.rows)} rows · ${bytes(e.table.total_bytes)}`}
+                    onClick={() => setSelected(e.key)}
+                  >
+                    <span className="tl-name">{highlight(e.table.name, e.hits)}</span>
+                    <span className="tl-badges">
+                      {e.facts.findings > 0 && (
+                        <span className={`tl-count ${e.facts.worst}`} title={e.facts.titles.join("\n")}>
+                          {e.facts.findings}
+                        </span>
+                      )}
+                      {!e.table.has_primary_key && (
+                        <span className="tl-flag" title="No primary key">
+                          no pk
+                        </span>
+                      )}
+                    </span>
+                    <span className="tl-metric">{metric(e.table, e.facts)}</span>
+                    <span
+                      className="tl-size"
+                      style={{
+                        width: `${Math.max(1.5, ((e.table.total_bytes ?? 0) / maxBytes) * 100)}%`,
+                      }}
+                    />
+                  </button>
+                ))}
+              </div>
+            ))}
+            {entries.length === 0 && <div className="tl-empty">No table matches “{query}”.</div>}
+          </div>
+        </aside>
+      )}
+      {!collapsed && (
+        <div
+          className="schema-resizer"
+          onPointerDown={startResize}
+          onDoubleClick={() => (setWidth(DEFAULT_W), remember(WIDTH_KEY, String(DEFAULT_W)))}
+          title="Drag to resize"
+        />
+      )}
+      <section className="schema-main">
+        {current ? (
+          <SchemaTable key={current.key} report={report} table={current.table} onOpenTable={(key) => (setQuery(""), setSelected(key))} />
+        ) : (
+          <div className="empty">No table matches “{query}”.</div>
+        )}
+      </section>
+    </div>
   );
 }
 
-function IndexesSection({
-  report,
-  indexes,
-  flagged,
-}: {
-  report: Report;
-  indexes: IndexStat[];
-  flagged: (index: string) => Finding | undefined;
-}) {
-  const usage = useMemo(() => indexUsage(report), [report]);
-  const [open, setOpen] = useState<string | null>(null);
-  const planned = plannedQueryCount(report);
-  const since = report.snapshot.server.started_at;
-  return (
-    <section>
-      <h3>
-        Indexes <span className="muted">{indexes.length}</span>
-      </h3>
-      <table className="grid">
-        <thead>
-          <tr>
-            <th>Index</th>
-            <th>Keys</th>
-            <th>Used by</th>
-            <th className="r">Reads</th>
-            <th className="r">Writes</th>
-            <th className="r">Size</th>
-          </tr>
-        </thead>
-        <tbody>
-          {indexes.map((i) => {
-            const uses = usage.get(indexKey(i.schema, i.table, i.name)) ?? [];
-            const issue = flagged(i.name);
-            const neverRead = i.reads === 0 && !i.is_primary_key;
-            const expanded = open === i.name && uses.length > 0;
-            return (
-              <Fragment key={i.name}>
-                <tr className={`row ${expanded ? "selected" : ""}`} onClick={() => setOpen(expanded ? null : i.name)} style={{ cursor: uses.length ? "pointer" : "default" }}>
-                  <td className="mono">
-                    {i.name}
-                    {i.is_primary_key && <span className="tag" style={{ marginLeft: 6 }}>PK</span>}
-                    {i.is_unique && !i.is_primary_key && <span className="tag" style={{ marginLeft: 6 }}>unique</span>}
-                    {issue && issue.check === "duplicate-index" && <span className="tag medium" style={{ marginLeft: 6 }}>redundant</span>}
-                  </td>
-                  <td className="mono" title={i.include.length ? `INCLUDE ${i.include.join(", ")}` : ""}>
-                    {i.columns.join(", ")}
-                    {i.include.length > 0 && <span className="muted"> +{i.include.length}</span>}
-                  </td>
-                  <td className="wrap">
-                    {uses.length > 0 ? (
-                      <span>
-                        <b>{uses.length}</b> {uses.length === 1 ? "query" : "queries"}
-                        <span className="muted"> · {[...new Set(uses.flatMap((u) => u.ops))].slice(0, 2).join(", ").toLowerCase()}</span>
-                      </span>
-                    ) : neverRead ? (
-                      <span className="tag high" title={since ? `No reads since ${since.slice(0, 16).replace("T", " ")}` : "No reads since the last restart"}>
-                        unused
-                      </span>
-                    ) : (
-                      <span className="muted" title="Read since the last restart, but by none of the queries whose plans Culprit captured">
-                        not in captured plans
-                      </span>
-                    )}
-                  </td>
-                  <td className="r">{count(i.reads)}</td>
-                  <td className="r">{count(i.writes)}</td>
-                  <td className="r">{bytes(i.size_bytes)}</td>
-                </tr>
-                {expanded && (
-                  <tr>
-                    <td colSpan={6} style={{ padding: "4px 10px 10px", height: "auto" }}>
-                      {uses.map((u) => (
-                        <button key={u.query.id} className="frow" onClick={() => setState({ view: "queries", query: u.query.id })}>
-                          <span className="sev low" />
-                          <span className="title mono" style={{ fontSize: 11.5, fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {oneLine(u.query.text)}
-                          </span>
-                          <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{u.ops.join(", ")}</span>
-                        </button>
-                      ))}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
-      <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-        "Used by" comes from the plans of the {planned} heaviest queries; read and write counts cover all activity
-        {since ? ` since ${new Date(since).toLocaleDateString()}` : " since the last restart"}.
-      </p>
-    </section>
-  );
+function highlight(text: string, hits: number[]): ReactNode {
+  if (!hits.length) return text;
+  const set = new Set(hits);
+  const out: ReactNode[] = [];
+  let run = "";
+  let marked = false;
+  for (let i = 0; i < text.length; i++) {
+    const on = set.has(i);
+    if (on !== marked && run) {
+      out.push(marked ? <mark key={i}>{run}</mark> : run);
+      run = "";
+    }
+    marked = on;
+    run += text[i];
+  }
+  if (run) out.push(marked ? <mark key="end">{run}</mark> : run);
+  return out;
 }

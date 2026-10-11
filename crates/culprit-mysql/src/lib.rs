@@ -6,6 +6,7 @@ mod connect;
 pub mod plan_json;
 pub mod plan_tree;
 mod rows;
+mod sessions;
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -13,7 +14,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use culprit_core::{
     ConnectionSpec, Engine, Error, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet, ServerInfo,
-    Session, Snapshot, SnapshotOptions, WaitStat,
+    Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
@@ -21,7 +22,7 @@ use mysql_async::{Conn, Value};
 use serde_json::Value as Json;
 
 use connect::{Connector, Scope, map_error};
-use rows::{query, query_one, tagged, value_text};
+use rows::{explain_one, query, query_one, tagged, value_text};
 
 pub struct MysqlProvider {
     connector: Connector,
@@ -63,7 +64,7 @@ impl Provider for MysqlProvider {
         match mode {
             ExplainMode::Estimated => {
                 let _ = conn.query_drop(tagged("SET SESSION explain_json_format_version = 1")).await;
-                let row = query_one(&mut conn, &format!("EXPLAIN FORMAT=JSON {statement}"))
+                let row = explain_one(&mut conn, &format!("EXPLAIN FORMAT=JSON {statement}"))
                     .await?
                     .ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
                 let json = row.text("explain").ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?;
@@ -77,7 +78,7 @@ impl Provider for MysqlProvider {
                     .with_hint("Use Explain (estimated) for statements that change data."));
                 }
                 conn.query_drop(tagged("START TRANSACTION READ ONLY")).await.map_err(map_error)?;
-                let result = query_one(&mut conn, &format!("EXPLAIN ANALYZE {statement}")).await;
+                let result = explain_one(&mut conn, &format!("EXPLAIN ANALYZE {statement}")).await;
                 let rollback = conn.query_drop(tagged("ROLLBACK")).await;
                 let row = result?.ok_or_else(|| Error::internal("EXPLAIN ANALYZE returned no plan"))?;
                 rollback.map_err(map_error)?;
@@ -85,6 +86,14 @@ impl Provider for MysqlProvider {
                 plan_tree::parse(&tree, Some(statement), schema)
             }
         }
+    }
+
+    fn session_actions(&self) -> Vec<SessionAction> {
+        vec![SessionAction::Cancel, SessionAction::Terminate]
+    }
+
+    async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
+        sessions::interrupt(&self.connector, session, action).await
     }
 
     async fn live(&self) -> Result<LiveState> {
@@ -146,7 +155,7 @@ impl Provider for MysqlProvider {
                 None => waits.push(WaitStat { category, wait_type: None, wait_ms: 0.0, tasks: Some(1.0) }),
             }
         }
-        Ok(LiveState { taken_at: now, sessions, waits })
+        Ok(LiveState { taken_at: now, sessions, waits, session_actions: Vec::new(), session_actions_note: None })
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
@@ -160,6 +169,20 @@ impl Provider for MysqlProvider {
         rollback.map_err(map_error)?;
         let _ = conn.disconnect().await;
         result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        Ok(result)
+    }
+
+    async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        let statement = single_statement(sql)?;
+        let mut conn = self.connector.connect(Scope::Database).await?;
+        let started = Instant::now();
+        // Sessions open read-only; a write the person chose to run gets a read-write session and commits (autocommit).
+        conn.query_drop(tagged("SET SESSION TRANSACTION READ WRITE")).await.map_err(map_error)?;
+        let result = run_in_transaction(&mut conn, statement, limit).await;
+        let _ = conn.disconnect().await;
+        let mut result = result?;
+        result.elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        result.messages.push("Committed.".to_string());
         Ok(result)
     }
 }
@@ -181,17 +204,13 @@ async fn lock_waits(conn: &mut Conn) -> HashMap<String, String> {
 }
 
 /// Trim and reject empty or multi-statement input (the server would refuse the second statement anyway).
+/// One statement, checked by Culprit's lexer under both backslash modes (and refusing executable comments).
 fn single_statement(sql: &str) -> Result<&str> {
-    let statement = sql.trim().trim_end_matches(';').trim_end();
-    if statement.is_empty() {
-        return Err(Error::invalid("There is no statement to run"));
-    }
-    Ok(statement)
+    culprit_core::sql::single_statement(sql, Engine::Mysql)
 }
 
 fn reads_only(statement: &str) -> bool {
-    let lower = statement.trim_start().trim_start_matches('(').trim_start().to_ascii_lowercase();
-    ["select", "with", "table ", "values"].iter().any(|k| lower.starts_with(k))
+    culprit_core::sql::reads_only(statement, Engine::Mysql)
 }
 
 async fn run_in_transaction(conn: &mut Conn, statement: &str, limit: usize) -> Result<ResultSet> {

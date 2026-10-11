@@ -1,0 +1,30 @@
+                                                                               QUERY PLAN                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=0.86..15.52 rows=20 width=37) (actual time=0.293..1.382 rows=20.00 loops=1)
+   Buffers: shared hit=40 read=63
+   I/O Timings: shared read=1.132
+   ->  Nested Loop  (cost=0.86..292890.46 rows=399599 width=37) (actual time=0.292..1.377 rows=20.00 loops=1)
+         Buffers: shared hit=40 read=63
+         I/O Timings: shared read=1.132
+         ->  Index Scan Backward using orders_status_created_idx on orders o  (cost=0.43..141997.27 rows=399599 width=26) (actual time=0.110..0.432 rows=20.00 loops=1)
+               Index Cond: (status = 'shipped'::text)
+               Index Searches: 1
+               Buffers: shared read=23
+               I/O Timings: shared read=0.402
+         ->  Memoize  (cost=0.43..0.47 rows=1 width=19) (actual time=0.047..0.047 rows=1.00 loops=20)
+               Cache Key: o.customer_id
+               Cache Mode: logical
+               Hits: 0  Misses: 20  Evictions: 0  Overflows: 0  Memory Usage: 3kB
+               Buffers: shared hit=40 read=40
+               I/O Timings: shared read=0.730
+               ->  Index Scan using customers_pkey on customers c  (cost=0.42..0.46 rows=1 width=19) (actual time=0.039..0.039 rows=1.00 loops=20)
+                     Index Cond: (id = o.customer_id)
+                     Index Searches: 20
+                     Buffers: shared hit=40 read=40
+                     I/O Timings: shared read=0.730
+ Planning:
+   Buffers: shared hit=290
+ Planning Time: 0.280 ms
+ Execution Time: 1.444 ms
+(26 rows)
+
