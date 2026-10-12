@@ -436,6 +436,11 @@ fn second_statement_at<'a>(tokens: &[Token<'a>], nesting: u8) -> Option<&'a str>
     }
     // The main query a statement may still introduce: a CTE's or INSERT's SELECT (or a CTE's DML), one each.
     let mut main_query = matches!(first.as_str(), "WITH" | "INSERT");
+    // The statement a CTE introduces (`WITH c AS (…) UPDATE …`): its clauses are read as that statement's.
+    let mut cte_main: Option<String> = None;
+    // An UPDATE (a statement's, or a MERGE's `THEN UPDATE`) whose SET clause hasn't come yet. That SET is
+    // the UPDATE's; any other SET starts a statement (`UPDATE t SET x = 1 SET NOCOUNT ON` is two).
+    let mut update_awaits_set = first == "UPDATE";
     let mut depth = 0i32;
     let mut seen_first = false;
     let mut previous: Option<String> = None;
@@ -494,15 +499,22 @@ fn second_statement_at<'a>(tokens: &[Token<'a>], nesting: u8) -> Option<&'a str>
                     let allowed = set_op || (main_query && !seen_select);
                     if allowed && !set_op {
                         main_query = false;
+                        if first == "WITH" {
+                            cte_main = Some(word.clone());
+                        }
                     }
                     !allowed
                 }
                 "INSERT" | "UPDATE" | "DELETE" | "MERGE" => {
-                    let merge_action = first == "MERGE" && prev == "THEN";
+                    let merge_action = (first == "MERGE" || cte_main.as_deref() == Some("MERGE")) && prev == "THEN";
                     let join_hint = word == "MERGE" && next_word.as_deref() == Some("JOIN");
                     let cte_dml = first == "WITH" && main_query && !seen_select;
                     if cte_dml {
                         main_query = false;
+                        cte_main = Some(word.clone());
+                    }
+                    if word == "UPDATE" && (merge_action || cte_dml) {
+                        update_awaits_set = true;
                     }
                     !(merge_action || join_hint || cte_dml)
                 }
@@ -511,8 +523,18 @@ fn second_statement_at<'a>(tokens: &[Token<'a>], nesting: u8) -> Option<&'a str>
                     matches!(tokens.get(i + 1), Some(Token::Word(_)) | Some(Token::Quoted(..)))
                         && tokens.get(i + 2).and_then(upper).as_deref() == Some("AS")
                 }
+                // UPDATE … SET is a clause, after a CTE too (`WITH c AS (…) UPDATE c SET …`).
+                "SET" if update_awaits_set => {
+                    update_awaits_set = false;
+                    false
+                }
                 "SET" => {
-                    matches!(first.as_str(), "SELECT" | "WITH" | "INSERT" | "DELETE" | "DROP" | "CREATE" | "TRUNCATE")
+                    let statement =
+                        if first == "WITH" { cte_main.as_deref().unwrap_or("WITH") } else { first.as_str() };
+                    matches!(
+                        statement,
+                        "SELECT" | "WITH" | "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "DROP" | "CREATE" | "TRUNCATE"
+                    )
                 }
                 "DROP" => first != "ALTER",
                 "ALTER" => !(first == "CREATE" && prev == "OR"),
@@ -865,6 +887,23 @@ pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_cte_update_and_its_set_clause_are_one_statement() {
+        let one = |text: &str| single_statement(text, Engine::Mssql).is_ok();
+        // A queue claim: take rows other sessions aren't holding, mark them, return them.
+        assert!(one("WITH due AS (SELECT TOP (50) id, next_attempt_at FROM q WITH (UPDLOCK, READPAST, ROWLOCK) \
+             WHERE status = 'pending' ORDER BY next_attempt_at) \
+             UPDATE due SET next_attempt_at = SYSUTCDATETIME() OUTPUT inserted.id"));
+        assert!(one("WITH c AS (SELECT id FROM t) MERGE t USING c ON t.id = c.id WHEN MATCHED THEN UPDATE SET x = 1;"));
+        assert!(one("MERGE t USING s ON t.id = s.id WHEN MATCHED AND s.gone = 1 THEN UPDATE SET t.x = 0 \
+             WHEN MATCHED THEN UPDATE SET t.x = s.x;"));
+        // Only the SET of an UPDATE is a clause: any other SET is another statement.
+        assert!(!one("WITH c AS (SELECT 1 AS a) SELECT a FROM c SET NOCOUNT ON"));
+        assert!(!one("WITH c AS (SELECT 1 AS a) UPDATE t SET x = 1 SET NOCOUNT ON"));
+        assert!(!one("UPDATE t SET x = 1 SET NOCOUNT ON"));
+        assert!(one("UPDATE t SET x = (SELECT 1), y = 2 WHERE id = 3"));
+    }
 
     #[test]
     fn a_tsql_if_and_its_body_are_one_statement() {
