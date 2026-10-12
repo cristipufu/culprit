@@ -133,9 +133,16 @@ pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     for f in &mut s.query_families {
         f.sample = redact_sql(&f.sample, engine);
     }
-    if let Some(d) = &mut s.deadlocks {
-        for p in d.deadlocks.iter_mut().flat_map(|d| d.processes.iter_mut()) {
-            p.statement = p.statement.as_deref().map(|t| redact_sql(t, engine));
+    if let Some(report) = &mut s.deadlocks {
+        for d in &mut report.deadlocks {
+            for p in &mut d.processes {
+                p.statement = p.statement.as_deref().map(|t| redact_sql(t, engine));
+                // Who ran it: an Entra login is a person's email address.
+                p.login = None;
+                p.host = None;
+            }
+            // The headline, explanation and fixes quote the processes: written again from what is left.
+            crate::deadlock::classify(engine, d);
         }
     }
     s
@@ -442,13 +449,19 @@ pub fn redact_plan(plan: &Plan) -> Plan {
             ..n.clone()
         }
     }
-    Plan {
+    let mut redacted = Plan {
         statement: plan.statement.as_deref().map(|s| redact_sql(s, plan.engine)),
         root: node(&plan.root, plan.engine),
         props: redact_props(&plan.props, plan.engine),
         raw: None,
+        insights: None,
         ..plan.clone()
+    };
+    // Insights quote the predicates they were found in: worked out again from the redacted plan.
+    if plan.insights.is_some() {
+        crate::insights::annotate(&mut redacted);
     }
+    redacted
 }
 
 /// Showplan XML attributes that carry SQL text or values.
@@ -619,6 +632,49 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_redacted_snapshot_keeps_no_planted_value() {
+        let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
+            .expect("fixture");
+        let mut snapshot: Snapshot = serde_json::from_str(&text).expect("snapshot");
+        let w = snapshot.workload.as_mut().expect("workload");
+        for q in &mut w.queries {
+            q.text = format!("{} AND x = N'PLANTED-text'", q.text);
+            for p in &mut q.plans {
+                p.compiled = Some("@p0 = N'PLANTED-compiled'".into());
+            }
+            if let Some(plan) = &mut q.plan {
+                plan.root.predicate = Some("[c] = N'PLANTED-predicate'".into());
+                plan.props.insert("Parameters".into(), "@p0 = N'PLANTED-props'".into());
+                // Insights written from the raw plan, as a collector leaves them.
+                crate::insights::annotate(plan);
+                if let Some(i) = plan.insights.as_mut() {
+                    i.note = Some("seen N'PLANTED-insight'".into());
+                }
+            }
+        }
+        let deadlock: crate::deadlock::Deadlock = serde_json::from_value(serde_json::json!({
+            "id": "d1", "at": null, "source": "test", "pattern": "cycle", "objects": [], "headline": "N'PLANTED-headline'",
+            "explanation": "N'PLANTED-explanation'", "fixes": [], "resources": [],
+            "processes": [{"id": "p1", "session": "51", "statement": "UPDATE t SET a = N'PLANTED-deadlock'",
+                "procedure": null, "login": "someone@PLANTED-login.com", "host": "PLANTED-host", "application": null,
+                "database": null, "isolation": null, "wait_mode": null, "victim": true}]
+        }))
+        .expect("deadlock");
+        snapshot.deadlocks = Some(
+            serde_json::from_value(serde_json::json!({
+                "deadlocks": [deadlock], "source": "test", "since_hours": 24.0, "counted": 1.0
+            }))
+            .expect("deadlocks"),
+        );
+        let out = serde_json::to_string(&redact_snapshot(&snapshot)).expect("json");
+        assert!(
+            !out.contains("PLANTED"),
+            "{}",
+            &out[out.find("PLANTED").unwrap_or(0).saturating_sub(200)..][..400.min(out.len())]
+        );
+    }
 
     #[test]
     fn prose_keeps_its_words_and_loses_the_values_it_quotes() {
