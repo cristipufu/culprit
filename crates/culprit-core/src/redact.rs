@@ -38,11 +38,68 @@ pub fn redact_sql(text: &str, engine: Engine) -> String {
 /// placeholders; the words around them stay as written, apostrophes included. Checks put every piece of SQL they quote
 /// in a code span, the parameter values a plan was compiled for too.
 pub fn redact_prose(text: &str, engine: Engine) -> String {
-    text.split('`')
+    // Values first, wherever they are: a value can hold a backtick, which would end its code span early and leave the
+    // values after it looking like prose.
+    mask_prose_values(text, engine)
+        .split('`')
         .enumerate()
         .map(|(i, part)| if i % 2 == 1 { collapse_parameters(redact_sql(part, engine)) } else { part.to_string() })
         .collect::<Vec<_>>()
         .join("`")
+}
+
+/// String literals and GUIDs anywhere in prose become placeholders. A quote right after a letter or digit is an
+/// apostrophe (isn't, the plan's), unless that letter stands alone as a string prefix (`N'…'`, `E'…'`, `X'…'`,
+/// `B'…'`). A literal that never closes hides the rest of the text: better a sentence lost than a value leaked.
+fn mask_prose_values(text: &str, engine: Engine) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let word = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let prev = i.checked_sub(1).and_then(|k| chars.get(k));
+        if chars[i] == '\'' {
+            let prefix = prev.is_some_and(|p| matches!(p.to_ascii_uppercase(), 'N' | 'E' | 'X' | 'B'))
+                && !word(i.checked_sub(2).and_then(|k| chars.get(k)));
+            if !word(prev) || prefix {
+                let backslashes = engine == Engine::Mysql || prev.is_some_and(|p| p.eq_ignore_ascii_case(&'E'));
+                let mut j = i + 1;
+                let close = loop {
+                    match chars.get(j) {
+                        None => break None,
+                        Some('\\') if backslashes => j += 2,
+                        Some('\'') if chars.get(j + 1) == Some(&'\'') => j += 2,
+                        Some('\'') => break Some(j),
+                        Some(_) => j += 1,
+                    }
+                };
+                out.push_str("'?'");
+                match close {
+                    Some(end) => i = end + 1,
+                    None => return out,
+                }
+                continue;
+            }
+        }
+        if !word(prev) && is_guid(&chars[i..]) {
+            out.push('?');
+            i += 36;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `chars` starts with a GUID (8-4-4-4-12 hex digits) that isn't part of a longer word.
+fn is_guid(chars: &[char]) -> bool {
+    chars.len() >= 36
+        && chars[..36].iter().enumerate().all(|(n, c)| match n {
+            8 | 13 | 18 | 23 => *c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+        && !chars.get(36).is_some_and(|c| c.is_alphanumeric() || *c == '_')
 }
 
 /// A list of parameters whose values are all placeholders now (`@p0 = N'?', @p1 = N'?', …`) says nothing past its
@@ -546,6 +603,25 @@ mod tests {
         // One parameter, or a list that still says something, stays as it is.
         assert_eq!(redact_prose("`@p0 = ?`", Engine::Mssql), "`@p0 = ?`");
         assert_eq!(redact_prose("`nvarchar(4000), @p1 = ?`", Engine::Mssql), "`nvarchar(4000), @p1 = ?`");
+    }
+
+    #[test]
+    fn a_value_holding_a_backtick_cannot_unmask_the_values_after_it() {
+        let out =
+            redact_prose("compiled for `@p0 = N'a`b', @p1 = N'secret', @p2 = 4242`. Then `x = 'y'`.", Engine::Mssql);
+        assert!(!out.contains("secret") && !out.contains("4242") && !out.contains("a`b"), "{out}");
+        // A literal that never closes hides everything after it.
+        let out = redact_prose("compiled for `@p0 = 1, @p1 = N'secret and more", Engine::Mssql);
+        assert!(!out.contains("secret") && !out.contains("more"), "{out}");
+        // A doubled quote is part of its value.
+        let out = redact_prose("`@p0 = N'it''s secret'` done", Engine::Mssql);
+        assert!(!out.contains("secret") && out.ends_with("done"), "{out}");
+        // GUIDs go wherever they are; apostrophes and words stay.
+        let out = redact_prose("tenant 9b9143e3-90c5-f111-bf5b-000d3aacaa10 isn't the plan's problem", Engine::Mssql);
+        assert_eq!(out, "tenant ? isn't the plan's problem");
+        // MySQL escapes quotes with backslashes.
+        let out = redact_prose(r"`status = 'it\'s `secret`'` done", Engine::Mysql);
+        assert!(!out.contains("secret"), "{out}");
     }
 
     use super::*;

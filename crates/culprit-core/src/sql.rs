@@ -395,6 +395,14 @@ const MSSQL_STATEMENTS: &[&str] = &[
 /// as a new statement counts unless the first statement's grammar clearly allows it there (UNION SELECT, a CTE's main
 /// query, MERGE's THEN UPDATE, ALTER TABLE … DROP COLUMN, DROP … IF EXISTS, a table hint's WITH (…)).
 fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
+    second_statement_at(tokens, 0)
+}
+
+/// IFs nested deeper than this count as more than one statement: the check recurses once per IF, and text from an
+/// editor or an agent can nest them without end.
+const MAX_IF_NESTING: u8 = 8;
+
+fn second_statement_at<'a>(tokens: &[Token<'a>], nesting: u8) -> Option<&'a str> {
     // Query Store's parameterized text starts with the parameter declarations: `(@P1 nvarchar(4000))SELECT …`.
     let tokens = match tokens {
         [Token::Punct('('), Token::Word(w), ..] if w.starts_with('@') => {
@@ -529,7 +537,10 @@ fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
         // `IF <condition> <statement>` is one statement: the first one after the condition is its body, checked as a
         // statement of its own. An ELSE branch or a BEGIN … END block of several still counts as more than one.
         if starts && first == "IF" {
-            return mssql_second_statement(&tokens[i..]);
+            if nesting >= MAX_IF_NESTING {
+                return Some(raw);
+            }
+            return second_statement_at(&tokens[i..], nesting + 1);
         }
         if starts {
             return Some(raw);
@@ -866,6 +877,10 @@ mod tests {
         assert!(!one("IF 1 = 1 SELECT 1 SELECT 2"));
         assert!(!one("IF 1 = 1 BEGIN SELECT 1 SELECT 2 END"));
         assert!(!one("IF 1 = 1 SELECT 1 ELSE DELETE FROM t"));
+        // Nesting is capped: a deep chain is refused at once instead of recursing without end.
+        assert!(one(&format!("{}SELECT 1", "IF 1 = 1 ".repeat(8))));
+        assert!(!one(&format!("{}SELECT 1", "IF 1 = 1 ".repeat(9))));
+        assert!(!one(&format!("{}SELECT 1", "IF 1 = 1 ".repeat(200_000))));
     }
 
     use super::*;

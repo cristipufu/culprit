@@ -134,27 +134,11 @@ pub fn list(items: &[String]) -> String {
     }
 }
 
-/// `[db].[dbo].[orders].[created_at]>=[@P1]` reads as `created_at >= @P1`; mirrors the UI's shortPredicate.
+/// `[db].[dbo].[orders].[created_at]>=[@P1]` reads as `created_at >= @P1`, and MySQL's `` `shop`.`orders`.`status` ``
+/// as `status`; mirrors the UI's shortPredicate. Prose quotes predicates in backtick code spans, so none may be left in.
 pub fn predicate(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('[') {
-        out.push_str(&rest[..start]);
-        let mut cursor = &rest[start..];
-        let mut last = "";
-        while let Some(stripped) = cursor.strip_prefix('[') {
-            let Some(end) = stripped.find(']') else { break };
-            last = &stripped[..end];
-            cursor = &stripped[end + 1..];
-            match cursor.strip_prefix('.') {
-                Some(next) if next.starts_with('[') => cursor = next,
-                _ => break,
-            }
-        }
-        out.push_str(last);
-        rest = cursor;
-    }
-    out.push_str(rest);
+    let out = last_names(&last_names(text, '[', ']'), '`', '`');
+    let out = out.replace('`', "");
     let mut spaced = String::with_capacity(out.len());
     let chars: Vec<char> = out.chars().collect();
     let mut i = 0;
@@ -173,6 +157,36 @@ pub fn predicate(text: &str) -> String {
         i += 1;
     }
     spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Each chain of quoted names (`[a].[b].[c]`) as its last name (`c`).
+fn last_names(text: &str, open: char, close: char) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(open) {
+        out.push_str(&rest[..start]);
+        let mut cursor = &rest[start..];
+        let mut last = "";
+        while let Some(stripped) = cursor.strip_prefix(open) {
+            let Some(end) = stripped.find(close) else { break };
+            last = &stripped[..end];
+            cursor = &stripped[end + close.len_utf8()..];
+            match cursor.strip_prefix('.') {
+                Some(next) if next.starts_with(open) => cursor = next,
+                _ => break,
+            }
+        }
+        // An opening quote that never closes stays as it is.
+        if last.is_empty() && cursor.starts_with(open) {
+            out.push(open);
+            rest = &cursor[open.len_utf8()..];
+            continue;
+        }
+        out.push_str(last);
+        rest = cursor;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// "Oct 1" (with the year when it isn't `now`'s): a date as people write it, from an ISO date or timestamp.
@@ -216,6 +230,10 @@ mod tests {
     fn predicates_read_short() {
         assert_eq!(predicate("[shop].[dbo].[orders].[created_at]>=[@P1]"), "created_at >= @P1");
         assert_eq!(predicate("(customer_id = $1)"), "(customer_id = $1)");
+        assert_eq!(predicate("(`shop`.`orders`.`status` = 'open')"), "(status = 'open')");
+        assert!(!predicate("`a`.`b` = '`'").contains("`"));
+        // A bracket that never closes (inside a value) neither hangs nor loses the text.
+        assert_eq!(predicate("[t].[c] = N'a[b'"), "c = N'a[b'");
     }
 
     #[test]
