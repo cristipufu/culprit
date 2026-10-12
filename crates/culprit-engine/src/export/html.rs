@@ -465,9 +465,11 @@ fn severity(f: &Finding) -> &'static str {
     }
 }
 
+/// `shared` is the report checked from its redacted snapshot when the export redacts (see `shared_report`).
 fn finding_body(
     out: &mut String,
     report: &Report,
+    shared: Option<&Report>,
     finding: &Finding,
     options: &ExportOptions,
     level: &str,
@@ -475,11 +477,12 @@ fn finding_body(
 ) {
     let s = &report.snapshot;
     let redacted;
-    let finding = if options.redact {
-        redacted = culprit_core::redact::redact_finding(finding, s.server.engine);
-        &redacted
-    } else {
-        finding
+    let finding = match shared {
+        Some(shared) => {
+            redacted = super::shareable(report, shared, finding);
+            &redacted
+        }
+        None => finding,
     };
     let _ = write!(out, r#"<section class="finding"><{level}>{}</{level}>"#, escape(&finding.title));
     let _ = write!(
@@ -577,8 +580,13 @@ fn finding_body(
 /// fix and how to verify it.
 pub fn finding_html(report: &Report, finding: &Finding, options: &ExportOptions) -> String {
     let mut body = String::new();
-    finding_body(&mut body, report, finding, options, "h1", 0);
-    page(&finding.title, &[report_engine_label(report).to_string(), format!("finding {}", finding.id)], &body, options)
+    let shared = options.redact.then(|| super::shared_report(report));
+    let title = match &shared {
+        Some(shared) => super::shareable(report, shared, finding).title,
+        None => finding.title.clone(),
+    };
+    finding_body(&mut body, report, shared.as_ref(), finding, options, "h1", 0);
+    page(&title, &[report_engine_label(report).to_string(), format!("finding {}", finding.id)], &body, options)
 }
 
 /// Every finding of a scan on one page, highest impact first.
@@ -594,19 +602,24 @@ pub fn report_html(report: &Report, options: &ExportOptions) -> String {
     if n == 0 {
         body.push_str("<p>Nothing stands out.</p>");
     } else {
+        let shared = options.redact.then(|| super::shared_report(report));
         body.push_str(r#"<ul class="scen" style="margin-top:18px">"#);
         for f in &report.findings {
+            let title = match &shared {
+                Some(shared) => super::shareable(report, shared, f).title,
+                None => f.title.clone(),
+            };
             let _ = write!(
                 body,
                 r#"<li><span class="tag">{}</span><div><div class="t"><span class="sev {}"></span>{}</div></div></li>"#,
                 escape(&f.impact.label),
                 severity(f),
-                escape(&f.title)
+                escape(&title)
             );
         }
         body.push_str("</ul>");
         for (i, f) in report.findings.iter().take(10).enumerate() {
-            finding_body(&mut body, report, f, options, "h1", i + 1);
+            finding_body(&mut body, report, shared.as_ref(), f, options, "h1", i + 1);
         }
     }
     page("Culprit report", &[report_engine_label(report).to_string()], &body, options)

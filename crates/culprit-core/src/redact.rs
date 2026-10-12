@@ -5,7 +5,7 @@
 //! backslash escapes.
 
 use crate::finding::Finding;
-use crate::model::{Engine, Properties};
+use crate::model::{Engine, Properties, Snapshot};
 use crate::plan::{Plan, PlanNode};
 
 /// Numbers inside these types' parentheses are sizes (`nvarchar(200)`, `decimal(12,2)`), not data.
@@ -114,7 +114,36 @@ fn collapse_parameters(span: String) -> String {
     if items.len() > 1 && items.iter().all(|i| placeholder(i)) { format!("{}, …", items[0]) } else { span }
 }
 
-/// A finding fit to leave the machine: its prose redacted with [`redact_prose`]. The fix's SQL stays as it is: Culprit
+/// A snapshot to build text that leaves the machine from (an export, a digest posted to chat): statements, plans,
+/// query samples and deadlock statements go through the SQL lexer, so their literals become placeholders, and the
+/// parameter values plans were compiled for are dropped. Findings checked from it can only quote what is left, so
+/// nothing has to be picked back out of their prose: re-check this, don't redact the findings of the original.
+pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
+    let engine = snapshot.server.engine;
+    let mut s = snapshot.clone();
+    if let Some(w) = &mut s.workload {
+        for q in &mut w.queries {
+            q.text = redact_sql(&q.text, engine);
+            q.plan = q.plan.as_ref().map(redact_plan);
+            for p in &mut q.plans {
+                p.compiled = None;
+            }
+        }
+    }
+    for f in &mut s.query_families {
+        f.sample = redact_sql(&f.sample, engine);
+    }
+    if let Some(d) = &mut s.deadlocks {
+        for p in d.deadlocks.iter_mut().flat_map(|d| d.processes.iter_mut()) {
+            p.statement = p.statement.as_deref().map(|t| redact_sql(t, engine));
+        }
+    }
+    s
+}
+
+/// A second layer over [`redact_snapshot`], for text from a finding that wasn't checked from a redacted snapshot (a
+/// plug-in check an export can't re-run): its prose redacted with [`redact_prose`], which reads SQL out of prose by
+/// heuristics and so can't be the only layer. The fix's SQL stays as it is: Culprit
 /// writes it from names and ids, never from the workload's values.
 pub fn redact_finding(finding: &Finding, engine: Engine) -> Finding {
     let prose = |t: &str| redact_prose(t, engine);

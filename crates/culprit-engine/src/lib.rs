@@ -645,10 +645,14 @@ impl Workspace {
         since: Option<&std::path::Path>,
         top: usize,
     ) -> Result<culprit_core::Digest> {
-        let recheck = |r: Report| culprit_checks::analyze_with(r.snapshot, &self.extra_checks);
+        // A digest is posted where the database's data must not go: every report it reads is checked again from its
+        // redacted snapshot, so titles, headlines and details can only quote SQL the lexer has already redacted.
+        let recheck = |r: Report| {
+            culprit_checks::analyze_with(culprit_core::redact::redact_snapshot(&r.snapshot), &self.extra_checks)
+        };
         let load = |name: &str, id: &str| reports::load(&self.paths.reports_dir(name).join(format!("{id}.json")));
         let current = match (report, name) {
-            (Some(path), _) => self.analyze_file(path)?,
+            (Some(path), _) => recheck(self.analyze_file(path)?),
             (None, Some(name)) => {
                 let latest = reports::list(&self.paths.reports_dir(name))?.into_iter().next().ok_or_else(|| {
                     Error::not_found(format!("No saved report for '{name}'"))
@@ -670,7 +674,7 @@ impl Workspace {
             return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top)));
         }
         let previous = match (since, name, report) {
-            (Some(path), _, _) => Some(self.analyze_file(path)?),
+            (Some(path), _, _) => Some(recheck(self.analyze_file(path)?)),
             (None, Some(name), None) => {
                 let history = reports::list(&self.paths.reports_dir(name))?;
                 let window = history.first().and_then(|r| r.window_days);
@@ -1155,7 +1159,8 @@ impl Workspace {
 }
 
 /// [`Workspace::drift`] for two reports already in hand (saved files, fixtures).
-/// Each top finding in full, redacted, for a consumer that posts the details (a thread per finding).
+/// Each top finding in full, for a consumer that posts the details (a thread per finding). `report` is checked from a
+/// redacted snapshot (see `Workspace::digest`).
 fn with_details(report: &Report, mut digest: culprit_core::Digest) -> culprit_core::Digest {
     for item in &mut digest.top {
         item.detail = report.findings.iter().find(|f| f.id == item.id).map(|f| export::finding_detail(report, f));

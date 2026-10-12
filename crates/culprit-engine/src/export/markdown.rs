@@ -347,19 +347,29 @@ pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::Diges
 /// One finding as a PR section: what's happening, the evidence, the query and its plan, the fix and how to verify it.
 pub fn finding_markdown(report: &Report, finding: &Finding, options: &ExportOptions) -> String {
     let mut out = String::new();
-    finding_section(&mut out, report, finding, options, "##");
+    let shared = options.redact.then(|| super::shared_report(report));
+    finding_section(&mut out, report, shared.as_ref(), finding, options, "##");
     footer(&mut out, &format!(" · finding {}", code(&finding.id)));
     out
 }
 
-fn finding_section(out: &mut String, report: &Report, finding: &Finding, options: &ExportOptions, level: &str) {
+/// `shared` is the report checked from its redacted snapshot when the export redacts (see `shared_report`).
+fn finding_section(
+    out: &mut String,
+    report: &Report,
+    shared: Option<&Report>,
+    finding: &Finding,
+    options: &ExportOptions,
+    level: &str,
+) {
     let s = &report.snapshot;
     let redacted;
-    let finding = if options.redact {
-        redacted = culprit_core::redact::redact_finding(finding, s.server.engine);
-        &redacted
-    } else {
-        finding
+    let finding = match shared {
+        Some(shared) => {
+            redacted = super::shareable(report, shared, finding);
+            &redacted
+        }
+        None => finding,
     };
     let _ = writeln!(out, "{level} {}\n", text(&finding.title));
     let _ = writeln!(
@@ -455,16 +465,21 @@ pub fn report_markdown(report: &Report, options: &ExportOptions) -> String {
     );
     let _ = writeln!(out, "{}. Scanned {}.\n", server_line(report), s.taken_at);
     redaction_note(&mut out, options);
+    let shared = options.redact.then(|| super::shared_report(report));
     if report.findings.is_empty() {
         let _ = writeln!(out, "Nothing stands out.\n");
     } else {
         let _ = writeln!(out, "| | Finding | Impact |\n|---|---|---|");
         for f in &report.findings {
-            let _ = writeln!(out, "| {} | {} | {} |", severity_dot(f), cell(&f.title), cell(&f.impact.label));
+            let title = match &shared {
+                Some(shared) => super::shareable(report, shared, f).title,
+                None => f.title.clone(),
+            };
+            let _ = writeln!(out, "| {} | {} | {} |", severity_dot(f), cell(&title), cell(&f.impact.label));
         }
         let _ = writeln!(out);
         for f in report.findings.iter().take(5) {
-            finding_section(&mut out, report, f, options, "###");
+            finding_section(&mut out, report, shared.as_ref(), f, options, "###");
         }
         if report.findings.len() > 5 {
             let _ = writeln!(

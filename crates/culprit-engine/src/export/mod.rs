@@ -10,7 +10,7 @@ mod svg;
 use std::borrow::Cow;
 
 use culprit_core::redact::{redact_native, redact_plan, redact_sql};
-use culprit_core::{Engine, Environment, Plan, PlanKind, PlanNode, Report, plan_cost_basis};
+use culprit_core::{Engine, Environment, Finding, Plan, PlanKind, PlanNode, Report, plan_cost_basis};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -114,6 +114,21 @@ pub fn file_stem(title: &str) -> String {
 
 pub(crate) fn prepared<'a>(plan: &'a Plan, options: &ExportOptions) -> Cow<'a, Plan> {
     if options.redact { Cow::Owned(redact_plan(plan)) } else { Cow::Borrowed(plan) }
+}
+
+/// The report as it may leave the machine: checked again from its redacted snapshot, so every finding's text quotes
+/// only SQL the lexer has already redacted.
+pub(crate) fn shared_report(report: &Report) -> Report {
+    culprit_checks::analyze(culprit_core::redact::redact_snapshot(&report.snapshot))
+}
+
+/// `finding` as it may leave the machine: the same finding from `shared` (see [`shared_report`]) with its prose
+/// redacted again as a second layer. A finding the re-check doesn't produce (a plug-in check) gets the second layer
+/// only.
+pub(crate) fn shareable(report: &Report, shared: &Report, finding: &Finding) -> Finding {
+    let engine = report.snapshot.server.engine;
+    let source = shared.findings.iter().find(|f| f.id == finding.id).unwrap_or(finding);
+    culprit_core::redact::redact_finding(source, engine)
 }
 
 pub(crate) fn sql_text(text: &str, engine: Engine, options: &ExportOptions) -> String {

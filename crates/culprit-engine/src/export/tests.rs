@@ -80,7 +80,8 @@ fn redacted_exports_and_digest_details_drop_values_quoted_in_prose() {
     for out in [&markdown, &html, &detail] {
         assert!(!out.contains("9b9143e3") && !out.contains("secret-ish"), "{out}");
     }
-    assert!(markdown.contains("@p0 = N'?', …"), "{markdown}");
+    // The export renders the finding as checked from the redacted snapshot: text added to the original isn't in it.
+    assert!(!markdown.contains("It was compiled for"), "{markdown}");
     // Asked for the raw text, an export keeps it.
     let raw = finding_markdown(&report, finding, &ExportOptions { redact: false, ..Default::default() });
     assert!(raw.contains("9b9143e3"));
@@ -88,4 +89,46 @@ fn redacted_exports_and_digest_details_drop_values_quoted_in_prose() {
     let detail = finding_detail(&report, finding);
     assert!(!detail.queries.is_empty() && !detail.queries[0].sql.is_empty());
     assert!(detail.queries[0].stats.contains("of database time"));
+}
+
+/// The demo's snapshot with values planted everywhere data can reach a scan: in statements, in plan predicates, and
+/// in the values plans were compiled for, one of them holding a backtick and a quote to break naive parsing.
+fn report_with_planted_values() -> Report {
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let mut snapshot: culprit_core::Snapshot = serde_json::from_str(&text).expect("snapshot");
+    let w = snapshot.workload.as_mut().expect("workload");
+    for q in &mut w.queries {
+        q.text = format!("{} /* x */ AND note = N'PLANTED-1'", q.text);
+        if let Some(plan) = &mut q.plan {
+            plan.root.predicate = Some("[shop].[t].[c]=N'PLANTED-2' AND [d]=N'a`b'".into());
+        }
+        for p in &mut q.plans {
+            p.compiled = Some("@p0 = N'x`y''z', @p1 = N'PLANTED-3', @p2 = (424242)".into());
+        }
+    }
+    culprit_checks::analyze(snapshot)
+}
+
+#[test]
+fn shared_text_is_checked_from_a_redacted_snapshot() {
+    let report = report_with_planted_values();
+    let options = ExportOptions { redact: true, ..Default::default() };
+    let shared = shared_report(&report);
+    let mut outputs = vec![report_markdown(&report, &options), report_html(&report, &options)];
+    for f in &report.findings {
+        outputs.push(finding_markdown(&report, f, &options));
+        outputs.push(serde_json::to_string(&shareable(&report, &shared, f)).expect("json"));
+    }
+    for f in &shared.findings {
+        outputs.push(serde_json::to_string(&finding_detail(&shared, f)).expect("json"));
+    }
+    for out in &outputs {
+        for planted in ["PLANTED-1", "PLANTED-2", "PLANTED-3", "424242", "a`b", "x`y"] {
+            assert!(!out.contains(planted), "{planted} left in:\n{out}");
+        }
+    }
+    // The re-check finds the same problems.
+    let ids = |r: &Report| r.findings.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+    assert_eq!(ids(&shared), ids(&report));
 }
