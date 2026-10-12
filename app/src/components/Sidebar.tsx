@@ -70,9 +70,15 @@ export function Sidebar() {
         )}
         <span style={{ minWidth: 0 }}>
           <div className="name">{active ?? "No connection"}</div>
-          <div className="sub">
-            {report ? `${report.snapshot.server.product} · ${report.snapshot.server.database}` : connection ? connection.display : "Choose a database"}
-          </div>
+          {/* Product and database a line each, so a long database name isn't cut off behind the product. */}
+          {report ? (
+            <>
+              <div className="sub">{report.snapshot.server.product}</div>
+              <div className="sub">{report.snapshot.server.database}</div>
+            </>
+          ) : (
+            <div className="sub">{connection ? connection.display : "Choose a database"}</div>
+          )}
         </span>
         <ChevronsUpDown size={14} className="chev" />
       </button>
