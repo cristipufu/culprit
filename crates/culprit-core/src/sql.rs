@@ -526,6 +526,11 @@ fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
         if word == "SELECT" && depth <= 0 {
             seen_select = true;
         }
+        // `IF <condition> <statement>` is one statement: the first one after the condition is its body, checked as a
+        // statement of its own. An ELSE branch or a BEGIN … END block of several still counts as more than one.
+        if starts && first == "IF" {
+            return mssql_second_statement(&tokens[i..]);
+        }
         if starts {
             return Some(raw);
         }
@@ -849,6 +854,20 @@ pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_tsql_if_and_its_body_are_one_statement() {
+        let one = |text: &str| single_statement(text, Engine::Mssql).is_ok();
+        assert!(one(
+            "IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = 'reader') CREATE USER [reader] FROM EXTERNAL PROVIDER;"
+        ));
+        assert!(one("IF OBJECT_ID('dbo.t') IS NULL CREATE TABLE dbo.t (id int)"));
+        assert!(one("IF EXISTS (SELECT 1 FROM a) INSERT INTO b SELECT * FROM a"));
+        assert!(!one("IF 1 = 1 SELECT 1 SELECT 2"));
+        assert!(!one("IF 1 = 1 BEGIN SELECT 1 SELECT 2 END"));
+        assert!(!one("IF 1 = 1 SELECT 1 ELSE DELETE FROM t"));
+    }
+
     use super::*;
 
     #[test]
