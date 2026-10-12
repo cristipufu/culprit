@@ -392,7 +392,8 @@
   font-weight: 600;
   padding: 1px 7px;
   border-radius: 999px;
-  color: var(--link);
+  /* Toward the text colour: readable on the tint, including in a dimmed row. */
+  color: color-mix(in srgb, var(--link) 70%, var(--text));
   background: color-mix(in srgb, var(--focus) 10%, transparent);
   white-space: nowrap;
 }

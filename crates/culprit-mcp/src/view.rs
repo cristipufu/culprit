@@ -160,7 +160,7 @@ pub fn top_queries(report: &Report, by: TopBy, limit: usize) -> Value {
 }
 
 pub fn query(report: &Report, id: &str) -> Result<Value> {
-    let w = report.snapshot.workload.as_ref().ok_or_else(|| Error::not_found("This scan has no query statistics"))?;
+    let w = report.snapshot.workload.as_ref().ok_or_else(|| Error::not_found("This scan has no query history"))?;
     let q = w.query(id).ok_or_else(|| {
         Error::not_found(format!("No query '{id}' in the latest scan")).with_hint("Call top_queries for the ids")
     })?;

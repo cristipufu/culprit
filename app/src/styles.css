@@ -600,7 +600,11 @@ textarea {
 
 .chip .n {
   font-variant-numeric: tabular-nums;
-  opacity: 0.65;
+  color: var(--text-3);
+}
+
+.chip.on .n {
+  color: inherit;
 }
 
 .tag {
@@ -928,7 +932,7 @@ textarea {
   font-size: var(--fs-strong);
   line-height: 1.55;
   margin: 0;
-  max-width: 680px;
+  max-width: 70ch;
 }
 
 .detail section {
@@ -1088,6 +1092,7 @@ textarea {
   margin: 0 0 10px;
   color: var(--text-2);
   line-height: 1.55;
+  max-width: 70ch;
 }
 
 .fix-cost {
@@ -1875,6 +1880,10 @@ table.grid td.sqlcell {
 
 .palette .item.on {
   background: var(--active);
+}
+
+.palette .item.on .k {
+  color: var(--text-2);
 }
 
 .palette .section {
@@ -4588,7 +4597,9 @@ body.resizing {
 .td-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
+  overflow-wrap: anywhere;
   padding: 0 20px 28px;
 }
 
@@ -4705,7 +4716,7 @@ table.grid td.chips-col {
 .chip-ix {
   display: inline-flex;
   align-items: center;
-  max-width: 200px;
+  max-width: 280px;
   height: 18px;
   margin: 1px 4px 1px 0;
   border-radius: 4px;
@@ -5060,6 +5071,7 @@ table.rg {
 
 .rg td.r {
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .rg td.null {
@@ -7866,7 +7878,7 @@ button.health-pill:hover {
 }
 
 .waits-tabs .kbd {
-  opacity: 0.7;
+  color: var(--text-3);
 }
 
 .waits-body {
@@ -9232,7 +9244,8 @@ button.health-pill:hover {
 }
 
 .pc-flag.high {
-  background: var(--high);
+  background: var(--high-text);
+  color: var(--text-inverse);
 }
 
 .pc-flag.medium {
@@ -9866,7 +9879,7 @@ button.health-pill:hover {
 }
 
 .qd-tab .kbd {
-  opacity: 0.7;
+  color: var(--text-3);
 }
 
 .tab-count {
@@ -10750,6 +10763,11 @@ button.health-pill:hover {
   gap: 6px;
   margin-top: 12px;
   font-size: var(--fs-ui);
+}
+
+/* The label on its own line, so the four engine buttons stay together. */
+.welcome-samples > .muted {
+  flex-basis: 100%;
 }
 
 @keyframes cmp-in {

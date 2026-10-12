@@ -108,7 +108,7 @@ pub fn safe_file_name(name: &str) -> String {
 
 /// Windows reserves device names (CON, NUL, COM1…) whatever the extension, and drops a trailing dot. Only applied on
 /// Windows, so existing report folders elsewhere keep their names.
-fn windows_safe(mut name: String) -> String {
+pub(crate) fn windows_safe(mut name: String) -> String {
     let stem = name.split('.').next().unwrap_or_default().to_ascii_uppercase();
     let numbered =
         stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit();

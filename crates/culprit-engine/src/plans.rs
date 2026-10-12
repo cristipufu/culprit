@@ -297,7 +297,8 @@ fn file_name(name: &str) -> (String, &'static str) {
         .take(80)
         .collect();
     let stem = stem.trim_matches(|c: char| c == '.' || c == ' ' || c == '-').to_string();
-    (if stem.is_empty() { "plan".to_string() } else { stem }, extension)
+    // `con`, `nul`, `com1`… are devices on Windows, whatever the extension.
+    (if stem.is_empty() { "plan".to_string() } else { crate::store::windows_safe(stem) }, extension)
 }
 
 fn showplan(text: &str) -> Result<Plan> {
@@ -848,5 +849,8 @@ mod tests {
         assert_eq!(file_name(".hidden.txt"), ("hidden".into(), "txt"));
         assert_eq!(file_name("/abs/path/x.exe"), ("abs-path-x.exe".into(), "txt"));
         assert_eq!(file_name("..."), ("plan".into(), "txt"));
+        assert_eq!(file_name("con"), ("_con".into(), "txt"));
+        assert_eq!(file_name("COM1.sqlplan"), ("_COM1".into(), "sqlplan"));
+        assert_eq!(file_name("nul.json"), ("_nul".into(), "json"));
     }
 }

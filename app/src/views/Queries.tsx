@@ -93,7 +93,7 @@ export function Queries({ report }: { report: Report }) {
   if (!workload) {
     return (
       <div className="empty">
-        <h3>No workload statistics</h3>
+        <h3>No query history</h3>
         <p>{report.snapshot.server.missing.find((m) => ["query-store", "plan-cache", "pg-stat-statements", "performance-schema"].includes(m.capability))?.reason ?? "This login can't read query statistics."}</p>
       </div>
     );

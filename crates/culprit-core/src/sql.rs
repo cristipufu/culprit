@@ -68,9 +68,45 @@ enum Token<'a> {
 
 /// Top-level tokens, with literals and comments skipped. Errors on text it can't lex safely.
 fn lex(text: &str, engine: Engine, mode: Mode) -> std::result::Result<Vec<Token<'_>>, &'static str> {
+    let mut tokens = Vec::new();
+    lex_into(text, engine, mode, &mut tokens).map(|()| tokens)
+}
+
+/// The message for a quote that never closes: the one lexing error that depends on the server's settings.
+const UNCLOSED_QUOTE: &str = "A quoted string or name is never closed";
+
+/// Every reading of `text` under the server settings that change lexing (see [`modes`]). A setting under which the
+/// text has a quote that never closes is one where the server rejects the text whole, so that reading is left out — as
+/// long as nothing before the open quote could run on its own: MySQL runs multi-statement text a statement at a time, so
+/// a `;` before it keeps the error. Every other error (comments, executable comments, invisible characters) refuses the
+/// text in any reading, and at least one reading must succeed.
+fn readings(text: &str, engine: Engine) -> std::result::Result<Vec<Vec<Token<'_>>>, &'static str> {
+    let mut out = Vec::new();
+    let mut unclosed = None;
+    for &mode in modes(engine) {
+        let mut tokens = Vec::new();
+        match lex_into(text, engine, mode, &mut tokens) {
+            Ok(()) => out.push(tokens),
+            Err(e) => {
+                let ran_before = engine == Engine::Mysql && tokens.iter().any(|t| matches!(t, Token::Semicolon(_)));
+                if e != UNCLOSED_QUOTE || ran_before {
+                    return Err(e);
+                }
+                unclosed = Some(e);
+            }
+        }
+    }
+    if out.is_empty() { Err(unclosed.unwrap_or(UNCLOSED_QUOTE)) } else { Ok(out) }
+}
+
+fn lex_into<'a>(
+    text: &'a str,
+    engine: Engine,
+    mode: Mode,
+    tokens: &mut Vec<Token<'a>>,
+) -> std::result::Result<(), &'static str> {
     let backslash = mode.backslash;
     let bytes = text.as_bytes();
-    let mut tokens = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let c = bytes[i];
@@ -159,7 +195,7 @@ fn lex(text: &str, engine: Engine, mode: Mode) -> std::result::Result<Vec<Token<
             }
         }
     }
-    Ok(tokens)
+    Ok(())
 }
 
 /// Whitespace, controls and format characters outside ASCII: invisible, and lexed differently by different servers.
@@ -228,7 +264,7 @@ fn quoted_end(
             i += 1;
         }
     }
-    Err("A quoted string or name is never closed")
+    Err(UNCLOSED_QUOTE)
 }
 
 /// A Postgres dollar-quote opener at `from` (`$$` or `$tag$`); `$1` is a parameter, not a quote.
@@ -259,8 +295,7 @@ fn too_many() -> Error {
 /// one statement, an executable comment, or quoting this can't follow — under every server setting that changes lexing.
 pub fn single_statement(text: &str, engine: Engine) -> Result<&str> {
     let mut cut: Option<usize> = None;
-    for (n, &mode) in modes(engine).iter().enumerate() {
-        let tokens = lex(text, engine, mode).map_err(Error::invalid)?;
+    for (n, tokens) in readings(text, engine).map_err(Error::invalid)?.into_iter().enumerate() {
         let first_semicolon = tokens.iter().position(|t| matches!(t, Token::Semicolon(_)));
         let end = match first_semicolon {
             Some(at) => {
@@ -278,13 +313,13 @@ pub fn single_statement(text: &str, engine: Engine) -> Result<&str> {
         cut = Some(end);
     }
     let statement = text[..cut.unwrap_or(text.len())].trim();
-    let tokens = lex(statement, engine, modes(engine)[0]).map_err(Error::invalid)?;
-    if statement.is_empty() || tokens.is_empty() {
+    let readings = readings(statement, engine).map_err(Error::invalid)?;
+    if statement.is_empty() || readings.iter().any(|tokens| tokens.is_empty()) {
         return Err(Error::invalid("There is no statement to run"));
     }
     // T-SQL runs consecutive statements without a semicolon between them: `SELECT 1 COMMIT CREATE TABLE …` is three.
     if engine == Engine::Mssql
-        && let Some(word) = mssql_second_statement(&tokens)
+        && let Some(word) = readings.iter().find_map(|tokens| mssql_second_statement(tokens))
     {
         return Err(too_many().with_hint(format!(
             "SQL Server reads `{word}` here as the start of another statement. Run or explain one statement at a time."
@@ -348,6 +383,12 @@ const MSSQL_STATEMENTS: &[&str] = &[
     "UPDATETEXT",
     "WRITETEXT",
     "READTEXT",
+    "FETCH",
+    "BREAK",
+    "CONTINUE",
+    "LINENO",
+    "END",
+    "ADD",
 ];
 
 /// The keyword that starts a second statement in one T-SQL text, if any. Conservative: a word SQL Server might read
@@ -474,6 +515,12 @@ fn mssql_second_statement<'a>(tokens: &[Token<'a>]) -> Option<&'a str> {
                 "OPEN" | "CLOSE" | "GET" | "MOVE" | "SEND" | "RECEIVE" | "ENABLE" | "DISABLE" | "BULK" => {
                     !next_is_paren && first != "ALTER"
                 }
+                // A cursor fetch; in a query it's `OFFSET n ROWS FETCH NEXT m ROWS ONLY`.
+                "FETCH" => !matches!(prev.as_str(), "ROW" | "ROWS"),
+                // CASE … END is an expression; END CONVERSATION is a statement.
+                "END" => next_word.as_deref() == Some("CONVERSATION"),
+                // ALTER TABLE … ADD is a clause; ADD SIGNATURE / COUNTERSIGNATURE is a statement.
+                "ADD" => matches!(next_word.as_deref(), Some("SIGNATURE") | Some("COUNTERSIGNATURE")),
                 _ => true,
             };
         if word == "SELECT" && depth <= 0 {
@@ -588,8 +635,8 @@ fn side_effect_family(engine: Engine, name: &str) -> bool {
 pub fn reads_only(text: &str, engine: Engine) -> bool {
     let Ok(statement) = single_statement(text, engine) else { return false };
     let advisory = |w: &str| engine == Engine::Postgres && w.to_ascii_lowercase().contains("advisory");
-    modes(engine).iter().all(|&mode| {
-        let Ok(tokens) = lex(statement, engine, mode) else { return false };
+    let Ok(readings) = readings(statement, engine) else { return false };
+    readings.iter().all(|tokens| {
         let words: Vec<(usize, String)> = tokens
             .iter()
             .enumerate()
@@ -657,7 +704,9 @@ pub fn check(text: &str, engine: Engine) -> StatementCheck {
         }
     };
     let reads = reads_only(statement, engine);
-    let words: Vec<String> = lex(statement, engine, modes(engine)[0])
+    let words: Vec<String> = readings(statement, engine)
+        .ok()
+        .and_then(|r| r.into_iter().next())
         .unwrap_or_default()
         .into_iter()
         .filter_map(|t| match t {
@@ -923,9 +972,44 @@ mod tests {
     }
 
     #[test]
+    fn a_setting_where_the_text_never_parses_does_not_refuse_a_read() {
+        // Valid in the server's default mode; under the other backslash setting the quote never closes, so a server
+        // running that way rejects the whole text and nothing runs.
+        assert!(reads_only(r"SELECT 'it\'s' AS s", Engine::Mysql));
+        assert!(reads_only(r#"SELECT "a\"b" AS s"#, Engine::Mysql));
+        assert!(reads_only(r"SELECT 'C:\' AS p", Engine::Postgres));
+        // But MySQL runs multi-statement text one statement at a time: with backslashes literal, this is a SELECT, a
+        // DELETE and an open quote, and the first two would run before the error.
+        let text = r"SELECT 'a\'; DELETE FROM t; SELECT '";
+        assert!(single_statement(text, Engine::Mysql).is_err(), "{text}");
+        assert!(!reads_only(text, Engine::Mysql), "{text}");
+        // Errors that don't depend on settings refuse the text in every reading.
+        assert!(!reads_only("SELECT 1 /* open", Engine::Mysql));
+        assert!(!reads_only("SELECT\u{a0}1", Engine::Postgres));
+    }
+
+    #[test]
+    fn a_cursor_fetch_is_a_statement_but_offset_fetch_is_part_of_the_query() {
+        assert!(!reads_only("SELECT 1 AS a\rFETCH NEXT FROM c", Engine::Mssql));
+        assert!(!reads_only("SELECT name FROM sys.tables\u{c}FETCH NEXT FROM c", Engine::Mssql));
+        let paged = "SELECT name FROM sys.tables ORDER BY name OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY";
+        assert!(reads_only(paged, Engine::Mssql), "{paged}");
+        assert!(reads_only("SELECT a FROM t ORDER BY a OFFSET 1 ROW FETCH FIRST 1 ROW ONLY", Engine::Mssql));
+        assert!(reads_only("SELECT CASE WHEN a = 1 THEN 'x' END AS b FROM t", Engine::Mssql));
+        assert!(!reads_only("SELECT 1 AS a END CONVERSATION @h", Engine::Mssql));
+        assert!(!reads_only("SELECT 1 AS a BREAK", Engine::Mssql));
+    }
+
+    #[test]
     fn no_tsql_statement_keyword_hides_behind_any_separator() {
         let separators = [" ", "\n", "\t", "\r", "\r\n", "/**/", "/* note */", " -- note\n", " -- note\r", ".", ") "];
         for keyword in MSSQL_STATEMENTS.iter().filter(|k| **k != "WITH") {
+            // The words that are statements only in context get it: END CONVERSATION, ADD SIGNATURE.
+            let keyword = match *keyword {
+                "END" => "END CONVERSATION",
+                "ADD" => "ADD SIGNATURE",
+                k => k,
+            };
             for sep in separators {
                 let text = format!("SELECT 1{sep}{keyword} x");
                 assert!(!reads_only(&text, Engine::Mssql), "{text:?}");

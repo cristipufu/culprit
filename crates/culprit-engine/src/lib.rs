@@ -985,8 +985,12 @@ impl Workspace {
         // Text that isn't exactly one statement never runs, confirmed or not: on SQL Server, statements need no
         // semicolon between them, so `SELECT 1 COMMIT CREATE TABLE …` would otherwise run all three.
         if let Some(problem) = check.problem {
-            return Err(Error::invalid(problem)
-                .with_hint("Run one statement at a time: select it in the editor first, or split the script."));
+            let hint = if problem.contains("never closed") {
+                "Check the quotes and comments: one starts and doesn't end."
+            } else {
+                "Run one statement at a time: select it in the editor first, or split the script."
+            };
+            return Err(Error::invalid(problem).with_hint(hint));
         }
         if check.reads_only {
             return self.run_read(name, sql, limit).await;

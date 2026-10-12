@@ -46,7 +46,7 @@ export function WorkloadUnlock({ report }: { report: Report }) {
     <div className="unlock">
       <div className="unlock-head">
         <KeyRound size={15} />
-        <b>Turn on query statistics</b>
+        <b>Turn on query history</b>
       </div>
       <p>
         {missing.reason} Until then Culprit can only check tables, indexes and settings: no query list, no plans, no trends.

@@ -151,7 +151,7 @@ enum Command {
     /// missing indexes. Each side is a connection name or a saved report file.
     Drift { a: String, b: String },
     /// What changed between two periods: queries that got slower, new ones, ones that got faster or stopped, and the
-    /// plan changes behind them. Query Store answers from its intervals; Postgres and MySQL from Culprit's earlier scans.
+    /// plan changes behind them. Query Store answers from its intervals; PostgreSQL and MySQL from Culprit's earlier scans.
     Changes(ChangesArgs),
     /// Put a moment on a connection's timeline: `culprit mark shop deploy v1.4.2` (from CI, after a migration). Charts
     /// and `changes` line regressions up with it. --list shows them, --remove <id> takes one off.
@@ -337,7 +337,7 @@ struct ExplainArgs {
     sql: Option<String>,
     #[arg(long, conflicts_with = "query_id")]
     file: Option<PathBuf>,
-    /// Explain a query from the latest report by its id (its stored plan when the engine keeps one). Postgres ids can
+    /// Explain a query from the latest report by its id (its stored plan when the engine keeps one). PostgreSQL ids can
     /// be negative, e.g. --query-id -1973449073115120133.
     #[arg(long, allow_hyphen_values = true)]
     query_id: Option<String>,
@@ -391,14 +391,14 @@ enum SavedCommand {
 #[derive(Args)]
 struct LiveArgs {
     connection: String,
-    /// Stop the statement this session is running; the session stays connected (Postgres, MySQL).
+    /// Stop the statement this session is running; the session stays connected (PostgreSQL, MySQL).
     #[arg(long, value_name = "SESSION", conflicts_with = "kill")]
     cancel: Option<String>,
     /// End this session; its open transaction rolls back.
     #[arg(long, value_name = "SESSION")]
     kill: Option<String>,
     /// How far along this session's running statement is: per-operator progress on SQL Server, the plan with elapsed
-    /// time and command progress on Postgres and MySQL.
+    /// time and command progress on PostgreSQL and MySQL.
     #[arg(long, value_name = "SESSION", conflicts_with_all = ["cancel", "kill"])]
     progress: Option<String>,
     /// With --progress: keep refreshing every second until the statement finishes.
@@ -477,6 +477,7 @@ fn writes_markdown(command: &Command) -> bool {
             | Command::Analyze { .. }
             | Command::Verify(_)
             | Command::Export(_)
+            | Command::Plan(plan_cmd::PlanCommand::Export { .. })
     )
 }
 
@@ -494,7 +495,7 @@ fn main() -> ExitCode {
     if format == Format::Md && !writes_markdown(&cli.command) {
         out.error(
             &Error::invalid("This command has no Markdown output")
-                .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify and export; use --format text or json here."),
+                .with_hint("Markdown is available for scan, findings, show, dashboard, analyze, verify, export and plan export; use --format text or json here."),
         );
         return ExitCode::FAILURE;
     }
@@ -767,7 +768,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
         }
         ConnCommand::Rename { old, new } => {
             let info = ws.rename_connection(&old, &new)?;
-            out.connection_added(&info, None);
+            out.connection_renamed(&old, &info);
             Ok(0)
         }
         ConnCommand::Discover(args) => {

@@ -607,7 +607,7 @@ function OutputPane({ output, look, onLook, empty }: { output: Output; look: Pla
       );
     case "rows": {
       const r = output.result;
-      const summary = r.columns.length === 0 ? r.messages.join(" ") : `${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${ROW_LIMIT.toLocaleString()})` : ""}`;
+      const summary = r.columns.length === 0 ? r.messages.join(" ") : `${r.rows.length.toLocaleString()} row${r.rows.length === 1 ? "" : "s"}${r.truncated ? ` (first ${r.rows.length.toLocaleString()}; more exist)` : ""}`;
       if (r.columns.length === 0) {
         return (
           <div className="result-message">

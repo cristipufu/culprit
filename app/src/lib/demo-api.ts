@@ -277,7 +277,7 @@ export async function demoApi(): Promise<Api> {
         product: r.snapshot.server.product,
         no_workload: r.snapshot.workload
           ? null
-          : (r.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability))?.reason ?? "This scan has no query statistics."),
+          : (r.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability))?.reason ?? "This scan has no query history."),
       },
     }));
   let demoApproval: ApprovalRequest | null =

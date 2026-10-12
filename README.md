@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/images/logo.svg" width="88" height="88" alt="Culprit">
+  <img src="docs/images/logo.svg" width="88" height="88" alt="Culprit SQL Studio">
 </p>
 
-<h1 align="center">Culprit</h1>
+<h1 align="center">Culprit SQL Studio</h1>
 
 <p align="center">
   <b>Find out what's slowing your database down, and exactly how to fix it.</b>

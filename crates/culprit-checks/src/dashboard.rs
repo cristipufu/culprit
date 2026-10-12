@@ -264,7 +264,7 @@ fn plan_changes<'a>(s: &'a Snapshot, w: &Workload) -> Vec<PlanChange<'a>> {
 }
 
 fn no_workload(key: TileKey, what: &str) -> Tile {
-    let mut t = Tile::new(key, TileStatus::Unavailable, format!("No query statistics, so {what}."));
+    let mut t = Tile::new(key, TileStatus::Unavailable, format!("No query history, so {what}."));
     t.detail = Some("Query statistics shows what it takes to turn them on.".into());
     t
 }
@@ -1614,8 +1614,8 @@ fn statistics(report: &Report) -> Tile {
                 TileKey::Statistics,
                 TileStatus::Bad,
                 match missing {
-                    Some(m) => format!("No query statistics: {}", sentence(&m.reason)),
-                    None => "No query statistics in this scan.".into(),
+                    Some(m) => format!("No query history: {}", sentence(&m.reason)),
+                    None => "No query history in this scan.".into(),
                 },
             );
             t.detail = Some(

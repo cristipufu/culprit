@@ -166,6 +166,16 @@ impl Out {
         println!("Next: culprit scan {}", info.name);
     }
 
+    pub fn connection_renamed(&self, old: &str, info: &ConnectionInfo) {
+        if self.format == Format::Json {
+            return self.json(&json!(info));
+        }
+        println!(
+            "Renamed {old} to {}; its scan history and saved password moved with it.",
+            self.paint(BOLD, &info.name)
+        );
+    }
+
     pub fn discovered(&self, found: &[DiscoveredDatabase], saved: &[ConnectionInfo]) {
         if self.format == Format::Json {
             return self.json(&json!({ "databases": found, "saved": saved }));
@@ -1158,7 +1168,11 @@ fn markdown_report(report: &Report) -> String {
     let s = &report.snapshot;
     let mut out = format!(
         "# Culprit report: {}\n\n{} · database `{}` · {}\n\n**{}**\n\n",
-        s.connection, s.server.product, s.server.database, s.taken_at, report.summary.headline
+        s.connection,
+        s.server.product,
+        s.server.database,
+        culprit_core::changes::dated_time(&s.taken_at),
+        report.summary.headline
     );
     let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = report.findings.iter().partition(|f| !f.inactive);
     let table = |out: &mut String, list: &[&Finding], from: usize| {

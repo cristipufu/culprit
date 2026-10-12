@@ -402,7 +402,7 @@
       "check": "filtered-scan",
       "confidence": "high",
       "fix": {
-        "cost": "shop.orders receives 0 writes in the hour since the server last restarted; each one will also update this index.",
+        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
         "summary": "Create an index on promo_code so these queries seek instead of scanning."
       },

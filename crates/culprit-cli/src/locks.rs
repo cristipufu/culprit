@@ -17,7 +17,7 @@ pub struct DeadlocksArgs {
     /// How far back: 90m, 24h, 7d.
     #[arg(long, default_value = "24h")]
     pub since: String,
-    /// Explain a saved deadlock instead: a SQL Server .xdl file, InnoDB status text or Postgres log lines (`-` reads stdin).
+    /// Explain a saved deadlock instead: a SQL Server .xdl file, InnoDB status text or PostgreSQL log lines (`-` reads stdin).
     #[arg(long, value_name = "PATH")]
     pub file: Option<PathBuf>,
 }

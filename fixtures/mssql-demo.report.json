@@ -541,7 +541,7 @@
       "check": "missing-index",
       "confidence": "high",
       "fix": {
-        "cost": "shop.order_items receives 0 writes in the hour since the server last restarted; each one will also update this index.",
+        "cost": "shop.order_items received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
         "summary": "Create an index on order_id. Equality columns come first; put the most selective one at the front if you know it."
       },
@@ -925,7 +925,7 @@
       "check": "missing-index",
       "confidence": "high",
       "fix": {
-        "cost": "shop.orders receives 0 writes in the hour since the server last restarted; each one will also update this index.",
+        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
         "summary": "Create an index on shipped_at, including total. Equality columns come first; put the most selective one at the front if you know it."
       },
@@ -989,7 +989,7 @@
       "check": "unindexed-fk",
       "confidence": "high",
       "fix": {
-        "cost": "shop.ticket_events receives 0 writes in the hour since the server last restarted; each one will also update this index.",
+        "cost": "shop.ticket_events received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]\n    ON [shop].[ticket_events] ([ticket_id])\n    WITH (ONLINE = ON);",
         "summary": "Index the foreign key column on shop.ticket_events."
       },

@@ -28,7 +28,12 @@ async function copy(text: string, what: string) {
  */
 export function ResultGrid({ result, types, summary }: { result: ResultSet; types?: Record<string, string>; summary?: string }) {
   const [selected, setSelected] = useState<Cell | null>(null);
-  const numeric = result.columns.map((c) => NUMERIC.test(types?.[c.toLowerCase()] ?? ""));
+  // Numeric by the catalog's type, or, for computed columns the catalog doesn't know (COUNT, SUM), by the values.
+  const numeric = result.columns.map(
+    (c, i) =>
+      NUMERIC.test(types?.[c.toLowerCase()] ?? "") ||
+      (result.rows.some((r) => r[i] != null) && result.rows.every((r) => r[i] == null || typeof r[i] === "number")),
+  );
   const valueAt = (cell: Cell) => result.rows[cell.row]?.[cell.col];
   const rowText = (row: number) => (result.rows[row] ?? []).map(cellText).join("\t");
   const header = result.columns.join("\t");

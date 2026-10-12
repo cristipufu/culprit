@@ -134,7 +134,10 @@ fn print_text(d: &Dashboard, out: &Out) {
         for item in tile.items.iter().take(3) {
             let value = item.value.as_deref().map(|v| format!("  {}", out.dim(v))).unwrap_or_default();
             let dot = item.status.map(|s| format!("{} ", mark(out, s))).unwrap_or_else(|| "· ".into());
-            println!("{indent}{dot}{}{value}", item.label);
+            // Two reads of the same table look alike; the id tells them apart and opens with `culprit query`.
+            let id =
+                item.query_id.as_deref().map(|id| format!("  {}", out.dim(&format!("id {id}")))).unwrap_or_default();
+            println!("{indent}{dot}{}{value}{id}", item.label);
         }
         if let Some(sql) = &tile.fix_sql {
             // Settings files and multi-line statements keep the tile's indent on every line.

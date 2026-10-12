@@ -51,7 +51,7 @@ pub struct WhatChangedArgs {
     pub connection: String,
     /// Compare everything since this moment (RFC 3339, e.g. a deploy time) with the same length of time before it.
     pub since: Option<String>,
-    /// The recent period as the last N hours (default 1; Postgres and MySQL default to the time since the previous scan).
+    /// The recent period as the last N hours (default 1; PostgreSQL and MySQL default to the time since the previous scan).
     pub recent_hours: Option<f64>,
     /// Runs a query needs in each period before its averages are compared (default 10).
     pub min_runs: Option<f64>,
@@ -720,6 +720,7 @@ impl CulpritMcp {
                         "product": r.product,
                         "opportunities": r.opportunities,
                         "headline": r.headline,
+                        "no_query_history": r.no_workload,
                     })),
                 })
             })
@@ -751,9 +752,14 @@ impl CulpritMcp {
     }
 
     fn report(&self, name: &str) -> Result<Report> {
-        self.ws
-            .latest_report(name, None)?
-            .ok_or_else(|| Error::not_found(format!("'{name}' hasn't been scanned yet")).with_hint("Call scan first"))
+        let mut report = self.ws.latest_report(name, None)?.ok_or_else(|| {
+            Error::not_found(format!("'{name}' hasn't been scanned yet")).with_hint("Call scan first")
+        })?;
+        // The environment is the connection's now, not when it was scanned: it decides what agents may do.
+        if let Ok(info) = self.ws.connection(name) {
+            report.snapshot.environment = info.environment;
+        }
+        Ok(report)
     }
 
     async fn run_query(&self, client: &str, name: &str, text: &str) -> Result<Value> {

@@ -112,7 +112,7 @@
       "check": "filtered-scan",
       "confidence": "high",
       "fix": {
-        "cost": "public.orders receives 0 writes in the 7 hours since the server last restarted; each one will also update this index.",
+        "cost": "public.orders received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
         "summary": "Create an index on customer_id so these queries seek instead of scanning."
       },
@@ -416,7 +416,7 @@
       "check": "unindexed-fk",
       "confidence": "high",
       "fix": {
-        "cost": "public.order_items receives 0 writes in the 7 hours since the server last restarted; each one will also update this index.",
+        "cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_order_id\n    ON public.order_items (order_id);",
         "summary": "Index the foreign key column on public.order_items."
       },
@@ -683,7 +683,7 @@
       "check": "filtered-scan",
       "confidence": "high",
       "fix": {
-        "cost": "public.order_items receives 0 writes in the 7 hours since the server last restarted; each one will also update this index.",
+        "cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
         "summary": "Create an index on product_id so these queries seek instead of scanning."
       },

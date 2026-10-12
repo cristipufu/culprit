@@ -81,6 +81,11 @@ function underMax(p: number | null | undefined, max: number | null | undefined):
 const STEPS = [0.001, 0.01, 0.1, 1, 10, 100, 1_000, 10_000, 100_000].flatMap((d) => [d, d * 2, d * 5]);
 const DECADES = [0.001, 0.01, 0.1, 1, 10, 100, 1_000, 10_000, 100_000];
 
+/** An axis label: round steps read "1 s" and "10 s", not "1.0 s". */
+function tick(ms: number): string {
+  return duration(ms).replace(/\.0 (s)$/, " $1");
+}
+
 function logTicks(lo: number, hi: number): number[] {
   const all = STEPS.filter((t) => t >= lo && t <= hi);
   const decades = all.filter((t) => DECADES.includes(t));
@@ -88,7 +93,10 @@ function logTicks(lo: number, hi: number): number[] {
 }
 
 function coverage(engine: Engine, hasHistogram: boolean, product?: string, source?: string): string {
-  if (source === "slow query log") return "The slow query log keeps every logged run, so the bars show how many runs took how long (only runs slower than long_query_time).";
+  if (source === "slow query log")
+    return hasHistogram
+      ? "The slow query log keeps every logged run, so the bars show how many runs took how long (only runs slower than long_query_time)."
+      : "The slow query log keeps every logged run slower than long_query_time; the lane shows fastest, average and slowest.";
   const name = serverName(engine, product);
   switch (engine) {
     case "mssql":
@@ -161,7 +169,10 @@ export function RuntimeSpread({
           const histMax = Math.max(...(l.histogram ?? []).map((h) => h[2]), 1);
           const sdLo = l.stddev != null ? Math.max(l.mean - l.stddev, l.min ?? lo, lo) : null;
           const sdHi = l.stddev != null ? Math.min(l.mean + l.stddev, l.max ?? hi) : null;
-          const tail = l.p95 != null && l.p99 != null && Math.abs(pos(l.p99) - pos(l.p95)) < 7;
+          // Percentiles of a handful of runs are just the slowest run under another name: mark them only with enough runs.
+          const p95 = l.runs >= 20 ? l.p95 : null;
+          const p99 = l.runs >= 100 ? l.p99 : null;
+          const tail = p95 != null && p99 != null && Math.abs(pos(p99) - pos(p95)) < 7;
           return (
             <div key={l.key} className="rs-lane">
               <div className="rs-label">
@@ -192,18 +203,18 @@ export function RuntimeSpread({
                 {l.min != null && <span className="rs-cap" style={{ left: `${pos(l.min)}%` }} title={`fastest ${duration(l.min)}`} />}
                 {l.max != null && <span className="rs-cap" style={{ left: `${pos(l.max)}%` }} title={`slowest ${duration(l.max)}`} />}
                 {tail ? (
-                  <span className="rs-q" style={{ left: `${pos(l.p99!)}%` }} title={`95% of runs within ${duration(l.p95!)}, 99% within ${duration(l.p99!)}`}>
+                  <span className="rs-q" style={{ left: `${pos(p99!)}%` }} title={`95% of runs within ${duration(p95!)}, 99% within ${duration(p99!)}`}>
                     p95·99
                   </span>
                 ) : (
                   <>
-                    {l.p95 != null && (
-                      <span className="rs-q" style={{ left: `${pos(l.p95)}%` }} title={`95% of runs within ${duration(l.p95)}`}>
+                    {p95 != null && (
+                      <span className="rs-q" style={{ left: `${pos(p95)}%` }} title={`95% of runs within ${duration(p95)}`}>
                         p95
                       </span>
                     )}
-                    {l.p99 != null && (
-                      <span className="rs-q" style={{ left: `${pos(l.p99)}%` }} title={`99% of runs within ${duration(l.p99)}`}>
+                    {p99 != null && (
+                      <span className="rs-q" style={{ left: `${pos(p99)}%` }} title={`99% of runs within ${duration(p99)}`}>
                         p99
                       </span>
                     )}
@@ -224,7 +235,7 @@ export function RuntimeSpread({
           <div className="rs-ticks">
             {ticks.map((t) => (
               <span key={t} style={{ left: `${pos(t)}%`, transform: `translateX(${pos(t) > 88 ? -100 : pos(t) < 8 ? 0 : -50}%)` }}>
-                {duration(t)}
+                {tick(t)}
               </span>
             ))}
           </div>

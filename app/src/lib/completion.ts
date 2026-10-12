@@ -51,6 +51,8 @@ export function completionConfig(engine: Engine, catalog: Catalog | null, report
       label: table.name,
       type: table.view ? "interface" : "class",
       detail: table.view ? "view" : rows != null ? rowCount(rows) : `${table.columns.length} columns`,
+      // Among equal matches the shorter name first: "ord" offers orders before order_items.
+      boost: -Math.min(table.name.length, 90) / 100,
     };
     (schemas[table.schema] ??= {})[table.name] = { self, children: columns };
   }

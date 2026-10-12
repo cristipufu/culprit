@@ -366,13 +366,17 @@ pub fn statement_handle(text: &str) -> String {
         .into_iter()
         .find(|v| lower.starts_with(v))
         .unwrap_or("");
-    let table = main_table(text, &lower, verb);
+    // A read whose FROM is a subquery or a VALUES list names its first joined table instead.
+    let table = main_table(text, &lower, verb)
+        .or_else(|| matches!(verb, "select" | "with").then(|| joined_table(text, &lower)).flatten());
     match (verb, table) {
         ("select" | "with", Some(t)) => format!("a read from {t}"),
         ("insert", Some(t)) => format!("an insert into {t}"),
         ("update", Some(t)) => format!("an update of {t}"),
         ("delete", Some(t)) => format!("a delete from {t}"),
         ("merge", Some(t)) => format!("a merge into {t}"),
+        // A read from something else (a subquery, VALUES) is still a read, not a call to its first function.
+        ("select" | "with", None) if lower.contains(" from ") => "a read".to_string(),
         // Statements without a table still have a name people recognise: `SELECT SLEEP(?)`, `DO SLEEP(?)`, `CALL p(?)`.
         _ => other_handle(text, &lower).unwrap_or_else(|| "a query".to_string()),
     }
@@ -425,6 +429,16 @@ fn other_handle(text: &str, lower: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The first table after a JOIN, as `main_table` reads names.
+fn joined_table(text: &str, lower: &str) -> Option<String> {
+    let at = lower.find(" join ")? + " join ".len();
+    let rest = text[at..].trim_start();
+    let token: String =
+        rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '"' | '`')).collect();
+    let name = token.rsplit('.').next()?.trim_matches(|c| matches!(c, '[' | ']' | '"' | '`')).to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// `lower` is `text` ASCII-lowercased, so byte offsets line up and the name keeps its original casing.
@@ -732,6 +746,11 @@ mod predicate_tests {
         assert_eq!(statement_handle("CALL refresh_totals(?)"), "a call to refresh_totals");
         assert_eq!(statement_handle("SELECT id FROM orders WHERE id = ?"), "a read from orders");
         assert_eq!(statement_handle("SELECT 1"), "a query");
+        assert_eq!(
+            statement_handle("SELECT count(*) FROM (VALUES ($1),($2)) v(x) JOIN orders o ON o.id = v.x"),
+            "a read from orders"
+        );
+        assert_eq!(statement_handle("SELECT count(*) FROM (SELECT 1) s"), "a read");
     }
 
     #[test]

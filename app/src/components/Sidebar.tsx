@@ -58,7 +58,11 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-drag" data-tauri-drag-region />
-      <button className="conn-switch" onClick={() => setState({ view: "connections" })}>
+      <button
+        className="conn-switch"
+        onClick={() => setState({ view: "connections" })}
+        title={report ? `${active} · ${report.snapshot.server.product} · ${report.snapshot.server.database}` : undefined}
+      >
         {connection ? (
           <EngineBadge engine={connection.engine} environment={connection.environment} product={report?.snapshot.server.product ?? connection.last_report?.product} size="md" />
         ) : (

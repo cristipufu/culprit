@@ -438,7 +438,8 @@ pub fn verification_markdown(v: &Verification) -> String {
             let _ = writeln!(out, "  {}", text(note));
         }
     }
-    let _ = writeln!(out, "\n<sub>Scans {} → {}.</sub>", v.before_taken_at, v.after_taken_at);
+    let (before, after) = culprit_core::changes::range_times(&v.before_taken_at, &v.after_taken_at);
+    let _ = writeln!(out, "\n<sub>Scans {before} → {after}.</sub>");
     out
 }
 

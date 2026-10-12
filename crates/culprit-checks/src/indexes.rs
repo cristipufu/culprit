@@ -289,6 +289,11 @@ pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[St
 
 pub(crate) fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
     let (writes, days) = measured_writes(snapshot, schema, table)?;
+    if writes <= 0.0 {
+        return Some(format!(
+            "{schema}.{table} received no writes, so this index would cost nothing to keep up there."
+        ));
+    }
     Some(format!(
         "{schema}.{table} receives {}; each one will also update this index.",
         how_many(snapshot, writes, days, "write", "writes")

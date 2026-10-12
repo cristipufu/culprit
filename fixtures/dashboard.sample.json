@@ -669,7 +669,7 @@
     "database": "culprit_demo",
     "engine": "mssql",
     "environment": "staging",
-    "headline": "No query statistics: Query Store is OFF on this database.",
+    "headline": "No query history: Query Store is OFF on this database.",
     "product": "SQL Server 2022",
     "report_id": "20261011T121512.204Z",
     "taken_at": "2026-10-11T12:15:12Z",
@@ -682,7 +682,7 @@
         "metrics": [],
         "next": null,
         "status": "unavailable",
-        "takeaway": "No query statistics, so database time isn't measured.",
+        "takeaway": "No query history, so database time isn't measured.",
         "title": "Database time"
       },
       {
@@ -757,7 +757,7 @@
         "metrics": [],
         "next": null,
         "status": "unavailable",
-        "takeaway": "No query statistics, so there is no query list.",
+        "takeaway": "No query history, so there is no query list.",
         "title": "Top queries"
       },
       {
@@ -975,7 +975,7 @@
         "metrics": [],
         "next": null,
         "status": "unavailable",
-        "takeaway": "No query statistics, so there are no plans to read.",
+        "takeaway": "No query history, so there are no plans to read.",
         "title": "Plans"
       },
       {
@@ -1019,7 +1019,7 @@
         "metrics": [],
         "next": null,
         "status": "unavailable",
-        "takeaway": "No query statistics, so failed runs aren't counted.",
+        "takeaway": "No query history, so failed runs aren't counted.",
         "title": "Failing queries"
       },
       {
@@ -1049,7 +1049,7 @@
         ],
         "next": null,
         "status": "bad",
-        "takeaway": "No query statistics: Query Store is OFF on this database.",
+        "takeaway": "No query history: Query Store is OFF on this database.",
         "title": "Query statistics"
       }
     ]

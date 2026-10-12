@@ -160,8 +160,15 @@ pub fn latest(dir: &Path, window_days: Option<u32>) -> Result<Option<Report>> {
 
 pub fn load(path: &Path) -> Result<Report> {
     let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| Error::invalid(format!("{} is not a Culprit report: {e}", path.display())))
+    serde_json::from_slice(&bytes).map_err(|e| {
+        // `latest.json` is the one-line summary of the newest scan, not the scan itself.
+        if serde_json::from_slice::<ReportSummary>(&bytes).is_ok() {
+            return Error::invalid(format!("{} is a scan summary, not a report", path.display())).with_hint(
+                "Pass the connection's name to use its latest scan, or a report file (`<snapshot id>.json`) from the same folder.",
+            );
+        }
+        Error::invalid(format!("{} is not a Culprit report: {e}", path.display()))
+    })
 }
 
 pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {

@@ -92,10 +92,13 @@ impl MysqlProvider {
                                 verb.to_ascii_uppercase()
                             ),
                         )
-                        .with_hint(
+                        .with_hint(if lower_starts_values(statement) {
+                            "An INSERT … VALUES searches no rows, so there's nothing to plan; its cost is the indexes and \
+                             triggers on the table."
+                        } else {
                             "Explain the SELECT with the same FROM and WHERE: the server usually finds the rows the \
-                             same way.",
-                        ));
+                             same way."
+                        }));
                     }
                     result => result?.ok_or_else(|| Error::internal("EXPLAIN returned no plan"))?,
                 };
@@ -455,6 +458,14 @@ fn json_value(value: &Value, kind: Option<&ColumnType>) -> Json {
         }
         other => Json::String(value_text(other)),
     }
+}
+
+/// An `INSERT`/`REPLACE … VALUES` (no SELECT behind it): nothing to search, so nothing to plan.
+fn lower_starts_values(statement: &str) -> bool {
+    let lower = statement.to_ascii_lowercase();
+    matches!(leading_verb(statement).as_str(), "insert" | "replace")
+        && (lower.contains(" values") || lower.contains(" value ") || lower.contains(" set "))
+        && !lower.contains("select")
 }
 
 /// What MySQL and MariaDB can EXPLAIN (`(`, `with`, `table`, `values` start reads too).

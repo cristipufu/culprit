@@ -640,7 +640,7 @@ impl Snapshot {
                 .iter()
                 .find(|m| WORKLOAD.contains(&m.capability))
                 .map(|m| m.reason.clone())
-                .unwrap_or_else(|| "This scan has no query statistics.".into()),
+                .unwrap_or_else(|| "This scan has no query history.".into()),
         )
     }
 
@@ -742,7 +742,7 @@ mod tests {
         assert_eq!(snapshot.no_workload_reason(), None);
         snapshot.workload = None;
         snapshot.server.missing.retain(|m| m.capability != super::Capability::QueryStore);
-        assert_eq!(snapshot.no_workload_reason().as_deref(), Some("This scan has no query statistics."));
+        assert_eq!(snapshot.no_workload_reason().as_deref(), Some("This scan has no query history."));
         snapshot.server.missing.push(super::MissingCapability {
             capability: super::Capability::QueryStore,
             reason: "Query Store is OFF on this database.".into(),

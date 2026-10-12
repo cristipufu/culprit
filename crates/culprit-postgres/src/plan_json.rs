@@ -40,7 +40,7 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         .ok_or_else(|| Error::internal("PostgreSQL plan has no root node"))?;
 
     let mut next_id = 0;
-    let root = node(root, &mut next_id);
+    let root = node(root, &mut next_id, 1.0);
     let mut props = Properties::new();
     for (key, value) in top {
         if key == "Plan" {
@@ -112,14 +112,17 @@ fn runtime(map: &Map<String, Value>) -> Option<NodeRuntime> {
     (!runtime.is_empty()).then_some(runtime)
 }
 
-fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
+/// `parallelism`: how many processes share the loops of this node (the workers a Gather launched plus the leader), so
+/// loops that ran side by side don't add up to more time than the query took.
+fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64) -> PlanNode {
     let id = *next_id;
     *next_id += 1;
     let op = text(map, "Node Type").unwrap_or_else(|| "Unknown".to_string());
     let loops = number(map, "Actual Loops");
     let analyzed = loops.is_some();
     let loops_or_one = loops.unwrap_or(1.0).max(1.0);
-    let act_rows = number(map, "Actual Rows").map(|r| r * loops_or_one);
+    // Rows per loop are averaged and rounded by PostgreSQL; the total is a whole number of rows.
+    let act_rows = number(map, "Actual Rows").map(|r| (r * loops_or_one).round());
     let removed = number(map, "Rows Removed by Filter").map(|r| r * loops_or_one);
 
     let object = text(map, "Relation Name").map(|relation| match text(map, "Schema") {
@@ -165,7 +168,16 @@ fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
     let children = map
         .get("Plans")
         .and_then(Value::as_array)
-        .map(|plans| plans.iter().filter_map(Value::as_object).map(|child| node(child, next_id)).collect())
+        .map(|plans| {
+            // Below a Gather, its workers and the leader each run the subtree at the same time.
+            let below = match op.as_str() {
+                "Gather" | "Gather Merge" => {
+                    1.0 + number(map, "Workers Launched").or(number(map, "Workers Planned")).unwrap_or(0.0)
+                }
+                _ => parallelism,
+            };
+            plans.iter().filter_map(Value::as_object).map(|child| node(child, next_id, below)).collect()
+        })
         .unwrap_or_default();
 
     let mut result = PlanNode {
@@ -185,7 +197,7 @@ fn node(map: &Map<String, Value>, next_id: &mut u32) -> PlanNode {
         table_rows: None,
         subtree_cost: number(map, "Total Cost").unwrap_or(0.0),
         self_cost: 0.0,
-        act_time_ms: number(map, "Actual Total Time").map(|t| t * loops_or_one),
+        act_time_ms: number(map, "Actual Total Time").map(|t| t * (loops_or_one / parallelism).max(1.0)),
         runtime: runtime(map),
         warnings,
         props,
@@ -277,6 +289,21 @@ fn prop_text(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_workers_share_their_loops() {
+        let json = r#"[{"Plan": {"Node Type": "Gather", "Workers Planned": 2, "Workers Launched": 2,
+            "Actual Total Time": 60.0, "Actual Rows": 14, "Actual Loops": 1, "Plan Rows": 15, "Total Cost": 100,
+            "Plans": [{"Node Type": "Seq Scan", "Parallel Aware": true, "Relation Name": "orders",
+                "Actual Total Time": 56.0, "Actual Rows": 4.67, "Actual Loops": 3, "Plan Rows": 6, "Total Cost": 90}]},
+            "Execution Time": 60.5}]"#;
+        let plan = parse(json, PlanKind::Actual, None).unwrap();
+        let scan = &plan.root.children[0];
+        // Three loops side by side: 56 ms of wall time, not 168.
+        assert_eq!(scan.act_time_ms, Some(56.0));
+        assert_eq!(scan.act_rows, Some(14.0));
+        assert_eq!(plan.root.act_time_ms, Some(60.0));
+    }
 
     #[test]
     fn buffers_are_each_operators_own_share() {
