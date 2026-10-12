@@ -241,8 +241,10 @@ struct PlanChange<'a> {
 fn plan_changes<'a>(s: &'a Snapshot, w: &Workload) -> Vec<PlanChange<'a>> {
     let total = w.total_time_ms.max(1.0);
     let from = w.window_start.as_deref().and_then(format::epoch_seconds);
+    // A plan switch of a query that has since stopped running is history, not news.
     let mut out: Vec<PlanChange> = app_queries(s)
         .filter(|q| q.plans.len() >= 2 && q.total_time_ms / total >= 0.02)
+        .filter(|q| crate::query_stopped(s, q).is_none())
         .filter_map(|q| {
             let seen = |p: &culprit_core::PlanVariant| p.first_seen.as_deref().and_then(format::epoch_seconds);
             let first = q.plans.iter().filter_map(seen).fold(f64::INFINITY, f64::min);
@@ -484,10 +486,17 @@ fn top_queries(s: &Snapshot) -> Tile {
         )
     };
     let mut tile = Tile::new(TileKey::TopQueries, TileStatus::Info, takeaway);
+    let stopped = top.iter().filter(|q| crate::query_stopped(s, q).is_some()).count();
     tile.detail = Some(format!(
-        "{} tracked over {}.",
+        "{} tracked over {}.{}",
         capitalized(&plural(w.query_count as usize, "query", "queries")),
-        window_phrase(w)
+        window_phrase(w),
+        match stopped {
+            0 => String::new(),
+            n if n == top.len() =>
+                " All of these stopped running before the window ended, most likely changed by a deploy.".into(),
+            n => format!(" {n} of these stopped running before the window ended, most likely changed by a deploy."),
+        }
     ));
     tile.metrics = vec![
         TileMetric::new("top-share", "Top query", Some(first), format::percent(first)),
@@ -497,7 +506,11 @@ fn top_queries(s: &Snapshot) -> Tile {
     tile.items = top
         .iter()
         .map(|q| {
-            let mut item = TileItem::new(ItemKind::Query, q.id.clone(), query_handle(q));
+            let label = match crate::query_stopped(s, q) {
+                Some(_) => format!("{} (stopped running)", query_handle(q)),
+                None => query_handle(q),
+            };
+            let mut item = TileItem::new(ItemKind::Query, q.id.clone(), label);
             item.value = Some(format::percent(share(q)));
             item.share = Some(share(q));
             item.query_id = Some(q.id.clone());
@@ -997,10 +1010,12 @@ fn deadlocks(report: &Report) -> Tile {
 
 fn indexes(report: &Report) -> Tile {
     let advice = crate::advisor::index_advice(report);
-    // A query that asks for two indexes still only takes its share of time once.
+    // A query that asks for two indexes still only takes its share of time once. A foreign key's index is for deletes on
+    // the parent: the queries that merely name the key wouldn't necessarily get faster, so they don't count here.
     let mut seen = HashSet::new();
     let mut share = 0.0;
-    for q in advice.candidates.iter().flat_map(|c| &c.queries) {
+    let measured = advice.candidates.iter().filter(|c| c.source != culprit_core::CandidateSource::ForeignKey);
+    for q in measured.flat_map(|c| &c.queries) {
         if seen.insert(q.id.as_str()) {
             share += q.share.unwrap_or(0.0);
         }
@@ -1086,7 +1101,9 @@ fn indexes(report: &Report) -> Tile {
 fn plans(s: &Snapshot) -> Tile {
     let Some(w) = &s.workload else { return no_workload(TileKey::Plans, "there are no plans to read") };
     let total = w.total_time_ms.max(1.0);
-    let with_plans: Vec<&QueryStat> = app_queries(s).filter(|q| q.plan.is_some()).collect();
+    // Plans of queries that stopped running (most likely changed by a deploy) would describe code that is gone.
+    let with_plans: Vec<&QueryStat> =
+        app_queries(s).filter(|q| q.plan.is_some() && crate::query_stopped(s, q).is_none()).collect();
     if with_plans.is_empty() {
         let reason = [Capability::QueryPlans, Capability::Showplan, Capability::GenericPlans]
             .into_iter()

@@ -167,10 +167,13 @@ SELECT name, type, reason, {valid_since} AS valid_since,
   TRY_CAST(JSON_VALUE(details, '$.planForceDetails.recommendedPlanCpuTimeAverage') AS float) AS recommended_cpu,
   TRY_CAST(JSON_VALUE(details, '$.planForceDetails.regressedPlanErrorCount') AS int) AS regressed_errors,
   TRY_CAST(JSON_VALUE(details, '$.planForceDetails.recommendedPlanErrorCount') AS int) AS recommended_errors,
-  JSON_VALUE(details, '$.implementationDetails.script') AS script
+  JSON_VALUE(details, '$.implementationDetails.script') AS script,
+  (SELECT {last} FROM sys.query_store_plan p
+   WHERE p.query_id = TRY_CAST(JSON_VALUE(details, '$.planForceDetails.queryId') AS bigint)) AS last_execution
 FROM sys.dm_db_tuning_recommendations
 "#,
-        valid_since = utc_local_iso("valid_since")
+        valid_since = utc_local_iso("valid_since"),
+        last = utc_local_iso("CAST(MAX(p.last_execution_time) AS datetime2)")
     )
 }
 
@@ -231,6 +234,7 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
                         error_prone: r.f64_or_zero("regressed_errors") > r.f64_or_zero("recommended_errors"),
                         script: r.str("script"),
                         valid_since: r.str("valid_since"),
+                        last_execution: r.str("last_execution"),
                     }
                 })
                 .collect()

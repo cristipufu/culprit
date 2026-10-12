@@ -273,9 +273,11 @@ WHERE vfs.database_id IN (DB_ID(), 2)"
     let database = format!(
         "SELECT DB_NAME() AS database_name, DB_ID() AS database_id, df.name AS file_name, df.type_desc, {COLUMNS}
 FROM sys.dm_io_virtual_file_stats(DB_ID(), NULL) vfs
-JOIN sys.database_files df ON df.file_id = vfs.file_id"
+JOIN sys.database_files df ON df.file_id = vfs.file_id
+WHERE vfs.database_id = DB_ID()"
     );
-    // Azure SQL Database has no sys.master_files: its own files only.
+    // Azure SQL Database has no sys.master_files: its own files only. Hyperscale also returns its page servers' files
+    // under database_id 0 with the same file ids, and those would pass for this database's data and log files.
     let rows = if azure {
         query(client, &database).await?
     } else {

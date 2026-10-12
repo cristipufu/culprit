@@ -16,4 +16,8 @@ estimated_gain: number | null, error_prone: boolean,
 /**
  * The T-SQL SQL Server would run to apply it.
  */
-script: string | null, valid_since: string | null, };
+script: string | null, valid_since: string | null, 
+/**
+ * When the query last ran, by Query Store (UTC). A recommendation outlives the query a deploy replaced.
+ */
+last_execution: string | null, };

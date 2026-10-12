@@ -22,6 +22,14 @@ pub fn tuning_advice_info() -> CheckInfo {
     }
 }
 
+/// A day or more between `last` and the end of the scan's data, as (seconds, `last`).
+fn quiet_since<'a>(snapshot: &Snapshot, last: Option<&'a str>) -> Option<(f64, &'a str)> {
+    let last = last?;
+    let end = snapshot.workload.as_ref()?.window_end.as_deref().and_then(parse_epoch_seconds)?;
+    let silence = end - parse_epoch_seconds(last)?;
+    (silence >= 86_400.0).then_some((silence, last))
+}
+
 pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(tuning) = &snapshot.tuning else { return Vec::new() };
     let db = quote(Engine::Mssql, &snapshot.server.database);
@@ -78,6 +86,21 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         }
         if let Some(q) = q {
             f.queries = vec![QueryRef { id: q.id.clone(), plan_node: None, note: None }];
+        } else if let Some((silence, last)) = quiet_since(snapshot, r.last_execution.as_deref()) {
+            // Not among the window's queries, and Query Store says it hasn't run for over a day: most likely a deploy
+            // replaced the statement, and the advice is about code that is gone.
+            f.inactive = true;
+            f.impact.score *= 0.25;
+            f.last_seen = Some(last.to_string());
+            f.caveats.insert(
+                0,
+                format!(
+                    "Query {query_id} has not run since {} ({} before this scan's data ends). A deploy most likely \
+                     changed it; check that the current version of this code doesn't have the same problem.",
+                    last.get(..16).unwrap_or(last).replace('T', " "),
+                    format::duration(silence * 1000.0)
+                ),
+            );
         }
         f.fix = Some(Fix {
             summary:
@@ -132,6 +155,22 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         f.metrics.push(Metric::text("Last reason", reason.to_string()));
         if let Some(q) = q {
             f.queries = vec![QueryRef { id: q.id.clone(), plan_node: None, note: None }];
+        } else if let Some((silence, last)) = quiet_since(snapshot, p.last_execution.as_deref()) {
+            // Not among the window's queries, and Query Store says it hasn't run for over a day: most likely a deploy
+            // replaced the statement, and the advice is about code that is gone.
+            f.inactive = true;
+            f.impact.score *= 0.25;
+            f.last_seen = Some(last.to_string());
+            f.caveats.insert(
+                0,
+                format!(
+                    "Query {} has not run since {} ({} before this scan's data ends). A deploy most likely \
+                     changed it; check that the current version of this code doesn't have the same problem.",
+                    p.query_id,
+                    last.get(..16).unwrap_or(last).replace('T', " "),
+                    format::duration(silence * 1000.0)
+                ),
+            );
         }
         f.fix = Some(Fix {
             summary: "Restore what the plan needs (often an index that was dropped or renamed), or unforce it and let \

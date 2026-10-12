@@ -725,10 +725,11 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 Engine::Mysql => " The timings include reads the operating system served from its cache unless InnoDB uses O_DIRECT.",
                 Engine::Mssql => "",
             };
+            // The label starts with a database name: never capitalize it, lead with the operation instead.
             f.summary = format!(
                 "{} {} took {} on average across {} {} {}. Healthy SSD storage answers in a few milliseconds{}; this slows every query that misses memory{}.{}",
-                capitalize(&label),
-                if write { "writes" } else { "reads" },
+                if write { "Writes to" } else { "Reads from" },
+                label,
                 format::duration(avg),
                 format::count(ops),
                 if write { "writes" } else { "reads" },
@@ -750,11 +751,13 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new(if write { "Writes" } else { "Reads" }, ops, Unit::Count),
                 Metric::text("File", file.name.clone()),
             ];
-            f.fix = Some(Fix {
-                summary: "Check the volume's limits first: cloud disks throttle at their provisioned IOPS and throughput, and burst credits run out. Then look for other load on the same disk and antivirus scanning data files, and give the log its own low-latency volume. A since-startup average hides bursts: sample Waits → Right now during the busy hour.".into(),
-                sql: None,
-                cost: None,
-            });
+            // Azure SQL Database runs on storage you don't manage: the tier decides the latency and the I/O limits.
+            let fix = if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
+                "In Azure SQL Database the service tier decides this: General Purpose reads from remote storage (5 to 10 ms is normal there), Hyperscale serves most reads from a local cache and the rest from page servers, Business Critical uses local SSDs. Check avg_data_io_percent and avg_log_write_percent in sys.dm_db_resource_stats: near 100% means the tier's I/O limit is throttling, so add vCores or move to a faster tier; well below it, cut the reads instead (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
+            } else {
+                "Check the volume's limits first: cloud disks throttle at their provisioned IOPS and throughput, and burst credits run out. Then look for other load on the same disk and antivirus scanning data files, and give the log its own low-latency volume. A since-startup average hides bursts: sample Waits → Right now during the busy hour."
+            };
+            f.fix = Some(Fix { summary: fix.into(), sql: None, cost: None });
             f.verify = vec![if write {
                 "Re-scan after the change: average log write time should be under 5 ms.".into()
             } else {

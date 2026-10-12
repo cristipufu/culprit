@@ -159,14 +159,52 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             let per_day_runs = workload.per_day(q.executions);
             let impact = query_impact(snapshot, &[q]).expect("workload present");
             let mut f = finding("chatty-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
-            f.title = format!("{} runs {}, one row at a time", capitalize(&query_handle(q)), runs_phrase(snapshot, q.executions));
-            f.summary = format!(
-                "This statement is {} of every statement the database executes, and each run returns about {} row{}. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small ({}), but each call costs a network round trip and a connection.",
-                format::percent(exec_share),
-                format::count(q.rows_per_execution().unwrap_or(1.0)),
-                if q.rows_per_execution().unwrap_or(1.0) <= 1.0 { "" } else { "s" },
-                format::percent(impact.share)
-            );
+            let rows = q.rows_per_execution().unwrap_or(1.0);
+            let handle = capitalize(&query_handle(q));
+            let runs = runs_phrase(snapshot, q.executions);
+            let lower = q.text.trim_start_matches(|c: char| c.is_whitespace() || c == '(').to_ascii_lowercase();
+            let writes = ["insert", "update", "delete", "merge"].iter().any(|v| lower.starts_with(v));
+            let share = format::percent(impact.share);
+            let exec = format::percent(exec_share);
+            // Three shapes look alike in the counters and need different fixes: a poll that mostly finds nothing, a
+            // write repeated row by row (or a heartbeat), and a read inside a loop (N+1).
+            let (title, summary, fix, verify) = if rows < 0.5 {
+                (
+                    format!("{handle} runs {runs} and most runs find nothing"),
+                    format!(
+                        "This statement is {exec} of every statement the database executes, and on average a run {} {} row{}: the app is polling, asking on a timer whether there is work. Each run is cheap ({share} of database time in all), but every instance of the app asks on its own, so the cost grows with the fleet, not with the work.",
+                        if writes { "changes" } else { "returns" },
+                        format::count(rows),
+                        if rows == 1.0 { "" } else { "s" },
+                    ),
+                    "Ask less often when the last run found nothing (back off to a few seconds), let one instance poll for the fleet, or have the writer wake the poller (a queue, a notification, a channel). Keep the poll on a small index, for example one filtered to the pending rows.",
+                    "After the change, this statement's runs per day should drop by an order of magnitude while the work it finds stays the same.",
+                )
+            } else if writes {
+                (
+                    format!("{handle} runs {runs}, one row each time"),
+                    format!(
+                        "This statement is {exec} of every statement the database executes, and each run changes about {} row{}. Writes that small and that frequent are usually a loop writing row by row, or a heartbeat; each one is a round trip and a log flush ({share} of database time in all).",
+                        format::count(rows),
+                        if rows <= 1.0 { "" } else { "s" },
+                    ),
+                    "Write many rows per statement (a multi-row VALUES, a table-valued parameter, or a bulk insert) inside one transaction; for a heartbeat or lease, renew less often.",
+                    "After the change, this statement's runs per day should drop by orders of magnitude.",
+                )
+            } else {
+                (
+                    format!("{handle} runs {runs}, one row at a time"),
+                    format!(
+                        "This statement is {exec} of every statement the database executes, and each run returns about {} row{}. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small ({share}), but each call costs a network round trip and a connection.",
+                        format::count(rows),
+                        if rows <= 1.0 { "" } else { "s" },
+                    ),
+                    "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.",
+                    "After the change, this statement's executions per day should drop by orders of magnitude.",
+                )
+            };
+            f.title = title;
+            f.summary = summary;
             f.severity = if exec_share >= 0.25 { Severity::Medium } else { Severity::Low };
             f.impact.score = (score_for_share(impact.share) + exec_share * 40.0).min(60.0);
             f.impact.db_time_share = Some(impact.share);
@@ -177,12 +215,8 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics.push(Metric::new("Runs per day", per_day_runs, Unit::Count));
             f.metrics.push(Metric::new("Share of executions", exec_share, Unit::Ratio));
             f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
-            f.fix = Some(Fix {
-                summary: "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.".into(),
-                sql: None,
-                cost: None,
-            });
-            f.verify = vec!["After the change, this statement's executions per day should drop by orders of magnitude.".into()];
+            f.fix = Some(Fix { summary: fix.into(), sql: None, cost: None });
+            f.verify = vec![verify.into()];
             f.caveats.push("Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.".into());
             f
         })
@@ -282,11 +316,17 @@ fn plan_warning_finding(
         PlanWarning::ImplicitConversion => {
             let node_props = node.into_iter().flat_map(|n| n.props.values());
             let plan_props = q.plan.iter().flat_map(|p| p.props.values());
-            let lines: Vec<&str> = node_props
+            // A conversion of the optimizer's own values (a VALUES list's Union1006, Expr1002) or of a parameter happens
+            // once per value, not per row of a table: it can't stop an index from being used.
+            let all: Vec<&str> = node_props
                 .chain(plan_props)
                 .flat_map(|v| v.lines())
                 .filter(|l| l.contains("CONVERT_IMPLICIT"))
                 .collect();
+            let lines: Vec<&str> = all.iter().copied().filter(|l| !converts_internal_value(l)).collect();
+            if !all.is_empty() && lines.is_empty() {
+                return None;
+            }
             let issue = lines.iter().find(|l| l.contains("Seek Plan")).or(lines.first()).copied();
             let blocks_seek = issue.is_some_and(|l| l.contains("Seek Plan"));
             let column = issue.and_then(convert_column);
@@ -374,6 +414,30 @@ fn warning_key(w: PlanWarning) -> &'static str {
     }
 }
 
+/// Whether every CONVERT_IMPLICIT in `text` converts an expression the optimizer made up (`[Union1006]`, `[Expr1002]`)
+/// or a parameter, rather than a table's column.
+fn converts_internal_value(text: &str) -> bool {
+    let mut any = false;
+    for (at, _) in text.match_indices("CONVERT_IMPLICIT(") {
+        any = true;
+        let rest = &text[at + "CONVERT_IMPLICIT(".len()..];
+        let Some(after_type) = rest.find("),").map(|i| &rest[i + 2..]).or_else(|| rest.split_once(',').map(|(_, r)| r))
+        else {
+            return false;
+        };
+        let expr = after_type.split(',').next().unwrap_or("").trim();
+        let name = expr.trim_matches(|c| c == '[' || c == ']');
+        let internal = !name.contains('.') && {
+            let digits = name.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+            digits.len() >= 3 && digits.len() < name.len() && digits.chars().all(|c| c.is_ascii_digit())
+        };
+        if !(internal || name.starts_with('@')) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Pull "Users.Email" out of `CONVERT_IMPLICIT(nvarchar(256),[db].[dbo].[Users].[Email],0)`.
 fn convert_column(text: &str) -> Option<String> {
     let start = text.find("CONVERT_IMPLICIT(")? + "CONVERT_IMPLICIT(".len();
@@ -385,6 +449,21 @@ fn convert_column(text: &str) -> Option<String> {
         [.., table, column] if !column.is_empty() && !column.starts_with('@') => Some(format!("{table}.{column}")),
         [column] if !column.is_empty() && !column.starts_with('@') => Some(column.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod convert_tests {
+    #[test]
+    fn conversions_of_the_optimizers_own_values_are_not_column_mismatches() {
+        assert!(super::converts_internal_value("CONVERT_IMPLICIT(varchar(36),[Union1006],0)"));
+        assert!(super::converts_internal_value("Cardinality Estimate: CONVERT_IMPLICIT(varchar(8),[Expr1002],0)"));
+        assert!(super::converts_internal_value("CONVERT_IMPLICIT(varchar(64),[@par2],0)"));
+        assert!(!super::converts_internal_value(
+            "CONVERT_IMPLICIT(nvarchar(255),[db].[shop].[jobs].[run_key],0)=[@par4]"
+        ));
+        assert!(!super::converts_internal_value("CONVERT_IMPLICIT(nvarchar(20),[status],0)"));
+        assert!(!super::converts_internal_value("no conversion here"));
     }
 }
 

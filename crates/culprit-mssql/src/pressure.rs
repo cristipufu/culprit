@@ -22,8 +22,10 @@ WHERE (object_name LIKE N'%SQL Statistics%'
 
 const PENDING_GRANTS_SQL: &str = "SELECT COUNT(*) AS pending, MAX(wait_time_ms) AS longest_ms FROM sys.dm_exec_query_memory_grants WHERE grant_time IS NULL";
 
-const THREADPOOL_NOW_SQL: &str =
-    "SELECT COUNT(*) AS waiting FROM sys.dm_os_waiting_tasks WHERE wait_type = N'THREADPOOL'";
+/// Requests queued for a worker right now. System tasks (no session) wait on THREADPOOL briefly all the time, and in
+/// Azure SQL Database the view shows the whole instance, so only sessions' requests waiting a measurable time count.
+const THREADPOOL_NOW_SQL: &str = "SELECT COUNT(*) AS waiting FROM sys.dm_os_waiting_tasks
+WHERE wait_type = N'THREADPOOL' AND session_id IS NOT NULL AND wait_duration_ms >= 100";
 
 const GRANTS_SQL: &str = r#"
 SELECT TOP (30) CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,

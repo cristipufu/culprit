@@ -187,6 +187,9 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         f.metrics.insert(0, Metric::new("Share of DB time", share, Unit::Ratio));
     }
 
+    if let Some(note) = drop_large_includes(snapshot, &c.schema, &c.table, &mut c.include) {
+        f.caveats.push(note);
+    }
     let wide_include = c.include.len() > MAX_INCLUDE;
     if wide_include {
         f.caveats.push(format!(
@@ -249,6 +252,53 @@ fn plan_asks_for(q: &QueryStat, c: &Candidate) -> bool {
             table_ok && lower_set(&h.equality) == lower_set(&c.equality)
         })
     })
+}
+
+/// SQL Server INCLUDE columns that hold large objects: (max) strings and binaries, text, ntext, image, xml, json. Including
+/// one copies the column's data into the index (most of a table whose rows are documents), so the suggestions keep the
+/// keys and let the few rows found go back to the table for it. Returns the sentence that says what was left out.
+pub(crate) fn drop_large_includes(
+    snapshot: &Snapshot,
+    schema: &str,
+    table: &str,
+    include: &mut Vec<String>,
+) -> Option<String> {
+    // Only SQL Server suggests INCLUDE columns, and in PostgreSQL `text` is the everyday string type.
+    if snapshot.server.engine != Engine::Mssql {
+        return None;
+    }
+    let is_large = |name: &str| {
+        snapshot
+            .columns
+            .iter()
+            .find(|c| {
+                c.schema.eq_ignore_ascii_case(schema)
+                    && c.table.eq_ignore_ascii_case(table)
+                    && c.name.eq_ignore_ascii_case(name)
+            })
+            .is_some_and(|c| {
+                let t = c.data_type.to_ascii_lowercase();
+                t.contains("(max)") || matches!(t.as_str(), "text" | "ntext" | "image" | "xml" | "json")
+            })
+    };
+    let large: Vec<String> = include.iter().filter(|c| is_large(c)).cloned().collect();
+    if large.is_empty() {
+        return None;
+    }
+    include.retain(|c| !is_large(c));
+    let size = snapshot
+        .table(schema, table)
+        .and_then(|t| t.data_bytes)
+        .map(|b| format!(" ({schema}.{table} holds {})", format::bytes(b)))
+        .unwrap_or_default();
+    Some(format!(
+        "Left {} out of INCLUDE: {} large values, and including {} would copy that data into the index{size}. The rows the \
+         index finds go back to the table for {}, which costs less.",
+        format::list(&large),
+        if large.len() == 1 { "it holds" } else { "they hold" },
+        if large.len() == 1 { "it" } else { "them" },
+        if large.len() == 1 { "it" } else { "them" },
+    ))
 }
 
 pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Fix {
@@ -464,8 +514,10 @@ pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -
     })
 }
 
+/// Never read since the counters started, and not one the database needs for something else: a key, a constraint or
+/// the table's storage. A filtered (partial) index counts: unread, it is only upkeep on every write it matches.
 pub(crate) fn is_unused(i: &IndexStat) -> bool {
-    let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled && i.filter.is_none();
+    let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled;
     is_candidate && i.reads == Some(0.0) && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0
 }
 
@@ -587,6 +639,19 @@ pub fn unindexed_fk_info() -> CheckInfo {
     }
 }
 
+/// Whether an index can serve the foreign key: it leads with the key columns, isn't disabled, and covers every row. A
+/// filtered (partial) index can't: checking a parent delete has to find soft-deleted children too.
+pub(crate) fn fk_is_indexed(snapshot: &Snapshot, fk: &culprit_core::ForeignKey) -> bool {
+    snapshot.indexes_on(&fk.schema, &fk.table).any(|i| {
+        let keys = i.key_names();
+        !i.is_disabled
+            && i.filter.is_none()
+            && keys.len() >= fk.columns.len()
+            && lower_set(&keys[..fk.columns.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                == lower_set(&fk.columns)
+    })
+}
+
 pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
     snapshot
         .foreign_keys
@@ -597,13 +662,7 @@ pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
             if rows < 10_000.0 {
                 return None;
             }
-            let covered = snapshot.indexes_on(&fk.schema, &fk.table).any(|i| {
-                let keys = i.key_names();
-                keys.len() >= fk.columns.len()
-                    && lower_set(&keys[..fk.columns.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
-                        == lower_set(&fk.columns)
-            });
-            if covered {
+            if fk_is_indexed(snapshot, fk) {
                 return None;
             }
             let child = format!("{}.{}", fk.schema, fk.table);
@@ -622,7 +681,13 @@ pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
                 fk.table,
                 fk.ref_table
             );
-            let touching = queries_touching(snapshot, &fk.schema, &fk.table);
+            // Queries that go through the key, still running: a plain insert into the child only validates the key
+            // against the parent's primary key, which needs no index here.
+            let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
+                .into_iter()
+                .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
+                .filter(|q| crate::query_stopped(snapshot, q).is_none())
+                .collect();
             f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
             f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
             f.impact.label = format!("{} rows unindexed", format::count(rows));

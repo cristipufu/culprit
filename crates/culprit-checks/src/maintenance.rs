@@ -1,6 +1,6 @@
 use culprit_core::{
-    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, Severity, Snapshot, StatisticsInfo,
-    SubjectKind, Unit, format,
+    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, Severity, Snapshot, SubjectKind, Unit,
+    format,
 };
 
 use crate::support::*;
@@ -29,7 +29,7 @@ struct Stale {
 
 pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
     let mut stale = match snapshot.server.engine {
-        Engine::Mssql => mssql_stale(&snapshot.statistics),
+        Engine::Mssql => mssql_stale(snapshot),
         Engine::Postgres => pg_stale(snapshot),
         Engine::Mysql => Vec::new(),
     };
@@ -91,12 +91,16 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
         .collect()
 }
 
-fn mssql_stale(stats: &[StatisticsInfo]) -> Vec<Stale> {
+/// SQL Server statistics changed by a fifth of the table. A filtered statistic covers only some rows (`rows` counts those)
+/// while its modification counter counts changes anywhere in its column, so the table's row count is the measure.
+fn mssql_stale(snapshot: &Snapshot) -> Vec<Stale> {
     let mut out: Vec<Stale> = Vec::new();
-    for s in stats {
-        let (Some(rows), Some(mods)) = (s.rows, s.modifications) else {
+    for s in &snapshot.statistics {
+        let (Some(stat_rows), Some(mods)) = (s.rows, s.modifications) else {
             continue;
         };
+        let table_rows = snapshot.table(&s.schema, &s.table).and_then(|t| t.rows).unwrap_or(0.0);
+        let rows = stat_rows.max(table_rows);
         let threshold = (rows * 0.2).max(1000.0);
         if rows < 10_000.0 || mods < threshold {
             continue;

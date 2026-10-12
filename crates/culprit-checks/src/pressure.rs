@@ -301,15 +301,32 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
                     "SQL Server ran short of worker threads".into()
                 },
                 if waiting > 0.0 {
-                    format!(", and {} tasks were waiting when the scan ran", format::count(waiting))
+                    format!(
+                        ", and {} waiting when the scan ran",
+                        if waiting == 1.0 {
+                            "1 request was".to_string()
+                        } else {
+                            format!("{} requests were", format::count(waiting))
+                        }
+                    )
                 } else {
                     String::new()
                 }
             );
-            f.severity = Severity::High;
-            f.impact.score = base_score(Severity::High);
+            // Measured waiting (a minute an hour) or a queue at the moment of the scan is starvation; a task or two seen
+            // once, with no THREADPOOL time on record, is a moment worth watching.
+            let sustained = per_hour >= 60_000.0 || waiting >= 5.0;
+            f.severity = if sustained { Severity::High } else { Severity::Medium };
+            f.impact.score = base_score(f.severity);
             f.impact.label = "THREADPOOL waits".into();
-            f.confidence = Confidence::High;
+            f.confidence = if per_hour > 0.0 { Confidence::High } else { Confidence::Low };
+            if per_hour <= 0.0 {
+                f.caveats.push(
+                    "Seen once, when the scan ran, with no THREADPOOL time in the wait statistics: sample Waits → Right now \
+                     a few times before acting on it."
+                        .into(),
+                );
+            }
             f.fix = Some(Fix {
                 summary: "Find the head blocker in Live and end the transaction behind the chain; then lower parallelism so each query takes fewer workers (cost threshold for parallelism, MAXDOP). Raising max worker threads only hides it.".into(),
                 sql: None,

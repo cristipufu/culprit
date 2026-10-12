@@ -75,6 +75,9 @@ pub struct TuningRecommendation {
     /// The T-SQL SQL Server would run to apply it.
     pub script: Option<String>,
     pub valid_since: Option<String>,
+    /// When the query last ran, by Query Store (UTC). A recommendation outlives the query a deploy replaced.
+    #[serde(default)]
+    pub last_execution: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]

@@ -85,8 +85,11 @@ fn overlapping_and_over_indexed_tables_on_every_engine() {
             i.size_bytes = Some(64.0 * 1024.0 * 1024.0);
             s.indexes.push(i);
         };
-        add("ix_busy", &["zz_tenant", "zz_created"], 900_000.0);
+        // ix_busy holds every key of ix_rare, so it can serve ix_rare's queries. ix_endpoint only shares the tenant
+        // column: in a multi-tenant table that says nothing about whether ix_busy could replace it.
+        add("ix_busy", &["zz_tenant", "zz_created", "zz_status"], 900_000.0);
         add("ix_rare", &["zz_tenant", "zz_status"], 12.0);
+        add("ix_endpoint", &["zz_tenant", "zz_endpoint"], 12.0);
         for n in 0..7 {
             add(&format!("ix_extra_{n}"), &[&format!("zz_col_{n}")], 5000.0);
         }
@@ -105,6 +108,10 @@ fn overlapping_and_over_indexed_tables_on_every_engine() {
         let found: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
             found.iter().any(|id| id.starts_with("overlapping-index:") && id.ends_with("ix_rare")),
+            "{name}: {found:?}"
+        );
+        assert!(
+            !found.iter().any(|id| id.starts_with("overlapping-index:") && id.ends_with("ix_endpoint")),
             "{name}: {found:?}"
         );
         assert!(found.iter().any(|id| id.starts_with("over-indexed:")), "{name}: {found:?}");

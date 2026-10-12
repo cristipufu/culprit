@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use culprit_core::{
     Capability, Category, CategoryCount, Check, CheckInfo, Finding, LockedCheck, QueryStat, Report, ServerInfo,
-    Severity, SeverityCount, Snapshot, Summary, format,
+    Severity, SeverityCount, Snapshot, SubjectKind, Summary, format,
 };
 
 pub use advisor::index_advice;
@@ -334,20 +334,48 @@ fn merge_scans_into_missing_indexes(findings: &mut Vec<Finding>) {
 /// A query that stopped running long before the window ended was most likely changed or fixed by a deploy. Its history still
 /// dominates a multi-day window, so without this the top of the list would be yesterday's problem. "Long" is relative to how
 /// often the query ran: silence of 20 typical intervals (at least an hour), so a daily job is not mistaken for a fixed one.
-fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
+/// Returns how long it has been quiet (seconds) and when it last ran.
+pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
     const QUIET_INTERVALS: f64 = 20.0;
     const MIN_QUIET_SECONDS: f64 = 3600.0;
-    let Some(workload) = &snapshot.workload else { return };
-    let Some(end) = workload.window_end.as_deref().and_then(support::parse_epoch_seconds) else { return };
+    let workload = snapshot.workload.as_ref()?;
+    let end = workload.window_end.as_deref().and_then(support::parse_epoch_seconds)?;
     let window_start = end - workload.window_hours * 3600.0;
-    let quiet = |q: &QueryStat| -> Option<(f64, String)> {
-        let last_text = q.last_seen.clone()?;
-        let last = support::parse_epoch_seconds(&last_text)?;
-        let first = q.first_seen.as_deref().and_then(support::parse_epoch_seconds).unwrap_or(window_start);
-        let interval = (last - first).max(1.0) / q.executions.max(1.0);
-        let silence = end - last;
-        (silence >= (interval * QUIET_INTERVALS).max(MIN_QUIET_SECONDS)).then_some((silence, last_text))
-    };
+    let last_text = q.last_seen.clone()?;
+    let last = support::parse_epoch_seconds(&last_text)?;
+    let first = q.first_seen.as_deref().and_then(support::parse_epoch_seconds).unwrap_or(window_start);
+    let interval = (last - first).max(1.0) / q.executions.max(1.0);
+    let silence = end - last;
+    if silence < (interval * QUIET_INTERVALS).max(MIN_QUIET_SECONDS) {
+        return None;
+    }
+    // A query that runs in bursts (an eval run, a batch) is quiet between them: being silent no longer than a gap it
+    // already came back from is its rhythm, not a deploy.
+    if let Some(gap) = longest_return(q, workload)
+        && silence <= gap
+    {
+        return None;
+    }
+    Some((silence, last_text))
+}
+
+/// The longest stretch of empty timeline buckets the query came back after, widened by the two partial buckets around
+/// it (when in them it ran isn't known). None when it never paused for a whole bucket.
+fn longest_return(q: &QueryStat, workload: &culprit_core::Workload) -> Option<f64> {
+    let trend = q.trend.as_ref()?;
+    let timeline = workload.timeline.as_ref()?;
+    let at = |i: usize| timeline.starts.get(i).and_then(|s| support::parse_epoch_seconds(s));
+    let width = at(1)? - at(0)?;
+    let active: Vec<usize> =
+        trend.executions.iter().enumerate().filter(|(_, e)| e.is_some_and(|e| e > 0.0)).map(|(i, _)| i).collect();
+    let empty = active.windows(2).map(|w| w[1] - w[0] - 1).max().filter(|&n| n >= 1)?;
+    Some((empty + 2) as f64 * width)
+}
+
+/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled. A finding is
+/// about queries when its subject is one (lock time, tuning advice, parameter sensitivity…) or its check reads plans.
+fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
+    let Some(workload) = &snapshot.workload else { return };
     const QUERY_DRIVEN: [&str; 9] = [
         "plan-warnings",
         "plan-insights",
@@ -359,14 +387,15 @@ fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
         "regression",
         "temp-spill",
     ];
-    for f in findings.iter_mut().filter(|f| !f.queries.is_empty() && QUERY_DRIVEN.contains(&f.check.as_str())) {
+    let about_queries = |f: &Finding| f.subject.kind == SubjectKind::Query || QUERY_DRIVEN.contains(&f.check.as_str());
+    for f in findings.iter_mut().filter(|f| !f.queries.is_empty() && about_queries(f)) {
         let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
         f.last_seen = queries.iter().filter_map(|q| q.last_seen.clone()).max_by(|a, b| {
             support::parse_epoch_seconds(a)
                 .partial_cmp(&support::parse_epoch_seconds(b))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let silences: Vec<(f64, String)> = queries.iter().filter_map(|q| quiet(q)).collect();
+        let silences: Vec<(f64, String)> = queries.iter().filter_map(|q| query_stopped(snapshot, q)).collect();
         if queries.is_empty() || silences.len() < queries.len() {
             continue;
         }

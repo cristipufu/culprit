@@ -16,13 +16,15 @@ pub fn overlapping_index_info() -> CheckInfo {
         category: Category::Indexes,
         engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::IndexUsage],
-        description: "Two indexes that lead with the same column where one is barely read: queries that use it can \
-            almost always use the other."
+        description: "Two indexes that lead with the same column where one is barely read and the other holds all \
+            its key columns: queries that use the first can seek the second and filter the rest there."
             .into(),
     }
 }
 
-/// Indexes that compete for the same leading column, as (rarely read, well used).
+/// Indexes that compete for the same leading column, as (rarely read, well used). The well-used one must hold every key
+/// column of the other, as a key or an included column: sharing only the first column says nothing when that column
+/// isn't selective (a tenant id in a multi-tenant schema leads almost every index, and one tenant can be most rows).
 pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
     let redundant: Vec<&str> = redundant_indexes(snapshot).iter().map(|(a, _)| a.name.as_str()).collect();
     let mut out: Vec<(&IndexStat, &IndexStat)> = Vec::new();
@@ -39,6 +41,11 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
             .indexes_on(&a.schema, &a.table)
             .filter(|b| b.name != a.name && !b.is_disabled && b.kind == a.kind && !same_keys(a, b))
             .filter(|b| b.key_names().first().is_some_and(|k| k.eq_ignore_ascii_case(&lead)))
+            .filter(|b| {
+                let held: Vec<String> =
+                    b.key_names().iter().map(|k| k.to_string()).chain(b.include.iter().cloned()).collect();
+                a.key_names().iter().all(|k| held.iter().any(|h| h.eq_ignore_ascii_case(k)))
+            })
             .filter(|b| b.reads.is_some_and(|r| r >= 1000.0 && reads * 100.0 <= r))
             .max_by(|x, y| x.reads.unwrap_or(0.0).total_cmp(&y.reads.unwrap_or(0.0)));
         if let Some(b) = better
@@ -65,8 +72,9 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
             let (ra, rb) = (a.reads.unwrap_or(0.0), b.reads.unwrap_or(0.0));
             f.title = format!("{} is barely read next to {}, which also starts with {}", a.name, b.name, lead);
             f.summary = format!(
-                "{} ({}) and {} ({}) both lead with {} on {}. {} was read {} times {}, {} {} times. Queries that use the \
-                 first can almost always seek on the second, while every write to {} keeps both up to date.",
+                "{} ({}) and {} ({}) both lead with {} on {}, and the second holds every key column of the first. {} was \
+                 read {} times {}, {} {} times. Queries that use the first can seek the second on {} and filter the rest \
+                 inside it, while every write to {} keeps both up to date.",
                 a.name,
                 a.columns.join(", "),
                 b.name,
@@ -78,6 +86,7 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
                 since_phrase(snapshot),
                 b.name,
                 format::count(rb),
+                lead,
                 table_name
             );
             let size = a.size_bytes.unwrap_or(0.0);

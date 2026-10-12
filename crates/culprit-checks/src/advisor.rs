@@ -65,6 +65,9 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             "Re-scan after the workload has run: the request disappears.".to_string(),
             "The queries listed seek on the new index and read far fewer pages per run.".to_string(),
         ];
+        if let Some(note) = crate::indexes::drop_large_includes(s, &c.schema, &c.table, &mut c.include) {
+            verify.push(note);
+        }
         if c.include.len() > MAX_INCLUDE {
             verify.push(format!(
                 "SQL Server also wanted {} more columns included; the statement keeps the keys only, so add INCLUDE \
@@ -173,12 +176,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         if rows < 10_000.0 {
             continue;
         }
-        let covered = s.indexes_on(&fk.schema, &fk.table).any(|i| {
-            let keys = i.key_names();
-            keys.len() >= fk.columns.len()
-                && lower_set(&keys[..fk.columns.len()].iter().map(|k| k.to_string()).collect::<Vec<_>>())
-                    == lower_set(&fk.columns)
-        });
+        let covered = crate::indexes::fk_is_indexed(s, fk);
         let planned = candidates.iter().any(|c| {
             same_table(&c.schema, &c.table, &fk.schema, &fk.table)
                 && c.keys.len() >= fk.columns.len()
@@ -225,24 +223,24 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
 
     // A table the scan no longer lists was dropped or renamed, and an index for queries that all stopped running fixes
-    // nothing now: neither belongs on the list of indexes to add.
+    // nothing now: neither belongs on the list of indexes to add. Whether a query stopped is read from its own history,
+    // not from which findings went inactive: a schema finding (an unindexed foreign key) can list a stopped query too.
     let inactive: HashSet<&str> = report.findings.iter().filter(|f| f.inactive).map(|f| f.id.as_str()).collect();
-    let query_ids = |active: bool| -> HashSet<&str> {
-        report
-            .findings
-            .iter()
-            .filter(|f| f.inactive != active)
-            .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
-            .collect()
-    };
-    let (running, stopped) = (query_ids(true), query_ids(false));
+    let stopped =
+        |id: &str| s.workload.as_ref().and_then(|w| w.query(id)).is_some_and(|q| crate::query_stopped(s, q).is_some());
+    for c in candidates.iter_mut() {
+        // A query that stopped running doesn't need the index any more; keep the list to the ones that still run. A
+        // foreign key's index is for deletes on the parent, so it stays when the queries naming it all stopped.
+        if c.source == CandidateSource::ForeignKey || c.queries.iter().any(|q| !stopped(&q.id)) {
+            c.queries.retain(|q| !stopped(&q.id));
+        }
+    }
     let before = candidates.len();
     candidates.retain(|c| {
         let table_known =
             s.tables.is_empty() || s.tables.iter().any(|t| same_table(&t.schema, &t.name, &c.schema, &c.table));
         let all_stopped = c.finding_id.as_deref().is_some_and(|id| inactive.contains(id))
-            || (!c.queries.is_empty()
-                && c.queries.iter().all(|q| stopped.contains(q.id.as_str()) && !running.contains(q.id.as_str())));
+            || (!c.queries.is_empty() && c.queries.iter().all(|q| stopped(&q.id)));
         table_known && !all_stopped
     });
     let skipped = before - candidates.len();
@@ -523,7 +521,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
 
 /// Whether a statement on the child table goes through the foreign key: it names a key column or the parent table.
 /// Utility statements (DDL, EXPLAIN, maintenance) never count, even when they mention them.
-fn uses_foreign_key(text: &str, columns: &[String], parent: &str) -> bool {
+pub(crate) fn uses_foreign_key(text: &str, columns: &[String], parent: &str) -> bool {
     let lower = text.to_lowercase();
     let first = lower.trim_start().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
     if matches!(first, "create" | "alter" | "drop" | "explain" | "vacuum" | "analyze" | "copy" | "truncate" | "reindex")
@@ -531,7 +529,12 @@ fn uses_foreign_key(text: &str, columns: &[String], parent: &str) -> bool {
         return false;
     }
     let parent = parent.rsplit('.').next().unwrap_or(parent).trim_matches(|c| matches!(c, '"' | '`' | '[' | ']'));
-    columns.iter().map(String::as_str).chain([parent]).any(|name| has_word(&lower, &name.to_lowercase()))
+    // A read that only returns the key column doesn't search by it: look from FROM on (joins, filters, subqueries).
+    let searched = match first {
+        "select" | "with" => lower.find(" from ").map_or(lower.as_str(), |at| &lower[at..]),
+        _ => lower.as_str(),
+    };
+    columns.iter().map(String::as_str).chain([parent]).any(|name| has_word(searched, &name.to_lowercase()))
 }
 
 /// `word` appears in `text` as a whole identifier, not inside a longer one (`order_id` is not in `suborder_id`).
@@ -556,6 +559,12 @@ mod tests {
         assert!(super::uses_foreign_key("DELETE FROM orders o USING order_items i WHERE i.x = o.id", &cols, "orders"));
         assert!(!super::uses_foreign_key("SELECT * FROM order_items WHERE product_id = $1", &cols, "shop.orders"));
         assert!(!super::uses_foreign_key("SELECT suborder_id FROM order_items", &cols, "shop.orders_archive"));
+        assert!(!super::uses_foreign_key("SELECT id, order_id FROM order_items WHERE sku = $1", &cols, "shop.orders"));
+        assert!(super::uses_foreign_key(
+            "SELECT i.id FROM orders o JOIN order_items i ON i.order_id = o.id",
+            &cols,
+            "x"
+        ));
         assert!(!super::uses_foreign_key("CREATE INDEX culprit_tmp ON order_items (order_id)", &cols, "orders"));
         assert!(!super::uses_foreign_key(
             "EXPLAIN (ANALYZE) SELECT * FROM order_items WHERE order_id = 1",
