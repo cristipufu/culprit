@@ -127,7 +127,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
               <Prose text={finding.fix.summary} />
             </p>
             {finding.fix.sql && (
-              <div className="codeblock">
+              <div className="codeblock fix-sql">
                 <Sql text={finding.fix.sql} pretty={false} />
               </div>
             )}

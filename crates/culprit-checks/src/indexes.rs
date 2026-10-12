@@ -639,71 +639,258 @@ pub fn unindexed_fk_info() -> CheckInfo {
     }
 }
 
-/// Whether an index can serve the foreign key: it leads with the key columns, isn't disabled, and covers every row. A
-/// filtered (partial) index can't: checking a parent delete has to find soft-deleted children too.
+/// Whether an index can serve the foreign key: it leads with the key columns, isn't disabled, and covers every row the
+/// check can match. A filtered (partial) index can't, unless its filter only leaves out rows whose key is NULL (those
+/// never match a parent row): checking a parent delete has to find soft-deleted children too.
 pub(crate) fn fk_is_indexed(snapshot: &Snapshot, fk: &culprit_core::ForeignKey) -> bool {
     snapshot.indexes_on(&fk.schema, &fk.table).any(|i| {
-        let keys = i.key_names();
         !i.is_disabled
-            && i.filter.is_none()
-            && keys.len() >= fk.columns.len()
-            && lower_set(&keys[..fk.columns.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
-                == lower_set(&fk.columns)
+            && leads_with(i, &fk.columns)
+            && i.filter.as_deref().is_none_or(|f| only_excludes_null_keys(f, &fk.columns))
     })
 }
 
+fn leads_with(i: &IndexStat, columns: &[String]) -> bool {
+    let keys = i.key_names();
+    keys.len() >= columns.len()
+        && lower_set(&keys[..columns.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>()) == lower_set(columns)
+}
+
+/// `([customer_id] IS NOT NULL)`, `(a IS NOT NULL AND b IS NOT NULL)`: a filter whose every condition is one of the key
+/// columns being NOT NULL.
+fn only_excludes_null_keys(filter: &str, columns: &[String]) -> bool {
+    let plain: String = filter
+        .chars()
+        .filter(|c| !matches!(c, '[' | ']' | '"' | '`' | '(' | ')'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    words.split(|w| *w == "and").all(|condition| match condition {
+        [column, "is", "not", "null"] => {
+            let name = column.rsplit('.').next().unwrap_or(column);
+            columns.iter().any(|c| c.eq_ignore_ascii_case(name))
+        }
+        _ => false,
+    })
+}
+
+/// Child tables smaller than this get no finding of their own: reading one in full is cheap today.
+pub(crate) const FK_OWN_FINDING_ROWS: f64 = 10_000.0;
+
+/// An index led by the key's columns that its filter keeps from serving the key.
+fn filtered_fk_index<'a>(snapshot: &'a Snapshot, fk: &'a culprit_core::ForeignKey) -> Option<&'a IndexStat> {
+    snapshot.indexes_on(&fk.schema, &fk.table).find(|i| {
+        leads_with(i, &fk.columns) && i.filter.as_deref().is_some_and(|f| !only_excludes_null_keys(f, &fk.columns))
+    })
+}
+
+/// Every foreign key no index can serve, with its child table's rows when known, largest first. A key repeated on the
+/// same columns (a duplicate constraint), or whose columns lead another unindexed key on the same table (one index on
+/// the longer key serves both), is listed once.
+pub(crate) fn unindexed_foreign_keys(snapshot: &Snapshot) -> Vec<(&culprit_core::ForeignKey, Option<f64>)> {
+    let keys = |fk: &culprit_core::ForeignKey| fk.columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>();
+    let same_table = |a: &culprit_core::ForeignKey, b: &culprit_core::ForeignKey| {
+        a.schema.eq_ignore_ascii_case(&b.schema) && a.table.eq_ignore_ascii_case(&b.table)
+    };
+    let candidates: Vec<&culprit_core::ForeignKey> =
+        snapshot.foreign_keys.iter().filter(|fk| !fk.columns.is_empty() && !fk_is_indexed(snapshot, fk)).collect();
+    let mut out: Vec<(&culprit_core::ForeignKey, Option<f64>)> = Vec::new();
+    for fk in &candidates {
+        let (mine, longer) = (keys(fk), |o: &&culprit_core::ForeignKey| {
+            let theirs = keys(o);
+            same_table(fk, o) && theirs.len() > fk.columns.len() && theirs.starts_with(&keys(fk))
+        });
+        if candidates.iter().any(longer) || out.iter().any(|(o, _)| same_table(fk, o) && keys(o) == mine) {
+            continue;
+        }
+        out.push((fk, snapshot.table(&fk.schema, &fk.table).and_then(|t| t.rows)));
+    }
+    out.sort_by(|a, b| {
+        b.1.unwrap_or(-1.0)
+            .total_cmp(&a.1.unwrap_or(-1.0))
+            .then_with(|| (&a.0.schema, &a.0.table, &a.0.name).cmp(&(&b.0.schema, &b.0.table, &b.0.name)))
+    });
+    out
+}
+
 pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
-    snapshot
-        .foreign_keys
+    let unindexed = unindexed_foreign_keys(snapshot);
+    let mut out: Vec<Finding> = unindexed
         .iter()
-        .filter(|fk| !fk.columns.is_empty())
-        .filter_map(|fk| {
-            let rows = snapshot.table(&fk.schema, &fk.table).and_then(|t| t.rows).unwrap_or(0.0);
-            if rows < 10_000.0 {
-                return None;
-            }
-            if fk_is_indexed(snapshot, fk) {
-                return None;
-            }
-            let child = format!("{}.{}", fk.schema, fk.table);
-            let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
-            let cols = format::list(&fk.columns);
-            let mut f = finding(
-                "unindexed-fk",
-                &format!("{child}({})", fk.columns.join(",")),
-                Category::Indexes,
-                subject(SubjectKind::Table, &child),
-            );
-            f.title = format!("{} has no index on {}, its foreign key to {}", fk.table, cols, fk.ref_table);
-            f.summary = format!(
-                "Deleting a row from {parent}, or changing its key, makes the database look for matching rows in {child} ({} rows) without an index, which means reading the whole table. Queries that load {} rows for one {} row can't seek either.",
-                format::count(rows),
-                fk.table,
-                fk.ref_table
-            );
-            // Queries that go through the key, still running: a plain insert into the child only validates the key
-            // against the parent's primary key, which needs no index here.
-            let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
-                .into_iter()
-                .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
-                .filter(|q| crate::query_stopped(snapshot, q).is_none())
-                .collect();
-            f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
-            f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
-            f.impact.label = format!("{} rows unindexed", format::count(rows));
-            f.confidence = Confidence::High;
-            f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
-            f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
-            f.queries = query_refs(&touching.into_iter().take(5).collect::<Vec<_>>());
-            f.fix = Some(Fix {
-                summary: format!("Index the foreign key column{} on {}.", if fk.columns.len() > 1 { "s" } else { "" }, child),
-                sql: Some(create_index_sql(snapshot, &fk.schema, &fk.table, &fk.columns, &[])),
-                cost: write_cost(snapshot, &fk.schema, &fk.table),
-            });
-            f.verify = vec![format!("Deletes from {parent} should no longer scan {child}; re-scan to confirm the finding is gone.")];
-            Some(f)
+        .filter_map(|(fk, rows)| {
+            rows.filter(|r| *r >= FK_OWN_FINDING_ROWS).map(|r| unindexed_fk_finding(snapshot, fk, r))
         })
-        .collect()
+        .collect();
+    out.extend(unindexed_fk_pattern(snapshot, &unindexed));
+    out
+}
+
+fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows: f64) -> Finding {
+    let child = format!("{}.{}", fk.schema, fk.table);
+    let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
+    let cols = format::list(&fk.columns);
+    let mut f = finding(
+        "unindexed-fk",
+        &format!("{child}({})", fk.columns.join(",")),
+        Category::Indexes,
+        subject(SubjectKind::Table, &child),
+    );
+    f.title = format!("{} has no index on {}, its foreign key to {}", fk.table, cols, fk.ref_table);
+    f.summary = format!(
+        "Deleting a row from {parent}, or changing its key, makes the database look for matching rows in {child} ({} rows) without an index, which means reading the whole table. Queries that load {} rows for one {} row can't seek either.",
+        format::count(rows),
+        fk.table,
+        fk.ref_table
+    );
+    // Queries that go through the key, still running: a plain insert into the child only validates the key against the
+    // parent's primary key, which needs no index here.
+    let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
+        .into_iter()
+        .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
+        .filter(|q| crate::query_stopped(snapshot, q).is_none())
+        .collect();
+    f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
+    f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
+    f.impact.label = format!("{} rows unindexed", format::count(rows));
+    f.confidence = Confidence::High;
+    f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
+    f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
+    f.queries = query_refs(&touching.into_iter().take(5).collect::<Vec<_>>());
+    f.fix = Some(Fix {
+        summary: format!("Index the foreign key column{} on {}.", if fk.columns.len() > 1 { "s" } else { "" }, child),
+        sql: Some(create_index_sql(snapshot, &fk.schema, &fk.table, &fk.columns, &[])),
+        cost: write_cost(snapshot, &fk.schema, &fk.table),
+    });
+    f.verify =
+        vec![format!("Deletes from {parent} should no longer scan {child}; re-scan to confirm the finding is gone.")];
+    if let Some(i) = filtered_fk_index(snapshot, fk) {
+        f.caveats.push(filtered_caveat(i, &parent));
+    }
+    f
+}
+
+fn filtered_caveat(i: &IndexStat, parent: &str) -> String {
+    format!(
+        "{} leads with these columns but is filtered ({}), so it can't serve the key: a delete on {parent} has to find \
+         the rows the filter leaves out too.",
+        i.name,
+        i.filter.as_deref().unwrap_or_default()
+    )
+}
+
+/// One finding for the habit rather than the table: many foreign keys unindexed, mostly on tables too small for a
+/// finding of their own. A schema helper or ORM that declares keys without indexes is the usual cause, and fixing it
+/// there covers the keys still to come.
+fn unindexed_fk_pattern(
+    snapshot: &Snapshot,
+    unindexed: &[(&culprit_core::ForeignKey, Option<f64>)],
+) -> Option<Finding> {
+    let total = snapshot.foreign_keys.iter().filter(|fk| !fk.columns.is_empty()).count();
+    let small: Vec<(&culprit_core::ForeignKey, f64)> =
+        unindexed.iter().filter_map(|(fk, rows)| rows.filter(|r| *r < FK_OWN_FINDING_ROWS).map(|r| (*fk, r))).collect();
+    if small.len() < 3 || (unindexed.len() as f64) < total as f64 * 0.25 {
+        return None;
+    }
+    let big = unindexed.iter().filter(|(_, rows)| rows.is_some_and(|r| r >= FK_OWN_FINDING_ROWS)).count();
+    let unknown = unindexed.iter().filter(|(_, rows)| rows.is_none()).count();
+    let filtered: Vec<&IndexStat> = unindexed.iter().filter_map(|(fk, _)| filtered_fk_index(snapshot, fk)).collect();
+    let named = |fk: &culprit_core::ForeignKey| format!("{}({})", fk.table, fk.columns.join(", "));
+    let under = format::count(FK_OWN_FINDING_ROWS);
+    let mut f =
+        finding("unindexed-fk", "schema", Category::Indexes, subject(SubjectKind::Database, &snapshot.server.database));
+    f.title = if unindexed.len() == total {
+        format!("None of the {total} foreign keys has an index that can serve it")
+    } else {
+        format!("{} of {} foreign keys have no index that can serve them", unindexed.len(), total)
+    };
+    let names = small
+        .iter()
+        .take(4)
+        .map(|(fk, rows)| format!("{} ({} rows)", named(fk), format::count(*rows)))
+        .collect::<Vec<_>>();
+    let elsewhere = [
+        match big {
+            0 => None,
+            1 => Some("1 on a larger table has a finding of its own".to_string()),
+            n => Some(format!("{n} on larger tables have findings of their own")),
+        },
+        match unknown {
+            0 => None,
+            1 => Some("1 is on a table whose size isn't known (a partitioned table, for one)".to_string()),
+            n => Some(format!("{n} are on tables whose size isn't known (partitioned tables, for one)")),
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    f.summary = format!(
+        "{}{}; {} {}. Deleting a parent row, or changing its key, checks every child table for matching rows, and \
+         without an index that check reads the child table in full: cheap while the tables are small, slower with every \
+         row and with every new table declared the same way.{} When this many keys lack an index, the code that declares \
+         tables usually creates foreign keys without one: fixing it there covers the keys still to come.",
+        if elsewhere.is_empty() {
+            format!("All {} are on tables under {under} rows", small.len())
+        } else {
+            format!("{} of these keys are on tables under {under} rows", small.len())
+        },
+        if elsewhere.is_empty() { String::new() } else { format!(" ({})", format::list(&elsewhere)) },
+        if small.len() <= 4 { "they are" } else { "the largest are" },
+        format::list(&names),
+        match filtered.len() {
+            0 => String::new(),
+            1 => format!(
+                " {} is led by its key's columns but filtered, so it can't serve the check: a parent delete has to find the \
+                 rows the filter leaves out too.",
+                filtered[0].name
+            ),
+            n => format!(
+                " {n} of these keys are covered only by a filtered index, which can't serve the check: a parent delete has \
+                 to find the rows the filter leaves out too."
+            ),
+        }
+    );
+    f.severity = Severity::Low;
+    f.impact.score = base_score(f.severity) + (small.len() as f64).log2().min(4.0);
+    f.impact.label = format!("{} of {} foreign keys unindexed", unindexed.len(), total);
+    f.confidence = Confidence::High;
+    f.metrics.push(Metric::new("Foreign keys without a usable index", unindexed.len() as f64, Unit::Count));
+    f.metrics.push(Metric::new("Foreign keys", total as f64, Unit::Count));
+    if !filtered.is_empty() {
+        f.metrics.push(Metric::new("Covered only by a filtered index", filtered.len() as f64, Unit::Count));
+    }
+    f.fix = Some(Fix {
+        summary: format!(
+            "Give each foreign key an unfiltered index led by its columns, and make declaring a foreign key declare its \
+             index wherever the schema is defined (a migration helper, the ORM's table definitions), so new keys get one \
+             too.{}",
+            if snapshot.server.engine == Engine::Postgres {
+                " Run the statements one at a time (psql -f does): CREATE INDEX CONCURRENTLY can't run inside a transaction."
+            } else {
+                ""
+            }
+        ),
+        sql: Some(
+            small
+                .iter()
+                .map(|(fk, _)| create_index_sql(snapshot, &fk.schema, &fk.table, &fk.columns, &[]))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ),
+        cost: Some(
+            "Each index is on a small table and costs little to keep up; check the busiest tables' write rates first."
+                .into(),
+        ),
+    });
+    f.verify = vec![
+        "Re-scan: this finding is gone; the foreign-key findings for single tables go once their own fixes are applied."
+            .into(),
+    ];
+    f.caveats.push(
+        "A key whose parent rows are never deleted or re-keyed (a lookup table, append-only history) doesn't need the \
+         index for the check; leave those out if their write cost matters."
+            .into(),
+    );
+    Some(f)
 }
 
 pub fn filtered_scan_info() -> CheckInfo {

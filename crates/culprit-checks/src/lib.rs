@@ -244,6 +244,10 @@ fn dedupe(findings: &mut Vec<Finding>) {
         }
         let table = f.subject.name.to_ascii_lowercase();
         let fk_cols = keys_of(&f.id);
+        // The schema-wide finding names no key of its own.
+        if fk_cols.is_empty() {
+            return true;
+        }
         !index_keys
             .iter()
             .any(|(t, keys)| *t == table && fk_cols.iter().all(|c| keys.iter().take(fk_cols.len()).any(|k| k == c)))

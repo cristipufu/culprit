@@ -173,7 +173,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     // 3. Foreign keys no index leads with.
     for fk in s.foreign_keys.iter().filter(|fk| !fk.columns.is_empty()) {
         let rows = s.table(&fk.schema, &fk.table).and_then(|t| t.rows).unwrap_or(0.0);
-        if rows < 10_000.0 {
+        if rows < crate::indexes::FK_OWN_FINDING_ROWS {
             continue;
         }
         let covered = crate::indexes::fk_is_indexed(s, fk);
@@ -498,6 +498,19 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
     if !s.server.has(Capability::QueryPlans) {
         notes.push("No plans were captured, so plan-based candidates are missing.".into());
+    }
+    if let Some(f) = report.findings.iter().find(|f| f.id == "unindexed-fk:schema") {
+        let threshold = crate::indexes::FK_OWN_FINDING_ROWS;
+        let small = crate::indexes::unindexed_foreign_keys(s)
+            .iter()
+            .filter(|(_, rows)| rows.is_some_and(|r| r < threshold))
+            .count();
+        notes.push(format!(
+            "{} more foreign keys on tables under {} rows have no usable index; the finding \u{201c}{}\u{201d} lists them with the SQL.",
+            small,
+            format::count(threshold),
+            f.title
+        ));
     }
     if skipped > 0 {
         notes.push(if skipped == 1 {

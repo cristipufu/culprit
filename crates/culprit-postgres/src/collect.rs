@@ -797,7 +797,7 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
     let sql = |sizes: &str| {
         format!(
             "SELECT s.schemaname AS schema_name, s.relname AS table_name,
-                    CASE WHEN s.n_live_tup > 0 OR c.reltuples < 0 THEN s.n_live_tup ELSE c.reltuples END AS rows,
+                    CASE WHEN c.relkind = 'p' THEN NULL WHEN s.n_live_tup > 0 OR c.reltuples < 0 THEN s.n_live_tup ELSE c.reltuples END AS rows,
                     {sizes},
                     EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = s.relid AND k.contype = 'p') AS has_pk,
                     s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del, s.n_dead_tup,
@@ -962,7 +962,11 @@ async fn foreign_keys(client: &Client) -> Result<Vec<ForeignKey>> {
                JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
                JOIN pg_class rt ON rt.oid = c.confrelid JOIN pg_namespace rn ON rn.oid = rt.relnamespace
                WHERE c.contype = 'f' AND n.nspname NOT IN ('pg_catalog', 'information_schema')";
-    let rows = query(client, sql).await?;
+    // A key on a partitioned table is repeated for each partition (conparentid points at the original): keep the original.
+    let rows = match query(client, &format!("{sql} AND c.conparentid = 0")).await {
+        Ok(rows) => rows,
+        Err(_) => query(client, sql).await?,
+    };
     Ok(rows
         .iter()
         .map(|r| ForeignKey {

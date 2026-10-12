@@ -82,7 +82,8 @@ export function Schema({ report }: { report: Report }) {
     setAdvising(false);
     setState({ schemaTable: null });
   }, [wanted]);
-  const toAdd = report.findings.filter((f) => ADD_CHECKS.includes(f.check)).length;
+  // One index each: the schema-wide foreign-key finding lists many and is counted in the advisor instead.
+  const toAdd = report.findings.filter((f) => ADD_CHECKS.includes(f.check) && f.subject.kind === "table").length;
   const toClean = report.findings.filter((f) => CLEANUP_CHECKS.includes(f.check)).length;
   const [width, setWidth] = useState(() => remembered(WIDTH_KEY, (v) => Math.min(MAX_W, Math.max(MIN_W, Number(v) || DEFAULT_W)), DEFAULT_W));
   const [collapsed, setCollapsed] = useState(() => remembered(COLLAPSED_KEY, (v) => v === "1", false));

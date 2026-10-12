@@ -271,3 +271,120 @@ fn advice_for_a_query_outside_the_window_that_has_not_run_for_days_is_marked_ina
     let f = finding(&report.findings, "tuning-advice:force:90001").expect("tuning advice");
     assert!(f.inactive && f.caveats[0].contains("Query 90001 has not run since 2026-10-08 17:20"), "{:?}", f.caveats);
 }
+
+/// The demo plus small child tables of `shop.customers`, each with a foreign key and no index for it; the first one's
+/// key is covered only by a filtered unique index.
+fn with_small_children(count: usize) -> Snapshot {
+    let mut s = snapshot();
+    let template = s.indexes.iter().find(|i| i.table == "customers").cloned().expect("an index");
+    for n in 0..count {
+        let table = format!("customer_note_{n}");
+        s.tables.push(
+            serde_json::from_value(json!({
+                "schema": "shop", "name": table, "rows": 500.0 + n as f64, "total_bytes": 65536.0,
+                "data_bytes": 65536.0, "index_bytes": 0.0, "has_primary_key": true, "is_heap": false
+            }))
+            .unwrap(),
+        );
+        s.foreign_keys.push(
+            serde_json::from_value(json!({
+                "name": format!("fk_{table}_customer"), "schema": "shop", "table": table, "columns": ["customer_id"],
+                "ref_schema": "shop", "ref_table": "customers", "ref_columns": ["id"]
+            }))
+            .unwrap(),
+        );
+        if n == 0 {
+            let mut i = template.clone();
+            i.name = format!("ux_{table}_customer_live");
+            i.table = table.clone();
+            i.columns = vec!["customer_id".into(), "kind".into()];
+            i.include.clear();
+            i.filter = Some("([is_deleted]=(0))".into());
+            i.is_primary_key = false;
+            i.is_clustered = false;
+            i.is_unique = true;
+            s.indexes.push(i);
+        }
+    }
+    s
+}
+
+#[test]
+fn most_foreign_keys_without_an_index_are_reported_as_a_habit() {
+    let report = analyze(with_small_children(4));
+    let f = finding(&report.findings, "unindexed-fk:schema").expect("schema-wide finding");
+    // The demo's two large unindexed keys plus the four small ones, of its five keys plus the four new ones.
+    assert_eq!(f.title, "6 of 9 foreign keys have no index that can serve them");
+    assert!(
+        f.summary.starts_with(
+            "4 of these keys are on tables under 10K rows (2 on larger tables have findings of their own); they are"
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(f.summary.contains("ux_customer_note_0_customer_live"), "{}", f.summary);
+    let sql = f.fix.as_ref().unwrap().sql.as_deref().unwrap();
+    assert!((0..4).all(|n| sql.contains(&format!("[customer_note_{n}]"))), "{sql}");
+    // Small tables get no finding of their own; the advisor points at the one that lists them.
+    assert!(!report.findings.iter().any(|f| f.id.starts_with("unindexed-fk:shop.customer_note")));
+    let advice = index_advice(&report);
+    assert!(
+        advice.notes.iter().any(|n| n.starts_with("4 more foreign keys") && n.contains(&f.title)),
+        "{:?}",
+        advice.notes
+    );
+}
+
+#[test]
+fn an_index_filtered_on_its_key_being_not_null_serves_the_key() {
+    let mut s = with_small_children(4);
+    for i in s.indexes.iter_mut().filter(|i| i.name == "ux_customer_note_0_customer_live") {
+        i.filter = Some("([customer_id] IS NOT NULL)".into());
+    }
+    let report = analyze(s);
+    let f = finding(&report.findings, "unindexed-fk:schema").expect("schema-wide finding");
+    assert_eq!(f.title, "5 of 9 foreign keys have no index that can serve them");
+    assert!(!f.summary.contains("filtered"), "{}", f.summary);
+}
+
+#[test]
+fn a_key_repeated_or_led_by_another_gets_one_index() {
+    let mut s = with_small_children(4);
+    let first = s.foreign_keys.iter().find(|fk| fk.table == "customer_note_1").cloned().unwrap();
+    let mut twin = first.clone();
+    twin.name = "fk_customer_note_1_customer_again".into();
+    let mut wider = first.clone();
+    wider.name = "fk_customer_note_1_customer_kind".into();
+    wider.columns = vec!["customer_id".into(), "kind".into()];
+    s.foreign_keys.push(twin);
+    s.foreign_keys.push(wider);
+    let report = analyze(s);
+    let sql = finding(&report.findings, "unindexed-fk:schema").unwrap().fix.as_ref().unwrap().sql.clone().unwrap();
+    assert_eq!(sql.matches("[customer_note_1]").count(), 1, "{sql}");
+    assert!(sql.contains("[customer_id], [kind]"), "{sql}");
+}
+
+#[test]
+fn a_table_of_unknown_size_is_not_called_small() {
+    let mut s = with_small_children(4);
+    s.tables.iter_mut().filter(|t| t.name == "customer_note_3").for_each(|t| t.rows = None);
+    let report = analyze(s);
+    let f = finding(&report.findings, "unindexed-fk:schema").expect("schema-wide finding");
+    assert!(f.summary.contains("1 is on a table whose size isn't known"), "{}", f.summary);
+    assert!(!f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("[customer_note_3]"));
+}
+
+#[test]
+fn every_key_unindexed_reads_as_none() {
+    let mut s = with_small_children(4);
+    s.foreign_keys.retain(|fk| fk.table.starts_with("customer_note"));
+    let f = analyze(s).findings.into_iter().find(|f| f.id == "unindexed-fk:schema").expect("schema-wide finding");
+    assert_eq!(f.title, "None of the 4 foreign keys has an index that can serve it");
+    assert!(f.summary.starts_with("All 4 are on tables under 10K rows; they are"), "{}", f.summary);
+}
+
+#[test]
+fn a_few_unindexed_keys_on_small_tables_are_not_a_habit() {
+    assert!(finding(&analyze(snapshot()).findings, "unindexed-fk:schema").is_none());
+    assert!(finding(&analyze(with_small_children(2)).findings, "unindexed-fk:schema").is_none());
+}

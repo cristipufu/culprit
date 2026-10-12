@@ -1081,6 +1081,12 @@ textarea {
   overflow-x: auto;
 }
 
+/* A fix can be a script of many statements: keep Verify and Caveats in reach. */
+.fix-sql {
+  max-height: 22rem;
+  overflow: auto;
+}
+
 .codeblock pre {
   margin: 0;
   font: var(--fs-ui)/1.55 var(--mono);
