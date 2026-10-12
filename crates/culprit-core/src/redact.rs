@@ -4,6 +4,7 @@
 //! Server's `[names]` and `N'…'`, Postgres's `"names"`, `E'…'` and `$$…$$`, MySQL's `` `names` ``, `"…"` strings and
 //! backslash escapes.
 
+use crate::finding::Finding;
 use crate::model::{Engine, Properties};
 use crate::plan::{Plan, PlanNode};
 
@@ -31,6 +32,50 @@ const SIZED_TYPES: &[&str] = &[
 /// Replace literal values in SQL text (a statement or a plan predicate) with placeholders.
 pub fn redact_sql(text: &str, engine: Engine) -> String {
     redact(text, engine, true)
+}
+
+/// Prose that quotes SQL in `code spans` (a finding's summary, caveats, notes): the values inside the spans become
+/// placeholders; the words around them stay as written, apostrophes included. Checks put every piece of SQL they quote
+/// in a code span, the parameter values a plan was compiled for too.
+pub fn redact_prose(text: &str, engine: Engine) -> String {
+    text.split('`')
+        .enumerate()
+        .map(|(i, part)| if i % 2 == 1 { collapse_parameters(redact_sql(part, engine)) } else { part.to_string() })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
+/// A list of parameters whose values are all placeholders now (`@p0 = N'?', @p1 = N'?', …`) says nothing past its
+/// first item.
+fn collapse_parameters(span: String) -> String {
+    let items: Vec<&str> = span.split(", ").collect();
+    let placeholder = |item: &str| {
+        item.split_once(" = ").is_some_and(|(name, value)| {
+            name.starts_with(['@', '$', ':']) && matches!(value, "?" | "(?)" | "'?'" | "N'?'" | "E'?'")
+        })
+    };
+    if items.len() > 1 && items.iter().all(|i| placeholder(i)) { format!("{}, …", items[0]) } else { span }
+}
+
+/// A finding fit to leave the machine: its prose redacted with [`redact_prose`]. The fix's SQL stays as it is: Culprit
+/// writes it from names and ids, never from the workload's values.
+pub fn redact_finding(finding: &Finding, engine: Engine) -> Finding {
+    let prose = |t: &str| redact_prose(t, engine);
+    let mut f = finding.clone();
+    f.summary = prose(&f.summary);
+    f.caveats = f.caveats.iter().map(|c| prose(c)).collect();
+    f.verify = f.verify.iter().map(|v| prose(v)).collect();
+    for m in &mut f.metrics {
+        m.text = m.text.as_deref().map(prose);
+    }
+    for q in &mut f.queries {
+        q.note = q.note.as_deref().map(prose);
+    }
+    if let Some(fix) = &mut f.fix {
+        fix.summary = prose(&fix.summary);
+        fix.cost = fix.cost.as_deref().map(prose);
+    }
+    f
 }
 
 /// Strings only: for text where bare numbers are measurements (costs, row counts), not data.
@@ -488,6 +533,21 @@ fn xml_escape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn prose_keeps_its_words_and_loses_the_values_it_quotes() {
+        let summary = "Plan 7 isn't the fast one: it was compiled for `@p0 = N'9b9143e3-90c5-f111-bf5b-000d3aacaa10', @p1 = (42)` \
+                       and filters on `[status] = N'active'`.";
+        let out = redact_prose(summary, Engine::Mssql);
+        assert!(out.starts_with("Plan 7 isn't the fast one"), "{out}");
+        assert!(out.contains("compiled for `@p0 = N'?', …`"), "{out}");
+        assert!(out.contains("`[status] = N'?'`"), "{out}");
+        assert!(!out.contains("9b9143e3") && !out.contains("active") && !out.contains("42"), "{out}");
+        // One parameter, or a list that still says something, stays as it is.
+        assert_eq!(redact_prose("`@p0 = ?`", Engine::Mssql), "`@p0 = ?`");
+        assert_eq!(redact_prose("`nvarchar(4000), @p1 = ?`", Engine::Mssql), "`nvarchar(4000), @p1 = ?`");
+    }
+
     use super::*;
 
     #[test]

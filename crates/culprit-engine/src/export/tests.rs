@@ -54,3 +54,38 @@ fn a_plan_file_never_puts_markup_into_an_html_page() {
     let diff = culprit_core::plan_diff_named(&plan, "A", &plan, "B");
     assert!(!diff_html(&plan, &plan, &diff, "A", "B", &options).contains("onerror"), "diff page");
 }
+
+/// The demo's report with its first query finding saying which values a plan was compiled for, as the
+/// parameter-sensitivity check does.
+fn report_quoting_values() -> (Report, String) {
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let mut report = culprit_checks::analyze(serde_json::from_str(&text).expect("snapshot"));
+    let f = report.findings.iter_mut().find(|f| !f.queries.is_empty()).expect("a query finding");
+    f.summary = format!(
+        "{} It was compiled for `@p0 = N'9b9143e3-90c5-f111-bf5b-000d3aacaa10', @p1 = N'secret-ish'`.",
+        f.summary
+    );
+    let id = f.id.clone();
+    (report, id)
+}
+
+#[test]
+fn redacted_exports_and_digest_details_drop_values_quoted_in_prose() {
+    let (report, id) = report_quoting_values();
+    let finding = report.findings.iter().find(|f| f.id == id).expect("finding");
+    let markdown = finding_markdown(&report, finding, &ExportOptions { redact: true, ..Default::default() });
+    let html = finding_html(&report, finding, &ExportOptions { redact: true, ..Default::default() });
+    let detail = serde_json::to_string(&finding_detail(&report, finding)).expect("json");
+    for out in [&markdown, &html, &detail] {
+        assert!(!out.contains("9b9143e3") && !out.contains("secret-ish"), "{out}");
+    }
+    assert!(markdown.contains("@p0 = N'?', …"), "{markdown}");
+    // Asked for the raw text, an export keeps it.
+    let raw = finding_markdown(&report, finding, &ExportOptions { redact: false, ..Default::default() });
+    assert!(raw.contains("9b9143e3"));
+    // The detail carries the query with its statement, and where its plan spends.
+    let detail = finding_detail(&report, finding);
+    assert!(!detail.queries.is_empty() && !detail.queries[0].sql.is_empty());
+    assert!(detail.queries[0].stats.contains("of database time"));
+}

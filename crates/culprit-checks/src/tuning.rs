@@ -44,7 +44,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             "tuning-advice",
             &format!("force:{query_id}"),
             Category::Queries,
-            subject(SubjectKind::Query, format!("query {query_id}")),
+            subject(SubjectKind::Query, query_id.to_string()),
         );
         let gain = r.estimated_gain.map(|g| format!(" (estimated {} faster)", format::percent(g))).unwrap_or_default();
         f.title = format!(
@@ -129,7 +129,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             "tuning-advice",
             &format!("forced-failing:{}", p.query_id),
             Category::Queries,
-            subject(SubjectKind::Query, format!("query {}", p.query_id)),
+            subject(SubjectKind::Query, p.query_id.to_string()),
         );
         let reason = p.last_failure_reason.as_deref().unwrap_or("unknown reason");
         f.title = format!(
@@ -191,7 +191,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             "tuning-advice",
             &format!("hint-failing:{}", h.query_id),
             Category::Queries,
-            subject(SubjectKind::Query, format!("query {}", h.query_id)),
+            subject(SubjectKind::Query, h.query_id.to_string()),
         );
         let reason = h.last_failure_reason.as_deref().unwrap_or("unknown reason");
         f.title =

@@ -474,6 +474,13 @@ fn finding_body(
     index: usize,
 ) {
     let s = &report.snapshot;
+    let redacted;
+    let finding = if options.redact {
+        redacted = culprit_core::redact::redact_finding(finding, s.server.engine);
+        &redacted
+    } else {
+        finding
+    };
     let _ = write!(out, r#"<section class="finding"><{level}>{}</{level}>"#, escape(&finding.title));
     let _ = write!(
         out,

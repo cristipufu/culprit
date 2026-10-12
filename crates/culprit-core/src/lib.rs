@@ -36,7 +36,9 @@ pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, Ti
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
 };
-pub use digest::{Digest, DigestChanges, DigestCounts, DigestFinding};
+pub use digest::{
+    Digest, DigestChanges, DigestCounts, DigestDay, DigestDetail, DigestFinding, DigestMetric, DigestQuery,
+};
 pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
 pub use error::{Error, ErrorCode, Result};
 pub use events::{ChangeEvent, EventAction, EventKind, EventLink, EventSource};

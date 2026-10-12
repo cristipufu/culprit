@@ -114,7 +114,7 @@ pub struct QueryRef {
     pub note: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
 pub struct Fix {
     pub summary: String,

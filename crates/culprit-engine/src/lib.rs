@@ -667,7 +667,7 @@ impl Workspace {
         if let Some(path) = since
             && let Some(previous) = read_digest(path)?
         {
-            return Ok(culprit_checks::digest_since(&current, &previous, top));
+            return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top)));
         }
         let previous = match (since, name, report) {
             (Some(path), _, _) => Some(self.analyze_file(path)?),
@@ -681,7 +681,7 @@ impl Workspace {
             }
             _ => None,
         };
-        Ok(culprit_checks::digest(&current, previous.as_ref(), top))
+        Ok(with_details(&current, culprit_checks::digest(&current, previous.as_ref(), top)))
     }
 
     /// The index advisor's plan for a connection, from its latest saved report re-checked with the current checks (so
@@ -1155,6 +1155,14 @@ impl Workspace {
 }
 
 /// [`Workspace::drift`] for two reports already in hand (saved files, fixtures).
+/// Each top finding in full, redacted, for a consumer that posts the details (a thread per finding).
+fn with_details(report: &Report, mut digest: culprit_core::Digest) -> culprit_core::Digest {
+    for item in &mut digest.top {
+        item.detail = report.findings.iter().find(|f| f.id == item.id).map(|f| export::finding_detail(report, f));
+    }
+    digest
+}
+
 /// `path` as a digest (`culprit digest` output), or `None` when it is a report or snapshot instead.
 fn read_digest(path: &std::path::Path) -> Result<Option<culprit_core::Digest>> {
     let bytes = std::fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;

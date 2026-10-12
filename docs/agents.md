@@ -199,7 +199,7 @@ Reports are stored per connection under `~/.local/share/culprit/reports/<connect
 
 ### A scheduled digest
 
-`culprit digest` turns a scan into a few facts for a job to post (Slack, Teams, an issue): counts by severity, database time and its trend, what changed since the previous digest (`new`, `fixed`, and `worse` with the severity it `was`), and the top findings with their ids. It is always JSON, and it reads saved reports only, never the database; formatting is the consumer's job.
+`culprit digest` turns a scan into a few facts for a job to post (Slack, Teams, an issue): counts by severity, database time in the last 24 hours against the 24 hours before (`database_time` says it, `day` has the numbers; scan with `--window-days 2` or more for the day before), what changed since the previous digest (`new`, `fixed`, and `worse` with the severity it `was`), and the top findings, one per query, table or index, with the others about the same one in `also` and the finding in full in `detail` (summary, numbers, each query's statement and the plan step to look at, the fix, how to verify it, what to check first: the app's finding view as data, for a thread reply per finding). It is always JSON, and it reads saved reports only, never the database; formatting is the consumer's job.
 
 ```sh
 culprit digest staging                                          # latest scan vs the scan before it with the same window
@@ -207,7 +207,7 @@ culprit scan staging --window-days 1 --json --full > report.json
 culprit digest --report report.json --since previous-digest.json > digest.json   # CI: keep digest.json for the next run
 ```
 
-Keep the digest between runs, not the report: a report holds statement text and the parameter values plans were compiled for, which can include data the application sent; a digest holds finding ids, titles and severities only. Reports given to `--report` or `--since` are re-checked with the current checks, so a finding means the same thing on each side. `--top` caps each list (5 by default). Text in it comes from the database (table names, query handles): escape it for the place you post it.
+Keep the digest between runs, not the report: a report holds the parameter values plans were compiled for and statements as the server saw them, which can include data the application sent. A digest is redacted: statements, plan predicates and the SQL quoted in its prose have their literal values replaced with placeholders, and parameter values are never in it. Reports given to `--report` or `--since` are re-checked with the current checks, so a finding means the same thing on each side. `--top` caps each list (5 by default). Text in it comes from the database (table names, query handles): escape it for the place you post it.
 
 ## JSON shapes
 

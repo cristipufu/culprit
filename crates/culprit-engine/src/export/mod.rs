@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 pub use html::{diff_html, finding_html, plan_html, report_html};
-pub use markdown::{diff_markdown, finding_markdown, plan_markdown, report_markdown, verification_markdown};
+pub use markdown::{
+    diff_markdown, finding_detail, finding_markdown, plan_markdown, report_markdown, verification_markdown,
+};
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]

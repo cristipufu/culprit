@@ -281,6 +281,69 @@ pub(crate) fn metric_text(m: &Metric) -> String {
     }
 }
 
+/// One finding in full for a digest (a chat thread, a ticket): the same pieces as [`finding_markdown`], always
+/// redacted, as data for the consumer to lay out.
+pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::DigestDetail {
+    let s = &report.snapshot;
+    let engine = s.server.engine;
+    let f = culprit_core::redact::redact_finding(finding, engine);
+    let queries = s
+        .workload
+        .as_ref()
+        .map(|w| {
+            f.queries
+                .iter()
+                .filter_map(|r| w.query(&r.id).map(|q| (r, q)))
+                .take(2)
+                .map(|(r, q)| {
+                    let plan = q.plan.as_ref().map(|plan| {
+                        let plan = culprit_core::redact::redact_plan(plan);
+                        let node = r
+                            .plan_node
+                            .and_then(|id| plan.nodes().into_iter().find(|n| n.id == id))
+                            .unwrap_or_else(|| plan.hottest());
+                        let mut line = format!(
+                            "{}: {} of the plan's cost, {}",
+                            label(node),
+                            format::percent(share(&plan, node)),
+                            rows_phrase(node)
+                        );
+                        if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
+                            let _ = write!(line, ", on `{}`", format::predicate(p));
+                        }
+                        line
+                    });
+                    culprit_core::DigestQuery {
+                        stats: format!(
+                            "{} of database time · {} · {} on average",
+                            format::percent(w.share(q.total_time_ms)),
+                            w.how_often(q.executions),
+                            format::duration(q.mean_time_ms)
+                        ),
+                        sql: culprit_core::redact::redact_sql(q.text.trim(), engine),
+                        plan,
+                        note: r.note.clone(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    culprit_core::DigestDetail {
+        confidence: format!("{:?}", f.confidence).to_lowercase(),
+        summary: f.summary,
+        metrics: f
+            .metrics
+            .iter()
+            .take(6)
+            .map(|m| culprit_core::DigestMetric { label: m.label.clone(), value: metric_text(m) })
+            .collect(),
+        queries,
+        fix: f.fix,
+        verify: f.verify,
+        caveats: f.caveats,
+    }
+}
+
 /// One finding as a PR section: what's happening, the evidence, the query and its plan, the fix and how to verify it.
 pub fn finding_markdown(report: &Report, finding: &Finding, options: &ExportOptions) -> String {
     let mut out = String::new();
@@ -291,6 +354,13 @@ pub fn finding_markdown(report: &Report, finding: &Finding, options: &ExportOpti
 
 fn finding_section(out: &mut String, report: &Report, finding: &Finding, options: &ExportOptions, level: &str) {
     let s = &report.snapshot;
+    let redacted;
+    let finding = if options.redact {
+        redacted = culprit_core::redact::redact_finding(finding, s.server.engine);
+        &redacted
+    } else {
+        finding
+    };
     let _ = writeln!(out, "{level} {}\n", text(&finding.title));
     let _ = writeln!(
         out,

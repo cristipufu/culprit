@@ -1,7 +1,8 @@
 //! The digest: one report, compared with the previous one when there is one, in the few facts a scheduled job posts.
 
 use culprit_core::{
-    Digest, DigestChanges, DigestCounts, DigestFinding, Environment, Finding, Report, Severity, TileKey,
+    Digest, DigestChanges, DigestCounts, DigestDay, DigestFinding, Environment, Finding, Report, Severity, SubjectKind,
+    Workload, format,
 };
 
 /// What a report says, and what changed since `previous` (an earlier report of the same database). `top` caps every
@@ -22,6 +23,7 @@ pub fn digest_since(report: &Report, previous: &Digest, top: usize) -> Digest {
 
 fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: usize) -> Digest {
     let board = crate::dashboard(report);
+    let day = report.snapshot.workload.as_ref().and_then(day_over_day);
     let active: Vec<&Finding> = report.findings.iter().filter(|f| !f.inactive).collect();
     let count = |s: Severity| active.iter().filter(|f| f.severity == s).count() as u32;
     let since = baseline.map(|(taken_at, before)| {
@@ -45,7 +47,8 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         taken_at: report.snapshot.taken_at.clone(),
         window: board.coverage.clone(),
         headline: report.summary.headline.clone(),
-        database_time: board.tiles.iter().find(|t| t.key == TileKey::DbTime).map(|t| t.takeaway.clone()),
+        database_time: day.as_ref().map(day_sentence),
+        day,
         counts: DigestCounts {
             active: active.len() as u32,
             high: count(Severity::High),
@@ -54,9 +57,92 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
             stopped: report.findings.iter().filter(|f| f.inactive).count() as u32,
         },
         since,
-        top: active.iter().take(top).map(|f| item(f, None)).collect(),
+        top: grouped(&active, top),
         findings: active.iter().map(|f| item(f, None)).collect(),
     }
+}
+
+/// The `top` most important findings, one per query, table or index: a query that is both chatty and waiting on locks
+/// is one thing to look at, with the other finding's title in `also`.
+fn grouped(active: &[&Finding], top: usize) -> Vec<DigestFinding> {
+    let key = |f: &Finding| {
+        matches!(f.subject.kind, SubjectKind::Query | SubjectKind::Table | SubjectKind::Index)
+            .then(|| (f.subject.kind, f.subject.name.clone()))
+    };
+    let mut out: Vec<(Option<(SubjectKind, String)>, DigestFinding)> = Vec::new();
+    for f in active {
+        let k = key(f);
+        if let Some(group) = out.iter_mut().find(|(other, _)| k.is_some() && *other == k) {
+            group.1.also.push(f.title.clone());
+        } else if out.len() < top {
+            out.push((k, item(f, None)));
+        }
+    }
+    out.into_iter().map(|(_, item)| item).collect()
+}
+
+const DAY: f64 = 24.0 * 3600.0;
+/// The history starts on a bucket boundary, so a "2-day" window can begin a little after two days ago.
+const SLACK: f64 = 1800.0;
+
+/// Database time in the last 24 hours and the 24 hours before, from the timeline. Buckets that straddle a cut count in
+/// proportion. `None` without a timeline or under a day of it; no day before when the history is shorter than two.
+fn day_over_day(w: &Workload) -> Option<DigestDay> {
+    let t = w.timeline.as_ref()?;
+    let end = format::epoch_seconds(&t.end)?;
+    let mut starts: Vec<f64> = t.starts.iter().map(|s| format::epoch_seconds(s)).collect::<Option<_>>()?;
+    let first = *starts.first()?;
+    // The window can begin inside the first bucket; time before it was never counted.
+    if let Some(from) = w.window_start.as_deref().and_then(format::epoch_seconds)
+        && from > first
+        && starts.get(1).is_none_or(|next| from < *next)
+    {
+        starts[0] = from;
+    }
+    let covered = end - starts[0];
+    if covered < DAY - SLACK {
+        return None;
+    }
+    let within = |from: f64, to: f64| -> f64 {
+        starts
+            .iter()
+            .enumerate()
+            .map(|(i, &start)| {
+                let stop = starts.get(i + 1).copied().unwrap_or(end);
+                let width = stop - start;
+                let overlap = (stop.min(to) - start.max(from)).max(0.0);
+                if width > 0.0 { t.time_ms.get(i).copied().unwrap_or(0.0) * overlap / width } else { 0.0 }
+            })
+            .sum()
+    };
+    Some(DigestDay {
+        last_ms: within(end - DAY, end),
+        before_ms: (covered >= 2.0 * DAY - SLACK).then(|| within(end - 2.0 * DAY, end - DAY)),
+    })
+}
+
+/// "Database time: 2.1 h in the last 24 hours, up 35% from the 24 hours before (1.6 h)."
+fn day_sentence(d: &DigestDay) -> String {
+    let last = format::duration(d.last_ms);
+    let Some(before) = d.before_ms else {
+        return format!("Database time: {last} in the last 24 hours.");
+    };
+    let then = format::duration(before);
+    // Under a second either side, a ratio is noise.
+    if before <= 0.0 || d.last_ms + before < 1_000.0 {
+        return format!("Database time: {last} in the last 24 hours, {then} in the 24 hours before.");
+    }
+    let ratio = d.last_ms / before;
+    let change = if ratio >= 2.0 {
+        format!("up {ratio:.1}× from")
+    } else if ratio >= 1.1 {
+        format!("up {} from", format::percent(ratio - 1.0))
+    } else if ratio <= 0.9 {
+        format!("down {} from", format::percent(1.0 - ratio))
+    } else {
+        "about the same as".to_string()
+    };
+    format!("Database time: {last} in the last 24 hours, {change} the 24 hours before ({then}).")
 }
 
 /// As connections spell it (`--env staging`).
@@ -77,6 +163,8 @@ fn item(f: &Finding, was: Option<Severity>) -> DigestFinding {
         db_time_share: f.impact.db_time_share,
         impact: f.impact.label.clone(),
         was,
+        also: Vec::new(),
+        detail: None,
     }
 }
 
@@ -101,7 +189,81 @@ mod tests {
         assert_eq!(d.top[0].id, r.findings.iter().find(|f| !f.inactive).unwrap().id);
         assert!(d.since.is_none());
         assert_eq!(d.headline, r.summary.headline);
-        assert!(d.database_time.is_some());
+        // The demo's history covers under a day: no day-over-day comparison.
+        assert!(d.database_time.is_none() && d.day.is_none());
+    }
+
+    /// `hours` hourly buckets ending at 2026-10-12T12:00Z, the bucket `i` hours before the end holding `ms(i)`.
+    fn hourly(hours: usize, ms: impl Fn(usize) -> f64) -> Workload {
+        let at = |h: usize| format!("2026-10-{:02}T{:02}:00:00Z", 10 + h / 24, h % 24);
+        let first = 60 - hours;
+        let mut w = report().snapshot.workload.expect("workload");
+        w.window_start = Some(at(first));
+        w.timeline = Some(culprit_core::Timeline {
+            source: Default::default(),
+            starts: (first..60).map(at).collect(),
+            end: at(60),
+            time_ms: (first..60).map(|h| ms(60 - h)).collect(),
+            executions: vec![0.0; hours],
+        });
+        w
+    }
+
+    #[test]
+    fn database_time_compares_the_last_24_hours_with_the_24_before() {
+        // 49 hours of history: 200 ms an hour in the last day, 100 in the day before, an hour older than that.
+        let w = hourly(49, |ago| if ago <= 24 { 200.0 } else { 100.0 });
+        let day = day_over_day(&w).expect("a day");
+        assert_eq!(day, DigestDay { last_ms: 4_800.0, before_ms: Some(2_400.0) });
+        assert_eq!(
+            day_sentence(&day),
+            "Database time: 4.8 s in the last 24 hours, up 2.0× from the 24 hours before (2.4 s)."
+        );
+        // A bucket that straddles a cut counts in proportion: the window starts half way into the first bucket.
+        let mut w = hourly(48, |_| 100.0);
+        if let Some(t) = w.timeline.as_mut() {
+            t.starts[0] = "2026-10-10T11:30:00Z".into();
+        }
+        let day = day_over_day(&w).expect("a day");
+        assert_eq!(day.last_ms, 2_400.0);
+        assert!((day.before_ms.expect("day before") - 2_400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn database_time_without_two_days_of_history() {
+        let day = day_over_day(&hourly(30, |_| 100.0)).expect("a day");
+        assert_eq!(day.before_ms, None);
+        assert_eq!(day_sentence(&day), "Database time: 2.4 s in the last 24 hours.");
+        assert_eq!(day_over_day(&hourly(10, |_| 100.0)), None);
+    }
+
+    #[test]
+    fn database_time_says_how_much_it_moved() {
+        let say = |last_ms, before_ms| day_sentence(&DigestDay { last_ms, before_ms: Some(before_ms) });
+        assert!(
+            say(13_500.0, 10_000.0).contains("up 35% from the 24 hours before (10.0 s)"),
+            "{}",
+            say(13_500.0, 10_000.0)
+        );
+        assert!(say(6_000.0, 10_000.0).contains("down 40% from"), "{}", say(6_000.0, 10_000.0));
+        assert!(say(10_400.0, 10_000.0).contains("about the same as the 24 hours before"));
+    }
+
+    #[test]
+    fn findings_about_the_same_query_are_one_item() {
+        let mut r = report();
+        let active: Vec<usize> = (0..r.findings.len()).filter(|&i| !r.findings[i].inactive).collect();
+        let (a, b) = (active[0], active[2]);
+        for i in [a, b] {
+            r.findings[i].subject = culprit_core::Subject { kind: SubjectKind::Query, name: "42".into() };
+        }
+        let d = digest(&r, None, 3);
+        assert_eq!(d.top.len(), 3);
+        assert_eq!(d.top[0].id, r.findings[a].id);
+        assert_eq!(d.top[0].also, [r.findings[b].title.clone()]);
+        assert!(d.top.iter().all(|f| f.id != r.findings[b].id));
+        // Every finding is still kept for the next comparison.
+        assert!(d.findings.iter().any(|f| f.id == r.findings[b].id));
     }
 
     #[test]

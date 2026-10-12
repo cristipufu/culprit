@@ -147,7 +147,7 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             f.impact.label =
                 format!("{} slower for some calls", times(slow.mean_time_ms / fast.mean_time_ms.max(0.001)));
             let compiled_for =
-                |p: &PlanVariant| compiled(p, q).map(|c| format!(", compiled for {c}")).unwrap_or_default();
+                |p: &PlanVariant| compiled(p, q).map(|c| format!(", compiled for `{c}`")).unwrap_or_default();
             f.summary = format!(
                 "SQL Server keeps two plans for this statement. Plan {} averages {}{}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
                 fast.id,
