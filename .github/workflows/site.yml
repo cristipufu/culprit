@@ -1,10 +1,10 @@
 name: Website
 
-# Publishes culpritsql.com (site/ plus the README's screenshots) to GitHub Pages when either changes on main.
+# Publishes culpritsql.com (site/, plus the docs as markdown for llms.txt) to GitHub Pages when either changes on main.
 on:
   push:
     branches: [main]
-    paths: ["site/**", "docs/images/**", "dev/site.sh", ".github/workflows/site.yml"]
+    paths: ["site/**", "docs/**", "README.md", "dev/site.sh", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:

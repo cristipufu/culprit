@@ -1,8 +1,9 @@
-// Culprit SQL Studio — culpritsql.com. Points the main download button at the visitor's platform and wires the copy
-// buttons. Everything works without it: the button falls back to the download section.
+// Culprit SQL Studio — culpritsql.com. Points the main download button at the visitor's computer, shows the star
+// count, switches the agent setup tabs and wires the copy buttons. The page works without it.
 
 (() => {
   const RELEASE = "https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/";
+  // Fixed icons, defined here; nothing from the network or the URL is ever inserted as markup.
   const PLATFORMS = {
     mac: {
       label: "Download for macOS",
@@ -14,15 +15,18 @@
       file: "Culprit-SQL-Studio-Windows-x64-setup.exe",
       icon: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 5.5 10.5 4.4v7.2H3V5.5Zm0 13 7.5 1.1v-7.1H3v6Zm8.4 1.2L21 21v-8.5h-9.6v7.2Zm0-15.4v7.3H21V3l-9.6 1.3Z"/></svg>',
     },
-    linux: {
-      label: "Download for Linux",
-      file: "Culprit-SQL-Studio-Linux-x86_64.AppImage",
-      icon: "",
-    },
+    linux: { label: "Download for Linux", file: "Culprit-SQL-Studio-Linux-x86_64.AppImage", icon: "" },
   };
 
-  const ua = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "";
-  const os = /mac|iphone|ipad/i.test(ua) ? "mac" : /win/i.test(ua) ? "windows" : /linux|x11/i.test(ua) ? "linux" : null;
+  // Phones and tablets can't run a desktop app (an iPad reports itself as a Mac with a touch screen), so they keep the
+  // generic button that scrolls to every platform.
+  const ua = navigator.userAgent || "";
+  const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+  const mobile =
+    (navigator.userAgentData && navigator.userAgentData.mobile) ||
+    /iphone|ipad|ipod|android|mobile/i.test(ua) ||
+    (/mac/i.test(platform) && navigator.maxTouchPoints > 1);
+  const os = mobile ? null : /mac/i.test(platform) ? "mac" : /win/i.test(platform) ? "windows" : /linux|x11/i.test(platform) ? "linux" : null;
 
   if (os) {
     const p = PLATFORMS[os];
@@ -32,17 +36,72 @@
       button.querySelector("[data-os-label]").textContent = p.label;
       button.querySelector(".os-icon").innerHTML = p.icon;
     }
-    const card = document.querySelector(`.dl[data-os="${os}"]`);
-    if (card) card.classList.add("current");
+    document.querySelector(`.dl[data-os="${os}"]`)?.classList.add("current");
+    document.querySelector("[data-other-os]")?.removeAttribute("hidden");
   }
 
-  for (const button of document.querySelectorAll("[data-copy]")) {
+  // The star count, when GitHub answers; nothing is shown otherwise.
+  fetch("https://api.github.com/repos/cristipufu/culprit-sql-studio", { headers: { Accept: "application/vnd.github+json" } })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((repo) => {
+      const n = repo && Number(repo.stargazers_count);
+      const el = document.querySelector("[data-stars]");
+      // A handful of stars reads as "nobody uses this": show the count once it says something.
+      if (!el || !Number.isFinite(n) || n < 25) return;
+      el.textContent = `★ ${n >= 1000 ? (n / 1000).toFixed(1) + "k" : n}`;
+      el.hidden = false;
+    })
+    .catch(() => {});
+
+  // Agent setup tabs.
+  const tabs = [...document.querySelectorAll('[role="tab"][data-tab]')];
+  const select = (tab) => {
+    for (const t of tabs) {
+      const on = t === tab;
+      t.setAttribute("aria-selected", String(on));
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute("aria-controls")).hidden = !on;
+    }
+  };
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => select(tab));
+    tab.addEventListener("keydown", (e) => {
+      const i = tabs.indexOf(tab);
+      const next = e.key === "ArrowRight" ? tabs[(i + 1) % tabs.length] : e.key === "ArrowLeft" ? tabs[(i - 1 + tabs.length) % tabs.length] : null;
+      if (next) {
+        e.preventDefault();
+        select(next);
+        next.focus();
+      }
+    });
+  }
+
+  // Copy buttons copy the visible commands; the result is announced for screen readers.
+  const announce = document.querySelector("[data-announce]");
+  const source = (target) =>
+    target === "setup" ? document.querySelector("pre[data-setup]:not([hidden])") : document.querySelector("pre[data-cli]");
+  const commands = (pre) =>
+    pre.textContent
+      .split("\n")
+      .map((line) => line.replace(/^\$ /, "").replace(/\s+#.*$/, ""))
+      .filter((line) => line.trim() && !line.trim().startsWith("#") && !line.trim().startsWith("//"))
+      .join("\n");
+  for (const button of document.querySelectorAll("[data-copy-target]")) {
     button.addEventListener("click", async () => {
+      const pre = source(button.dataset.copyTarget);
+      if (!pre) return;
       try {
-        await navigator.clipboard.writeText(button.dataset.copy);
+        await navigator.clipboard.writeText(commands(pre));
         button.textContent = "Copied";
+        if (announce) announce.textContent = "Copied to the clipboard";
       } catch {
-        button.textContent = "Select and copy";
+        // No clipboard access: select the text so ⌘C / Ctrl+C works.
+        const range = document.createRange();
+        range.selectNodeContents(pre);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        button.textContent = "Selected";
       }
       setTimeout(() => (button.textContent = "Copy"), 1600);
     });

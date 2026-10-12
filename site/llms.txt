@@ -1,0 +1,29 @@
+# Culprit SQL Studio
+
+> Free, open-source (MIT) database performance tool for SQL Server, PostgreSQL, MySQL and MariaDB: a desktop app for macOS, Windows and Linux, a CLI and an MCP server for coding agents. It reads the statistics the database already keeps (Query Store, plan cache, pg_stat_statements, performance_schema) and explains each problem in one sentence: what is slow, what it costs in database time, how to fix it and how to verify the fix. Read-only by design; nothing leaves the user's machine.
+
+Key facts:
+
+- Finds slow queries, plan regressions, missing and unused indexes, N+1 query loops, parameter-sensitive plans, lock waits, blocking chains, deadlocks, spills and stale statistics: 50 checks, ranked by share of database time.
+- Explains execution plans in plain words, draws them, and compares any two plans with a one-sentence reason why one is slower.
+- `culprit mcp` serves 25 tools (dashboard, findings, query plans and insights, what changed, blocking, waits, index advice, verify, read-only queries the person approves) to Claude Code, Codex, Cursor and any MCP client. Every CLI command also prints JSON.
+- Safe on production: scans read statistics and catalog views only; statements run as reads only when Culprit can prove they only read; anything else on production asks first; fixes are shown, never applied.
+- Logins need read access to statistics: SQL Server `VIEW SERVER STATE` (`VIEW DATABASE STATE` on Azure SQL Database), PostgreSQL `pg_read_all_stats` or `pg_monitor`, MySQL and MariaDB `PROCESS` and `SELECT` on `performance_schema`.
+- Supported: SQL Server 2022 and Azure SQL Database; PostgreSQL 15 to 18 including Amazon RDS; MySQL 5.7 to 8.4; MariaDB 10.5 to 11.8.
+
+## Docs
+
+- [Overview](https://culpritsql.com/docs/readme.md): what Culprit does, the features, coding agents, safety, supported databases and how to get started
+- [Guide](https://culpritsql.com/docs/guide.md): every check and command, the agent setup, measured speed, safety details and how to extend Culprit
+- [Coding agents](https://culpritsql.com/docs/agents.md): the CLI contract, the MCP tools, per-connection permissions, approvals and the audit log
+- [Engine parity](https://culpritsql.com/docs/parity.md): every feature on SQL Server, PostgreSQL, MySQL and MariaDB, where each answer comes from, and the versions verified
+
+## Download
+
+- [Latest release](https://github.com/cristipufu/culprit-sql-studio/releases/latest): macOS (universal, signed and notarized), Windows x64 installer, Linux AppImage and .deb, and the CLI for each
+- [Source code](https://github.com/cristipufu/culprit-sql-studio): Rust core, CLI and MCP server; Tauri and React desktop app
+
+## Optional
+
+- [Design](https://culpritsql.com/docs/design.md): how the product behaves and why
+- [Everything in one file](https://culpritsql.com/llms-full.txt): the overview, guide, coding agents and engine parity docs concatenated

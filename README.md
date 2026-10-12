@@ -25,6 +25,7 @@
 </p>
 
 <p align="center">
+  <a href="https://culpritsql.com"><b>culpritsql.com</b></a> ·
   <a href="#why-culprit">Why Culprit</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#built-for-coding-agents">Coding agents</a> ·
