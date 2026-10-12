@@ -7,3 +7,4 @@ node_modules
 # Tauri
 /app/src-tauri/gen
 /app/src-tauri/target
+_site/

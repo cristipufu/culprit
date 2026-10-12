@@ -1,0 +1,265 @@
+name: Release
+
+# Push a tag that matches the app's version (app/src-tauri/tauri.conf.json), e.g. `git tag v0.1.0 && git push origin v0.1.0`,
+# to build every platform, sign and notarize the macOS app and CLI, and open a DRAFT release with the files under the
+# stable names culpritsql.com links to. Publish the draft from the Releases page when it looks right.
+# "Run workflow" from the Actions tab builds the same files as artifacts without releasing anything.
+#
+# macOS signing turns itself on once these repository (or `release` environment) secrets exist; without them the
+# macOS build is ad-hoc signed and the run warns not to ship it:
+#   MACOS_CERT_P12        base64 of the "Developer ID Application" certificate + private key, exported as .p12
+#   MACOS_CERT_PASSWORD   the .p12's export password
+#   MACOS_API_KEY_P8      base64 of an App Store Connect API key (AuthKey_XXXX.p8), used to notarize
+#   MACOS_API_KEY_ID      that key's ID
+#   MACOS_API_ISSUER_ID   the team's issuer ID
+#   MACOS_TEAM_ID         the Apple team ID
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege: builds only read the repo. Only the publish job can write, and only to create the draft release.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS (universal, signed and notarized)
+    runs-on: macos-latest
+    # Signing secrets can live in this environment, so required reviewers can gate who may sign a build.
+    environment: release
+    timeout-minutes: 90
+    env:
+      HAS_APPLE_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Install UI dependencies
+        working-directory: app
+        run: bun install --frozen-lockfile
+
+      - name: Import the Developer ID certificate into a temporary keychain
+        if: env.HAS_APPLE_SIGNING == 'true'
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASS="$(uuidgen)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          printf '%s' "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Without this, codesign waits for a keychain prompt nobody can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychain -d user -s "$KC" login.keychain-db
+          IDENTITY=$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/{print $2; exit}')
+          [ -n "$IDENTITY" ] || { echo "::error::no Developer ID Application identity in MACOS_CERT_P12"; exit 1; }
+          echo "signing identity: $IDENTITY"
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build the app (universal) and the CLI
+        env:
+          # Tauri signs the app with this identity (hardened runtime); "-" is ad-hoc when there's no certificate.
+          APPLE_SIGNING_IDENTITY: ${{ env.SIGN_IDENTITY || '-' }}
+        run: |
+          set -euo pipefail
+          (cd app && bunx tauri build --target universal-apple-darwin --bundles app)
+          cargo build --locked --release -p culprit-cli --target aarch64-apple-darwin
+          cargo build --locked --release -p culprit-cli --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/culprit target/aarch64-apple-darwin/release/culprit target/x86_64-apple-darwin/release/culprit
+          if [ "$APPLE_SIGNING_IDENTITY" = "-" ]; then
+            codesign --force --sign - dist/culprit
+          else
+            codesign --force --timestamp --options runtime --sign "$APPLE_SIGNING_IDENTITY" dist/culprit
+          fi
+          ditto target/universal-apple-darwin/release/bundle/macos/Culprit.app dist/Culprit.app
+
+      - name: Notarize and staple
+        if: env.HAS_APPLE_SIGNING == 'true'
+        env:
+          API_KEY_P8: ${{ secrets.MACOS_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.MACOS_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.MACOS_API_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          cd dist
+          APP="Culprit.app"
+          printf '%s' "$API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/api.p8"
+          notarize() {
+            xcrun notarytool submit "$1" --key "$RUNNER_TEMP/api.p8" --key-id "$API_KEY_ID" \
+              --issuer "$API_ISSUER_ID" --team-id "$TEAM_ID" --wait --timeout 30m
+          }
+          codesign --verify --strict --deep --verbose=2 "$APP"
+
+          # The app: notarize a ditto zip of it, then staple the ticket so it opens offline on first launch.
+          ditto -c -k --keepParent "$APP" app.zip
+          notarize app.zip
+          rm app.zip
+          xcrun stapler staple "$APP"
+
+          # The CLI: a bare binary can't hold a stapled ticket; notarizing it records the ticket with Apple, which
+          # Gatekeeper checks online.
+          ditto -c -k culprit cli.zip
+          notarize cli.zip
+          rm cli.zip
+
+          # The disk image: the app plus an Applications shortcut, signed, notarized and stapled too.
+          mkdir dmg && ditto "$APP" "dmg/$APP" && ln -s /Applications dmg/Applications
+          hdiutil create -volname "Culprit SQL Studio" -srcfolder dmg -ov -format UDZO Culprit-SQL-Studio-macOS.dmg
+          rm -rf dmg
+          codesign --force --timestamp --sign "$SIGN_IDENTITY" Culprit-SQL-Studio-macOS.dmg
+          notarize Culprit-SQL-Studio-macOS.dmg
+          xcrun stapler staple Culprit-SQL-Studio-macOS.dmg
+          rm -f "$RUNNER_TEMP/api.p8"
+
+          xcrun stapler validate "$APP"
+          xcrun stapler validate Culprit-SQL-Studio-macOS.dmg
+          spctl --assess --type execute -vv "$APP"
+          spctl --assess --type open --context context:primary-signature -vv Culprit-SQL-Studio-macOS.dmg
+
+      - name: Package an unsigned disk image
+        if: env.HAS_APPLE_SIGNING != 'true'
+        run: |
+          set -euo pipefail
+          echo "::warning::MACOS_CERT_P12 isn't set: this macOS build is ad-hoc signed and Gatekeeper refuses it on other Macs. Don't ship it."
+          cd dist
+          mkdir dmg && ditto Culprit.app dmg/Culprit.app && ln -s /Applications dmg/Applications
+          hdiutil create -volname "Culprit SQL Studio" -srcfolder dmg -ov -format UDZO Culprit-SQL-Studio-macOS.dmg
+          rm -rf dmg
+
+      - name: Package the CLI
+        run: |
+          set -euo pipefail
+          cd dist
+          tar -czf culprit-cli-macos.tar.gz culprit
+          mkdir -p ../out && mv Culprit-SQL-Studio-macOS.dmg culprit-cli-macos.tar.gz ../out/
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-macos
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove the temporary keychain
+        if: always() && env.HAS_APPLE_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Build the installer and the CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd app && bun install --frozen-lockfile && bunx tauri build --bundles nsis)
+          cargo build --locked --release -p culprit-cli
+          mkdir -p out
+          cp target/release/bundle/nsis/*-setup.exe out/Culprit-SQL-Studio-Windows-x64-setup.exe
+          (cd target/release && 7z a -tzip ../../out/culprit-cli-windows-x64.zip culprit.exe >/dev/null)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-windows
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux (x86_64)
+    # The oldest supported runner, so the AppImage and CLI run on older glibc too.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            librsvg2-dev libayatana-appindicator3-dev libssl-dev libxdo-dev patchelf
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Build the AppImage, the Debian package and the CLI
+        run: |
+          set -euo pipefail
+          (cd app && bun install --frozen-lockfile && bunx tauri build --bundles appimage,deb)
+          cargo build --locked --release -p culprit-cli
+          mkdir -p out
+          cp target/release/bundle/appimage/*.AppImage out/Culprit-SQL-Studio-Linux-x86_64.AppImage
+          cp target/release/bundle/deb/*.deb out/Culprit-SQL-Studio-Linux-amd64.deb
+          tar -C target/release -czf out/culprit-cli-linux-x86_64.tar.gz culprit
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-linux
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Draft the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: out
+          merge-multiple: true
+      - name: Check the tag matches the app's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version app/src-tauri/tauri.conf.json)
+          [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG doesn't match the app's version $VERSION"; exit 1; }
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Culprit SQL Studio ${TAG#v}" --generate-notes ./*

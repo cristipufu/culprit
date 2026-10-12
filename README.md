@@ -37,7 +37,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/dashboard-dark.png">
-  <img alt="Culprit's dashboard for a SQL Server database: database time over five hours with a plan change, a deploy mark and a throttling period on its timeline, 24 findings ranked by severity, the top queries, where time goes, a blocked session right now, health, deadlocks, index advice and plan insights" src="docs/images/dashboard-light.png">
+  <img alt="Culprit's dashboard for a SQL Server database: database time over five hours with a plan change, a deploy mark and a throttling period on its timeline, 31 findings ranked by severity, the top queries, where time goes, a blocked session right now, health, deadlocks, index advice and plan insights" src="docs/images/dashboard-light.png">
 </picture>
 
 <br>
@@ -48,8 +48,8 @@ When a database gets slow, someone has to dig through Query Store, wait statisti
 
 Culprit does the digging in seconds. It reads the statistics your database already keeps, works out where the time goes, and tells you in one sentence what is wrong, what it costs and what to change:
 
-> **A type mismatch on `customers.email` stops a read from `customers` from using an index.**<br>
-> 54% of database time · **Fix:** send the parameter as `varchar`, the column's type · **Verify:** re-scan; the warning is gone from the plan.
+> **Repeats its read of `order_items` 1.5M times, once per row of `order_items`.**<br>
+> 27% of database time, and it times out on every run · **Fix:** the query forces a loop join; remove the hint and let the optimizer choose · **Verify:** run it with actual rows: a hash join, or far fewer executions of `order_items`.
 
 <table>
 <tr>
@@ -104,20 +104,20 @@ Add your own checks or database engines without forking. The app, the CLI and th
 
 ### Findings you can act on
 
-50 checks look for what actually costs time: type mismatches that block indexes, missing and unused indexes, N+1 query loops, plan regressions, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+50 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
-  <img alt="A finding: a type mismatch on customers.email stops an index seek, with its share of database time, the query as evidence, the expensive plan step, the fix and how to verify it" src="docs/images/findings-light.png">
+  <img alt="A finding: a query repeats its read of order_items 1.5 million times because it forces a loop join, with its share of database time, the query as evidence, the expensive plan step, the fix and how to verify it" src="docs/images/findings-light.png">
 </picture>
 
 ### Plans that explain themselves
 
-Every captured plan comes with insights in plain words ("a type mismatch stops SQL Server from seeking an index"), a diagram that shows where the cost goes, and the operator's details one click away. 32 rules cover SQL Server, PostgreSQL and MySQL plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
+Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 32 rules cover SQL Server, PostgreSQL and MySQL plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-dark.png">
-  <img alt="The Queries view: queries ranked by database time with trend sparklines, and the selected query's plan with an insight, a cost bar and a plan diagram" src="docs/images/queries-light.png">
+  <img alt="The Queries view: queries ranked by database time with trend sparklines, and the selected query's plan diagram, where a nested loop reading order_items 1.5 million times does 94% of the work" src="docs/images/queries-light.png">
 </picture>
 
 ### "What changed?" in one drag
@@ -131,11 +131,11 @@ Drag across the database-time chart to compare two periods. Culprit lists what g
 
 ### Compare any two plans
 
-Paste or drop a plan from anywhere (SSMS `.sqlplan`, PostgreSQL `EXPLAIN`, MySQL `EXPLAIN FORMAT=JSON`) and compare it with another. The headline says what matters: "Plan 69 is estimated 151× more expensive because it scans customers where Plan 68 seeks ix_customers_email." Every changed step is marked in both diagrams.
+Paste or drop a plan from anywhere (SSMS `.sqlplan`, PostgreSQL `EXPLAIN`, MySQL `EXPLAIN FORMAT=JSON`) and compare it with another. The headline says what matters: "Plan 13 is estimated 3.5K× more expensive because it scans orders where Plan 12 seeks orders_status_created_idx." Every changed step is marked in both diagrams.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/compare-dark.png">
-  <img alt="Two SQL Server plans side by side, with a one-sentence explanation of why one costs 151 times more and a list of the changed steps" src="docs/images/compare-light.png">
+  <img alt="Two PostgreSQL plans side by side, with a one-sentence explanation of why one costs 3,500 times more and a list of the changed steps" src="docs/images/compare-light.png">
 </picture>
 
 ### Who is blocking whom, right now
@@ -173,7 +173,7 @@ You decide what agents may do, per connection: nothing, read statistics and plan
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/agent-approval-dark.png">
-    <img alt="An approval dialog: claude-code wants to run a SELECT on a staging connection; checked as read-only, rolled back, capped at 200 rows and 30 seconds; Deny or Run once" src="docs/images/agent-approval-light.png" width="720">
+    <img alt="An approval dialog: claude-code wants to run a SELECT on a development connection; checked as read-only, rolled back, capped at 200 rows and 30 seconds; Deny or Run once" src="docs/images/agent-approval-light.png" width="720">
   </picture>
 </p>
 

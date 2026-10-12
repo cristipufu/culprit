@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Culprit SQL Studio · Find what's slowing your database down</title>
+  <meta name="description" content="Culprit SQL Studio finds the queries, indexes and settings slowing down SQL Server, PostgreSQL, MySQL and MariaDB, and tells you in one sentence what to fix. A fast desktop app, a CLI and an MCP server for coding agents. Free and open source.">
+  <link rel="canonical" href="https://culpritsql.com/">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0f0e0c" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://culpritsql.com/">
+  <meta property="og:title" content="Culprit SQL Studio · Find what's slowing your database down">
+  <meta property="og:description" content="Plain-language answers for SQL Server, PostgreSQL, MySQL and MariaDB performance. Desktop app, CLI and MCP server. Free and open source.">
+  <meta property="og:image" content="https://culpritsql.com/images/dashboard-dark.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Culprit SQL Studio",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "macOS, Windows, Linux",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "description": "Database performance investigation for SQL Server, PostgreSQL, MySQL and MariaDB: ranked findings, plans that explain themselves, live blocking and an MCP server for coding agents.",
+    "url": "https://culpritsql.com/",
+    "downloadUrl": "https://github.com/cristipufu/culprit-sql-studio/releases/latest",
+    "license": "https://opensource.org/licenses/MIT"
+  }
+  </script>
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav">
+    <div class="wrap nav-row">
+      <a class="brand" href="#top" aria-label="Culprit SQL Studio home">
+        <img src="favicon.svg" width="28" height="28" alt="">
+        <span>Culprit <b>SQL Studio</b></span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#features">Features</a>
+        <a href="#agents">Agents</a>
+        <a href="#safety">Safety</a>
+        <a href="#engines">Databases</a>
+      </nav>
+      <div class="nav-cta">
+        <a class="btn ghost small" href="https://github.com/cristipufu/culprit-sql-studio" rel="noopener">
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+          GitHub
+        </a>
+        <a class="btn primary small" href="#download">Download</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="glow" aria-hidden="true"></div>
+      <div class="wrap hero-grid">
+        <p class="eyebrow">
+          <span class="dot"></span> SQL Server · PostgreSQL · MySQL · MariaDB
+        </p>
+        <h1>Find the query that's<br>slowing your database down.</h1>
+        <p class="lede">
+          Culprit reads the statistics your database already keeps, works out where the time goes, and tells you in one
+          sentence what is wrong, what it costs and how to fix it. A fast desktop app, a CLI, and a safe way for your
+          coding agents to investigate with you.
+        </p>
+        <div class="hero-cta">
+          <a class="btn primary large" id="primary-download" href="#download" data-os-download>
+            <span class="os-icon" aria-hidden="true"></span>
+            <span data-os-label>Download Culprit</span>
+          </a>
+          <a class="btn ghost large" href="https://github.com/cristipufu/culprit-sql-studio" rel="noopener">Star on GitHub</a>
+        </div>
+        <p class="fineprint">Free and open source · macOS, Windows and Linux · 14 MB · opens in under a second</p>
+      </div>
+
+      <div class="wrap shot-wrap">
+        <figure class="window">
+          <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Culprit SQL Studio — mssql-demo</span></div>
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="images/dashboard-dark.png">
+            <img src="images/dashboard-light.png" width="2778" height="1736" alt=""Culprit's dashboard for a SQL Server database: database time over five hours with a plan change on its timeline, findings ranked by severity, the top queries, where time goes and a blocked session right now">
+          </picture>
+        </figure>
+      </div>
+    </section>
+
+    <section class="finding-demo">
+      <div class="wrap">
+        <p class="section-kicker">This is what an answer looks like</p>
+        <article class="finding-card">
+          <div class="finding-head">
+            <span class="sev">High</span>
+            <span class="share"><b>27%</b> of database time · times out on every run</span>
+          </div>
+          <h2>Repeats its read of <code>order_items</code> 1.5M times, once per row of <code>order_items</code>.</h2>
+          <dl>
+            <div><dt>Why</dt><dd>A nested loop is right for a few rows; at 1.5M repetitions one hash join over a single pass is far cheaper.</dd></div>
+            <div><dt>Fix</dt><dd>The query forces a loop join (<code>OPTION (LOOP JOIN)</code>): remove the hint and let the optimizer choose.</dd></div>
+            <div><dt>Verify</dt><dd>Run it with actual rows: a hash join, or far fewer executions of <code>order_items</code>.</dd></div>
+          </dl>
+        </article>
+        <ul class="stats" aria-label="At a glance">
+          <li><b>50</b><span>checks that find what costs time</span></li>
+          <li><b>4</b><span>database engines, one workflow</span></li>
+          <li><b>25</b><span>MCP tools for coding agents</span></li>
+          <li><b>&lt;1 s</b><span>to open, 10 ms per CLI call</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <div class="wrap">
+        <p class="section-kicker">Why Culprit</p>
+        <h2 class="section-title">An expert's afternoon of digging, done in seconds.</h2>
+        <div class="grid-3">
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🎯</div>
+            <h3>Answers, not raw numbers</h3>
+            <p>Every finding is ranked by its share of database time and comes with the evidence, a production-safe fix and a way to prove it worked.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🛡️</div>
+            <h3>Safe on production</h3>
+            <p>Scans read statistics only and never run your queries. Anything that could change data on a production database asks first.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🤖</div>
+            <h3>Built for coding agents</h3>
+            <p>An MCP server, JSON everywhere and per-connection permissions let Claude Code, Cursor or Codex investigate with you. Every call is approved and audited.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">⚡</div>
+            <h3>Fast and light</h3>
+            <p>A 14 MB native app that opens in under a second and shows the last report instantly while a fresh scan runs in the background.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🧭</div>
+            <h3>One tool, four engines</h3>
+            <p>The same views and wording on SQL Server, PostgreSQL, MySQL and MariaDB. When an engine can't show something, Culprit says why.</p>
+          </article>
+          <article class="card">
+            <div class="card-icon" aria-hidden="true">🔌</div>
+            <h3>Open and pluggable</h3>
+            <p>Add your own checks or database engines without forking. The app, the CLI and the agent tools share one Rust core.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="showcase">
+      <div class="wrap">
+        <div class="show">
+          <div class="show-text">
+            <p class="section-kicker">Findings</p>
+            <h2>Ranked by what they cost you.</h2>
+            <p>Runaway loops, missing and unused indexes, N+1 query storms, plan regressions, lock pile-ups, type mismatches that block indexes, parameter-sensitive plans, timeouts, spills to disk and more, each with the fix and how to verify it.</p>
+          </div>
+          <figure class="window small">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/findings-dark.png">
+              <img src="images/findings-light.png" loading="lazy" alt="The findings list with a finding open: its evidence, the plan's key step, the fix and how to verify it">
+            </picture>
+          </figure>
+        </div>
+        <div class="show flip">
+          <div class="show-text">
+            <p class="section-kicker">Plans</p>
+            <h2>Plans that explain themselves.</h2>
+            <p>Insights in plain words, a diagram that shows where the cost goes, and every operator's details one click away. Compare any two plans and the headline says why one is slower: "Plan 13 is estimated 3.5K× more expensive because it scans orders."</p>
+          </div>
+          <figure class="window small">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/queries-dark.png">
+              <img src="images/queries-light.png" loading="lazy" alt="A query's plan as a diagram: a nested loop reads order_items 1.5 million times and does 94% of the work">
+            </picture>
+          </figure>
+        </div>
+        <div class="show">
+          <div class="show-text">
+            <p class="section-kicker">What changed</p>
+            <h2>Drag across a chart. Get the why.</h2>
+            <p>Compare two periods and Culprit lists what got slower, what's new and what improved: "Got 293× slower at 5:00 PM, when SQL Server switched from plan 163 to plan 198."</p>
+          </div>
+          <figure class="window small">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/what-changed-dark.png">
+              <img src="images/what-changed-light.png" loading="lazy" alt="The What changed view comparing two periods, with a plan change explaining a regression">
+            </picture>
+          </figure>
+        </div>
+        <div class="show flip">
+          <div class="show-text">
+            <p class="section-kicker">Live</p>
+            <h2>Who is blocking whom, right now.</h2>
+            <p>A wall of lock waits becomes one sentence and a tree: which session holds everyone up, why, and who waits behind it. Deadlocks get the same treatment, with the pattern named and the fix spelled out.</p>
+          </div>
+          <figure class="window small">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="images/live-dark.png">
+              <img src="images/live-light.png" loading="lazy" alt="Live sessions with a blocking tree: one idle transaction holding locks that two sessions wait on">
+            </picture>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="agents" id="agents">
+      <div class="wrap agents-grid">
+        <div>
+          <p class="section-kicker">Coding agents first</p>
+          <h2 class="section-title">Let your agent investigate. Stay in control.</h2>
+          <p class="section-lede">
+            <code>culprit mcp</code> gives Claude Code, Cursor and Codex 25 tools: the dashboard, findings, plans,
+            insights, what changed, blocking, waits, index advice and verify. Every CLI command speaks JSON too.
+          </p>
+          <ul class="checks">
+            <li><b>Per-connection access.</b> Off, statistics and plans (the default), or read-only queries you approve one by one.</li>
+            <li><b>Approve the exact statement.</b> The dialog shows the SQL and what Culprit guarantees: one read-only statement, rolled back, capped rows and time.</li>
+            <li><b>Everything audited.</b> Every tool call lands in a local log you can read with <code>culprit audit</code>.</li>
+          </ul>
+        </div>
+        <div class="terminal" role="figure" aria-label="Terminal: adding Culprit to Claude Code">
+          <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>zsh</span>
+            <button class="copy" type="button" data-copy="claude mcp add culprit -- culprit mcp&#10;culprit agent init">Copy</button>
+          </div>
+<pre><code><span class="p">$</span> claude mcp add culprit -- culprit mcp
+<span class="c"># Cursor and Codex take the same command</span>
+<span class="p">$</span> culprit agent init
+<span class="c"># teaches agents in this repository to use Culprit</span>
+
+<span class="p">&gt;</span> the order report keeps timing out on staging. why?
+<span class="a">●</span> culprit.dashboard <span class="c">staging</span>
+<span class="a">●</span> culprit.findings <span class="c">staging · severity ≥ medium</span>
+<span class="a">●</span> culprit.plan_insights <span class="c">query 263</span>
+  It times out on every run (~15 s, 27% of database
+  time): its plan repeats a read of order_items 1.5M
+  times because the query forces a loop join. Removing
+  OPTION (LOOP JOIN) lets SQL Server hash-join once.</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="safety" id="safety">
+      <div class="wrap">
+        <p class="section-kicker">Safe on production</p>
+        <h2 class="section-title">Read-only by design. Careful by default.</h2>
+        <div class="grid-safety">
+          <div><h3>Reads statistics only</h3><p>Scans use catalog and statistics views with short lock timeouts. Estimated plans never execute anything.</p></div>
+          <div><h3>Production is guarded</h3><p>Statements Culprit can prove only read run read-only. Anything else on production needs an explicit confirmation.</p></div>
+          <div><h3>Fixes are suggestions</h3><p>Every fix is shown and copied, never applied, and uses online or concurrent operations where the server supports them.</p></div>
+          <div><h3>Your data stays yours</h3><p>Passwords live in the OS keychain, Entra ID uses your <code>az login</code>, and nothing about your servers leaves your machine.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="engines" id="engines">
+      <div class="wrap">
+        <p class="section-kicker">Supported databases</p>
+        <h2 class="section-title">One tool. Four engines.</h2>
+        <div class="engine-grid">
+          <article class="engine"><span class="badge ms">MS</span><h3>SQL Server</h3><p>2022 and Azure SQL Database. Query Store, plan cache, DMVs and deadlock history.</p></article>
+          <article class="engine"><span class="badge pg">Pg</span><h3>PostgreSQL</h3><p>15 to 18, including Amazon RDS. <code>pg_stat_statements</code>, statistics views and <code>EXPLAIN</code>.</p></article>
+          <article class="engine"><span class="badge my">My</span><h3>MySQL</h3><p>8.4. <code>performance_schema</code>, <code>sys</code> and <code>EXPLAIN FORMAT=JSON</code>.</p></article>
+          <article class="engine"><span class="badge ma">Ma</span><h3>MariaDB</h3><p>10.11 and 11.8. <code>performance_schema</code>, the slow query log and <code>ANALYZE FORMAT=JSON</code>.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="download" id="download">
+      <div class="glow small" aria-hidden="true"></div>
+      <div class="wrap">
+        <p class="section-kicker">Download</p>
+        <h2 class="section-title">Get Culprit SQL Studio.</h2>
+        <p class="section-lede center">Free and open source under the MIT license. Signed and notarized for macOS.</p>
+        <div class="dl-grid">
+          <article class="dl" data-os="mac">
+            <h3>macOS</h3>
+            <p>Apple silicon and Intel · macOS 11+</p>
+            <a class="btn primary" href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/Culprit-SQL-Studio-macOS.dmg">Download .dmg</a>
+          </article>
+          <article class="dl" data-os="windows">
+            <h3>Windows</h3>
+            <p>Windows 10 and 11 · x64</p>
+            <a class="btn primary" href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/Culprit-SQL-Studio-Windows-x64-setup.exe">Download installer</a>
+          </article>
+          <article class="dl" data-os="linux">
+            <h3>Linux</h3>
+            <p>x86_64 · AppImage or Debian package</p>
+            <div class="dl-pair">
+              <a class="btn primary" href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/Culprit-SQL-Studio-Linux-x86_64.AppImage">AppImage</a>
+              <a class="btn ghost" href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/Culprit-SQL-Studio-Linux-amd64.deb">.deb</a>
+            </div>
+          </article>
+        </div>
+        <div class="cli">
+          <h3>Just the CLI</h3>
+          <p>One binary for scripts, CI and agents. Download it for <a href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/culprit-cli-macos.tar.gz">macOS</a>, <a href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/culprit-cli-linux-x86_64.tar.gz">Linux</a> or <a href="https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/culprit-cli-windows-x64.zip">Windows</a>, then:</p>
+          <div class="terminal compact">
+            <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>zsh</span>
+              <button class="copy" type="button" data-copy="culprit conn add shop --url 'postgres://app@db.example.com:5432/shop'&#10;culprit dashboard shop">Copy</button>
+            </div>
+<pre><code><span class="p">$</span> culprit conn add shop --url 'postgres://app@db.example.com:5432/shop'
+<span class="p">$</span> culprit dashboard shop    <span class="c"># the database at a glance</span></code></pre>
+          </div>
+        </div>
+        <p class="fineprint center">All releases and checksums: <a href="https://github.com/cristipufu/culprit-sql-studio/releases">github.com/cristipufu/culprit-sql-studio/releases</a></p>
+      </div>
+    </section>
+
+    <section class="faq">
+      <div class="wrap narrow">
+        <h2 class="section-title">Questions</h2>
+        <details>
+          <summary>Is it really free?</summary>
+          <p>Yes. Culprit SQL Studio is open source under the MIT license: the app, the CLI and the MCP server.</p>
+        </details>
+        <details>
+          <summary>Will it change anything in my database?</summary>
+          <p>No. Scans only read statistics and catalog views. The SQL editor runs reads read-only, and anything that could change data on a production connection asks you first. Suggested fixes are shown, never applied.</p>
+        </details>
+        <details>
+          <summary>Does my data leave my machine?</summary>
+          <p>No. Culprit connects directly from your computer to your database. There is no account, no cloud service and no telemetry. Passwords stay in your operating system's keychain.</p>
+        </details>
+        <details>
+          <summary>Which coding agents work with it?</summary>
+          <p>Any agent that speaks the Model Context Protocol, including Claude Code, Cursor and Codex. Agents can also call the CLI directly, since every command has JSON output.</p>
+        </details>
+        <details>
+          <summary>Can I add my own checks?</summary>
+          <p>Yes. Checks and database engines plug in from outside without forking, and run, rank and explain exactly like the built-in ones. See the guide on GitHub.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap foot-row">
+      <a class="brand" href="#top"><img src="favicon.svg" width="22" height="22" alt=""><span>Culprit <b>SQL Studio</b></span></a>
+      <nav aria-label="Footer">
+        <a href="https://github.com/cristipufu/culprit-sql-studio" rel="noopener">GitHub</a>
+        <a href="https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/guide.md" rel="noopener">Guide</a>
+        <a href="https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/agents.md" rel="noopener">Agents</a>
+        <a href="https://github.com/cristipufu/culprit-sql-studio/releases" rel="noopener">Releases</a>
+        <a href="https://github.com/cristipufu/culprit-sql-studio/blob/main/LICENSE" rel="noopener">MIT license</a>
+      </nav>
+      <p class="muted">© 2026 Culprit SQL Studio</p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://culpritsql.com/sitemap.xml
