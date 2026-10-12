@@ -204,10 +204,10 @@ Reports are stored per connection under `~/.local/share/culprit/reports/<connect
 ```sh
 culprit digest staging                                          # latest scan vs the scan before it with the same window
 culprit scan staging --window-days 1 --json --full > report.json
-culprit digest --report report.json --since previous.json      # CI: keep report.json as the next run's previous.json
+culprit digest --report report.json --since previous-digest.json > digest.json   # CI: keep digest.json for the next run
 ```
 
-Both sides are re-checked with the current checks, so a finding means the same thing on each. `--top` caps each list (5 by default). Text in it comes from the database (table names, query handles): escape it for the place you post it.
+Keep the digest between runs, not the report: a report holds statement text and the parameter values plans were compiled for, which can include data the application sent; a digest holds finding ids, titles and severities only. Reports given to `--report` or `--since` are re-checked with the current checks, so a finding means the same thing on each side. `--top` caps each list (5 by default). Text in it comes from the database (table names, query handles): escape it for the place you post it.
 
 ## JSON shapes
 

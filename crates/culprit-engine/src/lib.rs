@@ -663,6 +663,12 @@ impl Workspace {
         };
         // The scan before, over the same window: a 7-day scan next to a 24-hour one would show findings coming and
         // going that only the window explains.
+        // A previous digest is the baseline a scheduled job keeps: it holds finding ids and titles, no statement text.
+        if let Some(path) = since
+            && let Some(previous) = read_digest(path)?
+        {
+            return Ok(culprit_checks::digest_since(&current, &previous, top));
+        }
         let previous = match (since, name, report) {
             (Some(path), _, _) => Some(self.analyze_file(path)?),
             (None, Some(name), None) => {
@@ -1149,6 +1155,19 @@ impl Workspace {
 }
 
 /// [`Workspace::drift`] for two reports already in hand (saved files, fixtures).
+/// `path` as a digest (`culprit digest` output), or `None` when it is a report or snapshot instead.
+fn read_digest(path: &std::path::Path) -> Result<Option<culprit_core::Digest>> {
+    let bytes = std::fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+    if value.get("snapshot").is_some() || value.get("counts").is_none() || value.get("findings").is_none() {
+        return Ok(None);
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(|e| Error::invalid(format!("{} is not a Culprit digest: {e}", path.display())))
+}
+
 pub fn drift_reports(a: &Report, b: &Report) -> Result<Drift> {
     let (ea, eb) = (a.snapshot.server.engine, b.snapshot.server.engine);
     if ea != eb {

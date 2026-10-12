@@ -31,7 +31,7 @@ use culprit_core::{
 pub use advisor::index_advice;
 pub use brief::agent_brief;
 pub use dashboard::dashboard;
-pub use digest::digest;
+pub use digest::{digest, digest_since};
 pub use drift::drift;
 
 struct Builtin {

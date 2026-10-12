@@ -27,6 +27,10 @@ pub struct Digest {
     pub since: Option<DigestChanges>,
     /// The findings worth a look, most important first.
     pub top: Vec<DigestFinding>,
+    /// Every finding about the database as it runs now: what the next digest compares with, so a scheduled job can
+    /// keep this digest instead of the report (which holds statement text and parameter values).
+    #[serde(default)]
+    pub findings: Vec<DigestFinding>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]

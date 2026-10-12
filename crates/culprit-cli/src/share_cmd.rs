@@ -24,7 +24,8 @@ pub struct DigestArgs {
     /// A report or snapshot file to digest instead (`culprit scan <name> --json --full > report.json`).
     #[arg(long)]
     pub report: Option<PathBuf>,
-    /// The previous report to compare with, when it isn't in this machine's history (the last run's artifact in CI).
+    /// What to compare with, when it isn't in this machine's history: the previous digest (what CI should keep between
+    /// runs: no statement text or parameter values), or a previous report or snapshot.
     #[arg(long)]
     pub since: Option<PathBuf>,
     /// How many findings each list holds at most.

@@ -31,4 +31,9 @@ since: DigestChanges | null,
 /**
  * The findings worth a look, most important first.
  */
-top: Array<DigestFinding>, };
+top: Array<DigestFinding>, 
+/**
+ * Every finding about the database as it runs now: what the next digest compares with, so a scheduled job can
+ * keep this digest instead of the report (which holds statement text and parameter values).
+ */
+findings: Array<DigestFinding>, };

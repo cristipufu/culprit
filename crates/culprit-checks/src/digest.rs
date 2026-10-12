@@ -7,21 +7,29 @@ use culprit_core::{
 /// What a report says, and what changed since `previous` (an earlier report of the same database). `top` caps every
 /// list of findings.
 pub fn digest(report: &Report, previous: Option<&Report>, top: usize) -> Digest {
+    let baseline = previous.map(|p| {
+        let findings = p.findings.iter().filter(|f| !f.inactive).map(|f| item(f, None)).collect::<Vec<_>>();
+        (p.snapshot.taken_at.clone(), findings)
+    });
+    build(report, baseline, top)
+}
+
+/// The same, compared with a previous digest instead of a report: what a scheduled job keeps between runs, since a
+/// digest holds no statement text or parameter values and a report does.
+pub fn digest_since(report: &Report, previous: &Digest, top: usize) -> Digest {
+    build(report, Some((previous.taken_at.clone(), previous.findings.clone())), top)
+}
+
+fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: usize) -> Digest {
     let board = crate::dashboard(report);
     let active: Vec<&Finding> = report.findings.iter().filter(|f| !f.inactive).collect();
     let count = |s: Severity| active.iter().filter(|f| f.severity == s).count() as u32;
-    let since = previous.map(|p| {
-        let before: Vec<&Finding> = p.findings.iter().filter(|f| !f.inactive).collect();
-        let was = |id: &str| before.iter().find(|f| f.id == id).copied();
+    let since = baseline.map(|(taken_at, before)| {
+        let was = |id: &str| before.iter().find(|f| f.id == id);
         DigestChanges {
-            taken_at: p.snapshot.taken_at.clone(),
+            taken_at,
             new: active.iter().filter(|f| was(&f.id).is_none()).take(top).map(|f| item(f, None)).collect(),
-            fixed: before
-                .iter()
-                .filter(|f| !active.iter().any(|a| a.id == f.id))
-                .take(top)
-                .map(|f| item(f, None))
-                .collect(),
+            fixed: before.iter().filter(|f| !active.iter().any(|a| a.id == f.id)).take(top).cloned().collect(),
             worse: active
                 .iter()
                 .filter_map(|f| was(&f.id).filter(|b| f.severity > b.severity).map(|b| item(f, Some(b.severity))))
@@ -47,6 +55,7 @@ pub fn digest(report: &Report, previous: Option<&Report>, top: usize) -> Digest 
         },
         since,
         top: active.iter().take(top).map(|f| item(f, None)).collect(),
+        findings: active.iter().map(|f| item(f, None)).collect(),
     }
 }
 
@@ -93,6 +102,20 @@ mod tests {
         assert!(d.since.is_none());
         assert_eq!(d.headline, r.summary.headline);
         assert!(d.database_time.is_some());
+    }
+
+    #[test]
+    fn a_previous_digest_is_as_good_a_baseline_as_its_report() {
+        let now = report();
+        let mut before = now.clone();
+        before.snapshot.taken_at = "2026-10-10T06:00:00Z".into();
+        let gone = before.findings.remove(0);
+        let from_report = digest(&now, Some(&before), 10).since.expect("changes");
+        let previous = digest(&before, None, 3);
+        assert_eq!(previous.findings.len(), before.findings.iter().filter(|f| !f.inactive).count());
+        let from_digest = digest_since(&now, &previous, 10).since.expect("changes");
+        assert_eq!(from_digest, from_report);
+        assert_eq!(from_digest.new[0].id, gone.id);
     }
 
     #[test]
