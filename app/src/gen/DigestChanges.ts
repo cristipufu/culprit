@@ -17,4 +17,9 @@ fixed: Array<DigestFinding>,
 /**
  * Active both times, more severe now.
  */
-worse: Array<DigestFinding>, };
+worse: Array<DigestFinding>, 
+/**
+ * Active both times, and what it counts since startup (lock escalations) happened again in between: each item's
+ * `count_since` says how many times.
+ */
+again: Array<DigestFinding>, };

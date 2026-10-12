@@ -37,6 +37,14 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
                 .filter_map(|f| was(&f.id).filter(|b| f.severity > b.severity).map(|b| item(f, Some(b.severity))))
                 .take(top)
                 .collect(),
+            again: active
+                .iter()
+                .filter_map(|f| {
+                    let since = counted_since(event_count(f)?, was(&f.id)?.count?);
+                    (since > 0.0).then(|| DigestFinding { count_since: Some(since), ..item(f, None) })
+                })
+                .take(top)
+                .collect(),
         }
     });
     Digest {
@@ -155,6 +163,22 @@ fn environment_name(environment: Environment) -> &'static str {
     }
 }
 
+/// What a finding counts since startup, for the findings that count events: a later digest tells from it whether
+/// they happened again.
+fn event_count(f: &Finding) -> Option<f64> {
+    let label = match f.check.as_str() {
+        "lock-escalations" => crate::signals::ESCALATIONS_METRIC,
+        _ => return None,
+    };
+    f.metrics.iter().find(|m| m.label == label).map(|m| m.value)
+}
+
+/// How many happened between two scans of a count since startup. A count lower than before was reset after the
+/// earlier scan (a restart, an index reloaded into memory), so all of it is new.
+fn counted_since(now: f64, before: f64) -> f64 {
+    if now >= before { now - before } else { now }
+}
+
 fn item(f: &Finding, was: Option<Severity>) -> DigestFinding {
     DigestFinding {
         id: f.id.clone(),
@@ -165,6 +189,8 @@ fn item(f: &Finding, was: Option<Severity>) -> DigestFinding {
         was,
         also: Vec::new(),
         detail: None,
+        count: event_count(f),
+        count_since: None,
     }
 }
 
@@ -278,6 +304,40 @@ mod tests {
         let from_digest = digest_since(&now, &previous, 10).since.expect("changes");
         assert_eq!(from_digest, from_report);
         assert_eq!(from_digest.new[0].id, gone.id);
+    }
+
+    fn with_escalations(mut r: Report, count: f64) -> Report {
+        let mut f = crate::support::finding(
+            "lock-escalations",
+            "dbo.orders",
+            culprit_core::Category::Indexes,
+            crate::support::subject(SubjectKind::Table, "dbo.orders"),
+        );
+        f.title = "Row locks on orders escalated to a lock on the whole table".into();
+        f.metrics =
+            vec![culprit_core::Metric::new(crate::signals::ESCALATIONS_METRIC, count, culprit_core::Unit::Count)];
+        r.findings.push(f);
+        r
+    }
+
+    #[test]
+    fn a_digest_says_when_a_count_since_startup_grew() {
+        let again = |now: f64, before: f64| {
+            let mut previous = with_escalations(report(), before);
+            previous.snapshot.taken_at = "2026-10-10T06:00:00Z".into();
+            let d = digest(&with_escalations(report(), now), Some(&previous), 10);
+            assert_eq!(d.findings.iter().find(|f| f.id == "lock-escalations:dbo.orders").unwrap().count, Some(now));
+            // A previous digest carries the count too.
+            let from_digest = digest_since(&with_escalations(report(), now), &digest(&previous, None, 10), 10);
+            assert_eq!(from_digest.since, d.since);
+            d.since.expect("changes").again.iter().map(|f| f.count_since).collect::<Vec<_>>()
+        };
+        assert_eq!(again(7.0, 4.0), [Some(3.0)]);
+        assert!(again(7.0, 7.0).is_empty());
+        // The counters were reset after the previous scan: every escalation counted now is new.
+        assert_eq!(again(2.0, 10.0), [Some(2.0)]);
+        // A finding without a count since startup never shows here.
+        assert!(digest(&report(), Some(&report()), 10).since.expect("changes").again.is_empty());
     }
 
     #[test]

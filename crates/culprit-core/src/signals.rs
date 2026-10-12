@@ -193,6 +193,10 @@ pub struct IndexContention {
     pub page_latch_wait_ms: f64,
     /// Row or page locks escalated to a lock on the whole table.
     pub lock_escalations: f64,
+    /// Escalations SQL Server tried, the ones that happened included: an attempt fails when another session holds a
+    /// conflicting lock on the table, and the statement keeps its row locks.
+    #[serde(default)]
+    pub lock_escalation_attempts: f64,
     pub leaf_inserts: Option<f64>,
     /// The leading key column only grows (identity or sequence), so every insert lands on the last page.
     pub sequential_key: bool,

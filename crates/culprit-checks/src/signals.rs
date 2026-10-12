@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use culprit_core::waits::category_key;
 use culprit_core::{
     Category, CheckInfo, Confidence, ConstraintIssue, ConstraintKind, Engine, FileIo, FileKind, Finding, Fix,
-    IndexStat, Metric, QueryStat, Replica, ReplicaRole, Severity, Snapshot, SubjectKind, TableStat, Unit, format,
-    signals::plan_row_bytes,
+    IndexStat, Metric, QueryRef, QueryStat, Replica, ReplicaRole, Severity, Snapshot, SubjectKind, TableStat, Unit,
+    format, signals::plan_row_bytes,
 };
 
 use crate::support::*;
@@ -933,7 +933,7 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("Average wait", avg, Unit::Ms),
             ];
             if c.lock_escalations > 0.0 {
-                f.metrics.push(Metric::new("Escalations to a table lock", c.lock_escalations, Unit::Count));
+                f.metrics.push(Metric::new(ESCALATIONS_METRIC, c.lock_escalations, Unit::Count));
             }
             f.fix = Some(Fix {
                 summary: format!(
@@ -955,6 +955,159 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
         .collect();
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
+    findings
+}
+
+// ── lock-escalations ───────────────────────────────────────────────────────────────────────────────
+
+/// The metric `lock-escalations` (and `hot-rows`) report escalations under; the digest reads it back.
+pub(crate) const ESCALATIONS_METRIC: &str = "Escalations to a table lock";
+
+/// SQL Server considers escalating once one statement holds about this many locks on one index.
+const ESCALATION_THRESHOLD: f64 = 5_000.0;
+
+pub fn lock_escalations_info() -> CheckInfo {
+    CheckInfo {
+        id: "lock-escalations".into(),
+        title: "Statements that lock a whole table".into(),
+        category: Category::Indexes,
+        engines: vec![Engine::Mssql],
+        requires: vec![],
+        description: "Tables where one statement took so many row or page locks that SQL Server replaced them with a lock on the whole table, and the attempts another session's locks stopped (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL never escalate row locks.".into(),
+    }
+}
+
+#[derive(Default)]
+struct TableEscalations {
+    escalations: f64,
+    attempts: f64,
+    lock_waits: f64,
+    lock_wait_ms: f64,
+}
+
+pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
+    let mut by_table: BTreeMap<(String, String), TableEscalations> = BTreeMap::new();
+    for i in &snapshot.indexes {
+        let Some(c) = i.contention.as_ref() else { continue };
+        if c.lock_escalations <= 0.0 && c.lock_escalation_attempts <= 0.0 {
+            continue;
+        }
+        let t = by_table.entry((i.schema.clone(), i.table.clone())).or_default();
+        t.escalations += c.lock_escalations;
+        // Attempts count the escalations that happened too; an older snapshot without attempts has the escalations.
+        t.attempts += c.lock_escalation_attempts.max(c.lock_escalations);
+        t.lock_waits += c.lock_waits();
+        t.lock_wait_ms += c.lock_wait_ms();
+    }
+    let mut findings: Vec<Finding> = by_table
+        .into_iter()
+        .map(|((schema, table), t)| {
+            let name = format!("{schema}.{table}");
+            let mut f = finding("lock-escalations", &name, Category::Indexes, subject(SubjectKind::Table, &name));
+            let failed = (t.attempts - t.escalations).max(0.0);
+            let times = |n: f64| if n == 1.0 { "once".to_string() } else { format!("{} times", format::count(n)) };
+            f.title = if t.escalations > 0.0 {
+                format!("Row locks on {table} escalated to a lock on the whole table {}", times(t.escalations))
+            } else {
+                format!("Statements on {table} took enough row locks to try locking the whole table {}", times(failed))
+            };
+            let happened = if t.escalations > 0.0 {
+                let more = match failed {
+                    0.0 => String::new(),
+                    1.0 => ", and tried once more but another session's locks stopped it".into(),
+                    n => format!(", and tried {} more times but another session's locks stopped it", format::count(n)),
+                };
+                format!(
+                    "Since its indexes were loaded into memory, SQL Server replaced the row and page locks on {table} with one lock on the whole table {}{more}.",
+                    times(t.escalations)
+                )
+            } else {
+                format!(
+                    "Since its indexes were loaded into memory, SQL Server tried {} to replace the row and page locks on {table} with one lock on the whole table, but another session's locks stopped it each time.",
+                    times(failed)
+                )
+            };
+
+            // SQL Server doesn't record which statement escalated: the writes to the table that change the most rows
+            // per run are the likely ones.
+            let mut writes: Vec<&QueryStat> = queries_touching(snapshot, &schema, &table)
+                .into_iter()
+                .filter(|q| is_write(q) && !crate::support::is_monitoring_query(q))
+                .collect();
+            let rows_per_run = |q: &QueryStat| q.rows.map(|r| per_run(r, q.executions));
+            writes.sort_by(|a, b| {
+                rows_per_run(b).unwrap_or(0.0).total_cmp(&rows_per_run(a).unwrap_or(0.0)).then(b.total_time_ms.total_cmp(&a.total_time_ms))
+            });
+            writes.truncate(3);
+            let suspects = match writes.first() {
+                Some(q) => match rows_per_run(q) {
+                    Some(rows) if rows >= ESCALATION_THRESHOLD / 5.0 => format!(
+                        " SQL Server doesn't record which statement it was; the likeliest is {}, which changes about {} rows a run.",
+                        query_handle(q),
+                        format::count(rows)
+                    ),
+                    _ => " SQL Server doesn't record which statement it was; the writes to it are listed below, and the one to look for changes thousands of rows in one run: a purge, a cascade, a backfill.".to_string(),
+                },
+                None => " SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.".to_string(),
+            };
+            f.summary = format!(
+                "{happened} That happens when one statement takes about 5,000 locks on one index: \
+                 SQL Server swaps them for a single lock on the whole table, and every other session that writes to {table}, or reads it without \
+                 row versioning, waits until that statement's transaction ends.{}{suspects}",
+                if t.escalations == 0.0 { " A failed attempt isn't free either: the statement keeps all its row locks, and SQL Server tries again every 1,250 locks." } else { "" },
+            );
+            f.queries = writes
+                .iter()
+                .map(|q| QueryRef {
+                    id: q.id.clone(),
+                    plan_node: None,
+                    note: rows_per_run(q).map(|rows| format!("Changes about {} rows a run.", format::count(rows))),
+                })
+                .collect();
+            f.last_seen = writes.first().and_then(|q| q.last_seen.clone());
+
+            let waited = t.lock_waits >= 1.0;
+            // One escalation is a lock on the whole table: every other writer waited for it, however briefly. Failed
+            // attempts locked nothing extra, but the statement behind them holds thousands of row locks and keeps trying.
+            f.severity = if t.escalations > 0.0 { Severity::High } else { Severity::Medium };
+            severity_score(&mut f);
+            f.impact.label = if t.escalations > 0.0 {
+                format!("{} table locks", format::count(t.escalations))
+            } else {
+                format!("{} attempts", format::count(failed))
+            };
+            f.confidence = Confidence::High;
+            f.metrics = vec![
+                Metric::new(ESCALATIONS_METRIC, t.escalations, Unit::Count),
+                Metric::new("Attempts another session stopped", failed, Unit::Count),
+            ];
+            if waited {
+                f.metrics.push(Metric::new("Lock waits on its indexes", t.lock_waits, Unit::Count));
+                f.metrics.push(Metric::new("Time waiting", t.lock_wait_ms, Unit::Ms));
+            }
+            let target = qualified(Engine::Mssql, &schema, &table);
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Change the statement that touches thousands of rows of {table} into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. \
+                     An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, \
+                     but other sessions then wait only for those rows, not for the whole table."
+                ),
+                sql: Some(format!(
+                    "-- One statement over every matching row escalates; 1,000 at a time doesn't\n\
+                     WHILE 1 = 1\n\
+                     BEGIN\n    \
+                         DELETE TOP (1000) FROM {target} WHERE /* the same filter */;\n    \
+                         IF @@ROWCOUNT = 0 BREAK;\n\
+                     END;"
+                )),
+                cost: None,
+            });
+            f.verify = vec![format!("Re-scan a day later: the escalation count on {table} should stop growing.")];
+            f.caveats.push("Counted since the index's metadata was loaded into memory, usually since SQL Server started.".into());
+            f
+        })
+        .collect();
+    findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score).then(a.id.cmp(&b.id)));
     findings
 }
 
@@ -1727,6 +1880,97 @@ mod tests {
         let page = last_page_insert(&s);
         assert_eq!(page[0].title, format!("Inserts into {table} queue for the last page of {index}"));
         assert!(page[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("OPTIMIZE_FOR_SEQUENTIAL_KEY = ON"));
+    }
+
+    fn escalating(escalations: f64, attempts: f64, lock_wait_ms: f64) -> IndexContention {
+        IndexContention {
+            lock_escalations: escalations,
+            lock_escalation_attempts: attempts,
+            row_lock_waits: if lock_wait_ms > 0.0 { 10.0 } else { 0.0 },
+            row_lock_wait_ms: lock_wait_ms,
+            ..Default::default()
+        }
+    }
+
+    /// The demo with no contention anywhere but on `dbo.<table>`'s two indexes.
+    fn escalations_on(table: &str, first: IndexContention, second: IndexContention) -> Snapshot {
+        let mut s = snapshot_with(Engine::Mssql);
+        s.indexes.iter_mut().for_each(|i| i.contention = None);
+        let mut a = s.indexes[0].clone();
+        a.schema = "dbo".into();
+        a.table = table.into();
+        a.name = format!("pk_{table}");
+        a.contention = Some(first);
+        let mut b = a.clone();
+        b.name = format!("ix_{table}_created_at");
+        b.contention = Some(second);
+        s.indexes.extend([a, b]);
+        s
+    }
+
+    #[test]
+    fn lock_escalations_add_up_per_table_and_name_the_write_that_changes_the_most_rows() {
+        let mut s = escalations_on("orders", escalating(3.0, 6.0, 30_000.0), escalating(2.0, 3.0, 0.0));
+        let q = first_query(&mut s);
+        q.text = "DELETE FROM dbo.orders WHERE created_at < @P1".into();
+        q.plan = None;
+        q.executions = 4.0;
+        q.rows = Some(40_000.0);
+        let id = q.id.clone();
+        let f = lock_escalations(&s);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].id, "lock-escalations:dbo.orders");
+        assert_eq!(f[0].title, "Row locks on orders escalated to a lock on the whole table 5 times");
+        assert!(
+            f[0].summary.contains("and tried 4 more times but another session's locks stopped it."),
+            "{}",
+            f[0].summary
+        );
+        assert!(
+            f[0].summary.contains("the likeliest is a delete from orders, which changes about 10K rows a run."),
+            "{}",
+            f[0].summary
+        );
+        assert_eq!(f[0].queries[0].id, id);
+        assert_eq!(f[0].severity, Severity::High);
+        assert_eq!(f[0].metrics[0].label, ESCALATIONS_METRIC);
+        assert_eq!(f[0].metrics[0].value, 5.0);
+        assert!(f[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("DELETE TOP (1000) FROM [dbo].[orders]"));
+    }
+
+    #[test]
+    fn lock_escalation_attempts_alone_are_a_finding() {
+        let s = escalations_on("audit_archive", escalating(0.0, 7.0, 0.0), IndexContention::default());
+        let f = lock_escalations(&s);
+        assert_eq!(
+            f[0].title,
+            "Statements on audit_archive took enough row locks to try locking the whole table 7 times"
+        );
+        assert_eq!(f[0].severity, Severity::Medium);
+        assert!(f[0].summary.contains("A failed attempt isn't free"));
+        // No statement in the history writes to it.
+        assert!(f[0].summary.contains("none of the statements in the query history writes to it"), "{}", f[0].summary);
+        assert!(f[0].queries.is_empty());
+    }
+
+    #[test]
+    fn lock_escalations_need_an_escalation_or_an_attempt() {
+        let s = escalations_on("orders", escalating(0.0, 0.0, 90_000.0), IndexContention::default());
+        assert!(lock_escalations(&s).is_empty());
+        // A snapshot from before attempts were collected still counts its escalations as attempts.
+        let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        let f = lock_escalations(&s);
+        assert_eq!(f[0].title, "Row locks on orders escalated to a lock on the whole table 2 times");
+        assert!(!f[0].summary.contains("tried"));
+        assert_eq!(f[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn a_single_lock_escalation_is_high() {
+        let s = escalations_on("orders", escalating(1.0, 1.0, 0.0), IndexContention::default());
+        let f = lock_escalations(&s);
+        assert_eq!(f[0].title, "Row locks on orders escalated to a lock on the whole table once");
+        assert_eq!(f[0].severity, Severity::High);
     }
 
     #[test]

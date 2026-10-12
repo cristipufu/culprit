@@ -418,6 +418,53 @@
       ]
     },
     {
+      "category": "indexes",
+      "caveats": [
+        "Counted since the index's metadata was loaded into memory, usually since SQL Server started."
+      ],
+      "check": "lock-escalations",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "-- One statement over every matching row escalates; 1,000 at a time doesn't\nWHILE 1 = 1\nBEGIN\n    DELETE TOP (1000) FROM [shop].[support_tickets] WHERE /* the same filter */;\n    IF @@ROWCOUNT = 0 BREAK;\nEND;",
+        "summary": "Change the statement that touches thousands of rows of support_tickets into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, but other sessions then wait only for those rows, not for the whole table."
+      },
+      "id": "lock-escalations:shop.support_tickets",
+      "impact": {
+        "db_time_share": null,
+        "label": "5 table locks",
+        "score": 45.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Escalations to a table lock",
+          "text": null,
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "label": "Attempts another session stopped",
+          "text": null,
+          "unit": "count",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "high",
+      "subject": {
+        "kind": "table",
+        "name": "shop.support_tickets"
+      },
+      "summary": "Since its indexes were loaded into memory, SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times. That happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
+      "title": "Row locks on support_tickets escalated to a lock on the whole table 5 times",
+      "verify": [
+        "Re-scan a day later: the escalation count on support_tickets should stop growing."
+      ]
+    },
+    {
       "category": "queries",
       "caveats": [
         "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
@@ -7952,7 +7999,7 @@
     "by_category": [
       {
         "category": "indexes",
-        "count": 10
+        "count": 11
       },
       {
         "category": "queries",
@@ -7969,7 +8016,7 @@
     ],
     "by_severity": [
       {
-        "count": 5,
+        "count": 6,
         "severity": "high"
       },
       {
@@ -7981,8 +8028,8 @@
         "severity": "low"
       }
     ],
-    "headline": "31 opportunities. The top ones touch 61% of database time over the last 5 hours.",
-    "opportunities": 31,
+    "headline": "32 opportunities. The top ones touch 61% of database time over the last 5 hours.",
+    "opportunities": 32,
     "top_share": 0.6085676171963393
   }
 }

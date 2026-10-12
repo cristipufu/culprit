@@ -486,6 +486,16 @@
   },
   {
     "category": "indexes",
+    "description": "Tables where one statement took so many row or page locks that SQL Server replaced them with a lock on the whole table, and the attempts another session's locks stopped (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL never escalate row locks.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "lock-escalations",
+    "requires": [],
+    "title": "Statements that lock a whole table"
+  },
+  {
+    "category": "indexes",
     "description": "Indexes keyed on an ever-increasing value (identity, sequence, insert time) where concurrent inserts wait for the latch on the last page (PAGELATCH_EX).",
     "engines": [
       "mssql"

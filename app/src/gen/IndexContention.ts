@@ -11,7 +11,12 @@ page_latch_waits: number, page_latch_wait_ms: number,
 /**
  * Row or page locks escalated to a lock on the whole table.
  */
-lock_escalations: number, leaf_inserts: number | null, 
+lock_escalations: number, 
+/**
+ * Escalations SQL Server tried, the ones that happened included: an attempt fails when another session holds a
+ * conflicting lock on the table, and the statement keeps its row locks.
+ */
+lock_escalation_attempts: number, leaf_inserts: number | null, 
 /**
  * The leading key column only grows (identity or sequence), so every insert lands on the last page.
  */

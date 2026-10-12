@@ -92,6 +92,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Builtin { info: signals::lock_time_info, run: signals::lock_time },
         Builtin { info: signals::big_result_info, run: signals::big_result },
         Builtin { info: signals::hot_rows_info, run: signals::hot_rows },
+        Builtin { info: signals::lock_escalations_info, run: signals::lock_escalations },
         Builtin { info: signals::last_page_insert_info, run: signals::last_page_insert },
         Builtin { info: signals::untrusted_constraint_info, run: signals::untrusted_constraint },
         Builtin { info: signals::missing_histogram_info, run: signals::missing_histogram },

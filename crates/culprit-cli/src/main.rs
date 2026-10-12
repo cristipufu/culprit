@@ -126,7 +126,8 @@ enum Command {
     /// Exits 2 when a finding you named is still present.
     Verify(share_cmd::VerifyArgs),
     /// A scan in a few facts, as JSON for a scheduled job to format and post: what the database looks like, what changed
-    /// since the previous digest (new, fixed and worse findings) and the findings worth a look. Compares the latest two
+    /// since the previous digest (new, fixed and worse findings, and lock escalations that happened again) and the findings
+    /// worth a look. Compares the latest two
     /// scans of a connection, or the report files given (no database access).
     Digest(share_cmd::DigestArgs),
     /// A finding (--finding <id>) or the whole latest scan as Markdown for a pull request, or a self-contained HTML page

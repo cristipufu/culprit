@@ -241,6 +241,7 @@ Time and reads say where the work is; these say what else a statement, file or t
 | Storage latency (`slow-storage`) | `dm_io_virtual_file_stats` per file, this database and tempdb | `pg_stat_io` by object (16+), `pg_stat_database` read time before; needs `track_io_timing` | `file_summary_by_instance` per file (performance_schema) |
 | Connection churn (`connection-churn`) | Logins/sec and pooled reuse (Connection Reset) | sessions, length and abandoned, 14+ | Connections, threads created, aborted connects |
 | Hot rows (`hot-rows`, `last-page-insert`) | `dm_db_index_operational_stats` lock and latch waits per index; sequential keys and OPTIMIZE_FOR_SEQUENTIAL_KEY | — | per statement via lock time |
+| Lock escalations (`lock-escalations`) | `dm_db_index_operational_stats` escalations and attempts per table, with the writes to it that change the most rows per run | never escalates | never escalates |
 | Untrusted constraints (`untrusted-constraint`) | WITH NOCHECK or disabled FKs and checks | CHECK constraints added NOT VALID | not used by the optimizer |
 | Missing histograms (`missing-histogram`) | — | — | heavy filters on columns with no leading index and no histogram (COLUMN_STATISTICS, `mysql.column_stats`), noting EXPLAIN's 10% / 33% guesses |
 | HOT updates and bloat (`hot-updates`, `table-bloat`) | — | `n_tup_hot_upd`, `n_tup_newpage_upd` (16+), fillfactor; bloat estimated from pg_stats | — |

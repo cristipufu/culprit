@@ -72,6 +72,10 @@ pub struct DigestChanges {
     pub fixed: Vec<DigestFinding>,
     /// Active both times, more severe now.
     pub worse: Vec<DigestFinding>,
+    /// Active both times, and what it counts since startup (lock escalations) happened again in between: each item's
+    /// `count_since` says how many times.
+    #[serde(default)]
+    pub again: Vec<DigestFinding>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -93,6 +97,13 @@ pub struct DigestFinding {
     /// In `top` only: the finding in full, as the app shows it, with literal values redacted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<DigestDetail>,
+    /// For a finding about events counted since startup (lock escalations): the count at this scan, which the next
+    /// digest compares with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<f64>,
+    /// In `since.again` only: how many happened since the previous digest's scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_since: Option<f64>,
 }
 
 /// A finding in full, in the app's order: what's happening, the numbers, the queries and where their plans spend,

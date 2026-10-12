@@ -166,7 +166,8 @@ SELECT OBJECT_SCHEMA_NAME(s.object_id) AS schema_name, OBJECT_NAME(s.object_id) 
   SUM(s.row_lock_wait_count) AS row_lock_waits, SUM(s.row_lock_wait_in_ms) AS row_lock_ms,
   SUM(s.page_lock_wait_count) AS page_lock_waits, SUM(s.page_lock_wait_in_ms) AS page_lock_ms,
   SUM(s.page_latch_wait_count) AS latch_waits, SUM(s.page_latch_wait_in_ms) AS latch_ms,
-  SUM(s.index_lock_promotion_count) AS escalations, SUM(s.leaf_insert_count) AS leaf_inserts,
+  SUM(s.index_lock_promotion_count) AS escalations, SUM(s.index_lock_promotion_attempt_count) AS escalation_attempts,
+  SUM(s.leaf_insert_count) AS leaf_inserts,
   MAX(CASE WHEN c.is_identity = 1 OR d.definition LIKE '%NEXT VALUE FOR%' OR d.definition LIKE '%newsequentialid%'
             OR d.definition LIKE '%getdate()%' OR d.definition LIKE '%getutcdate()%' OR d.definition LIKE '%sysdatetime%'
             OR d.definition LIKE '%sysutcdatetime%' THEN 1 ELSE 0 END) AS sequential,
@@ -179,12 +180,13 @@ LEFT JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.colum
 LEFT JOIN sys.default_constraints d ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
 WHERE i.name IS NOT NULL
 GROUP BY s.object_id, i.name
-HAVING SUM(s.row_lock_wait_count + s.page_lock_wait_count + s.page_latch_wait_count + s.index_lock_promotion_count) > 0
+HAVING SUM(s.row_lock_wait_count + s.page_lock_wait_count + s.page_latch_wait_count + s.index_lock_promotion_count
+  + s.index_lock_promotion_attempt_count) > 0
 "#
     )
 }
 
-/// Row and page lock waits, page latch waits and escalations per index since its metadata was loaded.
+/// Row and page lock waits, page latch waits and escalations (and attempts) per index since its metadata was loaded.
 async fn contention(client: &mut MsClient, major: u32) -> tiberius::Result<HashMap<IndexKey, IndexContention>> {
     // OPTIMIZE_FOR_SEQUENTIAL_KEY is a SQL Server 2019 (15) option.
     let rows = match query(client, &contention_sql(major >= 15)).await {
@@ -208,6 +210,7 @@ async fn contention(client: &mut MsClient, major: u32) -> tiberius::Result<HashM
                 page_latch_waits: r.f64_or_zero("latch_waits"),
                 page_latch_wait_ms: r.f64_or_zero("latch_ms"),
                 lock_escalations: r.f64_or_zero("escalations"),
+                lock_escalation_attempts: r.f64_or_zero("escalation_attempts"),
                 leaf_inserts: r.f64("leaf_inserts"),
                 sequential_key: r.f64_or_zero("sequential") > 0.0,
                 optimize_for_sequential_key: r.f64("optimize_sequential").map(|v| v > 0.0),

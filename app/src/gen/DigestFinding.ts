@@ -26,4 +26,13 @@ also?: Array<string>,
 /**
  * In `top` only: the finding in full, as the app shows it, with literal values redacted.
  */
-detail?: DigestDetail | null, };
+detail?: DigestDetail | null, 
+/**
+ * For a finding about events counted since startup (lock escalations): the count at this scan, which the next
+ * digest compares with.
+ */
+count?: number | null, 
+/**
+ * In `since.again` only: how many happened since the previous digest's scan.
+ */
+count_since?: number | null, };
