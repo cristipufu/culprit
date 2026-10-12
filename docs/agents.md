@@ -197,6 +197,18 @@ culprit findings staging --format md                      # markdown table for a
 
 Reports are stored per connection under `~/.local/share/culprit/reports/<connection>/` (or `$CULPRIT_HOME/reports/`).
 
+### A scheduled digest
+
+`culprit digest` turns a scan into a few facts for a job to post (Slack, Teams, an issue): counts by severity, database time and its trend, what changed since the previous digest (`new`, `fixed`, and `worse` with the severity it `was`), and the top findings with their ids. It is always JSON, and it reads saved reports only, never the database; formatting is the consumer's job.
+
+```sh
+culprit digest staging                                          # latest scan vs the scan before it with the same window
+culprit scan staging --window-days 1 --json --full > report.json
+culprit digest --report report.json --since previous.json      # CI: keep report.json as the next run's previous.json
+```
+
+Both sides are re-checked with the current checks, so a finding means the same thing on each. `--top` caps each list (5 by default). Text in it comes from the database (table names, query handles): escape it for the place you post it.
+
 ## JSON shapes
 
 The types are generated from the Rust model into `app/src/gen/*.ts` and are the reference: `Report`, `Finding`, `Snapshot`, `QueryStat`, `Plan`, `PlanNode`, `ServerInfo`, `LiveState`, `ResultSet`.

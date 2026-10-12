@@ -635,6 +635,49 @@ impl Workspace {
         reports::list(&self.paths.reports_dir(name))
     }
 
+    /// The digest of a scan: `report` (a report or snapshot file) or the connection's latest saved scan, compared with
+    /// `since` (a file) or the saved scan before it. Both are re-checked with the current checks, so a finding means
+    /// the same thing on each side.
+    pub fn digest(
+        &self,
+        name: Option<&str>,
+        report: Option<&std::path::Path>,
+        since: Option<&std::path::Path>,
+        top: usize,
+    ) -> Result<culprit_core::Digest> {
+        let recheck = |r: Report| culprit_checks::analyze_with(r.snapshot, &self.extra_checks);
+        let load = |name: &str, id: &str| reports::load(&self.paths.reports_dir(name).join(format!("{id}.json")));
+        let current = match (report, name) {
+            (Some(path), _) => self.analyze_file(path)?,
+            (None, Some(name)) => {
+                let latest = reports::list(&self.paths.reports_dir(name))?.into_iter().next().ok_or_else(|| {
+                    Error::not_found(format!("No saved report for '{name}'"))
+                        .with_hint(format!("Run `culprit scan {name}` first"))
+                })?;
+                recheck(load(name, &latest.id)?)
+            }
+            (None, None) => {
+                return Err(Error::invalid("Name a connection or pass --report <file>")
+                    .with_hint("culprit digest shop, or culprit digest --report report.json --since previous.json"));
+            }
+        };
+        // The scan before, over the same window: a 7-day scan next to a 24-hour one would show findings coming and
+        // going that only the window explains.
+        let previous = match (since, name, report) {
+            (Some(path), _, _) => Some(self.analyze_file(path)?),
+            (None, Some(name), None) => {
+                let history = reports::list(&self.paths.reports_dir(name))?;
+                let window = history.first().and_then(|r| r.window_days);
+                match history.iter().skip(1).find(|r| r.window_days == window) {
+                    Some(summary) => Some(recheck(load(name, &summary.id)?)),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        Ok(culprit_checks::digest(&current, previous.as_ref(), top))
+    }
+
     /// The index advisor's plan for a connection, from its latest saved report re-checked with the current checks (so
     /// advice from an older report still links to today's findings).
     pub fn index_advice(&self, name: &str) -> Result<culprit_core::IndexAdvice> {

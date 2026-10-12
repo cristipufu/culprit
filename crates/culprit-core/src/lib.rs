@@ -7,6 +7,7 @@ pub mod cloud;
 pub mod connection;
 pub mod dashboard;
 pub mod deadlock;
+pub mod digest;
 pub mod drift;
 pub mod error;
 pub mod events;
@@ -35,6 +36,7 @@ pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, Ti
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
 };
+pub use digest::{Digest, DigestChanges, DigestCounts, DigestFinding};
 pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
 pub use error::{Error, ErrorCode, Result};
 pub use events::{ChangeEvent, EventAction, EventKind, EventLink, EventSource};

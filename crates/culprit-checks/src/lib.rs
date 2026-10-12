@@ -5,6 +5,7 @@ mod config;
 mod config_health;
 pub mod dashboard;
 mod deadlocks;
+mod digest;
 pub mod drift;
 mod index_health;
 mod indexes;
@@ -30,6 +31,7 @@ use culprit_core::{
 pub use advisor::index_advice;
 pub use brief::agent_brief;
 pub use dashboard::dashboard;
+pub use digest::digest;
 pub use drift::drift;
 
 struct Builtin {

@@ -18,6 +18,21 @@ pub struct VerifyArgs {
 }
 
 #[derive(Args)]
+pub struct DigestArgs {
+    /// The saved connection whose latest scan to digest, compared with the scan before it.
+    pub connection: Option<String>,
+    /// A report or snapshot file to digest instead (`culprit scan <name> --json --full > report.json`).
+    #[arg(long)]
+    pub report: Option<PathBuf>,
+    /// The previous report to compare with, when it isn't in this machine's history (the last run's artifact in CI).
+    #[arg(long)]
+    pub since: Option<PathBuf>,
+    /// How many findings each list holds at most.
+    #[arg(long, default_value_t = 5)]
+    pub top: usize,
+}
+
+#[derive(Args)]
 pub struct ExportArgs {
     pub connection: String,
     /// One finding by id; omit for every finding of the latest scan.
@@ -32,6 +47,13 @@ pub struct ExportArgs {
     /// Write to this file instead of standard output.
     #[arg(long, short = 'o')]
     pub out: Option<PathBuf>,
+}
+
+/// Always JSON: the digest is data for a consumer (a pipeline, a bot) that decides how to show it.
+pub fn digest(ws: &Workspace, args: DigestArgs, out: &Out) -> Result<u8> {
+    let d = ws.digest(args.connection.as_deref(), args.report.as_deref(), args.since.as_deref(), args.top)?;
+    out.value(&serde_json::to_value(&d).map_err(|e| Error::internal(e.to_string()))?);
+    Ok(0)
 }
 
 /// Re-scan and report each finding as fixed, still present or can't tell, plus new findings. Exits 2 when a finding

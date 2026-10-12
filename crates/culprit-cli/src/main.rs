@@ -125,6 +125,10 @@ enum Command {
     /// Did the fix work? Re-scan and report each finding as fixed, still present or can't tell, plus new findings.
     /// Exits 2 when a finding you named is still present.
     Verify(share_cmd::VerifyArgs),
+    /// A scan in a few facts, as JSON for a scheduled job to format and post: what the database looks like, what changed
+    /// since the previous digest (new, fixed and worse findings) and the findings worth a look. Compares the latest two
+    /// scans of a connection, or the report files given (no database access).
+    Digest(share_cmd::DigestArgs),
     /// A finding (--finding <id>) or the whole latest scan as Markdown for a pull request, or a self-contained HTML page
     /// (--html). Literal values are redacted unless --no-redact; connection names and hosts are never included.
     Export(share_cmd::ExportArgs),
@@ -596,6 +600,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         Command::Plan(command) => plan_cmd::run(&ws, command, out).await,
         Command::Waits(args) => waits_cmd::run(&ws, args, out).await,
         Command::Verify(args) => share_cmd::verify(&ws, args, out).await,
+        Command::Digest(args) => share_cmd::digest(&ws, args, out),
         Command::Export(args) => share_cmd::export(&ws, args),
         Command::Live(args) => {
             let target = match (args.cancel, args.kill) {
