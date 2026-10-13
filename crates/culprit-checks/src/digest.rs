@@ -1,27 +1,29 @@
 //! The digest: one report, compared with the previous one when there is one, in the few facts a scheduled job posts.
 
 use culprit_core::{
-    Digest, DigestChanges, DigestCounts, DigestDay, DigestFinding, Environment, Finding, Report, Severity, SubjectKind,
-    Workload, format,
+    CandidateSource, CleanupKind, DeadlockPattern, Digest, DigestChanges, DigestCounts, DigestDay,
+    DigestDeadlockPattern, DigestDeadlocks, DigestFinding, DigestIndexAdvice, DigestIndexCreate, DigestIndexDrop,
+    DigestTopQuery, Environment, Finding, Report, Severity, SubjectKind, Workload, format,
 };
 
 /// What a report says, and what changed since `previous` (an earlier report of the same database). `top` caps every
-/// list of findings.
-pub fn digest(report: &Report, previous: Option<&Report>, top: usize) -> Digest {
+/// list of findings, index advice and deadlock patterns; `top_queries` is how many of the heaviest queries to list.
+pub fn digest(report: &Report, previous: Option<&Report>, top: usize, top_queries: usize) -> Digest {
     let baseline = previous.map(|p| {
         let findings = p.findings.iter().filter(|f| !f.inactive).map(|f| item(f, None)).collect::<Vec<_>>();
         (p.snapshot.taken_at.clone(), findings)
     });
-    build(report, baseline, top)
+    build(report, baseline, top, top_queries)
 }
 
 /// The same, compared with a previous digest instead of a report: what a scheduled job keeps between runs, since a
 /// digest holds no statement text or parameter values and a report does.
-pub fn digest_since(report: &Report, previous: &Digest, top: usize) -> Digest {
-    build(report, Some((previous.taken_at.clone(), previous.findings.clone())), top)
+pub fn digest_since(report: &Report, previous: &Digest, top: usize, top_queries: usize) -> Digest {
+    build(report, Some((previous.taken_at.clone(), previous.findings.clone())), top, top_queries)
 }
 
-fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: usize) -> Digest {
+fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: usize, top_queries: usize) -> Digest {
+    let previous_at = baseline.as_ref().map(|(at, _)| at.clone());
     let board = crate::dashboard(report);
     let day = report.snapshot.workload.as_ref().and_then(day_over_day);
     let active: Vec<&Finding> = report.findings.iter().filter(|f| !f.inactive).collect();
@@ -67,6 +69,238 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         since,
         top: grouped(&active, top),
         findings: active.iter().map(|f| item(f, None)).collect(),
+        top_queries: heaviest_queries(report, &active, top_queries),
+        index_advice: Some(index_advice(report, &active, top)),
+        deadlocks: Some(deadlocks(report, previous_at.as_deref(), top)),
+    }
+}
+
+/// A statement this long is cut: enough to recognise it in a chat message, where the label says what it does.
+const STATEMENT_CHARS: usize = 160;
+
+/// `text` on one line, cut at `STATEMENT_CHARS` with an ellipsis.
+fn one_line(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= STATEMENT_CHARS {
+        return flat;
+    }
+    let cut: String = flat.chars().take(STATEMENT_CHARS - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// The `n` application queries that used the most database time over the window, as the dashboard ranks them, each
+/// with the findings about it.
+fn heaviest_queries(report: &Report, active: &[&Finding], n: usize) -> Vec<DigestTopQuery> {
+    let s = &report.snapshot;
+    let Some(w) = &s.workload else { return Vec::new() };
+    let mut queries: Vec<_> = crate::support::app_queries(s).filter(|q| q.total_time_ms > 0.0).collect();
+    queries.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
+    queries
+        .into_iter()
+        .take(n)
+        .map(|q| DigestTopQuery {
+            id: q.id.clone(),
+            label: crate::support::query_handle(q),
+            statement: one_line(&q.text),
+            tables: culprit_core::sql::tables_in(&q.text, s.server.engine),
+            object: q.object_name.clone(),
+            db_time_share: (w.total_time_ms > 0.0).then(|| (q.total_time_ms / w.total_time_ms).min(1.0)),
+            total_ms: q.total_time_ms,
+            runs: q.executions,
+            mean_ms: q.mean_time_ms,
+            stopped: crate::query_stopped(s, q).is_some(),
+            findings: active
+                .iter()
+                .filter(|f| {
+                    (f.subject.kind == SubjectKind::Query && f.subject.name == q.id)
+                        || f.queries.iter().any(|r| r.id == q.id)
+                })
+                .map(|f| f.id.clone())
+                .collect(),
+        })
+        .collect()
+}
+
+/// The index advisor's plan, capped at `top` per list, with Azure SQL's own recommendations after it: only those its
+/// tuning check kept as findings, which it already set aside when the optimizer asks for the same index, an index
+/// already serves it, or another finding already says to drop it.
+fn index_advice(report: &Report, active: &[&Finding], top: usize) -> DigestIndexAdvice {
+    let advice = crate::index_advice(report);
+    let mut create: Vec<DigestIndexCreate> = advice
+        .candidates
+        .iter()
+        .map(|c| DigestIndexCreate {
+            table: format!("{}.{}", c.schema, c.table),
+            keys: c.keys.clone(),
+            include: c.include.clone(),
+            source: match c.source {
+                CandidateSource::Optimizer => "optimizer",
+                CandidateSource::PlanScan => "plan-scan",
+                CandidateSource::ForeignKey => "foreign-key",
+            }
+            .to_string(),
+            reason: c.reason.clone(),
+            db_time_share: c.db_time_share,
+            sql: c.sql.clone(),
+            finding: c.finding_id.clone(),
+        })
+        .collect();
+    let mut drop: Vec<DigestIndexDrop> = advice
+        .cleanups
+        .iter()
+        .map(|c| DigestIndexDrop {
+            kind: match c.kind {
+                CleanupKind::Unused => "unused",
+                CleanupKind::Duplicate => "duplicate",
+                CleanupKind::Prefix => "prefix",
+                CleanupKind::Overlap => "overlap",
+            }
+            .to_string(),
+            table: format!("{}.{}", c.schema, c.table),
+            index: c.index.clone(),
+            keys: c.keys.clone(),
+            other: c.other.clone(),
+            size_bytes: c.size_bytes,
+            reason: c.reason.clone(),
+            sql: c.sql.clone(),
+            finding: c.finding_id.clone(),
+        })
+        .collect();
+    let kept = |id: &str| active.iter().find(|f| f.id == id);
+    let recommendations = report.snapshot.tuning.iter().flat_map(|t| &t.recommendations);
+    for r in recommendations {
+        let Some(ix) = &r.index else { continue };
+        let table = format!("{}.{}", ix.schema, ix.table);
+        let score = r.score.map(|s| format!(", scoring it {s:.0} out of 100")).unwrap_or_default();
+        if r.kind.eq_ignore_ascii_case("CreateIndex") {
+            let Some(f) = kept(&format!("tuning-advice:create-index:{table}({})", ix.columns.join(","))) else {
+                continue;
+            };
+            create.push(DigestIndexCreate {
+                table,
+                keys: ix.columns.clone(),
+                include: ix.include.clone(),
+                source: "azure".into(),
+                reason: format!("Azure SQL Database's automatic tuning recommends it{score}."),
+                db_time_share: None,
+                sql: r.script.clone(),
+                finding: Some(f.id.clone()),
+            });
+        } else if r.kind.eq_ignore_ascii_case("DropIndex") {
+            let Some(name) = &ix.name else { continue };
+            let Some(f) = kept(&format!("tuning-advice:drop-index:{table}.{name}")) else { continue };
+            let existing = report.snapshot.indexes.iter().find(|i| {
+                i.schema.eq_ignore_ascii_case(&ix.schema)
+                    && i.table.eq_ignore_ascii_case(&ix.table)
+                    && i.name.eq_ignore_ascii_case(name)
+            });
+            drop.push(DigestIndexDrop {
+                kind: "azure".into(),
+                table,
+                index: name.clone(),
+                keys: existing.map(|i| i.key_names().into_iter().map(String::from).collect()).unwrap_or_default(),
+                other: None,
+                size_bytes: existing.and_then(|i| i.size_bytes),
+                reason: format!("Azure SQL Database's automatic tuning recommends dropping it{score}."),
+                sql: f.fix.as_ref().and_then(|x| x.sql.clone()),
+                finding: Some(f.id.clone()),
+            });
+        }
+    }
+    let (create_total, drop_total) = (create.len() as u32, drop.len() as u32);
+    create.truncate(top);
+    drop.truncate(top);
+    DigestIndexAdvice { create, create_total, drop, drop_total, counters: advice.counters, notes: advice.notes }
+}
+
+fn pattern_name(p: DeadlockPattern) -> &'static str {
+    match p {
+        DeadlockPattern::KeyLookup => "key-lookup",
+        DeadlockPattern::LockConversion => "lock-conversion",
+        DeadlockPattern::OppositeOrder => "opposite-order",
+        DeadlockPattern::LockEscalation => "lock-escalation",
+        DeadlockPattern::Parallelism => "parallelism",
+        DeadlockPattern::Cycle => "cycle",
+    }
+}
+
+/// The scan's deadlocks, one entry per pattern on the same tables, and how many came after `previous_at` (the
+/// previous digest's scan). Without graphs to read (Postgres keeps a counter only, a permission is missing) the count
+/// is `None` and the note says why, rather than reporting none.
+fn deadlocks(report: &Report, previous_at: Option<&str>, top: usize) -> DigestDeadlocks {
+    let s = &report.snapshot;
+    let Some(d) = &s.deadlocks else {
+        let why = s.notes.iter().find(|n| n.collector == "deadlocks").map(|n| n.message.clone());
+        return DigestDeadlocks {
+            note: Some(why.unwrap_or_else(|| {
+                "This scan has no deadlocks to read: the engine doesn't expose them to Culprit.".into()
+            })),
+            ..DigestDeadlocks::default()
+        };
+    };
+    let unknown = d.deadlocks.is_empty() && (d.counted.is_some() || d.note.is_some());
+    let at = |t: &Option<String>| t.as_deref().and_then(format::epoch_seconds);
+    let after = previous_at.and_then(format::epoch_seconds);
+    let mut groups: Vec<DigestDeadlockPattern> = Vec::new();
+    // Most recent first, so each group's first deadlock is its latest.
+    for dl in &d.deadlocks {
+        let mut tables = dl.objects.clone();
+        tables.sort();
+        let name = pattern_name(dl.pattern);
+        if let Some(g) = groups.iter_mut().find(|g| g.pattern == name && g.tables == tables) {
+            g.count += 1;
+            if at(&dl.at) > at(&g.latest_at) {
+                g.latest_at = dl.at.clone();
+            }
+            continue;
+        }
+        let mut statements: Vec<String> = Vec::new();
+        for p in &dl.processes {
+            if let Some(text) = p.statement.as_deref().map(one_line).filter(|t| !t.is_empty())
+                && !statements.contains(&text)
+                && statements.len() < 2
+            {
+                statements.push(text);
+            }
+        }
+        let mut lock_modes: Vec<String> = Vec::new();
+        for mode in dl.processes.iter().filter_map(|p| p.wait_mode.clone()) {
+            if !lock_modes.contains(&mode) {
+                lock_modes.push(mode);
+            }
+        }
+        groups.push(DigestDeadlockPattern {
+            pattern: name.into(),
+            label: dl.pattern.label().into(),
+            count: 1,
+            latest_at: dl.at.clone(),
+            tables,
+            statements,
+            lock_modes,
+            headline: dl.headline.clone(),
+            fix: dl.fixes.first().map(|f| f.title.clone()),
+        });
+    }
+    groups.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| at(&b.latest_at).partial_cmp(&at(&a.latest_at)).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    groups.truncate(top);
+    DigestDeadlocks {
+        count: (!unknown).then_some(d.deadlocks.len() as u32),
+        counted: d.counted,
+        counted_since: d.counted_since.clone(),
+        since_hours: Some(d.since_hours),
+        source: Some(d.source.clone()).filter(|s| !s.is_empty()),
+        latest_at: d.deadlocks.iter().filter_map(|x| x.at.clone()).max_by(|a, b| {
+            at(&Some(a.clone())).partial_cmp(&at(&Some(b.clone()))).unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        // Only deadlocks with a time can be placed before or after the previous scan.
+        new_since: after
+            .map(|after| d.deadlocks.iter().filter(|x| at(&x.at).is_some_and(|t| t > after)).count() as u32),
+        patterns: groups,
+        note: d.note.clone(),
     }
 }
 
@@ -207,7 +441,7 @@ mod tests {
     #[test]
     fn a_first_digest_counts_and_ranks_without_changes() {
         let r = report();
-        let d = digest(&r, None, 3);
+        let d = digest(&r, None, 3, 5);
         let active = r.findings.iter().filter(|f| !f.inactive).count() as u32;
         assert_eq!(d.counts.active, active);
         assert_eq!(d.counts.high + d.counts.medium + d.counts.low, active);
@@ -283,7 +517,7 @@ mod tests {
         for i in [a, b] {
             r.findings[i].subject = culprit_core::Subject { kind: SubjectKind::Query, name: "42".into() };
         }
-        let d = digest(&r, None, 3);
+        let d = digest(&r, None, 3, 5);
         assert_eq!(d.top.len(), 3);
         assert_eq!(d.top[0].id, r.findings[a].id);
         assert_eq!(d.top[0].also, [r.findings[b].title.clone()]);
@@ -298,10 +532,10 @@ mod tests {
         let mut before = now.clone();
         before.snapshot.taken_at = "2026-10-10T06:00:00Z".into();
         let gone = before.findings.remove(0);
-        let from_report = digest(&now, Some(&before), 10).since.expect("changes");
-        let previous = digest(&before, None, 3);
+        let from_report = digest(&now, Some(&before), 10, 5).since.expect("changes");
+        let previous = digest(&before, None, 3, 5);
         assert_eq!(previous.findings.len(), before.findings.iter().filter(|f| !f.inactive).count());
-        let from_digest = digest_since(&now, &previous, 10).since.expect("changes");
+        let from_digest = digest_since(&now, &previous, 10, 5).since.expect("changes");
         assert_eq!(from_digest, from_report);
         assert_eq!(from_digest.new[0].id, gone.id);
     }
@@ -325,10 +559,10 @@ mod tests {
         let again = |now: f64, before: f64| {
             let mut previous = with_escalations(report(), before);
             previous.snapshot.taken_at = "2026-10-10T06:00:00Z".into();
-            let d = digest(&with_escalations(report(), now), Some(&previous), 10);
+            let d = digest(&with_escalations(report(), now), Some(&previous), 10, 5);
             assert_eq!(d.findings.iter().find(|f| f.id == "lock-escalations:dbo.orders").unwrap().count, Some(now));
             // A previous digest carries the count too.
-            let from_digest = digest_since(&with_escalations(report(), now), &digest(&previous, None, 10), 10);
+            let from_digest = digest_since(&with_escalations(report(), now), &digest(&previous, None, 10, 5), 10, 5);
             assert_eq!(from_digest.since, d.since);
             d.since.expect("changes").again.iter().map(|f| f.count_since).collect::<Vec<_>>()
         };
@@ -337,7 +571,158 @@ mod tests {
         // The counters were reset after the previous scan: every escalation counted now is new.
         assert_eq!(again(2.0, 10.0), [Some(2.0)]);
         // A finding without a count since startup never shows here.
-        assert!(digest(&report(), Some(&report()), 10).since.expect("changes").again.is_empty());
+        assert!(digest(&report(), Some(&report()), 10, 5).since.expect("changes").again.is_empty());
+    }
+
+    #[test]
+    fn a_digest_lists_the_heaviest_queries_first() {
+        let r = report();
+        let d = digest(&r, None, 3, 2);
+        assert_eq!(d.top_queries.len(), 2);
+        assert!(d.top_queries[0].total_ms >= d.top_queries[1].total_ms);
+        let heaviest = crate::support::app_queries(&r.snapshot)
+            .max_by(|a, b| a.total_time_ms.total_cmp(&b.total_time_ms))
+            .expect("a query");
+        let first = &d.top_queries[0];
+        assert_eq!(first.id, heaviest.id);
+        assert_eq!(first.label, crate::support::query_handle(heaviest));
+        assert!(first.db_time_share.is_some_and(|s| s > 0.0 && s <= 1.0));
+        assert!(!first.statement.contains('\n') && first.statement.chars().count() <= STATEMENT_CHARS);
+        // Every finding about it, by subject or by the queries it names.
+        let about: Vec<&str> = r
+            .findings
+            .iter()
+            .filter(|f| !f.inactive)
+            .filter(|f| {
+                (f.subject.kind == SubjectKind::Query && f.subject.name == first.id)
+                    || f.queries.iter().any(|q| q.id == first.id)
+            })
+            .map(|f| f.id.as_str())
+            .collect();
+        assert_eq!(first.findings, about);
+        // `--top-queries 0` leaves them out.
+        assert!(digest(&r, None, 3, 0).top_queries.is_empty());
+    }
+
+    #[test]
+    fn index_advice_is_capped_but_counts_everything() {
+        let r = report();
+        let full = crate::index_advice(&r);
+        let d = digest(&r, None, 1, 5).index_advice.expect("advice");
+        assert_eq!(d.create_total as usize, full.candidates.len());
+        assert_eq!(d.drop_total as usize, full.cleanups.len());
+        assert!(full.candidates.len() > 1 && full.cleanups.len() > 1, "the demo needs more than one of each");
+        assert_eq!((d.create.len(), d.drop.len()), (1, 1));
+        assert_eq!(d.create[0].table, format!("{}.{}", full.candidates[0].schema, full.candidates[0].table));
+        assert_eq!(d.create[0].sql, full.candidates[0].sql);
+        assert_eq!(d.drop[0].index, full.cleanups[0].index);
+    }
+
+    #[test]
+    fn azure_index_recommendations_join_the_advice() {
+        let mut s = report().snapshot;
+        s.tuning = Some(culprit_core::TuningAdvice {
+            recommendations: vec![culprit_core::TuningRecommendation {
+                name: "IR_1".into(),
+                kind: "CreateIndex".into(),
+                state: Some("Active".into()),
+                score: Some(64.0),
+                script: Some("CREATE NONCLUSTERED INDEX [nci_1] ON [shop].[orders] ([channel], [created_at])".into()),
+                index: Some(culprit_core::RecommendedIndex {
+                    schema: "shop".into(),
+                    table: "orders".into(),
+                    name: Some("nci_1".into()),
+                    columns: vec!["channel".into(), "created_at".into()],
+                    include: vec!["total".into()],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let d = digest(&crate::analyze(s), None, 10, 5).index_advice.expect("advice");
+        let azure = d.create.iter().find(|c| c.source == "azure").expect("Azure's recommendation");
+        assert_eq!(azure.table, "shop.orders");
+        assert_eq!(azure.keys, ["channel", "created_at"]);
+        assert!(azure.reason.contains("64 out of 100"), "{}", azure.reason);
+        assert!(azure.sql.as_deref().is_some_and(|q| q.starts_with("CREATE NONCLUSTERED INDEX [nci_1]")));
+        assert_eq!(azure.finding.as_deref(), Some("tuning-advice:create-index:shop.orders(channel,created_at)"));
+    }
+
+    fn deadlock(at: &str, pattern: &str, objects: &[&str]) -> culprit_core::Deadlock {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("dl-{at}"), "at": at, "source": "system_health", "pattern": pattern, "objects": objects,
+            "processes": [
+                {"id": "p1", "victim": true, "statement": "UPDATE shop.orders SET total = ? WHERE id = ?", "wait_mode": "U"},
+                {"id": "p2", "victim": false, "statement": "SELECT  total\n FROM shop.orders WHERE id = ?", "wait_mode": "S"},
+            ],
+            "resources": [], "headline": "Two sessions waited on each other.", "explanation": "",
+            "fixes": [{"title": "Touch rows in the same order", "detail": ""}],
+        }))
+        .expect("deadlock")
+    }
+
+    fn with_deadlocks(deadlocks: Vec<culprit_core::Deadlock>) -> Report {
+        let mut r = report();
+        r.snapshot.deadlocks = Some(culprit_core::DeadlockReport {
+            deadlocks,
+            source: "system_health".into(),
+            since_hours: 48.0,
+            ..Default::default()
+        });
+        r
+    }
+
+    #[test]
+    fn deadlocks_are_grouped_by_pattern_and_counted_since_the_previous_digest() {
+        let r = with_deadlocks(vec![
+            deadlock("2026-10-11T11:00:00Z", "opposite-order", &["shop.orders", "shop.customers"]),
+            deadlock("2026-10-11T09:00:00Z", "opposite-order", &["shop.customers", "shop.orders"]),
+            deadlock("2026-10-10T20:00:00Z", "key-lookup", &["shop.customers"]),
+        ]);
+        let d = digest(&r, None, 5, 5).deadlocks.expect("deadlocks");
+        assert_eq!((d.count, d.since_hours, d.new_since), (Some(3), Some(48.0), None));
+        assert_eq!(d.latest_at.as_deref(), Some("2026-10-11T11:00:00Z"));
+        assert_eq!(d.patterns.len(), 2);
+        let first = &d.patterns[0];
+        assert_eq!((first.pattern.as_str(), first.count), ("opposite-order", 2));
+        assert_eq!(first.tables, ["shop.customers", "shop.orders"]);
+        assert_eq!(first.latest_at.as_deref(), Some("2026-10-11T11:00:00Z"));
+        assert_eq!(
+            first.statements,
+            ["UPDATE shop.orders SET total = ? WHERE id = ?", "SELECT total FROM shop.orders WHERE id = ?"]
+        );
+        assert_eq!(first.lock_modes, ["U", "S"]);
+        assert_eq!(first.fix.as_deref(), Some("Touch rows in the same order"));
+        // Compared with a previous digest taken at 10:00: one came after it.
+        let mut previous = digest(&r, None, 5, 5);
+        previous.taken_at = "2026-10-11T10:00:00Z".into();
+        assert_eq!(digest_since(&r, &previous, 5, 5).deadlocks.expect("deadlocks").new_since, Some(1));
+        // Capped like the findings.
+        assert_eq!(digest(&r, None, 1, 5).deadlocks.expect("deadlocks").patterns.len(), 1);
+    }
+
+    #[test]
+    fn deadlocks_that_cant_be_read_are_not_reported_as_none() {
+        // No deadlocks collected: the collector's note says why.
+        let mut r = report();
+        r.snapshot.deadlocks = None;
+        r.snapshot.notes.push(culprit_core::CollectorNote {
+            collector: "deadlocks".into(),
+            message: "Reading deadlocks needs VIEW SERVER STATE.".into(),
+        });
+        let d = digest(&r, None, 5, 5).deadlocks.expect("deadlocks");
+        assert_eq!((d.count, d.note.as_deref()), (None, Some("Reading deadlocks needs VIEW SERVER STATE.")));
+        // A counter without graphs (Postgres): counted, but no count of graphs.
+        let mut r = with_deadlocks(Vec::new());
+        if let Some(d) = r.snapshot.deadlocks.as_mut() {
+            d.counted = Some(3.0);
+            d.note = Some("Postgres counts deadlocks; their details are in the server log.".into());
+        }
+        let d = digest(&r, None, 5, 5).deadlocks.expect("deadlocks");
+        assert_eq!((d.count, d.counted), (None, Some(3.0)));
+        assert!(d.note.is_some());
+        // Read, and none: zero.
+        assert_eq!(digest(&with_deadlocks(Vec::new()), None, 5, 5).deadlocks.expect("deadlocks").count, Some(0));
     }
 
     #[test]
@@ -354,7 +739,7 @@ mod tests {
         before.findings[rising].severity = Severity::Low;
         let rising = before.findings[rising].id.clone();
 
-        let changes = digest(&now, Some(&before), 10).since.expect("changes");
+        let changes = digest(&now, Some(&before), 10, 5).since.expect("changes");
         assert_eq!(changes.taken_at, "2026-10-10T06:00:00Z");
         assert_eq!(changes.new.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [gone.id.as_str()]);
         assert_eq!(changes.fixed.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [old.id.as_str()]);

@@ -37,6 +37,135 @@ pub struct Digest {
     /// keep this digest instead of the report (which holds statement text and parameter values).
     #[serde(default)]
     pub findings: Vec<DigestFinding>,
+    /// The queries that used the most database time over the window, most first (`--top-queries`, 5 by default).
+    #[serde(default)]
+    pub top_queries: Vec<DigestTopQuery>,
+    /// What the index advisor suggests creating and dropping, Azure SQL's own recommendations included.
+    #[serde(default)]
+    pub index_advice: Option<DigestIndexAdvice>,
+    /// The deadlocks the scan read, grouped by pattern; `count` is `None` when they couldn't be read (see `note`).
+    #[serde(default)]
+    pub deadlocks: Option<DigestDeadlocks>,
+}
+
+/// One of the queries that used the most database time. Its statement is redacted: literal values are placeholders.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct DigestTopQuery {
+    /// The query's id in the report (`culprit show <connection> <id>`).
+    pub id: String,
+    /// What it does in a few words: "a read from orders", "a statement in dbo.usp_refresh".
+    pub label: String,
+    /// The statement on one line, cut short.
+    pub statement: String,
+    /// The tables it names.
+    pub tables: Vec<String>,
+    /// The stored procedure or function it ran in.
+    pub object: Option<String>,
+    /// Share of database time over the window, 0–1.
+    pub db_time_share: Option<f64>,
+    pub total_ms: f64,
+    pub runs: f64,
+    pub mean_ms: f64,
+    /// It stopped running before the window ended, most likely changed by a deploy.
+    pub stopped: bool,
+    /// The ids of the findings about it.
+    pub findings: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct DigestIndexAdvice {
+    /// Indexes to create, most valuable first, capped like the findings.
+    pub create: Vec<DigestIndexCreate>,
+    /// How many there are in all.
+    pub create_total: u32,
+    /// Indexes to drop or fold into another, capped the same way.
+    pub drop: Vec<DigestIndexDrop>,
+    pub drop_total: u32,
+    /// What the usage counters behind the advice cover: "in the 6 days since the server last restarted".
+    pub counters: String,
+    /// What this engine or login can't tell the advisor.
+    pub notes: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct DigestIndexCreate {
+    /// `schema.table`.
+    pub table: String,
+    pub keys: Vec<String>,
+    pub include: Vec<String>,
+    /// Who asks for it: "optimizer", "plan-scan", "foreign-key" or "azure" (Azure SQL's automatic tuning).
+    pub source: String,
+    pub reason: String,
+    /// Share of database time behind the queries that would use it, 0–1.
+    pub db_time_share: Option<f64>,
+    /// The CREATE statement, to copy: Culprit never runs it.
+    pub sql: Option<String>,
+    /// The finding about it, when there is one.
+    pub finding: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct DigestIndexDrop {
+    /// "unused", "duplicate", "prefix", "overlap", or "azure" when Azure SQL's automatic tuning recommends it.
+    pub kind: String,
+    /// `schema.table`.
+    pub table: String,
+    pub index: String,
+    pub keys: Vec<String>,
+    /// The index that makes this one unnecessary (duplicate, prefix, overlap).
+    pub other: Option<String>,
+    pub size_bytes: Option<f64>,
+    pub reason: String,
+    /// The statement that drops or disables it, to copy.
+    pub sql: Option<String>,
+    pub finding: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct DigestDeadlocks {
+    /// Deadlocks the scan read; `None` when it couldn't tell (no graphs to read, see `note`).
+    pub count: Option<u32>,
+    /// Deadlocks the server counted without keeping their graphs (Postgres), since `counted_since`.
+    pub counted: Option<f64>,
+    pub counted_since: Option<String>,
+    /// The hours the scan read back.
+    pub since_hours: Option<f64>,
+    /// Where they were read from, in words.
+    pub source: Option<String>,
+    /// The most recent one (UTC, ISO 8601).
+    pub latest_at: Option<String>,
+    /// How many happened after the previous digest's scan; `None` without one to compare with.
+    pub new_since: Option<u32>,
+    /// One per pattern on the same tables, the most frequent first, capped like the findings.
+    pub patterns: Vec<DigestDeadlockPattern>,
+    /// Why there are no graphs, or what unlocks more.
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct DigestDeadlockPattern {
+    /// "key-lookup", "lock-conversion", "opposite-order", "lock-escalation", "parallelism" or "cycle".
+    pub pattern: String,
+    /// "key-lookup deadlock", "opposite access order".
+    pub label: String,
+    pub count: u32,
+    pub latest_at: Option<String>,
+    /// The tables involved.
+    pub tables: Vec<String>,
+    /// The statements in the most recent one, redacted, on one line each.
+    pub statements: Vec<String>,
+    /// The lock modes the processes waited for.
+    pub lock_modes: Vec<String>,
+    /// The explainer's one-line story of the most recent one.
+    pub headline: String,
+    /// What makes it go away, in a few words.
+    pub fix: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]

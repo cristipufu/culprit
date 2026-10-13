@@ -38,7 +38,8 @@ pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
 };
 pub use digest::{
-    Digest, DigestChanges, DigestCounts, DigestDay, DigestDetail, DigestFinding, DigestMetric, DigestQuery,
+    Digest, DigestChanges, DigestCounts, DigestDay, DigestDeadlockPattern, DigestDeadlocks, DigestDetail,
+    DigestFinding, DigestIndexAdvice, DigestIndexCreate, DigestIndexDrop, DigestMetric, DigestQuery, DigestTopQuery,
 };
 pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
 pub use error::{Error, ErrorCode, Result};

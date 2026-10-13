@@ -28,9 +28,12 @@ pub struct DigestArgs {
     /// runs: no statement text or parameter values), or a previous report or snapshot.
     #[arg(long)]
     pub since: Option<PathBuf>,
-    /// How many findings each list holds at most.
+    /// How many findings, index suggestions and deadlock patterns each list holds at most.
     #[arg(long, default_value_t = 5)]
     pub top: usize,
+    /// How many of the queries that used the most database time to list; 0 leaves them out.
+    #[arg(long, default_value_t = 5)]
+    pub top_queries: usize,
 }
 
 #[derive(Args)]
@@ -52,7 +55,13 @@ pub struct ExportArgs {
 
 /// Always JSON: the digest is data for a consumer (a pipeline, a bot) that decides how to show it.
 pub fn digest(ws: &Workspace, args: DigestArgs, out: &Out) -> Result<u8> {
-    let d = ws.digest(args.connection.as_deref(), args.report.as_deref(), args.since.as_deref(), args.top)?;
+    let d = ws.digest(
+        args.connection.as_deref(),
+        args.report.as_deref(),
+        args.since.as_deref(),
+        args.top,
+        args.top_queries,
+    )?;
     out.value(&serde_json::to_value(&d).map_err(|e| Error::internal(e.to_string()))?);
     Ok(0)
 }

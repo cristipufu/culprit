@@ -2,7 +2,10 @@
 import type { DigestChanges } from "./DigestChanges";
 import type { DigestCounts } from "./DigestCounts";
 import type { DigestDay } from "./DigestDay";
+import type { DigestDeadlocks } from "./DigestDeadlocks";
 import type { DigestFinding } from "./DigestFinding";
+import type { DigestIndexAdvice } from "./DigestIndexAdvice";
+import type { DigestTopQuery } from "./DigestTopQuery";
 
 export type Digest = { connection: string, 
 /**
@@ -44,4 +47,16 @@ top: Array<DigestFinding>,
  * Every finding about the database as it runs now: what the next digest compares with, so a scheduled job can
  * keep this digest instead of the report (which holds statement text and parameter values).
  */
-findings: Array<DigestFinding>, };
+findings: Array<DigestFinding>, 
+/**
+ * The queries that used the most database time over the window, most first (`--top-queries`, 5 by default).
+ */
+top_queries: Array<DigestTopQuery>, 
+/**
+ * What the index advisor suggests creating and dropping, Azure SQL's own recommendations included.
+ */
+index_advice: DigestIndexAdvice | null, 
+/**
+ * The deadlocks the scan read, grouped by pattern; `count` is `None` when they couldn't be read (see `note`).
+ */
+deadlocks: DigestDeadlocks | null, };

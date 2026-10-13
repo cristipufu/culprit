@@ -601,8 +601,10 @@ impl Workspace {
             .as_ref()
             .map(|p| p.taken_at.clone())
             .unwrap_or_else(|| (taken_at - chrono::Duration::days(trends::HISTORY_DAYS as i64)).to_rfc3339());
-        // A day of deadlocks: graphs where the engine keeps them, Postgres's counter. Neither fails the scan.
-        let (deadlocks, recorded) = tokio::join!(provider.deadlocks(24.0), provider.recorded_changes(&since));
+        // Deadlocks over the scan's window, a day at least: graphs where the engine keeps them, Postgres's counter.
+        // Neither fails the scan.
+        let deadlock_hours = (f64::from(options.window_in_minutes()) / 60.0).clamp(24.0, 24.0 * 30.0);
+        let (deadlocks, recorded) = tokio::join!(provider.deadlocks(deadlock_hours), provider.recorded_changes(&since));
         match deadlocks {
             Ok(found) => snapshot.deadlocks = Some(found),
             Err(e) if e.code == ErrorCode::Unsupported => {}
@@ -640,13 +642,14 @@ impl Workspace {
 
     /// The digest of a scan: `report` (a report or snapshot file) or the connection's latest saved scan, compared with
     /// `since` (a file) or the saved scan before it. Both are re-checked with the current checks, so a finding means
-    /// the same thing on each side.
+    /// the same thing on each side. `top` caps each list; `top_queries` is how many of the heaviest queries it lists.
     pub fn digest(
         &self,
         name: Option<&str>,
         report: Option<&std::path::Path>,
         since: Option<&std::path::Path>,
         top: usize,
+        top_queries: usize,
     ) -> Result<culprit_core::Digest> {
         // A digest is posted where the database's data must not go: every report it reads is checked again from its
         // redacted snapshot, so titles, headlines and details can only quote SQL the lexer has already redacted.
@@ -674,7 +677,7 @@ impl Workspace {
         if let Some(path) = since
             && let Some(previous) = read_digest(path)?
         {
-            return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top)));
+            return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top, top_queries)));
         }
         let previous = match (since, name, report) {
             (Some(path), _, _) => Some(recheck(self.analyze_file(path)?)),
@@ -688,7 +691,7 @@ impl Workspace {
             }
             _ => None,
         };
-        Ok(with_details(&current, culprit_checks::digest(&current, previous.as_ref(), top)))
+        Ok(with_details(&current, culprit_checks::digest(&current, previous.as_ref(), top, top_queries)))
     }
 
     /// The index advisor's plan for a connection, from its latest saved report re-checked with the current checks (so

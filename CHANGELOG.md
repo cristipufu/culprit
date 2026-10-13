@@ -4,6 +4,13 @@ Each release's notes are its section below: the release workflow publishes them 
 
 ## 0.2.1
 
+### Digest
+
+- **`culprit digest` lists the queries that used the most database time** over the window, five by default (`--top-queries N`, 0 leaves them out): what each does, its statement on one line with literal values redacted, the tables it names, its share of database time, runs and average time, and the findings about it.
+- **The index advisor's plan is in the digest**: indexes to create (table, keys, includes, why, and the CREATE statement) and to drop or fold into another (unused, duplicate, overlapping, with size and why), Azure SQL's own recommendations included, capped by `--top` with totals for each.
+- **Deadlocks are in the digest**, grouped by pattern on the same tables: how many, the latest, how many since the previous digest, the two statements, the lock modes and the fix. When they can't be read, the digest says why instead of reporting none.
+- **A scan reads deadlocks over its whole window**, a day at least, so a two-day scan reports two days of them.
+
 ### Fixes
 
 - **Microsoft Entra ID sign-in shows one code, once.** Opening a connection asks for a token from several places at once (the report, the dashboard, live polling); each started its own device-code sign-in, so the code on screen kept changing while you typed it, and the sign-ins left waiting held their requests for up to 15 minutes. They now share one sign-in and its token. A sign-in that fails or that you cancel isn't reopened by polling for a minute; `az login` still works straight away.
