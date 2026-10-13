@@ -183,8 +183,9 @@ fn print_signals(title: &str, p: &Pressure, signals: &[Signal]) {
             SignalScope::Now => "now",
             SignalScope::SinceStartup => "since start",
             SignalScope::Sampled => "sampled",
+            SignalScope::LastHour => "last hour",
         };
-        println!("  {mark} {:<28} {:>10}  {:<11} {}", s.label, value(s), scope, s.healthy.as_deref().unwrap_or(""));
+        println!("  {mark} {:<36} {:>10}  {:<11} {}", s.label, value(s), scope, s.healthy.as_deref().unwrap_or(""));
     }
 }
 

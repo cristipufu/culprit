@@ -2,6 +2,13 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.3
+
+### Fixes
+
+- **On Azure SQL Database, Health no longer turns red over another database's load.** Page life expectancy, batch requests and the plans-compiled ratio come from the performance counters of the server process behind the database, which an elastic pool shares among all its databases. They're now labelled "(whole server)" and shown for context only. The database's own figures from Azure take their place, graded: its storage I/O against its tier's limit over the last hour (with the peak), and its memory in use.
+- **Page life expectancy says what it means**: how long a page stays in memory once read. Five minutes or more is healthy; under a minute means pages leave memory soon after they're read, often because of large scans.
+
 ## 0.2.2
 
 ### Fixes

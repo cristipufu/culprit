@@ -20,6 +20,12 @@ WHERE (object_name LIKE N'%SQL Statistics%'
    OR (object_name LIKE N'%Buffer Manager%' AND counter_name = N'Page life expectancy')
 "#;
 
+/// Azure SQL Database's own figures for this database: 15-second samples of the share of its tier's limits it used,
+/// kept for about an hour. The performance counters describe the server process behind the database, shared with every
+/// database in its elastic pool, so on Azure these say whether this database is short of storage I/O or memory.
+const RESOURCE_STATS_SQL: &str = "SELECT COUNT(*) AS samples, AVG(avg_data_io_percent) AS data_io,
+  MAX(avg_data_io_percent) AS data_io_peak, AVG(avg_memory_usage_percent) AS memory FROM sys.dm_db_resource_stats";
+
 const PENDING_GRANTS_SQL: &str = "SELECT COUNT(*) AS pending, MAX(wait_time_ms) AS longest_ms FROM sys.dm_exec_query_memory_grants WHERE grant_time IS NULL";
 
 /// Requests queued for a worker right now. System tasks (no session) wait on THREADPOOL briefly all the time, and in
@@ -104,6 +110,80 @@ fn uptime_hours(probe: &Probe) -> Option<f64> {
     (hours > 0.0).then_some(hours)
 }
 
+/// What the server's performance counters say. On Azure SQL Database they describe the server process behind the
+/// database, which an elastic pool shares among all its databases: shown for context, labelled as the whole server's,
+/// and never graded, since another database's scans would turn this one red.
+fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -> Vec<Signal> {
+    const SHARED: &str = "covers every database on the server behind this one (its elastic pool's, if it has one), so it isn't graded here";
+    let label = |name: &str| if azure { format!("{name} (whole server)") } else { name.to_string() };
+    let mut signals = Vec::new();
+    let batches = c.get("Batch Requests/sec").copied().unwrap_or(0.0);
+    let compiles = c.get("SQL Compilations/sec").copied().unwrap_or(0.0);
+    if let Some(hours) = uptime.filter(|_| batches > 0.0) {
+        let rate = Signal::new(
+            "batch-requests",
+            &label("Batch requests"),
+            batches / (hours * 3600.0),
+            SignalUnit::PerSecond,
+            SignalScope::SinceStartup,
+        );
+        signals.push(if azure { Signal { healthy: Some(SHARED.into()), ..rate } } else { rate });
+    }
+    if batches > 0.0 {
+        let ratio = Signal::new(
+            "compiles-per-batch",
+            &label("Plans compiled"),
+            compiles / batches * 100.0,
+            SignalUnit::Percent,
+            SignalScope::SinceStartup,
+        );
+        // A handful of batches compiling says nothing about plan reuse; grade the ratio only under real load.
+        let busy = uptime.is_none_or(|h| batches / (h * 3600.0) >= 1.0);
+        signals.push(if azure {
+            Signal { healthy: Some(SHARED.into()), ..ratio }
+        } else if busy {
+            ratio.graded("under 10% of batches is healthy", 10.0, 25.0, true)
+        } else {
+            Signal { healthy: Some("too few batches to judge; under 10% is healthy under load".into()), ..ratio }
+        });
+    }
+    if let Some(ple) = c.get("Page life expectancy") {
+        let life =
+            Signal::new("page-life", &label("Page life expectancy"), *ple, SignalUnit::Seconds, SignalScope::Now);
+        signals.push(if azure {
+            Signal { healthy: Some(SHARED.into()), ..life }
+        } else {
+            life.graded(
+                "how long a page stays in memory once read: five minutes or more is healthy; under a minute means \
+                 pages leave memory soon after they're read, often because of large scans",
+                300.0,
+                60.0,
+                false,
+            )
+        });
+    }
+    signals
+}
+
+/// Azure SQL Database's own figures for this database over the last hour: storage I/O against its tier's limit,
+/// graded, and memory in use, for context (a full cache is normal).
+fn resource_signals(data_io: f64, data_io_peak: f64, memory: f64) -> Vec<Signal> {
+    vec![
+        Signal::new("data-io", "Storage I/O of its limit", data_io, SignalUnit::Percent, SignalScope::LastHour).graded(
+            &format!(
+                "under 50% is healthy; near 100% the tier throttles reads and writes (peak {data_io_peak:.0}% in the hour)"
+            ),
+            50.0,
+            80.0,
+            true,
+        ),
+        Signal {
+            healthy: Some("of its memory limit; a full cache is normal, so it isn't graded".into()),
+            ..Signal::new("memory-use", "Memory in use", memory, SignalUnit::Percent, SignalScope::LastHour)
+        },
+    ]
+}
+
 /// Signals, grants and the oldest open transaction. Each read is independent; failures are returned as notes.
 pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, Vec<String>) {
     let azure = probe.is_azure_sql_database();
@@ -112,50 +192,22 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
     let mut notes = Vec::new();
 
     match counters(client).await {
-        Ok(c) => {
-            let batches = c.get("Batch Requests/sec").copied().unwrap_or(0.0);
-            let compiles = c.get("SQL Compilations/sec").copied().unwrap_or(0.0);
-            if let Some(hours) = uptime.filter(|_| batches > 0.0) {
-                p.signals.push(Signal::new(
-                    "batch-requests",
-                    "Batch requests",
-                    batches / (hours * 3600.0),
-                    SignalUnit::PerSecond,
-                    SignalScope::SinceStartup,
-                ));
-            }
-            if batches > 0.0 {
-                let ratio = Signal::new(
-                    "compiles-per-batch",
-                    "Plans compiled",
-                    compiles / batches * 100.0,
-                    SignalUnit::Percent,
-                    SignalScope::SinceStartup,
-                );
-                // A handful of batches compiling says nothing about plan reuse; grade the ratio only under real load.
-                let busy = uptime.is_none_or(|h| batches / (h * 3600.0) >= 1.0);
-                p.signals.push(if busy {
-                    ratio.graded("under 10% of batches is healthy", 10.0, 25.0, true)
-                } else {
-                    Signal {
-                        healthy: Some("too few batches to judge; under 10% is healthy under load".into()),
-                        ..ratio
-                    }
-                });
-            }
-            if let Some(ple) = c.get("Page life expectancy") {
-                p.signals.push(
-                    Signal::new("page-life", "Page life expectancy", *ple, SignalUnit::Seconds, SignalScope::Now)
-                        .graded(
-                            "minutes, not seconds: a drop means a big scan pushed data out of memory",
-                            300.0,
-                            60.0,
-                            false,
-                        ),
-                );
-            }
-        }
+        Ok(c) => p.signals.extend(counter_signals(&c, uptime, azure)),
         Err(e) => notes.push(format!("Performance counters: {e}")),
+    }
+    if azure {
+        match query(client, RESOURCE_STATS_SQL).await {
+            Ok(rows) => {
+                if let Some(r) = rows.first().filter(|r| r.f64_or_zero("samples") > 0.0) {
+                    p.signals.extend(resource_signals(
+                        r.f64_or_zero("data_io"),
+                        r.f64_or_zero("data_io_peak"),
+                        r.f64_or_zero("memory"),
+                    ));
+                }
+            }
+            Err(e) => notes.push(format!("Resource use: {e}")),
+        }
     }
     match query(client, PENDING_GRANTS_SQL).await {
         Ok(rows) => {
@@ -376,4 +428,54 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
         active_sessions: None,
         notes: Vec::new(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use culprit_core::SignalStatus;
+
+    use super::*;
+
+    fn counters(ple: f64) -> HashMap<String, f64> {
+        HashMap::from([
+            ("Batch Requests/sec".to_string(), 7_200_000.0),
+            ("SQL Compilations/sec".to_string(), 3_600_000.0),
+            ("Page life expectancy".to_string(), ple),
+        ])
+    }
+
+    fn signal<'a>(signals: &'a [Signal], key: &str) -> &'a Signal {
+        signals.iter().find(|s| s.key == key).expect(key)
+    }
+
+    // On a server of its own, a short page life is this server's, and graded.
+    #[test]
+    fn a_short_page_life_is_graded_on_a_server_of_its_own() {
+        let signals = counter_signals(&counters(44.0), Some(100.0), false);
+        let life = signal(&signals, "page-life");
+        assert_eq!((life.label.as_str(), life.status), ("Page life expectancy", SignalStatus::Bad));
+        assert!(life.healthy.as_deref().unwrap().starts_with("how long a page stays in memory once read"));
+        assert_eq!(signal(&signals, "compiles-per-batch").status, SignalStatus::Bad);
+    }
+
+    // On Azure SQL Database the counters are the server process's, shared by the elastic pool: context, never graded.
+    #[test]
+    fn azure_counters_are_the_whole_servers_and_never_graded() {
+        let signals = counter_signals(&counters(44.0), Some(100.0), true);
+        for key in ["page-life", "compiles-per-batch", "batch-requests"] {
+            let s = signal(&signals, key);
+            assert_eq!(s.status, SignalStatus::Info, "{key}");
+            assert!(s.label.ends_with("(whole server)"), "{}", s.label);
+            assert!(s.healthy.as_deref().unwrap().contains("every database on the server"), "{key}");
+        }
+    }
+
+    #[test]
+    fn azure_grades_this_databases_own_storage_io() {
+        let calm = resource_signals(0.0, 3.0, 0.4);
+        assert_eq!(signal(&calm, "data-io").status, SignalStatus::Good);
+        assert!(signal(&calm, "data-io").healthy.as_deref().unwrap().contains("peak 3%"));
+        assert_eq!(signal(&calm, "memory-use").status, SignalStatus::Info);
+        assert_eq!(signal(&resource_signals(85.0, 100.0, 90.0), "data-io").status, SignalStatus::Bad);
+    }
 }

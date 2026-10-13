@@ -116,6 +116,8 @@ pub enum SignalScope {
     SinceStartup,
     /// Over a short sample.
     Sampled,
+    /// Over the last hour (Azure SQL Database keeps its own resource figures for about that long).
+    LastHour,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -3182,7 +3182,7 @@
           "value": 45.88688946015424
         },
         {
-          "healthy": "minutes, not seconds: a drop means a big scan pushed data out of memory",
+          "healthy": "how long a page stays in memory once read: five minutes or more is healthy; under a minute means pages leave memory soon after they're read, often because of large scans",
           "key": "page-life",
           "label": "Page life expectancy",
           "scope": "now",

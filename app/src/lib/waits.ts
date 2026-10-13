@@ -110,7 +110,7 @@ export function signalValue(s: Signal): string {
   }
 }
 
-export const SIGNAL_SCOPE: Record<Signal["scope"], string> = { now: "now", "since-startup": "since start", sampled: "sampled" };
+export const SIGNAL_SCOPE: Record<Signal["scope"], string> = { now: "now", "since-startup": "since start", sampled: "sampled", "last-hour": "last hour" };
 
 // ── the "right now" sample keeps running while the panel is closed ────────────────────────────────
 
