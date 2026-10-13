@@ -24,6 +24,27 @@ const AREA: Record<InsightArea, { icon: LucideIcon; label: string }> = {
 const SEVERITY_LABEL: Record<Severity, string> = { high: "High", medium: "Medium", low: "Low" };
 const SHOWN = 4;
 
+/** One insight as Markdown, the way it reads in the panel: for a pull request, an issue or a coding agent. */
+const insightMarkdown = (i: PlanInsight) =>
+  [
+    `**${SEVERITY_LABEL[i.severity]} · ${AREA[i.area].label}:** ${i.title} (${percent(i.impact)} of the plan's work)`,
+    "",
+    i.detail,
+    "",
+    `**Fix:** ${i.fix}`,
+    ...(i.fix_sql ? ["", "```sql", i.fix_sql, "```"] : []),
+    "",
+    `**Verify:** ${i.verify}`,
+  ].join("\n");
+
+/** Every insight, most important first, numbered as the panel lists them, after the statement they're about. */
+const insightsMarkdown = (plan: Plan, items: PlanInsight[]) =>
+  [
+    "## Plan insights",
+    ...(plan.statement ? ["For this statement:", ["```sql", plan.statement.trim(), "```"].join("\n")] : []),
+    ...items.map((i, n) => `### ${n + 1}. ${insightMarkdown(i)}`),
+  ].join("\n\n");
+
 /**
  * What's wrong with this plan, most important first: one sentence each, the share of the plan's work it touches, and
  * (expanded) why, the fix with SQL to copy, and how to check it worked. Selecting one selects its operator.
@@ -81,6 +102,13 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
             ))}
         </span>
         <span className="spacer" />
+        <button
+          className="btn ghost small ins-copy-all"
+          onClick={() => copyAndTell(insightsMarkdown(plan, items), items.length === 1 ? "Copied the insight" : `Copied ${items.length} insights`)}
+          title="Copy every insight as Markdown, most important first, for a pull request or a coding agent"
+        >
+          <Copy size={12} /> Copy
+        </button>
         {note && (
           <span className="ins-note-icon" title={note}>
             <Info size={13} />
@@ -152,11 +180,16 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
                     <div className="ins-block-label">Verify</div>
                     <p>{i.verify}</p>
                   </div>
-                  {i.nodes[0] != null && (
-                    <button className="btn ghost small" onClick={() => onSelectNode(i.nodes[0]!)}>
-                      <Crosshair size={12} /> Show the operator
+                  <div className="ins-actions">
+                    {i.nodes[0] != null && (
+                      <button className="btn ghost small" onClick={() => onSelectNode(i.nodes[0]!)}>
+                        <Crosshair size={12} /> Show the operator
+                      </button>
+                    )}
+                    <button className="btn ghost small" onClick={() => copyAndTell(insightMarkdown(i), "Copied the insight")} title="Copy this insight as Markdown">
+                      <Copy size={12} /> Copy insight
                     </button>
-                  )}
+                  </div>
                 </div>
               )}
             </div>

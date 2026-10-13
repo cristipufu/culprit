@@ -9067,6 +9067,12 @@ button.health-pill:hover {
   animation: ins-in 180ms ease;
 }
 
+.ins-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 @keyframes ins-in {
   from {
     opacity: 0;
