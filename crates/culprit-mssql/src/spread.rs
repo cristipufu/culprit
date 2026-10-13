@@ -13,7 +13,7 @@ use crate::workload::{id_list, utc_offset_iso};
 const MAX_QUERIES: usize = 20;
 const MAX_PLANS: usize = 60;
 
-pub(crate) async fn attach(client: &mut MsClient, days: u32, queries: &mut [QueryStat]) {
+pub(crate) async fn attach(client: &mut MsClient, window_minutes: u32, queries: &mut [QueryStat]) {
     for q in queries.iter_mut() {
         let compiled = q.plan.as_ref().and_then(|p| p.props.get("Parameters").cloned());
         if let (Some(first), Some(compiled)) = (q.plans.first_mut(), compiled) {
@@ -45,13 +45,13 @@ pub(crate) async fn attach(client: &mut MsClient, days: u32, queries: &mut [Quer
             }
         }
     }
-    attach_variants(client, days, queries).await;
+    attach_variants(client, window_minutes, queries).await;
 }
 
-fn variants_sql(days: u32, ids: &str) -> String {
+fn variants_sql(window_minutes: u32, ids: &str) -> String {
     format!(
         r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT v.parent_query_id, v.query_variant_query_id AS variant_id, p.plan_id,
   SUM(rs.count_executions) AS executions,
   SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_ms,
@@ -72,13 +72,13 @@ GROUP BY v.parent_query_id, v.query_variant_query_id, p.plan_id
 
 /// SQL Server 2022 keeps one "variant" query per range of parameter values (with its own plans) under the statement
 /// the application sent. Older versions don't have the view; that is not an error.
-async fn attach_variants(client: &mut MsClient, days: u32, queries: &mut [QueryStat]) {
+async fn attach_variants(client: &mut MsClient, window_minutes: u32, queries: &mut [QueryStat]) {
     let ids: Vec<String> = queries.iter().map(|q| q.id.clone()).collect();
     let list = id_list(&ids);
     if list == "NULL" {
         return;
     }
-    let Ok(rows) = query(client, &variants_sql(days, &list)).await else { return };
+    let Ok(rows) = query(client, &variants_sql(window_minutes, &list)).await else { return };
     for r in rows {
         let Some(parent) = queries.iter_mut().find(|q| q.id == r.string("parent_query_id")) else { continue };
         let executions = r.f64_or_zero("executions");

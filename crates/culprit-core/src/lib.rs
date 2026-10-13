@@ -24,6 +24,7 @@ pub mod signals;
 pub mod sql;
 pub mod verification;
 pub mod waits;
+pub mod window;
 
 pub use actual::{ActualSummary, NodeProgress, NodeRuntime, NodeState, QueryProgress, actual_summary, self_times};
 pub use advice::*;
@@ -59,3 +60,4 @@ pub use waits::{
     GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalStatus, SignalUnit, WaitCategory, WaitQuery,
     WaitSample, WaitScope, WaitsReport,
 };
+pub use window::{MAX_WINDOW_MINUTES, MINUTES_PER_DAY, parse_window, window_label};

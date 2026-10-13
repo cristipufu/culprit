@@ -89,7 +89,7 @@ export function VerifyResult({ result, report, onClose }: { result: Result | nul
     item.status === "fixed" ? "Fixed. The new scan no longer reports it." : item.status === "still-present" ? "Still present in the new scan." : "Can't tell from the new scan.";
   const showNewScan = async () => {
     const name = report.snapshot.connection;
-    const fresh = await (await api()).latestReport(name, getState().windowDays);
+    const fresh = await (await api()).latestReport(name, getState().windowMinutes);
     if (!fresh || getState().active !== name) return;
     const keep = getState().finding;
     setState({

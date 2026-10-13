@@ -33,6 +33,9 @@ pub struct DashboardArgs {
     pub connection: String,
     /// Read the latest scan with this window (SQL Server Query Store days). Default: the latest scan of any window.
     pub window_days: Option<u32>,
+    /// Read the latest scan with this window in days, hours or minutes: "6h", "90m", "2d", "1d12h". Instead of
+    /// window_days.
+    pub window: Option<String>,
     /// Read sessions once for the "right now" tile (default true). Reads statistics views only.
     pub live: Option<bool>,
 }
@@ -105,6 +108,19 @@ pub struct ScanArgs {
     pub connection: String,
     /// Days of history to read where the engine keeps it (SQL Server Query Store). 1 to 90, default 7.
     pub window_days: Option<u32>,
+    /// The same window in days, hours or minutes: "6h", "90m", "2d", "1d12h" (up to 90 days). Instead of window_days.
+    /// Query Store keeps history in intervals (often an hour), so the window starts at the interval its edge falls in.
+    pub window: Option<String>,
+}
+
+/// The window a tool reads, in minutes: `window` ("6h", "90m", "2d"), else `window_days`, else none.
+fn window_minutes(window: Option<&str>, window_days: Option<u32>) -> Result<Option<u32>> {
+    match (window, window_days) {
+        (Some(_), Some(_)) => Err(Error::invalid("Give window or window_days, not both.")),
+        (Some(text), None) => culprit_core::parse_window(text).map(Some).map_err(Error::invalid),
+        (None, Some(days)) => Ok(Some(days.clamp(1, 90).saturating_mul(culprit_core::MINUTES_PER_DAY))),
+        (None, None) => Ok(None),
+    }
 }
 
 #[derive(Deserialize, JsonSchema, Clone, Copy)]
@@ -490,17 +506,16 @@ impl CulpritMcp {
                 let a: ScanArgs = args(value)?;
                 self.allowed(&a.connection)?;
                 let defaults = SnapshotOptions::default();
-                let options = SnapshotOptions {
-                    window_days: a.window_days.unwrap_or(defaults.window_days).clamp(1, 90),
-                    ..defaults
-                };
+                let window = window_minutes(a.window.as_deref(), a.window_days)?;
+                let options = defaults.clone().with_window_minutes(window.unwrap_or(defaults.window_in_minutes()));
                 let report = self.ws.scan(&a.connection, &options).await?;
                 Ok(view::findings(&report, None, Severity::Low, 30))
             }
             "dashboard" => {
                 let a: DashboardArgs = args(value)?;
                 self.allowed(&a.connection)?;
-                let mut dashboard = self.ws.dashboard(&a.connection, a.window_days, a.live.unwrap_or(true)).await?;
+                let window = window_minutes(a.window.as_deref(), a.window_days)?;
+                let mut dashboard = self.ws.dashboard(&a.connection, window, a.live.unwrap_or(true)).await?;
                 for tile in &mut dashboard.tiles {
                     tile.next = Some(view::next_tool(tile.key).to_string());
                 }
@@ -795,6 +810,16 @@ impl CulpritMcp {
 mod tests {
     use super::*;
     use culprit_core::Engine;
+
+    #[test]
+    fn a_window_reads_hours_or_days_but_not_both() {
+        assert_eq!(window_minutes(Some("6h"), None).expect("hours"), Some(360));
+        assert_eq!(window_minutes(None, Some(2)).expect("days"), Some(2 * culprit_core::MINUTES_PER_DAY));
+        assert_eq!(window_minutes(None, Some(400)).expect("clamped"), Some(90 * culprit_core::MINUTES_PER_DAY));
+        assert_eq!(window_minutes(None, None).expect("none"), None);
+        assert!(window_minutes(Some("6h"), Some(2)).is_err());
+        assert!(window_minutes(Some("six hours"), None).is_err());
+    }
 
     #[test]
     fn every_tool_has_an_object_schema_and_a_read_only_hint() {

@@ -287,7 +287,7 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
             Err(err) => part.notes_only("forwarded_fetches", &err),
         }
         let query_store = probe.query_store_readable();
-        match advice::query_families(client, options.window_days, query_store).await {
+        match advice::query_families(client, options.window_in_minutes(), query_store).await {
             Ok(families) => part.query_families = families,
             Err(err) => part.notes_only("query_families", &err),
         }

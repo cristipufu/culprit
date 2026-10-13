@@ -36,7 +36,7 @@ pub(crate) async fn forwarded_fetches(client: &mut MsClient) -> tiberius::Result
 
 /// Query Store queries grouped by query_hash: a family with many members is the same statement sent with different
 /// literals. Members are ranked by time so the family links to its heaviest variants.
-fn families_sql(days: u32) -> String {
+fn families_sql(window_minutes: u32) -> String {
     format!(
         r#"
 WITH per_query AS (
@@ -47,7 +47,7 @@ WITH per_query AS (
   JOIN sys.query_store_plan p ON p.query_id = q.query_id
   JOIN sys.query_store_runtime_stats rs ON rs.plan_id = p.plan_id
   JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
-  WHERE i.end_time > DATEADD(day, -{days}, SYSDATETIMEOFFSET())
+  WHERE i.end_time > DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET())
   GROUP BY q.query_hash, q.query_id, q.query_text_id
 ),
 families AS (
@@ -91,12 +91,12 @@ ORDER BY COUNT(*) DESC
 
 pub(crate) async fn query_families(
     client: &mut MsClient,
-    days: u32,
+    window_minutes: u32,
     query_store: bool,
 ) -> tiberius::Result<Vec<QueryFamily>> {
     let mut families: Vec<QueryFamily> = Vec::new();
     if query_store {
-        for r in query(client, &families_sql(days.max(1))).await? {
+        for r in query(client, &families_sql(window_minutes.max(1))).await? {
             let key = r.string("query_hash");
             let id = r.string("query_id");
             match families.iter_mut().find(|f| f.key == key) {

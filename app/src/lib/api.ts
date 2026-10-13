@@ -60,9 +60,9 @@ export interface Api {
   onSignIn(listener: (event: SignInEvent) => void): Promise<() => void>;
   cancelSignIn(): Promise<void>;
   openSignInPage(): Promise<void>;
-  latestReport(name: string, windowDays: number | null): Promise<Report | null>;
-  scan(name: string, windowDays: number | null): Promise<Report>;
-  brief(name: string, findingId: string, windowDays: number | null): Promise<string>;
+  latestReport(name: string, windowMinutes: number | null): Promise<Report | null>;
+  scan(name: string, windowMinutes: number | null): Promise<Report>;
+  brief(name: string, findingId: string, windowMinutes: number | null): Promise<string>;
   explain(name: string, sql: string, mode: ExplainMode, confirmed: boolean): Promise<Plan>;
   queryPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
   /** The actual plan of the query's last run as the engine kept it (SQL Server 2019+); never runs the query. */
@@ -72,7 +72,7 @@ export interface Api {
   /** What differs between the latest scans of two connections of the same engine. */
   drift(a: string, b: string): Promise<Drift>;
   /** The dashboard for the latest report with this window (no live read; the app polls sessions itself). */
-  dashboard(name: string, windowDays: number | null): Promise<Dashboard>;
+  dashboard(name: string, windowMinutes: number | null): Promise<Dashboard>;
   /** The index advisor's plan from the latest report: indexes to add, to clean up, and tables to look at. */
   indexAdvice(name: string): Promise<IndexAdvice>;
   parsePlan(text: string): Promise<Plan>;
@@ -89,7 +89,7 @@ export interface Api {
   savePlanFile(name: string, contents: string): Promise<string>;
   live(name: string): Promise<LiveState>;
   /** Where the latest scan's database time went, by wait category with the queries behind each. */
-  waits(name: string, windowDays: number | null): Promise<WaitsReport | null>;
+  waits(name: string, windowMinutes: number | null): Promise<WaitsReport | null>;
   /** What the server waits on right now, sampled for `seconds`. */
   waitSample(name: string, seconds: number): Promise<WaitSample>;
   interruptSession(name: string, session: string, action: SessionAction): Promise<void>;
@@ -155,16 +155,16 @@ async function desktopApi(): Promise<Api> {
     },
     cancelSignIn: () => invoke("cancel_sign_in"),
     openSignInPage: () => invoke("open_sign_in_page"),
-    latestReport: (name, windowDays) => invoke("latest_report", { name, windowDays }),
-    scan: (name, windowDays) => invoke("scan", { name, windowDays }),
-    brief: (name, findingId, windowDays) => invoke("brief", { name, findingId, windowDays }),
+    latestReport: (name, windowMinutes) => invoke("latest_report", { name, windowMinutes }),
+    scan: (name, windowMinutes) => invoke("scan", { name, windowMinutes }),
+    brief: (name, findingId, windowMinutes) => invoke("brief", { name, findingId, windowMinutes }),
     explain: (name, sql, mode, confirmed) => invoke("explain", { name, sql, mode, confirmed }),
     queryPlan: (name, queryId, planId) => invoke("query_plan", { name, queryId, planId }),
     lastActualPlan: (name, queryId, planId) => invoke("last_actual_plan", { name, queryId, planId }),
     queryProgress: (name, session, withPlan) => invoke("query_progress", { name, session, withPlan }),
     drift: (a, b) => invoke("drift", { a, b }),
     indexAdvice: (name) => invoke("index_advice", { name }),
-    dashboard: (name, windowDays) => invoke("dashboard", { name, windowDays }),
+    dashboard: (name, windowMinutes) => invoke("dashboard", { name, windowMinutes }),
     parsePlan: (text) => invoke("parse_plan", { text }),
     diffPlans: (a, b, nameA, nameB, connection) =>
       invoke("diff_plans", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB, connection: connection ?? null }),
@@ -176,7 +176,7 @@ async function desktopApi(): Promise<Api> {
     verifyFindings: (name, ids) => invoke("verify_findings", { name, ids }),
     savePlanFile: (name, contents) => invoke("save_plan_file", { name, contents }),
     live: (name) => invoke("live", { name }),
-    waits: (name, windowDays) => invoke("waits", { name, windowDays }),
+    waits: (name, windowMinutes) => invoke("waits", { name, windowMinutes }),
     waitSample: (name, seconds) => invoke("wait_sample", { name, seconds }),
     interruptSession: (name, session, action) => invoke("interrupt_session", { name, session, action }),
     run: (name, sql, limit, confirmed) => invoke("run_sql", { name, sql, limit, confirmed }),

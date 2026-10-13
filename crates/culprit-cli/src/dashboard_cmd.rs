@@ -15,6 +15,9 @@ pub struct DashboardArgs {
     /// Read the latest scan with this window (SQL Server Query Store days).
     #[arg(long)]
     pub window_days: Option<u32>,
+    /// Read the latest scan with this window, in days, hours or minutes: 6h, 90m, 2d. Instead of --window-days.
+    #[arg(long, value_parser = crate::parse_window_arg, conflicts_with = "window_days", value_name = "DURATION")]
+    pub window: Option<u32>,
     /// Take a fresh scan first instead of reading the latest one.
     #[arg(long)]
     pub scan: bool,
@@ -27,14 +30,14 @@ pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
     let mut dashboard = match crate::report_file(&args.connection) {
         Some(path) => culprit_engine::dashboard_report(&reports::load(&path)?),
         None => {
+            let window = crate::window_minutes(args.window, args.window_days);
             if args.scan {
                 let defaults = SnapshotOptions::default();
-                let options =
-                    SnapshotOptions { window_days: args.window_days.unwrap_or(defaults.window_days), ..defaults };
+                let options = defaults.clone().with_window_minutes(window.unwrap_or(defaults.window_in_minutes()));
                 out.progress(&format!("Scanning {}…", args.connection));
                 ws.scan(&args.connection, &options).await?;
             }
-            ws.dashboard(&args.connection, args.window_days, !args.no_live).await?
+            ws.dashboard(&args.connection, window, !args.no_live).await?
         }
     };
     let connection = dashboard.connection.clone();

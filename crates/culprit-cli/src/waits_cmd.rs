@@ -26,6 +26,9 @@ pub struct WaitsArgs {
     /// Read the latest scan with this window (SQL Server Query Store days).
     #[arg(long)]
     pub window_days: Option<u32>,
+    /// Read the latest scan with this window, in days, hours or minutes: 6h, 90m, 2d. Instead of --window-days.
+    #[arg(long, value_parser = crate::parse_window_arg, conflicts_with = "window_days", value_name = "DURATION")]
+    pub window: Option<u32>,
     /// Explain a saved snapshot or report file instead of a connection's latest scan.
     #[arg(long, conflicts_with = "now")]
     pub file: Option<PathBuf>,
@@ -59,10 +62,12 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
             (snapshot.connection.clone(), snapshot)
         }
         (None, Some(connection)) => {
-            let report = ws.latest_report(connection, args.window_days)?.ok_or_else(|| {
-                Error::not_found(format!("No report for {connection} yet"))
-                    .with_hint("Scan it first: culprit scan <connection>")
-            })?;
+            let report = ws
+                .latest_report(connection, crate::window_minutes(args.window, args.window_days))?
+                .ok_or_else(|| {
+                    Error::not_found(format!("No report for {connection} yet"))
+                        .with_hint("Scan it first: culprit scan <connection>")
+                })?;
             (connection.clone(), report.snapshot)
         }
         (None, None) => return Err(Error::invalid("Name a connection, or pass --file")),

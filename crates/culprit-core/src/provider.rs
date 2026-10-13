@@ -10,8 +10,14 @@ use crate::plan::Plan;
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct SnapshotOptions {
-    /// How far back to read workload history where the engine keeps it (Query Store).
+    /// How far back to read workload history where the engine keeps it (Query Store), in whole days. A window that
+    /// isn't whole days sets `window_minutes` too, and this is that window rounded up.
     pub window_days: u32,
+    /// The window in minutes when it isn't a whole number of days (`--window 6h`). Absent from scans before windows
+    /// could be hours, which read `window_days`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub window_minutes: Option<u32>,
     /// How many of the heaviest queries to keep in the snapshot.
     pub top_queries: u32,
     /// How many plans to fetch and parse, heaviest queries first.
@@ -20,7 +26,22 @@ pub struct SnapshotOptions {
 
 impl Default for SnapshotOptions {
     fn default() -> Self {
-        SnapshotOptions { window_days: 7, top_queries: 60, plans: 25 }
+        SnapshotOptions { window_days: 7, window_minutes: None, top_queries: 60, plans: 25 }
+    }
+}
+
+impl SnapshotOptions {
+    /// The history window in minutes, whether it was given in days or not.
+    pub fn window_in_minutes(&self) -> u32 {
+        self.window_minutes.unwrap_or_else(|| self.window_days.saturating_mul(crate::MINUTES_PER_DAY)).max(1)
+    }
+
+    /// These options with a window of `minutes`: whole days keep `window_days` alone, as every scan did before.
+    pub fn with_window_minutes(self, minutes: u32) -> Self {
+        let minutes = minutes.max(1);
+        let days = minutes.div_ceil(crate::MINUTES_PER_DAY);
+        let exact = minutes.is_multiple_of(crate::MINUTES_PER_DAY);
+        SnapshotOptions { window_days: days, window_minutes: (!exact).then_some(minutes), ..self }
     }
 }
 
@@ -131,5 +152,31 @@ pub trait Provider: Send + Sync {
     /// the engine doesn't date are found by comparing Culprit's scans instead.
     async fn recorded_changes(&self, _since: &str) -> Result<Vec<crate::events::ChangeEvent>> {
         Err(Error::new(ErrorCode::Unsupported, format!("{} doesn't date schema changes", self.engine())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_window_of_hours_keeps_its_minutes_and_rounds_its_days_up() {
+        let six_hours = SnapshotOptions::default().with_window_minutes(360);
+        assert_eq!((six_hours.window_days, six_hours.window_minutes), (1, Some(360)));
+        assert_eq!(six_hours.window_in_minutes(), 360);
+
+        let two_days = SnapshotOptions::default().with_window_minutes(2 * crate::MINUTES_PER_DAY);
+        assert_eq!((two_days.window_days, two_days.window_minutes), (2, None));
+        assert_eq!(two_days.window_in_minutes(), 2 * crate::MINUTES_PER_DAY);
+    }
+
+    #[test]
+    fn options_saved_before_hour_windows_still_read() {
+        let old: SnapshotOptions =
+            serde_json::from_str(r#"{"window_days":7,"top_queries":60,"plans":25}"#).expect("old options");
+        assert_eq!(old.window_minutes, None);
+        assert_eq!(old.window_in_minutes(), 7 * crate::MINUTES_PER_DAY);
+        let json = serde_json::to_string(&SnapshotOptions::default()).expect("serialize");
+        assert!(!json.contains("window_minutes"), "{json}");
     }
 }

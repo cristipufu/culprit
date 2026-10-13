@@ -56,7 +56,7 @@ function openFinding(id: string): void {
  * explains it. Composed from the latest scan by the same code as `culprit dashboard`; sessions are read live.
  */
 export default function Dashboard({ report, connection }: { report: Report; connection: ConnectionInfo }) {
-  const windowDays = useStore((s) => s.windowDays);
+  const windowMinutes = useStore((s) => s.windowMinutes);
   const scanning = useStore((s) => s.report.status === "ready" && s.report.scanning);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [waits, setWaits] = useState<{ tab: WaitsTab; category?: string } | null>(null);
@@ -66,13 +66,13 @@ export default function Dashboard({ report, connection }: { report: Report; conn
   useEffect(() => {
     let current = true;
     api()
-      .then((client) => client.dashboard(connection.name, windowDays))
+      .then((client) => client.dashboard(connection.name, windowMinutes))
       .then((model) => current && setLoaded({ status: "ready", model }))
       .catch((e) => current && setLoaded({ status: "error", error: errorMessage(e) }));
     return () => {
       current = false;
     };
-  }, [connection.name, windowDays, report.snapshot.id]);
+  }, [connection.name, windowMinutes, report.snapshot.id]);
 
   const tiles = useMemo(() => {
     if (loaded.status !== "ready") return null;

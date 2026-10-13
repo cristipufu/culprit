@@ -71,6 +71,16 @@ impl ChangesArgs {
     }
 }
 
+/// `--window`: `6h`, `90m`, `2d` or `1d12h`, in minutes.
+pub(crate) fn parse_window_arg(text: &str) -> Result<u32, String> {
+    culprit_core::parse_window(text)
+}
+
+/// The window a command reads, in minutes: `--window`, else `--window-days` in whole days, else none.
+pub(crate) fn window_minutes(window: Option<u32>, window_days: Option<u32>) -> Option<u32> {
+    window.or_else(|| window_days.map(|days| days.max(1).saturating_mul(culprit_core::MINUTES_PER_DAY)))
+}
+
 /// `6h`, `90m`, `2d`, or a bare number of hours.
 pub(crate) fn parse_hours(text: &str) -> Result<f64, String> {
     let text = text.trim();
@@ -300,6 +310,10 @@ struct ScanArgs {
     /// Days of Query Store history to read.
     #[arg(long, default_value_t = 7)]
     window_days: u32,
+    /// How far back to read history, in days, hours or minutes: 6h, 90m, 2d, 1d12h. Instead of --window-days. Query
+    /// Store keeps history in intervals (often an hour), so the window starts at the interval its edge falls in.
+    #[arg(long, value_parser = parse_window_arg, conflicts_with = "window_days", value_name = "DURATION")]
+    window: Option<u32>,
     /// How many of the heaviest queries to keep.
     #[arg(long, default_value_t = 60)]
     top: u32,
@@ -553,7 +567,9 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             Ok(0)
         }
         Command::Scan(args) => {
-            let options = SnapshotOptions { window_days: args.window_days, top_queries: args.top, plans: args.plans };
+            let window = window_minutes(args.window, Some(args.window_days)).unwrap_or_default();
+            let options = SnapshotOptions { top_queries: args.top, plans: args.plans, ..SnapshotOptions::default() }
+                .with_window_minutes(window);
             out.progress(&format!("Scanning {}…", args.connection));
             let report = ws.scan(&args.connection, &options).await?;
             out.scan(&report, args.full, &ws.paths().reports_dir(&args.connection));
@@ -943,3 +959,49 @@ fn echo_input(on: bool) {
 
 #[cfg(not(any(unix, windows)))]
 fn echo_input(_on: bool) {}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+
+    fn scan_args(args: &[&str]) -> Result<ScanArgs, clap::Error> {
+        let cli = Cli::try_parse_from([&["culprit", "scan", "shop"], args].concat())?;
+        match cli.command {
+            Command::Scan(scan) => Ok(scan),
+            _ => unreachable!("parsed as scan"),
+        }
+    }
+
+    #[test]
+    fn scan_takes_a_window_in_hours() {
+        let scan = scan_args(&["--window", "6h"]).expect("6h parses");
+        assert_eq!(scan.window, Some(360));
+        assert_eq!(window_minutes(scan.window, Some(scan.window_days)), Some(360));
+        // Without --window, --window-days (or its default of 7) is the window, as before.
+        let scan = scan_args(&["--window-days", "2"]).expect("days parse");
+        assert_eq!(window_minutes(scan.window, Some(scan.window_days)), Some(2 * culprit_core::MINUTES_PER_DAY));
+        let scan = scan_args(&[]).expect("defaults parse");
+        assert_eq!(window_minutes(scan.window, Some(scan.window_days)), Some(7 * culprit_core::MINUTES_PER_DAY));
+    }
+
+    #[test]
+    fn scan_refuses_a_window_given_twice_or_badly() {
+        let both = scan_args(&["--window", "6h", "--window-days", "2"]).err().expect("conflict");
+        assert_eq!(both.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let garbage = scan_args(&["--window", "6"]).err().expect("no unit");
+        assert!(garbage.to_string().contains("isn't a window"), "{garbage}");
+    }
+
+    #[test]
+    fn dashboard_and_waits_take_a_window_too() {
+        let cli = Cli::try_parse_from(["culprit", "dashboard", "shop", "--window", "90m"]).expect("dashboard");
+        let Command::Dashboard(dashboard) = cli.command else { unreachable!("parsed as dashboard") };
+        assert_eq!(window_minutes(dashboard.window, dashboard.window_days), Some(90));
+        let cli = Cli::try_parse_from(["culprit", "waits", "shop", "--window", "1d12h"]).expect("waits");
+        let Command::Waits(waits) = cli.command else { unreachable!("parsed as waits") };
+        assert_eq!(window_minutes(waits.window, waits.window_days), Some(36 * 60));
+        assert!(Cli::try_parse_from(["culprit", "waits", "shop", "--window", "6h", "--window-days", "1"]).is_err());
+    }
+}

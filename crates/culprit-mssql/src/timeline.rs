@@ -24,11 +24,11 @@ fn bucket_expr(minutes: u32) -> String {
     format!("DATEDIFF(minute, '19700101', CAST(SWITCHOFFSET(i.start_time, '+00:00') AS datetime2(0))) / {minutes}")
 }
 
-fn totals_sql(days: u32, minutes: u32) -> String {
+fn totals_sql(window_minutes: u32, minutes: u32) -> String {
     let bucket = bucket_expr(minutes);
     format!(
         r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT {bucket} AS bucket,
   SUM(rs.count_executions) AS executions,
   SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_ms
@@ -44,11 +44,11 @@ GROUP BY {bucket}
     )
 }
 
-fn per_query_sql(days: u32, minutes: u32, ids: &str) -> String {
+fn per_query_sql(window_minutes: u32, minutes: u32, ids: &str) -> String {
     let bucket = bucket_expr(minutes);
     format!(
         r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT p.query_id, {bucket} AS bucket,
   SUM(rs.count_executions) AS executions,
   SUM(rs.avg_duration * rs.count_executions) / 1000.0 AS total_ms
@@ -67,7 +67,7 @@ const INTERVAL_SQL: &str =
 /// The workload timeline plus a trend for each of `query_ids`, aligned to the same buckets.
 pub(crate) async fn collect(
     client: &mut MsClient,
-    days: u32,
+    window_minutes: u32,
     history_hours: f64,
     window_end: Option<&str>,
     query_ids: &[String],
@@ -79,8 +79,8 @@ pub(crate) async fn collect(
         .and_then(|r| r.f64("minutes"))
         .map(|m| m.max(1.0) as u32)
         .unwrap_or(60);
-    let minutes = bucket_minutes(history_hours.min(f64::from(days) * 24.0), interval);
-    let totals: Vec<(i64, f64, f64)> = query(client, &totals_sql(days, minutes))
+    let minutes = bucket_minutes(history_hours.min(f64::from(window_minutes) / 60.0), interval);
+    let totals: Vec<(i64, f64, f64)> = query(client, &totals_sql(window_minutes, minutes))
         .await?
         .iter()
         .filter_map(|r| Some((r.f64("bucket")? as i64, r.f64_or_zero("total_ms"), r.f64_or_zero("executions"))))
@@ -108,7 +108,7 @@ pub(crate) async fn collect(
         .map(|id| (id.clone(), QueryTrend { time_ms: vec![Some(0.0); len], executions: vec![Some(0.0); len] }))
         .collect();
     if ids != "NULL" {
-        for r in query(client, &per_query_sql(days, minutes, &ids)).await? {
+        for r in query(client, &per_query_sql(window_minutes, minutes, &ids)).await? {
             let Some(bucket) = r.f64("bucket").map(|b| b as i64) else { continue };
             let Some(trend) = trends.get_mut(&r.string("query_id")) else { continue };
             if bucket < first || bucket > last {

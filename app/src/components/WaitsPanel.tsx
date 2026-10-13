@@ -36,7 +36,7 @@ export default function WaitsPanel({
   onClose: () => void;
 }) {
   const connection = report.snapshot.connection;
-  const windowDays = useStore((s) => s.windowDays);
+  const windowMinutes = useStore((s) => s.windowMinutes);
   const [tab, setTab] = useState<WaitsTab>(initialTab);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [selected, setSelected] = useState<string | undefined>(initialCategory);
@@ -46,13 +46,13 @@ export default function WaitsPanel({
   useEffect(() => {
     let live = true;
     api()
-      .then((client) => client.waits(connection, windowDays))
+      .then((client) => client.waits(connection, windowMinutes))
       .then((r) => live && setLoaded({ status: "ready", report: r }))
       .catch((e) => live && setLoaded({ status: "error", error: errorMessage(e) }));
     return () => {
       live = false;
     };
-  }, [connection, windowDays]);
+  }, [connection, windowMinutes]);
 
   useEffect(() => {
     sheet.current?.focus();

@@ -596,7 +596,7 @@ async fn slow_log_workload(
     options: &SnapshotOptions,
 ) -> Result<Option<CollectedWorkload>> {
     let now = culprit_core::changes::epoch(&probe.now).unwrap_or(0.0);
-    let since = slowlog::iso(now - f64::from(options.window_days.max(1)) * 86_400.0);
+    let since = slowlog::iso(now - f64::from(options.window_in_minutes()) * 60.0);
     let runs = slowlog::read(conn, &probe.database, &slowlog::sql_time(&since), None).await?;
     if runs.is_empty() {
         return Ok(None);
@@ -941,7 +941,7 @@ async fn attach_samples(conn: &mut Conn, probe: &Probe, options: &SnapshotOption
     }
     if probe.slow_log_table() && kept.iter().any(&wanted) {
         let now = culprit_core::changes::epoch(&probe.now).unwrap_or(0.0);
-        let since = slowlog::iso(now - f64::from(options.window_days.max(1)) * 86_400.0);
+        let since = slowlog::iso(now - f64::from(options.window_in_minutes()) * 60.0);
         if let Ok(runs) = slowlog::read(conn, &probe.database, &slowlog::sql_time(&since), None).await {
             let keyed: Vec<(String, &str)> = runs.iter().map(|r| (fingerprint(&r.sql).key, r.sql.as_str())).collect();
             for d in kept.iter_mut().filter(|d| wanted(d)) {

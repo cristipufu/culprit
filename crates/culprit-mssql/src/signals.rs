@@ -19,7 +19,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
     let mut notes: Vec<(&str, String)> = Vec::new();
     let from_query_store = snapshot.workload.as_ref().is_some_and(|w| w.source == "Query Store");
     if from_query_store && let Some(workload) = snapshot.workload.as_mut() {
-        if let Err(e) = attach_costs(client, options.window_days.max(1), &mut workload.queries).await {
+        if let Err(e) = attach_costs(client, options.window_in_minutes(), &mut workload.queries).await {
             notes.push(("query costs", map_error(e).message));
         }
         culprit_core::signals::fill_row_bytes(&mut workload.queries);
@@ -61,7 +61,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
 /// Aborted (3) and exception (4) runs, their log bytes, and compile time from Query Store.
 async fn attach_costs(
     client: &mut MsClient,
-    days: u32,
+    window_minutes: u32,
     queries: &mut [culprit_core::QueryStat],
 ) -> tiberius::Result<()> {
     let ids: Vec<String> = queries.iter().map(|q| q.id.clone()).collect();
@@ -72,7 +72,7 @@ async fn attach_costs(
     let runs_sql = |log: &str| {
         format!(
             r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT p.query_id,
   SUM(CASE WHEN rs.execution_type = 3 THEN rs.count_executions ELSE 0 END) AS aborted,
   SUM(CASE WHEN rs.execution_type = 3 THEN rs.avg_duration * rs.count_executions ELSE 0 END) / 1000.0 AS aborted_ms,
@@ -94,7 +94,7 @@ GROUP BY p.query_id
     let total_log = if with_log {
         let sql = format!(
             r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT SUM(rs.avg_log_bytes_used * rs.count_executions) AS log_bytes
 FROM sys.query_store_runtime_stats rs
 JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id

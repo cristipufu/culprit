@@ -35,7 +35,7 @@ export type State = {
   /** Open Schema on this table (`schema.table`, from the palette). */
   schemaTable: string | null;
   dismissed: Record<string, true>;
-  windowDays: WindowDays;
+  windowMinutes: WindowMinutes;
 };
 
 /** A "What changed" request with only the given fields set; the rest fall back to the defaults. */
@@ -54,18 +54,29 @@ export function changeRequest(fields: Partial<ChangeRequest> = {}): ChangeReques
   };
 }
 
-export const WINDOW_OPTIONS = [1, 7, 30] as const;
-export type WindowDays = (typeof WINDOW_OPTIONS)[number];
-const DEFAULT_WINDOW: WindowDays = 7;
+/** The workload windows the picker offers, in minutes: 6 hours, 24 hours, 7 days and 30 days. */
+export const WINDOW_OPTIONS = [360, 1440, 10080, 43200] as const;
+export type WindowMinutes = (typeof WINDOW_OPTIONS)[number];
+const DEFAULT_WINDOW: WindowMinutes = 10080;
+const MINUTES_PER_DAY = 1440;
+
+/** A scan's window in minutes, also for scans from before windows could be hours. */
+export function windowMinutesOf(options: { window_days: number; window_minutes?: number } | null | undefined): number | null {
+  return options ? options.window_minutes ?? options.window_days * MINUTES_PER_DAY : null;
+}
 
 function windowKey(name: string): string {
   return `culprit.window.${name}`;
 }
 
-function rememberedWindow(name: string): WindowDays {
+function rememberedWindow(name: string): WindowMinutes {
   try {
     const v = Number(localStorage.getItem(windowKey(name)));
-    return (WINDOW_OPTIONS as readonly number[]).includes(v) ? (v as WindowDays) : DEFAULT_WINDOW;
+    const offered = (m: number): m is WindowMinutes => (WINDOW_OPTIONS as readonly number[]).includes(m);
+    if (offered(v)) return v;
+    // Remembered in days before the picker offered hours.
+    const fromDays = v * MINUTES_PER_DAY;
+    return offered(fromDays) ? fromDays : DEFAULT_WINDOW;
   } catch {
     return DEFAULT_WINDOW;
   }
@@ -97,7 +108,7 @@ let state: State = {
   advisor: false,
   schemaTable: null,
   dismissed: loadDismissed(),
-  windowDays: DEFAULT_WINDOW,
+  windowMinutes: DEFAULT_WINDOW,
 };
 
 const listeners = new Set<() => void>();
@@ -151,28 +162,28 @@ export async function loadConnections(): Promise<ConnectionInfo[]> {
 /** Open a connection: show its last report for the remembered window instantly, then refresh it in place. */
 export async function openConnection(name: string, options: { rescan?: boolean } = {}): Promise<void> {
   const rescan = options.rescan ?? true;
-  const windowDays = rememberedWindow(name);
-  setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, report: { status: "loading" }, windowDays });
+  const windowMinutes = rememberedWindow(name);
+  setState({ active: name, view: "dashboard", finding: null, query: null, changes: null, report: { status: "loading" }, windowMinutes });
   rememberLast(name);
-  await showCachedThenScan(name, windowDays, rescan);
+  await showCachedThenScan(name, windowMinutes, rescan);
 }
 
 /** Switch the workload window (Query Store): cached report for that window if there is one, then a fresh scan. */
-export async function setWindow(days: WindowDays): Promise<void> {
+export async function setWindow(minutes: WindowMinutes): Promise<void> {
   const name = getState().active;
-  if (!name || days === getState().windowDays) return;
+  if (!name || minutes === getState().windowMinutes) return;
   try {
-    localStorage.setItem(windowKey(name), String(days));
+    localStorage.setItem(windowKey(name), String(minutes));
   } catch {}
-  setState({ windowDays: days, report: { status: "loading" } });
-  await showCachedThenScan(name, days, true);
+  setState({ windowMinutes: minutes, report: { status: "loading" } });
+  await showCachedThenScan(name, minutes, true);
 }
 
-async function showCachedThenScan(name: string, windowDays: WindowDays, rescan: boolean): Promise<void> {
+async function showCachedThenScan(name: string, windowMinutes: WindowMinutes, rescan: boolean): Promise<void> {
   const client = await api();
   try {
-    const cached = await client.latestReport(name, windowDays);
-    if (getState().active !== name || getState().windowDays !== windowDays) return;
+    const cached = await client.latestReport(name, windowMinutes);
+    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
     if (cached) {
       const keep = getState().finding;
       const finding = keep && cached.findings.some((f) => f.id === keep) ? keep : cached.findings[0]?.id ?? null;
@@ -185,13 +196,13 @@ async function showCachedThenScan(name: string, windowDays: WindowDays, rescan: 
 }
 
 export async function scan(name: string): Promise<void> {
-  const windowDays = getState().windowDays;
+  const windowMinutes = getState().windowMinutes;
   const current = getState().report;
   if (current.status === "ready") setState({ report: { ...current, scanning: true, scanError: null } });
   else setState({ report: { status: "loading" } });
   try {
-    const report = await (await api()).scan(name, windowDays);
-    if (getState().active !== name || getState().windowDays !== windowDays) return;
+    const report = await (await api()).scan(name, windowMinutes);
+    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
     const keep = getState().finding;
     const stillThere = keep && report.findings.some((f) => f.id === keep);
     setState({
@@ -200,7 +211,7 @@ export async function scan(name: string): Promise<void> {
     });
     loadConnections();
   } catch (e) {
-    if (getState().active !== name || getState().windowDays !== windowDays) return;
+    if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
     const prev = getState().report;
     if (prev.status === "ready") setState({ report: { ...prev, scanning: false, scanError: errorMessage(e) } });
     else setState({ report: { status: "error", error: errorMessage(e) } });

@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use culprit_core::{Error, Report, Result};
+use culprit_core::{Error, MINUTES_PER_DAY, Report, Result, window_label};
 
 use crate::private_fs;
 use crate::trends::{self, Counters};
@@ -18,8 +18,12 @@ pub struct ReportSummary {
     pub taken_at: String,
     pub opportunities: u32,
     pub headline: String,
+    /// The scan's window in whole days; absent when it was hours (`window_minutes`).
     #[serde(default)]
     pub window_days: Option<u32>,
+    /// The scan's window in minutes. Absent from summaries written before windows could be hours.
+    #[serde(default)]
+    pub window_minutes: Option<u32>,
     /// The server as the scan saw it ("MariaDB 11.8.9"), so a list of connections can tell MariaDB from MySQL.
     #[serde(default)]
     pub product: Option<String>,
@@ -28,9 +32,17 @@ pub struct ReportSummary {
     pub no_workload: Option<String>,
 }
 
-fn summary_path(dir: &Path, window_days: Option<u32>) -> PathBuf {
-    match window_days {
-        Some(days) => dir.join(format!("latest-{days}d.json")),
+impl ReportSummary {
+    /// The scan's window in minutes, for summaries from before hour windows too.
+    pub fn window(&self) -> Option<u32> {
+        self.window_minutes.or_else(|| self.window_days.map(|days| days.saturating_mul(MINUTES_PER_DAY)))
+    }
+}
+
+/// The pointer to the latest scan with a window (`latest-7d.json`, `latest-6h.json`), or to the latest of any.
+fn summary_path(dir: &Path, window_minutes: Option<u32>) -> PathBuf {
+    match window_minutes {
+        Some(minutes) => dir.join(format!("latest-{}.json", window_label(minutes))),
         None => dir.join("latest.json"),
     }
 }
@@ -41,7 +53,8 @@ fn summary_of(report: &Report) -> ReportSummary {
         taken_at: report.snapshot.taken_at.clone(),
         opportunities: report.summary.opportunities,
         headline: report.summary.headline.clone(),
-        window_days: report.snapshot.options.as_ref().map(|o| o.window_days),
+        window_days: report.snapshot.options.as_ref().filter(|o| o.window_minutes.is_none()).map(|o| o.window_days),
+        window_minutes: report.snapshot.options.as_ref().map(|o| o.window_in_minutes()),
         product: Some(report.snapshot.server.product.clone()),
         no_workload: report.snapshot.no_workload_reason(),
     }
@@ -59,8 +72,8 @@ pub fn save(dir: &Path, report: &Report) -> Result<()> {
     let summary = summary_of(report);
     let json = serde_json::to_vec_pretty(&summary).map_err(|e| Error::internal(e.to_string()))?;
     write_atomic(&summary_path(dir, None), &json)?;
-    if let Some(days) = summary.window_days {
-        write_atomic(&summary_path(dir, Some(days)), &json)?;
+    if let Some(minutes) = summary.window() {
+        write_atomic(&summary_path(dir, Some(minutes)), &json)?;
     }
     Ok(())
 }
@@ -145,14 +158,14 @@ pub(crate) fn id_epoch(id: &str) -> Option<f64> {
     Some(t.and_utc().timestamp() as f64)
 }
 
-pub fn latest_summary(dir: &Path, window_days: Option<u32>) -> Option<ReportSummary> {
-    let bytes = fs::read(summary_path(dir, window_days)).ok()?;
+pub fn latest_summary(dir: &Path, window_minutes: Option<u32>) -> Option<ReportSummary> {
+    let bytes = fs::read(summary_path(dir, window_minutes)).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
-/// The most recent report, or the most recent one taken with a given window.
-pub fn latest(dir: &Path, window_days: Option<u32>) -> Result<Option<Report>> {
-    let Some(summary) = latest_summary(dir, window_days) else {
+/// The most recent report, or the most recent one taken with a given window (in minutes).
+pub fn latest(dir: &Path, window_minutes: Option<u32>) -> Result<Option<Report>> {
+    let Some(summary) = latest_summary(dir, window_minutes) else {
         return Ok(None);
     };
     load(&dir.join(format!("{}.json", summary.id))).map(Some)
@@ -184,4 +197,46 @@ pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {
         .collect();
     out.sort_by(|a, b| b.taken_at.cmp(&a.taken_at));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use culprit_core::SnapshotOptions;
+
+    use super::*;
+
+    fn fixture_report(id: &str, window_minutes: u32) -> Report {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/mssql-demo.report.json");
+        let mut report: Report = serde_json::from_str(&fs::read_to_string(path).expect("fixture")).expect("report");
+        report.snapshot.id = id.into();
+        report.snapshot.options = Some(SnapshotOptions::default().with_window_minutes(window_minutes));
+        report
+    }
+
+    #[test]
+    fn an_hours_scan_keeps_its_own_latest_pointer() {
+        let dir = std::env::temp_dir().join(format!("culprit-reports-window-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        save(&dir, &fixture_report("20261013T080000", MINUTES_PER_DAY)).expect("save the day scan");
+        save(&dir, &fixture_report("20261013T090000", 360)).expect("save the 6h scan");
+
+        assert!(dir.join("latest-6h.json").exists());
+        // The 6-hour scan doesn't take the 24-hour window's place.
+        let id = |window: Option<u32>| latest(&dir, window).expect("read").expect("a report").snapshot.id;
+        assert_eq!(id(Some(MINUTES_PER_DAY)), "20261013T080000");
+        assert_eq!(id(Some(360)), "20261013T090000");
+        assert_eq!(id(None), "20261013T090000");
+        let summary = latest_summary(&dir, Some(360)).expect("6h summary");
+        assert_eq!((summary.window_days, summary.window_minutes, summary.window()), (None, Some(360), Some(360)));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_summary_from_before_hour_windows_still_names_its_window() {
+        let old: ReportSummary =
+            serde_json::from_str(r#"{"id":"x","taken_at":"t","opportunities":1,"headline":"h","window_days":7}"#)
+                .expect("old summary");
+        assert_eq!(old.window(), Some(7 * MINUTES_PER_DAY));
+        assert_eq!(summary_path(Path::new("/r"), old.window()), Path::new("/r/latest-7d.json"));
+    }
 }

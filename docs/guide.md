@@ -52,6 +52,7 @@ culprit conn discover --match shop --match stg --save   # or find Azure SQL, Pos
 culprit conn import --dry-run                  # or bring in connections from Azure Data Studio, VS Code, DBeaver, DataGrip
 
 culprit scan shop-staging                      # findings, ranked
+culprit scan shop-staging --window 6h          # the same over the last 6 hours (90m, 2d, 1d12h; up to 90 days)
 culprit dashboard shop-staging                 # the database at a glance: what needs a look first
 culprit changes shop-staging --recent 2h      # what got slower, and what changed around it
 culprit mark shop-staging deploy v1.4.2         # put a deploy on the timeline (from CI, after a migration)

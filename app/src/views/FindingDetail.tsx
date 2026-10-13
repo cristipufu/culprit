@@ -13,7 +13,7 @@ import { api } from "../lib/api";
 import { ago, count, duration, metric, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { honest } from "../lib/rates";
-import { setState, toast, toggleDismissed, useStore } from "../lib/store";
+import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
 
 const CONFIDENCE_LABEL = { high: "High confidence", medium: "Medium confidence", low: "Low confidence" } as const;
@@ -34,7 +34,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
     await copyAndTell(finding.fix.sql, "Fix copied");
   };
   const copyBrief = async () => {
-    const brief = await (await api()).brief(report.snapshot.connection, finding.id, report.snapshot.options?.window_days ?? null);
+    const brief = await (await api()).brief(report.snapshot.connection, finding.id, windowMinutesOf(report.snapshot.options));
     await copyAndTell(brief, "Brief copied. Paste it into your coding agent");
   };
   const openInEditor = () => {

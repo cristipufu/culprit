@@ -481,6 +481,24 @@ fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
 }
 
 #[cfg(test)]
+mod window_tests {
+    use culprit_core::Engine;
+
+    use super::summarize;
+    use crate::waits::snapshot_with;
+
+    /// A scan with `--window 6h` reads about six hours of Query Store intervals, and the headline says so.
+    #[test]
+    fn the_headline_names_an_hours_window() {
+        let mut snapshot = snapshot_with(Engine::Mssql);
+        let workload = snapshot.workload.as_mut().expect("fixture has a workload");
+        workload.windowed = true;
+        workload.window_hours = 6.0;
+        assert_eq!(summarize(&snapshot, &[]).headline, "Nothing stands out over the last 6 hours.");
+    }
+}
+
+#[cfg(test)]
 mod prose_tests {
     use super::without_database;
 

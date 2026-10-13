@@ -626,9 +626,9 @@ impl Workspace {
         Ok(report)
     }
 
-    /// The newest saved report, or the newest one scanned with `window_days` when given.
-    pub fn latest_report(&self, name: &str, window_days: Option<u32>) -> Result<Option<Report>> {
-        reports::latest(&self.paths.reports_dir(name), window_days)
+    /// The newest saved report, or the newest one scanned with a window of `window_minutes` when given.
+    pub fn latest_report(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<Report>> {
+        reports::latest(&self.paths.reports_dir(name), window_minutes)
     }
 
     pub fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
@@ -677,8 +677,8 @@ impl Workspace {
             (Some(path), _, _) => Some(recheck(self.analyze_file(path)?)),
             (None, Some(name), None) => {
                 let history = reports::list(&self.paths.reports_dir(name))?;
-                let window = history.first().and_then(|r| r.window_days);
-                match history.iter().skip(1).find(|r| r.window_days == window) {
+                let window = history.first().and_then(|r| r.window());
+                match history.iter().skip(1).find(|r| r.window() == window) {
                     Some(summary) => Some(recheck(load(name, &summary.id)?)),
                     None => None,
                 }
@@ -704,10 +704,16 @@ impl Workspace {
         culprit_checks::index_advice(&fresh)
     }
 
-    /// The dashboard for a connection's latest report (the one scanned with `window_days`, when given). With `live`,
-    /// sessions are read once too; if that fails, the "right now" tile says why and the rest still comes back.
-    pub async fn dashboard(&self, name: &str, window_days: Option<u32>, live: bool) -> Result<culprit_core::Dashboard> {
-        let report = self.latest_report(name, window_days)?.ok_or_else(|| {
+    /// The dashboard for a connection's latest report (the one scanned with a window of `window_minutes`, when given).
+    /// With `live`, sessions are read once too; if that fails, the "right now" tile says why and the rest still comes
+    /// back.
+    pub async fn dashboard(
+        &self,
+        name: &str,
+        window_minutes: Option<u32>,
+        live: bool,
+    ) -> Result<culprit_core::Dashboard> {
+        let report = self.latest_report(name, window_minutes)?.ok_or_else(|| {
             Error::not_found(format!("No saved report for '{name}'"))
                 .with_hint(format!("Run `culprit scan {name}` first"))
         })?;
@@ -832,8 +838,8 @@ impl Workspace {
     /// Sessions, blocking and waits, plus what Live may do to other sessions here (nothing on production).
     /// Where the latest scan's database time went, by wait category, with the queries behind each. `None` when the scan
     /// recorded no waits (PostgreSQL without track_io_timing, logins that can't read wait statistics).
-    pub fn waits(&self, name: &str, window_days: Option<u32>) -> Result<Option<culprit_core::WaitsReport>> {
-        let report = self.latest_report(name, window_days)?.ok_or_else(|| {
+    pub fn waits(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<culprit_core::WaitsReport>> {
+        let report = self.latest_report(name, window_minutes)?.ok_or_else(|| {
             Error::not_found(format!("No report for {name} yet")).with_hint("Scan it first: culprit scan <connection>")
         })?;
         Ok(explain_waits(&report.snapshot))

@@ -90,6 +90,7 @@ culprit conn rename shop-stg-db shop-staging       # aliases are just names
 ```sh
 culprit conn list --json                                  # what can I reach?
 culprit scan shop-staging --json                              # summary + ranked findings (compact)
+culprit scan shop-staging --window 6h --json                  # the same over the last 6 hours (or 90m, 2d, 1d12h)
 culprit show shop-staging 'missing-index:dbo.orders(customer_id)' --json
 #   → finding, the queries involved with stats and hottest plan operator, and `brief`:
 #     a self-contained markdown description of the problem, evidence, fix and verification
@@ -203,7 +204,7 @@ Reports are stored per connection under `~/.local/share/culprit/reports/<connect
 
 ```sh
 culprit digest staging                                          # latest scan vs the scan before it with the same window
-culprit scan staging --window-days 1 --json --full > report.json
+culprit scan staging --window-days 1 --json --full > report.json    # or --window 6h for the last six hours
 culprit digest --report report.json --since previous-digest.json > digest.json   # CI: keep digest.json for the next run
 ```
 

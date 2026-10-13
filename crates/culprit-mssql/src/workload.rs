@@ -136,11 +136,11 @@ impl QueryAgg {
     }
 }
 
-fn runtime_sql(days: u32, with_tempdb: bool) -> String {
+fn runtime_sql(window_minutes: u32, with_tempdb: bool) -> String {
     let tempdb = if with_tempdb { "SUM(rs.avg_tempdb_space_used * rs.count_executions)" } else { "CAST(0 AS float)" };
     format!(
         r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT
   p.query_id,
   rs.plan_id,
@@ -171,10 +171,10 @@ GROUP BY p.query_id, rs.plan_id
     )
 }
 
-fn window_sql(days: u32) -> String {
+fn window_sql(window_minutes: u32) -> String {
     format!(
         r#"
-DECLARE @since datetimeoffset = DATEADD(day, -{days}, SYSDATETIMEOFFSET());
+DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT {start} AS window_start, {end} AS window_end,
   DATEDIFF(second, MIN(start_time), MAX(end_time)) / 3600.0 AS window_hours
 FROM sys.query_store_runtime_stats_interval
@@ -203,17 +203,18 @@ pub(crate) struct WorkloadResult {
     pub(crate) plan_errors: usize,
 }
 
-/// Workload from Query Store over `window_days`.
+/// Workload from Query Store over the scan's window. Query Store keeps runtime stats per interval (often an
+/// hour), so the window reaches back to the start of the interval its edge falls in.
 pub(crate) async fn from_query_store(
     client: &mut MsClient,
     options: &SnapshotOptions,
 ) -> tiberius::Result<WorkloadResult> {
-    let days = options.window_days.max(1);
-    let rows = match query(client, &runtime_sql(days, true)).await {
+    let window_minutes = options.window_in_minutes();
+    let rows = match query(client, &runtime_sql(window_minutes, true)).await {
         Ok(rows) => rows,
-        Err(_) => query(client, &runtime_sql(days, false)).await?,
+        Err(_) => query(client, &runtime_sql(window_minutes, false)).await?,
     };
-    let window = query(client, &window_sql(days)).await?.into_iter().next().unwrap_or_default();
+    let window = query(client, &window_sql(window_minutes)).await?.into_iter().next().unwrap_or_default();
 
     let mut by_query: BTreeMap<String, QueryAgg> = BTreeMap::new();
     for r in &rows {
@@ -259,7 +260,7 @@ WHERE q.query_id IN ({})
         }
     }
 
-    let since = format!("DATEADD(day, -{days}, SYSDATETIMEOFFSET())");
+    let since = format!("DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET())");
     let all_plan_ids: Vec<String> = selected.iter().flat_map(|q| q.plans.iter().map(|p| p.plan_id.clone())).collect();
     let plan_waits_sql = format!(
         r#"
@@ -300,12 +301,12 @@ GROUP BY ws.wait_category_desc
         Err(_) => Vec::new(),
     };
 
-    let window_hours = window.f64("window_hours").unwrap_or(f64::from(days) * 24.0);
+    let window_hours = window.f64("window_hours").unwrap_or(f64::from(window_minutes) / 60.0);
     let window_end = window.str("window_end");
     let trend_ids: Vec<String> = selected.iter().take(TREND_QUERIES).map(|q| q.query_id.clone()).collect();
     // Trends are a bonus: a failure here must not cost the scan its workload.
     let (timeline, mut trends) =
-        match crate::timeline::collect(client, days, window_hours, window_end.as_deref(), &trend_ids).await {
+        match crate::timeline::collect(client, window_minutes, window_hours, window_end.as_deref(), &trend_ids).await {
             Ok(Some((timeline, trends))) => (Some(timeline), trends),
             _ => (None, HashMap::new()),
         };
@@ -335,7 +336,7 @@ GROUP BY ws.wait_category_desc
         })
         .collect();
     // Compiled values and SQL Server 2022 variants are a bonus as well.
-    crate::spread::attach(client, days, &mut queries).await;
+    crate::spread::attach(client, window_minutes, &mut queries).await;
 
     let workload = Workload {
         source: "Query Store".into(),
@@ -637,6 +638,20 @@ pub(crate) async fn from_plan_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A 6-hour window reaches back 360 minutes, and keeps every interval that ended inside it: the one its edge falls
+    /// in included, so the window starts at that interval's start.
+    #[test]
+    fn an_hours_window_reads_back_in_minutes() {
+        let options = SnapshotOptions::default().with_window_minutes(360);
+        for sql in [runtime_sql(options.window_in_minutes(), true), window_sql(options.window_in_minutes())] {
+            assert!(sql.contains("DATEADD(minute, -360, SYSDATETIMEOFFSET())"), "{sql}");
+            assert!(sql.contains("end_time >= @since"), "{sql}");
+        }
+        // A window in days reads the same history it always did.
+        let week = SnapshotOptions::default();
+        assert!(window_sql(week.window_in_minutes()).contains("DATEADD(minute, -10080, SYSDATETIMEOFFSET())"));
+    }
 
     fn agg(id: &str, ms: f64, cpu: f64, reads: f64, executions: f64) -> QueryAgg {
         QueryAgg {
