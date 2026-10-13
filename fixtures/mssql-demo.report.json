@@ -444,12 +444,6 @@
           "text": null,
           "unit": "count",
           "value": 5.0
-        },
-        {
-          "label": "Attempts another session stopped",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],

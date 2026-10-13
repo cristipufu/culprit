@@ -1266,6 +1266,7 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             name,
             columns,
             contention: None,
+            created_at_latest: None,
         });
     }
     Ok((out, usage_note))

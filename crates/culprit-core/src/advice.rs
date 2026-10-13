@@ -61,7 +61,7 @@ pub struct AutomaticTuningOption {
 #[ts(export)]
 pub struct TuningRecommendation {
     pub name: String,
-    /// FORCE_LAST_GOOD_PLAN for plan-choice regressions.
+    /// FORCE_LAST_GOOD_PLAN for plan-choice regressions; CreateIndex and DropIndex on Azure SQL Database.
     pub kind: String,
     pub reason: Option<String>,
     /// Active, Verifying, Success, Reverted, Expired…
@@ -78,6 +78,27 @@ pub struct TuningRecommendation {
     /// When the query last ran, by Query Store (UTC). A recommendation outlives the query a deploy replaced.
     #[serde(default)]
     pub last_execution: Option<String>,
+    /// SQL Server's estimate of its value, 0–100.
+    #[serde(default)]
+    pub score: Option<f64>,
+    /// When SQL Server applied it itself (UTC): automatic tuning forced the plan, or created the index.
+    #[serde(default)]
+    pub applied_at: Option<String>,
+    /// The index a CreateIndex or DropIndex recommendation is about.
+    #[serde(default)]
+    pub index: Option<RecommendedIndex>,
+}
+
+/// An index Azure SQL Database recommends creating or dropping.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct RecommendedIndex {
+    pub schema: String,
+    pub table: String,
+    pub name: Option<String>,
+    /// Key columns, as the recommendation lists them.
+    pub columns: Vec<String>,
+    pub include: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
@@ -88,6 +109,9 @@ pub struct ForcedPlan {
     pub failures: f64,
     pub last_failure_reason: Option<String>,
     pub last_execution: Option<String>,
+    /// MANUAL (someone ran sp_query_store_force_plan) or AUTO (automatic plan correction), where the server says.
+    #[serde(default)]
+    pub forcing: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]

@@ -5,4 +5,10 @@ export type IndexStat = { schema: string, table: string, name: string, kind: str
 /**
  * Lock and latch waits on this index (SQL Server).
  */
-contention: IndexContention | null, };
+contention: IndexContention | null, 
+/**
+ * The latest it may have been created (UTC), set by a scan only when something says it may be new: an earlier
+ * scan saw its table without it, or the database dated a change to its table that no earlier scan was there to
+ * see. Its usage counters cover the time since at least. `None`: as old as the counters, as far as anyone knows.
+ */
+created_at_latest: string | null, };

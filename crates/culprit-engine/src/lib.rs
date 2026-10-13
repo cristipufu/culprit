@@ -620,9 +620,12 @@ impl Workspace {
             let history = reports::counters_history(&dir, &snapshot.taken_at);
             trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, &history);
         }
+        // This scan's changes come before the checks: an index the scans saw appear this week isn't unused yet.
+        let changes = history::compare(&dir, &snapshot, previous.as_ref().map(|p| p.id.as_str()), recorded);
+        history::date_new_indexes(&dir, &mut snapshot, &changes);
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
-        history::record(&dir, &report, previous.as_ref().map(|p| p.id.as_str()), recorded);
+        history::keep(&dir, &report.snapshot.id, &changes);
         Ok(report)
     }
 

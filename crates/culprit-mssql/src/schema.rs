@@ -384,6 +384,7 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
         last_read: r.str("last_read"),
         definition: None,
         contention: None,
+        created_at_latest: None,
     }
 }
 

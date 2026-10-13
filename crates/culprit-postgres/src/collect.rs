@@ -900,6 +900,7 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
             last_read: r.text("last_read"),
             definition: r.text("definition"),
             contention: None,
+            created_at_latest: None,
         })
         .collect();
 

@@ -6,7 +6,9 @@ use culprit_core::{
     Severity, Snapshot, SubjectKind, Unit, format,
 };
 
-use crate::indexes::{backs_foreign_key, is_unused, measured_writes, redundant_indexes, same_keys, scan_groups};
+use crate::indexes::{
+    backs_foreign_key, is_unused, measured_writes, redundant_indexes, same_keys, scan_groups, too_new,
+};
 use crate::support::*;
 
 pub fn overlapping_index_info() -> CheckInfo {
@@ -32,7 +34,13 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
         let plain = |i: &IndexStat| {
             !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled && i.filter.is_none()
         };
-        if !plain(a) || redundant.contains(&a.name.as_str()) || is_unused(a) || a.columns.is_empty() {
+        // Rarely read says nothing about an index that may have been created this week.
+        if !plain(a)
+            || redundant.contains(&a.name.as_str())
+            || is_unused(snapshot, a)
+            || too_new(snapshot, a)
+            || a.columns.is_empty()
+        {
             continue;
         }
         let Some(reads) = a.reads else { continue };
@@ -195,8 +203,11 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
             continue;
         }
         let measured = per_day_is_measured(days);
-        let idle: Vec<&IndexStat> =
-            secondary.iter().copied().filter(|i| is_unused(i) || redundant.contains(&i.name.as_str())).collect();
+        let idle: Vec<&IndexStat> = secondary
+            .iter()
+            .copied()
+            .filter(|i| is_unused(snapshot, i) || redundant.contains(&i.name.as_str()))
+            .collect();
         let table_name = t.qualified();
         let mut f = finding("over-indexed", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
         f.title = format!(

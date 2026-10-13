@@ -4,7 +4,8 @@
 use std::collections::HashMap;
 
 use culprit_core::{
-    AutomaticTuningOption, ForcedPlan, PlanCacheUse, QueryFamily, QueryHint, TuningAdvice, TuningRecommendation,
+    AutomaticTuningOption, ForcedPlan, PlanCacheUse, QueryFamily, QueryHint, RecommendedIndex, TuningAdvice,
+    TuningRecommendation,
 };
 
 use crate::conn::{MsClient, query};
@@ -168,22 +169,138 @@ SELECT name, type, reason, {valid_since} AS valid_since,
   TRY_CAST(JSON_VALUE(details, '$.planForceDetails.regressedPlanErrorCount') AS int) AS regressed_errors,
   TRY_CAST(JSON_VALUE(details, '$.planForceDetails.recommendedPlanErrorCount') AS int) AS recommended_errors,
   JSON_VALUE(details, '$.implementationDetails.script') AS script,
+  CAST(score AS float) AS score, {applied} AS applied_at,
+  COALESCE(JSON_VALUE(details, '$.createIndexDetails.schema'), JSON_VALUE(details, '$.dropIndexDetails.schema')) AS index_schema,
+  COALESCE(JSON_VALUE(details, '$.createIndexDetails.table'), JSON_VALUE(details, '$.dropIndexDetails.table')) AS index_table,
+  COALESCE(JSON_VALUE(details, '$.createIndexDetails.indexName'), JSON_VALUE(details, '$.dropIndexDetails.indexName')) AS index_name,
+  COALESCE(JSON_VALUE(details, '$.createIndexDetails.indexColumns'), JSON_VALUE(details, '$.dropIndexDetails.indexColumns')) AS index_columns,
+  COALESCE(JSON_VALUE(details, '$.createIndexDetails.includedColumns'), JSON_VALUE(details, '$.dropIndexDetails.includedColumns')) AS included_columns,
   (SELECT {last} FROM sys.query_store_plan p
    WHERE p.query_id = TRY_CAST(JSON_VALUE(details, '$.planForceDetails.queryId') AS bigint)) AS last_execution
 FROM sys.dm_db_tuning_recommendations
 "#,
         valid_since = utc_local_iso("valid_since"),
+        applied = utc_local_iso("execute_action_start_time"),
         last = utc_local_iso("CAST(MAX(p.last_execution_time) AS datetime2)")
     )
 }
 
-fn forced_plans_sql() -> String {
+/// With how each plan was forced (SQL Server 2019+, Azure SQL), or without it on older versions.
+fn forced_plans_sql(with_forcing: bool) -> String {
     format!(
         "SELECT CAST(query_id AS varchar(20)) AS query_id, CAST(plan_id AS varchar(20)) AS plan_id,
-           force_failure_count, last_force_failure_reason_desc, {last} AS last_execution
+           force_failure_count, last_force_failure_reason_desc, {last} AS last_execution{forcing}
          FROM sys.query_store_plan WHERE is_forced_plan = 1",
-        last = utc_local_iso("CAST(last_execution_time AS datetime2)")
+        last = utc_local_iso("CAST(last_execution_time AS datetime2)"),
+        forcing = if with_forcing { ", plan_forcing_type_desc AS forcing" } else { "" }
     )
+}
+
+/// "[a],[b] ASC" → ["a", "b"]: a column list as SQL Server writes it, brackets and sort order dropped.
+fn column_list(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut current, mut quoted) = (String::new(), false);
+    for c in text.chars().chain([',']) {
+        match c {
+            '[' => quoted = true,
+            ']' => quoted = false,
+            ',' if !quoted => {
+                let mut column = current.trim().to_string();
+                for order in [" ASC", " DESC"] {
+                    if column.to_ascii_uppercase().ends_with(order) {
+                        column.truncate(column.len() - order.len());
+                    }
+                }
+                let column = column.trim();
+                if !column.is_empty() {
+                    out.push(column.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    out
+}
+
+/// What's between the parentheses that open at `text`'s first `(`, and what follows them.
+fn parenthesized(text: &str) -> Option<(&str, &str)> {
+    let start = text.find('(')?;
+    let mut depth = 0;
+    for (i, c) in text[start..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[start + 1..start + i], &text[start + i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The index in a recommendation's script: `CREATE NONCLUSTERED INDEX [name] ON [schema].[table] ([a], [b]) INCLUDE
+/// ([c]) WITH (ONLINE = ON)` or `DROP INDEX [name] ON [schema].[table]`.
+fn index_from_script(script: &str) -> Option<RecommendedIndex> {
+    let upper = script.to_ascii_uppercase();
+    let after_index = upper.find("INDEX ")? + "INDEX ".len();
+    let on = after_index + upper[after_index..].find(" ON ")?;
+    let name = script[after_index..on].trim().trim_matches(['[', ']']).to_string();
+    let rest = &script[on + " ON ".len()..];
+    let object_end = [rest.find(['(', ';']), rest.to_ascii_uppercase().find(" WITH")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(rest.len());
+    let object = column_list(&rest[..object_end].replace("].[", "],["));
+    let (schema, table) = match object.as_slice() {
+        [.., schema, table] => (schema.clone(), table.clone()),
+        [table] => ("dbo".to_string(), table.clone()),
+        [] => return None,
+    };
+    let after_object = &rest[object_end..];
+    let keys = after_object.trim_start().starts_with('(').then(|| parenthesized(after_object)).flatten();
+    let (columns, include) = match keys {
+        Some((keys, after)) => {
+            let include = after
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("INCLUDE")
+                .then(|| parenthesized(after).map(|(cols, _)| column_list(cols)))
+                .flatten()
+                .unwrap_or_default();
+            (column_list(keys), include)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+    Some(RecommendedIndex { schema, table, name: (!name.is_empty()).then_some(name), columns, include })
+}
+
+/// The index an index recommendation is about: from its details, else from its script.
+fn recommended_index(r: &crate::value::Rec, script: Option<&str>) -> Option<RecommendedIndex> {
+    let from_script = script.and_then(index_from_script);
+    let (Some(schema), Some(table)) = (r.str("index_schema"), r.str("index_table")) else { return from_script };
+    let unquote = |s: String| s.trim().trim_matches(['[', ']']).to_string();
+    let columns = r.str("index_columns").map(|c| column_list(&c)).unwrap_or_default();
+    Some(RecommendedIndex {
+        schema: unquote(schema),
+        table: unquote(table),
+        name: r.str("index_name").map(unquote).or_else(|| from_script.as_ref().and_then(|i| i.name.clone())),
+        columns: if columns.is_empty() {
+            from_script.as_ref().map(|i| i.columns.clone()).unwrap_or_default()
+        } else {
+            columns
+        },
+        include: r
+            .str("included_columns")
+            .map(|c| column_list(&c))
+            .filter(|c| !c.is_empty())
+            .or_else(|| from_script.as_ref().map(|i| i.include.clone()))
+            .unwrap_or_default(),
+    })
 }
 
 const HINTS_SQL: &str = "SELECT CAST(query_id AS varchar(20)) AS query_id, query_hint_text, query_hint_failure_count,
@@ -222,9 +339,16 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
                         (Some(bad), Some(good)) if bad > 0.0 => Some(((bad - good) / bad).clamp(0.0, 1.0)),
                         _ => None,
                     };
+                    let kind = r.string("type");
+                    let script = r.str("script");
+                    let index = kind
+                        .to_ascii_lowercase()
+                        .contains("index")
+                        .then(|| recommended_index(r, script.as_deref()))
+                        .flatten();
                     TuningRecommendation {
                         name: r.string("name"),
-                        kind: r.string("type"),
+                        kind,
                         reason: r.str("reason"),
                         state: r.str("state"),
                         query_id: r.str("query_id"),
@@ -232,9 +356,12 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
                         recommended_plan_id: r.str("recommended_plan_id"),
                         estimated_gain: gain,
                         error_prone: r.f64_or_zero("regressed_errors") > r.f64_or_zero("recommended_errors"),
-                        script: r.str("script"),
+                        script,
                         valid_since: r.str("valid_since"),
                         last_execution: r.str("last_execution"),
+                        score: r.f64("score"),
+                        applied_at: r.str("applied_at"),
+                        index,
                     }
                 })
                 .collect()
@@ -243,8 +370,11 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
         Err(e) => return Err(e),
     }
     if query_store {
-        advice.forced_plans = query(client, &forced_plans_sql())
-            .await?
+        let rows = match query(client, &forced_plans_sql(true)).await {
+            Err(e) if absent(&e) => query(client, &forced_plans_sql(false)).await?,
+            rows => rows?,
+        };
+        advice.forced_plans = rows
             .iter()
             .map(|r| ForcedPlan {
                 query_id: r.string("query_id"),
@@ -252,6 +382,7 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
                 failures: r.f64_or_zero("force_failure_count"),
                 last_failure_reason: r.str("last_force_failure_reason_desc").filter(|s| s != "NONE" && !s.is_empty()),
                 last_execution: r.str("last_execution"),
+                forcing: r.str("forcing").filter(|s| s != "NONE" && !s.is_empty()),
             })
             .collect();
         match query(client, HINTS_SQL).await {
@@ -273,4 +404,30 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
         }
     }
     Ok(advice)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_index_recommendation_script_names_its_table_and_columns() {
+        let i = index_from_script(
+            "CREATE NONCLUSTERED INDEX [nci_wi_tickets_8F2A] ON [shop].[support_tickets] ([account_id], [is_deleted] ASC) \
+             INCLUDE ([status], [opened_at]) WITH (ONLINE = ON)",
+        )
+        .unwrap();
+        assert_eq!(i.name.as_deref(), Some("nci_wi_tickets_8F2A"));
+        assert_eq!((i.schema.as_str(), i.table.as_str()), ("shop", "support_tickets"));
+        assert_eq!(i.columns, ["account_id", "is_deleted"]);
+        assert_eq!(i.include, ["status", "opened_at"]);
+
+        let d = index_from_script("DROP INDEX [ix_orders_legacy] ON [shop].[orders] WITH (ONLINE = ON);").unwrap();
+        assert_eq!(d.name.as_deref(), Some("ix_orders_legacy"));
+        assert_eq!((d.schema.as_str(), d.table.as_str()), ("shop", "orders"));
+        assert!(d.columns.is_empty() && d.include.is_empty());
+
+        assert_eq!(column_list("[a],[b, c] DESC, d"), ["a", "b, c", "d"]);
+        assert!(index_from_script("EXEC sp_query_store_force_plan @query_id = 1, @plan_id = 2").is_none());
+    }
 }

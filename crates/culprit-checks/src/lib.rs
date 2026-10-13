@@ -455,7 +455,7 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     let top_share = support::top_findings_share(snapshot, findings.iter());
 
     let n = findings.iter().filter(|f| !f.inactive).count();
-    let window = snapshot.workload.as_ref().map(support::window_phrase);
+    let window = support::summary_window(snapshot);
     let headline = match (n, top_share, &window) {
         (0, _, Some(window)) => format!("Nothing stands out over {window}."),
         (0, _, None) => "Nothing stands out.".to_string(),
@@ -495,6 +495,27 @@ mod window_tests {
         workload.windowed = true;
         workload.window_hours = 6.0;
         assert_eq!(summarize(&snapshot, &[]).headline, "Nothing stands out over the last 6 hours.");
+    }
+
+    /// Query Store keeps whole hourly intervals, so `--window 6h` reads the interval it starts in too: the headline names
+    /// the window asked for, and the rounding.
+    #[test]
+    fn the_headline_names_the_window_asked_for_and_the_rounding() {
+        let mut snapshot = snapshot_with(Engine::Mssql);
+        snapshot.options = Some(culprit_core::SnapshotOptions::default().with_window_minutes(360));
+        let workload = snapshot.workload.as_mut().expect("fixture has a workload");
+        workload.windowed = true;
+        workload.window_hours = 6.9;
+        assert_eq!(
+            summarize(&snapshot, &[]).headline,
+            "Nothing stands out over the last 6 hours (Query Store keeps whole intervals, so this covers 7)."
+        );
+        // Rounding that doesn't show isn't mentioned.
+        snapshot.workload.as_mut().unwrap().window_hours = 6.3;
+        assert_eq!(summarize(&snapshot, &[]).headline, "Nothing stands out over the last 6 hours.");
+        // Less data than asked for: what it covers.
+        snapshot.workload.as_mut().unwrap().window_hours = 2.0;
+        assert_eq!(summarize(&snapshot, &[]).headline, "Nothing stands out over the last 2 hours.");
     }
 }
 

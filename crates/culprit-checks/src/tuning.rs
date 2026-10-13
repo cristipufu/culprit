@@ -2,10 +2,11 @@
 //! statements the application sends with literals baked in (so each is compiled and tracked on its own).
 
 use culprit_core::{
-    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, QueryRef, Severity, Snapshot,
-    SubjectKind, Unit, format,
+    Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, ForcedPlan, IndexStat, Metric, NodeKind,
+    QueryRef, QueryStat, RecommendedIndex, Severity, Snapshot, SubjectKind, TuningRecommendation, Unit, format,
 };
 
+use crate::indexes::{is_unused, leading_index, merge_candidates, redundant_indexes, split_object};
 use crate::support::*;
 
 pub fn tuning_advice_info() -> CheckInfo {
@@ -16,8 +17,9 @@ pub fn tuning_advice_info() -> CheckInfo {
         engines: vec![Engine::Mssql],
         requires: vec![Capability::QueryStore],
         description:
-            "Plan-forcing recommendations from automatic tuning, forced plans and Query Store hints that stopped \
-            applying, and automatic plan correction left off."
+            "Plan-forcing and index recommendations from automatic tuning, forced plans (those that stopped applying, \
+            and those that scan where an index added since could seek), Query Store hints that stopped applying, and \
+            automatic plan correction left off."
                 .into(),
     }
 }
@@ -30,14 +32,55 @@ fn quiet_since<'a>(snapshot: &Snapshot, last: Option<&'a str>) -> Option<(f64, &
     (silence >= 86_400.0).then_some((silence, last))
 }
 
+/// Waiting for someone to apply it. SQL Server applied the others itself (Verifying, Success) or let them go
+/// (Reverted, Expired): a plan it forced shows among the forced plans instead.
+fn waiting(r: &TuningRecommendation) -> bool {
+    r.state.as_deref().is_none_or(|s| matches!(s.to_ascii_lowercase().as_str(), "active" | "pending"))
+}
+
+/// A plan-forcing recommendation still waiting to be applied.
+fn waiting_plan_fix(r: &TuningRecommendation) -> bool {
+    waiting(r) && r.query_id.is_some() && r.recommended_plan_id.is_some()
+}
+
+/// Azure SQL's waiting recommendation to create an index on these key columns of a table. The missing-index finding for
+/// the same index says so rather than a second finding.
+pub(crate) fn recommended_create<'a>(
+    snapshot: &'a Snapshot,
+    schema: &str,
+    table: &str,
+    keys: &[String],
+) -> Option<&'a TuningRecommendation> {
+    snapshot.tuning.as_ref()?.recommendations.iter().find(|r| {
+        waiting(r)
+            && r.kind.eq_ignore_ascii_case("CreateIndex")
+            && r.index.as_ref().is_some_and(|i| {
+                i.schema.eq_ignore_ascii_case(schema)
+                    && i.table.eq_ignore_ascii_case(table)
+                    && !i.columns.is_empty()
+                    && lower_set(&i.columns) == lower_set(keys)
+            })
+    })
+}
+
 pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(tuning) = &snapshot.tuning else { return Vec::new() };
     let db = quote(Engine::Mssql, &snapshot.server.database);
     let mut out = Vec::new();
 
-    for r in tuning.recommendations.iter().filter(|r| {
-        r.state.as_deref().is_none_or(|s| matches!(s.to_ascii_lowercase().as_str(), "active" | "verifying" | "pending"))
-    }) {
+    for r in tuning.recommendations.iter().filter(|r| waiting(r)) {
+        let Some(index) = &r.index else { continue };
+        let advice = if r.kind.eq_ignore_ascii_case("CreateIndex") {
+            create_index_advice(snapshot, r, index)
+        } else if r.kind.eq_ignore_ascii_case("DropIndex") {
+            drop_index_advice(snapshot, r, index)
+        } else {
+            None
+        };
+        out.extend(advice);
+    }
+
+    for r in tuning.recommendations.iter().filter(|r| waiting(r)) {
         let (Some(query_id), Some(plan_id)) = (&r.query_id, &r.recommended_plan_id) else { continue };
         let q = snapshot.workload.as_ref().and_then(|w| w.query(query_id));
         let mut f = finding(
@@ -186,6 +229,35 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
 
+    // Forced plans that apply: SQL Server runs each as it is, also after an index is added or the data grows.
+    let mut kept: Vec<(&ForcedPlan, Option<&QueryStat>, String)> = Vec::new();
+    for p in tuning.forced_plans.iter().filter(|p| p.failures <= 0.0) {
+        let q = snapshot.workload.as_ref().and_then(|w| w.query(&p.query_id));
+        let applied = tuning.recommendations.iter().find(|r| {
+            r.query_id.as_deref() == Some(p.query_id.as_str())
+                && r.recommended_plan_id.as_deref() == Some(p.plan_id.as_str())
+        });
+        let automatic = p.forcing.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("AUTO"))
+            || applied.is_some_and(|r| !waiting(r));
+        let how = match (automatic, applied.and_then(|r| r.applied_at.as_deref())) {
+            (true, Some(at)) => {
+                format!("forced by automatic tuning on {}", format::friendly_date(at, &snapshot.taken_at))
+            }
+            (true, None) => "forced by automatic tuning".to_string(),
+            (false, _) if p.forcing.as_deref().is_some_and(|f| f.eq_ignore_ascii_case("MANUAL")) => {
+                "forced by hand".to_string()
+            }
+            _ => "forced".to_string(),
+        };
+        match q.and_then(|q| seekable_scan(snapshot, q, &p.plan_id).map(|scan| (q, scan))) {
+            Some((q, scan)) => out.push(forced_scan_finding(snapshot, p, q, &how, scan)),
+            None => kept.push((p, q, how)),
+        }
+    }
+    if !kept.is_empty() {
+        out.push(forced_plans_finding(snapshot, &kept));
+    }
+
     for h in tuning.hints.iter().filter(|h| h.failures > 0.0) {
         let mut f = finding(
             "tuning-advice",
@@ -218,7 +290,8 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
     if let Some(plan) = tuning.automatic_tuning.iter().find(|o| o.name.eq_ignore_ascii_case("FORCE_LAST_GOOD_PLAN")) {
         let desired_on = plan.desired.eq_ignore_ascii_case("ON");
         let actual_on = plan.actual.eq_ignore_ascii_case("ON");
-        let regressions = !tuning.recommendations.is_empty();
+        let waiting_fixes = tuning.recommendations.iter().filter(|r| waiting_plan_fix(r)).count();
+        let regressions = waiting_fixes > 0;
         if desired_on && !actual_on {
             let mut f = finding(
                 "tuning-advice",
@@ -256,8 +329,8 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             f.summary = format!(
                 "SQL Server found {} plan {} it could fix by going back to the last good plan, but automatic plan \
                  correction is off, so they wait for someone to apply them.",
-                tuning.recommendations.len(),
-                if tuning.recommendations.len() == 1 { "regression" } else { "regressions" }
+                waiting_fixes,
+                if waiting_fixes == 1 { "regression" } else { "regressions" }
             );
             f.severity = Severity::Low;
             f.impact.score = base_score(f.severity) + 4.0;
@@ -276,6 +349,360 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// A scan in a query's forced plan of a table an existing index could seek, the way the scan filters it.
+struct SeekableScan<'a> {
+    node: u32,
+    schema: String,
+    table: String,
+    columns: Vec<String>,
+    rows: f64,
+    index: &'a IndexStat,
+}
+
+/// Tables of this many rows or more: reading one in full where a seek would do costs something.
+const SCAN_ROWS: f64 = 10_000.0;
+
+fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Option<SeekableScan<'a>> {
+    // The captured plan is the one that took the most time: the forced one, once the forcing has taken hold.
+    let dominant = q.plans.iter().max_by(|a, b| a.total_time_ms.total_cmp(&b.total_time_ms))?;
+    if dominant.id != plan_id {
+        return None;
+    }
+    q.plan.as_ref()?.nodes().into_iter().find_map(|node| {
+        if node.kind != NodeKind::Scan {
+            return None;
+        }
+        let (schema, table) = split_object(node.object.as_deref()?)?;
+        let rows = node.table_rows.or_else(|| snapshot.table(&schema, &table).and_then(|t| t.rows))?;
+        if rows < SCAN_ROWS {
+            return None;
+        }
+        let cols = predicate_columns(node.predicate.as_deref()?);
+        let mut columns = cols.equality.clone();
+        columns.extend(cols.range.into_iter().take(1));
+        if columns.is_empty() {
+            return None;
+        }
+        let index = leading_index(snapshot, &schema, &table, &cols.equality, &columns)?;
+        Some(SeekableScan { node: node.id, schema, table, columns, rows, index })
+    })
+}
+
+fn forced_scan_finding(snapshot: &Snapshot, p: &ForcedPlan, q: &QueryStat, how: &str, scan: SeekableScan) -> Finding {
+    let table_name = format!("{}.{}", scan.schema, scan.table);
+    let index = &scan.index.name;
+    let columns = format::list(&scan.columns);
+    let mut f = finding(
+        "tuning-advice",
+        &format!("forced-scan:{}", p.query_id),
+        Category::Queries,
+        subject(SubjectKind::Query, p.query_id.clone()),
+    );
+    f.title = format!("A forced plan makes {} scan {} though {index} could seek it", query_handle(q), scan.table);
+    f.summary = format!(
+        "Plan {} is {how} for query {}. SQL Server runs a forced plan as it is, so this one reads all of {table_name} \
+         ({} rows) to find the rows by {columns}, while {index} leads with {} and could seek them. A forced plan \
+         doesn't change when an index is added: this one was most likely forced before {index} existed.",
+        p.plan_id,
+        p.query_id,
+        format::count(scan.rows),
+        if scan.columns.len() == 1 { "it" } else { "them" },
+    );
+    match query_impact(snapshot, &[q]) {
+        Some(impact) => {
+            apply_query_impact(&mut f, &impact);
+            f.severity = severity_for_share(impact.share).max(Severity::Medium);
+        }
+        None => {
+            f.severity = Severity::Medium;
+            f.impact.score = base_score(f.severity);
+            f.impact.label = "Forced plan".into();
+        }
+    }
+    f.confidence = Confidence::Medium;
+    f.metrics.push(Metric::text("Forced plan", p.plan_id.clone()));
+    f.metrics.push(Metric::text("Index that could seek", index.clone()));
+    f.metrics.push(Metric::new("Rows in table", scan.rows, Unit::Rows));
+    f.queries = vec![QueryRef {
+        id: q.id.clone(),
+        plan_node: Some(scan.node),
+        note: Some(format!("Scans {} under the forced plan.", scan.table)),
+    }];
+    f.last_seen = q.last_seen.clone();
+    f.fix = Some(Fix {
+        summary: format!(
+            "Unforce it, so SQL Server compiles a plan that can seek {index}. If automatic plan correction is on and the \
+             new plan turns out slower, it forces a plan again, chosen among the plans it has seen since."
+        ),
+        sql: Some(format!("EXEC sp_query_store_unforce_plan @query_id = {}, @plan_id = {};", p.query_id, p.plan_id)),
+        cost: None,
+    });
+    f.verify = vec![
+        format!("Re-scan: query {} seeks {index}, and its reads and average duration drop.", p.query_id),
+        format!(
+            "If it gets slower, force the plan again: EXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};",
+            p.query_id, p.plan_id
+        ),
+    ];
+    f
+}
+
+/// Plans listed one by one in the forced-plans finding; the rest are counted.
+const FORCED_LISTED: usize = 12;
+
+fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Option<&QueryStat>, String)]) -> Finding {
+    let n = kept.len();
+    let automatic = kept.iter().filter(|(_, _, how)| how.contains("automatic tuning")).count();
+    let mut f = finding(
+        "tuning-advice",
+        "forced-plans",
+        Category::Queries,
+        subject(SubjectKind::Database, snapshot.server.database.clone()),
+    );
+    f.title = match (n, automatic) {
+        (1, 1) => "Automatic tuning forced a plan in Query Store".to_string(),
+        (1, _) => "A plan is forced in Query Store".to_string(),
+        (n, a) if a == n => format!("{n} plans are forced in Query Store, all by automatic tuning"),
+        (n, 0) => format!("{n} plans are forced in Query Store"),
+        (n, a) => format!("{n} plans are forced in Query Store, {a} by automatic tuning"),
+    };
+    let automatic_sentence = match (n, automatic) {
+        (_, 0) => String::new(),
+        (1, _) => " Automatic plan correction forced it after the query got slower with a new plan.".to_string(),
+        (n, a) if a == n => {
+            " Automatic plan correction forced all of them after their queries got slower with a new plan.".to_string()
+        }
+        (_, 1) => {
+            " Automatic plan correction forced one of them after its query got slower with a new plan.".to_string()
+        }
+        (_, a) => {
+            format!(" Automatic plan correction forced {a} of them after their queries got slower with a new plan.")
+        }
+    };
+    f.summary = format!(
+        "SQL Server runs {} with the plan forced for {} instead of choosing one, even after an index is added or the \
+         data grows. That holds a query that once regressed to its good plan, but once the query or its indexes \
+         change, the forced plan can become the slower one without anything saying so.{automatic_sentence}",
+        if n == 1 { "this query" } else { "these queries" },
+        if n == 1 { "it" } else { "each" },
+    );
+    f.severity = Severity::Low;
+    f.impact.score = base_score(f.severity) + (n as f64).min(10.0) * 0.2;
+    f.impact.label = format!("{n} forced {}", if n == 1 { "plan" } else { "plans" });
+    f.confidence = Confidence::High;
+    f.metrics.push(Metric::new("Forced plans", n as f64, Unit::Count));
+    if automatic > 0 {
+        f.metrics.push(Metric::new("Forced by automatic tuning", automatic as f64, Unit::Count));
+    }
+    let mut lines: Vec<String> = kept
+        .iter()
+        .take(FORCED_LISTED)
+        .map(|(p, q, how)| {
+            let what = q.map(query_handle).map(|h| format!(" ({h})")).unwrap_or_default();
+            let ran = match (q, quiet_since(snapshot, p.last_execution.as_deref())) {
+                (None, Some((_, last))) => {
+                    format!("; not run since {}", format::friendly_date(last, &snapshot.taken_at))
+                }
+                _ => String::new(),
+            };
+            format!("Query {}{what}: plan {}, {how}{ran}.", p.query_id, p.plan_id)
+        })
+        .collect();
+    if n > FORCED_LISTED {
+        lines.push(format!("And {} more.", n - FORCED_LISTED));
+    }
+    f.caveats.push(format!("Forced plans:\n{}", lines.join("\n")));
+    f.queries = kept
+        .iter()
+        .filter_map(|(p, q, _)| q.map(|q| (p, q)))
+        .take(FORCED_LISTED)
+        .map(|(p, q)| QueryRef {
+            id: q.id.clone(),
+            plan_node: None,
+            note: Some(format!("Plan {} is forced.", p.plan_id)),
+        })
+        .collect();
+    f.fix = Some(Fix {
+        summary: "Nothing to do while they help. Unforce one whose query or indexes changed since it was forced and \
+            compare its duration before and after: SQL Server chooses a plan again."
+            .into(),
+        sql: Some(
+            std::iter::once("-- One at a time, comparing the query's duration before and after".to_string())
+                .chain(kept.iter().take(FORCED_LISTED).map(|(p, _, _)| {
+                    format!("-- EXEC sp_query_store_unforce_plan @query_id = {}, @plan_id = {};", p.query_id, p.plan_id)
+                }))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        cost: None,
+    });
+    f.verify = vec!["Re-scan after unforcing one: its query's average duration stays the same or drops.".into()];
+    f
+}
+
+fn create_index_advice(snapshot: &Snapshot, r: &TuningRecommendation, ix: &RecommendedIndex) -> Option<Finding> {
+    if ix.columns.is_empty() {
+        return None;
+    }
+    // The optimizer asks for the same index: the missing-index finding says Azure recommends it too.
+    if merge_candidates(snapshot).iter().any(|c| {
+        c.schema.eq_ignore_ascii_case(&ix.schema)
+            && c.table.eq_ignore_ascii_case(&ix.table)
+            && lower_set(&c.keys()) == lower_set(&ix.columns)
+    }) {
+        return None;
+    }
+    let table_name = format!("{}.{}", ix.schema, ix.table);
+    let columns = format::list(&ix.columns);
+    let mut f = finding(
+        "tuning-advice",
+        &format!("create-index:{table_name}({})", ix.columns.join(",")),
+        Category::Indexes,
+        subject(SubjectKind::Table, &table_name),
+    );
+    f.title = format!("Azure SQL recommends an index on {} ({columns})", ix.table);
+    let include =
+        if ix.include.is_empty() { String::new() } else { format!(", including {}", format::list(&ix.include)) };
+    f.summary = format!(
+        "Azure SQL Database's automatic tuning recommends an index on {table_name} ({columns}{include}){}{}. It weighs \
+         what the queries that read {} would save against what the index costs every write. The optimizer's own \
+         missing-index requests since the last restart don't include it, so check that those queries still run as \
+         they did.",
+        r.valid_since
+            .as_deref()
+            .map(|s| format!(", since {}", format::friendly_date(s, &snapshot.taken_at)))
+            .unwrap_or_default(),
+        r.score.map(|s| format!(", and scores it {s:.0} out of 100")).unwrap_or_default(),
+        ix.table
+    );
+    let rows = snapshot.table(&ix.schema, &ix.table).and_then(|t| t.rows);
+    // An index that leads with the keys may hold the included columns too: then the recommendation predates it (a
+    // migration added it since), and it expires on its own. One that lacks them can be widened instead.
+    let same_keys = leading_index(snapshot, &ix.schema, &ix.table, &ix.columns, &ix.columns);
+    let lacking: Vec<String> = match same_keys {
+        Some(existing) => {
+            let held: Vec<&str> =
+                existing.key_names().into_iter().chain(existing.include.iter().map(String::as_str)).collect();
+            ix.include.iter().filter(|c| !held.iter().any(|h| h.eq_ignore_ascii_case(c))).cloned().collect()
+        }
+        None => Vec::new(),
+    };
+    if same_keys.is_some() && lacking.is_empty() {
+        return None;
+    }
+    f.severity = if r.score.is_some_and(|s| s >= 50.0) { Severity::Medium } else { Severity::Low };
+    f.impact.score = base_score(f.severity) + r.score.unwrap_or(0.0) / 10.0;
+    f.impact.label = "Recommended by Azure SQL".into();
+    f.confidence = Confidence::Medium;
+    if let Some(score) = r.score {
+        f.metrics.push(Metric::new("Azure's score (0–100)", score, Unit::Count));
+    }
+    if let Some(rows) = rows {
+        f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
+    }
+    if let Some(existing) = same_keys {
+        let them = if lacking.len() == 1 { "it" } else { "them" };
+        f.caveats.insert(
+            0,
+            format!(
+                "{} already leads with {columns}; the recommended index adds {}, which spares the queries that read \
+                 {them} the lookups back to the table. Including {them} in {} does the same with one index fewer to \
+                 maintain.",
+                existing.name,
+                format::list(&lacking),
+                existing.name
+            ),
+        );
+    }
+    let target = qualified(Engine::Mssql, &ix.schema, &ix.table);
+    let name = ix.name.clone().unwrap_or_else(|| format!("ix_{}_{}", ix.table, ix.columns.join("_")));
+    f.fix = Some(Fix {
+        summary: "Create it online, outside the busiest hours. Azure SQL can also create recommended indexes itself \
+            (automatic tuning's CREATE_INDEX) and drops one that doesn't help."
+            .into(),
+        sql: Some(r.script.clone().unwrap_or_else(|| {
+            format!(
+                "CREATE NONCLUSTERED INDEX {} ON {target} ({}){} WITH (ONLINE = ON);",
+                quote(Engine::Mssql, &name),
+                ix.columns.iter().map(|c| quote(Engine::Mssql, c)).collect::<Vec<_>>().join(", "),
+                if ix.include.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " INCLUDE ({})",
+                        ix.include.iter().map(|c| quote(Engine::Mssql, c)).collect::<Vec<_>>().join(", ")
+                    )
+                }
+            )
+        })),
+        cost: None,
+    });
+    f.verify = vec![format!(
+        "Re-scan a day later: the recommendation is gone, and the queries that read {} do fewer reads.",
+        ix.table
+    )];
+    Some(f)
+}
+
+fn drop_index_advice(snapshot: &Snapshot, r: &TuningRecommendation, ix: &RecommendedIndex) -> Option<Finding> {
+    let name = ix.name.as_deref()?;
+    // Already gone, or the unused- and duplicate-index findings already say to drop it.
+    let existing = snapshot.indexes.iter().find(|i| {
+        i.schema.eq_ignore_ascii_case(&ix.schema)
+            && i.table.eq_ignore_ascii_case(&ix.table)
+            && i.name.eq_ignore_ascii_case(name)
+    })?;
+    if is_unused(snapshot, existing) || redundant_indexes(snapshot).iter().any(|(a, _)| std::ptr::eq(*a, existing)) {
+        return None;
+    }
+    let table_name = format!("{}.{}", ix.schema, ix.table);
+    let mut f = finding(
+        "tuning-advice",
+        &format!("drop-index:{table_name}.{}", existing.name),
+        Category::Indexes,
+        subject(SubjectKind::Index, format!("{table_name}.{}", existing.name)),
+    );
+    f.title = format!("Azure SQL recommends dropping {} on {}", existing.name, ix.table);
+    f.summary = format!(
+        "Azure SQL Database's automatic tuning recommends dropping {}{}{}, judging from a longer history than the usage \
+         counters here{}.",
+        existing.name,
+        r.reason.as_deref().filter(|s| !s.is_empty()).map(|s| format!(" ({s})")).unwrap_or_default(),
+        r.valid_since
+            .as_deref()
+            .map(|s| format!(" since {}", format::friendly_date(s, &snapshot.taken_at)))
+            .unwrap_or_default(),
+        existing
+            .reads
+            .map(|reads| format!(", which count {} reads of it {}", format::count(reads), since_phrase(snapshot)))
+            .unwrap_or_default()
+    );
+    f.severity = Severity::Low;
+    f.impact.score = base_score(f.severity) + r.score.unwrap_or(0.0) / 20.0;
+    f.impact.label = "Recommended by Azure SQL".into();
+    f.confidence = Confidence::Medium;
+    if let Some(size) = existing.size_bytes {
+        f.metrics.push(Metric::new("Size", size, Unit::Bytes));
+    }
+    if let Some(reads) = existing.reads {
+        f.metrics.push(Metric::new("Reads", reads, Unit::Count));
+    }
+    let target = qualified(Engine::Mssql, &existing.schema, &existing.table);
+    f.fix = Some(Fix {
+        summary:
+            "Disable it first: the definition stays, nothing reads or maintains it, and a rebuild brings it back. \
+            Drop it after a full business cycle without complaints."
+                .into(),
+        sql: Some(format!("ALTER INDEX {} ON {target} DISABLE;", quote(Engine::Mssql, &existing.name))),
+        cost: None,
+    });
+    if let Some(definition) = &existing.definition {
+        f.caveats.push(format!("Its definition, to recreate it:\n{definition}"));
+    }
+    f.verify = vec![format!("Watch the queries on {} for a week after disabling; none should get slower.", ix.table)];
+    Some(f)
 }
 
 fn failure_hint(reason: &str) -> &'static str {

@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 
 use culprit_core::changes::epoch;
 use culprit_core::events::in_range;
-use culprit_core::{
-    ChangeEvent, Engine, EventAction, EventKind, EventSource, IndexStat, Report, Snapshot, server_label, sql,
-};
+use culprit_core::{ChangeEvent, Engine, EventAction, EventKind, EventSource, IndexStat, Snapshot, server_label, sql};
 
 use crate::{private_fs, reports, trends};
 
@@ -38,13 +36,57 @@ fn write(dir: &Path, id: &str, events: &[ChangeEvent]) {
     }
 }
 
-/// Compare a fresh report with the scan before it and keep the result. Never fails a scan: problems leave no file.
-pub fn record(dir: &Path, report: &Report, previous_id: Option<&str>, recorded: Vec<ChangeEvent>) {
-    let previous = previous_id
-        .filter(|id| *id != report.snapshot.id)
-        .and_then(|id| reports::load(&dir.join(format!("{id}.json"))).ok());
-    let events = diff(previous.as_ref().map(|r| &r.snapshot), &report.snapshot, recorded);
-    write(dir, &report.snapshot.id, &events);
+/// Compare a fresh scan with the scan before it, plus what the database dated itself (`recorded`). [`keep`] keeps the
+/// result once the report is saved.
+pub fn compare(
+    dir: &Path,
+    snapshot: &Snapshot,
+    previous_id: Option<&str>,
+    recorded: Vec<ChangeEvent>,
+) -> Vec<ChangeEvent> {
+    let previous =
+        previous_id.filter(|id| *id != snapshot.id).and_then(|id| reports::load(&dir.join(format!("{id}.json"))).ok());
+    diff(previous.as_ref().map(|r| &r.snapshot), snapshot, recorded)
+}
+
+/// Keep a scan's changes next to its report. Never fails a scan: problems leave no file.
+pub fn keep(dir: &Path, id: &str, events: &[ChangeEvent]) {
+    write(dir, id, events);
+}
+
+/// Date the indexes that may be new ([`IndexStat::created_at_latest`]) from this scan's changes (`current`) and the
+/// earlier scans', so a check doesn't call an index unused before it has existed long enough to be read.
+pub fn date_new_indexes(dir: &Path, snapshot: &mut Snapshot, current: &[ChangeEvent]) {
+    let Some(now) = epoch(&snapshot.taken_at) else { return };
+    let mut known = events(dir, now - trends::HISTORY_DAYS * 86_400.0, now);
+    known.extend(current.iter().cloned());
+    let first_scan = reports::report_ids(dir).first().and_then(|id| reports::id_epoch(id)).filter(|t| *t < now);
+    for i in &mut snapshot.indexes {
+        i.created_at_latest = latest_creation(i, &known, first_scan);
+    }
+}
+
+/// The latest an index may have been created, when something says it may be new: a scan saw its table without it, or
+/// saw the table appear, or the database dated a change to its table before Culprit's first scan (SQL Server and MySQL
+/// move a table's date when one of its indexes is created). A table change dated after the first scan isn't one: the
+/// scans would have seen a new index appear.
+fn latest_creation(i: &IndexStat, events: &[ChangeEvent], first_scan: Option<f64>) -> Option<String> {
+    let table = i.qualified_table();
+    events
+        .iter()
+        .filter(|e| e.table.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&table)))
+        .filter(|e| match (e.kind, e.action) {
+            (EventKind::Index, Some(EventAction::Created)) => {
+                e.object.as_deref().is_some_and(|o| o.eq_ignore_ascii_case(&i.name))
+            }
+            (EventKind::Table, Some(EventAction::Created)) => true,
+            (EventKind::Table, _) => {
+                e.source == EventSource::Database && first_scan.is_none_or(|f| e.start() <= f + SAME_TIME)
+            }
+            _ => false,
+        })
+        .max_by(|a, b| epoch(&a.at).unwrap_or(0.0).total_cmp(&epoch(&b.at).unwrap_or(0.0)))
+        .map(|e| e.at.clone())
 }
 
 /// Everything Culprit's scans noticed in `[start, end]` (epoch seconds), oldest first.
@@ -566,6 +608,7 @@ fn statistics(p: Option<&Snapshot>, c: &Snapshot, since: f64, out: &mut Vec<Chan
 #[cfg(test)]
 mod tests {
     use super::*;
+    use culprit_core::Report;
 
     #[test]
     fn setting_values_lose_trailing_zeros() {
@@ -579,6 +622,66 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/pg-demo.report.json");
         let report: Report = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         report.snapshot
+    }
+
+    #[test]
+    fn a_scan_dates_the_index_it_saw_appear() {
+        let dir = std::env::temp_dir().join(format!("culprit-history-new-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut after = demo();
+        after.id = "20261011T080000.000Z".into();
+        after.taken_at = "2026-10-11T08:00:00Z".into();
+        let mut before = after.clone();
+        before.id = "20261010T080000.000Z".into();
+        before.taken_at = "2026-10-10T08:00:00Z".into();
+        let added = before.indexes.remove(before.indexes.iter().position(|i| !i.is_primary_key).unwrap()).name;
+        reports::save(&dir, &culprit_checks::analyze(before.clone())).unwrap();
+
+        let changes = compare(&dir, &after, Some(&before.id), Vec::new());
+        date_new_indexes(&dir, &mut after, &changes);
+        for i in &after.indexes {
+            let expected = (i.name == added).then_some("2026-10-11T08:00:00Z");
+            assert_eq!(i.created_at_latest.as_deref(), expected, "{}", i.name);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_index_is_dated_only_when_something_says_it_may_be_new() {
+        let s = demo();
+        let i = s.indexes.iter().find(|i| !i.is_primary_key).unwrap();
+        let table = i.qualified_table();
+        let on_table = |kind, source, action, at: &str| {
+            ChangeEvent::new(kind, source, &format!("{table}.{}", i.name), at, "t")
+                .action(action)
+                .table(table.clone())
+                .object(i.name.clone())
+        };
+        let first_scan = epoch("2026-10-05T00:00:00Z");
+
+        // Nothing says so: as old as its counters.
+        assert_eq!(latest_creation(i, &[], first_scan), None);
+        // A scan saw its table without it.
+        let created = on_table(EventKind::Index, EventSource::Scans, EventAction::Created, "2026-10-09T12:00:00Z")
+            .between("2026-10-09T06:00:00Z");
+        assert_eq!(latest_creation(i, &[created], first_scan).as_deref(), Some("2026-10-09T12:00:00Z"));
+        // Another index on the table appearing says nothing about this one.
+        let mut other = on_table(EventKind::Index, EventSource::Scans, EventAction::Created, "2026-10-09T12:00:00Z");
+        other.object = Some("ix_something_else".into());
+        assert_eq!(latest_creation(i, &[other], first_scan), None);
+        // The database dated a change to its table before the first scan: the index may be what changed.
+        let altered = |at: &str| on_table(EventKind::Table, EventSource::Database, EventAction::Changed, at);
+        assert_eq!(
+            latest_creation(i, &[altered("2026-10-04T20:00:00Z")], first_scan).as_deref(),
+            Some("2026-10-04T20:00:00Z")
+        );
+        assert_eq!(
+            latest_creation(i, &[altered("2026-10-04T20:00:00Z")], None).as_deref(),
+            Some("2026-10-04T20:00:00Z")
+        );
+        // After it, the scans were watching: a new index would have been seen appearing.
+        assert_eq!(latest_creation(i, &[altered("2026-10-08T20:00:00Z")], first_scan), None);
     }
 
     #[test]

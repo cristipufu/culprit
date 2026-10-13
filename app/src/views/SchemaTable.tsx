@@ -357,6 +357,10 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
   const planned = plannedQueryCount(report);
   const since = report.snapshot.server.started_at;
   const sinceText = since ? `since ${when(since).short}` : "since the last restart";
+  // An index that may be less than a week old hasn't had time to be read: the checks don't call it unused yet.
+  const takenAt = Date.parse(report.snapshot.taken_at);
+  const tooNew = (i: IndexStat) =>
+    i.created_at_latest != null && takenAt - Date.parse(i.created_at_latest) < 7 * 24 * 3600 * 1000;
   const biggest = Math.max(1, ...indexes.map((i) => i.size_bytes ?? 0));
   const name = tableKey(table).toLowerCase();
   const finding = (index: string, check: string) =>
@@ -411,6 +415,11 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                     engine === "mysql"
                       ? `Never read ${sinceText}, but it backs foreign key ${serves.name}: InnoDB requires it`
                       : `Never read ${sinceText}, but it backs foreign key ${serves.name}: without it, deleting a ${serves.ref_table} row scans ${table.name}`,
+                });
+              else if (neverRead && !i.is_unique && tooNew(i))
+                notes.push({
+                  tone: "low",
+                  text: `Not read yet, but it may be new (it existed by ${when(i.created_at_latest).short}): too soon to call it unused`,
                 });
               else if (neverRead && !i.is_unique)
                 notes.push({

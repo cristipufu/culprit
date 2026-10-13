@@ -264,7 +264,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         let exact = same_keys(a, b);
         let table_name = format!("{}.{}", a.schema, a.table);
         // Neither is read: both go, so say "unused" rather than "keep the other one".
-        if is_unused(b) && a.reads.is_none_or(|r| r == 0.0) {
+        if is_unused(s, b) && a.reads.is_none_or(|r| r == 0.0) {
             cleanups.push(IndexCleanup {
                 kind: CleanupKind::Unused,
                 schema: a.schema.clone(),
@@ -344,7 +344,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     for i in s
         .indexes
         .iter()
-        .filter(|i| is_unused(i) && !listed.contains(&i.name))
+        .filter(|i| is_unused(s, i) && !listed.contains(&i.name))
         .filter(|i| !(mysql && backs_foreign_key(s, i).is_some()))
     {
         let table_name = format!("{}.{}", i.schema, i.table);

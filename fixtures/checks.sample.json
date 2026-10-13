@@ -27,7 +27,7 @@
   },
   {
     "category": "indexes",
-    "description": "Indexes that are maintained on every write but no query has read since usage counters were reset.",
+    "description": "Indexes that are maintained on every write but no query has read since usage counters were reset. One that may be less than a week old (a scan saw it appear, or its table changed before Culprit's first scan) isn't called unused yet.",
     "engines": [
       "mssql",
       "postgres",
@@ -69,7 +69,7 @@
   },
   {
     "category": "indexes",
-    "description": "Two indexes that lead with the same column where one is barely read: queries that use it can almost always use the other.",
+    "description": "Two indexes that lead with the same column where one is barely read and the other holds all its key columns: queries that use the first can seek the second and filter the rest there.",
     "engines": [
       "mssql",
       "postgres",
@@ -110,7 +110,7 @@
   },
   {
     "category": "queries",
-    "description": "Plan-forcing recommendations from automatic tuning, forced plans and Query Store hints that stopped applying, and automatic plan correction left off.",
+    "description": "Plan-forcing and index recommendations from automatic tuning, forced plans (those that stopped applying, and those that scan where an index added since could seek), Query Store hints that stopped applying, and automatic plan correction left off.",
     "engines": [
       "mssql"
     ],
@@ -304,7 +304,7 @@
   },
   {
     "category": "queries",
-    "description": "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock escalation, parallelism) with the fix that removes them. SQL Server reads system_health, MySQL the latest InnoDB report, PostgreSQL only keeps a counter.",
+    "description": "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock escalation, parallelism) with the fix that removes them. SQL Server reads system_health (Azure SQL Database its deadlock telemetry), MySQL the latest InnoDB report, PostgreSQL only keeps a counter.",
     "engines": [
       "mssql",
       "postgres",
@@ -486,7 +486,7 @@
   },
   {
     "category": "indexes",
-    "description": "Tables where one statement took so many row or page locks that SQL Server replaced them with a lock on the whole table, and the attempts another session's locks stopped (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL never escalate row locks.",
+    "description": "Tables where one statement took so many row or page locks that SQL Server replaced them with a lock on the whole table (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL never escalate row locks.",
     "engines": [
       "mssql"
     ],

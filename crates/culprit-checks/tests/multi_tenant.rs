@@ -103,6 +103,49 @@ fn an_unread_filtered_index_is_unused_but_a_filtered_unique_one_is_a_constraint(
     assert!(!f.summary.contains("ux_tickets_open_number"), "{}", f.summary);
 }
 
+// A deploy adds an index for a query that ships with it, or hasn't run yet: no reads says nothing until it has existed
+// for a while. The scan dates it (`created_at_latest`) when an earlier scan saw its table without it, or the database
+// dated a change to its table that no earlier scan was there to see.
+#[test]
+fn an_index_added_this_week_is_not_unused_yet() {
+    let mut s = snapshot();
+    // Six weeks of usage counters.
+    s.server.started_at = Some("2026-08-31T12:00:00Z".into());
+    fn index(s: &mut Snapshot) -> &mut culprit_core::IndexStat {
+        s.indexes.iter_mut().find(|i| i.name == "ix_support_tickets_customer_id").unwrap()
+    }
+    let unused = |s: &Snapshot| {
+        let report = analyze(s.clone());
+        let cleaned = index_advice(&report).cleanups.iter().any(|c| c.index == "ix_support_tickets_customer_id");
+        (finding(&report.findings, "unused-index:shop.support_tickets").cloned(), cleaned)
+    };
+
+    // Created two and a half days before the scan.
+    index(&mut s).created_at_latest = Some("2026-10-09T00:51:00Z".into());
+    let (f, cleaned) = unused(&s);
+    assert!(f.is_none(), "{:?}", f.map(|f| f.summary));
+    assert!(!cleaned);
+
+    // Twelve days old, it is unused, over the days it has existed rather than the counters' six weeks.
+    index(&mut s).created_at_latest = Some("2026-09-29T12:00:00Z".into());
+    let (f, cleaned) = unused(&s);
+    let f = f.expect("unused after a week");
+    assert!(
+        f.summary.contains(
+            "No query has read ix_support_tickets_customer_id in the 12 days since Sep 29, before which it may not have existed"
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(f.metrics.iter().any(|m| m.label == "Counting for" && m.value.round() == 12.0));
+    assert!(cleaned);
+
+    // Nothing says it is new: as old as the counters.
+    index(&mut s).created_at_latest = None;
+    let f = unused(&s).0.expect("unused");
+    assert!(f.summary.contains("in the 41 days since the server last restarted"), "{}", f.summary);
+}
+
 #[test]
 fn a_poll_and_a_heartbeat_are_not_called_n_plus_one() {
     let mut s = snapshot();

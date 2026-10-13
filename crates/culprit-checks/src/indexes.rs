@@ -176,6 +176,14 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
             f.confidence = if lookups >= 1000.0 { Confidence::Medium } else { Confidence::Low };
         }
     }
+    // Azure SQL weighs the same index over a longer history than the optimizer's counters, which reset on restart.
+    if let Some(r) = crate::tuning::recommended_create(snapshot, &c.schema, &c.table, &keys) {
+        summary.push_str(&format!(
+            " Azure SQL's automatic tuning recommends the same index{}.",
+            r.score.map(|s| format!(", scoring it {s:.0} out of 100")).unwrap_or_default()
+        ));
+        f.confidence = Confidence::High;
+    }
     f.summary = summary;
     f.queries = query_refs(&linked);
     f.metrics.push(Metric::new("Lookups that wanted it", lookups, Unit::Count));
@@ -383,7 +391,10 @@ pub fn unused_index_info() -> CheckInfo {
         engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![Capability::IndexUsage],
         description:
-            "Indexes that are maintained on every write but no query has read since usage counters were reset.".into(),
+            "Indexes that are maintained on every write but no query has read since usage counters were reset. \
+            One that may be less than a week old (a scan saw it appear, or its table changed before Culprit's first \
+            scan) isn't called unused yet."
+                .into(),
     }
 }
 
@@ -397,7 +408,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
     for i in snapshot
         .indexes
         .iter()
-        .filter(|i| is_unused(i) && !redundant.contains(&i.name.as_str()))
+        .filter(|i| is_unused(snapshot, i) && !redundant.contains(&i.name.as_str()))
         .filter(|i| !(mysql && backs_foreign_key(snapshot, i).is_some()))
     {
         match by_table.iter_mut().find(|(s, t, _)| *s == i.schema && *t == i.table) {
@@ -411,6 +422,22 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             let table_name = format!("{schema}.{table}");
             let total_size: f64 = list.iter().filter_map(|i| i.size_bytes).sum();
             let writes = table_writes(snapshot, &schema, &table, &list);
+            // An index that may be younger than the counters has gone unread only since it may have been created.
+            let youngest = list
+                .iter()
+                .filter_map(|i| Some((index_age_days(snapshot, i)?, i.created_at_latest.as_deref()?)))
+                .filter(|(age, _)| days.is_none_or(|d| *age < d))
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            let days = youngest.map(|(age, _)| age).or(days);
+            let since = match youngest {
+                Some((age, created)) => format!(
+                    "in the {} days since {}, before which {} may not have existed",
+                    age.round(),
+                    format::friendly_date(created, &snapshot.taken_at),
+                    if list.len() == 1 { "it" } else { "some of them" }
+                ),
+                None => since_phrase(snapshot),
+            };
             let mut f = finding("unused-index", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
             f.title = match list.as_slice() {
                 [one] => format!("{} on {} is never read", one.name, table),
@@ -422,7 +449,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 Some(0.0) => format!(
                     "No query has read {} {}, and {} hasn't been written to either. {} {} of storage and buffer memory.",
                     names,
-                    since_phrase(snapshot),
+                    since,
                     table_name,
                     if list.len() == 1 { "It takes" } else { "Together they take" },
                     format::bytes(total_size)
@@ -430,7 +457,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 _ => format!(
                     "No query has read {} {}{}. {} still has to be updated on every insert, and on updates that touch its columns, and it takes {} of storage and buffer memory.",
                     names,
-                    since_phrase(snapshot),
+                    since,
                     writes.map(|w| format!(", while {} was written {} times", table_name, format::count(w))).unwrap_or_default(),
                     if list.len() == 1 { "It" } else { "Each one" },
                     format::bytes(total_size)
@@ -515,10 +542,24 @@ pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -
 }
 
 /// Never read since the counters started, and not one the database needs for something else: a key, a constraint or
-/// the table's storage. A filtered (partial) index counts: unread, it is only upkeep on every write it matches.
-pub(crate) fn is_unused(i: &IndexStat) -> bool {
+/// the table's storage. A filtered (partial) index counts: unread, it is only upkeep on every write it matches. An index
+/// that may be younger than a week isn't unused yet: the queries it was made for may not have run, or been deployed.
+pub(crate) fn is_unused(snapshot: &Snapshot, i: &IndexStat) -> bool {
     let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled;
-    is_candidate && i.reads == Some(0.0) && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0
+    is_candidate && i.reads == Some(0.0) && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0 && !too_new(snapshot, i)
+}
+
+/// Days an index must have existed before no reads says anything about it.
+const MIN_INDEX_DAYS: f64 = 7.0;
+
+/// Days since the latest it may have been created, when a scan found reason to think it may be new.
+fn index_age_days(snapshot: &Snapshot, i: &IndexStat) -> Option<f64> {
+    days_between(i.created_at_latest.as_deref()?, &snapshot.taken_at).map(|d| d.max(0.0))
+}
+
+/// It may have been created less than a week ago, so its usage counters say little yet.
+pub(crate) fn too_new(snapshot: &Snapshot, i: &IndexStat) -> bool {
+    index_age_days(snapshot, i).is_some_and(|d| d < MIN_INDEX_DAYS)
 }
 
 fn table_writes(snapshot: &Snapshot, schema: &str, table: &str, list: &[&IndexStat]) -> Option<f64> {
@@ -977,7 +1018,7 @@ fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows: f64) -> bo
     examined >= table_rows * 0.5 && returned.is_some_and(|r| r * 10.0 <= table_rows)
 }
 
-fn split_object(object: &str) -> Option<(String, String)> {
+pub(crate) fn split_object(object: &str) -> Option<(String, String)> {
     let clean = object.replace(['[', ']', '"'], "");
     let parts: Vec<&str> = clean.split('.').collect();
     match parts.as_slice() {
@@ -989,10 +1030,24 @@ fn split_object(object: &str) -> Option<(String, String)> {
 
 /// An index already leads with the equality columns: the scan has another cause (type mismatch, function on the column, stale stats).
 fn leading_index_exists(snapshot: &Snapshot, schema: &str, table: &str, equality: &[String], keys: &[String]) -> bool {
-    let wanted = if equality.is_empty() { &keys[..1] } else { equality };
-    snapshot.indexes_on(schema, table).any(|i| {
+    leading_index(snapshot, schema, table, equality, keys).is_some()
+}
+
+/// The index that leads with the equality columns (or, without any, with the first key), in any order.
+pub(crate) fn leading_index<'a>(
+    snapshot: &'a Snapshot,
+    schema: &str,
+    table: &str,
+    equality: &[String],
+    keys: &[String],
+) -> Option<&'a IndexStat> {
+    let wanted = if equality.is_empty() { keys.get(..1)? } else { equality };
+    snapshot.indexes.iter().find(|i| {
         let existing = i.key_names();
-        existing.len() >= wanted.len()
+        i.schema.eq_ignore_ascii_case(schema)
+            && i.table.eq_ignore_ascii_case(table)
+            && !i.is_disabled
+            && existing.len() >= wanted.len()
             && lower_set(&existing[..wanted.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
                 == lower_set(wanted)
     })
@@ -1070,7 +1125,7 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
             .filter(|b| b.name != a.name && !b.is_disabled && b.filter == a.filter && b.kind == a.kind)
             .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)))
             // A read index isn't redundant to one nothing reads: drop the unread one instead (the unused check says so).
-            .filter(|b| !(is_unused(b) && a.reads.is_some_and(|r| r > 0.0)));
+            .filter(|b| !(is_unused(snapshot, b) && a.reads.is_some_and(|r| r > 0.0)));
         if let Some(b) = keeper {
             out.push((a, b));
         }

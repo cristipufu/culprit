@@ -18,8 +18,8 @@ pub fn deadlocks_info() -> CheckInfo {
         engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
         description: "Deadlocks in the last day, grouped by pattern (key lookup, opposite order, read-then-update, lock \
-                      escalation, parallelism) with the fix that removes them. SQL Server reads system_health, MySQL the \
-                      latest InnoDB report, PostgreSQL only keeps a counter."
+                      escalation, parallelism) with the fix that removes them. SQL Server reads system_health (Azure \
+                      SQL Database its deadlock telemetry), MySQL the latest InnoDB report, PostgreSQL only keeps a counter."
             .into(),
     }
 }

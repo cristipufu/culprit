@@ -466,6 +466,11 @@ pub struct IndexStat {
     /// Lock and latch waits on this index (SQL Server).
     #[serde(default)]
     pub contention: Option<crate::signals::IndexContention>,
+    /// The latest it may have been created (UTC), set by a scan only when something says it may be new: an earlier
+    /// scan saw its table without it, or the database dated a change to its table that no earlier scan was there to
+    /// see. Its usage counters cover the time since at least. `None`: as old as the counters, as far as anyone knows.
+    #[serde(default)]
+    pub created_at_latest: Option<String>,
 }
 
 impl IndexStat {

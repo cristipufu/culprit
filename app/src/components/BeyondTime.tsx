@@ -471,7 +471,7 @@ export function SignalEvidence({ report, finding }: { report: Report; finding: F
     case "lock-escalations": {
       const indexes = snapshot.indexes.filter((i) => {
         const c = i.contention;
-        return `${i.schema}.${i.table}` === finding.subject.name && c && (c.lock_escalations > 0 || c.lock_escalation_attempts > 0);
+        return `${i.schema}.${i.table}` === finding.subject.name && c && c.lock_escalations > 0;
       });
       if (!indexes.length) return null;
       const table = indexes[0]!.table;
@@ -479,27 +479,21 @@ export function SignalEvidence({ report, finding }: { report: Report; finding: F
         <section>
           <h3>Evidence</h3>
           <div className="io-table" role="table" aria-label={`Lock escalations on ${table}`}>
-            <div className="io-row four io-th" role="row">
+            <div className="io-row io-th" role="row">
               <span role="columnheader">On {table}</span>
               <span role="columnheader">Table locks</span>
-              <span role="columnheader">Attempts stopped</span>
               <span role="columnheader">Lock waits</span>
             </div>
             {indexes.map((i) => {
               const c = i.contention!;
-              // Attempts count the escalations that happened too.
-              const stopped = Math.max(c.lock_escalation_attempts - c.lock_escalations, 0);
               const waits = c.row_lock_waits + c.page_lock_waits;
               return (
-                <div key={i.name} className="io-row four" role="row">
+                <div key={i.name} className="io-row" role="row">
                   <span className="io-name" role="cell">
                     {i.name}
                   </span>
                   <span className="io-cell" role="cell">
                     {c.lock_escalations > 0 ? <b>{count(c.lock_escalations)}</b> : "none"}
-                  </span>
-                  <span className="io-cell" role="cell">
-                    {stopped > 0 ? count(stopped) : "none"}
                   </span>
                   <span className="io-cell" role="cell">
                     {waits > 0 ? `${count(waits)}, ${duration(c.row_lock_wait_ms + c.page_lock_wait_ms)}` : "none"}

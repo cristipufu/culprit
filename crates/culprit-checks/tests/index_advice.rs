@@ -2,8 +2,8 @@
 
 use culprit_checks::{analyze, index_advice};
 use culprit_core::{
-    AutomaticTuningOption, CleanupKind, ForcedPlan, PlanCacheUse, QueryFamily, Setting, Snapshot, TableAdviceKind,
-    TuningAdvice, TuningRecommendation,
+    AutomaticTuningOption, CleanupKind, Finding, ForcedPlan, PlanCacheUse, QueryFamily, RecommendedIndex, Setting,
+    Severity, Snapshot, TableAdviceKind, TuningAdvice, TuningRecommendation,
 };
 
 fn snapshot(name: &str) -> Snapshot {
@@ -153,6 +153,7 @@ fn sql_server_tuning_advice_and_forced_plan_failures() {
             failures: 34.0,
             last_failure_reason: Some("NO_INDEX".into()),
             last_execution: None,
+            forcing: None,
         }],
         hints: Vec::new(),
     });
@@ -164,6 +165,154 @@ fn sql_server_tuning_advice_and_forced_plan_failures() {
     assert!(titles.iter().any(|t| t.contains("Automatic plan correction is off")), "{titles:?}");
     let force = report.findings.iter().find(|f| f.id == format!("tuning-advice:force:{query}")).unwrap();
     assert!(force.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("sp_query_store_force_plan"));
+}
+
+// Automatic tuning forced plan 9 for query 9 on Oct 3 and is verifying it: that is no longer a suggestion. The plan
+// scans order_items for an order id; once an index leads with order_id, the forcing is what keeps the query scanning.
+#[test]
+fn forced_plans_are_listed_and_one_that_scans_past_a_newer_index_stands_out() {
+    let mut s = snapshot("mssql-demo.json");
+    s.tuning = Some(TuningAdvice {
+        recommendations: vec![TuningRecommendation {
+            name: "PR_9".into(),
+            kind: "FORCE_LAST_GOOD_PLAN".into(),
+            state: Some("Verifying".into()),
+            query_id: Some("9".into()),
+            regressed_plan_id: Some("3".into()),
+            recommended_plan_id: Some("9".into()),
+            applied_at: Some("2026-10-03T08:00:00Z".into()),
+            ..Default::default()
+        }],
+        forced_plans: vec![
+            ForcedPlan {
+                query_id: "9".into(),
+                plan_id: "9".into(),
+                forcing: Some("AUTO".into()),
+                ..Default::default()
+            },
+            ForcedPlan {
+                query_id: "90001".into(),
+                plan_id: "4".into(),
+                forcing: Some("MANUAL".into()),
+                last_execution: Some("2026-10-02T06:00:00Z".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    });
+    let tuning = |s: &Snapshot| -> Vec<Finding> {
+        analyze(s.clone()).findings.into_iter().filter(|f| f.check == "tuning-advice").collect()
+    };
+
+    let findings = tuning(&s);
+    assert!(findings.iter().all(|f| f.id != "tuning-advice:force:9"), "Verifying isn't a suggestion");
+    let listed = findings.iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plans");
+    assert_eq!(listed.title, "2 plans are forced in Query Store, 1 by automatic tuning");
+    assert_eq!(listed.severity, Severity::Low);
+    let list = &listed.caveats[0];
+    assert!(list.contains(": plan 9, forced by automatic tuning on Oct 3."), "{list}");
+    assert!(list.contains("Query 90001: plan 4, forced by hand; not run since Oct 2."), "{list}");
+    assert!(
+        listed
+            .fix
+            .as_ref()
+            .unwrap()
+            .sql
+            .as_deref()
+            .unwrap()
+            .contains("sp_query_store_unforce_plan @query_id = 9, @plan_id = 9")
+    );
+
+    // An index that leads with order_id arrives: the forced plan still scans.
+    let mut index = s.indexes.iter().find(|i| i.name == "ix_order_items_product_id").unwrap().clone();
+    index.name = "ix_order_items_order_id".into();
+    index.columns = vec!["order_id".into()];
+    s.indexes.push(index);
+    let findings = tuning(&s);
+    let scan = findings.iter().find(|f| f.id == "tuning-advice:forced-scan:9").expect("the scanning forced plan");
+    assert!(scan.title.ends_with("scan order_items though ix_order_items_order_id could seek it"), "{}", scan.title);
+    assert!(scan.summary.contains("Plan 9 is forced by automatic tuning on Oct 3 for query 9."), "{}", scan.summary);
+    assert!(scan.summary.contains("reads all of shop.order_items (1.5M rows)"), "{}", scan.summary);
+    assert!(scan.severity >= Severity::Medium);
+    assert_eq!(scan.queries[0].plan_node, Some(1));
+    assert_eq!(
+        scan.fix.as_ref().unwrap().sql.as_deref(),
+        Some("EXEC sp_query_store_unforce_plan @query_id = 9, @plan_id = 9;")
+    );
+    // The other one is still listed.
+    let listed = findings.iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plans");
+    assert_eq!(listed.title, "A plan is forced in Query Store");
+}
+
+// Azure SQL Database recommends creating and dropping indexes too. One the optimizer asks for already has a
+// missing-index finding; one an index added since covers is out of date; one nothing else flags is a finding.
+#[test]
+fn azure_index_recommendations_are_findings_unless_another_finding_has_them() {
+    let mut s = snapshot("mssql-demo.json");
+    let recommend = |kind: &str, table: &str, name: &str, columns: &[&str]| TuningRecommendation {
+        name: format!("IR_{name}"),
+        kind: kind.into(),
+        state: Some("Active".into()),
+        score: Some(64.0),
+        valid_since: Some("2026-10-06T00:00:00Z".into()),
+        index: Some(RecommendedIndex {
+            schema: "shop".into(),
+            table: table.into(),
+            name: Some(name.into()),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
+            include: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    s.tuning = Some(TuningAdvice {
+        recommendations: vec![
+            recommend("CreateIndex", "order_items", "nci_wi_order_items_1", &["order_id"]),
+            recommend("CreateIndex", "orders", "nci_wi_orders_2", &["customer_id"]),
+            recommend("CreateIndex", "orders", "nci_wi_orders_3", &["channel", "created_at"]),
+            {
+                let mut r = recommend("CreateIndex", "customers", "nci_wi_customers_4", &["email"]);
+                r.index.as_mut().unwrap().include = vec!["segment".into()];
+                r
+            },
+            recommend("DropIndex", "orders", "ix_orders_channel", &[]),
+            recommend("DropIndex", "orders", "ix_orders_status", &[]),
+        ],
+        ..Default::default()
+    });
+    let report = analyze(s);
+    let ids: Vec<&str> = report.findings.iter().filter(|f| f.check == "tuning-advice").map(|f| f.id.as_str()).collect();
+
+    // The optimizer asks for it too: one finding, which says so.
+    assert!(!ids.iter().any(|id| id.contains("order_items")), "{ids:?}");
+    let missing = report.findings.iter().find(|f| f.id == "missing-index:shop.order_items(order_id)").unwrap();
+    assert!(
+        missing.summary.contains("Azure SQL's automatic tuning recommends the same index, scoring it 64 out of 100.")
+    );
+
+    // An index a migration added since covers it: nothing to do, and Azure lets it expire.
+    assert!(!ids.iter().any(|id| id.contains("(customer_id)")), "{ids:?}");
+
+    let new =
+        report.findings.iter().find(|f| f.id == "tuning-advice:create-index:shop.orders(channel,created_at)").unwrap();
+    assert!(new.title.starts_with("Azure SQL recommends an index on orders ("), "{}", new.title);
+    assert!(new.summary.contains(", since Oct 6, and scores it 64 out of 100."), "{}", new.summary);
+    assert_eq!(new.severity, Severity::Medium);
+    assert!(new.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("ON [shop].[orders] ([channel], [created_at])"));
+
+    // ix_customers_email leads with email but lacks the column the recommendation includes: widening it does the same.
+    let widen = report.findings.iter().find(|f| f.id == "tuning-advice:create-index:shop.customers(email)").unwrap();
+    assert!(
+        widen.caveats[0].starts_with("ix_customers_email already leads with email; the recommended index adds segment"),
+        "{:?}",
+        widen.caveats
+    );
+
+    // ix_orders_channel is read now and then, so nothing else flags it; ix_orders_status already has a finding.
+    let drop =
+        report.findings.iter().find(|f| f.id == "tuning-advice:drop-index:shop.orders.ix_orders_channel").unwrap();
+    assert_eq!(drop.title, "Azure SQL recommends dropping ix_orders_channel on orders");
+    assert!(drop.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("DISABLE"));
+    assert!(!ids.iter().any(|id| id.contains("ix_orders_status")), "{ids:?}");
 }
 
 #[test]

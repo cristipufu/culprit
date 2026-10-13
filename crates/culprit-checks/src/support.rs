@@ -490,6 +490,29 @@ pub fn window_phrase(workload: &culprit_core::Workload) -> String {
     workload.window_phrase()
 }
 
+/// The window a summary names: the one the scan asked for. Query Store keeps whole intervals (an hour by default), so
+/// `--window 6h` reads up to an interval more, and the rounding is said when it shows: "the last 6 hours (Query Store
+/// keeps whole intervals, so this covers 7)". Data that covers less than asked for is named as it is.
+pub fn summary_window(snapshot: &Snapshot) -> Option<String> {
+    let w = snapshot.workload.as_ref()?;
+    let asked = snapshot.options.as_ref().map(|o| f64::from(o.window_in_minutes()) / 60.0);
+    let Some(asked) = asked.filter(|a| {
+        w.windowed && snapshot.server.engine == Engine::Mssql && w.window_hours > *a && w.window_hours <= a + 1.5
+    }) else {
+        return Some(w.window_phrase());
+    };
+    let (said, covered) = (culprit_core::span_words(asked), culprit_core::span_words(w.window_hours));
+    if said == covered {
+        return Some(format!("the last {said}"));
+    }
+    // "7" after "6 hours"; the unit too when it differs.
+    let covered = match (said.split_once(' '), covered.split_once(' ')) {
+        (Some((_, unit)), Some((n, other))) if unit == other => n.to_string(),
+        _ => covered,
+    };
+    Some(format!("the last {said} (Query Store keeps whole intervals, so this covers {covered})"))
+}
+
 pub fn per_day(snapshot: &Snapshot, value: f64) -> f64 {
     snapshot.workload.as_ref().map(|w| w.per_day(value)).unwrap_or(value)
 }
