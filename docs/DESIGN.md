@@ -218,7 +218,11 @@ CodeMirror (loaded lazily). Run (⌘↵, read-only transaction), Explain (⌘E, 
 
 ### Command palette (⌘K)
 
-Fuzzy search over views, findings, queries, tables, connections and actions (re-scan, switch connection, toggle theme, copy fix).
+Fuzzy search over views, findings, queries, tables, connections and actions (re-scan, switch connection, toggle theme, copy fix, check for updates, turn the daily update check on or off).
+
+### Updates
+
+The desktop app checks the latest published release once a day, in the background and well after start-up, so a check never slows opening it. An update is offered quietly at the foot of the sidebar ("Update to 0.2.1"), never in a dialog: one click downloads it with its progress shown there, verifies its signature against the public key built into the app, and installs it; the app keeps running the old version until the person clicks "Restart to update". The signature is bound to the release's version (`requireSignedVersion`), so a tampered manifest can't pass an older package off as newer, and each kind of install (macOS app, Windows installer, AppImage, .deb) only updates from its own kind of package. A check that finds nothing counts for the day; one that finds an update, or can't reach GitHub, is asked again, so an update offered yesterday is still offered after a restart. The command palette checks on demand and turns the daily check off. The CLI never checks on its own (see `culprit update`).
 
 ### SQL Server tuning, statement families and health
 

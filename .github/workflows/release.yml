@@ -167,7 +167,8 @@ jobs:
 
       - name: Package and sign the update
         # Only a notarized app may reach installed copies: an ad-hoc signed one would stop opening.
-        if: env.HAS_APPLE_SIGNING == 'true' && env.HAS_UPDATER_SIGNING == 'true'
+        # Release tags only: a manual run, from any branch, never signs an update.
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_APPLE_SIGNING == 'true' && env.HAS_UPDATER_SIGNING == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -195,6 +196,8 @@ jobs:
   windows:
     name: Windows (x64)
     runs-on: windows-latest
+    # The update-signing secrets can live in this environment, limited to release tags.
+    environment: release
     timeout-minutes: 60
     env:
       HAS_UPDATER_SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
@@ -219,7 +222,7 @@ jobs:
           cp target/release/culprit.exe out/culprit-cli-windows-x64.exe
       - name: Sign the update
         # The installer is the update: the app runs it, unattended, in place of the installed version.
-        if: env.HAS_UPDATER_SIGNING == 'true'
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_UPDATER_SIGNING == 'true'
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -240,6 +243,8 @@ jobs:
     name: Linux (x86_64)
     # The oldest supported runner, so the AppImage and CLI run on older glibc too.
     runs-on: ubuntu-22.04
+    # The update-signing secrets can live in this environment, limited to release tags.
+    environment: release
     timeout-minutes: 60
     env:
       HAS_UPDATER_SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
@@ -269,7 +274,7 @@ jobs:
           cp target/release/culprit out/culprit-cli-linux-x86_64
       - name: Sign the updates
         # Each kind of install updates from its own package: the AppImage replaces itself, the .deb reinstalls.
-        if: env.HAS_UPDATER_SIGNING == 'true'
+        if: startsWith(github.ref, 'refs/tags/v') && env.HAS_UPDATER_SIGNING == 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

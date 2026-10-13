@@ -209,7 +209,7 @@ cargo build --release -p culprit-cli           # the culprit CLI, in target/rele
 cd app && bun install && bunx tauri build      # the desktop app
 ```
 
-Or download the desktop app and the CLI from the [releases](https://github.com/cristipufu/culprit-sql-studio/releases). A downloaded CLI keeps itself current with `culprit update`, which replaces it with the latest release after checking its SHA-256; nothing checks for updates on its own.
+Or download the desktop app and the CLI from the [releases](https://github.com/cristipufu/culprit-sql-studio/releases). The desktop app checks for a new release once a day and offers it at the foot of the sidebar; it installs only an update signed with Culprit's key, and restarts when you choose (turn the daily check off from the command palette). A downloaded CLI keeps itself current with `culprit update`, which replaces it with the latest release after checking its SHA-256; the CLI never checks on its own.
 
 Connect a database and get its dashboard:
 
