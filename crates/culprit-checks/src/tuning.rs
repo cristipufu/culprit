@@ -375,7 +375,7 @@ fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Op
             return None;
         }
         let (schema, table) = split_object(node.object.as_deref()?)?;
-        let rows = node.table_rows.or_else(|| snapshot.table(&schema, &table).and_then(|t| t.rows))?;
+        let rows = crate::indexes::scan_rows(snapshot, node, &schema, &table)?;
         if rows < SCAN_ROWS {
             return None;
         }

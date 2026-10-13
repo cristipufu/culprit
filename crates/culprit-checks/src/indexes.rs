@@ -972,7 +972,7 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             }
             let (Some(object), Some(predicate)) = (&node.object, &node.predicate) else { continue };
             let Some((schema, table)) = split_object(object) else { continue };
-            let rows = node.table_rows.or_else(|| snapshot.table(&schema, &table).and_then(|t| t.rows)).unwrap_or(0.0);
+            let rows = scan_rows(snapshot, node, &schema, &table).unwrap_or(0.0);
             let estimate_keeps_few = node.est_rows_total() * 10.0 <= rows * node.est_executions.max(1.0);
             if rows < 10_000.0 || !(estimate_keeps_few || measured_keeps_few(snapshot, q, rows)) {
                 continue;
@@ -1004,6 +1004,26 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
         }
     }
     groups
+}
+
+/// Rows a plan's scan reads. A scan of a filtered index reads only that index's rows, which the plan's estimate of
+/// rows read gives; its table cardinality is the whole table's, and would make a scan of an empty filtered index (a
+/// queue's "pending" rows, say) look like a read of every row. Any other scan is taken at the table's size: under a
+/// TOP, the estimate of rows read assumes matches come early, which is exactly when a costly scan would hide.
+pub(crate) fn scan_rows(snapshot: &Snapshot, node: &culprit_core::PlanNode, schema: &str, table: &str) -> Option<f64> {
+    let filtered = node.index.as_deref().is_some_and(|index| {
+        let name = index.trim_matches(['[', ']', '"']);
+        snapshot.indexes.iter().any(|i| {
+            i.schema.eq_ignore_ascii_case(schema)
+                && i.table.eq_ignore_ascii_case(table)
+                && i.name.eq_ignore_ascii_case(name)
+                && i.filter.is_some()
+        })
+    });
+    if filtered {
+        return node.rows_read;
+    }
+    node.table_rows.or_else(|| snapshot.table(schema, table).and_then(|t| t.rows))
 }
 
 /// MySQL and MariaDB count rows examined and rows returned per statement. A statement that examines most of the

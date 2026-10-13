@@ -2,8 +2,8 @@
 
 use culprit_checks::{analyze, index_advice};
 use culprit_core::{
-    AutomaticTuningOption, CleanupKind, Finding, ForcedPlan, PlanCacheUse, QueryFamily, RecommendedIndex, Setting,
-    Severity, Snapshot, TableAdviceKind, TuningAdvice, TuningRecommendation,
+    AutomaticTuningOption, CleanupKind, Finding, ForcedPlan, PlanCacheUse, PlanNode, QueryFamily, RecommendedIndex,
+    Setting, Severity, Snapshot, TableAdviceKind, TuningAdvice, TuningRecommendation,
 };
 
 fn snapshot(name: &str) -> Snapshot {
@@ -242,6 +242,51 @@ fn forced_plans_are_listed_and_one_that_scans_past_a_newer_index_stands_out() {
     // The other one is still listed.
     let listed = findings.iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plans");
     assert_eq!(listed.title, "A plan is forced in Query Store");
+}
+
+fn node_mut(node: &mut PlanNode, id: u32) -> Option<&mut PlanNode> {
+    if node.id == id {
+        return Some(node);
+    }
+    node.children.iter_mut().find_map(|child| node_mut(child, id))
+}
+
+// A scan of a filtered index reads only that index's rows (a queue's pending rows, empty most of the time), however
+// large the table: the plan's table cardinality is the whole table's, and must not make it read as a full scan.
+#[test]
+fn a_scan_of_a_small_filtered_index_is_not_a_read_of_the_whole_table() {
+    let mut s = snapshot("mssql-demo.json");
+    s.tuning = Some(TuningAdvice {
+        forced_plans: vec![ForcedPlan {
+            query_id: "9".into(),
+            plan_id: "9".into(),
+            forcing: Some("AUTO".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    // An index that could seek it, so a forced scan of order_items stands out.
+    let mut seekable = s.indexes.iter().find(|i| i.name == "ix_order_items_product_id").unwrap().clone();
+    seekable.name = "ix_order_items_order_id".into();
+    seekable.columns = vec!["order_id".into()];
+    s.indexes.push(seekable.clone());
+    let mut pending = seekable;
+    pending.name = "ix_order_items_pending".into();
+    pending.columns = vec!["product_id".into()];
+    pending.filter = Some("([quantity]=(0))".into());
+    s.indexes.push(pending);
+    // The forced plan's scan is of that filtered index, and reads its one row.
+    let query = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "9").unwrap();
+    let node = node_mut(&mut query.plan.as_mut().unwrap().root, 1).unwrap();
+    node.index = Some("[ix_order_items_pending]".into());
+    node.rows_read = Some(1.0);
+    let forced_scan =
+        |s: &Snapshot| analyze(s.clone()).findings.into_iter().any(|f| f.id == "tuning-advice:forced-scan:9");
+
+    assert!(!forced_scan(&s), "reading one row of a filtered index is no scan of the table");
+    // The same scan of an index without a filter is taken at the table's size.
+    s.indexes.iter_mut().find(|i| i.name == "ix_order_items_pending").unwrap().filter = None;
+    assert!(forced_scan(&s), "an unfiltered index scan reads the whole table");
 }
 
 // Azure SQL Database recommends creating and dropping indexes too. One the optimizer asks for already has a

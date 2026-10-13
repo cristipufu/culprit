@@ -2,6 +2,12 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.2
+
+### Fixes
+
+- **A scan of a filtered index is no longer called a read of the whole table.** A queue polled through an index filtered to its pending rows scans that index, which is usually nearly empty, but the plan reports the whole table's size alongside it, so the filtered-scan and forced-plan checks reported a full read of the table, as High. They now count the rows such a scan reads. Any other scan is still taken at the table's size, so a scan under a TOP that the optimizer expects to stop early is still caught.
+
 ## 0.2.1
 
 ### Digest
