@@ -5,6 +5,7 @@ import type { ColumnInfo } from "./ColumnInfo";
 import type { ConstraintIssue } from "./ConstraintIssue";
 import type { DeadlockReport } from "./DeadlockReport";
 import type { Environment } from "./Environment";
+import type { EscalationBaseline } from "./EscalationBaseline";
 import type { ForeignKey } from "./ForeignKey";
 import type { IndexStat } from "./IndexStat";
 import type { MissingIndex } from "./MissingIndex";
@@ -53,4 +54,9 @@ constraints: Array<ConstraintIssue>,
 /**
  * Column histograms (MySQL 8, MariaDB); `None` when the engine has none or they couldn't be read.
  */
-histograms: Array<ColumnHistogram> | null, };
+histograms: Array<ColumnHistogram> | null, 
+/**
+ * The lock escalations an earlier scan counted (SQL Server), set from the scans Culprit keeps or a previous
+ * digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
+ */
+escalations_before: EscalationBaseline | null, };

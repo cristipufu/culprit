@@ -448,6 +448,7 @@ pub async fn snapshot(
         deadlocks: None,
         constraints: Vec::new(),
         histograms: None,
+        escalations_before: None,
     };
     crate::signals::collect(connector, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;

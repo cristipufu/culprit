@@ -6,7 +6,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import type { Replica } from "../gen/Replica";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
-import { bytes, count, duration, percent, rowCount } from "../lib/format";
+import { bytes, count, duration, percent, rowCount, when } from "../lib/format";
 import { waitKey } from "../lib/waits";
 import { SignalTile } from "./Health";
 
@@ -437,6 +437,20 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
 const CHURN = ["new-connections", "session-length", "sessions-abandoned", "pooled-reuse", "thread-cache-misses", "aborted-connects", "aborted-clients"];
 
 /** The data behind server and object findings, which have no query to show. */
+/** The metric the lock-escalations check counts new escalations under, when an earlier scan is there to compare with. */
+const ESCALATIONS_SINCE = "Escalations since the previous scan";
+
+/** SQL Server counts escalations from when it started, with no time for each: what the counts cover, and how many came since the scan before. */
+function escalationsSince(startedAt: string | null, previousScan: string | undefined, finding: Finding): string {
+  const counted = startedAt
+    ? `Counted since SQL Server started (${when(startedAt).short}), with no time for each.`
+    : "Counted since each index was loaded into memory, with no time for each.";
+  const since = finding.metrics.find((m) => m.label === ESCALATIONS_SINCE)?.value;
+  if (since === undefined || !previousScan) return `${counted} The next scan says whether any happen after this one.`;
+  const at = when(previousScan).short;
+  return since > 0 ? `${counted} ${count(since)} since the previous scan (${at}).` : `${counted} None since the previous scan (${at}).`;
+}
+
 export function SignalEvidence({ report, finding }: { report: Report; finding: Finding }) {
   const { snapshot } = report;
   const p = snapshot.pressure ?? null;
@@ -503,8 +517,8 @@ export function SignalEvidence({ report, finding }: { report: Report; finding: F
             })}
           </div>
           <p className="beyond-foot">
-            Each table lock replaced one statement's row locks on that index, and every other writer waited for it. Counted since each index was loaded
-            into memory.
+            Each table lock replaced one statement's row locks on that index, and every other writer waited for it.{" "}
+            {escalationsSince(snapshot.server.started_at, snapshot.escalations_before?.taken_at, finding)}
           </p>
         </section>
       );

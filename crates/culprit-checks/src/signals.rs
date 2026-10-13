@@ -961,7 +961,10 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
 // ── lock-escalations ───────────────────────────────────────────────────────────────────────────────
 
 /// The metric `lock-escalations` (and `hot-rows`) report escalations under; the digest reads it back.
-pub(crate) const ESCALATIONS_METRIC: &str = "Escalations to a table lock";
+pub(crate) const ESCALATIONS_METRIC: &str = "Escalations since SQL Server started";
+
+/// The metric `lock-escalations` reports the escalations since the previous scan under, when there is one.
+pub(crate) const ESCALATIONS_SINCE_METRIC: &str = "Escalations since the previous scan";
 
 /// SQL Server considers escalating once one statement holds about this many locks on one index.
 const ESCALATION_THRESHOLD: f64 = 5_000.0;
@@ -984,6 +987,47 @@ struct TableEscalations {
     lock_wait_ms: f64,
 }
 
+/// The Extended Events session the lock-escalations fix starts, so the next escalation is kept with its statement.
+/// Culprit never starts it; a later Culprit can read it by this name.
+pub(crate) const ESCALATION_SESSION: &str = "culprit_lock_escalation";
+
+/// The SQL that starts [`ESCALATION_SESSION`] and reads what it caught: per database on Azure SQL Database, where a
+/// session can't see other databases, per server (filtered to `database`) elsewhere.
+fn escalation_session_sql(database: &str, azure_sql_database: bool) -> String {
+    let (scope, sessions, targets, filter, startup) = if azure_sql_database {
+        ("DATABASE", "sys.dm_xe_database_sessions", "sys.dm_xe_database_session_targets", String::new(), "")
+    } else {
+        (
+            "SERVER",
+            "sys.dm_xe_sessions",
+            "sys.dm_xe_session_targets",
+            format!("\n    WHERE sqlserver.database_name = N'{}'", database.replace('\'', "''")),
+            "\nWITH (STARTUP_STATE = ON)",
+        )
+    };
+    format!(
+        "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\n\
+         CREATE EVENT SESSION {ESCALATION_SESSION} ON {scope}\n\
+         ADD EVENT sqlserver.lock_escalation (\n    \
+             SET collect_statement = 1\n    \
+             ACTION (sqlserver.sql_text, sqlserver.client_app_name){filter})\n\
+         ADD TARGET package0.ring_buffer{startup};\n\
+         ALTER EVENT SESSION {ESCALATION_SESSION} ON {scope} STATE = START;\n\
+         \n\
+         -- Then read what it caught\n\
+         SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       \
+                OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       \
+                e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       \
+                e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       \
+                e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  \
+           FROM (SELECT CAST(t.target_data AS xml) AS d\n          \
+                   FROM {targets} t\n          \
+                   JOIN {sessions} s ON s.address = t.event_session_address\n         \
+                  WHERE s.name = N'{ESCALATION_SESSION}' AND t.target_name = N'ring_buffer') r\n \
+          CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);"
+    )
+}
+
 pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
     let mut by_table: BTreeMap<(String, String), TableEscalations> = BTreeMap::new();
     for i in &snapshot.indexes {
@@ -998,17 +1042,72 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
         t.lock_waits += c.lock_waits();
         t.lock_wait_ms += c.lock_wait_ms();
     }
+    // SQL Server counts escalations from when it started and keeps no time for each: only an earlier scan tells the
+    // recent ones from old ones.
+    let before = snapshot.escalations_before.as_ref();
+    let started = snapshot.server.started_at.as_deref();
+    let azure = snapshot.server.cloud.as_deref() == Some("Azure SQL Database");
     let mut findings: Vec<Finding> = by_table
         .into_iter()
         .map(|((schema, table), t)| {
             let name = format!("{schema}.{table}");
             let mut f = finding("lock-escalations", &name, Category::Indexes, subject(SubjectKind::Table, &name));
             let times = |n: f64| if n == 1.0 { "once".to_string() } else { format!("{} times", format::count(n)) };
-            f.title = format!("Row locks on {table} escalated to a lock on the whole table {}", times(t.escalations));
-            let happened = format!(
-                "Since its indexes were loaded into memory, SQL Server replaced the row and page locks on {table} with one lock on the whole table {}.",
-                times(t.escalations)
-            );
+            let since_start = match started {
+                Some(at) => format!("since SQL Server started ({})", format::friendly_date(at, &snapshot.taken_at)),
+                None => "since its indexes were loaded into memory".to_string(),
+            };
+            let started_on = started.map(crate::trends::when_phrase);
+            // How many since the earlier scan, when there is one to compare with.
+            let new = before.map(|b| (b, b.since(&name, t.escalations)));
+            let historical = new.is_some_and(|(_, n)| n == 0.0);
+            let happened = match new {
+                Some((b, n)) if n > 0.0 => {
+                    let total = if b.restarted {
+                        format!(
+                            "SQL Server restarted since then{}, and these are all it counted since.",
+                            started_on.as_deref().map(|on| format!(" ({on})")).unwrap_or_default()
+                        )
+                    } else if n < t.escalations {
+                        format!("It counted {} in all {since_start}.", format::count(t.escalations))
+                    } else {
+                        format!("All {} it counted {since_start} came after that scan.", format::count(t.escalations))
+                    };
+                    f.title = format!(
+                        "Row locks on {table} escalated to a table lock {} since {}",
+                        times(n),
+                        crate::trends::short_when(&b.taken_at)
+                    );
+                    format!(
+                        "SQL Server replaced the row and page locks on {table} with one lock on the whole table {} since the previous scan, {}. {total}",
+                        times(n),
+                        crate::trends::when_phrase(&b.taken_at)
+                    )
+                }
+                Some((b, _)) => {
+                    f.title = format!(
+                        "Row locks on {table} escalated to a table lock {} {since_start}, none since {}",
+                        times(t.escalations),
+                        crate::trends::short_when(&b.taken_at)
+                    );
+                    format!(
+                        "These escalations are history, not something happening now: SQL Server counts them from when it started{}, \
+                         and the count on {table} hasn't grown since the previous scan, {}. It doesn't record when each one happened.",
+                        started_on.as_deref().map(|on| format!(", {on}")).unwrap_or_default(),
+                        crate::trends::when_phrase(&b.taken_at)
+                    )
+                }
+                None => {
+                    f.title = format!("Row locks on {table} escalated to a table lock {} {since_start}", times(t.escalations));
+                    format!(
+                        "SQL Server replaced the row and page locks on {table} with one lock on the whole table {} {}. It keeps no time for each, \
+                         and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says \
+                         whether any happened since.",
+                        times(t.escalations),
+                        started_on.as_deref().map(|on| format!("since it started, {on}")).unwrap_or_else(|| since_start.clone())
+                    )
+                }
+            };
 
             // SQL Server doesn't record which statement escalated: the writes to the table that change the most rows
             // per run are the likely ones.
@@ -1021,19 +1120,27 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 rows_per_run(b).unwrap_or(0.0).total_cmp(&rows_per_run(a).unwrap_or(0.0)).then(b.total_time_ms.total_cmp(&a.total_time_ms))
             });
             writes.truncate(3);
-            let suspects = match writes.first() {
-                Some(q) => match rows_per_run(q) {
-                    Some(rows) if rows >= ESCALATION_THRESHOLD / 5.0 => format!(
-                        " SQL Server doesn't record which statement it was; the likeliest is {}, which changes about {} rows a run.",
-                        query_handle(q),
-                        format::count(rows)
-                    ),
-                    _ => " SQL Server doesn't record which statement it was; the writes to it are listed below, and the one to look for changes thousands of rows in one run: a purge, a cascade, a backfill.".to_string(),
-                },
-                None => " SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.".to_string(),
+            let suspects = if historical {
+                if writes.is_empty() {
+                    " None of the statements in the query history writes to it now.".to_string()
+                } else {
+                    " The writes to it in the query history are listed below for reference; none of them has escalated since the previous scan.".to_string()
+                }
+            } else {
+                match writes.first() {
+                    Some(q) => match rows_per_run(q) {
+                        Some(rows) if rows >= ESCALATION_THRESHOLD / 5.0 => format!(
+                            " SQL Server doesn't record which statement it was; the likeliest is {}, which changes about {} rows a run.",
+                            query_handle(q),
+                            format::count(rows)
+                        ),
+                        _ => " SQL Server doesn't record which statement it was; the writes to it are listed below, and the one to look for changes thousands of rows in one run: a purge, a cascade, a backfill.".to_string(),
+                    },
+                    None => " SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.".to_string(),
+                }
             };
             f.summary = format!(
-                "{happened} That happens when one statement takes about 5,000 locks on one index: \
+                "{happened} An escalation happens when one statement takes about 5,000 locks on one index: \
                  SQL Server swaps them for a single lock on the whole table, and every other session that writes to {table}, or reads it without \
                  row versioning, waits until that statement's transaction ends.{suspects}"
             );
@@ -1048,22 +1155,40 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             f.last_seen = writes.first().and_then(|q| q.last_seen.clone());
 
             let waited = t.lock_waits >= 1.0;
-            // One escalation is a lock on the whole table: every other writer waited for it, however briefly.
-            f.severity = Severity::High;
+            // One escalation is a lock on the whole table: every other writer waited for it, however briefly. Old ones
+            // with none since the previous scan are history: worth preventing, not an emergency.
+            f.severity = if historical { Severity::Low } else { Severity::High };
             severity_score(&mut f);
-            f.impact.label = format!("{} table locks", format::count(t.escalations));
+            let locks = |n: f64, new: &str| {
+                format!("{} {new}table lock{}", format::count(n), if n == 1.0 { "" } else { "s" })
+            };
+            f.impact.label = match new {
+                Some((_, n)) if n > 0.0 => locks(n, "new "),
+                Some(_) => format!("{}, none new", locks(t.escalations, "")),
+                None => locks(t.escalations, ""),
+            };
             f.confidence = Confidence::High;
             f.metrics = vec![Metric::new(ESCALATIONS_METRIC, t.escalations, Unit::Count)];
+            if let Some((_, n)) = new {
+                f.metrics.push(Metric::new(ESCALATIONS_SINCE_METRIC, n, Unit::Count));
+            }
             if waited {
                 f.metrics.push(Metric::new("Lock waits on its indexes", t.lock_waits, Unit::Count));
                 f.metrics.push(Metric::new("Time waiting", t.lock_wait_ms, Unit::Ms));
             }
             let target = qualified(Engine::Mssql, &schema, &table);
+            let session = escalation_session_sql(&snapshot.server.database, azure);
+            let lead = if historical {
+                format!("None happened since the previous scan. If a statement still changes thousands of rows of {table} at once, change it into")
+            } else {
+                format!("Change the statement that touches thousands of rows of {table} into")
+            };
             f.fix = Some(Fix {
                 summary: format!(
-                    "Change the statement that touches thousands of rows of {table} into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. \
+                    "{lead} a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. \
                      An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, \
-                     but other sessions then wait only for those rows, not for the whole table."
+                     but other sessions then wait only for those rows, not for the whole table. \
+                     To learn which statement it is, start the event session below ({ESCALATION_SESSION}): it keeps each escalation with its statement, in memory, at almost no cost."
                 ),
                 sql: Some(format!(
                     "-- One statement over every matching row escalates; 1,000 at a time doesn't\n\
@@ -1071,12 +1196,19 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                      BEGIN\n    \
                          DELETE TOP (1000) FROM {target} WHERE /* the same filter */;\n    \
                          IF @@ROWCOUNT = 0 BREAK;\n\
-                     END;"
+                     END;\n\
+                     \n\
+                     {session}"
                 )),
                 cost: None,
             });
-            f.verify = vec![format!("Re-scan a day later: the escalation count on {table} should stop growing.")];
-            f.caveats.push("Counted since the index's metadata was loaded into memory, usually since SQL Server started.".into());
+            f.verify = vec![format!(
+                "Scan again later: Culprit compares with this scan, and the finding says how many escalations on {table} happened since. None means it's fixed."
+            )];
+            f.caveats.push(
+                "SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each."
+                    .into(),
+            );
             f
         })
         .collect();
@@ -1893,7 +2025,10 @@ mod tests {
         let f = lock_escalations(&s);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].id, "lock-escalations:dbo.orders");
-        assert_eq!(f[0].title, "Row locks on orders escalated to a lock on the whole table 5 times");
+        assert_eq!(
+            f[0].title,
+            "Row locks on orders escalated to a table lock 5 times since SQL Server started (Oct 11)"
+        );
         // Attempts aren't reported: the counter moves without any statement behind it.
         assert!(!f[0].summary.contains("tried"), "{}", f[0].summary);
         assert!(
@@ -1922,7 +2057,10 @@ mod tests {
     fn a_table_with_no_statement_writing_to_it_says_where_to_look() {
         let s = escalations_on("audit_archive", escalating(2.0, 0.0, 0.0), IndexContention::default());
         let f = lock_escalations(&s);
-        assert_eq!(f[0].title, "Row locks on audit_archive escalated to a lock on the whole table 2 times");
+        assert_eq!(
+            f[0].title,
+            "Row locks on audit_archive escalated to a table lock 2 times since SQL Server started (Oct 11)"
+        );
         assert!(f[0].summary.contains("none of the statements in the query history writes to it"), "{}", f[0].summary);
         assert!(f[0].queries.is_empty());
         assert_eq!(f[0].severity, Severity::High);
@@ -1932,8 +2070,126 @@ mod tests {
     fn a_single_lock_escalation_is_high() {
         let s = escalations_on("orders", escalating(1.0, 1.0, 0.0), IndexContention::default());
         let f = lock_escalations(&s);
-        assert_eq!(f[0].title, "Row locks on orders escalated to a lock on the whole table once");
+        assert_eq!(f[0].title, "Row locks on orders escalated to a table lock once since SQL Server started (Oct 11)");
         assert_eq!(f[0].severity, Severity::High);
+    }
+
+    /// `s` with the counts of an earlier scan of it, taken at 06:00 on the day it was taken.
+    fn with_earlier_scan(mut s: Snapshot, counts: &[(&str, f64)], started_at: Option<&str>) -> Snapshot {
+        let mut earlier = s.clone();
+        earlier.taken_at = "2026-10-11T06:00:00Z".into();
+        if let Some(at) = started_at {
+            earlier.server.started_at = Some(at.into());
+        }
+        for i in earlier.indexes.iter_mut().filter_map(|i| i.contention.as_mut()) {
+            i.lock_escalations = 0.0;
+        }
+        for (table, n) in counts {
+            let i = earlier.indexes.iter_mut().find(|i| i.table == *table && i.contention.is_some()).expect("table");
+            i.contention.as_mut().unwrap().lock_escalations = *n;
+        }
+        s.escalations_before = culprit_core::EscalationBaseline::from_scan(&earlier, &s);
+        s
+    }
+
+    // SQL Server counts escalations since it started, with no time for each: without an earlier scan, Culprit can't
+    // tell whether they're recent, so they stay High and the finding says when the count began.
+    #[test]
+    fn escalations_without_an_earlier_scan_are_high_and_dated_from_the_start() {
+        let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::High);
+        assert!(
+            f.summary.starts_with(
+                "SQL Server replaced the row and page locks on orders with one lock on the whole table 2 times since it started, on Oct 11 at 12:13 UTC. \
+                 It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old"
+            ),
+            "{}",
+            f.summary
+        );
+        assert_eq!(f.metrics.len(), 1);
+    }
+
+    #[test]
+    fn escalations_since_the_previous_scan_are_high_and_counted() {
+        let s = escalations_on("orders", escalating(3.0, 0.0, 0.0), escalating(2.0, 0.0, 0.0));
+        let f = &lock_escalations(&with_earlier_scan(s, &[("orders", 4.0)], None))[0];
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.title, "Row locks on orders escalated to a table lock once since Oct 11, 06:00 UTC");
+        assert!(
+            f.summary.starts_with(
+                "SQL Server replaced the row and page locks on orders with one lock on the whole table once since the previous scan, \
+                 on Oct 11 at 06:00 UTC. It counted 5 in all since SQL Server started (Oct 11)."
+            ),
+            "{}",
+            f.summary
+        );
+        assert_eq!(f.impact.label, "1 new table lock");
+        assert_eq!((f.metrics[0].label.as_str(), f.metrics[0].value), (ESCALATIONS_METRIC, 5.0));
+        assert_eq!((f.metrics[1].label.as_str(), f.metrics[1].value), (ESCALATIONS_SINCE_METRIC, 1.0));
+    }
+
+    // The case that looked recent: the count is old, and the writes listed are only the table's writes now.
+    #[test]
+    fn escalations_with_none_since_the_previous_scan_are_low_history() {
+        let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        let q = first_query(&mut s);
+        q.text = "UPDATE TOP (1000) dbo.orders SET archived = 1 WHERE archived = 0".into();
+        q.plan = None;
+        q.rows = Some(q.executions * 900.0);
+        let f = &lock_escalations(&with_earlier_scan(s, &[("orders", 2.0)], None))[0];
+        assert_eq!(f.severity, Severity::Low);
+        assert_eq!(
+            f.title,
+            "Row locks on orders escalated to a table lock 2 times since SQL Server started (Oct 11), none since Oct 11, 06:00 UTC"
+        );
+        assert!(
+            f.summary.starts_with(
+                "These escalations are history, not something happening now: SQL Server counts them from when it started, \
+                 on Oct 11 at 12:13 UTC, and the count on orders hasn't grown since the previous scan, on Oct 11 at 06:00 UTC."
+            ),
+            "{}",
+            f.summary
+        );
+        assert!(f.summary.ends_with("none of them has escalated since the previous scan."), "{}", f.summary);
+        assert!(!f.summary.contains("likeliest"), "{}", f.summary);
+        assert_eq!(f.queries.len(), 1);
+        assert_eq!(f.impact.label, "2 table locks, none new");
+        assert_eq!(f.metrics[1].value, 0.0);
+        assert!(f.fix.as_ref().unwrap().summary.starts_with("None happened since the previous scan."));
+    }
+
+    #[test]
+    fn after_a_restart_every_escalation_counted_is_new() {
+        let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        // The earlier scan counted more, before the server restarted at 12:13 and started the count again.
+        let s = with_earlier_scan(s, &[("orders", 9.0)], Some("2026-10-01T00:00:00Z"));
+        assert!(s.escalations_before.as_ref().unwrap().restarted);
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::High);
+        assert_eq!(f.title, "Row locks on orders escalated to a table lock 2 times since Oct 11, 06:00 UTC");
+        assert!(
+            f.summary.contains(
+                "SQL Server restarted since then (on Oct 11 at 12:13 UTC), and these are all it counted since."
+            ),
+            "{}",
+            f.summary
+        );
+    }
+
+    #[test]
+    fn the_fix_starts_an_event_session_that_keeps_the_statement() {
+        let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        let sql = lock_escalations(&s)[0].fix.clone().unwrap().sql.unwrap();
+        assert!(sql.contains("CREATE EVENT SESSION culprit_lock_escalation ON SERVER"), "{sql}");
+        assert!(sql.contains("WHERE sqlserver.database_name = N'culprit_demo')"), "{sql}");
+        assert!(sql.contains("FROM sys.dm_xe_session_targets t"), "{sql}");
+        let mut azure = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        azure.server.cloud = Some("Azure SQL Database".into());
+        let sql = lock_escalations(&azure)[0].fix.clone().unwrap().sql.unwrap();
+        assert!(sql.contains("CREATE EVENT SESSION culprit_lock_escalation ON DATABASE"), "{sql}");
+        assert!(sql.contains("FROM sys.dm_xe_database_session_targets t"), "{sql}");
+        assert!(!sql.contains("STARTUP_STATE") && !sql.contains("database_name ="), "{sql}");
     }
 
     #[test]

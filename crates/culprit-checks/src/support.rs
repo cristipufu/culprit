@@ -184,6 +184,24 @@ pub fn supports_online_index(snapshot: &Snapshot) -> bool {
         .is_some_and(|e| e.contains("Enterprise") || e.contains("Developer") || e.contains("Azure"))
 }
 
+/// [`create_index_sql`] for an index that holds only the rows `filter` keeps (SQL Server, written as it keeps filters:
+/// `([is_deleted]=(0))`).
+pub fn create_filtered_index_sql(
+    snapshot: &Snapshot,
+    schema: &str,
+    table: &str,
+    keys: &[String],
+    include: &[String],
+    filter: &str,
+) -> String {
+    let sql = create_index_sql(snapshot, schema, table, keys, include);
+    let filter = format!("\n    WHERE {filter}");
+    match sql.find("\n    WITH (") {
+        Some(at) => format!("{}{filter}{}", &sql[..at], &sql[at..]),
+        None => format!("{}{filter};", sql.trim_end_matches(';')),
+    }
+}
+
 pub fn create_index_sql(snapshot: &Snapshot, schema: &str, table: &str, keys: &[String], include: &[String]) -> String {
     let engine = snapshot.server.engine;
     let name = index_name(table, keys);

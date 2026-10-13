@@ -625,6 +625,10 @@ pub struct Snapshot {
     /// Column histograms (MySQL 8, MariaDB); `None` when the engine has none or they couldn't be read.
     #[serde(default)]
     pub histograms: Option<Vec<crate::signals::ColumnHistogram>>,
+    /// The lock escalations an earlier scan counted (SQL Server), set from the scans Culprit keeps or a previous
+    /// digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
+    #[serde(default)]
+    pub escalations_before: Option<crate::signals::EscalationBaseline>,
 }
 
 impl Snapshot {

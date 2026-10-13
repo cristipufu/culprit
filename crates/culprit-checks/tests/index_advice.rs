@@ -2,8 +2,8 @@
 
 use culprit_checks::{analyze, index_advice};
 use culprit_core::{
-    AutomaticTuningOption, CleanupKind, Finding, ForcedPlan, PlanCacheUse, PlanNode, QueryFamily, RecommendedIndex,
-    Setting, Severity, Snapshot, TableAdviceKind, TuningAdvice, TuningRecommendation,
+    AutomaticTuningOption, CleanupKind, Finding, ForcedPlan, MissingIndex, PlanCacheUse, PlanNode, QueryFamily,
+    RecommendedIndex, Setting, Severity, Snapshot, TableAdviceKind, TuningAdvice, TuningRecommendation,
 };
 
 fn snapshot(name: &str) -> Snapshot {
@@ -445,4 +445,239 @@ fn health_settings_per_engine() {
     for id in ["config:performance_schema_digests_size", "config:statements_digest"] {
         assert!(found.iter().any(|f| f == id), "missing {id}: {found:?}");
     }
+}
+
+const ASKED: &str = "missing-index:shop.support_tickets(customer_id,is_deleted)";
+
+/// The demo where the optimizer asked for an index on support_tickets (`equality`, then `inequality`, including
+/// `include`) for one query, which compares is_deleted with `comparison`. `filtered` gives the table an index on those
+/// keys for the rows where is_deleted = 0.
+fn asked(
+    equality: &[&str],
+    inequality: &[&str],
+    include: &[&str],
+    comparison: &str,
+    filtered: Option<&[&str]>,
+) -> Snapshot {
+    let names = |v: &[&str]| v.iter().map(|c| c.to_string()).collect::<Vec<_>>();
+    let mut s = ten_days(snapshot("mssql-demo.json"));
+    let hash = "0x00C0FFEE00C0FFEE";
+    s.missing_indexes.push(MissingIndex {
+        schema: "shop".into(),
+        table: "support_tickets".into(),
+        equality: names(equality),
+        inequality: names(inequality),
+        include: names(include),
+        seeks: 400.0,
+        scans: 0.0,
+        avg_query_cost: 0.5,
+        avg_impact_pct: 95.0,
+        last_used: None,
+        query_hashes: vec![hash.into()],
+    });
+    let w = s.workload.as_mut().expect("workload");
+    let mut q = w.queries.iter().find(|q| q.plan.is_none()).cloned().unwrap_or_else(|| w.queries[0].clone());
+    q.id = "4242".into();
+    q.query_hash = Some(hash.into());
+    q.plan = None;
+    q.text = format!(
+        "(@par0 int,@par1 bit)select [id], [status] from [shop].[support_tickets] where (([customer_id] = @par0) and ({comparison}))"
+    );
+    w.queries.push(q);
+    if let Some(keys) = filtered {
+        let mut i = s.indexes.iter().find(|i| i.name == "ix_support_tickets_customer_id").expect("an index").clone();
+        i.name = "ix_support_tickets_open".into();
+        i.columns = names(keys);
+        i.filter = Some("([is_deleted]=(0))".into());
+        s.indexes.push(i);
+    }
+    s
+}
+
+fn asked_by_a_query(filtered: bool, comparison: &str) -> Snapshot {
+    let index: &[&str] = &["customer_id", "created_at"];
+    asked(&["customer_id", "is_deleted"], &[], &[], comparison, filtered.then_some(index))
+}
+
+#[test]
+fn a_missing_index_names_the_query_that_asked_for_it() {
+    let report = analyze(asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = @par1", None));
+    let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), ["4242"]);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("CREATE NONCLUSTERED INDEX"));
+    let advice = index_advice(&report);
+    let c = advice.candidates.iter().find(|c| c.table == "support_tickets" && c.keys.len() == 2).expect("to create");
+    assert_eq!(c.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), ["4242"]);
+
+    // When no query in the scan asked for it, the finding says where the request came from.
+    let mut s = asked_by_a_query(false, "[is_deleted] = @par1");
+    s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
+    let report = analyze(s);
+    let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert!(f.queries.is_empty());
+    assert!(
+        f.summary
+            .contains("None of the queries in this scan asked for it: the requests came from plans that ran before"),
+        "{}",
+        f.summary
+    );
+}
+
+// The index exists for is_deleted = 0, but the query passes is_deleted as a parameter, which SQL Server can't match to
+// a filtered index: the fix is the literal, not a second index.
+#[test]
+fn a_filtered_index_missed_through_a_parameter_is_a_rewrite_not_a_new_index() {
+    let report = analyze(asked_by_a_query(true, "[is_deleted] = @par1"));
+    let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert_eq!(
+        f.title,
+        "A query on support_tickets passes is_deleted as a parameter, so ix_support_tickets_open can't serve it"
+    );
+    assert!(
+        f.summary.contains(
+            "but ix_support_tickets_open (customer_id and created_at) already serves these lookups where is_deleted = 0"
+        ),
+        "{}",
+        f.summary
+    );
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none());
+    assert_eq!(
+        fix.summary,
+        "Write the filter as the index does, is_deleted = 0, instead of a parameter in the query below: ix_support_tickets_open \
+         then serves it, and no new index is needed."
+    );
+    assert_eq!((f.severity, f.confidence), (Severity::Low, culprit_core::Confidence::Medium));
+    assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), ["4242"]);
+    // Nor does the index advisor, or the digest's list to create, suggest it.
+    let advice = index_advice(&report);
+    assert!(!advice.candidates.iter().any(|c| c.table == "support_tickets" && c.keys.len() == 2));
+
+    // The parameter on either side of the comparison.
+    let report = analyze(asked_by_a_query(true, "@par1 = [support_tickets].[is_deleted]"));
+    assert!(report.findings.iter().find(|f| f.id == ASKED).unwrap().fix.as_ref().unwrap().sql.is_none());
+    // A literal already matches the index: whatever asked, it isn't the parameter, so the request stands.
+    let report = analyze(asked_by_a_query(true, "[is_deleted] = 0"));
+    assert!(report.findings.iter().find(|f| f.id == ASKED).unwrap().fix.as_ref().unwrap().sql.is_some());
+
+    // Included columns the index lacks: the literal first, then the index rebuilt with them, keeping its filter.
+    let index: &[&str] = &["customer_id", "created_at"];
+    let report = analyze(asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = @par1", Some(index)));
+    let fix = report.findings.iter().find(|f| f.id == ASKED).unwrap().fix.clone().unwrap();
+    assert!(fix.summary.contains("If reading status from the table for each row still costs too much after that, include it in ix_support_tickets_open"), "{}", fix.summary);
+    let sql = fix.sql.unwrap();
+    assert!(sql.contains("INCLUDE ([status])\n    WHERE ([is_deleted]=(0))\n    WITH (DROP_EXISTING = ON"), "{sql}");
+}
+
+// The index finds the rows by the request's equality columns but has no key for its range: the literal first, then,
+// if the range still matters, the rest of the request as an index filtered the same way. Never an index keyed on the
+// filter's column.
+#[test]
+fn a_filtered_index_that_only_partly_serves_the_request_leaves_a_filtered_index_to_create() {
+    let s = asked(
+        &["customer_id", "priority", "is_deleted"],
+        &["due_at"],
+        &[],
+        "[is_deleted] = @par1",
+        Some(&["priority", "customer_id"]),
+    );
+    let report = analyze(s);
+    let id = "missing-index:shop.support_tickets(customer_id,priority,is_deleted,due_at)";
+    let f = report.findings.iter().find(|f| f.id == id).expect("the request");
+    assert_eq!(
+        f.title,
+        "A query on support_tickets passes is_deleted as a parameter, so ix_support_tickets_open can't serve it"
+    );
+    assert!(
+        f.summary.contains(
+            "but ix_support_tickets_open (priority and customer_id) already finds these rows where is_deleted = 0 by priority and customer_id, \
+             though not by due_at."
+        ),
+        "{}",
+        f.summary
+    );
+    assert_eq!((f.severity, f.confidence), (Severity::Low, culprit_core::Confidence::Low));
+    let fix = f.fix.as_ref().unwrap();
+    assert!(
+        fix.summary.starts_with(
+            "Write the filter as the index does, is_deleted = 0, instead of a parameter in the query below: ix_support_tickets_open then \
+             finds its rows by priority and customer_id. If the range on due_at still costs too much after that, create the index below: the request \
+             without is_deleted, filtered the same way, so it holds only the rows where is_deleted = 0. It starts with ix_support_tickets_open's keys"
+        ),
+        "{}",
+        fix.summary
+    );
+    let sql = fix.sql.as_deref().unwrap();
+    assert!(
+        sql.contains("ON [shop].[support_tickets] ([priority], [customer_id], [due_at])\n    WHERE ([is_deleted]=(0))"),
+        "{sql}"
+    );
+    assert!(
+        !sql.contains("[is_deleted]]") && !sql.contains("[is_deleted], ") && !sql.contains(", [is_deleted]"),
+        "{sql}"
+    );
+
+    // The index advisor, and the digest's list to create, list the filtered index, not the request.
+    let advice = index_advice(&report);
+    let c = advice.candidates.iter().find(|c| c.finding_id.as_deref() == Some(id)).expect("to create");
+    assert_eq!(c.keys, ["priority", "customer_id", "due_at"]);
+    assert!(c.sql.as_deref().unwrap().contains("WHERE ([is_deleted]=(0))"));
+    assert!(c.reason.contains("This index is the rest of the request, filtered the same way."), "{}", c.reason);
+    let digest = culprit_checks::digest(&report, None, 10, 5);
+    let create = digest.index_advice.unwrap().create;
+    let listed = create.iter().find(|c| c.finding.as_deref() == Some(id)).expect("in the digest");
+    assert_eq!(listed.keys, ["priority", "customer_id", "due_at"]);
+    assert!(listed.sql.as_deref().unwrap().contains("WHERE ([is_deleted]=(0))"));
+}
+
+// An index with the request's keys is widened only when the queries can use it: a filtered one only when they ask for
+// the rows it holds, written as its filter is.
+#[test]
+fn a_filtered_index_is_widened_only_for_queries_that_fit_its_filter() {
+    let id = "missing-index:shop.support_tickets(customer_id,created_at)";
+    let filtered: &[&str] = &["customer_id", "created_at"];
+    let request = |comparison: &str, index: Option<&[&str]>| {
+        asked(&["customer_id"], &["created_at"], &["status"], comparison, index)
+    };
+    let fix = |s: Snapshot| analyze(s).findings.into_iter().find(|f| f.id == id).expect("the request").fix.unwrap();
+
+    // The query asks for is_deleted = 0, as the index's filter does: widen it, filter kept.
+    let widen = fix(request("[support_tickets].[is_deleted] = (0)", Some(filtered)));
+    let sql = widen.sql.unwrap();
+    assert!(sql.starts_with("CREATE NONCLUSTERED INDEX [ix_support_tickets_open]"), "{sql}");
+    assert!(sql.contains("INCLUDE ([status])\n    WHERE ([is_deleted]=(0))\n    WITH (DROP_EXISTING = ON"), "{sql}");
+
+    // The query doesn't ask for only those rows: a new index, and why the filtered one isn't it.
+    let create = fix(request("[priority] = @par1", Some(filtered)));
+    assert!(
+        create
+            .sql
+            .unwrap()
+            .contains("ON [shop].[support_tickets] ([customer_id], [created_at])\n    INCLUDE ([status])")
+    );
+    assert!(
+        create.summary.ends_with(
+            " ix_support_tickets_open has these keys but holds only the rows where is_deleted = 0, which the query below doesn't ask for."
+        ),
+        "{}",
+        create.summary
+    );
+
+    // No query in the scan asked: nothing shows it could use the filtered index.
+    let mut s = request("[is_deleted] = 0", Some(filtered));
+    s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
+    let create = fix(s);
+    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
+    assert!(
+        create.summary.ends_with("and Culprit can't show that these lookups ask for only those."),
+        "{}",
+        create.summary
+    );
+
+    // An unfiltered index with the keys is widened as before.
+    let id = "missing-index:shop.support_tickets(customer_id)";
+    let report = analyze(asked(&["customer_id"], &[], &["status"], "[priority] = @par1", None));
+    let sql = report.findings.iter().find(|f| f.id == id).expect("the request").fix.clone().unwrap().sql.unwrap();
+    assert!(sql.starts_with("CREATE NONCLUSTERED INDEX [ix_support_tickets_customer_id]"), "{sql}");
+    assert!(sql.contains("WITH (DROP_EXISTING = ON") && !sql.contains("WHERE"), "{sql}");
 }

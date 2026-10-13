@@ -34,8 +34,10 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
             taken_at,
             new: active.iter().filter(|f| was(&f.id).is_none()).take(top).map(|f| item(f, None)).collect(),
             fixed: before.iter().filter(|f| !active.iter().any(|a| a.id == f.id)).take(top).cloned().collect(),
+            // A count since startup turns a finding High when it grew and Low when it didn't: `again` says that.
             worse: active
                 .iter()
+                .filter(|f| event_count(f).is_none())
                 .filter_map(|f| was(&f.id).filter(|b| f.severity > b.severity).map(|b| item(f, Some(b.severity))))
                 .take(top)
                 .collect(),
@@ -55,6 +57,7 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         database: board.database.clone(),
         environment: Some(environment_name(board.environment).to_string()),
         taken_at: report.snapshot.taken_at.clone(),
+        server_started_at: report.snapshot.server.started_at.clone(),
         window: board.coverage.clone(),
         headline: report.summary.headline.clone(),
         database_time: day.as_ref().map(day_sentence),

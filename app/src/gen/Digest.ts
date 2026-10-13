@@ -17,6 +17,11 @@ server: string, database: string, environment: string | null,
  */
 taken_at: string, 
 /**
+ * When the server last started (UTC, ISO 8601), as far as the scan could tell: the next digest tells from it
+ * whether counts since startup (lock escalations) started again in between.
+ */
+server_started_at?: string | null, 
+/**
  * What the query history covers: "the last 25 hours".
  */
 window: string | null, 

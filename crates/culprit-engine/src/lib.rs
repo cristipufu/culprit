@@ -622,9 +622,16 @@ impl Workspace {
             let history = reports::counters_history(&dir, &snapshot.taken_at);
             trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, &history);
         }
+        let previous = previous
+            .filter(|p| p.id != snapshot.id)
+            .and_then(|p| reports::load(&dir.join(format!("{}.json", p.id))).ok())
+            .map(|r| r.snapshot);
         // This scan's changes come before the checks: an index the scans saw appear this week isn't unused yet.
-        let changes = history::compare(&dir, &snapshot, previous.as_ref().map(|p| p.id.as_str()), recorded);
+        let changes = history::diff(previous.as_ref(), &snapshot, recorded);
         history::date_new_indexes(&dir, &mut snapshot, &changes);
+        // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
+        snapshot.escalations_before =
+            previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
         history::keep(&dir, &report.snapshot.id, &changes);
@@ -657,28 +664,36 @@ impl Workspace {
             culprit_checks::analyze_with(culprit_core::redact::redact_snapshot(&r.snapshot), &self.extra_checks)
         };
         let load = |name: &str, id: &str| reports::load(&self.paths.reports_dir(name).join(format!("{id}.json")));
-        let current = match (report, name) {
-            (Some(path), _) => recheck(self.analyze_file(path)?),
+        let mut current = match (report, name) {
+            (Some(path), _) => self.analyze_file(path)?,
             (None, Some(name)) => {
                 let latest = reports::list(&self.paths.reports_dir(name))?.into_iter().next().ok_or_else(|| {
                     Error::not_found(format!("No saved report for '{name}'"))
                         .with_hint(format!("Run `culprit scan {name}` first"))
                 })?;
-                recheck(load(name, &latest.id)?)
+                load(name, &latest.id)?
             }
             (None, None) => {
                 return Err(Error::invalid("Name a connection or pass --report <file>")
                     .with_hint("culprit digest shop, or culprit digest --report report.json --since previous.json"));
             }
         };
-        // The scan before, over the same window: a 7-day scan next to a 24-hour one would show findings coming and
-        // going that only the window explains.
+        // A scan without an earlier one to compare lock escalations with (a scheduled job keeps no scans) compares
+        // them with the baseline's counts.
+        let unbased = current.snapshot.escalations_before.is_none();
         // A previous digest is the baseline a scheduled job keeps: it holds finding ids and titles, no statement text.
         if let Some(path) = since
             && let Some(previous) = read_digest(path)?
         {
+            if unbased {
+                current.snapshot.escalations_before =
+                    culprit_core::EscalationBaseline::from_digest(&previous, &current.snapshot);
+            }
+            let current = recheck(current);
             return Ok(with_details(&current, culprit_checks::digest_since(&current, &previous, top, top_queries)));
         }
+        // The scan before, over the same window: a 7-day scan next to a 24-hour one would show findings coming and
+        // going that only the window explains.
         let previous = match (since, name, report) {
             (Some(path), _, _) => Some(recheck(self.analyze_file(path)?)),
             (None, Some(name), None) => {
@@ -691,6 +706,11 @@ impl Workspace {
             }
             _ => None,
         };
+        if unbased && let Some(previous) = &previous {
+            current.snapshot.escalations_before =
+                culprit_core::EscalationBaseline::from_scan(&previous.snapshot, &current.snapshot);
+        }
+        let current = recheck(current);
         Ok(with_details(&current, culprit_checks::digest(&current, previous.as_ref(), top, top_queries)))
     }
 

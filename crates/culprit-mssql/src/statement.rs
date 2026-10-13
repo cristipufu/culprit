@@ -4,7 +4,7 @@ use culprit_core::{Error, ErrorCode, Plan, Result, ResultSet};
 use futures_util::TryStreamExt;
 use tiberius::QueryItem;
 
-use crate::conn::{MsClient, execute, map_error};
+use crate::conn::{MsClient, OWN_QUERY_MARKER, execute, map_error};
 use crate::plan_xml;
 use crate::value::to_json;
 
@@ -32,6 +32,20 @@ pub(crate) fn parameter_error(e: culprit_core::Error) -> culprit_core::Error {
         "Replace each parameter with a sample value of its type (a quoted string for text, a number for an id) and \
              try again. Queries Culprit captured open from Queries with the plan SQL Server actually used.",
     )
+}
+
+/// The person's SQL as sent to run: marked as Culprit's own after each statement keyword, so what Query Store records of
+/// it stays out of the application's workload. What they wrote, and what they get back, stays theirs. SHOWPLAN
+/// (estimated plans, statement types) compiles without running, and Query Store records none of it: that text goes
+/// unmarked.
+fn marked(sql: &str) -> String {
+    culprit_core::sql::mark_mssql_statements(sql, OWN_QUERY_MARKER)
+}
+
+/// A plan document as the person's own SQL would have produced it, without the markers [`marked`] added.
+fn unmarked(xml: String) -> String {
+    let added = format!(" {OWN_QUERY_MARKER}");
+    if xml.contains(&added) { xml.replace(&added, "") } else { xml }
 }
 
 pub(crate) async fn estimated_plan(client: &mut MsClient, sql: &str) -> Result<Plan> {
@@ -62,12 +76,12 @@ pub(crate) async fn statement_types(client: &mut MsClient, sql: &str) -> Result<
 /// reach here on production).
 pub(crate) async fn actual_plan(client: &mut MsClient, sql: &str) -> Result<Plan> {
     execute(client, "SET STATISTICS XML ON").await.map_err(map_error)?;
-    let documents = collect_plans(client, &measured_batch(sql)).await;
+    let documents = collect_plans(client, &measured_batch(&marked(sql))).await;
     let _ = execute(client, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await;
     let reset = execute(client, "SET STATISTICS XML OFF").await;
     let documents = documents?;
     reset.map_err(map_error)?;
-    let own: Vec<String> = documents.into_iter().filter(|xml| !is_wrapper_plan(xml)).collect();
+    let own: Vec<String> = documents.into_iter().filter(|xml| !is_wrapper_plan(xml)).map(unmarked).collect();
     best_plan(&own)
 }
 
@@ -126,7 +140,7 @@ fn best_plan(documents: &[String]) -> Result<Plan> {
 /// Runs on a dedicated session that is discarded afterwards, so stopping early at `limit` rows is safe.
 pub(crate) async fn run(client: &mut MsClient, sql: &str, limit: usize) -> Result<ResultSet> {
     let started = Instant::now();
-    let mut stream = client.simple_query(sql).await.map_err(map_error)?;
+    let mut stream = client.simple_query(marked(sql)).await.map_err(map_error)?;
     let mut columns: Vec<String> = Vec::new();
     let mut rows = Vec::new();
     let mut truncated = false;
@@ -167,7 +181,7 @@ pub(crate) async fn run(client: &mut MsClient, sql: &str, limit: usize) -> Resul
 /// the RPC path, which reports how many rows each statement touched.
 pub(crate) async fn run_changes(client: &mut MsClient, sql: &str) -> Result<ResultSet> {
     let started = Instant::now();
-    let done = client.execute(sql, &[]).await.map_err(map_error)?;
+    let done = client.execute(marked(sql), &[]).await.map_err(map_error)?;
     let affected: u64 = done.rows_affected().iter().sum();
     Ok(ResultSet {
         columns: Vec::new(),
@@ -204,6 +218,13 @@ mod changes_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_persons_sql_is_marked_as_sent_and_its_plan_reads_as_written() {
+        assert_eq!(marked("SELECT id FROM shop.orders"), "SELECT /* culprit */ id FROM shop.orders");
+        let plan = r#"<StmtSimple StatementText="UPDATE /* culprit */ shop.orders SET note = ''" />"#.to_string();
+        assert_eq!(unmarked(plan), r#"<StmtSimple StatementText="UPDATE shop.orders SET note = ''" />"#);
+    }
 
     #[test]
     fn measuring_always_rolls_back() {

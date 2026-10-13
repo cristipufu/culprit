@@ -810,6 +810,60 @@ const NOT_NAMES: &[&str] = &[
     "with",
 ];
 
+/// The keywords after which [`mark_mssql_statements`] puts its marker: one starts every statement Query Store records.
+const MARKED_KEYWORDS: [&str; 7] = ["SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "EXEC", "EXECUTE"];
+
+/// What `CREATE` or `ALTER` defines when its body is kept as text: everything after it is the module's definition.
+const MODULES: [&str; 5] = ["PROC", "PROCEDURE", "FUNCTION", "TRIGGER", "VIEW"];
+
+/// T-SQL `text` with ` {marker}` (a comment) after every SELECT, INSERT, UPDATE, DELETE, MERGE, EXEC and EXECUTE
+/// keyword, so SQL Server's Query Store, which keeps each statement of a batch with its own text, records every one of
+/// them with the marker. Strings, quoted names and comments are left alone, and a comment between two tokens changes
+/// nothing the server runs. Unchanged when there is no such keyword, when this lexer can't read the text (the server
+/// then sees what was written), and when the text defines a procedure, function, trigger or view: the marker would
+/// become part of its body, and every statement it runs would be left out of the workload for good.
+pub fn mark_mssql_statements(text: &str, marker: &str) -> String {
+    let Ok(readings) = readings(text, Engine::Mssql) else { return text.to_string() };
+    let ends = |tokens: &[Token<'_>]| -> Option<Vec<usize>> {
+        let words: Vec<&str> =
+            tokens.iter().filter_map(|t| if let Token::Word(w) = t { Some(*w) } else { None }).collect();
+        let is = |w: Option<&&str>, list: &[&str]| w.is_some_and(|w| list.iter().any(|k| w.eq_ignore_ascii_case(k)));
+        let defines_module = words.iter().enumerate().any(|(i, w)| {
+            is(Some(w), &["CREATE", "ALTER"])
+                && (is(words.get(i + 1), &MODULES) || (is(words.get(i + 1), &["OR"]) && is(words.get(i + 3), &MODULES)))
+        });
+        if defines_module {
+            return None;
+        }
+        Some(
+            words
+                .iter()
+                .filter(|w| is(Some(w), &MARKED_KEYWORDS))
+                .map(|w| (w.as_ptr() as usize - text.as_ptr() as usize, w.len()))
+                // `#select` (a temporary table) and `x.update` are names, not statements.
+                .filter(|(at, _)| !matches!(at.checked_sub(1).map(|b| text.as_bytes()[b]), Some(b'#' | b'.')))
+                .map(|(at, len)| at + len)
+                .collect(),
+        )
+    };
+    let mut readings = readings.iter().map(|tokens| ends(tokens));
+    let Some(Some(ends)) = readings.next() else { return text.to_string() };
+    // Every reading (QUOTED_IDENTIFIER on and off) must put the markers in the same places.
+    if readings.any(|other| other.as_ref() != Some(&ends)) {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len() + ends.len() * (marker.len() + 1));
+    let mut from = 0;
+    for end in ends {
+        out.push_str(&text[from..end]);
+        out.push(' ');
+        out.push_str(marker);
+        from = end;
+    }
+    out.push_str(&text[from..]);
+    out
+}
+
 /// Tables a statement reads or writes, as written (`schema.table` or `table`), lower-cased and unquoted. Best effort, for
 /// tying changes (a dropped index, fresh statistics) to the queries they touch; never used to decide what is safe.
 pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
@@ -1258,5 +1312,76 @@ mod tests {
         assert!(reads_only(r#"SELECT "Name", [Order] FROM t"#, Engine::Mssql));
         assert!(reads_only(r#"SELECT "name" FROM "orders" WHERE "id" = 1"#, Engine::Postgres));
         assert!(!reads_only("SELECT * FROM t FOR KEY SHARE", Engine::Postgres));
+    }
+
+    fn mark(sql: &str) -> String {
+        mark_mssql_statements(sql, "/* culprit */")
+    }
+
+    #[test]
+    fn marks_every_statement_keyword() {
+        assert_eq!(mark("SELECT a FROM t"), "SELECT /* culprit */ a FROM t");
+        assert_eq!(
+            mark("INSERT INTO t (a) SELECT a FROM s; DELETE FROM s;\nexec dbo.refresh"),
+            "INSERT /* culprit */ INTO t (a) SELECT /* culprit */ a FROM s; DELETE /* culprit */ FROM s;\nexec /* culprit */ dbo.refresh"
+        );
+        assert_eq!(
+            mark("MERGE t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE SET a = s.a;"),
+            "MERGE /* culprit */ t USING s ON t.id = s.id WHEN MATCHED THEN UPDATE /* culprit */ SET a = s.a;"
+        );
+        assert_eq!(mark("EXECUTE('SELECT 1')"), "EXECUTE /* culprit */('SELECT 1')");
+        // A common table expression's statement is marked, and so is its own SELECT.
+        assert_eq!(
+            mark("WITH old AS (SELECT id FROM t WHERE done = 1) UPDATE old SET archived = 1"),
+            "WITH old AS (SELECT /* culprit */ id FROM t WHERE done = 1) UPDATE /* culprit */ old SET archived = 1"
+        );
+        // A batch that declares first: the SELECT after it is the statement Query Store keeps.
+        assert_eq!(
+            mark(
+                "DECLARE @since datetime2 = DATEADD(day, -1, SYSUTCDATETIME());\nSELECT COUNT(*) FROM t WHERE at > @since"
+            ),
+            "DECLARE @since datetime2 = DATEADD(day, -1, SYSUTCDATETIME());\nSELECT /* culprit */ COUNT(*) FROM t WHERE at > @since"
+        );
+    }
+
+    #[test]
+    fn never_marks_inside_strings_names_or_comments() {
+        // The value written stays the person's.
+        assert_eq!(mark("UPDATE t SET note = 'select'"), "UPDATE /* culprit */ t SET note = 'select'");
+        assert_eq!(
+            mark("UPDATE t SET note = N'it''s a delete'"),
+            "UPDATE /* culprit */ t SET note = N'it''s a delete'"
+        );
+        assert_eq!(mark("-- delete me\nSELECT 1"), "-- delete me\nSELECT /* culprit */ 1");
+        assert_eq!(
+            mark("/* select /* nested update */ exec */ SELECT 1"),
+            "/* select /* nested update */ exec */ SELECT /* culprit */ 1"
+        );
+        assert_eq!(
+            mark("SELECT [select], [a]]update] FROM [delete]"),
+            "SELECT /* culprit */ [select], [a]]update] FROM [delete]"
+        );
+        assert_eq!(mark(r#"SELECT "update" FROM t"#), r#"SELECT /* culprit */ "update" FROM t"#);
+        assert_eq!(
+            mark("SELECT @select, selected FROM #select"),
+            "SELECT /* culprit */ @select, selected FROM #select"
+        );
+    }
+
+    #[test]
+    fn leaves_text_without_a_statement_keyword_or_with_a_module_body_as_it_is() {
+        for sql in [
+            "DECLARE @x int = 1",
+            "SET NOCOUNT ON",
+            "TRUNCATE TABLE t",
+            "CREATE PROCEDURE dbo.p AS SELECT 1",
+            "create or alter view dbo.v as select a from t",
+            "ALTER FUNCTION dbo.f() RETURNS TABLE AS RETURN (SELECT 1 AS a)",
+            "CREATE TRIGGER tr ON t AFTER INSERT AS UPDATE t SET a = 1",
+            // Text the lexer can't read is sent as written.
+            "SELECT 'never closed",
+        ] {
+            assert_eq!(mark(sql), sql);
+        }
     }
 }

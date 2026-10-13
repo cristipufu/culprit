@@ -276,9 +276,11 @@ fn single_statement(sql: &str) -> Result<&str> {
     culprit_core::sql::single_statement(sql, Engine::Postgres)
 }
 
-/// Parse the statement on the server without running it. This also rejects several statements in one string.
+/// Parse the statement on the server without running it. This also rejects several statements in one string. Tagged
+/// like everything Culprit sends: pg_stat_statements keeps the text it first sees for a statement, and parsing one with
+/// constants is enough to record it.
 async fn parameter_count(client: &Client, statement: &str) -> Result<usize> {
-    match client.prepare(statement).await {
+    match client.prepare(&tagged(statement)).await {
         Ok(prepared) => Ok(prepared.params().len()),
         // Parameters whose type cannot be inferred: still a single statement, with placeholders.
         Err(e) if sql_state(&e) == Some("42P18") => Ok(1),
@@ -309,7 +311,7 @@ async fn explain_text(client: &Client, sql: &str, kind: PlanKind, statement: &st
 
 /// Run one statement and collect up to `limit` rows; `cursor` fetches reads through a cursor (needs a transaction block).
 async fn run_in_transaction(client: &Client, statement: &str, limit: usize, cursor: bool) -> Result<ResultSet> {
-    let prepared = client.prepare(statement).await.map_err(single_statement_error)?;
+    let prepared = client.prepare(&tagged(statement)).await.map_err(single_statement_error)?;
     if !prepared.params().is_empty() {
         return Err(Error::invalid("This statement has $n parameters").with_hint("Replace them with values to run it."));
     }

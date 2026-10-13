@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.4
+
+### Fixes
+
+- **Lock escalations say whether they're new.** SQL Server counts them from when it started and keeps no time for each, so a count from last week read like today's. Each scan now compares with the scan before it, and a scheduled digest with the digest before: escalations since then are High and say how many and since when; a count that hasn't grown is Low and says these are history, none since the previous scan. Without an earlier scan the finding stays High and says when the count began. The fix adds an Extended Events session that keeps the next escalation with its statement, which SQL Server doesn't record otherwise.
+- **SQL you run from Culprit no longer shows up as your application's workload.** Culprit now marks every statement you run, measure or change from the CLI or the app's SQL editor as its own, the way it marks the statements it reads statistics with, so Query Store's copy of them stays out of Top queries and Queries; what you wrote and what you get back are unchanged.
+- **Missing-index findings name the queries that asked for them**, and when an existing filtered index would serve them if the query used its literal (`is_deleted = 0` rather than a parameter), say so instead of suggesting a new index. When it would serve them only in part, what's left is an index filtered the same way, never one keyed on the filter's column.
+- **Rebuilding a filtered index to include more columns keeps its filter, and is suggested only for queries that ask for the rows it holds.** The suggested `DROP_EXISTING` statement left out its `WHERE`, which would have turned it into an index on every row; queries that don't fit the filter, or that Culprit can't show, now get an index of their own.
+
 ## 0.2.3
 
 ### Fixes

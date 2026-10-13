@@ -4,10 +4,12 @@
 //!
 //! Every engine keeps a different subset. A value the engine doesn't keep is `None` (or absent), never zero.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::{Plan, QueryStat};
+use crate::{Digest, Plan, QueryStat, Snapshot};
 
 /// What a statement's runs cost besides elapsed time, as far as the engine keeps it. Totals cover all its runs in the
 /// workload's window (or since its statistics began, for sources that keep running totals).
@@ -212,6 +214,79 @@ impl IndexContention {
     pub fn lock_waits(&self) -> f64 {
         self.row_lock_waits + self.page_lock_waits
     }
+}
+
+/// The lock escalations an earlier scan of the same database counted per table. SQL Server counts them from when it
+/// started and keeps no time for each, so this is how a scan tells the ones since the earlier scan from old ones.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct EscalationBaseline {
+    /// When the earlier scan was taken (UTC, ISO 8601).
+    pub taken_at: String,
+    /// Escalations it counted per table (`schema.table`); a table missing here had none. Empty when the server
+    /// restarted after it: every escalation counted now came later.
+    pub tables: BTreeMap<String, f64>,
+    /// The server restarted between the earlier scan and this one, which started the counts again from zero.
+    pub restarted: bool,
+}
+
+/// Start times read a second or two apart are the same start.
+const SAME_START_SECONDS: f64 = 120.0;
+
+impl EscalationBaseline {
+    /// What `previous`, an earlier scan of the same database, counted, to compare `current` with. `None` when it can't
+    /// tell: either scan doesn't know when the server started, or `previous` has no lock counters.
+    pub fn from_scan(previous: &Snapshot, current: &Snapshot) -> Option<EscalationBaseline> {
+        if !previous.indexes.iter().any(|i| i.contention.is_some()) {
+            return None;
+        }
+        let restarted = restarted(previous.server.started_at.as_deref()?, current.server.started_at.as_deref()?)?;
+        Some(EscalationBaseline {
+            taken_at: previous.taken_at.clone(),
+            tables: if restarted { BTreeMap::new() } else { escalations_by_table(previous) },
+            restarted,
+        })
+    }
+
+    /// The same from a previous digest, which keeps each lock-escalations finding's count: what a scheduled job keeps
+    /// between runs instead of the scans. `None` for a digest that doesn't say when the server started.
+    pub fn from_digest(previous: &Digest, current: &Snapshot) -> Option<EscalationBaseline> {
+        let restarted = restarted(previous.server_started_at.as_deref()?, current.server.started_at.as_deref()?)?;
+        let tables = if restarted {
+            BTreeMap::new()
+        } else {
+            previous
+                .findings
+                .iter()
+                .filter_map(|f| Some((f.id.strip_prefix("lock-escalations:")?.to_string(), f.count?)))
+                .collect()
+        };
+        Some(EscalationBaseline { taken_at: previous.taken_at.clone(), tables, restarted })
+    }
+
+    /// Escalations on `table` (`schema.table`) since the earlier scan, out of `now` counted since the server started.
+    /// A count lower than then was started again (the table's indexes were reloaded into memory), so all of it is new.
+    pub fn since(&self, table: &str, now: f64) -> f64 {
+        let then = self.tables.get(table).copied().unwrap_or(0.0);
+        if now >= then { now - then } else { now }
+    }
+}
+
+/// Whether the server started again between two readings of its start time; `None` when either doesn't parse.
+fn restarted(before: &str, after: &str) -> Option<bool> {
+    let (before, after) = (crate::format::epoch_seconds(before)?, crate::format::epoch_seconds(after)?);
+    Some((after - before).abs() > SAME_START_SECONDS)
+}
+
+/// Lock escalations per table (`schema.table`) a scan counted, its tables without any left out.
+pub fn escalations_by_table(snapshot: &Snapshot) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    for i in &snapshot.indexes {
+        if let Some(c) = i.contention.as_ref().filter(|c| c.lock_escalations > 0.0) {
+            *out.entry(format!("{}.{}", i.schema, i.table)).or_insert(0.0) += c.lock_escalations;
+        }
+    }
+    out
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]

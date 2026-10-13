@@ -164,18 +164,9 @@ pub(crate) async fn execute(client: &mut MsClient, sql: &str) -> tiberius::Resul
 /// Marks Culprit's own statements so workload collection can leave them out of the application's history.
 pub(crate) const OWN_QUERY_MARKER: &str = "/* culprit */";
 
-/// Inserts the marker right after the first SELECT, which puts it inside the statement text Query Store records.
+/// Inserts the marker after each statement keyword, which puts it inside every statement text Query Store records.
 fn mark(sql: &str) -> String {
-    let upper = sql.to_ascii_uppercase();
-    let Some(at) = upper.match_indices("SELECT").map(|(i, _)| i).find(|&i| {
-        let before = upper[..i].chars().last();
-        let after = upper[i + 6..].chars().next();
-        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-    }) else {
-        return sql.to_string();
-    };
-    format!("{} {OWN_QUERY_MARKER}{}", &sql[..at + 6], &sql[at + 6..])
+    culprit_core::sql::mark_mssql_statements(sql, OWN_QUERY_MARKER)
 }
 
 pub(crate) async fn query(client: &mut MsClient, sql: &str) -> tiberius::Result<Vec<Rec>> {
@@ -318,13 +309,17 @@ mod tests {
     }
 
     #[test]
-    fn marks_the_first_select() {
+    fn marks_every_select() {
         assert_eq!(mark("DECLARE @x int = 1;\nSELECT a FROM t"), "DECLARE @x int = 1;\nSELECT /* culprit */ a FROM t");
         assert_eq!(
             mark("WITH s AS (SELECT 1 AS a) SELECT a FROM s"),
-            "WITH s AS (SELECT /* culprit */ 1 AS a) SELECT a FROM s"
+            "WITH s AS (SELECT /* culprit */ 1 AS a) SELECT /* culprit */ a FROM s"
         );
         assert_eq!(mark("SELECTED"), "SELECTED");
+        assert_eq!(
+            mark("SELECT 1 FROM t WHERE name LIKE N'%select%'"),
+            "SELECT /* culprit */ 1 FROM t WHERE name LIKE N'%select%'"
+        );
     }
 
     #[test]

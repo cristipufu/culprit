@@ -45,6 +45,9 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         let keys = c.keys();
         let table_name = format!("{}.{}", c.schema, c.table);
         let asking = asking_queries(queries, &c);
+        // An index the table has would serve these queries if they wrote its filter as a literal: only what it can't do
+        // then is left to create, filtered like it.
+        let parameterized = crate::indexes::parameterized_filter(s, &c, &asking);
         let share = query_impact(s, &asking).map(|i| i.share);
         let lookups = c.seeks + c.scans;
         let mut reason = format!(
@@ -76,11 +79,58 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             ));
             c.include.clear();
         }
-        let existing = existing_match(s, &c);
-        let (sql, widens) = match existing {
-            Some(e) if !c.include.is_empty() => (widen_fix(s, e, &c.include).sql, Some(e.name.clone())),
-            Some(e) => (None, Some(e.name.clone())),
-            None => (Some(create_index_sql(s, &c.schema, &c.table, &keys, &c.include)), None),
+        let (index_keys, include, sql, widens) = match &parameterized {
+            Some(p) => {
+                let remainder = p.remainder(&c.include);
+                let Some((sql, widens)) = p.remainder_sql(s, &remainder) else { continue };
+                let columns = format::list(&p.columns());
+                reason.push_str(&format!(
+                    " {} {columns} as a parameter, which keeps SQL Server off {}, filtered to {}; written as a literal, ",
+                    if asking.len() == 1 { "The query passes" } else { "The queries pass" },
+                    p.index.name,
+                    p.literals()
+                ));
+                verify.splice(
+                    0..2,
+                    [
+                        format!(
+                            "Write {} as a literal in the queries first, then re-scan: the request either disappears or asks for this.",
+                            p.literals()
+                        ),
+                        format!(
+                            "The queries listed seek on {} and read far fewer pages per run.",
+                            widens.as_deref().unwrap_or("the new index")
+                        ),
+                    ],
+                );
+                match remainder {
+                    crate::indexes::Remainder::Index { keys, include } => {
+                        reason.push_str(&format!(
+                            "it finds the rows by {}, not by {}. This index is the rest of the request, filtered the same way.",
+                            format::list(&keys[..keys.len() - p.missing_range.len()]),
+                            format::list(&p.missing_range)
+                        ));
+                        (keys, include, Some(sql), widens)
+                    }
+                    crate::indexes::Remainder::Include(missing) => {
+                        reason.push_str(&format!(
+                            "it serves them, reading {} from the table for each row. Including {} is the rest of the request.",
+                            format::list(&missing),
+                            if missing.len() == 1 { "it" } else { "them" }
+                        ));
+                        (p.index.key_names().iter().map(|k| k.to_string()).collect(), missing, Some(sql), widens)
+                    }
+                    crate::indexes::Remainder::Nothing => continue,
+                }
+            }
+            None => {
+                let (sql, widens) = match existing_match(s, &c, &asking) {
+                    Some(e) if !c.include.is_empty() => (widen_fix(s, e, &c.include).sql, Some(e.name.clone())),
+                    Some(e) => (None, Some(e.name.clone())),
+                    None => (Some(create_index_sql(s, &c.schema, &c.table, &keys, &c.include)), None),
+                };
+                (keys.clone(), c.include.clone(), sql, widens)
+            }
         };
         let requests = c
             .requests
@@ -96,8 +146,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         candidates.push(IndexCandidate {
             schema: c.schema.clone(),
             table: c.table.clone(),
-            keys: keys.clone(),
-            include: c.include.clone(),
+            keys: index_keys,
+            include,
             source: CandidateSource::Optimizer,
             reason,
             sql,

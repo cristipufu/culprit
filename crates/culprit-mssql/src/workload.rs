@@ -203,6 +203,20 @@ pub(crate) struct WorkloadResult {
     pub(crate) plan_errors: usize,
 }
 
+/// Query Store's queries behind the database's missing-index requests: the optimizer's request groups name the
+/// query_hash of each query that asked (SQL Server 2019+, Azure SQL). DMVs and Query Store's catalog only.
+const MISSING_INDEX_ASKERS_SQL: &str = r#"
+SELECT DISTINCT TOP (200) qsq.query_id
+FROM sys.dm_db_missing_index_group_stats_query m
+JOIN sys.dm_db_missing_index_groups g ON g.index_group_handle = m.group_handle
+JOIN sys.dm_db_missing_index_details d ON d.index_handle = g.index_handle
+JOIN sys.query_store_query qsq ON qsq.query_hash = m.query_hash
+WHERE d.database_id = DB_ID()
+"#;
+
+/// At most this many of them join the workload beyond its top queries, the most run first.
+const MAX_ASKERS: usize = 20;
+
 /// Workload from Query Store over the scan's window. Query Store keeps runtime stats per interval (often an
 /// hour), so the window reaches back to the start of the interval its edge falls in.
 pub(crate) async fn from_query_store(
@@ -227,7 +241,18 @@ pub(crate) async fn from_query_store(
     let total_cpu_ms: f64 = all.iter().map(|q| q.sum(|p| p.cpu_ms)).sum();
     let total_executions: f64 = all.iter().map(QueryAgg::executions).sum();
 
-    let selected = select_top(&all, options.top_queries as usize);
+    let mut selected = select_top(&all, options.top_queries as usize);
+    // The queries the optimizer asked for a missing index for, when SQL Server says which (2019+, Azure SQL), join the
+    // top ones, so the missing-index finding can name them. A failure here leaves the finding without them.
+    if let Ok(rows) = query(client, MISSING_INDEX_ASKERS_SQL).await {
+        let askers: HashSet<String> = rows.iter().map(|r| r.string("query_id")).collect();
+        let mut extra: Vec<&QueryAgg> = all
+            .iter()
+            .filter(|q| askers.contains(&q.query_id) && !selected.iter().any(|s| s.query_id == q.query_id))
+            .collect();
+        extra.sort_by(|a, b| b.executions().total_cmp(&a.executions()));
+        selected.extend(extra.into_iter().take(MAX_ASKERS));
+    }
     let ids: Vec<String> = selected.iter().map(|q| q.query_id.clone()).collect();
 
     let text_sql = format!(

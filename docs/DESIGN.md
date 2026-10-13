@@ -245,7 +245,7 @@ Time and reads say where the work is; these say what else a statement, file or t
 | Storage latency (`slow-storage`) | `dm_io_virtual_file_stats` per file, this database and tempdb | `pg_stat_io` by object (16+), `pg_stat_database` read time before; needs `track_io_timing` | `file_summary_by_instance` per file (performance_schema) |
 | Connection churn (`connection-churn`) | Logins/sec and pooled reuse (Connection Reset) | sessions, length and abandoned, 14+ | Connections, threads created, aborted connects |
 | Hot rows (`hot-rows`, `last-page-insert`) | `dm_db_index_operational_stats` lock and latch waits per index; sequential keys and OPTIMIZE_FOR_SEQUENTIAL_KEY | — | per statement via lock time |
-| Lock escalations (`lock-escalations`) | `dm_db_index_operational_stats` escalations per table (attempts are collected but not reported: the counter moves with SQL Server's background work), with the writes to it that change the most rows per run | never escalates | never escalates |
+| Lock escalations (`lock-escalations`) | `dm_db_index_operational_stats` escalations per table (attempts are collected but not reported: the counter moves with SQL Server's background work), with the writes to it that change the most rows per run. The count runs since SQL Server started with no time for each, so a scan compares it with the scan before (a digest with the digest before): High when it grew, Low history when it didn't, High without an earlier scan. The fix adds an Extended Events session (`culprit_lock_escalation`) that keeps the next escalation with its statement | never escalates | never escalates |
 | Untrusted constraints (`untrusted-constraint`) | WITH NOCHECK or disabled FKs and checks | CHECK constraints added NOT VALID | not used by the optimizer |
 | Missing histograms (`missing-histogram`) | — | — | heavy filters on columns with no leading index and no histogram (COLUMN_STATISTICS, `mysql.column_stats`), noting EXPLAIN's 10% / 33% guesses |
 | HOT updates and bloat (`hot-updates`, `table-bloat`) | — | `n_tup_hot_upd`, `n_tup_newpage_upd` (16+), fillfactor; bloat estimated from pg_stats | — |
@@ -307,7 +307,7 @@ Every tool call is appended to a private `audit.jsonl`, with the SQL text for `e
 
 | Check | Engines | Signal |
 |---|---|---|
-| `missing-index` | SQL Server | Missing-index DMVs, merged and de-duplicated against existing indexes, linked to the queries that asked for them |
+| `missing-index` | SQL Server | Missing-index DMVs, merged and de-duplicated against existing indexes, linked to the queries that asked for them (the scan keeps them with its top queries, 2019+). A request an existing filtered index would serve if the query wrote its filter as a literal instead of a parameter becomes that rewrite, not a new index; what the index can't serve after it (a range, included columns) is an index filtered the same way |
 | `filtered-scan` | both | Heavy queries whose plan reads a large table in full to keep a few rows; suggests the index from the filter's columns |
 | `unindexed-fk` | both | Foreign key columns with no index starting with them |
 | `unused-index` | both | Indexes with writes but no reads since stats reset, with uptime-based confidence; not before an index may be a week old (`indexes[].created_at_latest`: a scan saw it appear, or its table changed before the first scan) |

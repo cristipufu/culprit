@@ -246,7 +246,7 @@ fn numeric(id: &str) -> bool {
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// "Oct 9, 14:00 UTC" from an ISO 8601 UTC timestamp.
-fn short_when(iso: &str) -> String {
+pub(crate) fn short_when(iso: &str) -> String {
     let month = iso.get(5..7).and_then(|m| m.parse::<usize>().ok()).filter(|m| (1..=12).contains(m));
     let day = iso.get(8..10).and_then(|d| d.parse::<u32>().ok());
     match (month, day, iso.get(11..16)) {
@@ -255,7 +255,7 @@ fn short_when(iso: &str) -> String {
     }
 }
 
-fn when_phrase(iso: &str) -> String {
+pub(crate) fn when_phrase(iso: &str) -> String {
     let short = short_when(iso);
     match short.split_once(", ") {
         Some((date, time)) => format!("on {date} at {time}"),

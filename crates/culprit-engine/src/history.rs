@@ -36,20 +36,7 @@ fn write(dir: &Path, id: &str, events: &[ChangeEvent]) {
     }
 }
 
-/// Compare a fresh scan with the scan before it, plus what the database dated itself (`recorded`). [`keep`] keeps the
-/// result once the report is saved.
-pub fn compare(
-    dir: &Path,
-    snapshot: &Snapshot,
-    previous_id: Option<&str>,
-    recorded: Vec<ChangeEvent>,
-) -> Vec<ChangeEvent> {
-    let previous =
-        previous_id.filter(|id| *id != snapshot.id).and_then(|id| reports::load(&dir.join(format!("{id}.json"))).ok());
-    diff(previous.as_ref().map(|r| &r.snapshot), snapshot, recorded)
-}
-
-/// Keep a scan's changes next to its report. Never fails a scan: problems leave no file.
+/// Keep a scan's changes ([`diff`]) next to its report. Never fails a scan: problems leave no file.
 pub fn keep(dir: &Path, id: &str, events: &[ChangeEvent]) {
     write(dir, id, events);
 }
@@ -638,7 +625,7 @@ mod tests {
         let added = before.indexes.remove(before.indexes.iter().position(|i| !i.is_primary_key).unwrap()).name;
         reports::save(&dir, &culprit_checks::analyze(before.clone())).unwrap();
 
-        let changes = compare(&dir, &after, Some(&before.id), Vec::new());
+        let changes = diff(Some(&before), &after, Vec::new());
         date_new_indexes(&dir, &mut after, &changes);
         for i in &after.indexes {
             let expected = (i.name == added).then_some("2026-10-11T08:00:00Z");

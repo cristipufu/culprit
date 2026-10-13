@@ -111,19 +111,63 @@ pub(crate) fn merge_candidates(snapshot: &Snapshot) -> Vec<Candidate> {
     merged
 }
 
-/// An existing index whose leading keys already match the suggestion: the fix is to widen it, not add another.
-pub(crate) fn existing_match<'a>(snapshot: &'a Snapshot, c: &'a Candidate) -> Option<&'a IndexStat> {
-    let keys = c.keys();
-    snapshot.indexes_on(&c.schema, &c.table).find(|i| {
-        let existing = i.key_names();
-        existing.len() >= keys.len()
-            && lower_set(&existing[..c.equality.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
-                == lower_set(&c.equality)
-            && keys[c.equality.len()..]
-                .iter()
-                .zip(&existing[c.equality.len()..])
-                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+/// An existing index whose leading keys already match the suggestion: the fix is to widen it, not add another. A
+/// filtered index only when every query that `asking` names fits its filter as written (`is_deleted = 0` in the
+/// query): widening an index the queries can't use wouldn't help them, and with no query to show, nothing says they can.
+pub(crate) fn existing_match<'a>(
+    snapshot: &'a Snapshot,
+    c: &Candidate,
+    asking: &[&QueryStat],
+) -> Option<&'a IndexStat> {
+    same_keys_on_table(snapshot, c).find(|i| match i.filter.as_deref() {
+        None => true,
+        Some(filter) => fits_filter(filter, asking),
     })
+}
+
+/// A filtered index with the suggestion's keys that [`existing_match`] passed over: the queries don't ask for only the
+/// rows it holds, or Culprit can't show that they do.
+fn filtered_bystander<'a>(snapshot: &'a Snapshot, c: &Candidate, asking: &[&QueryStat]) -> Option<&'a IndexStat> {
+    same_keys_on_table(snapshot, c).find(|i| i.filter.as_deref().is_some_and(|f| !fits_filter(f, asking)))
+}
+
+/// The indexes on the suggestion's table whose leading keys are its equality columns (in any order), then its range.
+fn same_keys_on_table<'a>(snapshot: &'a Snapshot, c: &Candidate) -> impl Iterator<Item = &'a IndexStat> {
+    let keys = c.keys();
+    let (schema, table, equality) = (c.schema.clone(), c.table.clone(), c.equality.clone());
+    snapshot.indexes.iter().filter(move |i| {
+        let existing = i.key_names();
+        i.schema.eq_ignore_ascii_case(&schema)
+            && i.table.eq_ignore_ascii_case(&table)
+            && existing.len() >= keys.len()
+            && lower_set(&existing[..equality.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                == lower_set(&equality)
+            && keys[equality.len()..].iter().zip(&existing[equality.len()..]).all(|(a, b)| a.eq_ignore_ascii_case(b))
+    })
+}
+
+/// Every query in `asking` (at least one) compares each of the filter's columns to the filter's own literal.
+fn fits_filter(filter: &str, asking: &[&QueryStat]) -> bool {
+    let Some(conditions) = filter_equalities(filter) else { return false };
+    !asking.is_empty()
+        && asking.iter().all(|q| {
+            conditions
+                .iter()
+                .all(|(column, literal)| compared_to(&q.text, column, |value| same_literal(value, literal)))
+        })
+}
+
+/// A filter as people read it: "is_deleted = 0", or the definition without its brackets.
+fn readable_filter(filter: &str) -> String {
+    match filter_equalities(filter) {
+        Some(conditions) => {
+            format::list(&conditions.iter().map(|(column, value)| format!("{column} = {value}")).collect::<Vec<_>>())
+        }
+        None => {
+            let plain: String = filter.chars().filter(|c| !matches!(c, '[' | ']')).collect();
+            plain.strip_prefix('(').and_then(|p| p.strip_suffix(')')).unwrap_or(&plain).to_string()
+        }
+    }
 }
 
 pub fn missing_index(snapshot: &Snapshot) -> Vec<Finding> {
@@ -142,6 +186,9 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         subject(SubjectKind::Table, &table_name),
     );
     let linked = asking_queries(queries, &c);
+    if let Some(miss) = parameterized_filter(snapshot, &c, &linked) {
+        return parameterized_filter_finding(snapshot, f, &c, &linked, &miss);
+    }
     let table = snapshot.table(&c.schema, &c.table);
     let rows = table.and_then(|t| t.rows);
     let lookups = c.seeks + c.scans;
@@ -168,6 +215,15 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
             apply_query_impact(&mut f, &impact);
             f.severity = severity_for_share(impact.share).max(Severity::Medium);
             f.confidence = if c.impact_pct >= 50.0 { Confidence::High } else { Confidence::Medium };
+        }
+        None if linked.is_empty() && snapshot.workload.is_some() => {
+            summary.push_str(
+                " None of the queries in this scan asked for it: the requests came from plans that ran before the scan's window, or that Query Store no longer keeps.",
+            );
+            f.severity = if c.impact_pct >= 70.0 && lookups >= 1000.0 { Severity::Medium } else { Severity::Low };
+            f.impact.score = (6.0 * (c.weight + 1.0).log10()).clamp(4.0, 40.0);
+            f.impact.label = format!("{} lookups", format::count(lookups));
+            f.confidence = if lookups >= 1000.0 { Confidence::Medium } else { Confidence::Low };
         }
         None => {
             f.severity = if c.impact_pct >= 70.0 && lookups >= 1000.0 { Severity::Medium } else { Severity::Low };
@@ -207,7 +263,7 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         c.include.clear();
     }
 
-    f.fix = Some(match existing_match(snapshot, &c) {
+    f.fix = Some(match existing_match(snapshot, &c, &linked) {
         Some(existing) if !c.include.is_empty() => widen_fix(snapshot, existing, &c.include),
         Some(existing) => Fix {
             summary: format!(
@@ -219,9 +275,23 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         },
         None => Fix {
             summary: format!(
-                "Create an index on {}{}. Equality columns come first; put the most selective one at the front if you know it.",
+                "Create an index on {}{}. Equality columns come first; put the most selective one at the front if you know it.{}",
                 key_text,
-                if c.include.is_empty() { String::new() } else { format!(", including {}", format::list(&c.include)) }
+                if c.include.is_empty() { String::new() } else { format!(", including {}", format::list(&c.include)) },
+                filtered_bystander(snapshot, &c, &linked)
+                    .map(|i| {
+                        let rows = format!(
+                            " {} has these keys but holds only the rows where {}",
+                            i.name,
+                            readable_filter(i.filter.as_deref().unwrap_or_default())
+                        );
+                        match linked.len() {
+                            0 => format!("{rows}, and Culprit can't show that these lookups ask for only those."),
+                            1 => format!("{rows}, which the query below doesn't ask for."),
+                            _ => format!("{rows}, which the queries below don't ask for."),
+                        }
+                    })
+                    .unwrap_or_default()
             ),
             sql: Some(create_index_sql(snapshot, &c.schema, &c.table, &keys, &c.include)),
             cost: write_cost(snapshot, &c.schema, &c.table),
@@ -260,6 +330,349 @@ fn plan_asks_for(q: &QueryStat, c: &Candidate) -> bool {
             table_ok && lower_set(&h.equality) == lower_set(&c.equality)
         })
     })
+}
+
+/// An existing filtered index that would serve a request if its queries wrote the filter as the index does. SQL Server
+/// matches a filtered index to a query only through the literal in its filter (`is_deleted = 0`), never through a
+/// parameter that could hold any value, so a query that passes the filter's column as a parameter makes the optimizer
+/// ask for an index the table already has.
+pub(crate) struct ParameterizedFilter<'a> {
+    pub(crate) index: &'a IndexStat,
+    /// The filter's conditions, each a column the queries pass as a parameter and the literal the index uses.
+    pub(crate) conditions: Vec<(String, String)>,
+    /// The request without the filter's columns: its equality columns in the index's order, then its range columns.
+    pub(crate) keys: Vec<String>,
+    /// Range columns the index has no key for after the equality ones: with the literal, it finds the rows by those
+    /// and checks these on each.
+    pub(crate) missing_range: Vec<String>,
+}
+
+/// What a request still needs once its queries write the filter as a literal.
+pub(crate) enum Remainder {
+    /// The index serves it all.
+    Nothing,
+    /// The index with these columns included: it has the keys, and reads them from the table for each row it finds.
+    Include(Vec<String>),
+    /// An index on these keys and included columns, filtered like the existing one: it has no key for the range.
+    Index { keys: Vec<String>, include: Vec<String> },
+}
+
+impl ParameterizedFilter<'_> {
+    pub(crate) fn columns(&self) -> Vec<String> {
+        self.conditions.iter().map(|(column, _)| column.clone()).collect()
+    }
+
+    /// The filter as people write it: "is_deleted = 0".
+    pub(crate) fn literals(&self) -> String {
+        format::list(&self.conditions.iter().map(|(column, value)| format!("{column} = {value}")).collect::<Vec<_>>())
+    }
+
+    /// What's left of the request once the queries use the literal, given the columns it should include (`include`,
+    /// already trimmed of large and surplus ones).
+    pub(crate) fn remainder(&self, include: &[String]) -> Remainder {
+        let filtered = |c: &String| self.conditions.iter().any(|(column, _)| column.eq_ignore_ascii_case(c));
+        if !self.missing_range.is_empty() {
+            let include = include
+                .iter()
+                .filter(|c| !filtered(c) && !self.keys.iter().any(|k| k.eq_ignore_ascii_case(c)))
+                .cloned()
+                .collect();
+            return Remainder::Index { keys: self.keys.clone(), include };
+        }
+        let has = |c: &String| {
+            self.index.key_names().iter().any(|k| k.eq_ignore_ascii_case(c))
+                || self.index.include.iter().any(|i| i.eq_ignore_ascii_case(c))
+        };
+        let missing: Vec<String> = include.iter().filter(|c| !filtered(c) && !has(c)).cloned().collect();
+        if missing.is_empty() { Remainder::Nothing } else { Remainder::Include(missing) }
+    }
+
+    /// The DDL for [`Self::remainder`], and the index it rebuilds rather than adds; `None` when nothing is left. The
+    /// filter is kept either way: an index keyed on the filter's column would hold every row the filter leaves out.
+    pub(crate) fn remainder_sql(&self, snapshot: &Snapshot, remainder: &Remainder) -> Option<(String, Option<String>)> {
+        let index = self.index;
+        match remainder {
+            Remainder::Nothing => None,
+            Remainder::Include(columns) => {
+                widen_fix(snapshot, index, columns).sql.map(|sql| (sql, Some(index.name.clone())))
+            }
+            Remainder::Index { keys, include } => Some((
+                create_filtered_index_sql(
+                    snapshot,
+                    &index.schema,
+                    &index.table,
+                    keys,
+                    include,
+                    index.filter.as_deref()?,
+                ),
+                None,
+            )),
+        }
+    }
+}
+
+/// The filtered index on the request's table whose filter's columns the asking queries compare to parameters, and whose
+/// leading keys are the request's other equality columns. Its keys may lack the request's range columns, and it may
+/// lack included columns: [`ParameterizedFilter::remainder`] says what's left.
+pub(crate) fn parameterized_filter<'a>(
+    snapshot: &'a Snapshot,
+    c: &Candidate,
+    asking: &[&QueryStat],
+) -> Option<ParameterizedFilter<'a>> {
+    let on_table = |i: &&IndexStat| i.schema.eq_ignore_ascii_case(&c.schema) && i.table.eq_ignore_ascii_case(&c.table);
+    snapshot.indexes.iter().filter(on_table).find_map(|i| {
+        let conditions = filter_equalities(i.filter.as_deref()?)?;
+        // Every condition of the filter: the request asks for its column, and a query passes it as a parameter.
+        let all_passed = conditions.iter().all(|(column, _)| {
+            c.equality.iter().any(|k| k.eq_ignore_ascii_case(column))
+                && asking.iter().any(|q| compares_to_parameter(&q.text, column))
+        });
+        if !all_passed {
+            return None;
+        }
+        let in_filter = |k: &&String| conditions.iter().any(|(column, _)| column.eq_ignore_ascii_case(k));
+        let rest: Vec<String> = c.equality.iter().filter(|k| !in_filter(k)).cloned().collect();
+        let range: Vec<String> = c.inequality.iter().filter(|k| !in_filter(k)).cloned().collect();
+        let keys: Vec<String> = i.key_names().iter().map(|k| k.to_string()).collect();
+        if rest.is_empty() || keys.len() < rest.len() || lower_set(&keys[..rest.len()]) != lower_set(&rest) {
+            return None;
+        }
+        let has_range = keys.len() >= rest.len() + range.len()
+            && range.iter().zip(&keys[rest.len()..]).all(|(a, b)| a.eq_ignore_ascii_case(b));
+        Some(ParameterizedFilter {
+            index: i,
+            keys: keys[..rest.len()].iter().chain(&range).cloned().collect(),
+            missing_range: if has_range { Vec::new() } else { range },
+            conditions,
+        })
+    })
+}
+
+/// `([is_deleted]=(0))`, `([status]='open' AND [kind]=(2))`: a filter made only of column-equals-literal conditions,
+/// as (column, literal). `None` for any other filter.
+fn filter_equalities(filter: &str) -> Option<Vec<(String, String)>> {
+    let plain: String = filter.chars().filter(|c| !matches!(c, '[' | ']' | '"' | '(' | ')')).collect();
+    let spaced = plain.replace('=', " = ");
+    let words: Vec<&str> = spaced.split_whitespace().collect();
+    words
+        .split(|w| w.eq_ignore_ascii_case("and"))
+        .map(|condition| match condition {
+            [column, "=", literal] if is_literal(literal) => {
+                Some((column.rsplit('.').next().unwrap_or(column).to_string(), literal.to_string()))
+            }
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+        .filter(|c| !c.is_empty())
+}
+
+fn is_literal(word: &str) -> bool {
+    word.parse::<f64>().is_ok() || (word.ends_with('\'') && (word.starts_with('\'') || word.starts_with("N'")))
+}
+
+/// Whether `text` compares `column` to a parameter: `[column] = @p`, `t.column = @p` or `@p = column`.
+fn compares_to_parameter(text: &str, column: &str) -> bool {
+    compared_to(text, column, |value| value.starts_with('@') && value.len() > 1)
+}
+
+/// Whether `a` and `b` are the same literal: `0` and `(0)`, `'open'` and `N'open'`.
+fn same_literal(a: &str, b: &str) -> bool {
+    let plain = |v: &str| {
+        let v = v.trim().trim_matches(|c: char| c == '(' || c == ')' || c.is_whitespace());
+        v.strip_prefix(['n', 'N']).filter(|rest| rest.starts_with('\'')).unwrap_or(v).to_ascii_lowercase()
+    };
+    let (a, b) = (plain(a), plain(b));
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => !a.is_empty() && a == b,
+    }
+}
+
+/// Whether `text` compares `column` with `=` to a value `wanted` accepts, on either side, the column perhaps bracketed
+/// or qualified: `[column] = @p`, `t.column = 0`, `N'open' = column`. Text is compared lower-cased.
+fn compared_to(text: &str, column: &str, wanted: impl Fn(&str) -> bool) -> bool {
+    let plain = text.chars().filter(|c| !matches!(c, '[' | ']' | '"')).collect::<String>().to_ascii_lowercase();
+    let column = column.to_ascii_lowercase();
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$');
+    plain.match_indices(&column).any(|(at, _)| {
+        let end = at + column.len();
+        if plain[..at].chars().next_back().is_some_and(part) || plain[end..].chars().next().is_some_and(part) {
+            return false;
+        }
+        // `column = value`
+        if let Some(value) = plain[end..].trim_start().strip_prefix('=') {
+            return wanted(operand_after(value));
+        }
+        // `value = column`, the column perhaps qualified
+        let mut before = &plain[..at];
+        if let Some(qualified) = before.strip_suffix('.') {
+            before = qualified.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        }
+        before.trim_end().strip_suffix('=').is_some_and(|lhs| {
+            // `<=`, `>=` and `!=` aren't equality.
+            !lhs.ends_with(['<', '>', '!']) && wanted(operand_before(lhs))
+        })
+    })
+}
+
+/// The value right after `=`: a parameter, a number or a quoted string, past any opening parentheses.
+fn operand_after(text: &str) -> &str {
+    let text = text.trim_start().trim_start_matches(|c: char| c == '(' || c.is_whitespace());
+    let quote = if text.starts_with('\'') {
+        Some(0)
+    } else if text.starts_with("n'") {
+        Some(1)
+    } else {
+        None
+    };
+    match quote {
+        Some(open) => match text[open + 1..].find('\'') {
+            Some(close) => &text[..open + 1 + close + 1],
+            None => text,
+        },
+        None => {
+            let end = text
+                .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$' | '.' | '-' | '+')))
+                .unwrap_or(text.len());
+            &text[..end]
+        }
+    }
+}
+
+/// The value right before `=`, the same way.
+fn operand_before(text: &str) -> &str {
+    let text = text.trim_end().trim_end_matches(|c: char| c == ')' || c.is_whitespace());
+    if let Some(inner) = text.strip_suffix('\'') {
+        let Some(open) = inner.rfind('\'') else { return text };
+        let start = if text[..open].ends_with('n') { open - 1 } else { open };
+        return &text[start..];
+    }
+    let start = text
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$' | '.' | '-' | '+')))
+        .map_or(0, |p| p + 1);
+    &text[start..]
+}
+
+/// The finding when an existing filtered index would serve the request but its queries pass the filter's column as a
+/// parameter: the fix is the literal, and only what the index can't do after it (a range, included columns) is left.
+fn parameterized_filter_finding(
+    snapshot: &Snapshot,
+    mut f: Finding,
+    c: &Candidate,
+    linked: &[&QueryStat],
+    miss: &ParameterizedFilter,
+) -> Finding {
+    let index = miss.index;
+    let columns = miss.columns();
+    let literals = miss.literals();
+    let lookups = c.seeks + c.scans;
+    let one = linked.len() == 1;
+    let who = if one { format!("A query on {}", c.table) } else { format!("{} queries on {}", linked.len(), c.table) };
+    let (passes, them) = if one { ("passes", "it") } else { ("pass", "them") };
+    let below = if one { "the query below" } else { "the queries below" };
+    let index_keys: Vec<String> = index.key_names().iter().map(|k| k.to_string()).collect();
+    let equality = &miss.keys[..miss.keys.len() - miss.missing_range.len()];
+
+    let mut include = c.include.clone();
+    if let Some(note) = drop_large_includes(snapshot, &c.schema, &c.table, &mut include) {
+        f.caveats.push(note);
+    }
+    if include.len() > MAX_INCLUDE {
+        include.clear();
+    }
+    let remainder = miss.remainder(&include);
+    let partial = !matches!(remainder, Remainder::Nothing);
+
+    f.title = format!("{who} {passes} {} as a parameter, so {} can't serve {them}", format::list(&columns), index.name);
+    let serves = if miss.missing_range.is_empty() {
+        format!("already serves these lookups where {literals}")
+    } else {
+        format!(
+            "already finds these rows where {literals} by {}, though not by {}",
+            format::list(equality),
+            format::list(&miss.missing_range)
+        )
+    };
+    f.summary = format!(
+        "SQL Server's optimizer asked for an index on {}.{} ({}) {} times {}, but {} ({}) {serves}. \
+         It's a filtered index, and SQL Server uses one only for a query whose filter matches it as written: {below} {} {} to a parameter, \
+         which could hold any value, so the optimizer can't use the index and asks for a new one instead.",
+        c.schema,
+        c.table,
+        format::list(&c.keys()),
+        format::count(lookups),
+        since_phrase(snapshot),
+        index.name,
+        format::list(&index_keys),
+        if one { "compares" } else { "compare" },
+        format::list(&columns),
+    );
+    f.severity = Severity::Low;
+    // Whether the rest is worth an index of its own is only known once the queries use the one there is.
+    f.confidence = if matches!(remainder, Remainder::Index { .. }) { Confidence::Low } else { Confidence::Medium };
+    f.impact.score = (4.0 * (c.weight + 1.0).log10()).clamp(2.0, 20.0);
+    f.impact.label = format!("{} lookups", format::count(lookups));
+    f.queries = query_refs(linked);
+    f.metrics.push(Metric::new("Lookups that wanted it", lookups, Unit::Count));
+    f.metrics.push(Metric::new("Estimated improvement", c.impact_pct / 100.0, Unit::Ratio));
+    let lead = format!("Write the filter as the index does, {literals}, instead of a parameter in {below}");
+    let (summary, sql) = match (&remainder, miss.remainder_sql(snapshot, &remainder)) {
+        (Remainder::Index { include, .. }, Some((sql, _))) => {
+            let replaces = index_keys.len() == equality.len()
+                && !index.is_unique
+                && !index.is_primary_key
+                && index.include.iter().all(|i| include.iter().any(|c| c.eq_ignore_ascii_case(i)));
+            (
+                format!(
+                    "{lead}: {} then finds {} rows by {}. If the range on {} still costs too much after that, create the index below: \
+                     the request without {}, filtered the same way, so it holds only the rows where {literals}.{}",
+                    index.name,
+                    if one { "its" } else { "their" },
+                    format::list(equality),
+                    format::list(&miss.missing_range),
+                    format::list(&columns),
+                    if replaces {
+                        format!(" It starts with {}'s keys, so once it's in use {} can go.", index.name, index.name)
+                    } else {
+                        String::new()
+                    }
+                ),
+                Some(sql),
+            )
+        }
+        (Remainder::Include(missing), Some((sql, _))) => (
+            format!(
+                "{lead}: {} then serves {them}. If reading {} from the table for each row still costs too much after that, \
+                 include {} in {} (below: the rebuild keeps its filter).",
+                index.name,
+                format::list(missing),
+                if missing.len() == 1 { "it" } else { "them" },
+                index.name
+            ),
+            Some(sql),
+        ),
+        _ => (format!("{lead}: {} then serves {them}, and no new index is needed.", index.name), None),
+    };
+    f.fix = Some(Fix { summary, sql, cost: if partial { write_cost(snapshot, &c.schema, &c.table) } else { None } });
+    f.verify = vec![if partial {
+        format!(
+            "Change the query, let the workload run, then re-scan: the query's plan seeks {}, and if the optimizer still asks for an index, it's the one above.",
+            index.name
+        )
+    } else {
+        format!(
+            "Change the query, let the workload run, then re-scan: this request disappears, and the query's plan seeks {}.",
+            index.name
+        )
+    }];
+    f.caveats.push(format!(
+        "If {} also {} with other values for {}, those runs can't use {}: give them a statement of their own, with their own literal.",
+        if one { "the query" } else { "the queries" },
+        if one { "runs" } else { "run" },
+        format::list(&columns),
+        index.name
+    ));
+    f
 }
 
 /// SQL Server INCLUDE columns that hold large objects: (max) strings and binaries, text, ntext, image, xml, json. Including
@@ -326,8 +739,10 @@ pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[St
     });
     let inc = all_include.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
     let online = if supports_online_index(snapshot) { ", ONLINE = ON" } else { "" };
+    // The rebuild replaces the definition whole: without its filter, a filtered index would take every row.
+    let filter = existing.filter.as_deref().map(|f| format!("\n    WHERE {f}")).unwrap_or_default();
     let sql = format!(
-        "CREATE NONCLUSTERED INDEX {}\n    ON {} ({})\n    INCLUDE ({inc})\n    WITH (DROP_EXISTING = ON{online});",
+        "CREATE NONCLUSTERED INDEX {}\n    ON {} ({})\n    INCLUDE ({inc}){filter}\n    WITH (DROP_EXISTING = ON{online});",
         quote(engine, &existing.name),
         qualified(engine, &existing.schema, &existing.table),
         cols.collect::<Vec<_>>().join(", ")
@@ -1151,4 +1566,50 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filters_made_of_literal_equalities() {
+        let pairs =
+            |f: &str| filter_equalities(f).map(|v| v.into_iter().map(|(c, l)| format!("{c}={l}")).collect::<Vec<_>>());
+        assert_eq!(pairs("([is_deleted]=(0))"), Some(vec!["is_deleted=0".to_string()]));
+        assert_eq!(
+            pairs("([status]='open' AND [kind]=(2))"),
+            Some(vec!["status='open'".to_string(), "kind=2".to_string()])
+        );
+        assert_eq!(pairs("([customer_id] IS NOT NULL)"), None);
+        assert_eq!(pairs("([is_deleted]=(0) AND [due_at]>=getdate())"), None);
+        assert_eq!(pairs("([status]<>'closed')"), None);
+    }
+
+    #[test]
+    fn a_parameter_compared_on_either_side() {
+        assert!(compares_to_parameter(
+            "select id from [t] where (([a] = @p0) and ([is_deleted] = @par1))",
+            "is_deleted"
+        ));
+        assert!(compares_to_parameter("SELECT id FROM t WHERE @deleted = t.is_deleted", "is_deleted"));
+        assert!(!compares_to_parameter("SELECT id FROM t WHERE is_deleted = 0 AND a = @p", "is_deleted"));
+        assert!(!compares_to_parameter("SELECT id FROM t WHERE is_deleted >= @p", "is_deleted"));
+        assert!(!compares_to_parameter("SELECT id FROM t WHERE was_is_deleted = @p", "is_deleted"));
+        assert!(!compares_to_parameter("SELECT id FROM t WHERE @p <= is_deleted", "is_deleted"));
+    }
+
+    #[test]
+    fn a_literal_compared_on_either_side() {
+        let fits = |text: &str, literal: &str| compared_to(text, "status", |v| same_literal(v, literal));
+        assert!(fits("SELECT id FROM t WHERE [t].[status] = N'open' AND a = @p", "'open'"));
+        assert!(fits("SELECT id FROM t WHERE 'open' = status", "N'open'"));
+        assert!(fits("SELECT id FROM t WHERE (status = (2))", "2"));
+        assert!(fits("SELECT id FROM t WHERE status=2.0", "(2)"));
+        assert!(!fits("SELECT id FROM t WHERE status = 'closed'", "'open'"));
+        assert!(!fits("SELECT id FROM t WHERE status = @p", "'open'"));
+        assert!(!fits("SELECT id FROM t WHERE status >= 2", "2"));
+        assert!(!fits("SELECT id FROM t WHERE 2 <= status", "2"));
+        assert!(!fits("SELECT id FROM t WHERE a = 2", "2"));
+    }
 }

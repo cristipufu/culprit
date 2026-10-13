@@ -16,6 +16,10 @@ pub struct Digest {
     pub environment: Option<String>,
     /// When the scan was taken (UTC, ISO 8601).
     pub taken_at: String,
+    /// When the server last started (UTC, ISO 8601), as far as the scan could tell: the next digest tells from it
+    /// whether counts since startup (lock escalations) started again in between.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_started_at: Option<String>,
     /// What the query history covers: "the last 25 hours".
     pub window: Option<String>,
     /// The report's one-line summary.
@@ -199,7 +203,8 @@ pub struct DigestChanges {
     pub new: Vec<DigestFinding>,
     /// Active then, gone or stopped now.
     pub fixed: Vec<DigestFinding>,
-    /// Active both times, more severe now.
+    /// Active both times, more severe now. Findings that count events since startup (lock escalations) are in `again`
+    /// instead: they turn High when the count grew.
     pub worse: Vec<DigestFinding>,
     /// Active both times, and what it counts since startup (lock escalations) happened again in between: each item's
     /// `count_since` says how many times.

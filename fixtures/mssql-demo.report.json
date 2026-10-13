@@ -420,14 +420,14 @@
     {
       "category": "indexes",
       "caveats": [
-        "Counted since the index's metadata was loaded into memory, usually since SQL Server started."
+        "SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each."
       ],
       "check": "lock-escalations",
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "-- One statement over every matching row escalates; 1,000 at a time doesn't\nWHILE 1 = 1\nBEGIN\n    DELETE TOP (1000) FROM [shop].[support_tickets] WHERE /* the same filter */;\n    IF @@ROWCOUNT = 0 BREAK;\nEND;",
-        "summary": "Change the statement that touches thousands of rows of support_tickets into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, but other sessions then wait only for those rows, not for the whole table."
+        "sql": "-- One statement over every matching row escalates; 1,000 at a time doesn't\nWHILE 1 = 1\nBEGIN\n    DELETE TOP (1000) FROM [shop].[support_tickets] WHERE /* the same filter */;\n    IF @@ROWCOUNT = 0 BREAK;\nEND;\n\n-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\nCREATE EVENT SESSION culprit_lock_escalation ON SERVER\nADD EVENT sqlserver.lock_escalation (\n    SET collect_statement = 1\n    ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n    WHERE sqlserver.database_name = N'culprit_demo')\nADD TARGET package0.ring_buffer\nWITH (STARTUP_STATE = ON);\nALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);",
+        "summary": "Change the statement that touches thousands of rows of support_tickets into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, but other sessions then wait only for those rows, not for the whole table. To learn which statement it is, start the event session below (culprit_lock_escalation): it keeps each escalation with its statement, in memory, at almost no cost."
       },
       "id": "lock-escalations:shop.support_tickets",
       "impact": {
@@ -440,7 +440,7 @@
       "last_seen": null,
       "metrics": [
         {
-          "label": "Escalations to a table lock",
+          "label": "Escalations since SQL Server started",
           "text": null,
           "unit": "count",
           "value": 5.0
@@ -452,10 +452,10 @@
         "kind": "table",
         "name": "shop.support_tickets"
       },
-      "summary": "Since its indexes were loaded into memory, SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times. That happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
-      "title": "Row locks on support_tickets escalated to a lock on the whole table 5 times",
+      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says whether any happened since. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
+      "title": "Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)",
       "verify": [
-        "Re-scan a day later: the escalation count on support_tickets should stop growing."
+        "Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed."
       ]
     },
     {

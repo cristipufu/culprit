@@ -15,7 +15,8 @@ new: Array<DigestFinding>,
  */
 fixed: Array<DigestFinding>, 
 /**
- * Active both times, more severe now.
+ * Active both times, more severe now. Findings that count events since startup (lock escalations) are in `again`
+ * instead: they turn High when the count grew.
  */
 worse: Array<DigestFinding>, 
 /**
