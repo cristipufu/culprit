@@ -160,11 +160,27 @@ struct Cached {
     expires: Instant,
 }
 
+/// One sign-in at a time per authority and resource. A scan, the dashboard and live polling all ask for a token at
+/// once when a connection opens; without this each started its own device-code sign-in, and every new code replaced
+/// the one the person was typing.
+#[derive(Default)]
+struct Flight {
+    turn: tokio::sync::Mutex<()>,
+    /// How the last sign-in failed, and when. For a minute after, every caller gets that error instead of a new code:
+    /// the callers that waited on it, and polling that would otherwise reopen a sign-in the person just cancelled.
+    failure: Mutex<Option<(Instant, Error)>>,
+}
+
+/// How long a failed or cancelled sign-in answers for the next one. The Azure CLI is still tried first, so `az login`
+/// works straight away.
+const ASK_AGAIN_AFTER: Duration = Duration::from_secs(60);
+
 /// Token broker held by the workspace: the in-memory access-token cache, who shows device codes, and cancellation.
 pub struct EntraAuth {
     endpoint: Arc<dyn LoginEndpoint>,
     handler: Mutex<Option<SignInHandler>>,
     cache: Mutex<HashMap<(Authority, &'static str), Cached>>,
+    flights: Mutex<HashMap<(Authority, &'static str), Arc<Flight>>>,
     generation: AtomicU64,
 }
 
@@ -180,6 +196,7 @@ impl EntraAuth {
             endpoint,
             handler: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
+            flights: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
         }
     }
@@ -212,6 +229,9 @@ impl EntraAuth {
     pub fn sign_out(&self, authorities: &[Authority], secrets: &dyn SecretStore) -> Result<usize> {
         if let Ok(mut cache) = self.cache.lock() {
             cache.clear();
+        }
+        if let Ok(mut flights) = self.flights.lock() {
+            flights.clear();
         }
         let mut removed = 0;
         for authority in authorities {
@@ -251,7 +271,10 @@ impl EntraAuth {
         }
     }
 
-    /// A cached access token, a refreshed one, or (with a handler) a fresh device-code sign-in.
+    /// A cached access token, a refreshed one, or (with a handler) a fresh device-code sign-in. Callers that arrive
+    /// while a sign-in for the same authority and resource is under way wait for it and use its token, or share its
+    /// error, so the person only ever sees one code; and a sign-in that just failed or was cancelled isn't reopened
+    /// for a minute.
     pub async fn device_token(
         &self,
         engine: Engine,
@@ -262,6 +285,35 @@ impl EntraAuth {
         if let Some(token) = self.cached(&key) {
             return Ok(token);
         }
+        let flight = self.flight(&key);
+        let _turn = flight.turn.lock().await;
+        if let Some(token) = self.cached(&key) {
+            return Ok(token);
+        }
+        if let Some((at, failure)) = flight.failure.lock().ok().and_then(|f| f.clone())
+            && at.elapsed() < ASK_AGAIN_AFTER
+        {
+            return Err(failure);
+        }
+        let result = self.refresh_or_sign_in(engine, authority, key, secrets).await;
+        if let Ok(mut failure) = flight.failure.lock() {
+            *failure = result.as_ref().err().map(|e| (Instant::now(), e.clone()));
+        }
+        result
+    }
+
+    fn flight(&self, key: &(Authority, &'static str)) -> Arc<Flight> {
+        let mut flights = self.flights.lock().unwrap_or_else(|e| e.into_inner());
+        flights.entry(key.clone()).or_default().clone()
+    }
+
+    async fn refresh_or_sign_in(
+        &self,
+        engine: Engine,
+        authority: &Authority,
+        key: (Authority, &'static str),
+        secrets: &dyn SecretStore,
+    ) -> Result<String> {
         let account = authority.refresh_account();
         if let Some(refresh) = secrets.get(&account)? {
             let fields = vec![
@@ -552,6 +604,60 @@ mod tests {
         // The access token is reused from memory until it nears expiry: no further requests.
         assert_eq!(auth.device_token(Engine::Mssql, &authority(), &secrets).await.unwrap(), "access-1");
         assert_eq!(script.requests().len(), 4);
+    }
+
+    // Opening a connection asks for a token from several places at once (the report, the dashboard, live polling). They
+    // share one sign-in: one code on screen, and every caller gets its token.
+    #[tokio::test]
+    async fn concurrent_callers_share_one_device_code_sign_in() {
+        let script = Script::new(vec![
+            device_code(),
+            (400, serde_json::json!({ "error": "authorization_pending" })),
+            (400, serde_json::json!({ "error": "authorization_pending" })),
+            tokens("access-1", "refresh-1"),
+        ]);
+        let auth = EntraAuth::with_endpoint(script.clone());
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        auth.set_handler(Some(Arc::new(move |e| seen.lock().unwrap().push(e))));
+        let secrets = Memory::default();
+
+        let authority = authority();
+        let (a, b, c) = tokio::join!(
+            auth.device_token(Engine::Mssql, &authority, &secrets),
+            auth.device_token(Engine::Mssql, &authority, &secrets),
+            auth.device_token(Engine::Mssql, &authority, &secrets),
+        );
+        assert_eq!((a.unwrap(), b.unwrap(), c.unwrap()), ("access-1".into(), "access-1".into(), "access-1".into()));
+        let codes = events.lock().unwrap().iter().filter(|e| matches!(e, SignInEvent::Code { .. })).count();
+        assert_eq!(codes, 1, "one code on screen, not one per caller");
+        assert_eq!(script.requests().iter().filter(|(url, _)| url.ends_with("/devicecode")).count(), 1);
+    }
+
+    // A sign-in that fails (declined, cancelled, expired) fails the callers waiting on it too, rather than each of them
+    // putting a new code on screen straight away.
+    #[tokio::test]
+    async fn callers_waiting_on_a_failed_sign_in_share_its_error() {
+        let script = Script::new(vec![
+            device_code(),
+            (400, serde_json::json!({ "error": "authorization_declined", "error_description": "The user declined." })),
+        ]);
+        let auth = EntraAuth::with_endpoint(script.clone());
+        auth.set_handler(Some(Arc::new(|_| {})));
+        let secrets = Memory::default();
+
+        let authority = authority();
+        let (a, b) = tokio::join!(
+            auth.device_token(Engine::Mssql, &authority, &secrets),
+            auth.device_token(Engine::Mssql, &authority, &secrets),
+        );
+        let (a, b) = (a.unwrap_err(), b.unwrap_err());
+        assert_eq!((a.code, b.code), (ErrorCode::AuthFailed, ErrorCode::AuthFailed));
+        assert_eq!(a.message, b.message);
+        // And polling right after doesn't reopen it: the same answer, with no new code.
+        let c = auth.device_token(Engine::Mssql, &authority, &secrets).await.unwrap_err();
+        assert_eq!(c.message, a.message);
+        assert_eq!(script.requests().len(), 2, "one code requested and one poll, nothing more");
     }
 
     #[tokio::test]
