@@ -54,8 +54,8 @@ export function changeRequest(fields: Partial<ChangeRequest> = {}): ChangeReques
   };
 }
 
-/** The workload windows the picker offers, in minutes: 6 hours, 24 hours, 7 days and 30 days. */
-export const WINDOW_OPTIONS = [360, 1440, 10080, 43200] as const;
+/** The workload windows the picker offers, in minutes: an hour, 6 hours, 24 hours, 7 days and 30 days. */
+export const WINDOW_OPTIONS = [60, 360, 1440, 10080, 43200] as const;
 export type WindowMinutes = (typeof WINDOW_OPTIONS)[number];
 const DEFAULT_WINDOW: WindowMinutes = 10080;
 const MINUTES_PER_DAY = 1440;

@@ -92,6 +92,7 @@ mod tests {
     fn labels_a_window_by_its_largest_exact_unit() {
         assert_eq!(window_label(7 * MINUTES_PER_DAY), "7d");
         assert_eq!(window_label(360), "6h");
+        assert_eq!(window_label(60), "1h");
         assert_eq!(window_label(36 * 60), "36h");
         assert_eq!(window_label(90), "90m");
     }

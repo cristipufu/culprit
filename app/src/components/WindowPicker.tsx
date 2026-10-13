@@ -5,12 +5,13 @@ import { useHotkeys } from "../lib/hotkeys";
 import { setWindow, useStore, WINDOW_OPTIONS, type WindowMinutes } from "../lib/store";
 
 const LABEL: Record<WindowMinutes, string> = {
+  60: "Last hour",
   360: "Last 6 hours",
   1440: "Last 24 hours",
   10080: "Last 7 days",
   43200: "Last 30 days",
 };
-const SHORT: Record<WindowMinutes, string> = { 360: "6h", 1440: "24h", 10080: "7d", 43200: "30d" };
+const SHORT: Record<WindowMinutes, string> = { 60: "1h", 360: "6h", 1440: "24h", 10080: "7d", 43200: "30d" };
 
 /** Workload window for history-keeping sources (Query Store). `coveredHours` is what the source actually had. */
 export function WindowPicker({ coveredHours }: { coveredHours: number | null }) {
