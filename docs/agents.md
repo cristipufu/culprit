@@ -10,6 +10,7 @@ Culprit's CLI is designed to be driven by agents: JSON output, stable ids, no pr
 - **Connections by name.** The person adds a connection once (`culprit conn add` or the app). Secrets live in the OS keychain, come from `az login` (Entra ID), or are read from an environment variable named with `--password-env`. Agents only ever pass the name.
 - **Safe by default.** `scan`, `doctor`, `findings`, `show`, `top`, `live` and `explain` (without `--analyze`) never execute application SQL. `run` and `explain --analyze` on a production connection fail unless `--yes-execute-on-production` is passed; don't pass it without the person's explicit go-ahead.
 - **Stable ids.** Finding ids are `<check>:<subject>`, e.g. `missing-index:dbo.Orders(CustomerId)` or `plan-warnings:implicit-conversion:orders.status`. The same problem keeps the same id across scans, so "is it fixed?" is "is the id gone?".
+- **No surprise network calls.** No command checks for updates on its own. `culprit update --check --json` asks GitHub for the latest published release and prints `{"current","latest","update_available","url"}`; `culprit update` replaces the binary with it after checking the release's SHA-256. Run them when the person wants Culprit current, not as part of another task.
 
 ## MCP server
 

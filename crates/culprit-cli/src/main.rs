@@ -5,6 +5,7 @@ mod output;
 mod plan_cmd;
 mod share_cmd;
 mod timeline_cmd;
+mod update_cmd;
 mod waits_cmd;
 
 use std::io::{IsTerminal, Read};
@@ -195,6 +196,10 @@ enum Command {
     /// Set up a repository for coding agents.
     #[command(subcommand)]
     Agent(agents::AgentCommand),
+    /// Replace this binary with the latest published release, verified against the release's SHA256SUMS.txt.
+    /// --check only says whether a newer release exists. Culprit never checks for updates on its own: no other command
+    /// goes online for them.
+    Update(update_cmd::UpdateArgs),
 }
 
 #[derive(Subcommand)]
@@ -501,6 +506,7 @@ fn writes_markdown(command: &Command) -> bool {
 }
 
 fn main() -> ExitCode {
+    update_cmd::remove_stale_old();
     let cli = Cli::parse();
     let format = match (cli.json, cli.format) {
         (true, _) => Format::Json,
@@ -535,6 +541,10 @@ fn main() -> ExitCode {
 }
 
 async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
+    // Needs no workspace, so an update works even when the configuration can't be read.
+    if let Command::Update(args) = command {
+        return update_cmd::run(args, out).await;
+    }
     let mut ws = Workspace::open()?;
     // A device-code sign-in needs a person to read the code; scripts and agents get an error with a hint instead.
     if std::io::stderr().is_terminal() {
@@ -733,6 +743,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         Command::Mcp(args) => agents::mcp(ws, args).await,
         Command::Audit(args) => agents::audit(&ws, args, out),
         Command::Agent(command) => agents::agent(&ws, command, out),
+        Command::Update(_) => unreachable!("an update is run before the workspace opens"),
     }
 }
 

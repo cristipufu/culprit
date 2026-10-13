@@ -20,7 +20,7 @@ Key facts:
 
 ## Download
 
-- [Latest release](https://github.com/cristipufu/culprit-sql-studio/releases/latest): macOS (universal, signed and notarized), Windows x64 installer, Linux AppImage and .deb, and the CLI for each
+- [Latest release](https://github.com/cristipufu/culprit-sql-studio/releases/latest): macOS (universal, signed and notarized), Windows x64 installer, Linux AppImage and .deb, and the CLI for each. `culprit update` brings a downloaded CLI to the latest release.
 - [Source code](https://github.com/cristipufu/culprit-sql-studio): Rust core, CLI and MCP server; Tauri and React desktop app
 
 ## Optional

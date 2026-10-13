@@ -970,9 +970,11 @@ dependencies = [
  "culprit-core",
  "culprit-engine",
  "culprit-mcp",
+ "ring",
  "serde",
  "serde_json",
  "tokio",
+ "ureq",
  "windows-sys 0.61.2",
 ]
 

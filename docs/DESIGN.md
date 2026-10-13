@@ -391,6 +391,8 @@ culprit mcp [--connection <name>]…    MCP server on stdio for coding agents
 culprit conn set <name> --agent off|stats|query
 culprit audit [--limit N]             what agents did through `culprit mcp`
 culprit agent init [--dir .] [--connection <name>]… [--no-mcp]
+culprit update [--check]              replace this binary with the latest published release (SHA-256 checked);
+                                      never runs on its own
 ```
 
 Conventions:

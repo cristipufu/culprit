@@ -17,6 +17,8 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+ring.workspace = true
+ureq.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Hides a typed password (console echo off), as `stty -echo` does on Unix.
