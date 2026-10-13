@@ -375,6 +375,31 @@ textarea {
   color: var(--text-2);
 }
 
+/* An update the app found: the one item in the foot that asks for attention, and only by colour. */
+.update-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  color: var(--accent);
+  font-size: var(--fs-meta);
+  font-weight: 500;
+  border-radius: 6px;
+}
+
+button.update-item:hover {
+  background: var(--accent-soft, var(--hover));
+}
+
+.update-item.busy {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.update-item.failed {
+  color: var(--high);
+}
+
 .main {
   display: flex;
   flex-direction: column;

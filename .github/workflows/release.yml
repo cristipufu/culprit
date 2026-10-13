@@ -13,6 +13,14 @@ name: Release
 #   MACOS_API_KEY_ID      that key's ID
 #   MACOS_API_ISSUER_ID   the team's issuer ID
 #   MACOS_TEAM_ID         the Apple team ID
+#
+# Each platform's update package is signed for the desktop app's updater with these, and the release gets a
+# latest.json listing them; without them the release still builds, but installed apps aren't offered it:
+#   TAURI_SIGNING_PRIVATE_KEY           the update-signing private key (`tauri signer generate`); its public key is in
+#                                       app/src-tauri/tauri.conf.json
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  that key's password
+#
+# The release notes are the version's section in CHANGELOG.md; a version without one isn't drafted.
 on:
   push:
     tags: ["v*"]
@@ -38,6 +46,7 @@ jobs:
     timeout-minutes: 90
     env:
       HAS_APPLE_SIGNING: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_UPDATER_SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -152,7 +161,25 @@ jobs:
           set -euo pipefail
           cd dist
           tar -czf culprit-cli-macos.tar.gz culprit
-          mkdir -p ../out && mv Culprit-SQL-Studio-macOS.dmg culprit-cli-macos.tar.gz ../out/
+          # The bare binary too, for `culprit update` to swap in.
+          cp culprit culprit-cli-macos
+          mkdir -p ../out && mv Culprit-SQL-Studio-macOS.dmg culprit-cli-macos.tar.gz culprit-cli-macos ../out/
+
+      - name: Package and sign the update
+        # Only a notarized app may reach installed copies: an ad-hoc signed one would stop opening.
+        if: env.HAS_APPLE_SIGNING == 'true' && env.HAS_UPDATER_SIGNING == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # The notarized, stapled app, as the updater unpacks it in place of the installed one. No AppleDouble
+          # files: the signature and the stapled ticket are files inside the bundle.
+          COPYFILE_DISABLE=1 tar -C dist -czf out/Culprit-SQL-Studio-macOS.app.tar.gz Culprit.app
+          # Bound to the app's version, so a tampered manifest can't offer this package as a newer one.
+          cd app
+          bunx tauri signer sign --app-version "$(bun -e 'console.log(require("./src-tauri/tauri.conf.json").version)')" \
+            ../out/Culprit-SQL-Studio-macOS.app.tar.gz
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -169,6 +196,8 @@ jobs:
     name: Windows (x64)
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      HAS_UPDATER_SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -187,6 +216,19 @@ jobs:
           mkdir -p out
           cp target/release/bundle/nsis/*-setup.exe out/Culprit-SQL-Studio-Windows-x64-setup.exe
           (cd target/release && 7z a -tzip ../../out/culprit-cli-windows-x64.zip culprit.exe >/dev/null)
+          cp target/release/culprit.exe out/culprit-cli-windows-x64.exe
+      - name: Sign the update
+        # The installer is the update: the app runs it, unattended, in place of the installed version.
+        if: env.HAS_UPDATER_SIGNING == 'true'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd app
+          bunx tauri signer sign --app-version "$(bun -e 'console.log(require("./src-tauri/tauri.conf.json").version)')" \
+            ../out/Culprit-SQL-Studio-Windows-x64-setup.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows
@@ -199,6 +241,8 @@ jobs:
     # The oldest supported runner, so the AppImage and CLI run on older glibc too.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    env:
+      HAS_UPDATER_SIGNING: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -222,6 +266,19 @@ jobs:
           cp target/release/bundle/appimage/*.AppImage out/Culprit-SQL-Studio-Linux-x86_64.AppImage
           cp target/release/bundle/deb/*.deb out/Culprit-SQL-Studio-Linux-amd64.deb
           tar -C target/release -czf out/culprit-cli-linux-x86_64.tar.gz culprit
+          cp target/release/culprit out/culprit-cli-linux-x86_64
+      - name: Sign the updates
+        # Each kind of install updates from its own package: the AppImage replaces itself, the .deb reinstalls.
+        if: env.HAS_UPDATER_SIGNING == 'true'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd app
+          VERSION=$(bun -e 'console.log(require("./src-tauri/tauri.conf.json").version)')
+          bunx tauri signer sign --app-version "$VERSION" ../out/Culprit-SQL-Studio-Linux-x86_64.AppImage
+          bunx tauri signer sign --app-version "$VERSION" ../out/Culprit-SQL-Studio-Linux-amd64.deb
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-linux
@@ -252,6 +309,20 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version app/src-tauri/tauri.conf.json)
           [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG doesn't match the app's version $VERSION"; exit 1; }
+      - name: Take the release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # The version's section: from its heading to the next one, without leading blank lines.
+          awk -v v="$VERSION" '$0 == "## " v {on=1; next} /^## / && on {exit} on' CHANGELOG.md | sed -e '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || { echo "::error::CHANGELOG.md has no section for $VERSION: write the release notes there"; exit 1; }
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Write the update manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/scripts/updater_manifest.py out "$TAG" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/notes.md"
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -261,5 +332,6 @@ jobs:
           cd out
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          # The notes first, then GitHub's list of changes since the previous release.
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "Culprit SQL Studio ${TAG#v}" --generate-notes ./*
+            --title "Culprit SQL Studio ${TAG#v}" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes ./*

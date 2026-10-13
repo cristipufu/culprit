@@ -14,6 +14,7 @@ import { Queries } from "./views/Queries";
 import { Schema } from "./views/Schema";
 import { PasswordNeeded } from "./components/PasswordNeeded";
 import { DashboardSkeleton } from "./components/DashboardSkeleton";
+import { startUpdateChecks } from "./lib/updates";
 import type { Capability } from "./gen/Capability";
 
 const Editor = lazy(() => import("./views/Editor"));
@@ -47,6 +48,7 @@ export function App() {
   const toast = useStore((s) => s.toast);
 
   useEffect(() => installPlanPaste(() => getState().view), []);
+  useEffect(() => startUpdateChecks(), []);
 
   useEffect(() => {
     loadConnections().then((connections) => {

@@ -1,4 +1,4 @@
-import { Activity, ChevronsUpDown, CircleDot, Gauge, GitCompareArrows, ListOrdered, Monitor, Moon, Plus, RefreshCw, Search, SquareTerminal, Sun, Table2 } from "lucide-react";
+import { Activity, ChevronsUpDown, CircleAlert, CircleArrowUp, CircleDot, Gauge, GitCompareArrows, ListOrdered, Monitor, Moon, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Sun, Table2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { ago } from "../lib/format";
 import { EngineBadge } from "./EngineBadge";
@@ -6,6 +6,41 @@ import { groupByEnvironment } from "../lib/environments";
 import { currentReport, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { useTheme } from "../lib/theme";
 import { keys } from "../lib/keys";
+import { installUpdate, restartToUpdate, useUpdate } from "../lib/updates";
+
+/** An update the app found: offered quietly at the foot of the sidebar, installed when clicked, restarted on demand. */
+function UpdateItem() {
+  const update = useUpdate();
+  switch (update.status) {
+    case "available":
+      return (
+        <button className="update-item" onClick={() => void installUpdate()} title={`Download and install Culprit ${update.info.version} (you have ${update.info.current}); you choose when to restart`}>
+          <CircleArrowUp size={13} /> Update to {update.info.version}
+        </button>
+      );
+    case "downloading":
+      return (
+        <div className="update-item busy" role="status">
+          <span className="spinner" style={{ width: 12, height: 12 }} />
+          {update.progress == null ? `Downloading ${update.info.version}…` : `Downloading ${update.info.version}… ${Math.round(update.progress * 100)}%`}
+        </div>
+      );
+    case "ready":
+      return (
+        <button className="update-item" onClick={() => void restartToUpdate()} title={`Culprit ${update.info.version} is installed; restart to use it`}>
+          <RotateCw size={13} /> Restart to update
+        </button>
+      );
+    case "failed":
+      return (
+        <button className="update-item failed" onClick={() => void installUpdate()} title={`${update.error} Click to try again.`}>
+          <CircleAlert size={13} /> Update failed · try again
+        </button>
+      );
+    default:
+      return null;
+  }
+}
 
 function ConnectionList() {
   const connections = useStore((s) => s.connections);
@@ -99,6 +134,7 @@ export function Sidebar() {
       )}
       <ConnectionList />
       <div className="sidebar-foot">
+        <UpdateItem />
         {active && (
           <button className="scan-status" onClick={() => scan(active)} title={keys("Re-scan (⌘R)")}>
             {scanning ? <span className="spinner" style={{ width: 12, height: 12 }} /> : <RefreshCw size={13} />}

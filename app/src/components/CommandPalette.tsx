@@ -1,4 +1,4 @@
-import { Activity, Bookmark, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
+import { Activity, Bookmark, CircleArrowUp, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, RotateCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useFocusTrap } from "../lib/focus";
 import { rowCount } from "../lib/format";
@@ -8,6 +8,7 @@ import { EngineBadge } from "./EngineBadge";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, loadSaved, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { keys } from "../lib/keys";
+import { checkForUpdates, installUpdate, restartToUpdate, setAutoCheck, useAutoCheck, useUpdate } from "../lib/updates";
 
 /** `rank` orders equally good matches: findings keep the report's impact order. */
 type Item = { id: string; section: string; title: string; hint?: string; icon?: ReactNode; run: () => void; rank?: number };
@@ -67,6 +68,8 @@ export function CommandPalette() {
   }, [saved]);
   const [index, setIndex] = useState(0);
   const [theme, , setTheme] = useTheme();
+  const update = useUpdate();
+  const autoCheck = useAutoCheck();
   const panel = useRef<HTMLDivElement>(null);
   useFocusTrap(panel);
 
@@ -85,6 +88,21 @@ export function CommandPalette() {
       title: dark ? "Switch to light theme" : "Switch to dark theme",
       icon: icon(dark ? <Sun size={13} /> : <Moon size={13} />),
       run: () => (setTheme(dark ? "light" : "dark"), close()),
+    });
+    if (update.status === "available" || update.status === "failed") {
+      list.push({ id: "update-install", section: "Actions", title: `Update to Culprit ${update.info.version}`, icon: icon(<CircleArrowUp size={13} />), run: () => (close(), void installUpdate()) });
+    } else if (update.status === "ready") {
+      list.push({ id: "update-restart", section: "Actions", title: `Restart to finish updating to ${update.info.version}`, icon: icon(<RotateCw size={13} />), run: () => void restartToUpdate() });
+    } else {
+      list.push({ id: "update-check", section: "Actions", title: "Check for updates", icon: icon(<CircleArrowUp size={13} />), run: () => (close(), void checkForUpdates(true)) });
+    }
+    list.push({
+      id: "update-auto",
+      section: "Actions",
+      title: autoCheck ? "Stop checking for updates daily" : "Check for updates daily",
+      hint: autoCheck ? "on" : "off",
+      icon: icon(<CircleArrowUp size={13} />),
+      run: () => (setAutoCheck(!autoCheck), close()),
     });
     VIEWS.filter((v) => active || v.view === "plans" || v.view === "connections").forEach((v) =>
       list.push({ id: `view:${v.view}`, section: "Go to", title: v.title, icon: icon(v.icon), run: () => setState({ view: v.view, palette: false }) }),
@@ -117,7 +135,7 @@ export function CommandPalette() {
     );
     list.push({ id: "new", section: "Actions", title: "Add a connection", icon: icon(<Plus size={13} />), run: () => setState({ view: "connections", palette: false }) });
     return list;
-  }, [connections, report, active, saved, theme, setTheme]);
+  }, [connections, report, active, saved, theme, setTheme, update, autoCheck]);
 
   const results = useMemo(() => {
     const scored = items

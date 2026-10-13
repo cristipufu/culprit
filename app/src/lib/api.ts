@@ -42,6 +42,10 @@ import type { SignInEvent } from "../gen/SignInEvent";
 
 export type ApiError = { code: string; message: string; hint: string | null };
 
+/** A newer published release than the running app. */
+export type UpdateInfo = { version: string; current: string; notes: string | null };
+export type UpdateProgress = { downloaded: number; total: number | null };
+
 export interface Api {
   readonly kind: "desktop" | "demo";
   connections(): Promise<ConnectionInfo[]>;
@@ -117,6 +121,12 @@ export interface Api {
   setAgentAccess(name: string, access: AgentAccess): Promise<ConnectionInfo>;
   pendingApprovals(): Promise<ApprovalRequest[]>;
   decideApproval(id: string, hash: string, approved: boolean): Promise<void>;
+  /** A newer published release, or null. Asked by the app itself at most once a day, or when the person checks. */
+  checkUpdate(): Promise<UpdateInfo | null>;
+  /** Downloads, verifies and installs the update the last check found; the app restarts into it with restartApp. */
+  installUpdate(): Promise<void>;
+  onUpdateProgress(listener: (progress: UpdateProgress) => void): Promise<() => void>;
+  restartApp(): Promise<void>;
 }
 
 export function isApiError(value: unknown): value is ApiError {
@@ -197,6 +207,13 @@ async function desktopApi(): Promise<Api> {
     setAgentAccess: (name, access) => invoke("set_agent_access", { name, access }),
     pendingApprovals: () => invoke("pending_approvals"),
     decideApproval: (id, hash, approved) => invoke("decide_approval", { id, hash, approved }),
+    checkUpdate: () => invoke("check_update"),
+    installUpdate: () => invoke("install_update"),
+    onUpdateProgress: async (listener) => {
+      const { listen } = await import("@tauri-apps/api/event");
+      return listen<UpdateProgress>("update-progress", (e) => listener(e.payload));
+    },
+    restartApp: () => invoke("restart_app"),
   };
 }
 

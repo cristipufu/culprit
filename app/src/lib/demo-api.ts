@@ -25,7 +25,7 @@ import type { Pressure } from "../gen/Pressure";
 import type { ResourceSample } from "../gen/ResourceSample";
 import type { WaitSample } from "../gen/WaitSample";
 import type { WaitsReport } from "../gen/WaitsReport";
-import type { Api } from "./api";
+import type { Api, UpdateProgress } from "./api";
 import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
@@ -285,6 +285,8 @@ export async function demoApi(): Promise<Api> {
           : (r.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability))?.reason ?? "This scan has no query history."),
       },
     }));
+  const demoUpdate = import.meta.env.DEV && typeof location !== "undefined" && location.search.includes("demo-update");
+  const updateListeners = new Set<(progress: UpdateProgress) => void>();
   let demoApproval: ApprovalRequest | null =
     import.meta.env.DEV && typeof location !== "undefined" && location.search.includes("demo-approval")
       ? {
@@ -673,5 +675,19 @@ export async function demoApi(): Promise<Api> {
     decideApproval: async () => {
       demoApproval = null;
     },
+    // `?demo-update` offers a sample update so the update flow can be designed without a release.
+    checkUpdate: async () => (demoUpdate ? { version: "0.2.1", current: "0.2.0", notes: "### Updates itself\n\n- A sample release." } : null),
+    installUpdate: async () => {
+      const total = 18_000_000;
+      for (let downloaded = 0; downloaded <= total; downloaded += total / 20) {
+        updateListeners.forEach((listener) => listener({ downloaded, total }));
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+    },
+    onUpdateProgress: async (listener) => {
+      updateListeners.add(listener);
+      return () => updateListeners.delete(listener);
+    },
+    restartApp: async () => window.location.reload(),
   };
 }

@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use culprit_core::Verification;
 use culprit_core::{
-    Drift, Error, ExplainMode, LiveState, Plan, PlanDiff, Report, Result, ResultSet, ServerInfo, SessionAction,
+    Drift, Error, ErrorCode, ExplainMode, LiveState, Plan, PlanDiff, Report, Result, ResultSet, ServerInfo, SessionAction,
     SnapshotOptions,
 };
 use culprit_engine::entra::{DeviceCodePrompt, SignInEvent};
@@ -14,7 +14,8 @@ use culprit_engine::{
     ParsedConnection, Workspace,
 };
 use tauri::webview::PageLoadEvent;
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 type Ws<'a> = State<'a, Arc<Workspace>>;
 
@@ -440,13 +441,99 @@ fn decide_approval(ws: Ws, id: String, hash: String, approved: bool) -> Result<(
     ws.decide_approval(&id, &hash, approved)
 }
 
+/// A newer release the last check found, kept for the install.
+#[derive(Default)]
+struct PendingUpdate(Mutex<Option<Update>>);
+
+/// A newer release than this build: its version, and its notes when it has some.
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    version: String,
+    current: String,
+    notes: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+/// Updates come from the latest published release's `latest.json` (tauri.conf.json), or from
+/// CULPRIT_UPDATE_ENDPOINT for a mirror or a test. Whatever serves it, an update installs only when its signature
+/// matches the public key built into the app.
+fn updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater> {
+    let failed = |e: tauri_plugin_updater::Error| {
+        Error::new(ErrorCode::ConnectionFailed, format!("Couldn't check for updates: {e}"))
+    };
+    let mut builder = app.updater_builder().timeout(Duration::from_secs(30));
+    if let Ok(endpoint) = std::env::var("CULPRIT_UPDATE_ENDPOINT") {
+        let url = endpoint.parse().map_err(|_| Error::invalid("CULPRIT_UPDATE_ENDPOINT isn't a URL"))?;
+        builder = builder.endpoints(vec![url]).map_err(failed)?;
+    }
+    builder.build().map_err(failed)
+}
+
+/// Whether a newer release is out. Only ever asked by the app itself, at most once a day, or when the person checks.
+#[tauri::command]
+async fn check_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<Option<UpdateInfo>> {
+    let update = updater(&app)?
+        .check()
+        .await
+        .map_err(|e| Error::new(ErrorCode::ConnectionFailed, format!("Couldn't check for updates: {e}")))?;
+    let info = update.as_ref().map(|u| UpdateInfo {
+        version: u.version.clone(),
+        current: u.current_version.clone(),
+        notes: u.body.clone().filter(|b| !b.trim().is_empty()),
+    });
+    *pending.0.lock().unwrap_or_else(|e| e.into_inner()) = update;
+    Ok(info)
+}
+
+/// Downloads the update the last check found, verifies its signature and installs it, reporting progress as
+/// `update-progress`. The app keeps running the old version until `restart_app`, when the person chooses.
+#[tauri::command]
+async fn install_update(app: AppHandle, pending: State<'_, PendingUpdate>) -> Result<()> {
+    let update = pending
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .ok_or_else(|| Error::not_found("No update is waiting. Check for updates again."))?;
+    let mut downloaded = 0u64;
+    let mut reported = 0u64;
+    update
+        .download_and_install(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                // About a hundred events for the whole download, not one per chunk.
+                let step = total.map_or(256 * 1024, |t| (t / 100).max(1));
+                if downloaded - reported >= step || total == Some(downloaded) {
+                    reported = downloaded;
+                    let _ = app.emit("update-progress", UpdateProgress { downloaded, total });
+                }
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| Error::new(ErrorCode::Internal, format!("Couldn't install the update: {e}")))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
+}
+
 pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let trace = std::env::var_os("CULPRIT_TRACE_STARTUP").is_some();
     let workspace = Workspace::open()?;
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Announced::default())
         .manage(SignIn::default())
+        .manage(PendingUpdate::default())
         .setup(move |app| {
             let handle = app.handle().clone();
             let workspace = workspace.with_sign_in_handler(Arc::new(move |event: SignInEvent| {
@@ -529,7 +616,10 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             set_agent_access,
             pending_approvals,
             decide_approval,
-            interrupt_session
+            interrupt_session,
+            check_update,
+            install_update,
+            restart_app
         ])
         .run(tauri::generate_context!())?;
     Ok(())
