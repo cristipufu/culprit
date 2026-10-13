@@ -436,6 +436,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        sizes_before: None,
     };
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -791,10 +792,14 @@ pub fn leading_keyword(text: &str) -> Option<String> {
 }
 
 async fn tables(client: &Client) -> Result<Vec<TableStat>> {
-    let exact = "pg_total_relation_size(s.relid) AS total_bytes, pg_table_size(s.relid) AS data_bytes, pg_indexes_size(s.relid) AS index_bytes";
+    let exact = "pg_total_relation_size(s.relid) AS total_bytes, pg_table_size(s.relid) AS data_bytes, pg_indexes_size(s.relid) AS index_bytes,
+                 pg_relation_size(s.relid) AS in_row_bytes,
+                 CASE WHEN c.reltoastrelid = 0 THEN 0 ELSE pg_total_relation_size(c.reltoastrelid) END AS lob_bytes";
     let estimated = "(c.relpages::bigint + coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = s.relid), 0)) * current_setting('block_size')::bigint AS total_bytes,
                      c.relpages::bigint * current_setting('block_size')::bigint AS data_bytes,
-                     coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = s.relid), 0) * current_setting('block_size')::bigint AS index_bytes";
+                     coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = s.relid), 0) * current_setting('block_size')::bigint AS index_bytes,
+                     c.relpages::bigint * current_setting('block_size')::bigint AS in_row_bytes,
+                     coalesce((SELECT t.relpages FROM pg_class t WHERE t.oid = c.reltoastrelid), 0)::bigint * current_setting('block_size')::bigint AS lob_bytes";
     let sql = |sizes: &str| {
         format!(
             "SELECT s.schemaname AS schema_name, s.relname AS table_name,
@@ -841,6 +846,9 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
             forwarded_fetches: None,
             xid_age: r.number("xid_age"),
             storage: None,
+            in_row_bytes: r.number("in_row_bytes"),
+            lob_bytes: r.number("lob_bytes"),
+            overflow_bytes: None,
         })
         .collect())
 }

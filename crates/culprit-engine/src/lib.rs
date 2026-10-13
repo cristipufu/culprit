@@ -632,6 +632,8 @@ impl Workspace {
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
+        // How big each table was then tells how fast it grows.
+        snapshot.sizes_before = previous.as_ref().and_then(culprit_core::SizeBaseline::from_scan);
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
         history::keep(&dir, &report.snapshot.id, &changes);

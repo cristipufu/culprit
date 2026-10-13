@@ -546,6 +546,17 @@
     "title": "Tables that are mostly empty space"
   },
   {
+    "category": "maintenance",
+    "description": "Tables whose rows average many kilobytes, most of it in large values kept apart from the rows (SQL Server's LOB pages, PostgreSQL's TOAST): every statement that reads whole rows pulls them in, every write that sets them writes them again. From the catalog's page counts; no data is read.",
+    "engines": [
+      "mssql",
+      "postgres"
+    ],
+    "id": "large-rows",
+    "requires": [],
+    "title": "Tables whose rows are mostly large values"
+  },
+  {
     "category": "configuration",
     "description": "Average read and write latency per database file since startup: sys.dm_io_virtual_file_stats, pg_stat_io (16+, with track_io_timing), performance_schema file I/O.",
     "engines": [

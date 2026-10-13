@@ -1668,6 +1668,277 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
     findings
 }
 
+// ── large-rows ─────────────────────────────────────────────────────────────────────────────────────
+
+pub fn large_rows_info() -> CheckInfo {
+    CheckInfo {
+        id: "large-rows".into(),
+        title: "Tables whose rows are mostly large values".into(),
+        category: Category::Maintenance,
+        engines: vec![Engine::Mssql, Engine::Postgres],
+        requires: vec![],
+        description: "Tables whose rows average many kilobytes, most of it in large values kept apart from the rows (SQL Server's LOB pages, PostgreSQL's TOAST): every statement that reads whole rows pulls them in, every write that sets them writes them again. From the catalog's page counts; no data is read.".into(),
+    }
+}
+
+/// A row this big on average is mostly a payload, not a record.
+const LARGE_ROW_BYTES: f64 = 16.0 * 1024.0;
+/// Below this the large values cost too little to be worth a finding.
+const LARGE_ROWS_TABLE_BYTES: f64 = 256.0 * MB;
+/// The share of a table's data in large-value pages that makes them, not the rows, its size.
+const LARGE_VALUE_SHARE: f64 = 0.5;
+/// Pages a statement reads a run, and for each row it returns or changes, that mean it pulls whole rows: 16 pages is
+/// 128 KB a row, far more than any index or record needs.
+const WHOLE_ROW_PAGES: f64 = 50.0;
+const WHOLE_ROW_PAGES_PER_ROW: f64 = 16.0;
+/// Whole-row reads this often a day cost more than the table's size alone.
+const WHOLE_ROW_RUNS_PER_DAY: f64 = 1_000.0;
+/// Growth that matters: a tenth of the table a day, and at least this much.
+const FAST_GROWTH_SHARE: f64 = 0.1;
+const FAST_GROWTH_BYTES: f64 = 100.0 * MB;
+/// A table this big is costly to keep, back up and restore whatever reads it.
+const BIG_TABLE_BYTES: f64 = 10.0 * GB;
+
+/// A table's own data and the part of it in large-value pages: its in-row, large-value and row-overflow pages when the
+/// engine splits them. `None` when it doesn't.
+fn split_bytes(t: &TableStat) -> Option<(f64, f64)> {
+    let large = t.lob_bytes? + t.overflow_bytes.unwrap_or(0.0);
+    let total = match t.in_row_bytes {
+        Some(in_row) => in_row + large,
+        None => t.data_bytes?,
+    };
+    (total > 0.0).then_some((total, large))
+}
+
+/// A column type whose values the engine keeps apart from the row once they're large.
+fn large_value_type(engine: Engine, data_type: &str) -> bool {
+    let t = data_type.to_ascii_lowercase();
+    match engine {
+        Engine::Mssql => {
+            t.ends_with("(max)") || matches!(t.as_str(), "xml" | "text" | "ntext" | "image" | "geography" | "geometry")
+        }
+        Engine::Postgres => {
+            matches!(t.as_str(), "text" | "bytea" | "json" | "jsonb" | "xml" | "varchar" | "character varying")
+        }
+        Engine::Mysql => false,
+    }
+}
+
+/// Statements that read or rewrite whole rows of `t`: many pages a run, and many for each row they return or change.
+/// One-off statements (a single run) aren't the application's.
+fn whole_row_statements<'a>(snapshot: &'a Snapshot, t: &TableStat) -> Vec<&'a QueryStat> {
+    let mut found: Vec<&QueryStat> = queries_touching(snapshot, &t.schema, &t.name)
+        .into_iter()
+        .filter(|q| {
+            if is_monitoring_query(q) || q.executions < 2.0 {
+                return false;
+            }
+            let Some(reads) = q.logical_reads else { return false };
+            let per_run = reads / q.executions;
+            let rows = q.rows.map(|r| r / q.executions).unwrap_or(1.0).max(1.0);
+            per_run >= WHOLE_ROW_PAGES && per_run / rows >= WHOLE_ROW_PAGES_PER_ROW
+        })
+        .collect();
+    found.sort_by(|a, b| b.logical_reads.unwrap_or(0.0).total_cmp(&a.logical_reads.unwrap_or(0.0)));
+    found.truncate(5);
+    found
+}
+
+/// Whether a statement writes rows rather than reads them: its first statement keyword, past any parameter
+/// declarations and comments the engine kept with the text.
+fn writes_rows(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let first = ["select", "insert", "update", "delete", "merge"]
+        .into_iter()
+        .filter_map(|k| {
+            lower
+                .match_indices(k)
+                .find(|(at, _)| {
+                    let before = lower[..*at].chars().next_back();
+                    let after = lower[at + k.len()..].chars().next();
+                    !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .map(|(at, _)| (at, k))
+        })
+        .min_by_key(|(at, _)| *at);
+    first.is_some_and(|(_, k)| k != "select")
+}
+
+pub fn large_rows(snapshot: &Snapshot) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = snapshot
+        .tables
+        .iter()
+        .filter_map(|t| {
+            let rows = t.rows.filter(|r| *r >= 1.0)?;
+            let (size, large) = split_bytes(t)?;
+            (size >= LARGE_ROWS_TABLE_BYTES && size / rows >= LARGE_ROW_BYTES && large / size >= LARGE_VALUE_SHARE)
+                .then(|| large_rows_finding(snapshot, t, rows, size, large))
+        })
+        .collect();
+    findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
+    findings.truncate(5);
+    findings
+}
+
+fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, large: f64) -> Finding {
+    let engine = snapshot.server.engine;
+    let name = t.qualified();
+    let average = size / rows;
+    let share = large / size;
+    let mut f = finding("large-rows", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
+    f.title = format!(
+        "{} holds {} in {} rows: {} a row, mostly large values",
+        t.name,
+        format::bytes(size),
+        format::count(rows),
+        format::bytes(average)
+    );
+
+    // The columns that can hold them, from the catalog: nothing is sampled.
+    let mut columns: Vec<_> = snapshot
+        .columns
+        .iter()
+        .filter(|c| {
+            c.schema.eq_ignore_ascii_case(&t.schema)
+                && c.table.eq_ignore_ascii_case(&t.name)
+                && large_value_type(engine, &c.data_type)
+        })
+        .collect();
+    columns.sort_by_key(|c| c.ordinal);
+    let column_names: Vec<String> = columns.iter().take(6).map(|c| c.name.clone()).collect();
+    // Which of them hold the bytes isn't known without reading the data: these are the columns that can.
+    let held_in = match (column_names.as_slice(), columns.len()) {
+        ([], _) => String::new(),
+        ([one], 1) => format!(" (the column that can hold them: {one})"),
+        (names, n) if n > names.len() => {
+            format!(" (columns that can hold them: {} and {} more)", names.join(", "), n - names.len())
+        }
+        (names, _) => format!(" (columns that can hold them: {})", format::list(names)),
+    };
+    let mut summary = format!(
+        "The {} rows of {} take {}: {} each on average, and {} of that is large values kept apart from the rows{held_in}. Every statement that reads whole rows pulls them in, every insert or update that sets them writes them again, and they keep their space until the rows are deleted and purged.",
+        format::count(rows),
+        t.name,
+        format::bytes(size),
+        format::bytes(average),
+        share_words(share)
+    );
+    if engine == Engine::Postgres {
+        summary.push_str(" PostgreSQL has already compressed them: these are the sizes on disk.");
+    }
+
+    // Statements reading whole rows: what makes the size cost on every run, not just on disk.
+    let statements = whole_row_statements(snapshot, t);
+    let runs: f64 = statements.iter().map(|q| q.executions).sum();
+    let reads: f64 = statements.iter().filter_map(|q| q.logical_reads).sum();
+    let runs_a_day = per_day(snapshot, runs);
+    let hot = runs_a_day >= WHOLE_ROW_RUNS_PER_DAY;
+    if !statements.is_empty() {
+        let pages = (reads / runs.max(1.0)).round();
+        let writes = statements.iter().filter(|q| writes_rows(&q.text)).count();
+        let one = statements.len() == 1;
+        let verb = match (writes, one) {
+            (0, true) => "reads them",
+            (0, false) => "read them",
+            (1, true) => "writes them",
+            (w, false) if w == statements.len() => "write them",
+            _ => "read or write them",
+        };
+        summary.push_str(&format!(
+            " {} below {verb} {}, going through about {} pages ({}) a run.",
+            if one { "The statement".to_string() } else { format!("The {} statements", statements.len()) },
+            runs_phrase(snapshot, runs),
+            format::count(pages),
+            format::bytes(pages * 8192.0)
+        ));
+    }
+
+    // Growth since the previous scan, when there is one.
+    let growth = snapshot.sizes_before.as_ref().and_then(|b| {
+        let then = b.bytes(&name)?;
+        let days = days_between(&b.taken_at, &snapshot.taken_at).filter(|d| *d >= 1.0 / 24.0)?;
+        Some((b, size - then, days))
+    });
+    let mut fast = false;
+    if let Some((before, delta, days)) = growth {
+        let when = crate::trends::when_phrase(&before.taken_at);
+        let a_day = delta / days;
+        fast = a_day >= FAST_GROWTH_BYTES && a_day >= FAST_GROWTH_SHARE * size;
+        summary.push(' ');
+        summary.push_str(&if delta >= MB && days >= 20.0 / 24.0 {
+            format!(
+                "It grew by {} since the previous scan {when}, about {} a day.",
+                format::bytes(delta),
+                format::bytes(a_day)
+            )
+        } else if delta >= MB {
+            format!(
+                "It grew by {} in the {} since the previous scan {when}.",
+                format::bytes(delta),
+                culprit_core::span_words(days * 24.0)
+            )
+        } else if delta <= -MB {
+            format!("It's {} smaller than at the previous scan {when}.", format::bytes(-delta))
+        } else {
+            format!("It hasn't grown since the previous scan {when}.")
+        });
+        if delta >= MB && days >= 20.0 / 24.0 {
+            f.metrics.push(Metric::new("Growth a day", a_day, Unit::Bytes));
+        }
+    }
+    f.summary = summary;
+
+    let weight = usize::from(hot) + usize::from(fast) + usize::from(size >= BIG_TABLE_BYTES);
+    f.severity = match weight {
+        0 => Severity::Low,
+        1 => Severity::Medium,
+        _ => Severity::High,
+    };
+    f.confidence = Confidence::High;
+    if let Some(impact) = query_impact(snapshot, &statements) {
+        f.impact.db_time_share = Some(impact.share);
+        f.impact.time_ms_per_day = Some(impact.per_day_ms);
+    }
+    severity_score(&mut f);
+    f.impact.label = format!("{}, {} a row", format::bytes(size), format::bytes(average));
+    let mut metrics = vec![
+        Metric::new("Table data", size, Unit::Bytes),
+        Metric::new("Rows", rows, Unit::Rows),
+        Metric::new("Average row", average, Unit::Bytes),
+        Metric::new("In large-value pages", share, Unit::Ratio),
+    ];
+    if !statements.is_empty() {
+        metrics.push(Metric::new("Whole-row statements a day", runs_a_day, Unit::Count));
+    }
+    metrics.append(&mut f.metrics);
+    f.metrics = metrics;
+    f.queries = query_refs(&statements);
+    f.last_seen = statements.iter().filter_map(|q| q.last_seen.clone()).max();
+
+    let compress = match engine {
+        Engine::Postgres => {
+            "LZ4 compresses them faster than the default (ALTER TABLE … ALTER COLUMN … SET COMPRESSION lz4, PostgreSQL 14+), or keep them in object storage and store a reference"
+        }
+        _ => {
+            "COMPRESS() them as they're written (GZip; DECOMPRESS() reads them back), or keep them in object storage and store a reference"
+        }
+    };
+    f.fix = Some(Fix {
+        summary: format!(
+            "Read only the columns a statement needs: a SELECT * or an ORM loading whole rows pulls every large value. Keep a value that many rows repeat in one place and point to it. Clear values a row no longer needs once its work is done. Check how long deleted rows are kept before they're purged: until then they keep their values. For values that must stay, {compress}."
+        ),
+        sql: None,
+        cost: None,
+    });
+    f.verify = vec![
+        "Re-scan after the change: the table's average row and its share of large values should drop, and the statements below should read fewer pages a run.".into(),
+        "A later scan says whether it still grows: it compares the table's size with this scan's.".into(),
+    ];
+    f.caveats = vec!["Sizes are the pages the table has reserved, from the catalog: they include space allocated but not yet filled.".into()];
+    f
+}
+
 // ── replica-lag ────────────────────────────────────────────────────────────────────────────────────
 
 pub fn replica_lag_info() -> CheckInfo {
@@ -2289,6 +2560,174 @@ mod tests {
         assert_eq!(table_bloat(&s)[0].title, format!("{name} is about 60% empty space (≈ 2.4 GB)"));
         s.tables[0].storage.as_mut().unwrap().bloat_bytes = Some(50.0 * MB);
         assert!(table_bloat(&s).is_empty());
+    }
+
+    /// The demo's support tickets (its events on PostgreSQL) made into a table of 9.7K rows taking 2.9 GB, almost all
+    /// of it large values, with two large-value columns.
+    fn large_rows_snapshot(engine: Engine) -> Snapshot {
+        let mut s = snapshot_with(engine);
+        s.taken_at = "2026-10-13T09:00:00Z".into();
+        let name = if engine == Engine::Postgres { "events" } else { "support_tickets" };
+        let t = s.tables.iter_mut().find(|t| t.name == name).expect("the demo table");
+        t.rows = Some(9_728.0);
+        t.in_row_bytes = Some(31.0 * MB);
+        t.lob_bytes = Some(2_900.0 * MB);
+        t.overflow_bytes = Some(0.0);
+        t.data_bytes = Some(2_931.0 * MB);
+        let (schema, table) = (t.schema.clone(), t.name.clone());
+        let (body, attachments) = match engine {
+            Engine::Postgres => ("text", "bytea"),
+            _ => ("nvarchar(max)", "varbinary(max)"),
+        };
+        for (ordinal, (name, data_type)) in
+            [("id", "int"), ("body", body), ("attachments", attachments)].into_iter().enumerate()
+        {
+            s.columns.retain(|c| !(c.table == table && c.name == name));
+            s.columns.push(culprit_core::ColumnInfo {
+                schema: schema.clone(),
+                table: table.clone(),
+                name: name.into(),
+                data_type: data_type.into(),
+                nullable: true,
+                default: None,
+                generated: false,
+                ordinal: 100 + ordinal as u32,
+            });
+        }
+        s
+    }
+
+    fn large_rows_of(s: &Snapshot) -> Option<Finding> {
+        let name = if s.server.engine == Engine::Postgres { "public.events" } else { "shop.support_tickets" };
+        large_rows(s).into_iter().find(|f| f.id == format!("large-rows:{name}"))
+    }
+
+    /// A statement loading one whole support ticket by id, `runs` times over a 24-hour window, 280 pages a run.
+    fn load_ticket(s: &mut Snapshot, runs: f64) -> String {
+        let w = s.workload.as_mut().unwrap();
+        w.window_hours = 24.0;
+        let q = w.queries.iter_mut().find(|q| !crate::support::is_monitoring_query(q)).unwrap();
+        q.text = "SELECT * FROM shop.support_tickets WHERE id = @P1".into();
+        q.plan = None;
+        q.executions = runs;
+        q.rows = Some(runs);
+        q.logical_reads = Some(280.0 * runs);
+        q.id.clone()
+    }
+
+    #[test]
+    fn large_rows_stay_quiet_for_small_tables_small_rows_or_rows_kept_in_row() {
+        let mut s = large_rows_snapshot(Engine::Mssql);
+        assert!(large_rows_of(&s).is_some());
+        // Small rows: a million of them, 400 bytes each.
+        let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+        t.rows = Some(1_000_000.0);
+        assert!(large_rows_of(&s).is_none());
+        // A small table: 110 MB.
+        let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+        (t.rows, t.in_row_bytes, t.lob_bytes) = (Some(1_000.0), Some(10.0 * MB), Some(100.0 * MB));
+        assert!(large_rows(&s).is_empty());
+        // Large rows kept in the rows' own pages: wide, but not large values.
+        let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+        (t.rows, t.in_row_bytes, t.lob_bytes) = (Some(10_000.0), Some(300.0 * MB), Some(100.0 * MB));
+        assert!(large_rows(&s).is_empty());
+        // An engine that doesn't split its pages says nothing.
+        let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+        (t.in_row_bytes, t.lob_bytes) = (None, None);
+        assert!(large_rows(&s).is_empty());
+    }
+
+    #[test]
+    fn large_rows_name_the_table_its_columns_and_the_fix() {
+        let s = large_rows_snapshot(Engine::Mssql);
+        let f = large_rows_of(&s).expect("finding");
+        assert_eq!(f.title, "support_tickets holds 2.9 GB in 9.7K rows: 309 KB a row, mostly large values");
+        assert!(
+            f.summary.contains(
+                "almost all of that is large values kept apart from the rows (columns that can hold them: body and attachments)."
+            ),
+            "{}",
+            f.summary
+        );
+        assert!(!f.summary.contains("previous scan"), "no growth line without an earlier scan: {}", f.summary);
+        assert_eq!(f.severity, Severity::Low);
+        assert_eq!(f.confidence, Confidence::High);
+        assert!(f.queries.is_empty());
+        let fix = f.fix.as_ref().unwrap();
+        assert!(fix.sql.is_none());
+        assert!(fix.summary.contains("Read only the columns a statement needs") && fix.summary.contains("COMPRESS()"));
+        assert!(!f.verify.is_empty());
+    }
+
+    #[test]
+    fn large_rows_read_whole_many_times_a_day_raise_it() {
+        let mut s = large_rows_snapshot(Engine::Mssql);
+        let id = load_ticket(&mut s, 12_700.0);
+        let f = large_rows_of(&s).expect("finding");
+        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+        assert!(
+            f.summary.contains(
+                "The statement below reads them about 13K times a day, going through about 280 pages (2.2 MB) a run."
+            ),
+            "{}",
+            f.summary
+        );
+        // An insert writing them is said as one.
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == id).unwrap();
+        q.text = "(@P1 nvarchar(4000),@P2 varbinary(max))INSERT INTO shop.support_tickets (body, attachments) VALUES (@P1, @P2)".into();
+        assert!(large_rows_of(&s).unwrap().summary.contains("The statement below writes them about 13K times a day"));
+        // A seek that reads a few pages a row isn't a whole-row read.
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == id).unwrap();
+        q.logical_reads = Some(4.0 * 12_700.0);
+        assert!(large_rows_of(&s).unwrap().queries.is_empty());
+    }
+
+    #[test]
+    fn large_rows_say_how_fast_they_grow_since_the_previous_scan() {
+        let mut s = large_rows_snapshot(Engine::Mssql);
+        load_ticket(&mut s, 12_700.0);
+        let tables = BTreeMap::from([("shop.support_tickets".to_string(), 2_331.0 * MB)]);
+        s.sizes_before = Some(culprit_core::SizeBaseline { taken_at: "2026-10-12T09:00:00Z".into(), tables });
+        let f = large_rows_of(&s).expect("finding");
+        // Read whole thousands of times a day and growing by a fifth of its size a day.
+        assert_eq!(f.severity, Severity::High);
+        assert!(
+            f.summary.contains("It grew by 600 MB since the previous scan on Oct 12 at 09:00 UTC, about 600 MB a day."),
+            "{}",
+            f.summary
+        );
+        assert!(f.metrics.iter().any(|m| m.label == "Growth a day"));
+
+        // Six hours apart: the growth, without a daily rate drawn from a quarter of a day.
+        s.sizes_before.as_mut().unwrap().taken_at = "2026-10-13T03:00:00Z".into();
+        let f = large_rows_of(&s).unwrap();
+        assert!(f.summary.contains("It grew by 600 MB in the 6 hours since the previous scan"), "{}", f.summary);
+        assert!(!f.metrics.iter().any(|m| m.label == "Growth a day"));
+
+        // Not grown.
+        s.sizes_before.as_mut().unwrap().tables.insert("shop.support_tickets".into(), 2_931.0 * MB);
+        let f = large_rows_of(&s).unwrap();
+        assert!(f.summary.contains("It hasn't grown since the previous scan"), "{}", f.summary);
+        assert_eq!(f.severity, Severity::Medium);
+    }
+
+    #[test]
+    fn large_rows_on_postgres_count_toast() {
+        let s = large_rows_snapshot(Engine::Postgres);
+        let f = large_rows_of(&s).expect("finding");
+        assert!(f.summary.contains("PostgreSQL has already compressed them"));
+        assert!(f.fix.as_ref().unwrap().summary.contains("SET COMPRESSION lz4"));
+        // The demo's own text and jsonb columns can hold them too.
+        assert!(
+            f.summary.contains("(columns that can hold them: kind, payload, body and attachments)"),
+            "{}",
+            f.summary
+        );
+        // MySQL doesn't report the split.
+        let mut m = snapshot_with(Engine::Mysql);
+        m.tables.iter_mut().for_each(|t| (t.rows, t.data_bytes) = (Some(9_728.0), Some(2_931.0 * MB)));
+        assert!(large_rows(&m).is_empty());
     }
 
     #[test]

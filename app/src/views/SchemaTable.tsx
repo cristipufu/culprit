@@ -8,7 +8,7 @@ import type { Report } from "../gen/Report";
 import type { ResultSet } from "../gen/ResultSet";
 import type { TableStat } from "../gen/TableStat";
 import { api, errorMessage, type ApiError } from "../lib/api";
-import { ago, bytes, count, oneLine, when } from "../lib/format";
+import { ago, bytes, count, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
 import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
@@ -126,6 +126,10 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
   const data = table.data_bytes ?? 0;
   const index = table.index_bytes ?? 0;
   const total = Math.max(1, data + index);
+  // How the rows' own data splits between the rows and the large values kept apart from them, where the engine says.
+  const large = table.lob_bytes == null ? null : table.lob_bytes + (table.overflow_bytes ?? 0);
+  const own = large == null || table.in_row_bytes == null ? null : table.in_row_bytes + large;
+  const averageRow = own != null && own > 0 && table.rows != null && table.rows >= 1 ? own / table.rows : null;
   // SQL Server keeps statistics per object, not per table: show the stalest one Culprit read for this table.
   const stats = snapshot.statistics.filter((s) => s.schema === table.schema && s.table === table.name && s.last_updated);
   const stalest = stats.reduce<string | null>((oldest, s) => (oldest == null || (s.last_updated ?? "") < oldest ? s.last_updated : oldest), null);
@@ -189,6 +193,14 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
             ) : null
           }
         />
+        {averageRow != null && own != null && large != null && (
+          <Fact
+            label="Average row"
+            value={bytes(averageRow)}
+            warn={averageRow >= 16 * 1024 && large / own >= 0.5}
+            detail={<span title="Large values kept apart from the rows: LOB pages on SQL Server, TOAST on PostgreSQL">{percent(large / own)} in large values</span>}
+          />
+        )}
         {knowsStats && (
           <Fact
             label="Statistics"

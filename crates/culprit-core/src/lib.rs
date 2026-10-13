@@ -54,7 +54,7 @@ pub use plan_diff::{
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
 pub use signals::{
     ColumnHistogram, ConstraintIssue, ConstraintKind, EscalationBaseline, FileIo, FileKind, IndexContention,
-    QueryCosts, Replica, ReplicaRole, TableStorage, escalations_by_table,
+    QueryCosts, Replica, ReplicaRole, SizeBaseline, TableStorage, escalations_by_table,
 };
 pub use verification::{Verification, VerifiedFinding, VerifyStatus, compare_reports};
 pub use waits::{

@@ -230,6 +230,30 @@ pub struct EscalationBaseline {
     pub restarted: bool,
 }
 
+/// How big each table's data was at an earlier scan, to tell how fast it grows.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct SizeBaseline {
+    /// When the earlier scan was taken (UTC, ISO 8601).
+    pub taken_at: String,
+    /// Bytes of each table's own rows (`schema.table`) then: its heap or clustered index, large values included.
+    pub tables: BTreeMap<String, f64>,
+}
+
+impl SizeBaseline {
+    /// The sizes `previous`, an earlier scan of the same database, read. `None` when it read none.
+    pub fn from_scan(previous: &Snapshot) -> Option<SizeBaseline> {
+        let tables: BTreeMap<String, f64> =
+            previous.tables.iter().filter_map(|t| Some((t.qualified().to_ascii_lowercase(), t.data_bytes?))).collect();
+        (!tables.is_empty()).then(|| SizeBaseline { taken_at: previous.taken_at.clone(), tables })
+    }
+
+    /// Bytes of `table` (`schema.table`) at the earlier scan.
+    pub fn bytes(&self, table: &str) -> Option<f64> {
+        self.tables.get(&table.to_ascii_lowercase()).copied()
+    }
+}
+
 /// Start times read a second or two apart are the same start.
 const SAME_START_SECONDS: f64 = 120.0;
 

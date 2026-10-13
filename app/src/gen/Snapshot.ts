@@ -15,6 +15,7 @@ import type { QueryFamily } from "./QueryFamily";
 import type { ResourceSample } from "./ResourceSample";
 import type { ServerInfo } from "./ServerInfo";
 import type { Setting } from "./Setting";
+import type { SizeBaseline } from "./SizeBaseline";
 import type { SnapshotOptions } from "./SnapshotOptions";
 import type { StatisticsInfo } from "./StatisticsInfo";
 import type { TableStat } from "./TableStat";
@@ -59,4 +60,9 @@ histograms: Array<ColumnHistogram> | null,
  * The lock escalations an earlier scan counted (SQL Server), set from the scans Culprit keeps or a previous
  * digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
  */
-escalations_before: EscalationBaseline | null, };
+escalations_before: EscalationBaseline | null, 
+/**
+ * How big each table's data was at an earlier scan of the same database, set from the scans Culprit keeps: what
+ * tells how fast a table grows. `None` without an earlier scan.
+ */
+sizes_before: SizeBaseline | null, };

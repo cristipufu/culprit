@@ -98,6 +98,7 @@ pub fn all() -> Vec<Box<dyn Check>> {
         Builtin { info: signals::missing_histogram_info, run: signals::missing_histogram },
         Builtin { info: signals::hot_updates_info, run: signals::hot_updates },
         Builtin { info: signals::table_bloat_info, run: signals::table_bloat },
+        Builtin { info: signals::large_rows_info, run: signals::large_rows },
         Builtin { info: signals::slow_storage_info, run: signals::slow_storage },
         Builtin { info: signals::connection_churn_info, run: signals::connection_churn },
         Builtin { info: signals::replica_lag_info, run: signals::replica_lag },

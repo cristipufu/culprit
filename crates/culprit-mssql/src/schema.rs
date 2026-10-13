@@ -12,6 +12,9 @@ SELECT s.name AS schema_name, t.name AS table_name,
   SUM(ps.reserved_page_count) * 8192.0 AS total_bytes,
   SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.reserved_page_count ELSE 0 END) * 8192.0 AS data_bytes,
   SUM(CASE WHEN ps.index_id > 1 THEN ps.reserved_page_count ELSE 0 END) * 8192.0 AS index_bytes,
+  SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.in_row_reserved_page_count ELSE 0 END) * 8192.0 AS in_row_bytes,
+  SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.lob_reserved_page_count ELSE 0 END) * 8192.0 AS lob_bytes,
+  SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_overflow_reserved_page_count ELSE 0 END) * 8192.0 AS overflow_bytes,
   MAX(CASE WHEN ps.index_id = 0 THEN 1 ELSE 0 END) AS is_heap,
   MAX(CAST(OBJECTPROPERTY(t.object_id, 'TableHasPrimaryKey') AS int)) AS has_primary_key
 FROM sys.tables t
@@ -21,13 +24,17 @@ WHERE t.is_ms_shipped = 0
 GROUP BY s.name, t.name
 "#;
 
-/// Catalog-only variant for logins without VIEW DATABASE STATE: row counts and sizes from sys.partitions.
+/// Catalog-only variant for logins without VIEW DATABASE STATE: row counts and sizes from sys.partitions. A partition
+/// has one allocation unit per kind of page (in-row, LOB, row-overflow), so its rows are counted on the in-row one only.
 const TABLES_CATALOG_SQL: &str = r#"
 SELECT s.name AS schema_name, t.name AS table_name,
-  SUM(CASE WHEN p.index_id IN (0, 1) THEN p.rows ELSE 0 END) AS row_count,
+  SUM(CASE WHEN p.index_id IN (0, 1) AND au.type = 1 THEN p.rows ELSE 0 END) AS row_count,
   SUM(au.total_pages) * 8192.0 AS total_bytes,
   SUM(CASE WHEN p.index_id IN (0, 1) THEN au.total_pages ELSE 0 END) * 8192.0 AS data_bytes,
   SUM(CASE WHEN p.index_id > 1 THEN au.total_pages ELSE 0 END) * 8192.0 AS index_bytes,
+  SUM(CASE WHEN p.index_id IN (0, 1) AND au.type = 1 THEN au.total_pages ELSE 0 END) * 8192.0 AS in_row_bytes,
+  SUM(CASE WHEN p.index_id IN (0, 1) AND au.type = 2 THEN au.total_pages ELSE 0 END) * 8192.0 AS lob_bytes,
+  SUM(CASE WHEN p.index_id IN (0, 1) AND au.type = 3 THEN au.total_pages ELSE 0 END) * 8192.0 AS overflow_bytes,
   MAX(CASE WHEN p.index_id = 0 THEN 1 ELSE 0 END) AS is_heap,
   MAX(CAST(OBJECTPROPERTY(t.object_id, 'TableHasPrimaryKey') AS int)) AS has_primary_key
 FROM sys.tables t
@@ -345,6 +352,9 @@ fn table_of(r: &Rec) -> TableStat {
         forwarded_fetches: None,
         xid_age: None,
         storage: None,
+        in_row_bytes: r.f64("in_row_bytes"),
+        lob_bytes: r.f64("lob_bytes"),
+        overflow_bytes: r.f64("overflow_bytes"),
     }
 }
 

@@ -2,6 +2,17 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.5
+
+### Findings
+
+- **Tables whose rows are mostly large values are found on their own.** A table of 256 MB or more whose rows average 16 KB or more, most of it in pages kept apart from the rows (SQL Server's LOB pages, PostgreSQL's TOAST), is a `large-rows` finding: how big, how many rows, how much of it is large values, and the columns that can hold them, from the catalog without reading any data. It's raised when statements read or write whole rows thousands of times a day (they're listed), when the table grows fast since the previous scan (how much a day), and at 10 GB. The fix says what usually helps: read only the columns a statement needs, keep values many rows repeat in one place, clear values a row no longer needs, check how long deleted rows are kept, and compress what must stay.
+- **The schema view shows a table's average row** and how much of it is large values.
+
+### Fixes
+
+- **Row counts on SQL Server without VIEW DATABASE STATE are no longer multiplied for tables with large-value columns.** The catalog-only read counted each table's rows once per kind of page it has (in-row, LOB, row-overflow), so such a table showed up to three times its rows.
+
 ## 0.2.4
 
 ### Fixes

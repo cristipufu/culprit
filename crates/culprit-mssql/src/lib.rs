@@ -425,6 +425,7 @@ impl Provider for MssqlProvider {
             constraints: Vec::new(),
             histograms: None,
             escalations_before: None,
+            sizes_before: None,
         };
         match self.pool.get().await {
             Ok(mut client) => {

@@ -449,6 +449,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        sizes_before: None,
     };
     crate::signals::collect(connector, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1100,6 +1101,9 @@ async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> {
                 xid_age: None,
                 name,
                 storage: None,
+                in_row_bytes: None,
+                lob_bytes: None,
+                overflow_bytes: None,
             }
         })
         .collect())

@@ -10,4 +10,19 @@ forwarded_fetches: number | null,
 /**
  * How updates land on its pages and how much is empty space (PostgreSQL).
  */
-storage: TableStorage | null, };
+storage: TableStorage | null, 
+/**
+ * Bytes of the table's own rows (its heap or clustered index) kept in the rows' pages. With `lob_bytes` and
+ * `overflow_bytes`, how its data splits between the rows and the large values kept apart from them. `None` where
+ * the engine doesn't say.
+ */
+in_row_bytes: number | null, 
+/**
+ * Bytes of large values kept apart from the rows: SQL Server's LOB pages (`nvarchar(max)`, `varbinary(max)`,
+ * `xml`…), PostgreSQL's TOAST table.
+ */
+lob_bytes: number | null, 
+/**
+ * Bytes of variable-length values pushed off a row that outgrew its page (SQL Server row-overflow pages).
+ */
+overflow_bytes: number | null, };

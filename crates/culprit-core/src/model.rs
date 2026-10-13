@@ -433,6 +433,18 @@ pub struct TableStat {
     /// How updates land on its pages and how much is empty space (PostgreSQL).
     #[serde(default)]
     pub storage: Option<crate::signals::TableStorage>,
+    /// Bytes of the table's own rows (its heap or clustered index) kept in the rows' pages. With `lob_bytes` and
+    /// `overflow_bytes`, how its data splits between the rows and the large values kept apart from them. `None` where
+    /// the engine doesn't say.
+    #[serde(default)]
+    pub in_row_bytes: Option<f64>,
+    /// Bytes of large values kept apart from the rows: SQL Server's LOB pages (`nvarchar(max)`, `varbinary(max)`,
+    /// `xml`…), PostgreSQL's TOAST table.
+    #[serde(default)]
+    pub lob_bytes: Option<f64>,
+    /// Bytes of variable-length values pushed off a row that outgrew its page (SQL Server row-overflow pages).
+    #[serde(default)]
+    pub overflow_bytes: Option<f64>,
 }
 
 impl TableStat {
@@ -629,6 +641,10 @@ pub struct Snapshot {
     /// digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
     #[serde(default)]
     pub escalations_before: Option<crate::signals::EscalationBaseline>,
+    /// How big each table's data was at an earlier scan of the same database, set from the scans Culprit keeps: what
+    /// tells how fast a table grows. `None` without an earlier scan.
+    #[serde(default)]
+    pub sizes_before: Option<crate::signals::SizeBaseline>,
 }
 
 impl Snapshot {
