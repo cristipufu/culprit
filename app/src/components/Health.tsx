@@ -28,13 +28,27 @@ export function SignalTile({ signal }: { signal: Signal }) {
 }
 
 function OpenTransactionCard({ t }: { t: OpenTransaction }) {
-  const long = t.seconds >= 1800;
+  // A replication slot has no start time: how far it holds the horizon back is what tells.
+  const slot = t.holder === "replication-slot";
+  const behind = t.xid_age ?? 0;
+  const long = slot ? behind >= 1_000_000 : t.seconds >= 1800;
+  const watch = slot ? behind >= 100_000 : t.seconds >= 600;
   return (
     <div className={`open-txn ${long ? "long" : ""}`}>
-      <i className={`sig-dot ${long ? "bad" : t.seconds >= 600 ? "watch" : "good"}`} />
+      <i className={`sig-dot ${long ? "bad" : watch ? "watch" : "good"}`} />
       <div>
         <div className="open-txn-title">
-          Oldest open transaction: session <b>{t.session}</b>, open {duration(t.seconds * 1000)}
+          {slot ? (
+            <>
+              Replication slot <b>{t.session}</b> holds cleanup back by {Math.round(behind).toLocaleString()} transactions
+            </>
+          ) : (
+            <>
+              {t.holder === "prepared-transaction" ? "Oldest prepared transaction" : "Oldest open transaction"}:{" "}
+              {t.holder === "prepared-transaction" ? "" : "session "}
+              <b>{t.session}</b>, open {duration(t.seconds * 1000)}
+            </>
+          )}
           {t.state ? ` · ${t.state}` : ""}
         </div>
         <div className="open-txn-meta">

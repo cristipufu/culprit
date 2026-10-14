@@ -419,6 +419,30 @@ pub struct TableStorage {
     /// it does the live-row counter.
     #[serde(default)]
     pub planner_rows: Option<f64>,
+    /// The table's own storage parameters as set (`autovacuum_vacuum_scale_factor=0.01`, `fillfactor=70`): what
+    /// overrides the server's autovacuum settings for it. Empty when it has none, or the scan predates them.
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
+impl TableStorage {
+    /// The value of storage parameter `name` set on the table, when it is set and a number.
+    pub fn option(&self, name: &str) -> Option<f64> {
+        self.options.iter().find_map(|o| {
+            let (key, value) = o.split_once('=')?;
+            key.trim().eq_ignore_ascii_case(name).then(|| value.trim().parse().ok()).flatten()
+        })
+    }
+
+    /// Whether the table turns autovacuum off for itself (`autovacuum_enabled=false`).
+    pub fn autovacuum_off(&self) -> bool {
+        self.options.iter().any(|o| {
+            o.split_once('=').is_some_and(|(k, v)| {
+                k.trim().eq_ignore_ascii_case("autovacuum_enabled")
+                    && matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "off" | "no" | "0")
+            })
+        })
+    }
 }
 
 #[cfg(test)]

@@ -195,7 +195,8 @@ pub fn index_name(table: &str, columns: &[String]) -> String {
 }
 
 pub fn supports_online_index(snapshot: &Snapshot) -> bool {
-    if snapshot.server.cloud.is_some() {
+    // Azure SQL runs every edition's features; RDS runs the edition it was bought with, read below.
+    if snapshot.server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure")) {
         return true;
     }
     snapshot

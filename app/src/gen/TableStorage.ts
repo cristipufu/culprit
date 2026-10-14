@@ -30,4 +30,9 @@ counter_hours: number | null,
  * The planner's row count (pg_class.reltuples), which a statistics reset, crash or failover doesn't zero the way
  * it does the live-row counter.
  */
-planner_rows: number | null, };
+planner_rows: number | null, 
+/**
+ * The table's own storage parameters as set (`autovacuum_vacuum_scale_factor=0.01`, `fillfactor=70`): what
+ * overrides the server's autovacuum settings for it. Empty when it has none, or the scan predates them.
+ */
+options: Array<string>, };

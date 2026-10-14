@@ -3280,6 +3280,7 @@ mod tests {
             hot_updates: Some(10_000.0),
             new_page_updates: Some(80_000.0),
             fillfactor: Some(100.0),
+            bloat_bytes: None,
             ..Default::default()
         });
         let name = t.name.clone();

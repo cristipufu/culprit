@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use culprit_core::waits::{category_info, category_key};
 use culprit_core::{Capability, Engine, QueryStat, Snapshot, WaitCategory, WaitQuery, WaitScope, WaitsReport, format};
 
-use crate::support::app_queries;
+use crate::support::{app_queries, setting_change};
 
 /// Queries listed per category.
 const MAX_QUERIES: usize = 12;
@@ -67,8 +67,19 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
     match engine {
         Engine::Postgres => {
             notes.push("PostgreSQL keeps no history of what sessions waited on. These totals come from per-statement timing; use Right now to sample what sessions wait on at this moment.".into());
-            if !snapshot.waits.iter().any(|w| category_key(&w.category) == "io") {
-                notes.push("Turn on track_io_timing (ALTER SYSTEM SET track_io_timing = on; SELECT pg_reload_conf();) so time spent reading from disk is measured per statement.".into());
+            // The setting says whether disk time is measured; a cached database reads nothing from disk with it on.
+            // Without the setting in the scan, no disk time at all is the hint.
+            let timing_off = match snapshot.setting("track_io_timing") {
+                Some(s) => !matches!(s.value.trim().to_ascii_lowercase().as_str(), "on" | "true" | "1"),
+                None => !snapshot.waits.iter().any(|w| category_key(&w.category) == "io"),
+            };
+            if timing_off {
+                let change = setting_change(&snapshot.server, "track_io_timing", "on");
+                notes.push(format!(
+                    "Turn on track_io_timing so time spent reading from disk is measured per statement. {}{}",
+                    change.how,
+                    change.sql.map(|sql| format!(" ({})", sql.replace('\n', " "))).unwrap_or_default()
+                ));
             }
         }
         Engine::Mysql if !snapshot.server.has(Capability::PerformanceSchema) => {
@@ -77,13 +88,40 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
         Engine::Mysql => {
             notes.push(format!("{} counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total.", snapshot.server.name()));
         }
-        Engine::Mssql => {
-            if scope == WaitScope::SinceStartup {
-                notes.push("Query Store isn't capturing waits, so these are server totals since startup and can't be tied to queries. Turn it on: ALTER DATABASE CURRENT SET QUERY_STORE (WAIT_STATS_CAPTURE_MODE = ON);".into());
-            }
-        }
+        Engine::Mssql if scope == WaitScope::SinceStartup => notes.push(waits_capture_note(snapshot)),
+        Engine::Mssql => {}
     }
     Some(WaitsReport { engine, scope, source, total_ms, categories, notes })
+}
+
+/// Why SQL Server's waits aren't tied to queries, and what would tie them. Query Store captures waits per query from
+/// SQL Server 2017 (and on Azure SQL); it has to be on for that, and on 2016 it can't.
+fn waits_capture_note(snapshot: &Snapshot) -> String {
+    const TOTALS: &str = "These are server totals since startup and can't be tied to queries.";
+    let state = snapshot.setting("query_store_options.actual_state_desc").map(|s| s.value.to_ascii_uppercase());
+    let on = state.as_deref().is_some_and(|s| s == "READ_WRITE" || s == "READ_ONLY");
+    let azure = snapshot.server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure SQL"));
+    let major: u32 = snapshot.server.version.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    if !azure && major > 0 && major < 14 {
+        return format!(
+            "{TOTALS} Query Store on {} doesn't record waits per query; SQL Server 2017 and later do.",
+            snapshot.server.product
+        );
+    }
+    if !on {
+        return format!(
+            "{TOTALS} Query Store is off; with it on (and recording waits, the default from SQL Server 2017), Culprit can tie waits to queries: ALTER DATABASE CURRENT SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE, WAIT_STATS_CAPTURE_MODE = ON);"
+        );
+    }
+    let capturing = snapshot
+        .setting("query_store_options.wait_stats_capture_mode_desc")
+        .is_some_and(|s| s.value.eq_ignore_ascii_case("ON"));
+    if capturing {
+        return format!("Query Store recorded no waits for this database's queries in the window. {TOTALS}");
+    }
+    format!(
+        "Query Store isn't capturing waits. {TOTALS} Turn it on: ALTER DATABASE CURRENT SET QUERY_STORE (WAIT_STATS_CAPTURE_MODE = ON);"
+    )
 }
 
 fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
@@ -348,9 +386,61 @@ mod tests {
 
         let mut pg = snapshot_with(Engine::Postgres);
         pg.waits = vec![wait("Other", "statement time", 1000.0)];
+        pg.settings.retain(|s| s.name != "track_io_timing");
         let report = explain(&pg).unwrap();
         assert_eq!(report.scope, WaitScope::Statements);
         assert!(report.notes.iter().any(|n| n.contains("track_io_timing")));
+    }
+
+    // C19: the note follows the setting. A cached database with timing on reads nothing from disk, which is no reason
+    // to ask for timing; with it off, the advice is worded where the server runs.
+    #[test]
+    fn the_io_timing_note_follows_the_setting() {
+        let mut pg = snapshot_with(Engine::Postgres);
+        pg.waits = vec![wait("Other", "statement time", 1000.0)];
+        assert!(!explain(&pg).unwrap().notes.iter().any(|n| n.contains("track_io_timing")), "it is on in the demo");
+        for s in pg.settings.iter_mut().filter(|s| s.name == "track_io_timing") {
+            s.value = "off".into();
+        }
+        pg.server.cloud = Some("Amazon RDS".into());
+        let notes = explain(&pg).unwrap().notes;
+        let note = notes.iter().find(|n| n.contains("track_io_timing")).unwrap();
+        assert!(note.contains("DB parameter group") && !note.contains("ALTER SYSTEM"), "{note}");
+    }
+
+    // C19: wait capture is suggested only where it exists: Query Store on, SQL Server 2017 or later.
+    #[test]
+    fn wait_capture_is_suggested_only_where_it_exists() {
+        let mut s = snapshot_with(Engine::Mssql);
+        s.waits = vec![wait("CPU", "SOS_SCHEDULER_YIELD", 100.0)];
+        let set = |s: &mut Snapshot, name: &str, value: &str| {
+            for x in s.settings.iter_mut().filter(|x| x.name == name) {
+                x.value = value.into();
+            }
+        };
+        set(&mut s, "query_store_options.wait_stats_capture_mode_desc", "OFF");
+        let note = |s: &Snapshot| explain(s).unwrap().notes.join(" ");
+        assert!(note(&s).contains("WAIT_STATS_CAPTURE_MODE = ON"));
+        set(&mut s, "query_store_options.actual_state_desc", "OFF");
+        assert!(note(&s).contains("Query Store is off"), "{}", note(&s));
+        s.server.version = "13.0.6300.2".into();
+        s.server.product = "SQL Server 2016".into();
+        let text = note(&s);
+        assert!(
+            text.contains("SQL Server 2016 doesn't record waits per query")
+                && !text.contains("WAIT_STATS_CAPTURE_MODE"),
+            "{text}"
+        );
+    }
+
+    // C19: SQL Server's Memory category holds allocations as well as grants, and THREADPOOL is folded into CPU.
+    #[test]
+    fn category_labels_say_what_they_hold() {
+        let (label, meaning) = category_info("memory", Engine::Mssql);
+        assert_eq!(label, "Memory");
+        assert!(meaning.contains("RESOURCE_SEMAPHORE") && meaning.contains("CMEMTHREAD"));
+        assert!(category_info("cpu", Engine::Mssql).1.contains("THREADPOOL"));
+        assert!(!category_info("cpu", Engine::Postgres).1.contains("THREADPOOL"));
     }
 
     #[test]

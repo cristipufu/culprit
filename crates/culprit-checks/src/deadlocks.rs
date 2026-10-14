@@ -40,6 +40,24 @@ fn tables(objects: &[String]) -> String {
     }
 }
 
+/// Whether a deadlock is this database's. SQL Server's system_health and InnoDB's report are the whole server's: a
+/// deadlock whose processes ran in other databases (SQL Server), or whose tables are all in other schemas (MySQL, where
+/// a schema is a database), belongs to them. One that names neither can't be placed, and is kept.
+fn in_this_database(d: &Deadlock, snapshot: &Snapshot) -> bool {
+    let database = &snapshot.server.database;
+    let mut named = d.processes.iter().filter_map(|p| p.database.as_deref()).peekable();
+    if named.peek().is_some() {
+        return named.any(|db| db.eq_ignore_ascii_case(database));
+    }
+    if snapshot.server.engine == Engine::Mysql {
+        let mut schemas = d.objects.iter().filter_map(|o| o.split_once('.').map(|(s, _)| s)).peekable();
+        if schemas.peek().is_some() {
+            return schemas.any(|s| s.eq_ignore_ascii_case(database));
+        }
+    }
+    true
+}
+
 pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(report) = snapshot.deadlocks.as_ref() else { return Vec::new() };
     let mut out = Vec::new();
@@ -50,11 +68,14 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
     };
 
     let mut groups: BTreeMap<(DeadlockPattern, Vec<String>), Vec<&Deadlock>> = BTreeMap::new();
-    for d in &report.deadlocks {
+    for d in report.deadlocks.iter().filter(|d| in_this_database(d, snapshot)) {
         groups.entry((d.pattern, d.objects.clone())).or_default().push(d);
     }
     for ((pattern, objects), list) in groups {
-        let n = list.len();
+        // Only a dated deadlock counts toward "in the last day": InnoDB keeps its latest one however old it is, and
+        // one whose time couldn't be read may be from long ago.
+        let n = list.iter().filter(|d| d.at.is_some()).count();
+        let undated = list.len() - n;
         let latest = list.iter().max_by(|a, b| a.at.cmp(&b.at)).copied().unwrap_or(list[0]);
         let statements: std::collections::BTreeSet<String> = list
             .iter()
@@ -79,13 +100,30 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
         } else {
             Severity::Low
         };
-        f.confidence = Confidence::High;
-        f.title = format!("{who} deadlocked {times} in {window} ({} on {})", pattern.label(), tables(&objects));
+        f.confidence = if n > 0 { Confidence::High } else { Confidence::Medium };
+        f.title = if n > 0 {
+            format!(
+                "{who} deadlocked {times} in {window}{} ({} on {})",
+                if undated > 0 { format!(", and {undated} more at an unknown time") } else { String::new() },
+                pattern.label(),
+                tables(&objects)
+            )
+        } else {
+            format!(
+                "{who} deadlocked at an unknown time ({} on {}): the server's latest deadlock report doesn't say when",
+                pattern.label(),
+                tables(&objects)
+            )
+        };
         f.summary = format!("{} {}", latest.headline, latest.explanation);
+        let all = list.len();
         f.impact.score = base_score(f.severity) + (n as f64).min(20.0);
-        f.impact.label = if n == 1 { "1 deadlock".into() } else { format!("{n} deadlocks") };
+        f.impact.label = if all == 1 { "1 deadlock".into() } else { format!("{all} deadlocks") };
+        if n == 0 {
+            f.caveats.push("When it happened is unknown, so it may be from long ago: InnoDB keeps its most recent deadlock until the next one, however old. Check the error log (innodb_print_all_deadlocks) before acting on it.".into());
+        }
         f.metrics = vec![
-            Metric { label: "Deadlocks".into(), value: n as f64, unit: Unit::Count, text: None },
+            Metric { label: "Deadlocks".into(), value: all as f64, unit: Unit::Count, text: None },
             Metric { label: "Pattern".into(), value: 0.0, unit: Unit::Text, text: Some(pattern.label().into()) },
         ];
         if let Some(victim) = latest.victim() {
@@ -118,18 +156,26 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
     if report.deadlocks.is_empty()
         && let Some(counted) = report.counted.filter(|c| *c > 0.0)
     {
-        let since = report
+        // The counter runs from the statistics' last reset. With no reset on record it runs from an unknown time
+        // (statistics survive a clean restart), so it is a total, not a rate.
+        let since = match report.counted_since.as_deref() {
+            Some(s) => format!(" since {}", friendly_date(s, &snapshot.taken_at)),
+            None => " since its statistics began (no reset on record, so it doesn't say when)".into(),
+        };
+        let per_day = report
             .counted_since
             .as_deref()
-            .map(|s| format!(" since {}", friendly_date(s, &snapshot.taken_at)))
-            .unwrap_or_default();
+            .and_then(|s| days_between(s, &snapshot.taken_at))
+            .filter(|d| d * 24.0 >= culprit_core::RATE_MIN_HOURS)
+            .map(|d| counted / d);
         let mut f = finding(
             "deadlocks",
             "counter",
             Category::Queries,
             subject(SubjectKind::Database, snapshot.server.database.clone()),
         );
-        f.severity = if counted >= 100.0 { Severity::Medium } else { Severity::Low };
+        // A count says how many, not when: Medium only for a real rate over a known span (ten a day).
+        f.severity = if per_day.is_some_and(|d| d >= 10.0) { Severity::Medium } else { Severity::Low };
         f.confidence = Confidence::Medium;
         f.title = format!("PostgreSQL resolved {counted:.0} deadlock{}{since}", if counted == 1.0 { "" } else { "s" });
         f.summary = report.note.clone().unwrap_or_default();
@@ -225,6 +271,72 @@ mod tests {
                 .as_deref()
                 .is_some_and(|s| s.contains("ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON"))
         );
+    }
+
+    // C1: system_health and InnoDB's report are the server's; another database's deadlocks aren't this one's.
+    #[test]
+    fn other_databases_deadlocks_are_left_out() {
+        let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../fixtures/mssql-demo.json")).unwrap();
+        let mut elsewhere = deadlock("2026-10-11T11:00:00Z");
+        for p in &mut elsewhere.processes {
+            p.database = Some("billing".into());
+        }
+        snapshot.deadlocks = Some(DeadlockReport {
+            deadlocks: vec![elsewhere.clone(), elsewhere.clone(), elsewhere],
+            source: "system_health event files".into(),
+            since_hours: 24.0,
+            ..Default::default()
+        });
+        assert!(deadlocks(&snapshot).is_empty());
+
+        // MySQL names no database per process; the tables' schema is the database.
+        let mut mysql: Snapshot = serde_json::from_str(include_str!("../../../fixtures/mysql-demo.json")).unwrap();
+        let mut other = deadlock("2026-10-11T11:00:00Z");
+        for p in &mut other.processes {
+            p.database = None;
+        }
+        other.objects = vec!["billing.invoices".into()];
+        let mut ours = other.clone();
+        ours.objects = vec![format!("{}.orders", mysql.server.database)];
+        mysql.deadlocks = Some(DeadlockReport {
+            deadlocks: vec![other, ours],
+            source: "InnoDB status".into(),
+            since_hours: 24.0,
+            ..Default::default()
+        });
+        let found = deadlocks(&mysql);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].title.contains(".orders"), "{}", found[0].title);
+    }
+
+    // C1: InnoDB keeps its latest deadlock however old; one whose time is unknown claims no window and is Low.
+    #[test]
+    fn an_undated_deadlock_claims_no_window() {
+        let mut snapshot: Snapshot = serde_json::from_str(include_str!("../../../fixtures/mssql-demo.json")).unwrap();
+        let mut undated = deadlock("2026-10-11T11:00:00Z");
+        undated.at = None;
+        snapshot.deadlocks = Some(DeadlockReport {
+            deadlocks: vec![undated],
+            source: "InnoDB status".into(),
+            since_hours: 24.0,
+            ..Default::default()
+        });
+        let f = &deadlocks(&snapshot)[0];
+        assert!(!f.title.contains("the last day"), "{}", f.title);
+        assert!(f.title.contains("at an unknown time"), "{}", f.title);
+        assert_eq!(f.severity, Severity::Low);
+        assert!(f.caveats.iter().any(|c| c.contains("may be from long ago")));
+    }
+
+    // C14: with no statistics reset on record, PostgreSQL's counter has no window: a total, Low.
+    #[test]
+    fn a_postgres_counter_without_a_reset_has_no_window() {
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        snapshot.deadlocks = Some(DeadlockReport { counted: Some(400.0), since_hours: 24.0, ..Default::default() });
+        let f = &deadlocks(&snapshot)[0];
+        assert!(f.title.contains("since its statistics began"), "{}", f.title);
+        assert_eq!(f.severity, Severity::Low);
     }
 
     #[test]

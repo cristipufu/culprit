@@ -55,9 +55,10 @@ fn without_performance_schema_the_slow_log_is_offered_first() {
     assert_eq!(f.severity, Severity::High);
     assert!(f.summary.starts_with("Without it MariaDB keeps"), "{}", f.summary);
     let sql = f.fix.as_ref().and_then(|x| x.sql.as_deref()).unwrap_or_default();
+    // One statement per setting, worded by setting_change (a managed MariaDB gets its parameter group instead).
     assert!(
         sql.contains(
-            "SET GLOBAL userstat = ON, GLOBAL slow_query_log = ON, GLOBAL log_output = 'FILE,TABLE', GLOBAL long_query_time = 0.1;"
+            "SET GLOBAL userstat = 'ON';\nSET GLOBAL slow_query_log = 'ON';\nSET GLOBAL log_output = 'FILE,TABLE';\nSET GLOBAL long_query_time = 0.1;"
         ),
         "{sql}"
     );

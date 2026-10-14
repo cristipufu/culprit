@@ -4,11 +4,16 @@
 
 use culprit_core::{Confidence, Engine, Finding, Fix, Metric, Severity, Snapshot, Unit, format};
 
-use crate::config::{is_on, setting_finding, value};
-use crate::support::quote;
+use crate::config::{is_on, setting_finding, settings_change, value};
+use crate::support::{quote, setting_change};
 
 fn number(snapshot: &Snapshot, name: &str) -> Option<f64> {
     value(snapshot, &[name]).and_then(|v| v.trim().parse::<f64>().ok())
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// "128MB", "4GB", "8192kB" (Postgres' pretty values) to bytes.
@@ -38,7 +43,12 @@ pub(crate) fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
     let qs_on = value(snapshot, &["query_store_options.actual_state_desc"])
         .is_some_and(|v| matches!(v.to_ascii_uppercase().as_str(), "READ_WRITE" | "READ_ONLY"));
 
+    // With size-based cleanup on AUTO, Query Store trims its oldest data at 90% full (down to about 80%) and never
+    // fills: nearly full is how it runs, not a warning.
+    let cleans_itself = value(snapshot, &["query_store_options.size_based_cleanup_mode_desc"])
+        .is_some_and(|v| v.eq_ignore_ascii_case("AUTO"));
     if qs_on
+        && !cleans_itself
         && let (Some(used), Some(max)) = (
             number(snapshot, "query_store_options.current_storage_size_mb"),
             number(snapshot, "query_store_options.max_storage_size_mb"),
@@ -139,23 +149,41 @@ pub(crate) fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
 
+    // MAXDOP 0 lets a query use every processor. Up to 8 per NUMA node that is what Microsoft recommends anyway, so it
+    // matters only on a bigger server, which the scan has to know.
     let server_maxdop = number(snapshot, "max degree of parallelism");
     let db_maxdop = number(snapshot, "MAXDOP");
-    if snapshot.server.cloud.is_none() && server_maxdop == Some(0.0) && db_maxdop.is_none_or(|v| v == 0.0) {
+    let cpus = snapshot.pressure.as_ref().and_then(|p| p.cpus);
+    let nodes = snapshot.pressure.as_ref().and_then(|p| p.numa_nodes).unwrap_or(1.0).max(1.0);
+    let per_node = cpus.map(|c| (c / nodes).floor());
+    if server_maxdop == Some(0.0)
+        && db_maxdop.is_none_or(|v| v == 0.0)
+        && let Some(cpus) = cpus.filter(|c| *c > 8.0)
+    {
+        let cap = per_node.unwrap_or(8.0).clamp(1.0, 8.0);
         let mut f = setting_finding(
             "maxdop",
             Severity::Low,
-            "One query may use every CPU core (MAXDOP 0)".into(),
-            "With no limit on parallelism, a single large query can occupy all schedulers and make everything else \
-             queue behind it. Microsoft's guidance is at most 8, or the cores in one NUMA node."
-                .into(),
+            format!("One query may use all {} processors (MAXDOP 0)", format::count(cpus)),
+            format!(
+                "With no limit on parallelism, a single large query can occupy all {} schedulers and make everything \
+                 else queue behind it. Microsoft's guidance is at most 8, and no more than the processors in one NUMA \
+                 node{}.",
+                format::count(cpus),
+                if nodes > 1.0 {
+                    format!(" ({} here)", format::count(per_node.unwrap_or(cpus)))
+                } else {
+                    String::new()
+                }
+            ),
             Fix {
-                summary: "Cap it for this database (or server-wide with sp_configure).".into(),
-                sql: Some("ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 8;".into()),
+                summary: "Cap it for this database (or for the whole server).".into(),
+                sql: Some(format!("ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = {cap:.0};")),
                 cost: None,
             },
         );
         f.confidence = Confidence::Low;
+        f.metrics.push(Metric::new("Processors", cpus, Unit::Count));
         out.push(f);
     }
     out
@@ -164,6 +192,7 @@ pub(crate) fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
 pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();
     if value(snapshot, &["autovacuum"]).is_some_and(|v| !is_on(v)) {
+        let change = setting_change(&snapshot.server, "autovacuum", "on");
         let mut f = setting_finding(
             "autovacuum",
             Severity::High,
@@ -172,8 +201,8 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
              planner statistics go stale, and transaction-ID wraparound becomes a real risk."
                 .into(),
             Fix {
-                summary: "Turn it back on; tune it per table instead of disabling it.".into(),
-                sql: Some("ALTER SYSTEM SET autovacuum = on;\nSELECT pg_reload_conf();".into()),
+                summary: format!("Turn it back on; tune it per table instead of disabling it. {}", change.how),
+                sql: change.sql,
                 cost: None,
             },
         );
@@ -181,22 +210,39 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
 
-    let big: Vec<&culprit_core::TableStat> =
-        snapshot.tables.iter().filter(|t| t.rows.unwrap_or(0.0) >= 10_000_000.0).collect();
-    if !big.is_empty() && number(snapshot, "autovacuum_vacuum_scale_factor").is_some_and(|v| v >= 0.2) {
+    // Big tables that churn and still follow the server's scale factor. A table that only grows (no updates or
+    // deletes) leaves no dead rows for the factor to wait for, and one with its own factor isn't following it.
+    let factor = number(snapshot, "autovacuum_vacuum_scale_factor");
+    let big: Vec<&culprit_core::TableStat> = snapshot
+        .tables
+        .iter()
+        .filter(|t| t.rows.unwrap_or(0.0) >= 10_000_000.0)
+        .filter(|t| {
+            t.storage
+                .as_ref()
+                .is_none_or(|s| s.option("autovacuum_vacuum_scale_factor").is_none() && !s.autovacuum_off())
+        })
+        .filter(|t| {
+            let churn = t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0);
+            t.updates.is_none() && t.deletes.is_none() || churn >= t.rows.unwrap_or(0.0) * 0.01
+        })
+        .collect();
+    if let Some(factor) = factor.filter(|v| *v >= 0.2)
+        && !big.is_empty()
+    {
         let biggest =
             big.iter().max_by(|a, b| a.rows.unwrap_or(0.0).total_cmp(&b.rows.unwrap_or(0.0))).expect("non-empty");
         let mut f = setting_finding(
             "autovacuum-scale",
             Severity::Low,
-            format!("Autovacuum waits for 20% of {} to change before cleaning it", biggest.name),
+            format!("Autovacuum waits for {} of {} to change before cleaning it", format::percent(factor), biggest.name),
             format!(
-                "autovacuum_vacuum_scale_factor is {}: {} ({} rows) is only vacuumed after about {} rows change, so \
-                 dead rows pile up between runs and each run is long.",
+                "autovacuum_vacuum_scale_factor is {}: {} ({} rows, with updates and deletes) is only vacuumed after \
+                 about {} rows change, so dead rows pile up between runs and each run is long.",
                 value(snapshot, &["autovacuum_vacuum_scale_factor"]).unwrap_or("0.2"),
                 biggest.qualified(),
                 format::count(biggest.rows.unwrap_or(0.0)),
-                format::count(biggest.rows.unwrap_or(0.0) * 0.2)
+                format::count(biggest.rows.unwrap_or(0.0) * factor)
             ),
             Fix {
                 summary: "Lower it for the big tables only.".into(),
@@ -220,6 +266,7 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     }
 
     if value(snapshot, &["pg_stat_statements.track"]).is_some_and(|v| v.eq_ignore_ascii_case("none")) {
+        let change = setting_change(&snapshot.server, "pg_stat_statements.track", "top");
         out.push(setting_finding(
             "pg_stat_statements.track",
             Severity::Medium,
@@ -227,16 +274,15 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             "pg_stat_statements.track is none, so no statement statistics accumulate: Culprit can't see which queries \
              use the time."
                 .into(),
-            Fix {
-                summary: "Track top-level statements.".into(),
-                sql: Some("ALTER SYSTEM SET pg_stat_statements.track = 'top';\nSELECT pg_reload_conf();".into()),
-                cost: None,
-            },
+            Fix { summary: format!("Track top-level statements. {}", change.how), sql: change.sql, cost: None },
         ));
     }
 
     if let Some(dealloc) = number(snapshot, "pg_stat_statements.dealloc").filter(|d| *d > 0.0) {
         let max = value(snapshot, &["pg_stat_statements.max"]).unwrap_or("5000").to_string();
+        // More room than it has now: 20,000, or twice the current size when that's already more.
+        let room = max.trim().parse::<f64>().map_or(20_000.0, |m| (m * 2.0).max(20_000.0));
+        let change = setting_change(&snapshot.server, "pg_stat_statements.max", &format!("{room:.0}"));
         let mut f = setting_finding(
             "pg_stat_statements.max",
             if dealloc >= 1000.0 { Severity::Medium } else { Severity::Low },
@@ -248,8 +294,11 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
                 format::count(dealloc)
             ),
             Fix {
-                summary: "Keep more entries (needs a restart), and fix the statement families that create them.".into(),
-                sql: Some("ALTER SYSTEM SET pg_stat_statements.max = 20000; -- takes effect after a restart".into()),
+                summary: format!(
+                    "Keep more entries, and fix the statement families that create them. {} It takes effect after a restart.",
+                    change.how
+                ),
+                sql: change.sql,
                 cost: Some("About 2 KB of shared memory per entry.".into()),
             },
         );
@@ -290,26 +339,44 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     out
 }
 
-/// `SET GLOBAL …` that has the server log slow statements to the table Culprit reads (and, on MariaDB, count index
-/// reads), without a restart. `None` when it already does.
-fn slow_log_statement(snapshot: &Snapshot) -> Option<String> {
-    let mut parts = Vec::new();
+/// The settings that have the server log slow statements to the table Culprit reads (and, on MariaDB, count index
+/// reads), without a restart, worded where they are set ([`settings_change`]). `None` when it already does.
+fn slow_log_change(snapshot: &Snapshot) -> Option<crate::support::SettingChange> {
+    let mut changes: Vec<(&str, String)> = Vec::new();
     if value(snapshot, &["userstat"]).is_some_and(|v| !is_on(v)) {
-        parts.push("GLOBAL userstat = ON".to_string());
+        changes.push(("userstat", "ON".into()));
     }
     if value(snapshot, &["slow_query_log"]).is_some_and(|v| !is_on(v)) {
-        parts.push("GLOBAL slow_query_log = ON".to_string());
+        changes.push(("slow_query_log", "ON".into()));
     }
     let output = value(snapshot, &["log_output"]).unwrap_or("FILE").trim().to_ascii_uppercase();
     if !output.split(',').any(|o| o.trim() == "TABLE") {
         let output =
             if output.is_empty() || output == "NONE" { "TABLE".to_string() } else { format!("{output},TABLE") };
-        parts.push(format!("GLOBAL log_output = '{output}'"));
+        changes.push(("log_output", output));
     }
     if number(snapshot, "long_query_time").is_none_or(|t| t > 1.0) {
-        parts.push("GLOBAL long_query_time = 0.1".to_string());
+        changes.push(("long_query_time", "0.1".into()));
     }
-    (!parts.is_empty()).then(|| format!("SET {};", parts.join(", ")))
+    let changes: Vec<(&str, &str)> = changes.iter().map(|(n, v)| (*n, v.as_str())).collect();
+    (!changes.is_empty()).then(|| settings_change(&snapshot.server, &changes))
+}
+
+/// Settings read only at startup: the server configuration (my.cnf) and a restart on a server you manage; the
+/// platform's control and a reboot on a managed one.
+fn restart_change(snapshot: &Snapshot, changes: &[(&str, &str)]) -> crate::support::SettingChange {
+    let managed = settings_change(&snapshot.server, changes);
+    if managed.sql.is_none() {
+        return crate::support::SettingChange {
+            how: format!("{} It takes effect after a reboot.", managed.how),
+            sql: None,
+        };
+    }
+    let lines: Vec<String> = changes.iter().map(|(n, v)| format!("{n} = {v}")).collect();
+    crate::support::SettingChange {
+        how: "Set it in the server configuration (my.cnf) and restart.".into(),
+        sql: Some(format!("-- In the server configuration (my.cnf), then restart:\n[mysqld]\n{}", lines.join("\n"))),
+    }
 }
 
 pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
@@ -334,15 +401,23 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
                 ),
             )
         };
-        let restart = "-- In the server configuration (my.cnf), then restart:\n[mysqld]\nperformance_schema = ON";
-        let (fix_summary, sql) = match slow_log_statement(snapshot).filter(|_| !logged) {
+        let restart = restart_change(snapshot, &[("performance_schema", "ON")]);
+        let (fix_summary, sql) = match slow_log_change(snapshot).filter(|_| !logged) {
             Some(now) => (
-                "Start with the slow query log, which needs no restart: Culprit reads it from the mysql.slow_log table. \
-                 Turn performance_schema on at the next restart for statistics on every statement."
-                    .to_string(),
-                format!("-- Now, no restart (connections opened earlier keep the old threshold):\n{now}\n\n{restart}"),
+                format!(
+                    "Start with the slow query log, which needs no restart: Culprit reads it from the mysql.slow_log table. {} \
+                     Turn performance_schema on at the next restart for statistics on every statement: {}",
+                    now.how,
+                    lowercase_first(&restart.how)
+                ),
+                match (now.sql, restart.sql) {
+                    (Some(now), Some(restart)) => Some(format!(
+                        "-- Now, no restart (connections opened earlier keep the old threshold):\n{now}\n\n{restart}"
+                    )),
+                    (now, restart) => now.or(restart),
+                },
             ),
-            None => ("Turn it on in the server configuration (it can't be changed at runtime).".to_string(), restart.to_string()),
+            None => (format!("Turn it on (it can't be changed at runtime). {}", restart.how), restart.sql),
         };
         let mut f = setting_finding(
             "performance_schema",
@@ -351,7 +426,7 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             summary,
             Fix {
                 summary: fix_summary,
-                sql: Some(sql),
+                sql,
                 cost: Some("A few hundred MB of memory and a small CPU overhead.".into()),
             },
         );
@@ -382,6 +457,10 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
         let size = value(snapshot, &["performance_schema_digests_size"]).unwrap_or("10000").to_string();
         let untracked_share =
             if total_ms + untracked_ms > 0.0 { untracked_ms / (total_ms + untracked_ms) } else { 0.0 };
+        // More room than it has now (-1 is "sized automatically"): 50,000, or twice what it holds.
+        let room = size.trim().parse::<f64>().ok().filter(|s| *s > 0.0).map_or(50_000.0, |s| (s * 2.0).max(50_000.0));
+        let room = format!("{room:.0}");
+        let change = restart_change(snapshot, &[("performance_schema_digests_size", room.as_str())]);
         let mut f = setting_finding(
             "performance_schema_digests_size",
             if untracked_share >= 0.2 { Severity::Medium } else { Severity::Low },
@@ -398,8 +477,16 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
                 }
             ),
             Fix {
-                summary: "Raise the table size (needs a restart) and truncate the summary to start fresh.".into(),
-                sql: Some("-- my.cnf, then restart:\n[mysqld]\nperformance_schema_digests_size = 50000\n-- or start over now:\nTRUNCATE TABLE performance_schema.events_statements_summary_by_digest;".into()),
+                summary: format!("Raise the table size and truncate the summary to start fresh. {}", change.how),
+                sql: Some(match change.sql {
+                    Some(restart) => format!(
+                        "{restart}\n-- or start over now:\nTRUNCATE TABLE performance_schema.events_statements_summary_by_digest;"
+                    ),
+                    None => {
+                        "-- Start over now:\nTRUNCATE TABLE performance_schema.events_statements_summary_by_digest;"
+                            .into()
+                    }
+                }),
                 cost: None,
             },
         );
@@ -412,6 +499,14 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
     }
     let truncated = snapshot.queries().iter().filter(|q| q.text.trim_end().ends_with("...")).count();
     if truncated >= 3 && number(snapshot, "max_digest_length").is_some_and(|v| v <= 1024.0) {
+        let change = restart_change(
+            snapshot,
+            &[
+                ("max_digest_length", "4096"),
+                ("performance_schema_max_digest_length", "4096"),
+                ("performance_schema_max_sql_text_length", "4096"),
+            ],
+        );
         let mut f = setting_finding(
             "max_digest_length",
             Severity::Low,
@@ -420,8 +515,8 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
              merged into one digest, and Culprit can't explain them."
                 .into(),
             Fix {
-                summary: "Keep longer text (needs a restart).".into(),
-                sql: Some("-- my.cnf, then restart:\n[mysqld]\nmax_digest_length = 4096\nperformance_schema_max_digest_length = 4096\nperformance_schema_max_sql_text_length = 4096".into()),
+                summary: format!("Keep longer text. {}", change.how),
+                sql: change.sql,
                 cost: Some("A little more memory per digest.".into()),
             },
         );
@@ -429,4 +524,117 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::waits::snapshot_with;
+    use culprit_core::{Pressure, Setting, TableStorage};
+
+    fn set(s: &mut Snapshot, name: &str, value: &str) {
+        s.settings.retain(|x| !x.name.eq_ignore_ascii_case(name));
+        s.settings.push(Setting {
+            name: name.into(),
+            value: value.into(),
+            default_value: None,
+            scope: "server".into(),
+        });
+    }
+
+    fn found<'a>(findings: &'a [Finding], id: &str) -> Option<&'a Finding> {
+        findings.iter().find(|f| f.id == id)
+    }
+
+    // C9: with size-based cleanup on AUTO, Query Store trims itself at 90% and never fills.
+    #[test]
+    fn a_query_store_that_cleans_itself_is_never_too_full() {
+        let mut s = snapshot_with(Engine::Mssql);
+        set(&mut s, "query_store_options.current_storage_size_mb", "950");
+        set(&mut s, "query_store_options.max_storage_size_mb", "1000");
+        set(&mut s, "query_store_options.size_based_cleanup_mode_desc", "AUTO");
+        assert!(found(&mssql(&s), "config:query-store-size").is_none());
+        set(&mut s, "query_store_options.size_based_cleanup_mode_desc", "OFF");
+        assert!(found(&mssql(&s), "config:query-store-size").is_some());
+    }
+
+    // C6: MAXDOP 0 is Microsoft's own advice up to 8 processors; above that the cap fits one NUMA node.
+    #[test]
+    fn maxdop_zero_matters_only_on_a_bigger_server() {
+        let mut s = snapshot_with(Engine::Mssql);
+        set(&mut s, "max degree of parallelism", "0");
+        set(&mut s, "MAXDOP", "0");
+        s.pressure = None;
+        assert!(found(&mssql(&s), "config:maxdop").is_none(), "unknown processor count: nothing to judge");
+        s.pressure = Some(Pressure { cpus: Some(4.0), numa_nodes: Some(1.0), ..Pressure::default() });
+        assert!(found(&mssql(&s), "config:maxdop").is_none(), "4 processors: MAXDOP 0 is fine");
+        s.pressure = Some(Pressure { cpus: Some(24.0), numa_nodes: Some(2.0), ..Pressure::default() });
+        let f = found(&mssql(&s), "config:maxdop").cloned().unwrap();
+        assert!(f.title.contains("all 24 processors"), "{}", f.title);
+        assert!(f.fix.unwrap().sql.unwrap().contains("MAXDOP = 8"));
+        s.pressure = Some(Pressure { cpus: Some(12.0), numa_nodes: Some(2.0), ..Pressure::default() });
+        assert!(found(&mssql(&s), "config:maxdop").cloned().unwrap().fix.unwrap().sql.unwrap().contains("MAXDOP = 6"));
+    }
+
+    // C16: only big tables that churn and follow the server's factor; the title says the factor in use.
+    #[test]
+    fn autovacuum_scale_skips_append_only_tables_and_their_own_settings() {
+        let mut s = snapshot_with(Engine::Postgres);
+        set(&mut s, "autovacuum_vacuum_scale_factor", "0.3");
+        for t in &mut s.tables {
+            t.rows = Some(1_000.0);
+        }
+        let t = &mut s.tables[0];
+        t.rows = Some(20_000_000.0);
+        t.updates = Some(0.0);
+        t.deletes = Some(0.0);
+        assert!(found(&postgres(&s), "config:autovacuum-scale").is_none(), "append-only: no dead rows to wait for");
+        s.tables[0].updates = Some(2_000_000.0);
+        let f = found(&postgres(&s), "config:autovacuum-scale").cloned().unwrap();
+        assert!(f.title.starts_with("Autovacuum waits for 30% of"), "{}", f.title);
+        s.tables[0].storage =
+            Some(TableStorage { options: vec!["autovacuum_vacuum_scale_factor=0.01".into()], ..Default::default() });
+        assert!(found(&postgres(&s), "config:autovacuum-scale").is_none(), "it has its own factor");
+    }
+
+    // C7: ALTER SYSTEM is refused on managed PostgreSQL; never propose a smaller pg_stat_statements.max.
+    #[test]
+    fn postgres_settings_are_worded_where_they_run() {
+        let mut s = snapshot_with(Engine::Postgres);
+        set(&mut s, "autovacuum", "off");
+        set(&mut s, "pg_stat_statements.dealloc", "40");
+        set(&mut s, "pg_stat_statements.max", "50000");
+        let out = postgres(&s);
+        assert!(
+            found(&out, "config:autovacuum")
+                .unwrap()
+                .fix
+                .as_ref()
+                .unwrap()
+                .sql
+                .as_deref()
+                .unwrap()
+                .starts_with("ALTER SYSTEM SET autovacuum")
+        );
+        let max = found(&out, "config:pg_stat_statements.max").unwrap().fix.clone().unwrap();
+        assert!(max.sql.unwrap().contains("pg_stat_statements.max = 100000"));
+        s.server.cloud = Some("Azure Database for PostgreSQL".into());
+        let fix = found(&postgres(&s), "config:autovacuum").unwrap().fix.clone().unwrap();
+        assert!(fix.sql.is_none() && fix.summary.contains("server parameters"), "{}", fix.summary);
+    }
+
+    // C7: with performance_schema off on RDS, the fix is the parameter group, not SET GLOBAL and my.cnf.
+    #[test]
+    fn mysql_restart_settings_on_a_managed_server() {
+        let mut s = snapshot_with(Engine::Mysql);
+        set(&mut s, "performance_schema", "OFF");
+        set(&mut s, "slow_query_log", "OFF");
+        let fix = found(&mysql(&s), "config:performance_schema").unwrap().fix.clone().unwrap();
+        assert!(fix.sql.as_deref().unwrap().contains("[mysqld]\nperformance_schema = ON"));
+        s.server.cloud = Some("Amazon RDS".into());
+        let fix = found(&mysql(&s), "config:performance_schema").unwrap().fix.clone().unwrap();
+        assert!(fix.sql.is_none(), "{:?}", fix.sql);
+        assert!(fix.summary.contains("in the instance's DB parameter group"), "{}", fix.summary);
+        assert!(fix.summary.contains("after a reboot"));
+    }
 }

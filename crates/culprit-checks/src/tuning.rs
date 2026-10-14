@@ -985,7 +985,7 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
                 cost: None,
             });
             f.verify = vec!["Re-scan after a day: single-use plans take a much smaller share of the cache.".into()];
-            if snapshot.server.cloud.is_some() {
+            if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
                 f.caveats.push("On Azure SQL Database the setting is managed per database with ALTER DATABASE SCOPED CONFIGURATION SET OPTIMIZE_FOR_AD_HOC_WORKLOADS = ON.".into());
             }
             out.push(f);

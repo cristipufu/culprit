@@ -265,7 +265,8 @@ fn one_request_seen_waiting_for_a_worker_is_worth_watching_not_high() {
     let f = finding(&report.findings, "worker-pressure:server")
         .or_else(|| report.findings.iter().find(|f| f.check == "worker-pressure"));
     let f = f.expect("worker pressure");
-    assert_eq!(f.severity, Severity::Medium);
+    // Seen once with nothing on record: Low, the same single-sighting rule as a pending memory grant.
+    assert_eq!(f.severity, Severity::Low);
     s.pressure.as_mut().unwrap().signals = vec![signal(6.0)];
     let report = analyze(s);
     assert_eq!(report.findings.iter().find(|f| f.check == "worker-pressure").unwrap().severity, Severity::High);

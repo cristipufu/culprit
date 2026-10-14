@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use culprit_core::{
-    Engine, GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
+    CleanupHolder, Engine, GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
 };
 
 use crate::conn::{MsClient, query};
@@ -26,7 +26,19 @@ WHERE (object_name LIKE N'%SQL Statistics%'
 const RESOURCE_STATS_SQL: &str = "SELECT COUNT(*) AS samples, AVG(avg_data_io_percent) AS data_io,
   MAX(avg_data_io_percent) AS data_io_peak, AVG(avg_memory_usage_percent) AS memory FROM sys.dm_db_resource_stats";
 
-const PENDING_GRANTS_SQL: &str = "SELECT COUNT(*) AS pending, MAX(wait_time_ms) AS longest_ms FROM sys.dm_exec_query_memory_grants WHERE grant_time IS NULL";
+/// Requests in this database waiting for a memory grant right now. The view lists the whole instance's grants; other
+/// databases' requests, and Culprit's own sessions, aren't this database's queue.
+const PENDING_GRANTS_SQL: &str = "SELECT COUNT(*) AS pending, MAX(g.wait_time_ms) AS longest_ms
+FROM sys.dm_exec_query_memory_grants g
+JOIN sys.dm_exec_sessions s ON s.session_id = g.session_id
+LEFT JOIN sys.dm_exec_requests r ON r.session_id = g.session_id AND r.request_id = g.request_id
+WHERE g.grant_time IS NULL AND g.session_id <> @@SPID AND ISNULL(s.program_name, N'') <> N'culprit'
+  AND COALESCE(r.database_id, s.database_id) = DB_ID()";
+
+/// The processors SQL Server schedules on, and how many NUMA nodes they are split into: what MAXDOP is sized against.
+const CPUS_SQL: &str = "SELECT i.cpu_count,
+  (SELECT COUNT(DISTINCT parent_node_id) FROM sys.dm_os_schedulers WHERE status = N'VISIBLE ONLINE') AS numa_nodes
+FROM sys.dm_os_sys_info i";
 
 /// Requests queued for a worker right now. System tasks (no session) wait on THREADPOOL briefly all the time, and in
 /// Azure SQL Database the view shows the whole instance, so only sessions' requests waiting a measurable time count.
@@ -49,16 +61,24 @@ ORDER BY SUM(qs.total_grant_kb) - SUM(qs.total_used_grant_kb) DESC
 const VERSION_STORE_SQL: &str =
     "SELECT SUM(reserved_space_kb) AS kb FROM sys.dm_tran_version_store_space_usage WHERE database_id = DB_ID()";
 
+/// The oldest transaction that holds this database's cleanup: one that changed data here (it has a first log record,
+/// so the log can't be reused past it and its locks stay held) or one that reads or makes row versions (the version
+/// store keeps every version since it started). A read-only transaction without versions, or one in another database,
+/// holds nothing here.
 const OLDEST_TRANSACTION_SQL: &str = r#"
 SELECT TOP (1) CAST(s.session_id AS varchar(10)) AS session_id,
   DATEDIFF(second, at.transaction_begin_time, GETDATE()) AS seconds,
   s.program_name, s.status,
-  CASE WHEN snap.transaction_id IS NULL THEN 0 ELSE 1 END AS is_snapshot
-FROM sys.dm_tran_session_transactions st
-JOIN sys.dm_tran_active_transactions at ON at.transaction_id = st.transaction_id
+  CASE WHEN snap.transaction_id IS NULL THEN 0 ELSE 1 END AS is_snapshot,
+  CASE WHEN dt.database_transaction_begin_lsn IS NULL THEN 0 ELSE 1 END AS wrote
+FROM sys.dm_tran_database_transactions dt
+JOIN sys.dm_tran_session_transactions st ON st.transaction_id = dt.transaction_id
+JOIN sys.dm_tran_active_transactions at ON at.transaction_id = dt.transaction_id
 JOIN sys.dm_exec_sessions s ON s.session_id = st.session_id
-LEFT JOIN sys.dm_tran_active_snapshot_database_transactions snap ON snap.transaction_id = st.transaction_id
-WHERE s.is_user_process = 1 AND s.session_id <> @@SPID AND st.is_user_transaction = 1
+LEFT JOIN sys.dm_tran_active_snapshot_database_transactions snap ON snap.transaction_id = dt.transaction_id
+WHERE dt.database_id = DB_ID() AND s.is_user_process = 1 AND s.session_id <> @@SPID
+  AND ISNULL(s.program_name, N'') <> N'culprit'
+  AND (dt.database_transaction_begin_lsn IS NOT NULL OR snap.transaction_id IS NOT NULL)
 ORDER BY at.transaction_begin_time
 "#;
 
@@ -118,7 +138,11 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
     let label = |name: &str| if azure { format!("{name} (whole server)") } else { name.to_string() };
     let mut signals = Vec::new();
     let batches = c.get("Batch Requests/sec").copied().unwrap_or(0.0);
-    let compiles = c.get("SQL Compilations/sec").copied().unwrap_or(0.0);
+    let compilations = c.get("SQL Compilations/sec").copied().unwrap_or(0.0);
+    // SQL Compilations/sec counts recompiles too; they have other causes (changed statistics or schema, temporary
+    // tables, OPTION (RECOMPILE)) and parameters don't remove them.
+    let recompiles = c.get("SQL Re-Compilations/sec").copied().unwrap_or(0.0).min(compilations);
+    let compiles = compilations - recompiles;
     if let Some(hours) = uptime.filter(|_| batches > 0.0) {
         let rate = Signal::new(
             "batch-requests",
@@ -146,6 +170,14 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
         } else {
             Signal { healthy: Some("too few batches to judge; under 10% is healthy under load".into()), ..ratio }
         });
+        let recompiled = Signal::new(
+            "recompiles-per-batch",
+            &label("Plans recompiled"),
+            recompiles / batches * 100.0,
+            SignalUnit::Percent,
+            SignalScope::SinceStartup,
+        );
+        signals.push(if azure { Signal { healthy: Some(SHARED.into()), ..recompiled } } else { recompiled });
     }
     if let Some(ple) = c.get("Page life expectancy") {
         let life =
@@ -246,6 +278,32 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
                 );
             }
             let threadpool = totals.get("THREADPOOL").map(|t| t.0).unwrap_or(0.0);
+            // Totals since the start: one bad hour days ago and a steady trickle average to the same rate, so checks
+            // say how much and since when instead of an hourly rate.
+            p.signals.push(Signal::new(
+                "threadpool-wait-ms",
+                if azure {
+                    "Waiting for workers since start"
+                } else {
+                    "Waiting for workers since start (whole instance)"
+                },
+                threadpool,
+                SignalUnit::Milliseconds,
+                SignalScope::SinceStartup,
+            ));
+            // Memory grants alone; the Memory category also holds allocation waits (CMEMTHREAD) and compile memory.
+            let grants = totals.get("RESOURCE_SEMAPHORE").map(|t| t.0).unwrap_or(0.0);
+            p.signals.push(Signal::new(
+                "grant-wait-ms",
+                if azure {
+                    "Waiting for memory grants since start"
+                } else {
+                    "Waiting for memory grants since start (whole instance)"
+                },
+                grants,
+                SignalUnit::Milliseconds,
+                SignalScope::SinceStartup,
+            ));
             if let Some(hours) = uptime {
                 p.signals.push(
                     Signal::new(
@@ -268,6 +326,12 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
             Signal::new("threadpool-waiting", "Tasks without a worker", waiting, SignalUnit::Count, SignalScope::Now)
                 .graded("0 is healthy", 1.0, 1.0, true),
         );
+    }
+    if let Ok(rows) = query(client, CPUS_SQL).await
+        && let Some(r) = rows.first()
+    {
+        p.cpus = r.f64("cpu_count").filter(|n| *n > 0.0);
+        p.numa_nodes = r.f64("numa_nodes").filter(|n| *n > 0.0);
     }
     match query(client, GRANTS_SQL).await {
         Ok(rows) => {
@@ -311,6 +375,10 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
                 }),
                 held_bytes: version_store.filter(|_| r.f64_or_zero("is_snapshot") > 0.0),
                 held_versions: None,
+                holder: Some(CleanupHolder::Session),
+                xid_age: None,
+                wrote: Some(r.f64_or_zero("wrote") > 0.0),
+                database: None,
             });
             if let Some(t) = &p.oldest_transaction {
                 p.signals.push(
@@ -383,7 +451,11 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
             SignalUnit::PerSecond,
             SignalScope::Sampled,
         ));
-        if let Some(compiles) = rate("SQL Compilations/sec").filter(|_| batches > 0.0) {
+        // Recompiles are counted in compilations too; plan reuse is about the first compile.
+        let recompiles = rate("SQL Re-Compilations/sec").unwrap_or(0.0);
+        if let Some(compiles) =
+            rate("SQL Compilations/sec").map(|c| (c - recompiles).max(0.0)).filter(|_| batches > 0.0)
+        {
             signals.push(
                 Signal::new(
                     "compiles-per-batch",
@@ -468,6 +540,16 @@ mod tests {
             assert!(s.label.ends_with("(whole server)"), "{}", s.label);
             assert!(s.healthy.as_deref().unwrap().contains("every database on the server"), "{key}");
         }
+    }
+
+    // SQL Compilations/sec counts recompiles too: plan reuse is judged on first compiles only.
+    #[test]
+    fn recompiles_are_not_counted_as_new_plans() {
+        let mut c = counters(400.0);
+        c.insert("SQL Re-Compilations/sec".into(), 1_800_000.0);
+        let signals = counter_signals(&c, Some(100.0), false);
+        assert_eq!(signal(&signals, "compiles-per-batch").value, 25.0);
+        assert_eq!(signal(&signals, "recompiles-per-batch").value, 25.0);
     }
 
     #[test]

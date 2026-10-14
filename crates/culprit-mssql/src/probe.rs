@@ -24,7 +24,8 @@ SELECT
   HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE') AS can_view_server_state,
   HAS_PERMS_BY_NAME(NULL, 'DATABASE', 'SHOWPLAN') AS can_showplan,
   SUSER_SNAME() AS login_name,
-  USER_NAME() AS user_name
+  USER_NAME() AS user_name,
+  CASE WHEN DB_ID(N'rdsadmin') IS NOT NULL THEN 1 ELSE 0 END AS rds
 "#;
 
 const START_TIME_SQL: &str = "SELECT CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), sqlserver_start_time), 126) + 'Z' AS started_at FROM sys.dm_os_sys_info";
@@ -62,6 +63,9 @@ pub(crate) struct Probe {
     pub(crate) user: String,
     pub(crate) started_at: Option<String>,
     pub(crate) query_store: Option<QueryStoreState>,
+    /// Amazon RDS for SQL Server, which keeps its own `rdsadmin` database. Its server settings are a DB parameter
+    /// group's, and sp_configure is refused.
+    pub(crate) rds: bool,
 }
 
 impl Probe {
@@ -73,6 +77,7 @@ impl Probe {
         match self.engine_edition {
             ENGINE_EDITION_AZURE_SQL_DATABASE => Some("Azure SQL Database".into()),
             ENGINE_EDITION_MANAGED_INSTANCE => Some("Azure SQL Managed Instance".into()),
+            _ if self.rds => Some("Amazon RDS".into()),
             _ => None,
         }
     }
@@ -143,6 +148,7 @@ pub(crate) async fn run(client: &mut MsClient) -> tiberius::Result<Probe> {
         user: r.string("user_name"),
         started_at,
         query_store,
+        rds: r.bool("rds"),
     })
 }
 
@@ -231,6 +237,34 @@ pub(crate) fn server_info(p: &Probe, capabilities: Vec<Capability>, missing: Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe(engine_edition: i64, rds: bool) -> Probe {
+        Probe {
+            version: "16.0.4135.4".into(),
+            major: 16,
+            edition: "Standard Edition (64-bit)".into(),
+            engine_edition,
+            database: "shop".into(),
+            data_bytes: None,
+            can_view_database_state: true,
+            can_view_server_state: false,
+            can_showplan: true,
+            login: "admin".into(),
+            user: "dbo".into(),
+            started_at: None,
+            query_store: None,
+            rds,
+        }
+    }
+
+    // RDS keeps its rdsadmin database; its settings live in a DB parameter group, so the cloud has to be known.
+    #[test]
+    fn rds_is_told_apart_from_a_server_you_manage() {
+        assert_eq!(probe(2, true).cloud().as_deref(), Some("Amazon RDS"));
+        assert_eq!(probe(3, false).cloud(), None);
+        assert_eq!(probe(ENGINE_EDITION_AZURE_SQL_DATABASE, false).cloud().as_deref(), Some("Azure SQL Database"));
+        assert_eq!(probe(2, true).product(), "SQL Server 2022");
+    }
 
     #[test]
     fn principal_names_cannot_break_out_of_the_grant() {

@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
-use culprit_core::{Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample, WaitStat};
+use culprit_core::{
+    CleanupHolder, Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
+};
 use mysql_async::{Conn, Value};
 
 use crate::connect::TAG;
@@ -98,13 +100,28 @@ async fn status(conn: &mut Conn) -> Result<HashMap<String, f64>> {
             "Threads_connected",
             "Max_used_connections",
             "Innodb_row_lock_waits",
+            "Innodb_row_lock_time",
             "Innodb_row_lock_time_avg",
         ],
     )
     .await
 }
 
-/// The oldest open transaction, with the connecting program's name when performance_schema has it.
+/// Seconds since connections peaked at Max_used_connections (MySQL 5.7.5+; MariaDB doesn't keep the time). The status
+/// value is written in the session's time zone, which Culprit sets to UTC.
+async fn peak_connections_ago(conn: &mut Conn) -> Option<f64> {
+    let rows = query(conn, "SHOW GLOBAL STATUS LIKE 'Max_used_connections_time'").await.ok()?;
+    let at = rows.first().and_then(|r| r.text("Value").or_else(|| r.text("value")))?;
+    let rows = query_with(conn, "SELECT TIMESTAMPDIFF(SECOND, ?, UTC_TIMESTAMP()) AS ago", vec![Value::from(at)])
+        .await
+        .ok()?;
+    rows.first().and_then(|r| r.number("ago")).filter(|s| *s >= 0.0)
+}
+
+/// The oldest transaction that holds InnoDB's purge back, with the connecting program's name when performance_schema
+/// has it. Purge is the whole server's, so a transaction in any database counts; what holds it is a read view, which a
+/// REPEATABLE READ or SERIALIZABLE transaction keeps until it ends and a READ COMMITTED one only while a statement
+/// runs. A READ COMMITTED transaction sitting idle holds no read view, so it isn't the one.
 fn oldest_sql(with_program: bool) -> String {
     let (column, join) = match with_program {
         true => (
@@ -116,11 +133,12 @@ fn oldest_sql(with_program: bool) -> String {
     };
     format!(
         "SELECT CAST(t.trx_mysql_thread_id AS CHAR) AS session, TIMESTAMPDIFF(SECOND, t.trx_started, NOW()) AS seconds,
-                p.COMMAND AS command, {column}
+                p.COMMAND AS command, p.DB AS db, t.trx_rows_modified AS modified, {column}
            FROM information_schema.INNODB_TRX t
            LEFT JOIN information_schema.PROCESSLIST p ON p.ID = t.trx_mysql_thread_id
            {join}
           WHERE t.trx_mysql_thread_id <> CONNECTION_ID()
+            AND (t.trx_isolation_level IN ('REPEATABLE READ', 'SERIALIZABLE') OR p.COMMAND <> 'Sleep')
           ORDER BY t.trx_started LIMIT 1"
     )
 }
@@ -175,6 +193,16 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
                     )
                     .graded("above 99% is healthy for most workloads", 99.0, 95.0, false),
                 );
+                // How much reading from disk that miss rate is: a 98% hit rate can be 1 read a second or 10,000.
+                if let Some(u) = uptime_s {
+                    p.signals.push(Signal::new(
+                        "buffer-pool-reads",
+                        "Pages read from disk",
+                        reads / u,
+                        SignalUnit::PerSecond,
+                        SignalScope::SinceStartup,
+                    ));
+                }
             }
             if let (Some(disk), Some(all)) =
                 (get("Created_tmp_disk_tables"), get("Created_tmp_tables").filter(|t| *t > 0.0))
@@ -219,6 +247,16 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
                 };
                 p.signals.push(Signal::new("row-lock-waits", label, value, unit, SignalScope::SinceStartup));
             }
+            // The whole server's time waiting for row locks since it started (every database's).
+            if let Some(total) = get("Innodb_row_lock_time") {
+                p.signals.push(Signal::new(
+                    "row-lock-time",
+                    "Time waiting for row locks since start (whole server)",
+                    total,
+                    SignalUnit::Milliseconds,
+                    SignalScope::SinceStartup,
+                ));
+            }
             if let Some(avg) = get("Innodb_row_lock_time_avg") {
                 p.signals.push(
                     Signal::new(
@@ -259,6 +297,15 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
                         )
                         .graded("under 90% of max_connections is healthy", 90.0, 100.0, true),
                     );
+                    if let Some(ago) = peak_connections_ago(conn).await {
+                        p.signals.push(Signal::new(
+                            "max-used-connections-ago",
+                            "Since the busiest moment",
+                            ago,
+                            SignalUnit::Seconds,
+                            SignalScope::Now,
+                        ));
+                    }
                 }
             }
         }
@@ -272,13 +319,24 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
     .ok()
     .flatten()
     .and_then(|r| r.number("n"));
+    // Its own signal, not the oldest transaction's: the history list is the whole server's, and it counts the undo
+    // logs of committed transactions purge hasn't removed yet (each one any number of rows), not row versions.
     if let Some(h) = history {
-        p.signals.push(Signal::new("history-length", "Undo history", h, SignalUnit::Count, SignalScope::Now).graded(
-            "under 100K old row versions is healthy",
-            100_000.0,
-            1_000_000.0,
-            true,
-        ));
+        p.signals.push(
+            Signal::new(
+                "history-length",
+                "Undo logs not yet purged (whole server)",
+                h,
+                SignalUnit::Count,
+                SignalScope::Now,
+            )
+            .graded(
+                "under 100K is healthy; a long history means purge is behind or a long transaction holds it",
+                100_000.0,
+                1_000_000.0,
+                true,
+            ),
+        );
     }
     // The program name comes from performance_schema's connection attributes, which a server without it lacks.
     let oldest = match query_one(conn, &oldest_sql(true)).await {
@@ -297,13 +355,15 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
                 } else {
                     "running".into()
                 }),
-                held_bytes: None,
-                held_versions: history,
+                holder: Some(CleanupHolder::Session),
+                wrote: r.number("modified").map(|m| m > 0.0),
+                database: r.text("db").filter(|d| !d.is_empty()),
+                ..OpenTransaction::default()
             });
             p.signals.push(
                 Signal::new(
                     "oldest-transaction",
-                    "Oldest open transaction",
+                    "Oldest transaction holding purge",
                     seconds,
                     SignalUnit::Seconds,
                     SignalScope::Now,

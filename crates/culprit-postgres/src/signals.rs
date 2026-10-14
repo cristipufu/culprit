@@ -169,7 +169,8 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                   WHERE o LIKE 'fillfactor=%') AS fillfactor,
                 CASE WHEN c.reltuples >= 0 THEN c.reltuples::float8 END AS planner_rows,
                 (SELECT extract(epoch FROM now() - d.stats_reset) / 3600 FROM pg_stat_database d
-                  WHERE d.datname = current_database()) AS counter_hours
+                  WHERE d.datname = current_database()) AS counter_hours,
+                array_to_string(c.reloptions, ',') AS options
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
@@ -185,6 +186,11 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                     bloat_bytes: None,
                     counter_hours: r.number("counter_hours").filter(|h| *h > 0.0),
                     planner_rows: r.number("planner_rows"),
+                    // Storage parameters hold no commas; their values are numbers and booleans.
+                    options: r
+                        .text("options")
+                        .map(|o| o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                        .unwrap_or_default(),
                 },
             )
         })
