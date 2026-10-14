@@ -16,7 +16,13 @@ state: string | null,
 /**
  * Synchronous or asynchronous, when known.
  */
-sync: string | null, lag_seconds: number | null, 
+sync: string | null, 
+/**
+ * How far behind it is beyond any apply delay it is configured with (`delay_seconds`). On a PostgreSQL standby,
+ * counted only while it has received changes it hasn't replayed: with nothing to replay, the time since the last
+ * replayed commit is how long the primary has been quiet, not lag.
+ */
+lag_seconds: number | null, 
 /**
  * Bytes not yet applied (PostgreSQL replay lag, SQL Server redo queue) or kept for a slot.
  */
@@ -28,4 +34,27 @@ unsent_bytes: number | null,
 /**
  * The last replication error, as the engine reports it (database text).
  */
-error: string | null, };
+error: string | null, 
+/**
+ * A delay it is configured to apply changes with, on purpose (MySQL SQL_Delay, PostgreSQL
+ * recovery_min_apply_delay); already taken out of `lag_seconds`.
+ */
+delay_seconds: number | null, 
+/**
+ * A logical consumer (a subscription, a CDC tool such as Debezium or Fivetran) rather than a copy of the server.
+ */
+logical: boolean | null, 
+/**
+ * How long a replication slot has been without a consumer (PostgreSQL 17+ `inactive_since`).
+ */
+inactive_seconds: number | null, 
+/**
+ * Whether a slot's WAL is still kept for it: reserved, extended, unreserved (about to be given up) or lost
+ * (PostgreSQL 13+).
+ */
+wal_status: string | null, 
+/**
+ * WAL that can still be written before the slot is given up under max_slot_wal_keep_size; `None` when nothing
+ * caps what slots keep (PostgreSQL 13+ `safe_wal_size`).
+ */
+safe_wal_bytes: number | null, };

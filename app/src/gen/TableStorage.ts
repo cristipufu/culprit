@@ -19,4 +19,15 @@ fillfactor: number | null,
 /**
  * Bytes beyond what the live rows need, estimated from column statistics (no pgstattuple needed).
  */
-bloat_bytes: number | null, };
+bloat_bytes: number | null, 
+/**
+ * Hours the update counters have been counting: since the database's statistics were last reset. `None` when
+ * that is unknown: PostgreSQL 15+ leaves `stats_reset` empty until the first reset, and the counters outlive a
+ * clean restart, so they may be far older than the server's start.
+ */
+counter_hours: number | null, 
+/**
+ * The planner's row count (pg_class.reltuples), which a statistics reset, crash or failover doesn't zero the way
+ * it does the live-row counter.
+ */
+planner_rows: number | null, };

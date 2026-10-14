@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use culprit_core::{
-    CollectorNote, ColumnHistogram, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole, Signal, SignalScope,
-    SignalUnit, Snapshot,
+    CollectorNote, ColumnHistogram, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole, Setting, Signal,
+    SignalScope, SignalUnit, Snapshot,
 };
 use mysql_async::{Conn, Value};
 
@@ -49,7 +49,16 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
         Ok(signals) => pressure.signals.extend(signals),
         Err(e) => notes.push(("connections", e.message)),
     }
-    match replica_status(&mut conn).await {
+    // What replication and connection advice depend on: whether this server takes writes, and its thread cache.
+    let variables = match server_variables(&mut conn).await {
+        Ok(v) => v,
+        Err(e) => {
+            notes.push(("server variables", e.message));
+            HashMap::new()
+        }
+    };
+    let writable = variables.get("read_only").map(|v| !is_on(v));
+    match replica_status(&mut conn, writable).await {
         Ok(replicas) => pressure.replicas = replicas,
         Err(e) => notes.push((
             "replication",
@@ -57,6 +66,16 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
         )),
     }
     let _ = conn.disconnect().await;
+    if let Some(value) = variables.get("thread_cache_size")
+        && snapshot.setting("thread_cache_size").is_none()
+    {
+        snapshot.settings.push(Setting {
+            name: "thread_cache_size".into(),
+            value: value.clone(),
+            default_value: None,
+            scope: "server".into(),
+        });
+    }
     snapshot
         .notes
         .extend(notes.into_iter().map(|(collector, message)| CollectorNote { collector: collector.into(), message }));
@@ -223,10 +242,17 @@ async fn connections(conn: &mut Conn) -> culprit_core::Result<Vec<Signal>> {
         .iter()
         .filter_map(|r| Some((r.string("variable_name"), r.text("value")?.trim().parse::<f64>().ok()?)))
         .collect();
+    Ok(connection_signals(&status))
+}
+
+/// The connection signals from SHOW GLOBAL STATUS. `Connections` counts every attempt, the ones that failed
+/// (Aborted_connects: a wrong password, a timeout, a scanner) included; a pool only cuts the ones that log in.
+fn connection_signals(status: &HashMap<String, f64>) -> Vec<Signal> {
     let get = |k: &str| status.get(k).copied();
-    let Some(uptime) = get("Uptime").filter(|u| *u > 0.0) else { return Ok(Vec::new()) };
+    let Some(uptime) = get("Uptime").filter(|u| *u > 0.0) else { return Vec::new() };
     let mut out = Vec::new();
-    if let Some(connections) = get("Connections") {
+    if let Some(attempts) = get("Connections") {
+        let connections = (attempts - get("Aborted_connects").unwrap_or(0.0)).max(0.0);
         let rate = connections / uptime;
         out.push(
             Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
@@ -262,52 +288,98 @@ async fn connections(conn: &mut Conn) -> culprit_core::Result<Vec<Signal>> {
             out.push(signal);
         }
     }
-    Ok(out)
+    out
 }
 
-/// This server's replication channels when it is a replica: lag, thread state and the last error code.
-async fn replica_status(conn: &mut Conn) -> culprit_core::Result<Vec<Replica>> {
+/// Whether a server variable's value means on.
+fn is_on(value: &str) -> bool {
+    matches!(value.trim().to_ascii_uppercase().as_str(), "ON" | "1" | "TRUE" | "YES")
+}
+
+/// The server variables advice depends on: read_only (does it take writes) and thread_cache_size.
+async fn server_variables(conn: &mut Conn) -> culprit_core::Result<HashMap<String, String>> {
+    let rows = query(conn, "SHOW GLOBAL VARIABLES WHERE Variable_name IN ('read_only', 'thread_cache_size')").await?;
+    Ok(rows.iter().filter_map(|r| Some((r.string("variable_name").to_ascii_lowercase(), r.text("value")?))).collect())
+}
+
+/// This server's replication channels when it is a replica: lag beyond any configured delay, thread state and the
+/// last error code. `writable` is whether it takes writes (read_only off), when known.
+async fn replica_status(conn: &mut Conn, writable: Option<bool>) -> culprit_core::Result<Vec<Replica>> {
     let rows = match query(conn, "SHOW REPLICA STATUS").await {
         Ok(rows) => rows,
         // Before MySQL 8.0.22 and MariaDB 10.5.1.
         Err(_) => query(conn, "SHOW SLAVE STATUS").await?,
     };
-    Ok(rows.iter().map(replica).collect())
+    Ok(rows.iter().filter_map(|r| replica(ChannelRow::from(r), writable)).collect())
 }
 
-fn replica(r: &Rec) -> Replica {
-    let either = |a: &str, b: &str| r.text(a).or_else(|| r.text(b));
-    let io = either("replica_io_running", "slave_io_running").unwrap_or_default();
-    let sql = either("replica_sql_running", "slave_sql_running").unwrap_or_default();
-    let io_errno = r.number("last_io_errno").filter(|n| *n > 0.0);
-    let sql_errno = r.number("last_sql_errno").filter(|n| *n > 0.0);
-    let state = match (io.eq_ignore_ascii_case("yes"), sql.eq_ignore_ascii_case("yes")) {
+/// One row of SHOW REPLICA STATUS, as far as replica-lag reads it.
+#[derive(Default)]
+struct ChannelRow {
+    channel: Option<String>,
+    source: String,
+    io: String,
+    sql: String,
+    io_errno: Option<f64>,
+    sql_errno: Option<f64>,
+    behind: Option<f64>,
+    /// SQL_Delay: seconds the replica waits on purpose before applying (CHANGE REPLICATION SOURCE TO SOURCE_DELAY).
+    delay: Option<f64>,
+}
+
+impl From<&Rec> for ChannelRow {
+    fn from(r: &Rec) -> ChannelRow {
+        let either = |a: &str, b: &str| r.text(a).or_else(|| r.text(b));
+        ChannelRow {
+            channel: either("channel_name", "connection_name").filter(|c| !c.is_empty()),
+            source: either("source_host", "master_host").unwrap_or_default(),
+            io: either("replica_io_running", "slave_io_running").unwrap_or_default(),
+            sql: either("replica_sql_running", "slave_sql_running").unwrap_or_default(),
+            io_errno: r.number("last_io_errno").filter(|n| *n > 0.0),
+            sql_errno: r.number("last_sql_errno").filter(|n| *n > 0.0),
+            behind: either("seconds_behind_source", "seconds_behind_master").and_then(|s| s.trim().parse().ok()),
+            delay: r.number("sql_delay").filter(|d| *d > 0.0),
+        }
+    }
+}
+
+/// A channel as replica-lag reads it. Group Replication's own channels (group_replication_applier, …_recovery) are
+/// left out: they sit idle by design and the group reports its members elsewhere. Both threads off with no error is
+/// someone's STOP REPLICA, not a failure; on a server that takes writes it is usually a former replica promoted to
+/// primary, with its old configuration left behind.
+fn replica(r: ChannelRow, writable: Option<bool>) -> Option<Replica> {
+    if r.channel.as_deref().is_some_and(|c| c.to_ascii_lowercase().starts_with("group_replication_")) {
+        return None;
+    }
+    let error = r.sql_errno.or(r.io_errno);
+    let state = match (r.io.eq_ignore_ascii_case("yes"), r.sql.eq_ignore_ascii_case("yes")) {
         (true, true) => "replicating".to_string(),
-        (false, true) => format!("receiving stopped (I/O thread: {io})"),
+        (false, true) => format!("receiving stopped (I/O thread: {})", r.io),
         (true, false) => "applying stopped (SQL thread)".to_string(),
-        (false, false) => "stopped".to_string(),
+        (false, false) if error.is_some() => "stopped".to_string(),
+        (false, false) if writable == Some(true) => "configured, not running (no error; accepts writes)".to_string(),
+        (false, false) => "stopped by hand (no error)".to_string(),
     };
-    let channel = either("channel_name", "connection_name").filter(|c| !c.is_empty());
-    let source = either("source_host", "master_host").unwrap_or_default();
-    Replica {
-        name: match channel {
-            Some(c) => format!("{c} (from {source})"),
-            None => format!("from {source}"),
-        },
-        role: ReplicaRole::ThisServer,
+    Some(Replica {
         state: Some(state),
-        sync: None,
-        lag_seconds: either("seconds_behind_source", "seconds_behind_master").and_then(|s| s.trim().parse().ok()),
-        lag_bytes: None,
-        unsent_bytes: None,
-        error: sql_errno.or(io_errno).map(|n| {
+        // Seconds_Behind_Source counts the configured delay too: only what is beyond it is lag.
+        lag_seconds: r.behind.map(|s| (s - r.delay.unwrap_or(0.0)).max(0.0)),
+        delay_seconds: r.delay,
+        error: error.map(|n| {
             let code = n as u32;
             match error_name(code) {
                 Some(name) => format!("{code} {name}"),
                 None => format!("error {code}"),
             }
         }),
-    }
+        ..Replica::new(
+            match r.channel {
+                Some(c) => format!("{c} (from {})", r.source),
+                None => format!("from {}", r.source),
+            },
+            ReplicaRole::ThisServer,
+        )
+    })
 }
 
 /// Column histograms in this database: MySQL 8's COLUMN_STATISTICS, MariaDB's mysql.column_stats. `None` on MySQL 5.7,
@@ -390,6 +462,52 @@ mod tests {
         assert_eq!(short_path("/var/lib/mysql/shop/orders.ibd"), "shop/orders.ibd");
         assert_eq!(short_path("./ibdata1"), "ibdata1");
         assert_eq!(short_path("C:\\data\\shop\\orders.ibd"), "shop/orders.ibd");
+    }
+
+    fn channel(io: &str, sql: &str) -> ChannelRow {
+        ChannelRow { source: "10.0.0.5".into(), io: io.into(), sql: sql.into(), ..Default::default() }
+    }
+
+    // SOURCE_DELAY = 3600 keeps the replica an hour behind on purpose: only what is beyond it is lag.
+    #[test]
+    fn a_delayed_replica_counts_only_the_lag_beyond_its_delay() {
+        let r =
+            replica(ChannelRow { behind: Some(3_630.0), delay: Some(3_600.0), ..channel("Yes", "Yes") }, None).unwrap();
+        assert_eq!((r.lag_seconds, r.delay_seconds), (Some(30.0), Some(3_600.0)));
+    }
+
+    // Both threads off with no error is a STOP REPLICA; on a server that takes writes, a promoted primary's leftover.
+    #[test]
+    fn a_channel_stopped_by_hand_is_not_a_failure() {
+        let promoted = replica(channel("No", "No"), Some(true)).unwrap();
+        assert_eq!(promoted.state.as_deref(), Some("configured, not running (no error; accepts writes)"));
+        assert_eq!(
+            replica(channel("No", "No"), Some(false)).unwrap().state.as_deref(),
+            Some("stopped by hand (no error)")
+        );
+        let failed = replica(ChannelRow { sql_errno: Some(1062.0), ..channel("No", "No") }, Some(true)).unwrap();
+        assert_eq!((failed.state.as_deref(), failed.error.as_deref()), (Some("stopped"), Some("1062 duplicate key")));
+        // Group Replication's own channels idle by design.
+        let gr = ChannelRow { channel: Some("group_replication_recovery".into()), ..channel("No", "No") };
+        assert!(replica(gr, Some(true)).is_none());
+    }
+
+    // Connections counts failed attempts too; the rate a pool would cut is the successful ones.
+    #[test]
+    fn failed_connection_attempts_are_not_new_connections() {
+        let status: HashMap<String, f64> = [
+            ("Uptime", 1_000.0),
+            ("Connections", 30_000.0),
+            ("Aborted_connects", 20_000.0),
+            ("Threads_created", 5_000.0),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let signals = connection_signals(&status);
+        let rate = signals.iter().find(|s| s.key == "new-connections").unwrap();
+        assert_eq!(rate.value, 10.0);
+        assert_eq!(signals.iter().find(|s| s.key == "thread-cache-misses").unwrap().value, 50.0);
     }
 
     #[test]

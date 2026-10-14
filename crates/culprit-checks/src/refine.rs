@@ -28,6 +28,11 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("statements that ran once", ran_once_only),
         // Wording.
         rule("names without the database", names_without_database),
+        // Signals: one cause, one finding.
+        rule("dead rows are the table's empty space", dead_rows_explain_bloat),
+        rule("updates that aren't HOT explain their WAL", cold_updates_explain_log),
+        rule("large values explain the log their writes make", large_values_explain_log),
+        rule("one blocking chain on a table", one_blocking_chain),
     ]
 }
 
@@ -357,6 +362,257 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             ),
         );
     }
+}
+
+// ── signals ──────────────────────────────────────────────────────────────────────────────────────────
+
+/// A metric's value on a finding, by label.
+fn metric(f: &Finding, label: &str) -> Option<f64> {
+    f.metrics.iter().find(|m| m.label == label).map(|m| m.value)
+}
+
+/// The table a finding about a table names, as `schema.table` lowercased: its subject, or for hot-rows (whose subject
+/// is the index most of the waiting was on) its id.
+fn finding_table(f: &Finding) -> String {
+    match f.id.strip_prefix("hot-rows:") {
+        Some(table) => table.to_ascii_lowercase(),
+        None => f.subject.name.to_ascii_lowercase(),
+    }
+}
+
+/// The table a write statement changes, by name only (`orders`), and its verb: insert, update or merge.
+fn written_table(q: &QueryStat) -> Option<(&'static str, String)> {
+    let handle = support::query_handle(q);
+    [("insert", "an insert into "), ("update", "an update of "), ("merge", "a merge into ")]
+        .into_iter()
+        .find_map(|(verb, prefix)| handle.strip_prefix(prefix).map(|t| (verb, t.to_ascii_lowercase())))
+}
+
+/// Takes the finding at `from` out of `findings` and lets `into` (the finding that names the cause) absorb what it
+/// adds: its queries, its rank and, unless its statements are history (they stopped running, or ran once), its
+/// severity. The finding after `from` takes its place.
+fn absorb(snapshot: &Snapshot, findings: &mut Vec<Finding>, into: usize, from: usize, note: Option<String>) {
+    let gone = findings[from].clone();
+    let history = gone.inactive
+        || snapshot
+            .workload
+            .as_ref()
+            .is_some_and(|w| gone.queries.iter().filter_map(|r| w.query(&r.id)).any(|q| query_is_history(snapshot, q)));
+    let target = &mut findings[into];
+    for q in &gone.queries {
+        match target.queries.iter_mut().find(|r| r.id == q.id) {
+            Some(r) => {
+                if r.note.is_none() {
+                    r.note = note.clone();
+                }
+            }
+            None => target.queries.push(culprit_core::QueryRef {
+                id: q.id.clone(),
+                plan_node: q.plan_node,
+                note: note.clone(),
+            }),
+        }
+    }
+    target.impact.score = target.impact.score.max(gone.impact.score);
+    target.impact.db_time_share = match (target.impact.db_time_share, gone.impact.db_time_share) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    };
+    target.impact.time_ms_per_day = target.impact.time_ms_per_day.or(gone.impact.time_ms_per_day);
+    target.last_seen = target.last_seen.clone().max(gone.last_seen.clone());
+    if !history {
+        target.severity = target.severity.max(gone.severity);
+    }
+    findings.remove(from);
+}
+
+/// The position of the first finding of `check` about `table` (`schema.table`, lowercased).
+fn position_on(findings: &[Finding], check: &str, table: &str) -> Option<usize> {
+    findings.iter().position(|f| f.check == check && finding_table(f) == table)
+}
+
+fn leaf(table: &str) -> &str {
+    table.rsplit('.').next().unwrap_or(table)
+}
+
+/// PostgreSQL's bloat estimate counts every byte beyond the live rows, so dead rows VACUUM hasn't cleared yet show up
+/// as empty space too, with a rewrite (pg_repack, VACUUM FULL) as the fix. When the dead rows account for the space,
+/// dead-rows already says it with the right fix, VACUUM: keep that one, and say what the estimate saw.
+fn dead_rows_explain_bloat(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let mut i = 0;
+    while i < findings.len() {
+        if findings[i].check != "table-bloat" {
+            i += 1;
+            continue;
+        }
+        let table = finding_table(&findings[i]);
+        let share = metric(&findings[i], "Share").unwrap_or(1.0);
+        let dead = snapshot
+            .tables
+            .iter()
+            .find(|t| t.qualified().eq_ignore_ascii_case(&table))
+            .and_then(signals::dead_share)
+            .filter(|d| *d >= share * signals::DEAD_EXPLAINS_BLOAT);
+        let Some(target) = dead.and_then(|_| position_on(findings, "dead-rows", &table)) else {
+            i += 1;
+            continue;
+        };
+        let bytes = metric(&findings[i], "Empty space (estimated)").unwrap_or(0.0);
+        findings[target].caveats.push(format!(
+            "PostgreSQL's statistics also estimate about {} of {} ({}) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum.",
+            format::bytes(bytes),
+            leaf(&table),
+            format::percent(share)
+        ));
+        // `absorb` removed `i`: the next finding is now there.
+        absorb(snapshot, findings, target, i, None);
+    }
+}
+
+/// An update that isn't HOT writes the new row version, an entry in every index and, after each checkpoint, whole
+/// pages: the WAL a log-volume finding counts for an UPDATE is what hot-updates explains for its table, when that
+/// statement made most of the table's non-HOT updates. One finding, the table's, with the statement and its WAL.
+fn cold_updates_explain_log(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    let mut i = 0;
+    while i < findings.len() {
+        let f = &findings[i];
+        let candidate = (f.check == "log-volume")
+            .then(|| f.queries.first().and_then(|r| workload.query(&r.id)))
+            .flatten()
+            .and_then(|q| Some((q, written_table(q)?)))
+            .filter(|(_, (verb, _))| *verb == "update");
+        let Some((q, (_, table))) = candidate else {
+            i += 1;
+            continue;
+        };
+        let target = findings.iter().position(|h| {
+            h.check == "hot-updates"
+                && leaf(&finding_table(h)) == table
+                && snapshot.tables.iter().find(|t| t.qualified().eq_ignore_ascii_case(&finding_table(h))).is_some_and(
+                    |t| {
+                        let cold =
+                            t.updates.unwrap_or(0.0) - t.storage.as_ref().and_then(|s| s.hot_updates).unwrap_or(0.0);
+                        q.rows.is_some_and(|rows| cold > 0.0 && rows >= 0.5 * cold)
+                    },
+                )
+        });
+        let Some(target) = target else {
+            i += 1;
+            continue;
+        };
+        let bytes = metric(&findings[i], "Log written").unwrap_or(0.0);
+        let per_row = metric(&findings[i], "Per row");
+        let handle = support::query_handle(q);
+        let once = ran_once(q);
+        let h = &mut findings[target];
+        h.summary.push_str(&format!(
+            " {} changed {} of these rows and wrote {} of WAL for them{}: an update that isn't HOT logs the new row version and an entry in every index, and the first change to each page after a checkpoint logs the whole page.",
+            capitalize(&handle),
+            format::count(q.rows.unwrap_or(0.0)),
+            format::bytes(bytes),
+            per_row.map(|b| format!(", about {} a row", format::bytes(b))).unwrap_or_default()
+        ));
+        h.metrics.push(culprit_core::Metric::new("WAL its update wrote", bytes, culprit_core::Unit::Bytes));
+        if once {
+            h.severity = Severity::Low;
+            h.caveats.insert(
+                0,
+                format!(
+                    "The update behind most of these ran once in {}: a backfill or a migration looks like this, and its share stays in the counts long after. It needs work only if updates like it keep coming.",
+                    workload.window_phrase()
+                ),
+            );
+        }
+        absorb(snapshot, findings, target, i, Some(format!("Wrote {} of WAL.", format::bytes(bytes))));
+    }
+}
+
+/// Inserting or updating large values logs them in full: a log-volume finding whose bytes per row are about the size
+/// of a large-rows table's average row is that table's large values, and batching or dropping indexes (log-volume's
+/// advice) can't shrink them. One finding, large-rows, with the statement and its log.
+fn large_values_explain_log(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    let log = if snapshot.server.engine == Engine::Postgres { "WAL" } else { "transaction log" };
+    let mut i = 0;
+    while i < findings.len() {
+        let f = &findings[i];
+        let candidate = (f.check == "log-volume")
+            .then(|| f.queries.first().and_then(|r| workload.query(&r.id)))
+            .flatten()
+            .and_then(|q| Some((q, written_table(q)?, metric(f, "Per row")?)));
+        let Some((q, (_, table), per_row)) = candidate else {
+            i += 1;
+            continue;
+        };
+        let target = findings.iter().position(|l| {
+            l.check == "large-rows"
+                && leaf(&finding_table(l)) == table
+                && metric(l, "Average row").is_some_and(|avg| avg > 0.0 && (0.5..=3.0).contains(&(per_row / avg)))
+        });
+        let Some(target) = target else {
+            i += 1;
+            continue;
+        };
+        let bytes = metric(&findings[i], "Log written").unwrap_or(0.0);
+        let handle = support::query_handle(q);
+        let l = &mut findings[target];
+        l.summary.push_str(&format!(
+            " {} wrote {} of {log} for them, about {} a row: the large values are logged in full, so batching the writes or dropping indexes won't shrink it; smaller or fewer values will.",
+            capitalize(&handle),
+            format::bytes(bytes),
+            format::bytes(per_row)
+        ));
+        l.metrics.push(culprit_core::Metric::new("Log its writes wrote", bytes, culprit_core::Unit::Bytes));
+        absorb(snapshot, findings, target, i, Some(format!("Writes about {} of {log} a row.", format::bytes(per_row))));
+    }
+}
+
+/// Statements waiting on locks on a table and that table's lock waits are one blocking chain: hot-rows (the table's
+/// waits, with its statements) is the finding; each statement's lock-time joins it as a note.
+fn one_blocking_chain(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let mut i = 0;
+    while i < findings.len() {
+        if findings[i].check != "lock-time" {
+            i += 1;
+            continue;
+        }
+        let ids: Vec<String> = findings[i].queries.iter().map(|q| q.id.clone()).collect();
+        let target =
+            findings.iter().position(|h| h.check == "hot-rows" && h.queries.iter().any(|q| ids.contains(&q.id)));
+        let Some(target) = target else {
+            i += 1;
+            continue;
+        };
+        let lock = metric(&findings[i], "Lock wait").unwrap_or(0.0);
+        let share = metric(&findings[i], "Share of its time").map(|s| {
+            if s >= 0.97 { "nearly all of its time".to_string() } else { format!("{} of its time", format::percent(s)) }
+        });
+        let window = snapshot.workload.as_ref().map(|w| format!(" in {}", w.window_phrase())).unwrap_or_default();
+        let note = format!(
+            "Waited {} on locks{}{window}.",
+            format::duration(lock),
+            share.as_ref().map(|s| format!(", {s}")).unwrap_or_default()
+        );
+        let handle = snapshot
+            .workload
+            .as_ref()
+            .and_then(|w| w.query(ids.first()?))
+            .map(support::query_handle)
+            .unwrap_or_else(|| "A statement".into());
+        findings[target].summary.push_str(&format!(
+            " {} waited {} for these locks{window}{}.",
+            capitalize(&handle),
+            format::duration(lock),
+            share.map(|s| format!(", {s}")).unwrap_or_default()
+        ));
+        absorb(snapshot, findings, target, i, Some(note));
+    }
+}
+
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
 #[cfg(test)]

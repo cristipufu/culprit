@@ -24,6 +24,9 @@ fn demo(escalations: u32) -> Snapshot {
     let mut s: Snapshot = serde_json::from_slice(&std::fs::read(path).expect("fixture")).expect("snapshot");
     let orders = s.indexes.iter_mut().find(|i| i.schema == "shop" && i.table == "orders").expect("an orders index");
     orders.contention = Some(IndexContention { lock_escalations: f64::from(escalations), ..Default::default() });
+    // Started twelve hours before the scan: without an earlier scan, the count is graded on its rate since the start.
+    let started = chrono::Utc::now() - chrono::Duration::hours(12);
+    s.server.started_at = Some(started.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     s
 }
 
@@ -81,11 +84,12 @@ async fn each_scan_compares_escalations_with_the_scan_before() {
     .expect("save connection");
     let scan = || async { ws.scan("shop", &SnapshotOptions::default()).await.expect("scan") };
 
-    // The first scan has nothing to compare with: it can't tell whether the two are recent.
+    // The first scan has nothing to compare with: it can't tell whether the two are recent, only that two in the 12
+    // hours since the start is more than one a day.
     let first = scan().await;
     assert!(first.snapshot.escalations_before.is_none());
     assert_eq!(escalation(&first).severity, Severity::High);
-    assert!(escalation(&first).title.ends_with("2 times since SQL Server started (Oct 11)"));
+    assert!(escalation(&first).title.contains("2 times since SQL Server started"), "{}", escalation(&first).title);
 
     // Nothing new since: history.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;

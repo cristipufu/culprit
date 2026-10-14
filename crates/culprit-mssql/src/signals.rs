@@ -45,7 +45,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
             Ok(files) => pressure.files = files,
             Err(e) => notes.push(("file latency", map_error(e).message)),
         }
-        match logins(client).await {
+        match logins(client, probe.is_azure_sql_database()).await {
             Ok(signals) => pressure.signals.extend(signals),
             Err(e) => notes.push(("logins", map_error(e).message)),
         }
@@ -107,14 +107,19 @@ WHERE i.end_time >= @since
     };
     let by_id: HashMap<String, Rec> = rows.into_iter().map(|r| (r.string("query_id"), r)).collect();
 
-    // Compile statistics cover the query's whole life in Query Store; runs over the same life turn them into a
-    // per-run cost that applies to the window's runs.
+    // Compile statistics cover the query's whole life in Query Store, from its first compile; its runtime statistics
+    // only the intervals Query Store still keeps (cleanup removes older ones). How long each covers turns the
+    // compiles into a per-run cost for the runs that are kept.
     let compile_sql = format!(
         r#"
 SELECT q.query_id, q.count_compiles, q.avg_compile_duration / 1000.0 AS avg_compile_ms,
-  (SELECT SUM(rs.count_executions) FROM sys.query_store_runtime_stats rs
-     JOIN sys.query_store_plan p ON p.plan_id = rs.plan_id WHERE p.query_id = q.query_id) AS lifetime_runs
+  DATEDIFF(second, q.initial_compile_start_time, SYSDATETIMEOFFSET()) AS compiling_s,
+  r.runs AS lifetime_runs, DATEDIFF(second, r.first_start, SYSDATETIMEOFFSET()) AS kept_s
 FROM sys.query_store_query q
+OUTER APPLY (SELECT SUM(rs.count_executions) AS runs, MIN(i.start_time) AS first_start
+     FROM sys.query_store_runtime_stats rs
+     JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
+     JOIN sys.query_store_plan p ON p.plan_id = rs.plan_id WHERE p.query_id = q.query_id) r
 WHERE q.query_id IN ({list})
 "#
     );
@@ -136,21 +141,57 @@ WHERE q.query_id IN ({list})
                 _ => None,
             };
         }
-        if let Some(r) = compiles.get(&q.id) {
-            let count = r.f64_or_zero("count_compiles");
-            let avg = r.f64_or_zero("avg_compile_ms");
-            let lifetime_runs = r.f64("lifetime_runs").filter(|n| *n > 0.0);
-            if count > 0.0
-                && let Some(lifetime_runs) = lifetime_runs
-            {
-                let per_run = count * avg / lifetime_runs;
-                costs.plan_ms = Some(per_run * q.executions);
-                costs.plans = Some((count / lifetime_runs * q.executions).round().min(q.executions.max(count)));
-            }
+        let compiled = compiles.get(&q.id).map(|r| Compiles {
+            count: r.f64_or_zero("count_compiles"),
+            avg_ms: r.f64_or_zero("avg_compile_ms"),
+            kept_runs: r.f64("lifetime_runs"),
+            compiling_s: r.f64("compiling_s"),
+            kept_s: r.f64("kept_s"),
+        });
+        if let Some((plan_ms, plans)) = compiled.and_then(|c| c.for_runs(q.executions)) {
+            costs.plan_ms = Some(plan_ms);
+            costs.plans = Some(plans);
         }
         q.costs = (!costs.is_empty()).then_some(costs);
     }
     Ok(())
+}
+
+/// A query's compile statistics from Query Store, and how long they and its kept runtime statistics cover.
+struct Compiles {
+    /// count_compiles: every compile since the first (initial_compile_start_time).
+    count: f64,
+    avg_ms: f64,
+    /// Runs in the runtime statistics Query Store still keeps.
+    kept_runs: Option<f64>,
+    /// Seconds since its first compile.
+    compiling_s: Option<f64>,
+    /// Seconds since the oldest runtime interval kept for it.
+    kept_s: Option<f64>,
+}
+
+impl Compiles {
+    /// Compile time and compiles for `runs` of its runs, at the rate per run of the period both statistics cover. The
+    /// compile counts run from the first compile; once cleanup has removed older runtime intervals, dividing them by
+    /// the runs still kept would claim more compiles than runs: the compiles are then scaled to the kept span. `None`
+    /// without runs or a span to scale by.
+    fn for_runs(&self, runs: f64) -> Option<(f64, f64)> {
+        let kept_runs = self.kept_runs.filter(|n| *n > 0.0)?;
+        if self.count <= 0.0 {
+            return None;
+        }
+        // An interval's length of slack: the first runtime interval starts on its boundary, before the first compile.
+        const SLACK_S: f64 = 3_600.0;
+        let share = match (self.compiling_s, self.kept_s) {
+            (Some(life), Some(kept)) if life > kept + SLACK_S && life > 0.0 => (kept / life).clamp(0.0, 1.0),
+            (Some(_), Some(_)) => 1.0,
+            _ => return None,
+        };
+        let compiles = self.count * share;
+        let per_run = compiles * self.avg_ms / kept_runs;
+        let plans = (compiles / kept_runs * runs).round().min(runs.max(compiles));
+        Some((per_run * runs, plans))
+    }
 }
 
 // ── per index ──────────────────────────────────────────────────────────────────────────────────────
@@ -242,6 +283,7 @@ WHERE (is_not_trusted = 1 OR is_disabled = 1) AND is_not_for_replication = 0 AND
             name: r.string("name"),
             kind: if r.string("kind") == "check" { ConstraintKind::Check } else { ConstraintKind::ForeignKey },
             disabled: r.f64_or_zero("disabled") > 0.0,
+            inheritance_child: false,
         })
         .collect())
 }
@@ -312,7 +354,7 @@ WHERE vfs.database_id = DB_ID()"
 }
 
 /// New logins per second since startup, and how many connection uses a pool served (Connection Reset).
-async fn logins(client: &mut MsClient) -> tiberius::Result<Vec<Signal>> {
+async fn logins(client: &mut MsClient, azure_sql_database: bool) -> tiberius::Result<Vec<Signal>> {
     let sql = r#"
 SELECT RTRIM(pc.counter_name) AS counter, pc.cntr_value AS value,
   DATEDIFF(second, si.sqlserver_start_time, SYSDATETIME()) AS uptime_s
@@ -322,34 +364,56 @@ WHERE pc.object_name LIKE '%General Statistics%' AND pc.counter_name IN ('Logins
     let rows = query(client, sql).await?;
     let get = |name: &str| rows.iter().find(|r| r.string("counter") == name).and_then(|r| r.f64("value"));
     let uptime = rows.first().and_then(|r| r.f64("uptime_s")).filter(|s| *s > 0.0);
+    Ok(login_signals(get("Logins/sec"), get("Connection Reset/sec"), uptime, azure_sql_database))
+}
+
+/// The login counters count every database on the instance. On Azure SQL Database that instance is the server
+/// process behind the database, shared by its elastic pool: shown for context, labelled as the whole server's and
+/// never graded, since another database's logins would turn this one red.
+fn login_signals(logins: Option<f64>, resets: Option<f64>, uptime_s: Option<f64>, shared: bool) -> Vec<Signal> {
+    const SHARED: &str = "covers every database on the server behind this one (its elastic pool's, if it has one), so it isn't graded here";
+    let label = |name: &str| if shared { format!("{name} (whole server)") } else { name.to_string() };
+    let grade = |signal: Signal, healthy: &str, watch: f64, bad: f64, higher_is_worse: bool| {
+        if shared {
+            Signal { healthy: Some(SHARED.into()), ..signal }
+        } else {
+            signal.graded(healthy, watch, bad, higher_is_worse)
+        }
+    };
     let mut out = Vec::new();
-    if let (Some(logins), Some(seconds)) = (get("Logins/sec"), uptime) {
-        out.push(
+    if let (Some(logins), Some(seconds)) = (logins, uptime_s) {
+        out.push(grade(
             Signal::new(
                 "new-connections",
-                "New connections",
+                &label("New connections"),
                 logins / seconds,
                 SignalUnit::PerSecond,
                 SignalScope::SinceStartup,
-            )
-            .graded("under 5 a second: pooled connections log in once and are reused", 5.0, 25.0, true),
-        );
-        if let Some(resets) = get("Connection Reset/sec")
+            ),
+            "under 5 a second: pooled connections log in once and are reused",
+            5.0,
+            25.0,
+            true,
+        ));
+        if let Some(resets) = resets
             && logins + resets >= 1_000.0
         {
-            out.push(
+            out.push(grade(
                 Signal::new(
                     "pooled-reuse",
-                    "Connections served from a pool",
+                    &label("Connections served from a pool"),
                     resets / (logins + resets) * 100.0,
                     SignalUnit::Percent,
                     SignalScope::SinceStartup,
-                )
-                .graded("above 90% when the application pools connections", 90.0, 50.0, false),
-            );
+                ),
+                "above 90% when the application pools connections",
+                90.0,
+                50.0,
+                false,
+            ));
         }
     }
-    Ok(out)
+    out
 }
 
 /// Availability group replicas of this database, and Azure SQL geo-replication links. Neither exists on most servers.
@@ -374,32 +438,32 @@ WHERE drs.database_id = DB_ID()
         .iter()
         .filter(|r| !(r.f64_or_zero("is_local") > 0.0 && r.f64_or_zero("is_primary") > 0.0))
         .map(|r| Replica {
-            name: r.string("name"),
-            role: if r.f64_or_zero("is_local") > 0.0 { ReplicaRole::ThisServer } else { ReplicaRole::Replica },
             state: r.str("state"),
             sync: r.str("sync").map(|s| s.replace('_', " ").to_lowercase()),
             lag_seconds: r.f64("lag_s"),
             lag_bytes: r.f64("redo_bytes"),
             unsent_bytes: r.f64("unsent_bytes"),
-            error: None,
+            ..Replica::new(
+                r.string("name"),
+                if r.f64_or_zero("is_local") > 0.0 { ReplicaRole::ThisServer } else { ReplicaRole::Replica },
+            )
         })
         .collect();
     let geo = "SELECT partner_server + '/' + partner_database AS name, replication_state_desc AS state, role_desc,
   replication_lag_sec AS lag_s FROM sys.dm_geo_replication_link_status";
     if let Ok(rows) = query(client, geo).await {
         out.extend(rows.iter().map(|r| Replica {
-            name: r.string("name"),
-            role: if r.string("role_desc").eq_ignore_ascii_case("SECONDARY") {
-                ReplicaRole::ThisServer
-            } else {
-                ReplicaRole::Replica
-            },
             state: r.str("state"),
             sync: Some("asynchronous".into()),
             lag_seconds: r.f64("lag_s"),
-            lag_bytes: None,
-            unsent_bytes: None,
-            error: None,
+            ..Replica::new(
+                r.string("name"),
+                if r.string("role_desc").eq_ignore_ascii_case("SECONDARY") {
+                    ReplicaRole::ThisServer
+                } else {
+                    ReplicaRole::Replica
+                },
+            )
         }));
     }
     out
@@ -408,6 +472,38 @@ WHERE drs.database_id = DB_ID()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Query Store's cleanup removed the runtime intervals of the query's first 29 days; its compile count still runs
+    // from day one. Dividing all its compiles by the runs still kept would claim a compile for every run.
+    #[test]
+    fn compiles_are_scaled_to_the_runtime_statistics_still_kept() {
+        let day = 86_400.0;
+        let compiles = |compiling_s: f64| Compiles {
+            count: 1_500.0,
+            avg_ms: 20.0,
+            kept_runs: Some(1_500.0),
+            compiling_s: Some(compiling_s),
+            kept_s: Some(day),
+        };
+        // Both cover the same day: a compile for every run.
+        let (plan_ms, plans) = compiles(day).for_runs(100.0).unwrap();
+        assert_eq!((plan_ms, plans), (2_000.0, 100.0));
+        // Compiling for 30 days, runs kept for the last one: a compile every 30 runs.
+        let (plan_ms, plans) = compiles(30.0 * day).for_runs(100.0).unwrap();
+        assert_eq!(plans, 3.0);
+        assert!((plan_ms - 2_000.0 / 30.0).abs() < 1e-6, "{plan_ms}");
+        assert!(Compiles { kept_runs: None, ..compiles(day) }.for_runs(100.0).is_none());
+    }
+
+    // On Azure SQL Database the login counters are the server process's, shared by the pool: never graded.
+    #[test]
+    fn azure_logins_are_the_whole_servers_and_not_graded() {
+        let shared = login_signals(Some(3_600_000.0), Some(10.0), Some(3_600.0), true);
+        assert_eq!(shared[0].label, "New connections (whole server)");
+        assert_eq!(shared[0].status, culprit_core::SignalStatus::Info);
+        let own = login_signals(Some(3_600_000.0), Some(10.0), Some(3_600.0), false);
+        assert_eq!(own[0].status, culprit_core::SignalStatus::Bad);
+    }
 
     #[test]
     fn contention_sql_only_names_the_2019_option_when_asked() {

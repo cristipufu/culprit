@@ -66,6 +66,64 @@ fn is_read(q: &QueryStat) -> bool {
     matches!(verb(&q.text).as_str(), "select" | "with" | "values" | "table")
 }
 
+/// A read whose rows go to the client. `SELECT … INTO #t` (or a new table), `SELECT … INTO OUTFILE` and `SELECT @v = …`
+/// / `SELECT @v := …` start with SELECT but keep their rows on the server.
+fn returns_rows(q: &QueryStat) -> bool {
+    if !is_read(q) {
+        return false;
+    }
+    let lower = q.text.to_ascii_lowercase().replace(['\n', '\r', '\t'], " ");
+    let words: Vec<&str> = lower.split_whitespace().collect();
+    // `INTO` before the first FROM, outside parentheses and strings, is SELECT INTO; MySQL also writes it last.
+    let mut depth = 0i32;
+    for w in &words {
+        depth += w.matches('(').count() as i32 - w.matches(')').count() as i32;
+        if depth > 0 {
+            continue;
+        }
+        match *w {
+            "from" => break,
+            "into" => return false,
+            _ => {}
+        }
+    }
+    if lower.contains(" into outfile") || lower.contains(" into dumpfile") || lower.contains(" into @") {
+        return false;
+    }
+    // The first item of the select list assigns a variable: `SELECT @total = SUM(x)` (SQL Server), `@v := …` (MySQL).
+    let mut list = words.iter().skip(1).skip_while(|w| matches!(**w, "distinct" | "all" | "top")).peekable();
+    if let Some(first) = list.next() {
+        let first = if first.starts_with('(') || first.chars().all(|c| c.is_ascii_digit()) {
+            list.next().copied().unwrap_or(first)
+        } else {
+            first
+        };
+        if first.starts_with('@') && !first.starts_with("@@") {
+            let rest = &lower[lower.find(first).unwrap_or(0) + first.len()..];
+            let assigns = first.contains(":=")
+                || first.ends_with('=')
+                || rest.trim_start().starts_with('=')
+                || rest.trim_start().starts_with(":=");
+            if assigns {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A read that copies a whole table out: mysqldump's `SELECT SQL_NO_CACHE * FROM t`, or an export or ETL job reading
+/// without a filter a few times a day. Its rows are the point; paging them only spreads the same rows over more runs.
+fn looks_like_export(snapshot: &Snapshot, q: &QueryStat) -> bool {
+    let lower = q.text.to_ascii_lowercase();
+    if lower.contains("sql_no_cache") {
+        return true;
+    }
+    let unfiltered = !lower.contains(" where ") && !lower.contains(" limit ") && !lower.contains(" top ");
+    let few_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(q.executions)).is_some_and(|d| d <= 4.0);
+    unfiltered && few_a_day
+}
+
 fn is_write(q: &QueryStat) -> bool {
     matches!(verb(&q.text).as_str(), "insert" | "update" | "delete" | "merge" | "copy" | "replace" | "upsert")
 }
@@ -96,6 +154,51 @@ fn per_run(total: f64, runs: f64) -> f64 {
     if runs > 0.0 { total / runs } else { 0.0 }
 }
 
+/// Whether the workload window's start is only a lower bound: pg_stat_statements before PostgreSQL 14 keeps no reset
+/// time, so the window is dated from the server's start, but the counts survive a clean restart and may be far older.
+fn window_start_unknown(snapshot: &Snapshot) -> bool {
+    snapshot.server.engine == Engine::Postgres
+        && !culprit_core::version_at_least(&snapshot.server.version, [14, 0, 0])
+        && snapshot.workload.as_ref().is_some_and(|w| !w.windowed)
+}
+
+/// [`rate_per_day`] for a threshold, `None` where the window's start is unknown (see [`window_start_unknown`]): a
+/// window that may be days too short would make the rate days too high.
+fn window_rate_per_day(snapshot: &Snapshot, value: f64) -> Option<f64> {
+    if window_start_unknown(snapshot) {
+        return None;
+    }
+    rate_per_day(snapshot, value)
+}
+
+/// The grade of a count kept since the server started (or its statistics were reset), the one way every check here
+/// grades one: such a count keeps no time for each event, so a burst months ago reads the same as one this morning.
+/// It escalates only on a daily rate measured over an hour or more of counters ([`counter_rate_per_day`]) reaching
+/// `high` or `medium`; without one it is history, Low.
+fn since_start_severity(rate_per_day: Option<f64>, high: f64, medium: f64) -> Severity {
+    match rate_per_day {
+        Some(r) if r >= high => Severity::High,
+        Some(r) if r >= medium => Severity::Medium,
+        _ => Severity::Low,
+    }
+}
+
+/// The caveat on a since-start count that has no measured rate: what was counted, over how long, and why it isn't
+/// graded higher.
+fn history_caveat(snapshot: &Snapshot, what: &str) -> String {
+    let engine = engine_name(snapshot);
+    match counter_days(snapshot) {
+        // Counting for less than an hour: too little for a rate, whatever the total.
+        Some(_) => format!(
+            "{engine} has counted these {what} only {}: too little time to make a rate, so the total doesn't raise it. A scan after an hour or more of counting can.",
+            since_phrase(snapshot).trim_start_matches("in ")
+        ),
+        None => format!(
+            "{engine} counts {what} from when it started, with no time for each, and this scan doesn't know when that was: they may come from one burst long ago. Culprit raises it only on a rate measured over an hour or more of counting."
+        ),
+    }
+}
+
 // ── failing-query ──────────────────────────────────────────────────────────────────────────────────
 
 pub fn failing_query_info() -> CheckInfo {
@@ -114,11 +217,20 @@ fn looks_like_timeout(mean_ms: f64) -> Option<f64> {
     [15.0, 30.0, 60.0, 120.0].into_iter().find(|s| (mean_ms / 1000.0 - s).abs() <= s * 0.1)
 }
 
+/// Error 3572 is FOR UPDATE NOWAIT finding the row taken: the statement asked not to wait, and the application expects
+/// the error (a try-lock), so it isn't a run that failed.
+fn deliberate_error(costs: &culprit_core::QueryCosts) -> bool {
+    costs.top_error.as_deref().is_some_and(|e| e.starts_with("3572 "))
+}
+
 pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
     let mssql = snapshot.server.engine == Engine::Mssql;
     let mut findings: Vec<Finding> = app_queries(snapshot)
         .filter_map(|q| {
             let costs = q.costs.as_ref()?;
+            if deliberate_error(costs) {
+                return None;
+            }
             let unfinished = costs.unfinished()?;
             let rate = per_run(unfinished, q.executions);
             (unfinished >= 5.0 && rate >= 0.01).then_some((q, costs, unfinished, rate))
@@ -168,7 +280,13 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
             }
             parts.push("A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.".into());
             f.summary = parts.join(" ");
-            f.severity = if rate >= 0.10 {
+            // MySQL and MariaDB count errors per digest from when it was first seen, with no time for each: an old
+            // storm keeps the share up long after it ended. Only a failed run among the recent statements
+            // performance_schema keeps (the error named above) shows it still happens.
+            let recent = mssql || costs.top_error.is_some();
+            f.severity = if !recent {
+                Severity::Low
+            } else if rate >= 0.10 {
                 Severity::High
             } else if rate >= 0.02 {
                 Severity::Medium
@@ -194,7 +312,12 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
             }
             f.fix = Some(failing_fix(snapshot, q, costs, timeout, aborted > failed));
             f.verify = vec!["Re-scan after the change: runs that fail or are cancelled should drop to near zero.".into()];
-            if !mssql {
+            if !recent {
+                f.caveats.push(format!(
+                    "{} counts errors per statement from when it first saw the statement, with no time for each, and none of its runs in the recent statement history performance_schema keeps failed: these failures may be old. Culprit raises it once a recent run fails too.",
+                    engine_name(snapshot)
+                ));
+            } else if !mssql {
                 f.caveats.push(format!("{} counts errors per statement since it started, so old failures stay in the total until it restarts.", engine_name(snapshot)));
             }
             f
@@ -310,7 +433,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 reuse
             );
-            f.severity = if share >= 0.5 && rate_per_day(snapshot, plan_ms).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 && window_rate_per_day(snapshot, plan_ms).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} planning", format::percent(share));
@@ -342,7 +465,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
             });
             f.verify = vec!["Re-scan: planning should be a small part of its time.".into()];
             if !pg {
-                f.caveats.push("Query Store keeps compile time for the query's whole life, so the time is spread over the window's runs.".into());
+                f.caveats.push("Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.".into());
             }
             f
         })
@@ -391,7 +514,7 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 format::duration(q.mean_time_ms)
             );
-            f.severity = if share >= 0.5 || rate_per_day(snapshot, jit).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 || window_rate_per_day(snapshot, jit).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} JIT", format::percent(share));
@@ -401,11 +524,7 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("JIT per run", per_run(jit, q.executions), Unit::Ms),
                 Metric::new("Run time", q.mean_time_ms, Unit::Ms),
             ];
-            f.fix = Some(Fix {
-                summary: "Raise the cost threshold so JIT only starts for genuinely long queries, or turn it off for the application's role. Fixing the row estimate that inflates the cost also helps.".into(),
-                sql: Some("-- JIT only for plans the planner thinks are 10× more expensive than the default threshold\nALTER SYSTEM SET jit_above_cost = 1000000;\nSELECT pg_reload_conf();\n-- Or for the application's role only:\n-- ALTER ROLE app_user SET jit = off;".into()),
-                cost: None,
-            });
+            f.fix = Some(jit_fix(snapshot, threshold.as_deref()));
             f.verify = vec!["Re-scan: JIT time per run should drop to zero or near it, and the average run time with it.".into()];
             f
         })
@@ -413,6 +532,32 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
     findings
+}
+
+/// The default jit_above_cost, and the threshold the fix raises it to from there: ten times as high.
+const JIT_ABOVE_COST_DEFAULT: f64 = 100_000.0;
+
+/// Raise jit_above_cost where this server is configured, from what it is now: ten times the default, or ten times the
+/// current value when that is already higher, never lower. Or turn JIT off for the application's role.
+fn jit_fix(snapshot: &Snapshot, current: Option<&str>) -> Fix {
+    let current = current.and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(JIT_ABOVE_COST_DEFAULT);
+    let target = (current.max(JIT_ABOVE_COST_DEFAULT) * 10.0).round();
+    let change = setting_change(&snapshot.server, "jit_above_cost", &format!("{target:.0}"));
+    let role = "-- Or for the application's role only:\n-- ALTER ROLE app_user SET jit = off;";
+    Fix {
+        summary: format!(
+            "Raise the cost threshold so JIT only starts for plans ten times as expensive as now ({} today): {} Or turn JIT off for the application's role. Fixing the row estimate that inflates the cost also helps.",
+            format::count(current),
+            change.how
+        ),
+        sql: Some(match change.sql {
+            Some(sql) => format!(
+                "-- JIT only for plans the planner thinks are 10× more expensive than today's threshold\n{sql}\n{role}"
+            ),
+            None => role.to_string(),
+        }),
+        cost: None,
+    }
 }
 
 // ── log-volume ─────────────────────────────────────────────────────────────────────────────────────
@@ -442,7 +587,8 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
             let share = costs.log_share.unwrap_or(0.0);
             let rows = q.rows.unwrap_or(0.0);
             let per_row = (rows >= 1_000.0).then(|| bytes / rows);
-            let heavy_share = share >= 0.3 && bytes >= GB;
+            // A share of the log is a threshold only with a volume a day behind it: 30% of a quiet hour is nothing.
+            let heavy_share = share >= 0.3 && window_rate_per_day(snapshot, bytes).is_some_and(|d| d >= GB);
             let heavy_rows = per_row.is_some_and(|b| b >= 4_096.0) && bytes >= 100.0 * MB;
             (heavy_share || heavy_rows).then_some((q, costs, bytes, share, per_row))
         })
@@ -453,20 +599,34 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
                 Some(b) if b >= 4_096.0 => format!("{} writes {} of {log} per row it changes", capitalize(&handle), format::bytes(b)),
                 _ => format!("{} writes {} of the database's {log}", capitalize(&handle), format::percent(share)),
             };
-            // A full-page image is a whole 8 KB page; their share says whether checkpoints drive the volume.
-            let image_share = costs.log_full_pages.map(|n| (n * 8_192.0 / bytes).min(1.0));
+            // pg_stat_statements counts full-page images, not their bytes. A whole page is 8 KB at most: PostgreSQL
+            // leaves out the empty middle of each page, and wal_compression shrinks the rest, so 8 KB each is an upper
+            // bound, and close to the truth only with compression off.
+            // wal_compression is off, on, or a method (pglz, lz4, zstd from 15).
+            let compression = pg
+                .then(|| snapshot.setting("wal_compression"))
+                .flatten()
+                .map(|s| !matches!(s.value.trim().to_ascii_lowercase().as_str(), "off" | "false" | "0" | "no"));
+            let images = costs.log_full_pages.filter(|n| *n > 0.0);
+            let image_share = images.filter(|_| compression == Some(false)).map(|n| (n * 8_192.0 / bytes).min(1.0));
             f.summary = format!(
                 "It wrote {} of {log} {}: {} of what statements wrote{}. Every byte of {log} is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.{}",
                 format::bytes(bytes),
                 window_phrase(snapshot),
                 format::percent(share),
                 per_row.map(|b| format!(", about {} per row it changed", format::bytes(b))).unwrap_or_default(),
-                match image_share {
-                    Some(s) if s >= 0.5 => format!(" About {} of it is full-page images: the first change to each page after a checkpoint logs the whole 8 KB page.", format::percent(s)),
+                match (image_share, images) {
+                    (Some(s), _) if s >= 0.5 => format!(" Up to {} of it is full-page images: the first change to each page after a checkpoint logs the whole page, 8 KB at most.", format::percent(s)),
+                    (None, Some(n)) if pg && n * 8_192.0 >= 0.5 * bytes => format!(
+                        " {} of its records are full-page images: the first change to each page after a checkpoint logs the whole page{}.",
+                        format::count(n),
+                        if compression == Some(true) { ", compressed with wal_compression" } else { "" }
+                    ),
                     _ => String::new(),
                 }
             );
-            f.severity = if share >= 0.5 || per_row.is_some_and(|b| b >= 8_192.0) { Severity::Medium } else { Severity::Low };
+            let busy = share >= 0.5 && window_rate_per_day(snapshot, bytes).is_some_and(|d| d >= GB);
+            f.severity = if busy || per_row.is_some_and(|b| b >= 8_192.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} of {log}", format::bytes(bytes));
@@ -476,9 +636,16 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
                 f.metrics.push(Metric::new("Per row", b, Unit::Bytes));
             }
             f.fix = Some(if pg {
+                // wal_compression only where it is known to be off; on or unknown, the checkpoint interval is the lever.
+                let compress = image_share.filter(|s| *s >= 0.5).map(|_| setting_change(&snapshot.server, "wal_compression", "on"));
+                let images = match (&compress, compression) {
+                    (Some(change), _) => format!(" Full-page images dominate and wal_compression is off: turning it on shrinks them (lz4 or zstd on PostgreSQL 15+). {}", change.how),
+                    (None, Some(true)) => " wal_compression already shrinks full-page images; a longer checkpoint interval (checkpoint_timeout, max_wal_size) logs fewer of them.".to_string(),
+                    (None, _) => " If full-page images dominate, a longer checkpoint interval (checkpoint_timeout, max_wal_size) logs fewer of them, and wal_compression shrinks them if it is off.".to_string(),
+                };
                 Fix {
-                    summary: "Touch each page once per checkpoint: batch the changes (one statement for many rows, sorted by key) rather than many scattered single-row writes. Every index on the table adds its own WAL: drop indexes nobody reads (see Indexes). When full-page images dominate, wal_compression shrinks them, and a longer checkpoint interval logs fewer of them.".into(),
-                    sql: image_share.filter(|s| *s >= 0.5).map(|_| "ALTER SYSTEM SET wal_compression = on;  -- lz4 or zstd on PostgreSQL 15+\nSELECT pg_reload_conf();".into()),
+                    summary: format!("Touch each page once per checkpoint: batch the changes (one statement for many rows, sorted by key) rather than many scattered single-row writes. Every index on the table adds its own WAL: drop indexes nobody reads (see Indexes).{images}"),
+                    sql: compress.and_then(|c| c.sql),
                     cost: None,
                 }
             } else {
@@ -509,6 +676,10 @@ pub fn lock_time_info() -> CheckInfo {
         description: "Statements that spend a large part of their time waiting for locks other sessions hold: Query Store's lock waits per query, MySQL and MariaDB lock time per digest. PostgreSQL keeps no lock time per statement; Live shows blocking as it happens.".into(),
     }
 }
+
+/// Lock waits a day that make a statement's waiting High, or Medium: half an hour and five minutes.
+const LOCK_HIGH_MS_PER_DAY: f64 = 30.0 * 60_000.0;
+const LOCK_MEDIUM_MS_PER_DAY: f64 = 5.0 * 60_000.0;
 
 /// Runs that end in lock wait timeouts often enough for failing-query to report them.
 fn times_out_on_locks(q: &QueryStat) -> bool {
@@ -556,7 +727,20 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
                 }
             );
             let db_share = if total_db > 0.0 { lock / total_db } else { 0.0 };
-            f.severity = severity_for_share(db_share);
+            // A share of database time alone makes one two-minute incident in a quiet database High: the waiting must
+            // also add up to minutes a day, measured over an hour or more.
+            let by_minutes = since_start_severity(
+                window_rate_per_day(snapshot, lock),
+                LOCK_HIGH_MS_PER_DAY,
+                LOCK_MEDIUM_MS_PER_DAY,
+            );
+            f.severity = severity_for_share(db_share).min(by_minutes);
+            if window_rate_per_day(snapshot, lock).is_none() {
+                f.caveats.push(
+                    "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
+                        .into(),
+                );
+            }
             with_query(snapshot, &mut f, q);
             f.impact.score = score_for_share(db_share).max(base_score(f.severity));
             f.impact.label = format!("{} waiting on locks", format::duration(lock));
@@ -595,7 +779,7 @@ pub fn big_result_info() -> CheckInfo {
 
 pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = app_queries(snapshot)
-        .filter(|q| is_read(q) && q.executions >= 20.0)
+        .filter(|q| returns_rows(q) && q.executions >= 20.0)
         .filter_map(|q| {
             let rows = per_run(q.rows?, q.executions);
             (rows >= 10_000.0).then_some((q, rows))
@@ -605,6 +789,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             let handle = query_handle(q);
             let width = q.costs.as_ref().and_then(|c| c.row_bytes).or_else(|| q.plan.as_ref().and_then(plan_row_bytes));
             let bytes = width.map(|w| w * rows);
+            let export = looks_like_export(snapshot, q);
             f.title = format!(
                 "{} returns {} rows{} per run",
                 capitalize(&handle),
@@ -612,7 +797,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
                 bytes.map(|b| format!(" (≈ {})", format::bytes(b))).unwrap_or_default()
             );
             f.summary = format!(
-                "Each run sends {} rows to the application{}; its {} runs {} moved {} rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
+                "Each run sends {} rows to the application{}; its {} runs {} moved {} rows. {}",
                 format::count(rows),
                 match (bytes, width) {
                     (Some(b), Some(w)) => format!(", about {} at the plan's estimated {} per row", format::bytes(b), format::bytes(w)),
@@ -620,9 +805,19 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
                 },
                 format::count(q.executions),
                 window_phrase(snapshot),
-                format::count(q.rows.unwrap_or(0.0))
+                format::count(q.rows.unwrap_or(0.0)),
+                if export {
+                    format!(
+                        "It reads the whole table {}: an export, a dump or an ETL job looks like this, and for those the rows are the point. It needs work only if a screen or a request runs it.",
+                        runs_phrase(snapshot, q.executions)
+                    )
+                } else {
+                    "Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.".to_string()
+                }
             );
-            f.severity = if rows >= 100_000.0 || rate_per_day(snapshot, q.rows.unwrap_or(0.0)).is_some_and(|d| d >= 100_000_000.0) {
+            f.severity = if export {
+                Severity::Low
+            } else if rows >= 100_000.0 || window_rate_per_day(snapshot, q.rows.unwrap_or(0.0)).is_some_and(|d| d >= 100_000_000.0) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -635,8 +830,13 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             if let Some(b) = bytes {
                 f.metrics.push(Metric::new("Bytes per run (estimated)", b, Unit::Bytes));
             }
+            let page = "Return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database.";
             f.fix = Some(Fix {
-                summary: "Return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database.".into(),
+                summary: if export {
+                    format!("If it is an export or ETL job, leave it as it is, and run it on a replica or off-peak if it competes with the application. If the application runs it: {page}")
+                } else {
+                    page.into()
+                },
                 sql: None,
                 cost: None,
             });
@@ -662,63 +862,144 @@ pub fn slow_storage_info() -> CheckInfo {
     }
 }
 
-/// (file, average ms, operations, is a write) for the slowest file of each kind that crosses its threshold.
-fn slow_files(files: &[FileIo]) -> Vec<(&FileIo, f64, f64, bool)> {
-    let mut worst: BTreeMap<(u8, bool), (&FileIo, f64, f64, bool)> = BTreeMap::new();
-    for f in files {
-        let kind = match f.kind {
-            FileKind::Data => 0,
-            FileKind::Temp => 1,
-            FileKind::Log => 2,
-            FileKind::Other => continue,
-        };
-        // Reads of data and temp files; writes of the log, which every commit waits for.
-        let candidates = [
-            (f.avg_read_ms(), f.reads, false, f.kind != FileKind::Log, 20.0),
-            (f.avg_write_ms(), f.writes, true, f.kind == FileKind::Log, 10.0),
-        ];
-        for (avg, ops, write, applies, limit) in candidates {
-            if let Some(avg) = avg
-                && applies
-                && ops >= 1_000.0
-                && avg >= limit
-            {
-                let key = (kind, write);
-                if worst.get(&key).is_none_or(|w| avg > w.1) {
-                    worst.insert(key, (f, avg, ops, write));
-                }
-            }
-        }
-    }
-    worst.into_values().collect()
+/// Reads (or log writes) at least this large on average are bulk I/O: backups, CHECKDB, read-ahead of large scans. Each
+/// takes longer than the page-sized reads queries wait on, so their average says little about the storage.
+const BULK_IO_BYTES: f64 = 64.0 * 1024.0;
+
+/// The files of one kind in one database, added up for the operation that matters for that kind: reads of data and
+/// temporary files, writes of the log (every commit waits for them).
+struct FileGroup<'a> {
+    files: Vec<&'a FileIo>,
+    database: Option<String>,
+    kind: FileKind,
+    write: bool,
+    ops: f64,
+    ms: f64,
+    /// Bytes moved, when every file says.
+    bytes: Option<f64>,
 }
 
-fn file_label(snapshot: &Snapshot, f: &FileIo) -> String {
-    match (snapshot.server.engine, f.kind, f.database.as_deref()) {
-        (Engine::Mssql, _, Some("tempdb")) if f.kind == FileKind::Log => "tempdb's log".into(),
+impl FileGroup<'_> {
+    /// Average time per operation, weighted by operations across the files: one quiet file read in large chunks by a
+    /// backup doesn't stand for the database's storage.
+    fn avg_ms(&self) -> f64 {
+        per_run(self.ms, self.ops)
+    }
+
+    /// Average bytes per operation, when known.
+    fn avg_bytes(&self) -> Option<f64> {
+        self.bytes.map(|b| per_run(b, self.ops))
+    }
+
+    fn bulk(&self) -> bool {
+        self.avg_bytes().is_some_and(|b| b >= BULK_IO_BYTES)
+    }
+}
+
+/// Every kind of file in every database whose operation-weighted average crosses its threshold over 1,000 operations.
+/// tempdb's log is left out: SQL Server doesn't harden it at commit, so no commit waits for those writes.
+fn slow_groups<'a>(snapshot: &Snapshot, files: &'a [FileIo]) -> Vec<FileGroup<'a>> {
+    let mut groups: BTreeMap<(u8, Option<String>), FileGroup<'a>> = BTreeMap::new();
+    for f in files {
+        let (order, write) = match f.kind {
+            FileKind::Data => (0, false),
+            FileKind::Temp => (1, false),
+            FileKind::Log => (2, true),
+            FileKind::Other => continue,
+        };
+        if snapshot.server.engine == Engine::Mssql && f.kind == FileKind::Log && f.database.as_deref() == Some("tempdb")
+        {
+            continue;
+        }
+        let (ops, ms, bytes) =
+            if write { (f.writes, f.write_ms, f.write_bytes) } else { (f.reads, f.read_ms, f.read_bytes) };
+        // An operation nobody timed says nothing about its time.
+        let Some(ms) = ms.filter(|_| ops > 0.0) else { continue };
+        let g = groups.entry((order, f.database.clone())).or_insert_with(|| FileGroup {
+            files: Vec::new(),
+            database: f.database.clone(),
+            kind: f.kind,
+            write,
+            ops: 0.0,
+            ms: 0.0,
+            bytes: Some(0.0),
+        });
+        g.files.push(f);
+        g.ops += ops;
+        g.ms += ms;
+        g.bytes = g.bytes.zip(bytes).map(|(a, b)| a + b);
+    }
+    groups.into_values().filter(|g| g.ops >= 1_000.0 && g.avg_ms() >= if g.write { 10.0 } else { 20.0 }).collect()
+}
+
+fn file_label(snapshot: &Snapshot, g: &FileGroup) -> String {
+    let one = (g.files.len() == 1).then(|| g.files[0].name.clone());
+    match (snapshot.server.engine, g.kind, g.database.as_deref()) {
         (Engine::Mssql, _, Some("tempdb")) => "tempdb".into(),
         (Engine::Mssql, FileKind::Log, Some(db)) => format!("{db}'s log"),
-        (Engine::Mssql, _, Some(db)) => format!("{db}'s data file {}", f.name),
+        (Engine::Mssql, _, Some(db)) => match one {
+            Some(name) => format!("{db}'s data file {name}"),
+            None => format!("{db}'s data files"),
+        },
         (Engine::Postgres, FileKind::Log, _) => "WAL".into(),
         (Engine::Postgres, FileKind::Temp, _) => "temporary tables".into(),
         (Engine::Postgres, _, _) => "table and index files".into(),
-        _ => f.name.clone(),
+        (_, kind, _) => one.unwrap_or_else(|| {
+            match kind {
+                FileKind::Temp => "temporary files",
+                FileKind::Log => "the log files",
+                _ => "data files",
+            }
+            .into()
+        }),
+    }
+}
+
+/// How storage that answers slowly is fixed depends on where it runs.
+fn storage_fix(snapshot: &Snapshot) -> &'static str {
+    match snapshot.server.cloud.as_deref() {
+        // Azure SQL Database runs on storage you don't manage: the tier decides the latency and the I/O limits.
+        Some("Azure SQL Database") => {
+            "In Azure SQL Database the service tier decides this: General Purpose reads from remote storage (5 to 10 ms is normal there), Hyperscale serves most reads from a local cache and the rest from page servers, Business Critical uses local SSDs. Check avg_data_io_percent and avg_log_write_percent in sys.dm_db_resource_stats: near 100% means the tier's I/O limit is throttling, so add vCores or move to a faster tier; well below it, cut the reads instead (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
+        }
+        // Managed Instance General Purpose keeps each file on a remote disk sized from the file.
+        Some("Azure SQL Managed Instance") => {
+            "On Managed Instance General Purpose each data and log file is a remote disk whose IOPS and throughput come from the file's size (up to 128 GB about 500 IOPS, up to 512 GB about 2,300, up to 1 TB 5,000): growing a busy file past the next size step raises its limit, and the next-gen General Purpose tier sets IOPS apart from size. Business Critical uses local SSDs. Compare each file's latency in sys.dm_io_virtual_file_stats with its size, and cut the reads too (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
+        }
+        _ => {
+            "Check the volume's limits first: cloud disks throttle at their provisioned IOPS and throughput, and burst credits run out. Then look for other load on the same disk and antivirus scanning data files, and give the log its own low-latency volume. A since-startup average hides bursts: sample Waits → Right now during the busy hour."
+        }
     }
 }
 
 pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };
     let files = culprit_core::signals::merge_logs(&p.files);
-    slow_files(&files)
+    slow_groups(snapshot, &files)
         .into_iter()
-        .map(|(file, avg, ops, write)| {
-            let label = file_label(snapshot, file);
-            let key = format!("{}:{}", file.database.as_deref().unwrap_or(""), file.name);
+        .map(|g| {
+            let (avg, ops, write) = (g.avg_ms(), g.ops, g.write);
+            let label = file_label(snapshot, &g);
+            let what = match g.files.as_slice() {
+                [one] => one.name.clone(),
+                _ => format!("{} files", match g.kind {
+                    FileKind::Temp => "temp",
+                    FileKind::Log => "log",
+                    _ => "data",
+                }),
+            };
+            let key = format!("{}:{what}", g.database.as_deref().unwrap_or(""));
             let mut f = finding("slow-storage", &key, Category::Configuration, subject(SubjectKind::Database, &label));
-            f.title = if write {
-                format!("Writes to {label} average {}: every commit waits for them", format::duration(avg))
-            } else {
-                format!("Reads from {label} average {}: storage is slow", format::duration(avg))
+            // Only reads come in bulk sizes that slow each one down; a log is judged on its commits.
+            let bulk = !write && g.bulk();
+            f.title = match (write, bulk) {
+                (true, _) => format!("Writes to {label} average {}: every commit waits for them", format::duration(avg)),
+                (false, false) => format!("Reads from {label} average {}: storage is slow", format::duration(avg)),
+                (false, true) => format!(
+                    "Reads from {label} average {}, mostly large reads of {}",
+                    format::duration(avg),
+                    format::bytes(g.avg_bytes().unwrap_or(0.0))
+                ),
             };
             let cache_note = match snapshot.server.engine {
                 Engine::Postgres => " PostgreSQL's numbers include reads the operating system served from its cache, so reads that reached the disk were slower still.",
@@ -738,7 +1019,14 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 if write { " and every commit" } else { "" },
                 cache_note
             );
+            if bulk {
+                f.summary.push_str(&format!(
+                    " These reads average {} each: mostly large sequential reads (backups, CHECKDB, read-ahead of big scans), which take longer each than the page-sized reads queries wait on, so the average overstates what queries see.",
+                    format::bytes(g.avg_bytes().unwrap_or(0.0))
+                ));
+            }
             f.severity = match (write, avg) {
+                (false, _) if bulk => Severity::Low,
                 (true, a) if a >= 30.0 => Severity::High,
                 (false, a) if a >= 50.0 => Severity::High,
                 _ => Severity::Medium,
@@ -749,15 +1037,15 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics = vec![
                 Metric::new(if write { "Average write" } else { "Average read" }, avg, Unit::Ms),
                 Metric::new(if write { "Writes" } else { "Reads" }, ops, Unit::Count),
-                Metric::text("File", file.name.clone()),
+                Metric::text(
+                    if g.files.len() == 1 { "File" } else { "Files" },
+                    g.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>().join(", "),
+                ),
             ];
-            // Azure SQL Database runs on storage you don't manage: the tier decides the latency and the I/O limits.
-            let fix = if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
-                "In Azure SQL Database the service tier decides this: General Purpose reads from remote storage (5 to 10 ms is normal there), Hyperscale serves most reads from a local cache and the rest from page servers, Business Critical uses local SSDs. Check avg_data_io_percent and avg_log_write_percent in sys.dm_db_resource_stats: near 100% means the tier's I/O limit is throttling, so add vCores or move to a faster tier; well below it, cut the reads instead (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
-            } else {
-                "Check the volume's limits first: cloud disks throttle at their provisioned IOPS and throughput, and burst credits run out. Then look for other load on the same disk and antivirus scanning data files, and give the log its own low-latency volume. A since-startup average hides bursts: sample Waits → Right now during the busy hour."
-            };
-            f.fix = Some(Fix { summary: fix.into(), sql: None, cost: None });
+            if let Some(b) = g.avg_bytes().filter(|_| !write) {
+                f.metrics.push(Metric::new("Average read size", b, Unit::Bytes));
+            }
+            f.fix = Some(Fix { summary: storage_fix(snapshot).into(), sql: None, cost: None });
             f.verify = vec![if write {
                 "Re-scan after the change: average log write time should be under 5 ms.".into()
             } else {
@@ -789,6 +1077,11 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         return Vec::new();
     }
     let engine = snapshot.server.engine;
+    // On Azure SQL Database the login counters belong to the server process behind the database, shared by its
+    // elastic pool: another database's logins aren't this one's to fix.
+    if engine == Engine::Mssql && snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
+        return Vec::new();
+    }
     let limit = if engine == Engine::Postgres { 2.0 } else { 10.0 };
     if rate < limit {
         return Vec::new();
@@ -800,7 +1093,13 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         Category::Configuration,
         subject(SubjectKind::Database, &snapshot.server.database),
     );
-    f.title = format!("The application opens {} connections a second: use a pool", format::count(rate));
+    // PostgreSQL counts sessions to this database; SQL Server's logins and MySQL's connections count the whole server,
+    // every database and application on it.
+    f.title = if engine == Engine::Postgres {
+        format!("The application opens {} connections a second: use a pool", format::count(rate))
+    } else {
+        format!("The server accepts {} new connections a second: use a pool", format::count(rate))
+    };
     let detail = match engine {
         Engine::Postgres => {
             let length = p.signal("session-length").map(|s| s.value);
@@ -823,8 +1122,13 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
             None => "Every connection pays for TLS, authentication and a thread.".into(),
         },
     };
+    let scope = match engine {
+        Engine::Postgres => " to this database",
+        Engine::Mssql => ", counting every database on the instance",
+        Engine::Mysql => ", counting every schema and application on it (failed attempts left out)",
+    };
     f.summary = format!(
-        "{} the server accepted {} new connections a second on average. {detail} An application that connects for each request spends more time connecting than querying under load.",
+        "{} the server accepted {} new connections a second on average{scope}. {detail} An application that connects for each request spends more time connecting than querying under load.",
         capitalize(&since_start(snapshot)),
         format::count(rate)
     );
@@ -833,7 +1137,11 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     f.impact.label = format!("{}/s new connections", format::count(rate));
     f.confidence = Confidence::Medium;
     f.metrics = vec![Metric::new("New connections per second", rate, Unit::Count)];
-    let mariadb = is_mariadb(snapshot);
+    // A larger thread cache, where the server is configured, and never smaller than it is.
+    const THREAD_CACHE: f64 = 64.0;
+    let thread_cache = snapshot.setting("thread_cache_size").and_then(|s| s.value.trim().parse::<f64>().ok());
+    let cache_change = (engine == Engine::Mysql && thread_cache.is_none_or(|n| n < THREAD_CACHE))
+        .then(|| setting_change(&snapshot.server, "thread_cache_size", &format!("{THREAD_CACHE:.0}")));
     f.fix = Some(match engine {
         Engine::Postgres => Fix {
             summary: "Pool connections in the application (every mainstream driver has a pool), or put PgBouncer in front in transaction mode so thousands of clients share a few dozen server connections.".into(),
@@ -846,12 +1154,18 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
             cost: None,
         },
         Engine::Mysql => Fix {
-            summary: "Pool connections in the application. Until then, a larger thread cache lets new connections reuse threads.".into(),
-            sql: Some(if mariadb {
-                "SET GLOBAL thread_cache_size = 64;  -- and in the server's configuration file".into()
-            } else {
-                "SET PERSIST thread_cache_size = 64;".into()
-            }),
+            summary: match (&cache_change, thread_cache) {
+                (Some(change), _) => format!(
+                    "Pool connections in the application. Until then, a larger thread cache lets new connections reuse threads: {}",
+                    change.how
+                ),
+                (None, Some(n)) => format!(
+                    "Pool connections in the application: the thread cache already keeps {} threads, so each connection still pays for TLS and authentication.",
+                    format::count(n)
+                ),
+                (None, None) => "Pool connections in the application.".into(),
+            },
+            sql: cache_change.and_then(|c| c.sql),
             cost: None,
         },
     });
@@ -880,65 +1194,85 @@ fn index_label(i: &IndexStat) -> String {
     format!("{}.{}", i.schema, i.table)
 }
 
+/// Lock waits a day on one table that make hot-rows High: ten minutes. A minute a day of waits a second or longer each
+/// is Medium.
+const HOT_ROWS_HIGH_MS_PER_DAY: f64 = 600_000.0;
+const HOT_ROWS_MEDIUM_MS_PER_DAY: f64 = 60_000.0;
+
 pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
     let rcsi = snapshot.setting("is_read_committed_snapshot_on").map(|s| crate::config::is_on(&s.value));
-    let mut findings: Vec<Finding> = snapshot
-        .indexes
-        .iter()
-        .filter_map(|i| {
-            let c = i.contention.as_ref()?;
-            (c.lock_wait_ms() >= 10_000.0 && c.lock_waits() >= 1.0).then_some((i, c))
+    // One finding per table: its indexes' waits are the same rows fought over, whichever index the lock was taken on.
+    let mut by_table: BTreeMap<(String, String), Vec<(&IndexStat, &culprit_core::IndexContention)>> = BTreeMap::new();
+    for i in &snapshot.indexes {
+        if let Some(c) = i.contention.as_ref().filter(|c| c.lock_waits() >= 1.0 && c.lock_wait_ms() > 0.0) {
+            by_table.entry((i.schema.clone(), i.table.clone())).or_default().push((i, c));
+        }
+    }
+    let mut findings: Vec<Finding> = by_table
+        .into_iter()
+        .filter_map(|((schema, table), mut indexes)| {
+            let waits: f64 = indexes.iter().map(|(_, c)| c.lock_waits()).sum();
+            let wait_ms: f64 = indexes.iter().map(|(_, c)| c.lock_wait_ms()).sum();
+            (wait_ms >= 10_000.0).then(|| {
+                indexes.sort_by(|a, b| b.1.lock_wait_ms().total_cmp(&a.1.lock_wait_ms()));
+                (schema, table, indexes, waits, wait_ms)
+            })
         })
-        .map(|(i, c)| {
-            let table = index_label(i);
-            let mut f = finding(
-                "hot-rows",
-                &format!("{table}.{}", i.name),
-                Category::Indexes,
-                subject(SubjectKind::Index, format!("{table}.{}", i.name)),
-            );
-            let avg = per_run(c.lock_wait_ms(), c.lock_waits());
-            f.title = format!("Sessions wait {} each on row locks in {}", format::duration(avg), i.table);
-            let escalations = if c.lock_escalations > 0.0 {
-                format!(" {} times SQL Server escalated many row locks to a lock on the whole table, which blocks every other session.", format::count(c.lock_escalations))
+        .map(|(schema, table, indexes, waits, wait_ms)| {
+            let name = format!("{schema}.{table}");
+            // The subject is the index most of the waiting was on; the finding is the table's.
+            let (top, _) = indexes[0];
+            let mut f = finding("hot-rows", &name, Category::Indexes, subject(SubjectKind::Index, format!("{}.{}", index_label(top), top.name)));
+            let escalations: f64 = indexes.iter().map(|(_, c)| c.lock_escalations).sum();
+            let avg = per_run(wait_ms, waits);
+            f.title = format!("Sessions wait {} each on row locks in {table}", format::duration(avg));
+            let names: Vec<String> = indexes.iter().map(|(i, _)| i.name.clone()).collect();
+            let on = match names.as_slice() {
+                [one] => format!("Since {one} was loaded into memory, sessions waited"),
+                _ => format!("Since its indexes were loaded into memory, sessions waited on {}", format::list(&names)),
+            };
+            let escalated = if escalations > 0.0 {
+                format!(" {} times SQL Server escalated many row locks to a lock on the whole table, which blocks every other session.", format::count(escalations))
             } else {
                 String::new()
             };
             f.summary = format!(
-                "Since {} was loaded into memory, sessions waited {} times for locks on its rows and pages, {} in all, {} each on average.{escalations} \
+                "{on} {} times for locks on the rows and pages of {table}, {} in all, {} each on average.{escalated} \
                  Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change.",
-                i.name,
-                format::count(c.lock_waits()),
-                format::duration(c.lock_wait_ms()),
+                format::count(waits),
+                format::duration(wait_ms),
                 format::duration(avg)
             );
-            let touching = queries_touching(snapshot, &i.schema, &i.table);
+            let touching = queries_touching(snapshot, &schema, &table);
             let mut locked: Vec<&QueryStat> = touching.into_iter().filter(|q| lock_ms(q) > 0.0).collect();
             locked.sort_by(|a, b| lock_ms(b).total_cmp(&lock_ms(a)));
             locked.truncate(3);
             f.queries = query_refs(&locked);
-            f.severity = if c.lock_wait_ms() >= 600_000.0 {
-                Severity::High
-            } else if c.lock_wait_ms() >= 60_000.0 && avg >= 1_000.0 {
-                Severity::Medium
-            } else {
-                Severity::Low
+            // Counted since the indexes were loaded, with no time for each wait: graded on a rate measured over an
+            // hour or more, never on the total.
+            let rate = counter_rate_per_day(snapshot, wait_ms);
+            f.severity = match rate {
+                Some(r) if r >= HOT_ROWS_HIGH_MS_PER_DAY => Severity::High,
+                Some(r) if r >= HOT_ROWS_MEDIUM_MS_PER_DAY && avg >= 1_000.0 => Severity::Medium,
+                _ => Severity::Low,
             };
             severity_score(&mut f);
-            f.impact.label = format!("{} waiting on locks", format::duration(c.lock_wait_ms()));
+            f.impact.label = format!("{} waiting on locks", format::duration(wait_ms));
             f.confidence = Confidence::High;
             f.metrics = vec![
-                Metric::new("Lock waits", c.lock_waits(), Unit::Count),
-                Metric::new("Time waiting", c.lock_wait_ms(), Unit::Ms),
+                Metric::new("Lock waits", waits, Unit::Count),
+                Metric::new("Time waiting", wait_ms, Unit::Ms),
                 Metric::new("Average wait", avg, Unit::Ms),
             ];
-            if c.lock_escalations > 0.0 {
-                f.metrics.push(Metric::new(ESCALATIONS_METRIC, c.lock_escalations, Unit::Count));
+            if let Some(r) = rate.filter(|_| counter_days(snapshot).is_some_and(per_day_is_measured)) {
+                f.metrics.push(Metric::new("Waiting a day", r, Unit::Ms));
+            }
+            if escalations > 0.0 {
+                f.metrics.push(Metric::new(ESCALATIONS_METRIC, escalations, Unit::Count));
             }
             f.fix = Some(Fix {
                 summary: format!(
-                    "Keep the transactions that change {} short and commit before slow work; make their WHERE use an index so they lock only the rows they change.{}",
-                    i.table,
+                    "Keep the transactions that change {table} short and commit before slow work; make their WHERE use an index so they lock only the rows they change.{}",
                     if rcsi == Some(false) {
                         " If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first."
                     } else {
@@ -948,8 +1282,11 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 sql: (rcsi == Some(false)).then(|| "-- Readers stop waiting for writers; test first\nALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;".into()),
                 cost: None,
             });
-            f.verify = vec!["Re-scan a day later: lock waits on this index should stop growing.".into()];
-            f.caveats.push("Counted since the index's metadata was loaded into memory, usually since SQL Server started.".into());
+            f.verify = vec![format!("Re-scan a day later: lock waits on {table} should stop growing.")];
+            f.caveats.push("Counted since the indexes' metadata was loaded into memory, usually since SQL Server started.".into());
+            if rate.is_none() {
+                f.caveats.push(history_caveat(snapshot, "lock waits"));
+            }
             f
         })
         .collect();
@@ -968,6 +1305,11 @@ pub(crate) const ESCALATIONS_SINCE_METRIC: &str = "Escalations since the previou
 
 /// SQL Server considers escalating once one statement holds about this many locks on one index.
 const ESCALATION_THRESHOLD: f64 = 5_000.0;
+
+/// Escalations a day since SQL Server started that make a first scan's finding High (one a day: something recurring)
+/// or Medium (one a week). Fewer may all be old.
+const ESCALATIONS_HIGH_PER_DAY: f64 = 1.0;
+const ESCALATIONS_MEDIUM_PER_DAY: f64 = 1.0 / 7.0;
 
 pub fn lock_escalations_info() -> CheckInfo {
     CheckInfo {
@@ -1061,6 +1403,8 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             // How many since the earlier scan, when there is one to compare with.
             let new = before.map(|b| (b, b.since(&name, t.escalations)));
             let historical = new.is_some_and(|(_, n)| n == 0.0);
+            // Without one, how many a day since SQL Server started, over an hour or more of counting.
+            let first_scan_rate = if new.is_none() { counter_rate_per_day(snapshot, t.escalations) } else { None };
             let happened = match new {
                 Some((b, n)) if n > 0.0 => {
                     let total = if b.restarted {
@@ -1099,10 +1443,21 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 }
                 None => {
                     f.title = format!("Row locks on {table} escalated to a table lock {} {since_start}", times(t.escalations));
+                    // Without an earlier scan, only how often they happened on average says whether they recur.
+                    let often = match first_scan_rate {
+                        Some(r) if r >= ESCALATIONS_HIGH_PER_DAY => {
+                            " That is once a day or more on average since then: often enough to be still happening."
+                        }
+                        Some(r) if r >= ESCALATIONS_MEDIUM_PER_DAY => {
+                            " That is once a week or more on average since then: likely to happen again."
+                        }
+                        Some(_) => " That is less than once a week on average since then: they may all be old.",
+                        None => " SQL Server started too recently to tell how often it happens.",
+                    };
                     format!(
                         "SQL Server replaced the row and page locks on {table} with one lock on the whole table {} {}. It keeps no time for each, \
                          and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says \
-                         whether any happened since.",
+                         whether any happened since.{often}",
                         times(t.escalations),
                         started_on.as_deref().map(|on| format!("since it started, {on}")).unwrap_or_else(|| since_start.clone())
                     )
@@ -1155,9 +1510,14 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             f.last_seen = writes.first().and_then(|q| q.last_seen.clone());
 
             let waited = t.lock_waits >= 1.0;
-            // One escalation is a lock on the whole table: every other writer waited for it, however briefly. Old ones
-            // with none since the previous scan are history: worth preventing, not an emergency.
-            f.severity = if historical { Severity::Low } else { Severity::High };
+            // One escalation is a lock on the whole table: every other writer waited for it, however briefly. New ones
+            // since the previous scan are High; old ones with none since are history: worth preventing, not an
+            // emergency. Without an earlier scan the count keeps no time, so only a measured rate raises it.
+            f.severity = match new {
+                Some(_) if historical => Severity::Low,
+                Some(_) => Severity::High,
+                None => since_start_severity(first_scan_rate, ESCALATIONS_HIGH_PER_DAY, ESCALATIONS_MEDIUM_PER_DAY),
+            };
             severity_score(&mut f);
             let locks = |n: f64, new: &str| {
                 format!("{} {new}table lock{}", format::count(n), if n == 1.0 { "" } else { "s" })
@@ -1257,7 +1617,13 @@ pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
                 format::count(c.page_latch_waits),
                 format::duration(c.page_latch_wait_ms)
             );
-            f.severity = if c.page_latch_wait_ms >= 600_000.0 { Severity::High } else { Severity::Medium };
+            // Counted since the index was loaded, with no time for each wait: graded on a rate measured over an hour or
+            // more (ten minutes a day High, one Medium), never on the total.
+            let rate = counter_rate_per_day(snapshot, c.page_latch_wait_ms);
+            f.severity = since_start_severity(rate, 600_000.0, 60_000.0);
+            if rate.is_none() {
+                f.caveats.push(history_caveat(snapshot, "latch waits"));
+            }
             severity_score(&mut f);
             f.impact.label = format!("{} latch waits", format::duration(c.page_latch_wait_ms));
             f.confidence = Confidence::Medium;
@@ -1303,6 +1669,13 @@ pub fn untrusted_constraint_info() -> CheckInfo {
     }
 }
 
+/// Whether PostgreSQL's planner reads these CHECK constraints at all: constraint exclusion looks at inheritance
+/// children only (constraint_exclusion = partition, the default), or at every table with constraint_exclusion = on.
+fn planner_reads_checks(snapshot: &Snapshot, list: &[&ConstraintIssue]) -> bool {
+    list.iter().any(|c| c.inheritance_child)
+        || snapshot.setting("constraint_exclusion").is_some_and(|s| crate::config::is_on(&s.value))
+}
+
 pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
     let mssql = snapshot.server.engine == Engine::Mssql;
     let engine = snapshot.server.engine;
@@ -1335,10 +1708,20 @@ pub fn untrusted_constraint(snapshot: &Snapshot) -> Vec<Finding> {
                     if list.len() == 1 { "it" } else { "them" },
                     if disabled > 0 { " A switched-off constraint doesn't check new rows either, so the data may already break it." } else { "" }
                 )
-            } else {
+            } else if planner_reads_checks(snapshot, &list) {
                 format!(
-                    "{names} {} added NOT VALID, so rows that existed then were never checked. Until it is validated the planner can't use it to skip the table when a query's filter contradicts it (constraint exclusion).",
-                    if list.len() == 1 { "was" } else { "were" }
+                    "{names} {} added NOT VALID, so rows that existed then were never checked. Until it is validated the planner can't use it to skip the table when a query's filter contradicts it (constraint exclusion{}).",
+                    if list.len() == 1 { "was" } else { "were" },
+                    if list.iter().any(|c| c.inheritance_child) { ", which it applies to this inheritance child" } else { ", which constraint_exclusion = on applies to every table" }
+                )
+            } else {
+                // The planner reads CHECK constraints only on inheritance children (constraint_exclusion = partition,
+                // the default): here a NOT VALID one is about the data, and often deliberate.
+                format!(
+                    "{names} {} added NOT VALID: PostgreSQL checks new and changed rows against {} but never checked the rows that existed then, so some may break {}. That is often deliberate: NOT VALID adds a constraint without a long scan under lock. The planner doesn't read it here either way (constraint exclusion looks at CHECK constraints only on inheritance children unless constraint_exclusion is on). Validating proves the old rows, and lets later steps skip their own full scan: SET NOT NULL (12+) and ATTACH PARTITION when the constraint implies them.",
+                    if list.len() == 1 { "was" } else { "were" },
+                    if list.len() == 1 { "it" } else { "them" },
+                    if list.len() == 1 { "it" } else { "them" }
                 )
             };
             f.severity = if disabled > 0 { Severity::Medium } else { Severity::Low };
@@ -1452,9 +1835,11 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
                     entry.0.push(c);
                 }
             }
-            // MySQL's fixed guesses: 10% for =, 33.33% for ranges, 11.11% for BETWEEN.
+            // MySQL's fixed guesses: 10% for =, 33.33% for ranges, 11.11% for BETWEEN. MariaDB without statistics for
+            // the column assumes the condition filters nothing: 100%.
+            let guesses: &[f64] = if mariadb { &[100.0] } else { &[10.0, 33.33, 11.11] };
             if let Some(filtered) = node.props.get("filtered").and_then(|v| v.parse::<f64>().ok())
-                && [10.0, 33.33, 11.11].iter().any(|g| (filtered - g).abs() < 0.01)
+                && guesses.iter().any(|g| (filtered - g).abs() < 0.01)
             {
                 entry.1 = Some(filtered);
             }
@@ -1470,15 +1855,27 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             let name = format!("{schema}.{table}");
             let mut f = finding("missing-histogram", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
             let list = format::list(&columns);
-            f.title = format!("{engine} guesses how many {table} rows match {list}: no histogram");
+            f.title = format!(
+                "{engine} guesses how many {table} rows match {list}: no {}",
+                if mariadb { "column statistics" } else { "histogram" }
+            );
             let who = match queries.len() {
                 1 => format!("{} filters", capitalize(&query_handle(queries[0]))),
                 n => format!("{n} of the heaviest queries filter"),
             };
-            f.summary = format!(
-                "{who} {table} on {list}, which no index starts with and no histogram describes, so {engine} assumes a fixed share of rows match (10% for =, a third for ranges){}. When the real share is far off, common for status flags and skewed values, it picks the wrong join order or access path. A histogram costs nothing at query time and changes only when you run ANALYZE again.",
-                guess.map(|g| format!("; EXPLAIN shows filtered = {g:.2}%, one of those guesses")).unwrap_or_default()
-            );
+            f.summary = if mariadb {
+                // MariaDB doesn't guess a share: without statistics for a column it counts the condition as keeping
+                // every row.
+                format!(
+                    "{who} {table} on {list}, which no index starts with and no statistics describe, so {engine} assumes the condition keeps every row{}. When it actually keeps few, common for status flags and skewed values, it picks the wrong join order or access path. Column statistics cost nothing at query time and change only when you run ANALYZE again.",
+                    guess.map(|g| format!(" (EXPLAIN shows filtered = {g:.0}%)")).unwrap_or_default()
+                )
+            } else {
+                format!(
+                    "{who} {table} on {list}, which no index starts with and no histogram describes, so {engine} assumes a fixed share of rows match (10% for =, a third for ranges){}. When the real share is far off, common for status flags and skewed values, it picks the wrong join order or access path. A histogram costs nothing at query time and changes only when you run ANALYZE again.",
+                    guess.map(|g| format!("; EXPLAIN shows filtered = {g:.2}%, one of those guesses")).unwrap_or_default()
+                )
+            };
             f.queries = query_refs(&queries);
             let impact = query_impact(snapshot, &queries);
             let share = impact.as_ref().map(|i| i.share).unwrap_or(0.0);
@@ -1526,8 +1923,10 @@ pub fn hot_updates_info() -> CheckInfo {
     }
 }
 
+/// Non-HOT updates a day to one table that make hot-updates Medium.
+const COLD_UPDATES_MEDIUM_PER_DAY: f64 = 1_000_000.0;
+
 pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
-    let hours = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours);
     let mut findings: Vec<Finding> = snapshot
         .tables
         .iter()
@@ -1536,9 +1935,11 @@ pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
             let updates = t.updates.filter(|u| *u >= 10_000.0)?;
             let hot = s.hot_updates?;
             let ratio = hot / updates;
-            (ratio < 0.5).then_some((t, s, updates, hot, ratio))
+            // A table without indexes has no entries to rewrite: a non-HOT update there costs what a HOT one does.
+            let indexes = snapshot.indexes_on(&t.schema, &t.name).count();
+            (ratio < 0.5 && indexes > 0).then_some((t, s, updates, hot, ratio, indexes))
         })
-        .map(|(t, s, updates, hot, ratio)| {
+        .map(|(t, s, updates, hot, ratio, indexes)| {
             let name = t.qualified();
             let mut f = finding("hot-updates", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
             let cold = updates - hot;
@@ -1547,7 +1948,6 @@ pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
             } else {
                 format!("Only {} of updates to {} are HOT: the rest rewrite every index", format::percent(ratio), t.name)
             };
-            let indexes = snapshot.indexes_on(&t.schema, &t.name).count();
             let every_index = match indexes {
                 1 => "its only index".to_string(),
                 2 => "both of its indexes".to_string(),
@@ -1574,8 +1974,21 @@ pub fn hot_updates(snapshot: &Snapshot) -> Vec<Finding> {
             f.summary = format!(
                 "An update that changes no indexed column and finds room on the same page is HOT: it writes no index entries and its old version is cleaned up without VACUUM. {how_many}, so each wrote a new entry in {every_index}.{cause}"
             );
-            let per_day = hours.filter(|h| *h > 0.0).map(|h| cold / h * 24.0);
-            f.severity = if per_day.is_some_and(|d| d >= 1_000_000.0) { Severity::Medium } else { Severity::Low };
+            // The counts run from the database's last statistics reset, which PostgreSQL 15+ leaves empty until the first
+            // one: then their age is unknown (the counters outlive restarts), and so is any rate. A one-time backfill
+            // keeps the share low long after it ran, so only a measured rate raises it.
+            let hours = s.counter_hours.filter(|h| *h >= culprit_core::RATE_MIN_HOURS);
+            let per_day = hours.map(|h| cold / h * 24.0);
+            f.severity = since_start_severity(per_day, f64::INFINITY, COLD_UPDATES_MEDIUM_PER_DAY);
+            if per_day.is_none_or(|d| d < COLD_UPDATES_MEDIUM_PER_DAY) {
+                f.caveats.push(match s.counter_hours {
+                    Some(h) => format!(
+                        "The counts cover the {} since the statistics were last reset: one large update or backfill in that time keeps the share low long after it ran. Compare how n_tup_hot_upd grows against n_tup_upd over a few days before changing the table.",
+                        culprit_core::span_words(h)
+                    ),
+                    None => "How long these counts have run isn't known (PostgreSQL 15+ records no start until its statistics are first reset, and the counts outlive restarts): one large update or backfill long ago would keep the share low. Compare how n_tup_hot_upd grows against n_tup_upd over a few days before changing the table.".into(),
+                });
+            }
             severity_score(&mut f);
             f.impact.label = format!("{} HOT", format::percent(ratio));
             f.confidence = if moved.is_some() { Confidence::High } else { Confidence::Medium };
@@ -1621,6 +2034,16 @@ fn table_heap_bytes(t: &TableStat) -> Option<f64> {
     t.data_bytes.or(t.total_bytes).filter(|b| *b > 0.0)
 }
 
+/// Dead rows explain the estimated empty space when their share of the row versions is at least this part of its
+/// share: the estimate is good to tens of percent.
+pub(crate) const DEAD_EXPLAINS_BLOAT: f64 = 0.9;
+
+/// The share of a table's row versions that are dead (not yet vacuumed), when the engine counts them.
+pub(crate) fn dead_share(t: &TableStat) -> Option<f64> {
+    let dead = t.dead_rows.filter(|d| *d > 0.0)?;
+    Some(dead / (dead + t.rows.unwrap_or(0.0).max(0.0)))
+}
+
 pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = snapshot
         .tables
@@ -1635,13 +2058,21 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
             let name = t.qualified();
             let mut f = finding("table-bloat", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
             f.title = format!("{} is about {} empty space (≈ {})", t.name, format::percent(share), format::bytes(bloat));
+            // The estimate counts every byte beyond the live rows, dead rows VACUUM hasn't cleared yet included. When
+            // they account for it, VACUUM is the fix, not a rewrite.
+            let dead = dead_share(t).filter(|d| *d >= share * DEAD_EXPLAINS_BLOAT);
             f.summary = format!(
-                "From its row count and average row width, {}'s rows need about {}; it takes {}. New rows reuse freed space, but every scan still reads the empty pages, and the cache holds them. This is an estimate from statistics, good to tens of percent; pgstattuple measures it exactly.",
+                "From its row count and average row width, {}'s rows need about {}; it takes {}. New rows reuse freed space, but every scan still reads the empty pages, and the cache holds them. This is an estimate from statistics, good to tens of percent; pgstattuple measures it exactly.{}",
                 t.name,
                 format::bytes((size - bloat).max(0.0)),
-                format::bytes(size)
+                format::bytes(size),
+                dead.map(|d| format!(
+                    " {} of its row versions are dead rows VACUUM hasn't cleared yet, enough to be most of this space: vacuum it first and estimate again before rewriting it.",
+                    format::percent(d)
+                ))
+                .unwrap_or_default()
             );
-            f.severity = if bloat >= GB { Severity::Medium } else { Severity::Low };
+            f.severity = if bloat >= GB && dead.is_none() { Severity::Medium } else { Severity::Low };
             severity_score(&mut f);
             f.impact.label = format!("≈ {} empty", format::bytes(bloat));
             f.confidence = Confidence::Medium;
@@ -1651,13 +2082,21 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("Share", share, Unit::Ratio),
             ];
             let target = qualified(Engine::Postgres, &t.schema, &t.name);
-            f.fix = Some(Fix {
-                summary: "Measure it exactly first. To give the space back, rewrite the table: pg_repack does it online; VACUUM FULL does it while blocking all reads and writes. If the table keeps growing, make autovacuum visit it more often so freed space is reused sooner.".into(),
-                sql: Some(format!(
-                    "-- Exact numbers (needs the pgstattuple extension)\nSELECT * FROM pgstattuple('{}');\n-- Rewrite offline: blocks reads and writes until it finishes\n-- VACUUM (FULL, ANALYZE) {target};",
-                    target.replace('\'', "''")
-                )),
-                cost: Some("Rewrites the table".into()),
+            f.fix = Some(if dead.is_some() {
+                Fix {
+                    summary: "Vacuum it: VACUUM clears the dead rows without blocking reads or writes, and new rows then reuse their space. Make autovacuum visit it sooner so they don't pile up again. Rewrite the table (pg_repack online, VACUUM FULL offline) only if the estimate stays high after a vacuum.".into(),
+                    sql: Some(format!("VACUUM (ANALYZE) {target};")),
+                    cost: Some("VACUUM doesn't block reads or writes".into()),
+                }
+            } else {
+                Fix {
+                    summary: "Measure it exactly first. To give the space back, rewrite the table: pg_repack does it online; VACUUM FULL does it while blocking all reads and writes. If the table keeps growing, make autovacuum visit it more often so freed space is reused sooner.".into(),
+                    sql: Some(format!(
+                        "-- Exact numbers (needs the pgstattuple extension)\nSELECT * FROM pgstattuple('{}');\n-- Rewrite offline: blocks reads and writes until it finishes\n-- VACUUM (FULL, ANALYZE) {target};",
+                        target.replace('\'', "''")
+                    )),
+                    cost: Some("Rewrites the table".into()),
+                }
             });
             f.verify = vec!["Re-scan after the rewrite: the estimate should fall under 20%.".into()];
             f
@@ -1698,6 +2137,8 @@ const FAST_GROWTH_SHARE: f64 = 0.1;
 const FAST_GROWTH_BYTES: f64 = 100.0 * MB;
 /// A table this big is costly to keep, back up and restore whatever reads it.
 const BIG_TABLE_BYTES: f64 = 10.0 * GB;
+/// A data page, on SQL Server and PostgreSQL.
+const PAGE_BYTES: f64 = 8_192.0;
 
 /// A table's own data and the part of it in large-value pages: its in-row, large-value and row-overflow pages when the
 /// engine splits them. `None` when it doesn't.
@@ -1725,8 +2166,13 @@ fn large_value_type(engine: Engine, data_type: &str) -> bool {
 }
 
 /// Statements that read or rewrite whole rows of `t`: many pages a run, and many for each row they return or change.
-/// One-off statements (a single run) aren't the application's.
-fn whole_row_statements<'a>(snapshot: &'a Snapshot, t: &TableStat) -> Vec<&'a QueryStat> {
+/// One-off statements (a single run) aren't the application's. A scan of the rows' own pages reads about as many
+/// pages as the table keeps in-row, and returns few rows (a count, a filter on an unindexed column): many pages a row
+/// without a single large value. A statement reading about that many pages a run is left out; one reading far fewer
+/// (a few rows by key) or more (the large values too) isn't.
+fn whole_row_statements<'a>(snapshot: &'a Snapshot, t: &TableStat, size: f64, large: f64) -> Vec<&'a QueryStat> {
+    let in_row_pages = t.in_row_bytes.unwrap_or(size - large).max(0.0) / PAGE_BYTES;
+    let scans_in_row = |pages: f64| pages >= in_row_pages * 0.5 && pages <= in_row_pages * 1.2;
     let mut found: Vec<&QueryStat> = queries_touching(snapshot, &t.schema, &t.name)
         .into_iter()
         .filter(|q| {
@@ -1736,7 +2182,7 @@ fn whole_row_statements<'a>(snapshot: &'a Snapshot, t: &TableStat) -> Vec<&'a Qu
             let Some(reads) = q.logical_reads else { return false };
             let per_run = reads / q.executions;
             let rows = q.rows.map(|r| r / q.executions).unwrap_or(1.0).max(1.0);
-            per_run >= WHOLE_ROW_PAGES && per_run / rows >= WHOLE_ROW_PAGES_PER_ROW
+            per_run >= WHOLE_ROW_PAGES && per_run / rows >= WHOLE_ROW_PAGES_PER_ROW && !scans_in_row(per_run)
         })
         .collect();
     found.sort_by(|a, b| b.logical_reads.unwrap_or(0.0).total_cmp(&a.logical_reads.unwrap_or(0.0)));
@@ -1765,14 +2211,28 @@ fn writes_rows(text: &str) -> bool {
     first.is_some_and(|(_, k)| k != "select")
 }
 
+/// The rows a table holds, as far as its size per row goes. PostgreSQL's live-row counter starts again from zero after
+/// a statistics reset, a crash or a failover, while the planner's count (reltuples) doesn't: the larger of the two.
+fn table_rows(t: &TableStat) -> Option<f64> {
+    let planner = t.storage.as_ref().and_then(|s| s.planner_rows);
+    match (t.rows, planner) {
+        (Some(live), Some(planner)) => Some(live.max(planner)),
+        (rows, planner) => rows.or(planner),
+    }
+    .filter(|r| *r >= 1.0)
+}
+
 pub fn large_rows(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = snapshot
         .tables
         .iter()
         .filter_map(|t| {
-            let rows = t.rows.filter(|r| *r >= 1.0)?;
+            let rows = table_rows(t)?;
             let (size, large) = split_bytes(t)?;
-            (size >= LARGE_ROWS_TABLE_BYTES && size / rows >= LARGE_ROW_BYTES && large / size >= LARGE_VALUE_SHARE)
+            // Dead row versions (not yet vacuumed) keep their large values on disk too: a queue whose deleted payloads
+            // wait for VACUUM isn't a table of large rows. Per version, they must still be large.
+            let versions = rows + t.dead_rows.unwrap_or(0.0).max(0.0);
+            (size >= LARGE_ROWS_TABLE_BYTES && size / versions >= LARGE_ROW_BYTES && large / size >= LARGE_VALUE_SHARE)
                 .then(|| large_rows_finding(snapshot, t, rows, size, large))
         })
         .collect();
@@ -1828,11 +2288,19 @@ fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, 
         summary.push_str(" PostgreSQL has already compressed them: these are the sizes on disk.");
     }
 
+    // Dead versions hold their values until VACUUM: say how much of the table they are.
+    if let Some(dead) = dead_share(t).filter(|d| *d >= 0.2) {
+        summary.push_str(&format!(
+            " {} of its row versions are dead rows not yet vacuumed, and their large values still take space until VACUUM clears them.",
+            format::percent(dead)
+        ));
+    }
+
     // Statements reading whole rows: what makes the size cost on every run, not just on disk.
-    let statements = whole_row_statements(snapshot, t);
+    let statements = whole_row_statements(snapshot, t, size, large);
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
     let reads: f64 = statements.iter().filter_map(|q| q.logical_reads).sum();
-    let hot = rate_per_day(snapshot, runs).is_some_and(|r| r >= WHOLE_ROW_RUNS_PER_DAY);
+    let hot = window_rate_per_day(snapshot, runs).is_some_and(|r| r >= WHOLE_ROW_RUNS_PER_DAY);
     let runs_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(runs));
     if !statements.is_empty() {
         let pages = (reads / runs.max(1.0)).round();
@@ -1952,97 +2420,295 @@ pub fn replica_lag_info() -> CheckInfo {
     }
 }
 
-fn stopped(r: &Replica) -> bool {
-    r.state
-        .as_deref()
-        .is_some_and(|s| s.contains("stopped") || s == "not receiving" || s.eq_ignore_ascii_case("NOT SYNCHRONIZING"))
+/// How a replica, a consumer or this server stands, as replica-lag reads it.
+#[derive(Debug, PartialEq)]
+enum ReplicaStatus {
+    /// Replication failed or can't connect: the copy stopped with an error, or a standby meant to stream has no
+    /// receiver.
+    Stopped,
+    /// Both MySQL replication threads are off and nothing failed: someone ran STOP REPLICA.
+    StoppedByHand,
+    /// The same on a server that takes writes: a former replica promoted to primary, its old configuration left behind.
+    LeftConfigured,
+    /// Behind by this many seconds beyond any configured delay (or by bytes, when that is all the engine says).
+    Behind,
+    Fine,
+}
+
+fn replica_status(snapshot: &Snapshot, r: &Replica) -> ReplicaStatus {
+    // Group Replication's own channels idle by design; the group reports its members elsewhere.
+    if r.name.to_ascii_lowercase().starts_with("group_replication_") {
+        return ReplicaStatus::Fine;
+    }
+    let state = r.state.as_deref().unwrap_or("");
+    if state.starts_with("configured, not running") {
+        return ReplicaStatus::LeftConfigured;
+    }
+    if state.starts_with("stopped by hand") {
+        return ReplicaStatus::StoppedByHand;
+    }
+    if state.contains("stopped") || state == "not receiving" || state.eq_ignore_ascii_case("NOT SYNCHRONIZING") {
+        return ReplicaStatus::Stopped;
+    }
+    let seconds = replica_lag_seconds(snapshot, r);
+    // A configured delay keeps WAL waiting on purpose: only the seconds beyond it say whether it is behind.
+    let bytes = r.lag_bytes.filter(|_| r.delay_seconds.is_none() && seconds.is_none_or(|s| s > 0.0));
+    if seconds.is_some_and(|s| s >= 30.0) || bytes.is_some_and(|b| b >= GB) {
+        ReplicaStatus::Behind
+    } else {
+        ReplicaStatus::Fine
+    }
+}
+
+/// Seconds behind beyond any configured delay. A PostgreSQL standby with nothing received left to replay is caught up,
+/// whatever the time since its last replayed commit (older scans reported that time as lag).
+fn replica_lag_seconds(snapshot: &Snapshot, r: &Replica) -> Option<f64> {
+    if snapshot.server.engine == Engine::Postgres && r.role == ReplicaRole::ThisServer && r.lag_bytes == Some(0.0) {
+        return Some(0.0);
+    }
+    r.lag_seconds
 }
 
 pub fn replica_lag(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };
-    let pg = snapshot.server.engine == Engine::Postgres;
     p.replicas
         .iter()
-        .filter(|r| match r.role {
-            ReplicaRole::Slot => r.state.as_deref() == Some("inactive") && r.lag_bytes.is_some_and(|b| b >= GB),
-            _ => stopped(r) || r.lag_seconds.is_some_and(|s| s >= 30.0) || r.lag_bytes.is_some_and(|b| b >= GB),
-        })
-        .map(|r| {
-            let mut f = finding("replica-lag", &r.name, Category::Configuration, subject(SubjectKind::Database, &r.name));
-            let lag = r
-                .lag_seconds
-                .map(|s| format::duration(s * 1000.0))
-                .or_else(|| r.lag_bytes.map(|b| format!("{} of log", format::bytes(b))))
-                .unwrap_or_else(|| "behind".into());
-            match r.role {
-                ReplicaRole::Slot => {
-                    let kept = r.lag_bytes.unwrap_or(0.0);
-                    f.title = format!("The inactive replication slot {} keeps {} of WAL", r.name, format::bytes(kept));
-                    f.summary = format!(
-                        "A replication slot keeps every WAL file its consumer hasn't confirmed. {} is inactive, so the WAL it holds keeps growing until the disk fills and the server stops accepting writes.",
-                        r.name
-                    );
-                    f.severity = if kept >= 10.0 * GB { Severity::High } else { Severity::Medium };
-                    f.fix = Some(Fix {
-                        summary: "If nothing will consume this slot again, drop it. To keep a slot from filling the disk, cap what slots may keep (PostgreSQL 13+).".into(),
-                        sql: Some(format!(
-                            "SELECT pg_drop_replication_slot('{}');\n-- Cap what any slot may keep:\n-- ALTER SYSTEM SET max_slot_wal_keep_size = '50GB'; SELECT pg_reload_conf();",
-                            r.name.replace('\'', "''")
-                        )),
-                        cost: None,
-                    });
-                    f.metrics = vec![Metric::new("WAL kept", kept, Unit::Bytes)];
-                }
-                _ if stopped(r) => {
-                    f.title = match r.role {
-                        ReplicaRole::ThisServer => format!("Replication to this server has stopped ({})", r.state.clone().unwrap_or_default()),
-                        _ => format!("The replica {} isn't receiving changes ({})", r.name, r.state.clone().unwrap_or_default()),
-                    };
-                    f.summary = format!(
-                        "{}The copy no longer keeps up, so its data is getting older by the minute and failing over to it now would lose changes.",
-                        r.error.as_ref().map(|e| format!("The last error was {e}. ")).unwrap_or_default()
-                    );
-                    f.severity = Severity::High;
-                    f.fix = Some(Fix {
-                        summary: if snapshot.server.engine == Engine::Mysql {
-                            "Read the full error with SHOW REPLICA STATUS on the replica, fix its cause, then START REPLICA.".into()
-                        } else {
-                            "Find why it stopped (the replica's error log, network, disk space), fix it, and let it catch up before relying on it.".into()
-                        },
-                        sql: None,
-                        cost: None,
-                    });
-                }
-                _ => {
-                    f.title = match r.role {
-                        ReplicaRole::ThisServer => format!("This server is {lag} behind its primary"),
-                        _ => format!("The replica {} is {lag} behind", r.name),
-                    };
-                    f.summary = format!(
-                        "Reads from the replica return data {lag} old, and failing over now would lose or wait for that much. Lag grows when the replica applies changes slower than the primary writes them: large transactions, long queries on the replica{}, or slower storage.",
-                        if pg { " (which can pause replay)" } else { "" }
-                    );
-                    f.severity = if r.lag_seconds.is_some_and(|s| s >= 600.0) { Severity::High } else { Severity::Medium };
-                    f.fix = Some(Fix {
-                        summary: "Split large write transactions into batches, check the replica's storage and CPU, and move long reports off it or let them run against a snapshot.".into(),
-                        sql: None,
-                        cost: None,
-                    });
-                    if let Some(s) = r.lag_seconds {
-                        f.metrics.push(Metric::new("Behind by", s * 1000.0, Unit::Ms));
-                    }
-                    if let Some(b) = r.lag_bytes {
-                        f.metrics.push(Metric::new("Not yet applied", b, Unit::Bytes));
-                    }
-                }
-            }
-            severity_score(&mut f);
-            f.impact.label = if r.role == ReplicaRole::Slot { "WAL kept".into() } else { format!("{lag} behind") };
-            f.confidence = Confidence::High;
-            f.verify = vec!["Re-scan: the lag should be seconds, or the slot gone.".into()];
-            f
+        .filter_map(|r| match r.role {
+            ReplicaRole::Slot => slot_finding(snapshot, r),
+            _ => replica_finding(snapshot, r),
         })
         .collect()
+}
+
+/// A replica, a logical consumer or this server, when it is stopped or behind.
+fn replica_finding(snapshot: &Snapshot, r: &Replica) -> Option<Finding> {
+    let status = replica_status(snapshot, r);
+    if status == ReplicaStatus::Fine {
+        return None;
+    }
+    let pg = snapshot.server.engine == Engine::Postgres;
+    let mysql = snapshot.server.engine == Engine::Mysql;
+    let consumer = r.is_logical();
+    let seconds = replica_lag_seconds(snapshot, r);
+    let mut f = finding("replica-lag", &r.name, Category::Configuration, subject(SubjectKind::Database, &r.name));
+    let lag = seconds
+        .map(|s| format::duration(s * 1000.0))
+        .or_else(|| r.lag_bytes.map(|b| format!("{} of log", format::bytes(b))))
+        .unwrap_or_else(|| "behind".into());
+    let state = r.state.clone().unwrap_or_default();
+    match status {
+        ReplicaStatus::LeftConfigured => {
+            f.title = "This server is still set up as a replica, but replication isn't running".into();
+            f.summary = "Both replication threads are off and no error is recorded, so someone stopped them, and this server takes writes (read_only is off). A former replica promoted to primary looks like this: its old replication settings stay behind, and starting them by mistake would apply another server's changes on top of this one's.".into();
+            f.severity = Severity::Low;
+            f.fix = Some(Fix {
+                summary: "If it is no longer a replica, remove the configuration with RESET REPLICA ALL (RESET SLAVE ALL before MySQL 8.0.22 and MariaDB 10.5.1). If it should replicate, make it read-only and START REPLICA.".into(),
+                sql: None,
+                cost: None,
+            });
+        }
+        ReplicaStatus::StoppedByHand => {
+            f.title = "Replication to this server was stopped by hand".into();
+            f.summary = "Both replication threads are off and no error is recorded: someone ran STOP REPLICA, for a backup or maintenance perhaps. While it stays stopped the copy gets older by the minute, and failing over to it would lose the changes since.".into();
+            f.severity = Severity::Medium;
+            f.fix = Some(Fix {
+                summary: "If it should replicate, START REPLICA and let it catch up before relying on it; if it is no longer a replica, RESET REPLICA ALL removes the configuration.".into(),
+                sql: None,
+                cost: None,
+            });
+        }
+        ReplicaStatus::Stopped => {
+            f.title = match r.role {
+                ReplicaRole::ThisServer => format!("Replication to this server has stopped ({state})"),
+                _ if consumer => format!("The logical consumer {} isn't receiving changes ({state})", r.name),
+                _ => format!("The replica {} isn't receiving changes ({state})", r.name),
+            };
+            let error = r.error.as_ref().map(|e| format!("The last error was {e}. ")).unwrap_or_default();
+            f.summary = if pg && r.role == ReplicaRole::ThisServer && state == "not receiving" {
+                format!(
+                    "{error}This standby is set up to stream from its primary (primary_conninfo is set) but no WAL receiver is running, so it isn't getting changes: its data is getting older by the minute and failing over to it now would lose them."
+                )
+            } else {
+                format!(
+                    "{error}The copy no longer keeps up, so its data is getting older by the minute and failing over to it now would lose changes."
+                )
+            };
+            f.severity = Severity::High;
+            f.fix = Some(Fix {
+                summary: if mysql {
+                    "Read the full error with SHOW REPLICA STATUS on the replica, fix its cause, then START REPLICA."
+                        .into()
+                } else {
+                    "Find why it stopped (the replica's error log, network, disk space), fix it, and let it catch up before relying on it.".into()
+                },
+                sql: None,
+                cost: None,
+            });
+        }
+        _ => {
+            let delay = r.delay_seconds.map(|d| {
+                format!(
+                    " It is also set up to apply changes {} late on purpose ({}); that part isn't counted.",
+                    format::duration(d * 1000.0),
+                    if pg { "recovery_min_apply_delay" } else { "SOURCE_DELAY" }
+                )
+            });
+            if consumer {
+                f.title = format!("The logical consumer {} is {lag} behind", r.name);
+                f.summary = format!(
+                    "{} receives this database's changes through logical decoding: a subscription, or a CDC tool such as Debezium. It has confirmed changes only up to {lag} ago, so whatever it feeds sees data that old, and its slot keeps the WAL since then on this server. A consumer falls behind when it applies changes slower than this server writes them: one very large transaction, a slow destination, or a connector that is throttled or failing.",
+                    r.name
+                );
+                f.fix = Some(Fix {
+                    summary: "Look at the consumer, not this server: the subscriber's apply worker (pg_stat_subscription and its log) or the CDC connector's lag and errors. Split very large transactions so changes flow in smaller pieces.".into(),
+                    sql: None,
+                    cost: None,
+                });
+            } else {
+                f.title = match r.role {
+                    ReplicaRole::ThisServer => format!("This server is {lag} behind its primary"),
+                    _ => format!("The replica {} is {lag} behind", r.name),
+                };
+                f.summary = format!(
+                    "Reads from the replica return data {lag} old, and failing over now would lose or wait for that much. Lag grows when the replica applies changes slower than the primary writes them: large transactions, long queries on the replica{}, or slower storage.{}",
+                    if pg { " (which can pause replay)" } else { "" },
+                    delay.clone().unwrap_or_default()
+                );
+                f.fix = Some(Fix {
+                    summary: "Split large write transactions into batches, check the replica's storage and CPU, and move long reports off it or let them run against a snapshot.".into(),
+                    sql: None,
+                    cost: None,
+                });
+            }
+            f.severity = if seconds.is_some_and(|s| s >= 600.0) { Severity::High } else { Severity::Medium };
+            if let Some(s) = seconds {
+                f.metrics.push(Metric::new("Behind by", s * 1000.0, Unit::Ms));
+            }
+            if let Some(b) = r.lag_bytes {
+                f.metrics.push(Metric::new("Not yet applied", b, Unit::Bytes));
+            }
+            if let Some(d) = r.delay_seconds {
+                f.metrics.push(Metric::new("Delayed on purpose by", d * 1000.0, Unit::Ms));
+            }
+        }
+    }
+    severity_score(&mut f);
+    f.impact.label = match status {
+        ReplicaStatus::LeftConfigured | ReplicaStatus::StoppedByHand | ReplicaStatus::Stopped => {
+            r.state.clone().unwrap_or_else(|| "stopped".into())
+        }
+        _ => format!("{lag} behind"),
+    };
+    f.confidence = Confidence::High;
+    f.verify = vec![match status {
+        ReplicaStatus::LeftConfigured => "Re-scan: the leftover replication configuration should be gone.".into(),
+        _ => "Re-scan: the lag should be seconds.".into(),
+    }];
+    Some(f)
+}
+
+/// An inactive replication slot that keeps a gigabyte or more of WAL. A physical slot without its replica keeps WAL for
+/// nothing; a logical one belongs to a consumer (a subscription, a CDC tool) that may only be between syncs, and
+/// dropping it forces that consumer to copy everything again. Whether it can fill the disk depends on
+/// max_slot_wal_keep_size (13+): with a cap, PostgreSQL gives the slot up instead.
+fn slot_finding(snapshot: &Snapshot, r: &Replica) -> Option<Finding> {
+    let kept = r.lag_bytes.filter(|b| *b >= GB)?;
+    if r.state.as_deref() != Some("inactive") || r.wal_status.as_deref() == Some("lost") {
+        return None;
+    }
+    let logical = r.is_logical();
+    // safe_wal_size exists from 13 and is empty when nothing caps what slots keep.
+    let capped = r.safe_wal_bytes.is_some();
+    let cap_known = r.wal_status.is_some();
+    let mut f = finding("replica-lag", &r.name, Category::Configuration, subject(SubjectKind::Database, &r.name));
+    f.title = if logical {
+        format!("The logical slot {} keeps {} of WAL while its consumer is away", r.name, format::bytes(kept))
+    } else {
+        format!("The inactive replication slot {} keeps {} of WAL", r.name, format::bytes(kept))
+    };
+    let idle = r
+        .inactive_seconds
+        .map(|s| format!("{} has had no consumer for {}", r.name, format::duration(s * 1000.0)))
+        .unwrap_or_else(|| format!("{} has no consumer connected", r.name));
+    let kind = if logical {
+        " It is a logical slot: a subscription or a CDC tool (Debezium, Fivetran, Airbyte…) reads changes through it, and many connect only between syncs. Dropping it makes that consumer copy everything again."
+    } else {
+        " It is a physical slot: a standby or a backup tool streams WAL through it."
+    };
+    // Before 13 nothing can cap a slot; from 13 the scan reads whether something does (older scans didn't).
+    let can_cap = culprit_core::version_at_least(&snapshot.server.version, [13, 0, 0]);
+    let risk = match (capped, cap_known, can_cap) {
+        (true, _, _) => format!(
+            " max_slot_wal_keep_size caps what it can keep: {} more WAL and PostgreSQL gives the slot up, so the disk is safe, but its consumer then has to start over.",
+            format::bytes(r.safe_wal_bytes.unwrap_or(0.0))
+        ),
+        (false, true, _) => " Nothing caps what it keeps (max_slot_wal_keep_size is -1), so it grows until the disk fills and the server stops accepting writes.".into(),
+        (false, false, true) => " Unless max_slot_wal_keep_size caps what slots keep, it grows until the disk fills and the server stops accepting writes.".into(),
+        (false, false, false) => " Before PostgreSQL 13 nothing can cap it: it grows until the disk fills and the server stops accepting writes.".into(),
+    };
+    f.summary = format!(
+        "A replication slot keeps every WAL file its consumer hasn't confirmed. {idle}, so the WAL it holds keeps growing.{kind}{risk}"
+    );
+    f.severity = match (capped, r.wal_status.as_deref()) {
+        (true, Some("unreserved")) => Severity::Medium,
+        (true, _) => Severity::Low,
+        (false, _) if kept >= 10.0 * GB => Severity::High,
+        _ => Severity::Medium,
+    };
+    let quoted = r.name.replace('\'', "''");
+    // Only where nothing caps slots yet (or the scan couldn't tell): a cap already set is never lowered.
+    let cap = (!capped && can_cap).then(|| setting_change(&snapshot.server, "max_slot_wal_keep_size", "50GB"));
+    let mut sql = if logical {
+        format!(
+            "-- Only once its consumer is gone for good: dropping it makes the consumer copy everything again\n-- SELECT pg_drop_replication_slot('{quoted}');"
+        )
+    } else {
+        format!("SELECT pg_drop_replication_slot('{quoted}');")
+    };
+    if let Some(statements) = cap.as_ref().and_then(|c| c.sql.as_deref()) {
+        let lead = if cap_known {
+            "Cap what any slot may keep"
+        } else {
+            "If max_slot_wal_keep_size isn't set, cap what any slot may keep"
+        };
+        sql.push_str(&format!("\n-- {lead}:\n{statements}"));
+    }
+    let cap_advice = match &cap {
+        Some(c) if cap_known => format!(" To keep any slot from filling the disk, cap what slots may keep: {}", c.how),
+        Some(c) => format!(
+            " If max_slot_wal_keep_size isn't set, cap what slots may keep so none can fill the disk: {}",
+            c.how
+        ),
+        None if !can_cap => " PostgreSQL 13 and later can cap what slots keep (max_slot_wal_keep_size).".into(),
+        None => String::new(),
+    };
+    f.fix = Some(Fix {
+        summary: if logical {
+            format!(
+                "Find its consumer first: the slot's name and plugin usually say which subscription or connector it is. If it still syncs, leave the slot: it catches up when the consumer connects. If the consumer is gone for good, drop it.{cap_advice}"
+            )
+        } else {
+            format!("If nothing will stream through this slot again (a standby that was removed), drop it.{cap_advice}")
+        },
+        sql: Some(sql),
+        cost: None,
+    });
+    f.metrics = vec![Metric::new("WAL kept", kept, Unit::Bytes)];
+    if let Some(s) = r.inactive_seconds {
+        f.metrics.push(Metric::new("Without a consumer for", s * 1000.0, Unit::Ms));
+    }
+    if let Some(b) = r.safe_wal_bytes {
+        f.metrics.push(Metric::new("WAL left before it is given up", b, Unit::Bytes));
+    }
+    severity_score(&mut f);
+    f.impact.label = format!("{} of WAL kept", format::bytes(kept));
+    f.confidence = Confidence::High;
+    f.verify = vec![if logical {
+        "Re-scan once the consumer has synced: the WAL kept should drop, or the slot be gone.".into()
+    } else {
+        "Re-scan: the slot should be gone, or active again.".into()
+    }];
+    Some(f)
 }
 
 #[cfg(test)]
@@ -2142,13 +2808,58 @@ mod tests {
             log_full_pages: Some(20_000.0),
             ..Default::default()
         });
+        // Whether wal_compression is on decides both what the image count means and the advice: it was assumed off.
         let f = log_volume(&s);
         assert_eq!(f[0].title, "An update of orders writes 10.2 KB of WAL per row it changes");
-        assert!(f[0].summary.contains("full-page images"));
-        assert!(f[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("wal_compression"));
+        assert!(f[0].summary.contains("20K of its records are full-page images"), "{}", f[0].summary);
+        assert!(f[0].fix.as_ref().unwrap().sql.is_none(), "unknown wal_compression: no setting to change");
+        set(&mut s, "wal_compression", "off");
+        let f = log_volume(&s);
+        assert!(f[0].summary.contains("Up to 78% of it is full-page images"), "{}", f[0].summary);
+        assert_eq!(
+            f[0].fix.as_ref().unwrap().sql.as_deref(),
+            Some("ALTER SYSTEM SET wal_compression = 'on';\nSELECT pg_reload_conf();")
+        );
+        // Already compressed: the checkpoint interval is the lever, not the setting it already has.
+        set(&mut s, "wal_compression", "lz4");
+        let f = log_volume(&s);
+        assert!(f[0].fix.as_ref().unwrap().sql.is_none());
+        assert!(f[0].fix.as_ref().unwrap().summary.contains("wal_compression already shrinks"));
+        // On a managed service the advice is the platform's control.
+        set(&mut s, "wal_compression", "off");
+        s.server.cloud = Some("Amazon RDS".into());
+        let fix = log_volume(&s)[0].fix.clone().unwrap();
+        assert!(fix.sql.is_none() && fix.summary.contains("DB parameter group"), "{}", fix.summary);
         // Reads are never log findings.
         first_query(&mut s).text = "SELECT 1".into();
         assert!(log_volume(&s).is_empty());
+    }
+
+    // A share of the log needs a measured volume a day: 30% of a few quiet minutes is nothing.
+    #[test]
+    fn a_log_share_needs_a_daily_volume() {
+        let mut s = snapshot_with(Engine::Postgres);
+        let q = first_query(&mut s);
+        q.text = "UPDATE orders SET note = $1 WHERE id = $2".into();
+        q.rows = None;
+        q.costs = Some(QueryCosts { log_bytes: Some(2.0 * GB), log_share: Some(0.6), ..Default::default() });
+        s.workload.as_mut().unwrap().window_hours = 0.5;
+        assert!(log_volume(&s).is_empty(), "half an hour of statistics is no daily volume");
+        s.workload.as_mut().unwrap().window_hours = 24.0;
+        assert_eq!(log_volume(&s)[0].severity, Severity::Medium);
+        // pg_stat_statements before 14 can't say when its counts began: the window may be days longer.
+        s.server.version = "13.16".into();
+        assert!(log_volume(&s).is_empty());
+    }
+
+    fn set(s: &mut Snapshot, name: &str, value: &str) {
+        s.settings.retain(|x| x.name != name);
+        s.settings.push(culprit_core::Setting {
+            name: name.into(),
+            value: value.into(),
+            default_value: None,
+            scope: "server".into(),
+        });
     }
 
     #[test]
@@ -2269,8 +2980,11 @@ mod tests {
     }
 
     /// The demo with no contention anywhere but on `dbo.<table>`'s two indexes.
+    /// The demo's server started 44 seconds before its scan: too little counting for any rate. These tests start it 12
+    /// hours earlier, at 00:13 UTC on the day of the scan.
     fn escalations_on(table: &str, first: IndexContention, second: IndexContention) -> Snapshot {
         let mut s = snapshot_with(Engine::Mssql);
+        s.server.started_at = Some("2026-10-11T00:13:03Z".into());
         s.indexes.iter_mut().for_each(|i| i.contention = None);
         let mut a = s.indexes[0].clone();
         a.schema = "dbo".into();
@@ -2364,21 +3078,47 @@ mod tests {
     }
 
     // SQL Server counts escalations since it started, with no time for each: without an earlier scan, Culprit can't
-    // tell whether they're recent, so they stay High and the finding says when the count began.
+    // tell whether they're recent. The finding says when the count began, and only a rate measured since then raises
+    // it: two in the 12 hours since the start is High.
     #[test]
-    fn escalations_without_an_earlier_scan_are_high_and_dated_from_the_start() {
+    fn escalations_without_an_earlier_scan_are_graded_on_their_rate_since_the_start() {
         let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
         let f = &lock_escalations(&s)[0];
         assert_eq!(f.severity, Severity::High);
         assert!(
             f.summary.starts_with(
-                "SQL Server replaced the row and page locks on orders with one lock on the whole table 2 times since it started, on Oct 11 at 12:13 UTC. \
+                "SQL Server replaced the row and page locks on orders with one lock on the whole table 2 times since it started, on Oct 11 at 00:13 UTC. \
                  It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old"
             ),
             "{}",
             f.summary
         );
+        assert!(f.summary.contains("once a day or more on average since then"), "{}", f.summary);
         assert_eq!(f.metrics.len(), 1);
+    }
+
+    // The false flag: one escalation since a start six months ago was High on a first scan. Without an earlier scan
+    // it is history unless the count since the start makes a rate.
+    #[test]
+    fn one_escalation_in_six_months_is_low_history_on_a_first_scan() {
+        let mut s = escalations_on("orders", escalating(1.0, 0.0, 0.0), IndexContention::default());
+        s.server.started_at = Some("2026-04-11T12:00:00Z".into());
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::Low);
+        assert!(
+            f.summary.contains("less than once a week on average since then: they may all be old"),
+            "{}",
+            f.summary
+        );
+        // A few a week since the start is Medium: likely to happen again.
+        s.server.started_at = Some("2026-10-01T12:00:00Z".into());
+        s.indexes.iter_mut().filter_map(|i| i.contention.as_mut()).for_each(|c| c.lock_escalations = 3.0);
+        assert_eq!(lock_escalations(&s)[0].severity, Severity::Medium);
+        // Minutes of counting make no rate: the demo's server started 44 seconds before the scan.
+        s.server.started_at = Some("2026-10-11T12:13:03Z".into());
+        let f = &lock_escalations(&s)[0];
+        assert_eq!(f.severity, Severity::Low);
+        assert!(f.summary.contains("started too recently to tell how often"), "{}", f.summary);
     }
 
     #[test]
@@ -2417,7 +3157,7 @@ mod tests {
         assert!(
             f.summary.starts_with(
                 "These escalations are history, not something happening now: SQL Server counts them from when it started, \
-                 on Oct 11 at 12:13 UTC, and the count on orders hasn't grown since the previous scan, on Oct 11 at 06:00 UTC."
+                 on Oct 11 at 00:13 UTC, and the count on orders hasn't grown since the previous scan, on Oct 11 at 06:00 UTC."
             ),
             "{}",
             f.summary
@@ -2432,7 +3172,8 @@ mod tests {
 
     #[test]
     fn after_a_restart_every_escalation_counted_is_new() {
-        let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+        s.server.started_at = Some("2026-10-11T12:13:03Z".into());
         // The earlier scan counted more, before the server restarted at 12:13 and started the count again.
         let s = with_earlier_scan(s, &[("orders", 9.0)], Some("2026-10-01T00:00:00Z"));
         assert!(s.escalations_before.as_ref().unwrap().restarted);
@@ -2472,6 +3213,7 @@ mod tests {
             name: name.into(),
             kind,
             disabled,
+            inheritance_child: false,
         };
         s.constraints = vec![c("FK_orders_customers", ConstraintKind::ForeignKey, false)];
         let f = untrusted_constraint(&s);
@@ -2538,7 +3280,7 @@ mod tests {
             hot_updates: Some(10_000.0),
             new_page_updates: Some(80_000.0),
             fillfactor: Some(100.0),
-            bloat_bytes: None,
+            ..Default::default()
         });
         let name = t.name.clone();
         let f = hot_updates(&s);
@@ -2733,14 +3475,10 @@ mod tests {
     #[test]
     fn replicas_lagging_stopped_and_slots() {
         let r = |name: &str, role, state: &str, lag_seconds, lag_bytes| Replica {
-            name: name.into(),
-            role,
             state: Some(state.into()),
-            sync: None,
             lag_seconds,
             lag_bytes,
-            unsent_bytes: None,
-            error: None,
+            ..Replica::new(name, role)
         };
         let s = with_pressure(Engine::Postgres, |p| {
             p.replicas = vec![

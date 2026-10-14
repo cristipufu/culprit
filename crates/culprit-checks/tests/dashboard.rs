@@ -323,6 +323,7 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
         lag_bytes: None,
         unsent_bytes: None,
         error: None,
+        ..Replica::new("", ReplicaRole::Replica)
     }];
     let d = dashboard(&r);
     let storage = tile(&d, TileKey::Storage);
