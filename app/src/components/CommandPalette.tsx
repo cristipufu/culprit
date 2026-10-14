@@ -1,4 +1,4 @@
-import { Activity, Bookmark, CircleArrowUp, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, RotateCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
+import { Activity, Bookmark, Camera, CircleArrowUp, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, RotateCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useFocusTrap } from "../lib/focus";
 import { rowCount } from "../lib/format";
@@ -8,6 +8,7 @@ import { EngineBadge } from "./EngineBadge";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, loadSaved, openConnection, scan, setState, useStore, type View } from "../lib/store";
 import { keys } from "../lib/keys";
+import { canScreenshot, screenshotWorkspace } from "../lib/screenshot";
 import { checkForUpdates, installUpdate, restartToUpdate, setAutoCheck, useAutoCheck, useUpdate } from "../lib/updates";
 
 /** `rank` orders equally good matches: findings keep the report's impact order. */
@@ -79,6 +80,9 @@ export function CommandPalette() {
     if (active) {
       list.push({ id: "rescan", section: "Actions", title: "Scan now", hint: keys("⌘R"), icon: icon(<RefreshCw size={13} />), run: () => (close(), scan(active)) });
       list.push({ id: "new-tab", section: "Actions", title: "New query tab", hint: keys("⌘T"), icon: icon(<Plus size={13} />), run: () => setState({ view: "editor", editorSql: " ", palette: false }) });
+    }
+    if (canScreenshot()) {
+      list.push({ id: "screenshot", section: "Actions", title: "Screenshot this view", hint: "copy as PNG", icon: icon(<Camera size={13} />), run: () => void screenshotWorkspace() });
     }
     list.push({ id: "paste-plan", section: "Actions", title: "Open or compare a plan", icon: icon(<GitCompareArrows size={13} />), run: () => setState({ view: "plans", palette: false }) });
     const dark = theme === "dark" || (theme === "system" && window.matchMedia?.("(prefers-color-scheme: dark)").matches);

@@ -45,6 +45,8 @@ export type ApiError = { code: string; message: string; hint: string | null };
 /** A newer published release than the running app. */
 export type UpdateInfo = { version: string; current: string; notes: string | null };
 export type UpdateProgress = { downloaded: number; total: number | null };
+/** Part of the window in CSS pixels, from its top left corner. */
+export type ScreenArea = { x: number; y: number; width: number; height: number };
 
 export interface Api {
   readonly kind: "desktop" | "demo";
@@ -91,6 +93,8 @@ export interface Api {
   verifyFindings(name: string, ids: string[]): Promise<Verification>;
   /** Writes into the Downloads folder and returns the path; the browser demo downloads instead. */
   savePlanFile(name: string, contents: string): Promise<string>;
+  /** Copies a PNG of `area`, exactly as the window shows it, to the clipboard. Desktop app on macOS only. */
+  screenshot(area: ScreenArea): Promise<void>;
   live(name: string): Promise<LiveState>;
   /** Where the latest scan's database time went, by wait category with the queries behind each. */
   waits(name: string, windowMinutes: number | null): Promise<WaitsReport | null>;
@@ -139,7 +143,7 @@ export function errorMessage(value: unknown): ApiError {
   return { code: "internal", message: String(value), hint: null };
 }
 
-function isDesktop(): boolean {
+export function isDesktop(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
@@ -185,6 +189,7 @@ async function desktopApi(): Promise<Api> {
     exportFinding: (name, findingId, format, options) => invoke("export_finding", { name, findingId, format, options }),
     verifyFindings: (name, ids) => invoke("verify_findings", { name, ids }),
     savePlanFile: (name, contents) => invoke("save_plan_file", { name, contents }),
+    screenshot: (area) => invoke("screenshot", { area }),
     live: (name) => invoke("live", { name }),
     waits: (name, windowMinutes) => invoke("waits", { name, windowMinutes }),
     waitSample: (name, seconds) => invoke("wait_sample", { name, seconds }),

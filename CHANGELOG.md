@@ -2,6 +2,12 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.6
+
+### App
+
+- **Screenshot the view you're looking at.** The camera at the right end of the top bar (or *Screenshot this view* in ⌘K) copies the workspace as a PNG, ready to paste into a chat or a pull request: the top bar and the view, never the sidebar with your connection names. The window takes the picture itself, so it is exactly what's on screen, scroll positions and theme included, at the screen's full resolution. Nothing is saved to disk. macOS for now.
+
 ## 0.2.5
 
 ### Findings

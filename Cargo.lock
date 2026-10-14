@@ -945,13 +945,20 @@ dependencies = [
 name = "culprit-app"
 version = "0.2.5"
 dependencies = [
+ "block2",
  "culprit-core",
  "culprit-engine",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-web-kit",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-updater",
+ "tokio",
 ]
 
 [[package]]

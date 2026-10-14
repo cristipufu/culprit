@@ -541,6 +541,7 @@ export async function demoApi(): Promise<Api> {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       return name;
     },
+    screenshot: () => desktopOnly("Screenshots of the window are taken by the desktop app."),
     live: async (name) => {
       const c = connections.find((x) => x.name === name);
       const production = c?.environment === "production";

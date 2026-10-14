@@ -436,6 +436,15 @@ button.update-item:hover {
   flex: 1;
 }
 
+/* While the webview takes a screenshot of the workspace, the button that asked for it and any toast stay out of it. */
+.capturing .shot-btn {
+  visibility: hidden;
+}
+
+.capturing .toast {
+  display: none;
+}
+
 .view {
   flex: 1;
   min-height: 0;

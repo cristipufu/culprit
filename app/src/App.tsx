@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect } from "react";
 import { CommandPalette } from "./components/CommandPalette";
+import { ScreenshotButton } from "./components/ScreenshotButton";
 import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WindowPicker } from "./components/WindowPicker";
@@ -122,6 +123,8 @@ function TopBar() {
       <header className="topbar" data-tauri-drag-region>
         <h1>{TITLES[view]}</h1>
         <span className="context">Paste, drop or open plans · compare any two</span>
+        <span className="spacer" />
+        <ScreenshotButton />
       </header>
     );
   }
@@ -153,6 +156,7 @@ function TopBar() {
           Last scan failed: {report.scanError.message}
         </span>
       )}
+      <ScreenshotButton />
     </header>
   );
 }

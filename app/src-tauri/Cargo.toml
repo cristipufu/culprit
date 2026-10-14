@@ -19,3 +19,13 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.3", features = [] }
 tauri-plugin-updater = "=2.13.1"
+tokio.workspace = true
+
+# Screenshots: WKWebView takes the picture, AppKit puts it on the clipboard (all already in Tauri's tree).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSPasteboard"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "objc2-core-foundation", "WKSnapshotConfiguration", "WKWebView"] }

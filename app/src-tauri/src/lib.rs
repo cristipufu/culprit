@@ -17,6 +17,8 @@ use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+mod screenshot;
+
 type Ws<'a> = State<'a, Arc<Workspace>>;
 
 /// The device code being shown, so "Open the sign-in page" opens Microsoft's page and nothing the webview asks for.
@@ -276,6 +278,12 @@ async fn verify_findings(ws: Ws<'_>, name: String, ids: Vec<String>) -> Result<V
 #[tauri::command]
 async fn save_plan_file(name: String, contents: String) -> Result<String> {
     culprit_engine::plans::save_to_downloads(&name, &contents).map(|path| path.display().to_string())
+}
+
+/// Copy a picture of part of the window to the clipboard as PNG; nothing is written to disk.
+#[tauri::command]
+async fn screenshot(webview: tauri::Webview, area: screenshot::Area) -> Result<()> {
+    screenshot::copy(&webview, area).await
 }
 
 #[tauri::command]
@@ -600,6 +608,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             export_finding,
             verify_findings,
             save_plan_file,
+            screenshot,
             live,
             waits,
             wait_sample,
