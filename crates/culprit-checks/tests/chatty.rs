@@ -30,8 +30,10 @@ fn with_insert(rows_sent: f64, rows_affected: Option<f64>) -> Snapshot {
     s
 }
 
+/// The chatty finding about the demo's first statement (the one these tests make an INSERT).
 fn chatty_title(s: Snapshot) -> Option<String> {
-    analyze(s).findings.into_iter().find(|f| f.check == "chatty-query").map(|f| f.title)
+    let id = s.workload.as_ref().expect("workload").queries[0].id.clone();
+    analyze(s).findings.into_iter().find(|f| f.id == format!("chatty-query:{id}")).map(|f| f.title)
 }
 
 #[test]
@@ -46,4 +48,21 @@ fn without_rows_affected_a_write_is_judged_by_what_the_engine_counted() {
     // Engines that count a write's rows as `rows` (SQL Server, PostgreSQL) leave rows_affected empty.
     let title = chatty_title(with_insert(30_000.0, None)).expect("a chatty finding");
     assert!(title.contains("one row each time"), "{title}");
+}
+
+#[test]
+fn a_count_over_a_short_window_counts_when_it_already_passes_the_daily_bar() {
+    // One minute of history: 30K runs are already more than the 20K a day the check asks for, with nothing stretched;
+    // 4K runs in a minute would only reach it by extrapolating to a day.
+    let busy = |runs: f64| {
+        let mut s = with_insert(0.0, Some(runs));
+        let workload = s.workload.as_mut().expect("workload");
+        workload.window_hours = 1.0 / 60.0;
+        workload.queries[0].executions = runs;
+        workload.queries[0].total_time_ms = runs * 0.4;
+        workload.total_executions = workload.queries.iter().map(|q| q.executions).sum();
+        chatty_title(s).is_some()
+    };
+    assert!(busy(30_000.0));
+    assert!(!busy(4_000.0));
 }

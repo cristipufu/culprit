@@ -536,6 +536,19 @@ pub fn counter_days_for_rate(snapshot: &Snapshot) -> Option<f64> {
     counter_days(snapshot).filter(|d| d * 24.0 >= culprit_core::RATE_MIN_HOURS)
 }
 
+/// Whether `total`, counted over the workload window, comes to at least `per_day` a day: a rate over at least an hour of
+/// data, or, in a window shorter than a day, a total that is already that many (the day that window sits in held at
+/// least as many, so nothing is extrapolated). False when the window is unknown. 30K runs in a minute are a busy
+/// statement; 14 runs in a minute are not "20K a day".
+pub fn at_least_per_day(snapshot: &Snapshot, total: f64, per_day: f64) -> bool {
+    let Some(w) = snapshot.workload.as_ref() else { return false };
+    if w.window_unknown() {
+        return false;
+    }
+    w.rate_per_day(total).is_some_and(|r| r >= per_day)
+        || (w.window_hours > 0.0 && w.window_hours <= 24.0 && total >= per_day)
+}
+
 /// A cumulative counter's `total` (since the server started or statistics were reset) as a daily rate for comparing
 /// with a threshold (see [`counter_days_for_rate`]).
 pub fn counter_rate_per_day(snapshot: &Snapshot, total: f64) -> Option<f64> {

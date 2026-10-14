@@ -162,6 +162,11 @@ fn window_start_unknown(snapshot: &Snapshot) -> bool {
         && snapshot.workload.as_ref().is_some_and(|w| !w.windowed)
 }
 
+/// [`at_least_per_day`], false where the window's start is unknown (see [`window_start_unknown`]).
+fn window_at_least(snapshot: &Snapshot, total: f64, per_day: f64) -> bool {
+    !window_start_unknown(snapshot) && at_least_per_day(snapshot, total, per_day)
+}
+
 /// [`rate_per_day`] for a threshold, `None` where the window's start is unknown (see [`window_start_unknown`]): a
 /// window that may be days too short would make the rate days too high.
 fn window_rate_per_day(snapshot: &Snapshot, value: f64) -> Option<f64> {
@@ -433,7 +438,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 reuse
             );
-            f.severity = if share >= 0.5 && window_rate_per_day(snapshot, plan_ms).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 && window_at_least(snapshot, plan_ms, 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} planning", format::percent(share));
@@ -514,7 +519,7 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 format::duration(q.mean_time_ms)
             );
-            f.severity = if share >= 0.5 || window_rate_per_day(snapshot, jit).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 || window_at_least(snapshot, jit, 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} JIT", format::percent(share));
@@ -588,7 +593,7 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
             let rows = q.rows.unwrap_or(0.0);
             let per_row = (rows >= 1_000.0).then(|| bytes / rows);
             // A share of the log is a threshold only with a volume a day behind it: 30% of a quiet hour is nothing.
-            let heavy_share = share >= 0.3 && window_rate_per_day(snapshot, bytes).is_some_and(|d| d >= GB);
+            let heavy_share = share >= 0.3 && window_at_least(snapshot, bytes, GB);
             let heavy_rows = per_row.is_some_and(|b| b >= 4_096.0) && bytes >= 100.0 * MB;
             (heavy_share || heavy_rows).then_some((q, costs, bytes, share, per_row))
         })
@@ -625,7 +630,7 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
                     _ => String::new(),
                 }
             );
-            let busy = share >= 0.5 && window_rate_per_day(snapshot, bytes).is_some_and(|d| d >= GB);
+            let busy = share >= 0.5 && window_at_least(snapshot, bytes, GB);
             f.severity = if busy || per_row.is_some_and(|b| b >= 8_192.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
@@ -817,7 +822,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             );
             f.severity = if export {
                 Severity::Low
-            } else if rows >= 100_000.0 || window_rate_per_day(snapshot, q.rows.unwrap_or(0.0)).is_some_and(|d| d >= 100_000_000.0) {
+            } else if rows >= 100_000.0 || window_at_least(snapshot, q.rows.unwrap_or(0.0), 100_000_000.0) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -2300,7 +2305,7 @@ fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, 
     let statements = whole_row_statements(snapshot, t, size, large);
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
     let reads: f64 = statements.iter().filter_map(|q| q.logical_reads).sum();
-    let hot = window_rate_per_day(snapshot, runs).is_some_and(|r| r >= WHOLE_ROW_RUNS_PER_DAY);
+    let hot = window_at_least(snapshot, runs, WHOLE_ROW_RUNS_PER_DAY);
     let runs_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(runs));
     if !statements.is_empty() {
         let pages = (reads / runs.max(1.0)).round();
@@ -2842,9 +2847,12 @@ mod tests {
         let q = first_query(&mut s);
         q.text = "UPDATE orders SET note = $1 WHERE id = $2".into();
         q.rows = None;
-        q.costs = Some(QueryCosts { log_bytes: Some(2.0 * GB), log_share: Some(0.6), ..Default::default() });
+        q.costs = Some(QueryCosts { log_bytes: Some(0.4 * GB), log_share: Some(0.6), ..Default::default() });
         s.workload.as_mut().unwrap().window_hours = 0.5;
-        assert!(log_volume(&s).is_empty(), "half an hour of statistics is no daily volume");
+        assert!(log_volume(&s).is_empty(), "0.4 GB in half an hour is a gigabyte a day only by stretching it");
+        // 2 GB inside half an hour are 2 GB inside that day: nothing is stretched.
+        first_query(&mut s).costs.as_mut().unwrap().log_bytes = Some(2.0 * GB);
+        assert_eq!(log_volume(&s).len(), 1);
         s.workload.as_mut().unwrap().window_hours = 24.0;
         assert_eq!(log_volume(&s)[0].severity, Severity::Medium);
         // pg_stat_statements before 14 can't say when its counts began: the window may be days longer.

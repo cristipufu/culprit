@@ -515,7 +515,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|q| !is_monitoring_query(q))
         .filter(|q| {
             let exec_share = q.executions / workload.total_executions;
-            let busy = workload.rate_per_day(q.executions).is_some_and(|r| r >= 20_000.0);
+            let busy = at_least_per_day(snapshot, q.executions, 20_000.0);
             let small = q.rows_handled_per_execution().is_some_and(|r| r <= 2.0) && q.mean_time_ms < 5.0;
             small && exec_share >= 0.08 && busy
         })
