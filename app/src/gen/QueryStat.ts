@@ -22,4 +22,15 @@ spread: Spread | null,
 /**
  * Failed runs, planning, JIT, log volume and result size, as far as the engine keeps them.
  */
-costs: QueryCosts | null, };
+costs: QueryCosts | null, 
+/**
+ * Rows the statement changed (inserted, updated or deleted), where the engine counts them apart from the rows it
+ * returned (`rows`): MySQL and MariaDB's performance_schema. `None` where the engine doesn't separate them.
+ */
+rows_affected: number | null, 
+/**
+ * Which of `plans` the attached `plan` is (Query Store's plan_id): the plan still in use (the heaviest of the
+ * variants no newer variant replaced), not merely the heaviest over the window. `None` when the source keeps one
+ * plan per statement.
+ */
+plan_id: string | null, };

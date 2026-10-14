@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use culprit_core::{
@@ -30,6 +31,9 @@ pub struct Probe {
     pub preloaded: bool,
     /// This login can create the extension (superuser, a cloud admin role, or CREATE on the database).
     pub can_create_extension: bool,
+    /// The server is a standby replaying another's WAL (`pg_is_in_recovery()`): its usage counters count only the reads
+    /// run on it.
+    pub standby: bool,
 }
 
 pub enum StatementsAccess {
@@ -172,7 +176,8 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
                 (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
                   OR EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN ('rds_superuser', 'azure_pg_admin', 'cloudsqlsuperuser')
                                AND pg_has_role(current_user, r.oid, 'MEMBER'))
-                  OR has_database_privilege(current_database(), 'CREATE') AS can_create_extension",
+                  OR has_database_privilege(current_database(), 'CREATE') AS can_create_extension,
+                pg_is_in_recovery() AS in_recovery",
         started = iso("pg_postmaster_start_time()"),
         now = iso("now()"),
     );
@@ -192,6 +197,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
         statements: StatementsAccess::NotInstalled,
         preloaded: row.flag("preloaded"),
         can_create_extension: row.flag("can_create_extension"),
+        standby: row.flag("in_recovery"),
     };
     if let Some(schema) = row.text("pgss_schema") {
         probe.statements = statements_access(client, &schema, version_num).await;
@@ -267,7 +273,7 @@ pub async fn snapshot(
         async {
             let client = connector.connect(COLLECTOR).await?;
             Ok::<_, culprit_core::Error>((
-                tables(&client).await,
+                tables(&client, probe.version_num).await,
                 indexes(&client, &probe).await,
                 foreign_keys(&client).await,
                 columns(&client).await,
@@ -386,6 +392,16 @@ pub async fn snapshot(
         Err(e) => note("settings", e.message),
     }
     settings_out.extend(statement_status);
+    // A standby's usage counters are its own reads, next to the primary's statement history: say what it is, and the
+    // engine sets its usage counters aside.
+    if probe.standby {
+        settings_out.push(Setting {
+            name: culprit_core::REPLICA_SETTING.into(),
+            value: "standby".into(),
+            default_value: None,
+            scope: "server".into(),
+        });
+    }
     // PostgreSQL keeps no wait history: time by category comes from statement and WAL timing, when they are on.
     let waits_out = crate::pressure::history_waits(&primary, &probe, statements_ms, statements_io_ms).await;
     if waits_out.is_empty() {
@@ -502,19 +518,7 @@ async fn collect_with_base(
         })
         .unwrap_or_default();
 
-    let start = match reset {
-        Some(reset) => format!("'{reset}'::timestamptz"),
-        None => "pg_postmaster_start_time()".to_string(),
-    };
-    let window_sql = format!(
-        "SELECT {start_text} AS start, {now} AS end_at, extract(epoch FROM now() - {start}) / 3600 AS hours",
-        start_text = iso(&start),
-        now = iso("now()")
-    );
-    let window = query_one(client, &window_sql).await?;
-    let (window_start, window_end, window_hours) = window
-        .map(|r| (r.text("start"), r.text("end_at"), r.number("hours").unwrap_or(0.0)))
-        .unwrap_or((None, None, 0.0));
+    let (window_start, window_end, window_hours) = window(client, reset).await?;
 
     let n = options.top_queries.max(1) as f64;
     let by_time = (n * 0.6).ceil() as u32;
@@ -569,11 +573,17 @@ async fn collect_with_base(
             trend: None,
             spread: r.number("min_ms").map(|min_ms| Spread { min_ms: Some(min_ms), ..Default::default() }),
             costs: None,
+            // PostgreSQL's `rows` counts rows returned and rows changed alike.
+            rows_affected: None,
+            plan_id: None,
         })
         .collect();
+    // Whose statement each is (the busiest role's), to plan it with that role's search_path.
+    let owners: HashMap<String, String> =
+        rows.iter().filter_map(|r| Some((r.string("id"), r.text("owner")?))).collect();
 
     let plan_note = if probe.generic_plans() {
-        attach_plans(client, &mut queries, options.plans, probe.version_num).await
+        attach_plans(client, &mut queries, &owners, options.plans, probe.version_num).await
     } else {
         None
     };
@@ -606,12 +616,41 @@ async fn collect_with_base(
             query_count: count,
             queries,
             timeline: None,
+            untracked_time_ms: None,
+            min_logged_ms: None,
         },
         plan_note,
         families,
         status,
         io_ms,
     }))
+}
+
+/// When pg_stat_statements started counting. 14+ says (`pg_stat_statements_info.stats_reset`). Before that only a
+/// server that discards its statistics at shutdown (`pg_stat_statements.save = off`) bounds it: they started at the
+/// last start or later. With `save` on (the default) they outlive restarts, so the start time says nothing: the window
+/// is unknown (`window_start` empty, 0 hours) and Culprit's earlier scans of the database narrow it down.
+async fn window(client: &Client, reset: Option<&str>) -> Result<(Option<String>, Option<String>, f64)> {
+    let start = match reset {
+        Some(reset) => format!("'{reset}'::timestamptz"),
+        None => {
+            "CASE WHEN current_setting('pg_stat_statements.save', true) = 'off' THEN pg_postmaster_start_time() END"
+                .to_string()
+        }
+    };
+    let window_sql = format!(
+        "SELECT {start_text} AS start, {now} AS end_at, extract(epoch FROM now() - ({start})) / 3600 AS hours",
+        start_text = iso(&start),
+        now = iso("now()")
+    );
+    let window = query_one(client, &window_sql).await?;
+    Ok(window
+        .map(|r| {
+            let start = r.text("start");
+            let hours = if start.is_some() { r.number("hours").unwrap_or(0.0) } else { 0.0 };
+            (start, r.text("end_at"), hours)
+        })
+        .unwrap_or((None, None, 0.0)))
 }
 
 /// The pg_stat_statements relation a base query reads (`"public".pg_stat_statements`).
@@ -621,93 +660,233 @@ fn base_relation(base: &str) -> Option<&str> {
 }
 
 /// Statements pg_stat_statements keeps apart only because a value list has a different length (`IN ($1, $2)` vs
-/// `IN ($1, $2, $3)`) or a VALUES clause a different number of rows: each is planned and tracked on its own.
+/// `IN ($1, $2, $3)`) or a VALUES clause a different number of rows: each is planned and tracked on its own. A family
+/// counts the texts that differ before their lists are collapsed: the same text under several statement ids (one per
+/// schema a tenant's search_path resolves to) is one variant, not a value-list split.
 async fn query_families(client: &Client, base: &str) -> Result<Vec<QueryFamily>> {
-    let sql = format!(
+    Ok(query(client, &families_sql(base)).await?.iter().map(family_of).collect())
+}
+
+fn families_sql(base: &str) -> String {
+    format!(
         r#"WITH s AS ({base}),
+         t AS (
+           SELECT id, calls, total_ms, query, regexp_replace(regexp_replace(query, '\$\d+', '$N', 'g'), '\s+', ' ', 'g') AS shape
+           FROM s WHERE id IS NOT NULL AND query <> '<insufficient privilege>'),
          n AS (
-           SELECT id, calls, total_ms, query,
-             regexp_replace(
-               regexp_replace(
-                 regexp_replace(regexp_replace(query, '\$\d+', '$N', 'g'), '\$N(\s*,\s*\$N)+', '$N', 'g'),
-                 '(\(\$N\)\s*,\s*)+\(\$N\)', '($N), …', 'g'),
-               '\s+', ' ', 'g') AS family
-           FROM s WHERE id IS NOT NULL AND query <> '<insufficient privilege>')
-         SELECT md5(family) AS key, count(*) AS variants, sum(calls) AS executions, sum(total_ms) AS total_ms,
+           SELECT id, calls, total_ms, query, shape,
+             regexp_replace(regexp_replace(shape, '\$N(\s*,\s*\$N)+', '$N', 'g'), '(\(\$N\)\s*,\s*)+\(\$N\)', '($N), …', 'g') AS family
+           FROM t)
+         SELECT md5(family) AS key, count(DISTINCT shape) AS variants, sum(calls) AS executions, sum(total_ms) AS total_ms,
                 (array_agg(query ORDER BY total_ms DESC))[1] AS sample,
                 array_to_string((array_agg(id::text ORDER BY total_ms DESC))[1:5], ',') AS ids
-         FROM n GROUP BY family HAVING count(*) >= 5
-         ORDER BY count(*) DESC LIMIT 15"#
-    );
-    Ok(query(client, &sql)
-        .await?
-        .iter()
-        .map(|r| QueryFamily {
-            key: r.string("key"),
-            sample: r.string("sample"),
-            variants: r.number("variants").unwrap_or(0.0),
-            executions: r.number("executions").unwrap_or(0.0),
-            total_time_ms: r.number("total_ms").unwrap_or(0.0),
-            cached_bytes: None,
-            query_ids: r.string("ids").split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
-        })
-        .collect())
+         FROM n GROUP BY family HAVING count(DISTINCT shape) >= 5
+         ORDER BY count(DISTINCT shape) DESC LIMIT 15"#
+    )
+}
+
+fn family_of(r: &crate::rows::Row) -> QueryFamily {
+    QueryFamily {
+        key: r.string("key"),
+        sample: r.string("sample"),
+        variants: r.number("variants").unwrap_or(0.0),
+        executions: r.number("executions").unwrap_or(0.0),
+        total_time_ms: r.number("total_ms").unwrap_or(0.0),
+        cached_bytes: None,
+        query_ids: r.string("ids").split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
+    }
+}
+
+/// What one pg_stat_statements version calls each column, per entry.
+struct EntryColumns {
+    total: &'static str,
+    mean: &'static str,
+    max: &'static str,
+    stddev: &'static str,
+    min: &'static str,
+    io: &'static str,
+    /// `stats_since` (17+): when the entry started counting.
+    since: Option<&'static str>,
+    toplevel: bool,
+}
+
+/// One row per statement: pg_stat_statements keeps an entry per (role, database, queryid), so a statement several roles
+/// run (an app's pool and its migrations, one login per tenant) is several entries splitting its time. Their counts and
+/// times add up; the slowest and fastest run are the extremes over the entries; the spread is pooled from each entry's
+/// mean and standard deviation (`Σn(σ²+μ²)/N − μ²`). The text and owner are the busiest entry's.
+fn aggregated_base(relation: &str, c: &EntryColumns) -> String {
+    let toplevel = if c.toplevel { " AND toplevel" } else { "" };
+    let first_seen = c.since.map(|since| iso(&format!("min({since})"))).unwrap_or_else(|| "NULL::text".to_string());
+    format!(
+        "SELECT queryid::text AS id, (array_agg(query ORDER BY {total} DESC))[1] AS query, sum(calls) AS calls,
+                sum({total}) AS total_ms, sum({total}) / nullif(sum(calls), 0)::float8 AS mean_ms,
+                max({max}) AS max_ms, min({min}) AS min_ms,
+                sqrt(greatest(sum(calls * ({stddev} ^ 2 + {mean} ^ 2)) / nullif(sum(calls), 0)::float8
+                              - (sum({total}) / nullif(sum(calls), 0)::float8) ^ 2, 0)) AS stddev_ms,
+                sum(rows) AS rows, sum(shared_blks_hit + shared_blks_read) AS reads, sum(shared_blks_read) AS phys,
+                sum(temp_blks_written) AS temp, sum({io}) AS io_ms, {first_seen} AS first_seen,
+                (array_agg(userid ORDER BY {total} DESC))[1]::text AS owner, count(*) AS entries
+         FROM {relation}
+         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
+           AND query NOT LIKE '%{TAG}'
+         GROUP BY queryid",
+        total = c.total,
+        mean = c.mean,
+        max = c.max,
+        stddev = c.stddev,
+        min = c.min,
+        io = c.io,
+    )
 }
 
 fn statements_base(relation: &str, version_num: u32) -> String {
-    let names = if version_num >= 130_000 {
-        ("total_exec_time", "mean_exec_time", "max_exec_time", "stddev_exec_time", "min_exec_time")
-    } else {
-        ("total_time", "mean_time", "max_time", "stddev_time", "min_time")
-    };
-    let toplevel = if version_num >= 140_000 { " AND toplevel" } else { "" };
-    let first_seen = if version_num >= 170_000 { iso("stats_since") } else { "NULL::text".to_string() };
-    let io = crate::pressure::statements_io_column(version_num);
-    format!(
-        "SELECT queryid::text AS id, query, calls, {} AS total_ms, {} AS mean_ms, {} AS max_ms, {} AS stddev_ms, {} AS min_ms, rows,
-                shared_blks_hit + shared_blks_read AS reads, shared_blks_read AS phys, temp_blks_written AS temp,
-                {io} AS io_ms, {first_seen} AS first_seen
-         FROM {relation}
-         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
-           AND query NOT LIKE '%{TAG}'",
-        names.0, names.1, names.2, names.3, names.4
+    let modern = version_num >= 130_000;
+    aggregated_base(
+        relation,
+        &EntryColumns {
+            total: if modern { "total_exec_time" } else { "total_time" },
+            mean: if modern { "mean_exec_time" } else { "mean_time" },
+            max: if modern { "max_exec_time" } else { "max_time" },
+            stddev: if modern { "stddev_exec_time" } else { "stddev_time" },
+            min: if modern { "min_exec_time" } else { "min_time" },
+            io: crate::pressure::statements_io_column(version_num),
+            since: (version_num >= 170_000).then_some("stats_since"),
+            toplevel: version_num >= 140_000,
+        },
     )
 }
 
 fn statements_base_legacy(relation: &str) -> String {
-    format!(
-        "SELECT queryid::text AS id, query, calls, total_time AS total_ms, mean_time AS mean_ms, max_time AS max_ms,
-                stddev_time AS stddev_ms, min_time AS min_ms, rows, shared_blks_hit + shared_blks_read AS reads, shared_blks_read AS phys,
-                temp_blks_written AS temp, (blk_read_time + blk_write_time) AS io_ms, NULL::text AS first_seen
-         FROM {relation}
-         WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-           AND query NOT LIKE '%{TAG}'"
+    aggregated_base(
+        relation,
+        &EntryColumns {
+            total: "total_time",
+            mean: "mean_time",
+            max: "max_time",
+            stddev: "stddev_time",
+            min: "min_time",
+            io: "(blk_read_time + blk_write_time)",
+            since: None,
+            toplevel: false,
+        },
     )
 }
 
 /// Attach generic plans to the heaviest plannable statements. Returns a note when some could not be planned.
-async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, version_num: u32) -> Option<String> {
+async fn attach_plans(
+    client: &Client,
+    queries: &mut [QueryStat],
+    owners: &HashMap<String, String>,
+    budget: u32,
+    version_num: u32,
+) -> Option<String> {
     let mut order: Vec<usize> = (0..queries.len()).collect();
     order.sort_by(|a, b| queries[*b].total_time_ms.total_cmp(&queries[*a].total_time_ms));
     let (mut attempted, mut planned) = (0u32, 0u32);
+    // Culprit's own search_path, put back after planning a statement under its owner's.
+    let own_path = query_one(client, "SELECT current_setting('search_path') AS path")
+        .await
+        .ok()
+        .flatten()
+        .map(|r| r.string("path"));
+    let mut paths: HashMap<String, Option<String>> = HashMap::new();
+    let mut current = own_path.clone();
     for index in order {
         if attempted >= budget {
             break;
         }
         let Some(statement) = plannable(&queries[index].text) else { continue };
         attempted += 1;
+        // The same text resolves to different tables under different search_paths (a schema per tenant): plan it as
+        // the role that ran it most would, as far as the catalog says.
+        let wanted = match owners.get(&queries[index].id) {
+            Some(owner) => match paths.get(owner) {
+                Some(path) => path.clone(),
+                None => {
+                    let path = owner_search_path(client, owner).await;
+                    paths.insert(owner.clone(), path.clone());
+                    path
+                }
+            },
+            None => None,
+        }
+        .or_else(|| own_path.clone());
+        if wanted != current
+            && let Some(path) = wanted.as_deref()
+            && set_search_path(client, path).await
+        {
+            current = wanted.clone();
+        }
         let Some(json) = generic_plan_json(client, statement, version_num).await else { continue };
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
             crate::tables::fill(client, &mut plan).await;
+            mark_generic(&mut plan, current.as_deref().filter(|p| Some(*p) != own_path.as_deref()));
             queries[index].plan = Some(plan);
             planned += 1;
         }
+    }
+    if current != own_path
+        && let Some(path) = own_path.as_deref()
+    {
+        set_search_path(client, path).await;
     }
     (planned < attempted).then(|| {
         format!(
             "Planned {planned} of {attempted} heavy statements. The rest could not be planned: their recorded text is truncated, is not valid SQL once constants are replaced by placeholders, or uses objects this login cannot see."
         )
     })
+}
+
+/// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values (estimates for `$n`
+/// use default selectivities), and partitions pruned only when it runs. `search_path`: the one it was planned under,
+/// when it was the statement owner's rather than Culprit's.
+pub(crate) fn mark_generic(plan: &mut culprit_core::Plan, search_path: Option<&str>) {
+    plan.props.insert(
+        "Generic Plan".into(),
+        "Planned without parameter values: estimates for $n use default selectivities, and partitions are pruned only when it runs.".into(),
+    );
+    if let Some(path) = search_path {
+        plan.props.insert("search_path".into(), path.to_string());
+    }
+}
+
+/// The search_path a role (an oid from pg_stat_statements) runs with, as far as the catalog says: its own setting for
+/// this database or for every database, else this database's, else the server's; `$user` read as the role.
+async fn owner_search_path(client: &Client, owner: &str) -> Option<String> {
+    // pg_stat_statements' userid is an oid; anything else never reaches the SQL text.
+    if owner.is_empty() || !owner.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let sql = format!(
+        "SELECT r.rolname,
+                coalesce(
+                  (SELECT substring(c FROM '^search_path=(.*)$') FROM pg_db_role_setting s, unnest(s.setconfig) AS c
+                    WHERE s.setrole = r.oid AND c LIKE 'search_path=%'
+                      AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
+                    ORDER BY s.setdatabase DESC LIMIT 1),
+                  (SELECT substring(c FROM '^search_path=(.*)$') FROM pg_db_role_setting s, unnest(s.setconfig) AS c
+                    WHERE s.setrole = 0 AND c LIKE 'search_path=%'
+                      AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) LIMIT 1),
+                  (SELECT reset_val FROM pg_settings WHERE name = 'search_path')) AS path
+           FROM pg_roles r WHERE r.oid = {owner}"
+    );
+    let row = query_one(client, &sql).await.ok().flatten()?;
+    Some(resolve_user(&row.text("path")?, &row.text("rolname")?))
+}
+
+/// A search_path with `$user` read as `role`.
+pub(crate) fn resolve_user(path: &str, role: &str) -> String {
+    path.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| if p == "$user" || p == "\"$user\"" { quote_ident(role) } else { p.to_string() })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Set this session's search_path; the path is bound as a parameter, never spliced into the SQL.
+async fn set_search_path(client: &Client, path: &str) -> bool {
+    client.query(crate::rows::tagged("SELECT set_config('search_path', $1, false)").as_str(), &[&path]).await.is_ok()
 }
 
 async fn generic_plan_json(client: &Client, statement: &str, version_num: u32) -> Option<String> {
@@ -791,7 +970,7 @@ pub fn leading_keyword(text: &str) -> Option<String> {
     (!word.is_empty()).then(|| word.to_ascii_lowercase())
 }
 
-async fn tables(client: &Client) -> Result<Vec<TableStat>> {
+async fn tables(client: &Client, version_num: u32) -> Result<Vec<TableStat>> {
     let exact = "pg_total_relation_size(s.relid) AS total_bytes, pg_table_size(s.relid) AS data_bytes, pg_indexes_size(s.relid) AS index_bytes,
                  pg_relation_size(s.relid) AS in_row_bytes,
                  CASE WHEN c.reltoastrelid = 0 THEN 0 ELSE pg_total_relation_size(c.reltoastrelid) END AS lob_bytes";
@@ -803,17 +982,20 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
     let sql = |sizes: &str| {
         format!(
             "SELECT s.schemaname AS schema_name, s.relname AS table_name,
-                    CASE WHEN c.relkind = 'p' THEN NULL WHEN s.n_live_tup > 0 OR c.reltuples < 0 THEN s.n_live_tup ELSE c.reltuples END AS rows,
+                    {rows} AS rows,
                     {sizes},
                     EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = s.relid AND k.contype = 'p') AS has_pk,
                     s.seq_scan, s.seq_tup_read, s.idx_scan, s.n_tup_ins, s.n_tup_upd, s.n_tup_del, s.n_dead_tup,
                     s.n_mod_since_analyze,
                     {vacuum} AS last_vacuum,
                     {analyze} AS last_analyze,
-                    age(c.relfrozenxid) AS xid_age
+                    CASE WHEN c.relkind = 'p' THEN NULL ELSE age(c.relfrozenxid) END AS xid_age,
+                    {partition_of} AS partition_of
              FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid",
+            rows = ROWS_SQL,
             vacuum = iso("greatest(s.last_vacuum, s.last_autovacuum)"),
             analyze = iso("greatest(s.last_analyze, s.last_autoanalyze)"),
+            partition_of = if version_num >= 100_000 { partition_parent("c") } else { "NULL::text".to_string() },
         )
     };
     let rows = match query(client, &sql(exact)).await {
@@ -849,8 +1031,31 @@ async fn tables(client: &Client) -> Result<Vec<TableStat>> {
             in_row_bytes: r.number("in_row_bytes"),
             lob_bytes: r.number("lob_bytes"),
             overflow_bytes: None,
+            partition_of: r.text("partition_of"),
+            counters_since: None,
         })
         .collect())
+}
+
+/// A table's row count. `n_live_tup` is a statistics counter: after a reset (`pg_stat_reset()`, crash recovery, a
+/// restore, a promoted standby) it counts only inserts minus deletes since, so a 10-million-row table reads as a few
+/// thousand rows until a vacuum or analyze sets it again. Until one has (no vacuum or analyze time since the reset),
+/// the planner's own count (`reltuples`, kept in the catalog) is the better one; a table never analyzed has only the
+/// counter. Partitioned parents hold no rows of their own.
+const ROWS_SQL: &str = "CASE WHEN c.relkind = 'p' THEN NULL
+                             WHEN c.reltuples < 0 THEN s.n_live_tup
+                             WHEN s.last_vacuum IS NULL AND s.last_autovacuum IS NULL AND s.last_analyze IS NULL
+                                  AND s.last_autoanalyze IS NULL THEN greatest(c.reltuples, s.n_live_tup)
+                             ELSE s.n_live_tup END";
+
+/// The relation `alias` (a pg_class row) is a partition of, as `schema.name` (PostgreSQL 10+ for tables, 11+ for
+/// indexes); NULL for one that isn't.
+fn partition_parent(alias: &str) -> String {
+    format!(
+        "CASE WHEN {alias}.relispartition THEN (SELECT pn.nspname || '.' || pc.relname FROM pg_inherits ih
+           JOIN pg_class pc ON pc.oid = ih.inhparent JOIN pg_namespace pn ON pn.oid = pc.relnamespace
+          WHERE ih.inhrelid = {alias}.oid LIMIT 1) END"
+    )
 }
 
 async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
@@ -871,6 +1076,17 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
                          ELSE pg_get_indexdef(x.indexrelid, k, true) END,
                     chr(31) ORDER BY k)
                  FROM generate_series(x.indnkeyatts + 1, x.indnatts) AS k) AS include_columns,
+                (SELECT string_agg(concat_ws(' ',
+                    CASE WHEN NOT opc.opcdefault THEN opc.opcname END,
+                    CASE WHEN x.indcollation[k - 1] <> 0
+                          AND x.indcollation[k - 1] IS DISTINCT FROM coalesce(
+                              (SELECT a.attcollation FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[k - 1]),
+                              100)
+                         THEN 'COLLATE ' || quote_ident(coll.collname) END), chr(31) ORDER BY k)
+                 FROM generate_series(1, x.indnkeyatts) AS k
+                 JOIN pg_opclass opc ON opc.oid = x.indclass[k - 1]
+                 LEFT JOIN pg_collation coll ON coll.oid = x.indcollation[k - 1]) AS key_opclasses,
+                {partition_of} AS partition_of,
                 pg_get_expr(x.indpred, x.indrelid, true) AS filter,
                 i.relpages::bigint * current_setting('block_size')::bigint AS estimated_bytes,
                 s.idx_scan, {last_read} AS last_read,
@@ -883,7 +1099,8 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
          LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = x.indexrelid
          WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
            AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
-           AND t.relkind IN ('r', 'm', 'p')"
+           AND t.relkind IN ('r', 'm', 'p')",
+        partition_of = partition_parent("i"),
     );
     let rows = query(client, &sql).await?;
     let mut indexes: Vec<IndexStat> = rows
@@ -910,6 +1127,9 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
             definition: r.text("definition"),
             contention: None,
             created_at_latest: None,
+            partition_of: r.text("partition_of"),
+            opclasses: opclasses(r.text("key_opclasses").as_deref()),
+            counters_since: None,
         })
         .collect();
 
@@ -930,6 +1150,13 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
         }
     }
     Ok(indexes)
+}
+
+/// Per key, its operator class and collation when they aren't the defaults (`key_opclasses`, chr(31)-separated, empty
+/// for a key on the defaults). `None` when every key uses the defaults.
+fn opclasses(list: Option<&str>) -> Option<Vec<String>> {
+    let keys: Vec<String> = list?.split(crate::rows::LIST_SEPARATOR).map(|k| k.trim().to_string()).collect();
+    keys.iter().any(|k| !k.is_empty()).then_some(keys)
 }
 
 async fn columns(client: &Client) -> Result<Vec<ColumnInfo>> {
@@ -1113,6 +1340,71 @@ mod tests {
             Some("SELECT 1 FROM t WHERE c > now() - $1::interval AND d = $2::date")
         );
         assert_eq!(cast_typed_placeholders("SELECT update_date FROM t WHERE id = $1"), None);
+    }
+
+    #[test]
+    fn one_row_per_statement_whichever_roles_ran_it() {
+        let base = statements_base("public.pg_stat_statements", 160_000);
+        assert!(base.contains("GROUP BY queryid"), "{base}");
+        assert!(base.contains("sum(calls) AS calls") && base.contains("sum(total_exec_time) AS total_ms"));
+        assert!(base.contains("max(max_exec_time) AS max_ms") && base.contains("min(min_exec_time) AS min_ms"));
+        // Pooled spread: each entry's own and how far its mean sits from the statement's.
+        assert!(base.contains("sum(calls * (stddev_exec_time ^ 2 + mean_exec_time ^ 2))"));
+        assert!(base.contains(" AND toplevel") && base.contains(&format!("NOT LIKE '%{TAG}'")));
+        assert!(base.contains("(array_agg(userid ORDER BY total_exec_time DESC))[1]::text AS owner"));
+        assert_eq!(base_relation(&base), Some("public.pg_stat_statements"));
+        let old = statements_base("public.pg_stat_statements", 120_000);
+        assert!(
+            old.contains("sum(total_time)") && !old.contains("toplevel") && old.contains("NULL::text AS first_seen")
+        );
+        assert!(statements_base("s.pg_stat_statements", 170_000).contains("min(stats_since)"));
+        assert!(statements_base_legacy("s.pg_stat_statements").contains("GROUP BY queryid"));
+    }
+
+    #[test]
+    fn a_family_counts_texts_not_statement_ids() {
+        // The same text under one id per tenant schema is one variant; a different IN-list length is another.
+        let sql = families_sql("SELECT 1");
+        assert!(sql.contains("count(DISTINCT shape) AS variants"), "{sql}");
+        assert!(sql.contains("HAVING count(DISTINCT shape) >= 5"));
+    }
+
+    #[test]
+    fn rows_after_a_statistics_reset_come_from_the_planner() {
+        // No vacuum or analyze since the counters started: n_live_tup counts only inserts minus deletes since.
+        assert!(ROWS_SQL.contains("s.last_autoanalyze IS NULL THEN greatest(c.reltuples, s.n_live_tup)"));
+        assert!(ROWS_SQL.contains("WHEN c.relkind = 'p' THEN NULL"));
+        let parent = partition_parent("c");
+        assert!(parent.contains("c.relispartition") && parent.contains("ih.inhrelid = c.oid"), "{parent}");
+    }
+
+    #[test]
+    fn operator_classes_and_collations_per_key() {
+        assert_eq!(opclasses(None), None);
+        assert_eq!(opclasses(Some("")), None);
+        assert_eq!(opclasses(Some("\u{1f}")), None, "every key on the defaults");
+        assert_eq!(
+            opclasses(Some("text_pattern_ops\u{1f}")),
+            Some(vec!["text_pattern_ops".to_string(), String::new()])
+        );
+        assert_eq!(opclasses(Some("COLLATE \"C\"")), Some(vec!["COLLATE \"C\"".to_string()]));
+    }
+
+    #[test]
+    fn a_search_path_reads_user_as_the_statements_owner() {
+        assert_eq!(resolve_user("\"$user\", public", "tenant_a"), "tenant_a, public");
+        assert_eq!(resolve_user("$user,public", "Tenant B"), "\"Tenant B\", public");
+        assert_eq!(resolve_user("app, public", "x"), "app, public");
+    }
+
+    #[test]
+    fn a_generic_plan_says_what_it_cannot_know() {
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
+            "Plan Rows": 5, "Total Cost": 4500.0, "Filter": "(customer_id = $1)"}}]"#;
+        let mut plan = plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        mark_generic(&mut plan, Some("tenant_a, public"));
+        assert!(plan.props["Generic Plan"].contains("default selectivities"));
+        assert_eq!(plan.props.get("search_path").map(String::as_str), Some("tenant_a, public"));
     }
 
     #[test]

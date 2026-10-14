@@ -1,15 +1,15 @@
 //! Read-only collectors behind the index advisor and tuning checks: forwarded fetches on heaps, statements that differ
 //! only in literals, single-use plans, and Query Store's own tuning state (recommendations, forced plans, hints).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use culprit_core::{
     AutomaticTuningOption, ForcedPlan, PlanCacheUse, QueryFamily, QueryHint, RecommendedIndex, TuningAdvice,
     TuningRecommendation,
 };
 
-use crate::conn::{MsClient, query};
-use crate::workload::utc_local_iso;
+use crate::conn::{MsClient, OWN_QUERY_MARKER, query};
+use crate::workload::{utc_local_iso, utc_offset_iso};
 
 const FORWARDED_SQL: &str = r#"
 SELECT s.name AS schema_name, t.name AS table_name, SUM(os.forwarded_fetch_count) AS forwarded
@@ -35,8 +35,22 @@ pub(crate) async fn forwarded_fetches(client: &mut MsClient) -> tiberius::Result
         .collect())
 }
 
+/// A statement's text without the parameter declarations a parameterized one starts with
+/// (`(@p0 nvarchar(7),@p1 int)SELECT …` → `SELECT …`): the declarations end at the first `)` followed by neither `,`
+/// nor another `)`. `{text}` is the T-SQL expression of the text. Hashed on its first 4,000 characters (HASHBYTES takes
+/// 8,000 bytes before SQL Server 2016).
+fn body_sql(text: &str) -> String {
+    format!(
+        "CASE WHEN {text} LIKE N'(@%' AND PATINDEX(N'%)[^,)]%', {text}) > 0
+              THEN SUBSTRING({text}, PATINDEX(N'%)[^,)]%', {text}) + 1, 2147483647) ELSE {text} END"
+    )
+}
+
 /// Query Store queries grouped by query_hash: a family with many members is the same statement sent with different
-/// literals. Members are ranked by time so the family links to its heaviest variants.
+/// literals. Members are ranked by time so the family links to its heaviest variants. A variant is a text that differs
+/// once its parameter declarations are set aside: the same statement sent with `nvarchar(7)` and `nvarchar(9)`
+/// parameters (ADO.NET's AddWithValue sizes them to each value) or written into several procedures shares a
+/// query_hash, but has no literal baked in. Culprit's own statements are left out.
 fn families_sql(window_minutes: u32) -> String {
     format!(
         r#"
@@ -51,17 +65,24 @@ WITH per_query AS (
   WHERE i.end_time > DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET())
   GROUP BY q.query_hash, q.query_id, q.query_text_id
 ),
+members AS (
+  SELECT pq.query_hash, pq.query_id, pq.query_text_id, pq.executions, pq.total_ms,
+    HASHBYTES('SHA2_256', LEFT({body}, 4000)) AS body_hash
+  FROM per_query pq
+  JOIN sys.query_store_query_text qt ON qt.query_text_id = pq.query_text_id
+  WHERE qt.query_sql_text NOT LIKE N'%{marker}%'
+),
 families AS (
-  SELECT TOP 15 query_hash, COUNT(*) AS variants, SUM(executions) AS executions, SUM(total_ms) AS total_ms
-  FROM per_query
+  SELECT TOP 15 query_hash, COUNT(DISTINCT body_hash) AS variants, SUM(executions) AS executions, SUM(total_ms) AS total_ms
+  FROM members
   GROUP BY query_hash
-  HAVING COUNT(*) >= 10
-  ORDER BY COUNT(*) DESC
+  HAVING COUNT(DISTINCT body_hash) >= 10
+  ORDER BY COUNT(DISTINCT body_hash) DESC
 ),
 ranked AS (
-  SELECT pq.query_hash, pq.query_id, pq.query_text_id,
-    ROW_NUMBER() OVER (PARTITION BY pq.query_hash ORDER BY pq.total_ms DESC) AS rn
-  FROM per_query pq JOIN families f ON f.query_hash = pq.query_hash
+  SELECT m.query_hash, m.query_id, m.query_text_id,
+    ROW_NUMBER() OVER (PARTITION BY m.query_hash ORDER BY m.total_ms DESC) AS rn
+  FROM members m JOIN families f ON f.query_hash = m.query_hash
 )
 SELECT CONVERT(varchar(20), f.query_hash, 1) AS query_hash, f.variants, f.executions, f.total_ms,
   CAST(r.query_id AS varchar(20)) AS query_id, r.rn,
@@ -70,25 +91,57 @@ FROM families f
 JOIN ranked r ON r.query_hash = f.query_hash AND r.rn <= 5
 JOIN sys.query_store_query_text qt ON qt.query_text_id = r.query_text_id
 ORDER BY f.variants DESC, r.rn
-"#
+"#,
+        body = body_sql("qt.query_sql_text"),
+        marker = OWN_QUERY_MARKER,
     )
 }
 
-/// Ad-hoc plans in the plan cache grouped by query_hash: the fallback when Query Store is off, and the memory each
-/// family's single-use plans hold.
-const CACHE_FAMILIES_SQL: &str = r#"
+/// Ad-hoc plans in this database's plan cache grouped by query_hash: the fallback when Query Store is off, and the
+/// memory each family's single-use plans hold. A plan belongs to the database it was compiled in (the plan attribute
+/// `dbid`); the batch text's own dbid is empty for ad-hoc and prepared statements. Variants are counted as for Query
+/// Store, and Culprit's own statements are left out.
+fn cache_families_sql() -> String {
+    format!(
+        r#"
 SELECT TOP 15 CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
-  COUNT(*) AS variants, SUM(qs.execution_count) AS executions, SUM(qs.total_elapsed_time) / 1000.0 AS total_ms,
+  COUNT(DISTINCT HASHBYTES('SHA2_256', LEFT({body}, 4000))) AS variants, SUM(qs.execution_count) AS executions,
+  SUM(qs.total_elapsed_time) / 1000.0 AS total_ms,
   SUM(CAST(cp.size_in_bytes AS bigint)) AS cached_bytes,
   LEFT(MAX(CAST(st.text AS nvarchar(max))), 600) AS sample
 FROM sys.dm_exec_query_stats qs
 JOIN sys.dm_exec_cached_plans cp ON cp.plan_handle = qs.plan_handle
+CROSS APPLY sys.dm_exec_plan_attributes(qs.plan_handle) pa
 CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) st
-WHERE cp.objtype IN ('Adhoc', 'Prepared') AND (st.dbid = DB_ID() OR st.dbid IS NULL)
+WHERE cp.objtype IN ('Adhoc', 'Prepared') AND pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID()
+  AND st.text NOT LIKE N'%{marker}%'
 GROUP BY qs.query_hash
-HAVING COUNT(*) >= 10
-ORDER BY COUNT(*) DESC
-"#;
+HAVING COUNT(DISTINCT HASHBYTES('SHA2_256', LEFT({body}, 4000))) >= 10
+ORDER BY variants DESC
+"#,
+        body = body_sql("CAST(st.text AS nvarchar(max))"),
+        marker = OWN_QUERY_MARKER,
+    )
+}
+
+/// Statements that read the server's own catalog and statistics (monitoring tools, IDEs, audits): real load, but no
+/// application's literals to fix.
+fn is_monitoring_text(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "sys.dm_",
+        "sys.query_store",
+        "sys.objects",
+        "sys.columns",
+        "sys.indexes",
+        "information_schema.",
+        "msdb.",
+        " sys.",
+        "(sys.",
+    ]
+    .iter()
+    .any(|marker| t.contains(marker))
+}
 
 pub(crate) async fn query_families(
     client: &mut MsClient,
@@ -96,10 +149,19 @@ pub(crate) async fn query_families(
     query_store: bool,
 ) -> tiberius::Result<Vec<QueryFamily>> {
     let mut families: Vec<QueryFamily> = Vec::new();
+    // Families whose heaviest member reads the catalog (a monitoring tool's): no application literals to fix.
+    let mut monitoring: HashSet<String> = HashSet::new();
     if query_store {
         for r in query(client, &families_sql(window_minutes.max(1))).await? {
             let key = r.string("query_hash");
             let id = r.string("query_id");
+            if r.str("sample").is_some_and(|sample| is_monitoring_text(&sample)) {
+                monitoring.insert(key);
+                continue;
+            }
+            if monitoring.contains(&key) {
+                continue;
+            }
             match families.iter_mut().find(|f| f.key == key) {
                 Some(f) => f.query_ids.push(id),
                 None => families.push(QueryFamily {
@@ -115,9 +177,12 @@ pub(crate) async fn query_families(
         }
     }
     // The plan cache adds memory per family, and stands in for Query Store when it is off.
-    if let Ok(rows) = query(client, CACHE_FAMILIES_SQL).await {
+    if let Ok(rows) = query(client, &cache_families_sql()).await {
         for r in rows {
             let key = r.string("query_hash");
+            if monitoring.contains(&key) || is_monitoring_text(&r.string("sample")) {
+                continue;
+            }
             match families.iter_mut().find(|f| f.key == key) {
                 Some(f) => f.cached_bytes = r.f64("cached_bytes"),
                 None if !query_store => families.push(QueryFamily {
@@ -136,11 +201,14 @@ pub(crate) async fn query_families(
     Ok(families)
 }
 
+/// Plans compiled in this database (the plan attribute `dbid`): the cache is the server's, the scan is the database's.
 const PLAN_CACHE_SQL: &str = r#"
-SELECT COUNT(*) AS total_plans, SUM(CAST(size_in_bytes AS bigint)) AS total_bytes,
-  SUM(CASE WHEN usecounts = 1 AND objtype IN ('Adhoc', 'Prepared') THEN 1 ELSE 0 END) AS single_use_plans,
-  SUM(CASE WHEN usecounts = 1 AND objtype IN ('Adhoc', 'Prepared') THEN CAST(size_in_bytes AS bigint) ELSE 0 END) AS single_use_bytes
-FROM sys.dm_exec_cached_plans
+SELECT COUNT(*) AS total_plans, SUM(CAST(cp.size_in_bytes AS bigint)) AS total_bytes,
+  SUM(CASE WHEN cp.usecounts = 1 AND cp.objtype IN ('Adhoc', 'Prepared') THEN 1 ELSE 0 END) AS single_use_plans,
+  SUM(CASE WHEN cp.usecounts = 1 AND cp.objtype IN ('Adhoc', 'Prepared') THEN CAST(cp.size_in_bytes AS bigint) ELSE 0 END) AS single_use_bytes
+FROM sys.dm_exec_cached_plans cp
+CROSS APPLY sys.dm_exec_plan_attributes(cp.plan_handle) pa
+WHERE pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID()
 "#;
 
 pub(crate) async fn plan_cache(client: &mut MsClient) -> tiberius::Result<Option<PlanCacheUse>> {
@@ -181,7 +249,7 @@ FROM sys.dm_db_tuning_recommendations
 "#,
         valid_since = utc_local_iso("valid_since"),
         applied = utc_local_iso("execute_action_start_time"),
-        last = utc_local_iso("CAST(MAX(p.last_execution_time) AS datetime2)")
+        last = utc_offset_iso("MAX(p.last_execution_time)")
     )
 }
 
@@ -191,7 +259,7 @@ fn forced_plans_sql(with_forcing: bool) -> String {
         "SELECT CAST(query_id AS varchar(20)) AS query_id, CAST(plan_id AS varchar(20)) AS plan_id,
            force_failure_count, last_force_failure_reason_desc, {last} AS last_execution{forcing}
          FROM sys.query_store_plan WHERE is_forced_plan = 1",
-        last = utc_local_iso("CAST(last_execution_time AS datetime2)"),
+        last = utc_offset_iso("last_execution_time"),
         forcing = if with_forcing { ", plan_forcing_type_desc AS forcing" } else { "" }
     )
 }
@@ -409,6 +477,52 @@ pub(crate) async fn tuning(client: &mut MsClient, query_store: bool) -> tiberius
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `body_sql`'s PATINDEX finds: the first `)` followed by neither `,` nor `)`.
+    fn body(text: &str) -> &str {
+        if !text.starts_with("(@") {
+            return text;
+        }
+        let bytes = text.as_bytes();
+        (0..bytes.len().saturating_sub(1))
+            .find(|&i| bytes[i] == b')' && !matches!(bytes[i + 1], b',' | b')'))
+            .map(|i| &text[i + 1..])
+            .unwrap_or(text)
+    }
+
+    #[test]
+    fn families_count_texts_that_differ_past_their_parameter_declarations() {
+        // ADO.NET sizes each nvarchar parameter to its value: one statement, many declarations, no literal.
+        assert_eq!(body("(@p0 nvarchar(7))SELECT * FROM t WHERE a = @p0"), "SELECT * FROM t WHERE a = @p0");
+        assert_eq!(body("(@p0 nvarchar(9))SELECT * FROM t WHERE a = @p0"), "SELECT * FROM t WHERE a = @p0");
+        assert_eq!(
+            body("(@p0 nvarchar(7),@p1 int)UPDATE t SET b = @p1 WHERE a = @p0"),
+            "UPDATE t SET b = @p1 WHERE a = @p0"
+        );
+        assert_eq!(body("(@p0 decimal(10,2))SELECT @p0"), "SELECT @p0");
+        assert_eq!(body("SELECT * FROM t WHERE a = 'x'"), "SELECT * FROM t WHERE a = 'x'");
+
+        let sql = families_sql(60);
+        assert!(sql.contains("COUNT(DISTINCT body_hash) AS variants"), "{sql}");
+        assert!(sql.contains("PATINDEX(N'%)[^,)]%', qt.query_sql_text)"));
+        assert!(sql.contains(&format!("NOT LIKE N'%{OWN_QUERY_MARKER}%'")));
+        let cache = cache_families_sql();
+        assert!(cache.contains("pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID()"), "{cache}");
+        assert!(!cache.contains("st.dbid IS NULL"), "another database's ad-hoc statements aren't this one's");
+        assert!(cache.contains(&format!("NOT LIKE N'%{OWN_QUERY_MARKER}%'")));
+        assert!(is_monitoring_text("SELECT session_id FROM sys.dm_exec_requests WHERE x = 1"));
+        assert!(!is_monitoring_text("SELECT * FROM shop.orders WHERE id = 1"));
+    }
+
+    #[test]
+    fn query_store_times_are_switched_to_utc_not_shifted_again() {
+        // Query Store keeps datetimeoffset values: shifting them by the server's offset counted it twice.
+        let forced = forced_plans_sql(true);
+        assert!(forced.contains("SWITCHOFFSET(last_execution_time, '+00:00')"), "{forced}");
+        assert!(!forced.contains("GETUTCDATE"));
+        let recommendations = recommendations_sql();
+        assert!(recommendations.contains("SWITCHOFFSET(MAX(p.last_execution_time), '+00:00')"));
+    }
 
     #[test]
     fn an_index_recommendation_script_names_its_table_and_columns() {

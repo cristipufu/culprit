@@ -618,22 +618,35 @@ impl Workspace {
                 Vec::new()
             }
         };
-        if let Some(workload) = snapshot.workload.as_mut().filter(|w| !w.windowed && w.timeline.is_none()) {
-            let history = reports::counters_history(&dir, &snapshot.taken_at);
-            trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, &history);
-        }
         let previous = previous
             .filter(|p| p.id != snapshot.id)
             .and_then(|p| reports::load(&dir.join(format!("{}.json", p.id))).ok())
             .map(|r| r.snapshot);
-        // This scan's changes come before the checks: an index the scans saw appear this week isn't unused yet.
+        // A replica's usage counters are its own reads: set them aside before anything compares or judges them.
+        history::set_aside_replica_usage(&mut snapshot);
+        let same_database = previous.as_ref().filter(|p| history::same_database(p, &snapshot));
+        let evictions = trends::evictions(&snapshot);
+        if let Some(workload) = snapshot.workload.as_mut().filter(|w| !w.windowed) {
+            // A source that can't say when it started counting (pg_stat_statements before 14) gets its window from the
+            // scan before.
+            let before = same_database.and_then(|p| Some((p.workload.as_ref()?, p.taken_at.as_str())));
+            trends::infer_window(workload, before, &snapshot.taken_at);
+            let history = reports::counters_history(&dir, &snapshot.taken_at);
+            if workload.timeline.is_none() {
+                trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, evictions, &history);
+            }
+            // Statements whose source doesn't say when they last ran get it from the scans that saw them grow.
+            trends::last_seen_from_scans(workload, &snapshot.server.database, &snapshot.taken_at, &history);
+        }
+        // This scan's changes come before the checks: an index the scans saw appear this week isn't unused yet, nor
+        // one whose usage counters started over.
         let changes = history::diff(previous.as_ref(), &snapshot, recorded);
         history::date_new_indexes(&dir, &mut snapshot, &changes);
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
-        // How big each table was then tells how fast it grows.
-        snapshot.sizes_before = previous.as_ref().and_then(culprit_core::SizeBaseline::from_scan);
+        // How big each table was a day or more ago tells how fast it grows.
+        snapshot.sizes_before = history::growth_baseline(&dir, &snapshot);
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
         history::keep(&dir, &report.snapshot.id, &changes);

@@ -9,7 +9,7 @@ use culprit_core::{ChangeKind, Changes, Engine, Error, Result, TimelineSource};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::trends::{Counters, QueryMeta};
+use crate::trends::{self, Counters, QueryMeta, StepKind};
 
 /// Which two periods to compare. Everything is optional: by default the recent period is the last half of the
 /// history (at most a day) and the baseline is the same length right before it.
@@ -164,11 +164,14 @@ fn nearest(points: &[(f64, &Counters)], t: f64) -> usize {
 struct Span {
     time_ms: f64,
     executions: f64,
+    /// Steps whose totals shrank without the source resetting (entries evicted): the totals hold only what the
+    /// statements still there grew by.
+    unknown_steps: usize,
     queries: BTreeMap<String, Option<[f64; 2]>>,
 }
 
 fn span(points: &[(f64, &Counters)], from: usize, to: usize) -> Span {
-    let mut out = Span { time_ms: 0.0, executions: 0.0, queries: BTreeMap::new() };
+    let mut out = Span { time_ms: 0.0, executions: 0.0, unknown_steps: 0, queries: BTreeMap::new() };
     for (_, c) in &points[from..=to] {
         for id in c.queries.keys() {
             out.queries.entry(id.clone()).or_insert(Some([0.0, 0.0]));
@@ -176,29 +179,33 @@ fn span(points: &[(f64, &Counters)], from: usize, to: usize) -> Span {
     }
     for pair in points[from..=to].windows(2) {
         let ((ta, a), (_, b)) = (pair[0], pair[1]);
-        let reset = b.window_start.as_deref().and_then(epoch).is_some_and(|r| r > ta + 1.0)
-            || b.total_executions < a.total_executions
-            || b.total_time_ms < a.total_time_ms - 0.5;
-        if reset {
-            out.time_ms += b.total_time_ms;
-            out.executions += b.total_executions;
-        } else {
-            out.time_ms += b.total_time_ms - a.total_time_ms;
-            out.executions += b.total_executions - a.total_executions;
+        // A reset only when the source says so: totals also shrink when entries are evicted, and then the later totals
+        // are not "everything since", only what the entries still there grew by.
+        let kind = trends::step_kind(ta, a, b);
+        match kind {
+            StepKind::Reset => {
+                out.time_ms += b.total_time_ms;
+                out.executions += b.total_executions;
+            }
+            StepKind::Growth => {
+                out.time_ms += b.total_time_ms - a.total_time_ms;
+                out.executions += b.total_executions - a.total_executions;
+            }
+            StepKind::Unknown => {
+                out.unknown_steps += 1;
+                for id in b.queries.keys() {
+                    if let Some(v) = trends::query_step(kind, ta, a, b, id, None) {
+                        out.time_ms += v[0];
+                        out.executions += v[1];
+                    }
+                }
+            }
         }
         for (id, value) in out.queries.iter_mut() {
+            // Sources report first-seen to the second; an entry created in the scan's own second is new.
+            let first = b.meta.get(id).and_then(|m| m.first_seen.as_deref()).and_then(epoch);
             let step = match (a.queries.get(id), b.queries.get(id)) {
-                (_, Some(after)) if reset => Some(*after),
-                (Some(before), Some(after)) if after[1] >= before[1] && after[0] >= before[0] => {
-                    Some([after[0] - before[0], after[1] - before[1]])
-                }
-                (Some(_), Some(after)) => Some(*after),
-                // Tracked by neither scan: if the source says it first ran after the earlier one, all its runs are new.
-                (None, Some(after)) => {
-                    let first = b.meta.get(id).and_then(|m| m.first_seen.as_deref()).and_then(epoch);
-                    // Sources report first-seen to the second; an entry created in the scan's own second is new.
-                    first.is_some_and(|f| f + 1.0 > ta).then_some(*after)
-                }
+                (_, Some(_)) => trends::query_step(kind, ta, a, b, id, first),
                 // Gone from the later scan: either it stopped or it fell out of the heaviest queries; unknown.
                 (Some(_), None) => None,
                 (None, None) => Some([0.0, 0.0]),
@@ -261,6 +268,12 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
 
     let before = span(&points, start, mid);
     let after = span(&points, mid, end);
+    if before.unknown_steps + after.unknown_steps > 0 {
+        data.notes.push(
+            "Between some of these scans the source's totals shrank without a reset (entries evicted or plans dropped), so those stretches count only what the statements still tracked grew by: totals there are a lower bound."
+                .to_string(),
+        );
+    }
     data.baseline_total = PeriodStats::new(before.executions, before.time_ms);
     data.recent_total = PeriodStats::new(after.executions, after.time_ms);
 
@@ -416,7 +429,24 @@ mod tests {
                     (id.to_string(), meta)
                 })
                 .collect(),
+            evictions: None,
         }
+    }
+
+    #[test]
+    fn totals_that_shrink_without_a_reset_are_a_lower_bound_not_a_restart() {
+        // Weeks of totals, then entries evicted between the second and third scans: the totals shrink, the reset time
+        // doesn't move. The recent period is what the statements still there grew by, not everything since the reset.
+        let history = vec![
+            counters("2026-10-11T00:00:00Z", [900_000.0, 50_000.0], &[("a", 100.0, 10.0, None)]),
+            counters("2026-10-11T06:00:00Z", [900_300.0, 50_030.0], &[("a", 400.0, 40.0, None)]),
+            counters("2026-10-11T12:00:00Z", [5_000.0, 500.0], &[("a", 700.0, 70.0, None)]),
+        ];
+        let (baseline, recent) = default_scan_periods(&history).unwrap();
+        let data = from_scans(&history, &baseline, &recent);
+        assert_eq!(data.recent_total.mean_ms, 10.0);
+        assert!(data.recent_total.executions < 100.0, "{:?}", data.recent_total);
+        assert!(data.notes.iter().any(|n| n.contains("lower bound")), "{:?}", data.notes);
     }
 
     #[test]

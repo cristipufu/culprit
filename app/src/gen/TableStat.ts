@@ -25,4 +25,15 @@ lob_bytes: number | null,
 /**
  * Bytes of variable-length values pushed off a row that outgrew its page (SQL Server row-overflow pages).
  */
-overflow_bytes: number | null, };
+overflow_bytes: number | null, 
+/**
+ * The partitioned table this one is a partition of (`schema.table`, PostgreSQL). Its rows, sizes and counters are
+ * the partition's own; judge the table as a whole at the parent. `None` for a table that isn't a partition.
+ */
+partition_of: string | null, 
+/**
+ * The latest its usage counters (scans, reads, writes) may have started over (UTC), when a scan saw them shrink
+ * since the scan before without the server restarting: a statistics reset for the table, a database taken offline,
+ * restored or failed over. What they count covers the time since then at least. `None`: as old as the server's.
+ */
+counters_since: string | null, };

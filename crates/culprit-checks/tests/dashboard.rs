@@ -155,6 +155,7 @@ fn a_trend_compares_the_last_stretch_with_what_came_before() {
         end: "2026-10-11T10:00:00Z".into(),
         time_ms: vec![10_000.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0, 30_000.0, 30_000.0],
         executions: vec![1.0; 8],
+        unknown: None,
     });
     let d = dashboard(&r);
     let db = tile(&d, TileKey::DbTime);
