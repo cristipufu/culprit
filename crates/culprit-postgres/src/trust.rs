@@ -7,8 +7,8 @@
 //! So every plan Culprit asks for without running the statement is made in a read-only transaction that is rolled
 //! back, with session locks released after: the code can read what this login reads, but can't write, and what it
 //! changes in the session doesn't outlive the plan. And a login that can do more than read statistics ([`ELEVATED`])
-//! doesn't plan while code another role wrote is in reach ([`foreign_code`]). A login with only pg_monitor, and
-//! SELECT on the tables it plans, plans every statement.
+//! plans, during a scan, only the statements it ran itself, and nothing while code another role wrote is in reach
+//! ([`foreign_code`]). A login with only pg_monitor, and SELECT on the tables it plans, plans every statement.
 
 use culprit_core::{Error, ErrorCode, Result};
 use tokio_postgres::Client;

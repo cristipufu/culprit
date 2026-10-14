@@ -23,7 +23,7 @@ Every check, plan insight and collector was reviewed for findings the statistics
 
 ### Safety
 
-- **Planning never lends your privileges.** To estimate a statement, PostgreSQL's planner runs the functions it reaches with the privileges of whoever plans it. Culprit now makes every plan in a read-only transaction that is rolled back. A login with more than `pg_monitor` doesn't plan while functions or operators written by other roles are in reach; the scan says which roles own them and how to get plans back.
+- **Planning never lends your privileges.** To estimate a statement, PostgreSQL's planner runs the functions it reaches with the privileges of whoever plans it. Culprit now makes every plan in a read-only transaction that is rolled back. A login with more than `pg_monitor` (a superuser, an RDS master user, an Azure admin) plans only the statements it ran itself, and none while functions or operators written by other roles are in reach; the scan says what it left out and how to get those plans: a login with only `pg_monitor` and `SELECT` on the tables plans them all.
 
 ### For developers
 

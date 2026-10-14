@@ -57,8 +57,8 @@ Rules every source follows:
 - **Planning never lends this login's privileges.** PostgreSQL's planner runs the functions and operators a statement
   reaches (constants folded, a column's common values compared), with the privileges of whoever plans it, and neither
   `search_path` nor `SET ROLE` keeps someone else's code out. `culprit-postgres/src/trust.rs` makes every plan in a
-  read-only transaction that is rolled back, and a login that can do more than read statistics doesn't plan while
-  functions or operators other roles wrote are in reach.
+  read-only transaction that is rolled back. A login that can do more than read statistics plans only the statements
+  it ran itself during a scan, and nothing while functions or operators other roles wrote are in reach.
 - **The plan that runs now.** A plan describes the database when it was captured. Query Store keeps a plan's first XML,
   so a plan older than its table is marked in the prepare stage.
 

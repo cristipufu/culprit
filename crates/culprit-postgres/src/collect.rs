@@ -580,8 +580,11 @@ async fn collect_with_base(
             plan_id: None,
         })
         .collect();
+    // The statements this login ran itself (among the roles that ran each): the only ones an elevated login plans.
+    let mine: std::collections::HashSet<String> =
+        rows.iter().filter(|r| r.flag("mine")).map(|r| r.string("id")).collect();
     let (plan_note, plans_withheld) = if probe.generic_plans() {
-        match attach_plans(client, &mut queries, probe, options.plans).await {
+        match attach_plans(client, &mut queries, &mine, probe, options.plans).await {
             Ok(note) => (note, None),
             Err(withheld) => (None, Some(withheld)),
         }
@@ -727,7 +730,8 @@ fn aggregated_base(relation: &str, c: &EntryColumns) -> String {
                               - (sum({total}) / nullif(sum(calls), 0)::float8) ^ 2, 0)) AS stddev_ms,
                 sum(rows) AS rows, sum(shared_blks_hit + shared_blks_read) AS reads, sum(shared_blks_read) AS phys,
                 sum(temp_blks_written) AS temp, sum({io}) AS io_ms, {first_seen} AS first_seen,
-                count(*) AS entries
+                count(*) AS entries,
+                bool_or(userid = current_user::regrole::oid) AS mine
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
            AND query NOT LIKE '%{TAG}'
@@ -779,13 +783,14 @@ fn statements_base_legacy(relation: &str) -> String {
 async fn attach_plans(
     client: &Client,
     queries: &mut [QueryStat],
+    mine: &std::collections::HashSet<String>,
     probe: &Probe,
     budget: u32,
 ) -> Result<Option<String>> {
-    // Planning runs the code a statement reaches with this login's privileges (`crate::trust`): a login that can do
-    // more than read statistics plans nothing while another role's code is in reach. Each plan checks again, in its
-    // own read-only transaction. Statements are planned under Culprit's own search_path, never the role's that ran
-    // them: a statement whose names don't resolve here stays unplanned.
+    // Planning runs the code a statement reaches with this login's privileges (`crate::trust`). A login that can do
+    // more than read statistics plans only statements it ran itself, and none while another role's code is in reach;
+    // each plan checks again, in its own read-only transaction. Statements are planned under Culprit's own
+    // search_path, never the role's that ran them: a statement whose names don't resolve here stays unplanned.
     if probe.elevated {
         let owners = crate::trust::foreign_code(client).await?;
         if !owners.is_empty() {
@@ -794,12 +799,16 @@ async fn attach_plans(
     }
     let mut order: Vec<usize> = (0..queries.len()).collect();
     order.sort_by(|a, b| queries[*b].total_time_ms.total_cmp(&queries[*a].total_time_ms));
-    let (mut attempted, mut planned) = (0u32, 0u32);
+    let (mut attempted, mut planned, mut others) = (0u32, 0u32, 0u32);
     for index in order {
         if attempted >= budget {
             break;
         }
         let Some(statement) = plannable(&queries[index].text) else { continue };
+        if probe.elevated && !mine.contains(&queries[index].id) {
+            others += 1;
+            continue;
+        }
         attempted += 1;
         let Some(json) = generic_plan_json(client, statement, probe).await else { continue };
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
@@ -809,11 +818,18 @@ async fn attach_plans(
             planned += 1;
         }
     }
-    Ok((planned < attempted).then(|| {
-        format!(
+    let mut notes = Vec::new();
+    if planned < attempted {
+        notes.push(format!(
             "Planned {planned} of {attempted} heavy statements. The rest could not be planned: their recorded text is truncated, is not valid SQL once constants are replaced by placeholders, or uses objects this login cannot see."
-        )
-    }))
+        ));
+    }
+    if others > 0 {
+        notes.push(format!(
+            "{others} heavy statements other roles ran were left unplanned: this login can do more than read statistics, and planning a statement runs the functions it reaches with this login's privileges. A login with only pg_monitor, and SELECT on the tables, plans them."
+        ));
+    }
+    Ok((!notes.is_empty()).then(|| notes.join(" ")))
 }
 
 /// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values (estimates for `$n`
@@ -1291,6 +1307,8 @@ mod tests {
         assert!(base.contains("sum(calls * (stddev_exec_time ^ 2 + mean_exec_time ^ 2))"));
         assert!(base.contains(" AND toplevel") && base.contains(&format!("NOT LIKE '%{TAG}'")));
         assert_eq!(base_relation(&base), Some("public.pg_stat_statements"));
+        // Whether this login ran it, without a subquery whose FROM would hide the relation.
+        assert!(base.contains("bool_or(userid = current_user::regrole::oid) AS mine"), "{base}");
         let old = statements_base("public.pg_stat_statements", 120_000);
         assert!(
             old.contains("sum(total_time)") && !old.contains("toplevel") && old.contains("NULL::text AS first_seen")
