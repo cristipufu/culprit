@@ -43,6 +43,26 @@ pub fn severity_for_share(share: f64) -> Severity {
     Severity::Low
 }
 
+/// Database time a day a finding needs behind it for Medium, and for High: a share of a quiet database's time is still a
+/// small number.
+pub const MEDIUM_MS_A_DAY: f64 = 60_000.0;
+pub const HIGH_MS_A_DAY: f64 = 600_000.0;
+
+/// Severity for a finding from the database time behind it (`time_ms` in the workload's window, `share` of all
+/// of it): the share says how much of the workload it is, the amount whether that's worth anyone's time. The amount is
+/// the time a day over at least an hour of window; under an hour, the window's own total, which a day holds at least.
+pub fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
+    let a_day = snapshot.workload.as_ref().map(|w| w.rate_per_day(time_ms).unwrap_or(time_ms)).unwrap_or(0.0);
+    let by_amount = if a_day >= HIGH_MS_A_DAY {
+        Severity::High
+    } else if a_day >= MEDIUM_MS_A_DAY {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+    severity_for_share(share).min(by_amount)
+}
+
 pub fn base_score(severity: Severity) -> f64 {
     match severity {
         Severity::High => 45.0,

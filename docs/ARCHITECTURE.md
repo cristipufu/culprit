@@ -100,7 +100,7 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | A type mismatch is a column the engine converts implicitly to match a value of another type, in the plan that runs now. | `insights::converts_column`, `current_conversions`, `mark_changed_columns` |
 | An index is advice only for a filter that keeps a small share of the rows read; past that, the scan is the right plan and the advice is to read less. | `INDEX_KEEPS_AT_MOST`, `PlanNode::kept_share` |
 | A setting is changed where the server runs: SQL on a server you manage, the platform's control on a managed one, and never to a lower value than it has. | `support::setting_change` |
-| Severity needs an amount, not only a share: a large share of a quiet database's time is still a small number. | per check; `severity_for_share` with an absolute floor |
+| Severity needs an amount, not only a share: a large share of a quiet database's time is still a small number (Medium needs a minute a day of database time, High ten). | `support::severity_for_time` |
 | One cause, one finding. | refine rules |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 

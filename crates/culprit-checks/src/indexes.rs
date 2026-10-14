@@ -292,26 +292,6 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
     f
 }
 
-/// Database time a day an index finding needs behind it for Medium, and for High: a share of a quiet database's time
-/// is still a small number.
-const MEDIUM_MS_A_DAY: f64 = 60_000.0;
-const HIGH_MS_A_DAY: f64 = 600_000.0;
-
-/// Severity for an index finding from the database time behind it (`time_ms` in the workload's window, `share` of all
-/// of it): the share says how much of the workload it is, the amount whether that's worth anyone's time. The amount is
-/// the time a day over at least an hour of window; under an hour, the window's own total, which a day holds at least.
-pub(crate) fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
-    let a_day = snapshot.workload.as_ref().map(|w| w.rate_per_day(time_ms).unwrap_or(time_ms)).unwrap_or(0.0);
-    let by_amount = if a_day >= HIGH_MS_A_DAY {
-        Severity::High
-    } else if a_day >= MEDIUM_MS_A_DAY {
-        Severity::Medium
-    } else {
-        Severity::Low
-    };
-    severity_for_share(share).min(by_amount)
-}
-
 /// When SQL Server's optimizer last wanted the index, when that is before the scan's window (or, without query
 /// history, before the last week: a weekly job has had its chance), and the window as words: none of the window's
 /// queries wanted it. `None` when one of the merged requests was wanted within it, or when it isn't known when.

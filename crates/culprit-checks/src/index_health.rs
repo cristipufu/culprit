@@ -431,7 +431,7 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             Some(i) if i.share >= 0.005 => {
                 apply_query_impact(&mut f, i);
                 let time_ms: f64 = scanning.iter().map(|q| q.total_time_ms).sum();
-                f.severity = crate::indexes::severity_for_time(snapshot, time_ms, i.share);
+                f.severity = severity_for_time(snapshot, time_ms, i.share);
             }
             _ => {
                 f.severity = if rows_read >= 1e9 { Severity::Medium } else { Severity::Low };
