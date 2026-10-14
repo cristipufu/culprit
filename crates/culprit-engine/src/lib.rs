@@ -827,6 +827,10 @@ impl Workspace {
 
     pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
         let mut plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id).await)?;
+        // Query Store keeps a plan's first XML: check its conversions against the latest scan's catalog.
+        if let Ok(Some(report)) = self.latest_report(name, None) {
+            culprit_core::insights::mark_changed_columns(&mut plan, &report.snapshot.columns);
+        }
         culprit_core::insights::annotate(&mut plan);
         Ok(plan)
     }

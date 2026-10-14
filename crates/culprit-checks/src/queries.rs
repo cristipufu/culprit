@@ -1,4 +1,4 @@
-use culprit_core::insights::converts_column;
+use culprit_core::insights::{converts_column, current_conversions, mismatch_fix};
 use culprit_core::{
     Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, NodeKind, PlanNode, PlanWarning,
     QueryRef, QueryStat, Severity, Snapshot, SubjectKind, Unit, format,
@@ -40,7 +40,7 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     apply_query_impact(&mut f, &impact);
     f.severity = severity_for_share(impact.share);
     f.confidence = Confidence::High;
-    let per_day_runs = per_day(snapshot, q.executions);
+    let per_day_runs = rate_per_day(snapshot, q.executions);
     let reads_per_row = match (q.reads_per_execution(), q.rows_per_execution()) {
         (Some(reads), Some(rows)) => Some(reads / rows.max(1.0)),
         _ => None,
@@ -70,7 +70,9 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     f.summary = summary;
     f.queries = vec![QueryRef { id: q.id.clone(), plan_node: hot.map(|(_, n)| n.id), note: None }];
     f.metrics.push(Metric::new("Share of DB time", impact.share, Unit::Ratio));
-    f.metrics.push(Metric::new("Runs per day", per_day_runs, Unit::Count));
+    if let Some(runs) = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(q.executions)) {
+        f.metrics.push(Metric::new("Runs per day", runs, Unit::Count));
+    }
     f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
     if let Some(r) = q.reads_per_execution() {
         let label =
@@ -87,7 +89,7 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     f
 }
 
-fn heavy_fix_text(hot: Option<&PlanNode>, per_day_runs: f64, q: &QueryStat) -> String {
+fn heavy_fix_text(hot: Option<&PlanNode>, per_day_runs: Option<f64>, q: &QueryStat) -> String {
     if let Some(node) = hot {
         if node.kind == NodeKind::Scan && node.predicate.is_some() {
             let table = node.object.as_deref().unwrap_or("the table");
@@ -109,7 +111,7 @@ fn heavy_fix_text(hot: Option<&PlanNode>, per_day_runs: f64, q: &QueryStat) -> S
             return "Most of the work is sorting. An index whose key order matches the ORDER BY lets the database read rows already sorted.".into();
         }
     }
-    if per_day_runs >= 100_000.0 && q.mean_time_ms < 5.0 {
+    if per_day_runs.is_some_and(|r| r >= 100_000.0) && q.mean_time_ms < 5.0 {
         return "Each run is fast; the cost is in how often it runs. Cache the result or batch the calls in the application.".into();
     }
     "Find this statement in the application (copy the brief for your coding agent) and check whether it reads more rows or columns than it needs.".into()
@@ -158,14 +160,14 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|q| !is_monitoring_query(q))
         .filter(|q| {
             let exec_share = q.executions / workload.total_executions;
-            let per_day_runs = workload.per_day(q.executions);
+            let busy = workload.rate_per_day(q.executions).is_some_and(|r| r >= 20_000.0);
             let small = q.rows_per_execution().is_some_and(|r| r <= 2.0) && q.mean_time_ms < 5.0;
-            small && exec_share >= 0.08 && per_day_runs >= 20_000.0
+            small && exec_share >= 0.08 && busy
         })
         .take(4)
         .map(|q| {
             let exec_share = q.executions / workload.total_executions;
-            let per_day_runs = workload.per_day(q.executions);
+            let per_day_runs = workload.per_day_measured(q.executions);
             let impact = query_impact(snapshot, &[q]).expect("workload present");
             let mut f = finding("chatty-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             let rows = q.rows_per_execution().unwrap_or(1.0);
@@ -217,11 +219,13 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             f.severity = if exec_share >= 0.25 { Severity::Medium } else { Severity::Low };
             f.impact.score = (score_for_share(impact.share) + exec_share * 40.0).min(60.0);
             f.impact.db_time_share = Some(impact.share);
-            f.impact.time_ms_per_day = Some(impact.per_day_ms);
+            f.impact.time_ms_per_day = impact.per_day_ms;
             f.impact.label = format!("{} of executions", format::percent(exec_share));
             f.confidence = Confidence::Medium;
             f.queries = query_refs(&[q]);
-            f.metrics.push(Metric::new("Runs per day", per_day_runs, Unit::Count));
+            if let Some(runs) = per_day_runs {
+                f.metrics.push(Metric::new("Runs per day", runs, Unit::Count));
+            }
             f.metrics.push(Metric::new("Share of executions", exec_share, Unit::Ratio));
             f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
             f.fix = Some(Fix { summary: fix.into(), sql: None, cost: None });
@@ -302,7 +306,9 @@ fn merge_same_cause(snapshot: &Snapshot, findings: Vec<Finding>) -> Vec<Finding>
         m.metrics.retain(|x| x.label != "Share of DB time" && x.label != "Average duration");
         m.metrics.insert(0, Metric::new("Share of DB time", impact.share, Unit::Ratio));
         m.metrics.insert(1, Metric::new("Queries affected", queries.len() as f64, Unit::Count));
-        m.metrics.insert(2, Metric::new("DB time per day", impact.per_day_ms, Unit::Ms));
+        if let Some(per_day_ms) = impact.per_day_ms {
+            m.metrics.insert(2, Metric::new("DB time per day", per_day_ms, Unit::Ms));
+        }
     }
     merged
 }
@@ -329,13 +335,19 @@ fn plan_warning_finding(
                 node_props.chain(plan_props).flat_map(|v| v.lines()).filter(|l| l.contains("CONVERT")).collect();
             // Only a column converted to match a value of another type is a mismatch (the rule the plan parser applies;
             // scans saved before it flagged every conversion SQL Server warned about).
-            let lines: Vec<&str> = named.iter().copied().filter(|l| converts_column(l)).collect();
+            // A plan captured before a column changed type still shows its old conversion (`current_conversions`).
+            let still =
+                |l: &str| q.plan.as_ref().map_or_else(|| converts_column(l), |p| !current_conversions(p, l).is_empty());
+            let lines: Vec<&str> = named.iter().copied().filter(|l| still(l)).collect();
             if !named.is_empty() && lines.is_empty() {
                 return None;
             }
             let issue = lines.iter().find(|l| l.contains("Seek Plan")).or(lines.first()).copied();
             let blocks_seek = issue.is_some_and(|l| l.contains("Seek Plan"));
-            let column = issue.and_then(convert_column);
+            let converted = issue.and_then(|l| current_conversions(q.plan.as_ref()?, l).into_iter().next());
+            let column = converted.as_ref().map(|(c, _)| c.clone());
+            let target = converted.map(|(_, t)| t);
+            let unicode = target.as_deref().is_some_and(|t| t.to_ascii_lowercase().starts_with("nvarchar"));
             let convert = issue.map(|l| l.split_once(": ").map(|(_, e)| e).unwrap_or(l).to_string());
             f.title = match &column {
                 Some(c) => format!("A type mismatch on {c} stops {handle} from using an index"),
@@ -348,17 +360,14 @@ fn plan_warning_finding(
                 match &q.parameters {
                     Some(p) if p.to_ascii_lowercase().contains("nvarchar") => format!(" The application declares its parameters as `{}`: Unicode strings compared with a non-Unicode column.", truncate(p, 120)),
                     Some(p) => format!(" The application declares its parameters as `{}`.", truncate(p, 120)),
-                    None => " This often happens when an application sends strings as nvarchar (Unicode) to a varchar column.".to_string(),
+                    None if unicode => " This often happens when an application sends strings as nvarchar (Unicode) to a varchar column.".to_string(),
+                    None => String::new(),
                 }
             );
             f.severity =
                 if blocks_seek { severity_for_share(impact.share).max(Severity::Medium) } else { Severity::Low };
             f.confidence = if blocks_seek { Confidence::High } else { Confidence::Medium };
-            f.fix = Some(Fix {
-                summary: "Send the parameter with the column's exact type. In Node.js (mssql/tedious) declare the parameter as VarChar instead of the default NVarChar; in .NET set SqlDbType.VarChar; with an ORM, map the column as non-Unicode.".into(),
-                sql: None,
-                cost: None,
-            });
+            f.fix = Some(Fix { summary: mismatch_fix(column.as_deref(), target.as_deref()), sql: None, cost: None });
             if let Some(c) = &column {
                 f.id = format!("plan-warnings:implicit-conversion:{c}");
                 f.subject = subject(SubjectKind::Table, c);
@@ -420,20 +429,6 @@ fn warning_key(w: PlanWarning) -> &'static str {
     }
 }
 
-/// Pull "Users.Email" out of `CONVERT_IMPLICIT(nvarchar(256),[db].[dbo].[Users].[Email],0)`.
-fn convert_column(text: &str) -> Option<String> {
-    let start = text.find("CONVERT_IMPLICIT(")? + "CONVERT_IMPLICIT(".len();
-    let rest = &text[start..];
-    let after_type = rest.find("),").map(|i| &rest[i + 2..]).or_else(|| rest.split_once(',').map(|(_, r)| r))?;
-    let expr = after_type.split(',').next()?;
-    let parts: Vec<&str> = expr.split('.').map(|p| p.trim_matches(|c| c == '[' || c == ']')).collect();
-    match parts.as_slice() {
-        [.., table, column] if !column.is_empty() && !column.starts_with('@') => Some(format!("{table}.{column}")),
-        [column] if !column.is_empty() && !column.starts_with('@') => Some(column.to_string()),
-        _ => None,
-    }
-}
-
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -469,7 +464,8 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("plan-regression", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_query_impact(&mut f, &impact);
             let wasted = (latest.mean_time_ms - best.mean_time_ms) * latest.executions;
-            f.impact.time_ms_per_day = Some(per_day(snapshot, wasted));
+            let wasted_per_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(wasted));
+            f.impact.time_ms_per_day = wasted_per_day;
             f.impact.label = format!("{} slower", format::factor(factor));
             f.severity = severity_for_share(impact.share).max(Severity::Medium);
             f.confidence = Confidence::High;
@@ -484,7 +480,9 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Fast plan", best.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Current plan", latest.mean_time_ms, Unit::Ms));
-            f.metrics.push(Metric::new("Extra time per day", per_day(snapshot, wasted), Unit::Ms));
+            if let Some(extra) = wasted_per_day {
+                f.metrics.push(Metric::new("Extra time per day", extra, Unit::Ms));
+            }
             f.fix = Some(Fix {
                 summary: "Force the fast plan now to stop the bleeding, then find out why the optimizer changed its mind (statistics, parameter values, schema). Unforce once the cause is fixed.".into(),
                 sql: Some(format!("EXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};", q.id, best.id)),

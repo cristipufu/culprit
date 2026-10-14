@@ -30,6 +30,16 @@ fn a_column_converted_to_match_a_parameter_is_a_mismatch() {
 }
 
 #[test]
+fn a_plan_captured_before_the_column_changed_type_is_not_a_mismatch() {
+    // The demo's customers.email is varchar(200) and query 7's plan converts it. Once the column is nvarchar(200), the
+    // plan Query Store kept describes a table that's gone.
+    let mut s = snapshot();
+    let email = s.columns.iter_mut().find(|c| c.table == "customers" && c.name == "email").expect("email");
+    email.data_type = "nvarchar(200)".into();
+    assert_eq!(conversion_findings(s), Vec::<String>::new());
+}
+
+#[test]
 fn conversions_the_query_asks_for_are_not_a_mismatch() {
     // `SELECT CONVERT(varchar(36), c.id), CONVERT(varchar(30), c.created_at, 126) …`: SQL Server warns about every
     // CONVERT in the select list, though nothing is compared with a value of another type.

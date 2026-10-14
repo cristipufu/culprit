@@ -12,7 +12,16 @@ use serde_json::json;
 fn snapshot() -> Snapshot {
     let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
         .expect("fixture");
-    serde_json::from_str(&text).expect("snapshot")
+    counted_for_ten_days(serde_json::from_str(&text).expect("snapshot"))
+}
+
+/// The demo's counters are minutes old; an index is only called unused after a week of them.
+fn counted_for_ten_days(mut s: Snapshot) -> Snapshot {
+    s.server.started_at = Some("2026-10-01T12:00:00Z".into());
+    if let Some(p) = s.pressure.as_mut() {
+        p.uptime_hours = Some(240.0);
+    }
+    s
 }
 
 fn finding<'a>(findings: &'a [Finding], id: &str) -> Option<&'a Finding> {

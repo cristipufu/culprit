@@ -9,7 +9,7 @@ use culprit_core::{
     MergedRequest, QueryStat, Report, Snapshot, TableAdvice, TableAdviceKind, format,
 };
 
-use crate::index_health::{full_scans, hide_index_sql, overlapping_pairs};
+use crate::index_health::{hide_index_sql, overlapping_pairs};
 use crate::indexes::{
     asking_queries, backs_foreign_key, existing_match, is_unused, merge_candidates, redundant_indexes, same_keys,
     scan_groups, widen_fix, write_cost, writes_per_day,
@@ -436,7 +436,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         scan_groups(s).into_iter().map(|g| (g.schema.to_ascii_lowercase(), g.table.to_ascii_lowercase())).collect();
     for t in &s.tables {
         let table_name = t.qualified();
-        if let Some((scans, rows_read)) = full_scans(s, t)
+        if let Some((scans_total, read_total, days)) = crate::index_health::full_scans_measured(s, t)
+            && let (scans, rows_read) = (scans_total / days, read_total / days)
             && scans >= 50.0
             && rows_read >= 5_000_000.0
             && !planned.contains(&(t.schema.to_ascii_lowercase(), t.name.to_ascii_lowercase()))
@@ -448,9 +449,9 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 schema: t.schema.clone(),
                 table: t.name.clone(),
                 reason: format!(
-                    "Read in full about {} times a day ({} rows a day without an index). {}",
-                    format::count(scans),
-                    format::count(rows_read),
+                    "Read in full {} ({} rows without an index). {}",
+                    how_many(s, scans_total, days, "time", "times"),
+                    format::count(read_total),
                     if touching.is_empty() {
                         "No captured statement names it.".to_string()
                     } else {
@@ -460,8 +461,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 rows: t.rows,
                 indexes: Some(s.indexes_on(&t.schema, &t.name).count() as f64),
                 writes_per_day: writes_per_day(s, &t.schema, &t.name),
-                full_scans_per_day: Some(scans),
-                rows_scanned_per_day: Some(rows_read),
+                full_scans_per_day: per_day_is_measured(days).then_some(scans),
+                rows_scanned_per_day: per_day_is_measured(days).then_some(rows_read),
                 forwarded_per_day: None,
                 sql: None,
                 queries: touching.iter().take(5).map(|q| advice_query(s, q)).collect(),
@@ -545,6 +546,11 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
     if !s.server.has(Capability::IndexUsage) {
         notes.push("Index usage counters aren't readable, so unused and overlapping indexes can't be judged.".into());
+    } else if !crate::indexes::watched_long_enough(s) {
+        notes.push(format!(
+            "Index usage counters have counted {}; an index has to go unread for a week before it's listed to clean up.",
+            counter_days(s).map_or_else(|| "for an unknown time".to_string(), |d| format!("for {}", format::duration(d * 86_400_000.0)))
+        ));
     }
     if !s.server.has(Capability::QueryPlans) {
         notes.push("No plans were captured, so plan-based candidates are missing.".into());

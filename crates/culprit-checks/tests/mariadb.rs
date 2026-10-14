@@ -16,8 +16,13 @@ fn set(s: &mut Snapshot, name: &str, value: &str) {
 
 #[test]
 fn findings_use_mariadb_words_and_syntax() {
-    let s = snapshot();
+    let mut s = snapshot();
     assert_eq!(s.server.name(), "MariaDB");
+    // The demo's counters are an hour old; an index is only called unused after a week of them.
+    s.server.started_at = Some("2026-10-01T12:00:00Z".into());
+    if let Some(p) = s.pressure.as_mut() {
+        p.uptime_hours = Some(240.0);
+    }
     let report = analyze(s);
     // MariaDB estimates that a filter on an unindexed column keeps every row; rows examined against rows returned say
     // otherwise, so the scan is still found.

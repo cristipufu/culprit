@@ -53,7 +53,8 @@ pub fn base_score(severity: Severity) -> f64 {
 
 pub struct QueryImpact {
     pub share: f64,
-    pub per_day_ms: f64,
+    /// Database time a day, when the window is long enough to say so without extrapolating.
+    pub per_day_ms: Option<f64>,
 }
 
 pub fn query_impact(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<QueryImpact> {
@@ -62,12 +63,12 @@ pub fn query_impact(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<Query
         return None;
     }
     let total_ms: f64 = queries.iter().map(|q| q.total_time_ms).sum();
-    Some(QueryImpact { share: workload.share(total_ms), per_day_ms: workload.per_day(total_ms) })
+    Some(QueryImpact { share: workload.share(total_ms), per_day_ms: workload.per_day_measured(total_ms) })
 }
 
 pub fn apply_query_impact(f: &mut Finding, impact: &QueryImpact) {
     f.impact.db_time_share = Some(impact.share);
-    f.impact.time_ms_per_day = Some(impact.per_day_ms);
+    f.impact.time_ms_per_day = impact.per_day_ms;
     f.impact.score = score_for_share(impact.share);
     f.impact.label = share_label(impact.share);
 }
@@ -536,8 +537,24 @@ pub fn summary_window(snapshot: &Snapshot) -> Option<String> {
     Some(format!("the last {said} (Query Store keeps whole intervals, so this covers {covered})"))
 }
 
-pub fn per_day(snapshot: &Snapshot, value: f64) -> f64 {
-    snapshot.workload.as_ref().map(|w| w.per_day(value)).unwrap_or(value)
+/// `value` from the workload window as a daily rate for comparing with a threshold, over at least an hour of data
+/// ([`culprit_core::RATE_MIN_HOURS`]); None under that, so minutes of history never pass for a busy day. Sentences that
+/// say "a day" use [`culprit_core::Workload::per_day_measured`] or [`runs_phrase`] instead.
+pub fn rate_per_day(snapshot: &Snapshot, value: f64) -> Option<f64> {
+    snapshot.workload.as_ref()?.rate_per_day(value)
+}
+
+/// Days of cumulative counters (see [`counter_days`]) when they cover at least an hour
+/// ([`culprit_core::RATE_MIN_HOURS`]): enough to compare a rate with a threshold. Sentences that say "a day" also need
+/// [`per_day_is_measured`], or say what was counted with [`how_many`].
+pub fn counter_days_for_rate(snapshot: &Snapshot) -> Option<f64> {
+    counter_days(snapshot).filter(|d| d * 24.0 >= culprit_core::RATE_MIN_HOURS)
+}
+
+/// A cumulative counter's `total` (since the server started or statistics were reset) as a daily rate for comparing
+/// with a threshold (see [`counter_days_for_rate`]).
+pub fn counter_rate_per_day(snapshot: &Snapshot, total: f64) -> Option<f64> {
+    counter_days_for_rate(snapshot).map(|d| total / d)
 }
 
 pub fn lower_set(items: &[String]) -> Vec<String> {
@@ -828,5 +845,59 @@ mod predicate_tests {
         assert_eq!(p.range, vec!["CreatedAt"]);
         let p = predicate_columns("[shop].[dbo].[Users].[TenantId]=CONVERT_IMPLICIT(uniqueidentifier,[@P1],0)");
         assert_eq!(p.equality, vec!["TenantId"]);
+    }
+}
+
+/// How to change a server setting where this server runs. On a server you manage it is SQL (`ALTER SYSTEM` and a
+/// reload on PostgreSQL, `SET PERSIST`/`SET GLOBAL` on MySQL and MariaDB); a managed service refuses those, so there it
+/// is the platform's own control (a DB parameter group, server parameters, database flags) and no SQL. Every check
+/// that suggests a setting words it with this, so advice is always something the reader can run.
+pub struct SettingChange {
+    /// One sentence: where and how to set it.
+    pub how: String,
+    /// The statements, on servers where they work.
+    pub sql: Option<String>,
+}
+
+pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str) -> SettingChange {
+    let managed = |control: &str| SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
+    match server.cloud.as_deref() {
+        Some("Amazon RDS") => return managed("the instance's DB parameter group"),
+        Some("Amazon Aurora") => return managed("the cluster's (or instance's) DB parameter group"),
+        Some(c) if c.starts_with("Azure Database for") => {
+            return managed("the server parameters (Azure portal or `az … server parameter set`)");
+        }
+        Some("Google Cloud SQL") => {
+            return managed(
+                "the instance's database flags (Cloud SQL console or `gcloud sql instances patch --database-flags`)",
+            );
+        }
+        _ => {}
+    }
+    let quoted =
+        |v: &str| if v.chars().all(|c| c.is_ascii_digit() || c == '.') { v.to_string() } else { format!("'{v}'") };
+    match server.engine {
+        Engine::Postgres => SettingChange {
+            how: format!(
+                "Set {name} to {value} and reload the configuration (settings marked as needing a restart take effect after one)."
+            ),
+            sql: Some(format!("ALTER SYSTEM SET {name} = {};\nSELECT pg_reload_conf();", quoted(value))),
+        },
+        Engine::Mysql if server.name() == "MySQL" && culprit_core::version_at_least(&server.version, [8, 0, 0]) => {
+            SettingChange {
+                how: format!("Set {name} to {value}; SET PERSIST keeps it across restarts."),
+                sql: Some(format!("SET PERSIST {name} = {};", quoted(value))),
+            }
+        }
+        Engine::Mysql => SettingChange {
+            how: format!(
+                "Set {name} to {value} now, and in the server's option file (my.cnf) so it survives a restart."
+            ),
+            sql: Some(format!("SET GLOBAL {name} = {};", quoted(value))),
+        },
+        Engine::Mssql => SettingChange {
+            how: format!("Set {name} to {value}."),
+            sql: Some(format!("EXEC sp_configure '{name}', {};\nRECONFIGURE;", quoted(value))),
+        },
     }
 }

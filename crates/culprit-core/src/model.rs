@@ -195,6 +195,11 @@ pub fn span_words(hours: f64) -> String {
 /// Under this many hours of data, a per-day rate would be an extrapolation: say what was measured instead.
 pub const PER_DAY_MIN_HOURS: f64 = 20.0;
 
+/// Under this much data a count isn't a rate at all: a threshold on a rate (runs a day, ms a day) needs at least an
+/// hour of it, so minutes of counters can't pass for a busy day. Saying "a day" in a sentence needs
+/// [`PER_DAY_MIN_HOURS`].
+pub const RATE_MIN_HOURS: f64 = 1.0;
+
 impl Workload {
     pub fn per_day(&self, value: f64) -> f64 {
         if self.window_hours <= 0.0 {
@@ -206,6 +211,11 @@ impl Workload {
     /// `value` per day, only when the window is long enough ([`PER_DAY_MIN_HOURS`]) to say so without extrapolating.
     pub fn per_day_measured(&self, value: f64) -> Option<f64> {
         (self.window_hours >= PER_DAY_MIN_HOURS).then(|| self.per_day(value))
+    }
+
+    /// `value` as a daily rate for comparing with a threshold, only over at least [`RATE_MIN_HOURS`] of data.
+    pub fn rate_per_day(&self, value: f64) -> Option<f64> {
+        (self.window_hours >= RATE_MIN_HOURS).then(|| self.per_day(value))
     }
 
     /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.

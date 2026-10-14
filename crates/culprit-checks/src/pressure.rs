@@ -671,9 +671,20 @@ pub fn checkpoint_pressure(snapshot: &Snapshot) -> Vec<Finding> {
         Metric::new("Forced checkpoints", requested / 100.0, Unit::Ratio),
         Metric::new("Checkpoints", total, Unit::Count),
     ];
+    // More room than it has now: 8GB, or twice the current size when that's already at least 8GB.
+    let proposed_mb = current.as_deref().and_then(size_in_mb).map_or(8192.0, |mb| (mb * 2.0).max(8192.0));
+    let proposed = if proposed_mb >= 1024.0 && proposed_mb % 1024.0 == 0.0 {
+        format!("{:.0}GB", proposed_mb / 1024.0)
+    } else {
+        format!("{proposed_mb:.0}MB")
+    };
+    let change = setting_change(&snapshot.server, "max_wal_size", &proposed);
     f.fix = Some(Fix {
-        summary: "Give WAL more room between checkpoints so they run on schedule. Check free disk space first: WAL can grow to about this size.".into(),
-        sql: Some("ALTER SYSTEM SET max_wal_size = '8GB';\nSELECT pg_reload_conf();".into()),
+        summary: format!(
+            "Give WAL more room between checkpoints so they run on schedule. {} Check free disk space first: WAL can grow to about this size.",
+            change.how
+        ),
+        sql: change.sql,
         cost: Some("WAL takes more disk, and crash recovery can take a little longer.".into()),
     });
     f.verify = vec!["Re-scan after a day of normal load: forced checkpoints should be under 10%.".into()];
@@ -756,6 +767,21 @@ pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
     });
     f.verify = vec!["Re-scan: row-lock waits per hour and their average should both drop.".into()];
     vec![f]
+}
+
+/// A PostgreSQL size setting ("1GB", "512MB", "64kB", or a bare number of MB as `max_wal_size` reports it) in MB.
+fn size_in_mb(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let digits = text.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(text.len());
+    let number: f64 = text[..digits].parse().ok()?;
+    let factor = match text[digits..].trim().to_ascii_lowercase().as_str() {
+        "" | "mb" => 1.0,
+        "kb" => 1.0 / 1024.0,
+        "gb" => 1024.0,
+        "tb" => 1024.0 * 1024.0,
+        _ => return None,
+    };
+    Some(number * factor)
 }
 
 #[cfg(test)]

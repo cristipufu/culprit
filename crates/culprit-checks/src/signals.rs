@@ -310,7 +310,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 reuse
             );
-            f.severity = if share >= 0.5 && per_day(snapshot, plan_ms) >= 60_000.0 { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 && rate_per_day(snapshot, plan_ms).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} planning", format::percent(share));
@@ -391,7 +391,7 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 format::duration(q.mean_time_ms)
             );
-            f.severity = if share >= 0.5 || per_day(snapshot, jit) >= 60_000.0 { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 || rate_per_day(snapshot, jit).is_some_and(|d| d >= 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} JIT", format::percent(share));
@@ -622,7 +622,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
                 window_phrase(snapshot),
                 format::count(q.rows.unwrap_or(0.0))
             );
-            f.severity = if rows >= 100_000.0 || per_day(snapshot, q.rows.unwrap_or(0.0)) >= 100_000_000.0 {
+            f.severity = if rows >= 100_000.0 || rate_per_day(snapshot, q.rows.unwrap_or(0.0)).is_some_and(|d| d >= 100_000_000.0) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -1832,8 +1832,8 @@ fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, 
     let statements = whole_row_statements(snapshot, t);
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
     let reads: f64 = statements.iter().filter_map(|q| q.logical_reads).sum();
-    let runs_a_day = per_day(snapshot, runs);
-    let hot = runs_a_day >= WHOLE_ROW_RUNS_PER_DAY;
+    let hot = rate_per_day(snapshot, runs).is_some_and(|r| r >= WHOLE_ROW_RUNS_PER_DAY);
+    let runs_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(runs));
     if !statements.is_empty() {
         let pages = (reads / runs.max(1.0)).round();
         let writes = statements.iter().filter(|q| writes_rows(&q.text)).count();
@@ -1898,7 +1898,7 @@ fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, 
     f.confidence = Confidence::High;
     if let Some(impact) = query_impact(snapshot, &statements) {
         f.impact.db_time_share = Some(impact.share);
-        f.impact.time_ms_per_day = Some(impact.per_day_ms);
+        f.impact.time_ms_per_day = impact.per_day_ms;
     }
     severity_score(&mut f);
     f.impact.label = format!("{}, {} a row", format::bytes(size), format::bytes(average));
@@ -1908,7 +1908,7 @@ fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, 
         Metric::new("Average row", average, Unit::Bytes),
         Metric::new("In large-value pages", share, Unit::Ratio),
     ];
-    if !statements.is_empty() {
+    if let Some(runs_a_day) = runs_a_day.filter(|_| !statements.is_empty()) {
         metrics.push(Metric::new("Whole-row statements a day", runs_a_day, Unit::Count));
     }
     metrics.append(&mut f.metrics);

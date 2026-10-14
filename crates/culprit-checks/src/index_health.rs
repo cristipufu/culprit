@@ -274,16 +274,9 @@ pub fn scan_heavy_info() -> CheckInfo {
     }
 }
 
-/// Full-table reads per day and rows read without an index per day, from Postgres' seq_scan/seq_tup_read or MySQL's
-/// rows read with no index.
-pub(crate) fn full_scans(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<(f64, f64)> {
-    let (scans, scanned, days) = full_scans_measured(snapshot, t)?;
-    Some((scans / days, scanned / days))
-}
-
 /// Full-table reads and rows read without an index since the counters started, and the days that covers.
 pub(crate) fn full_scans_measured(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<(f64, f64, f64)> {
-    let days = counter_days(snapshot).filter(|d| *d >= 0.02)?;
+    let days = counter_days_for_rate(snapshot)?;
     let rows = t.rows.filter(|r| *r >= 50_000.0)?;
     let scanned = t.seq_rows_read?;
     let scans = t.seq_scans.unwrap_or(scanned / rows);

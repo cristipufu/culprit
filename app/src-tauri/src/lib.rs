@@ -121,6 +121,8 @@ fn add_discovered(ws: Ws, items: Vec<DiscoveredDatabase>) -> Result<Vec<Connecti
 
 /// The UI never shows raw plan XML/JSON, and on busy databases it is most of a report's size; keep it on disk only.
 fn for_ui(mut report: Report) -> Report {
+    // Reports saved before plans were checked against the catalog: mark them too.
+    culprit_core::insights::mark_snapshot(&mut report.snapshot);
     if let Some(workload) = report.snapshot.workload.as_mut() {
         for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
             plan.raw = None;

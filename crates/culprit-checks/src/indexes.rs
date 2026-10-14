@@ -781,7 +781,7 @@ pub(crate) fn measured_writes(snapshot: &Snapshot, schema: &str, table: &str) ->
         .table(schema, table)
         .and_then(|t| Some(t.inserts? + t.updates.unwrap_or(0.0) + t.deletes.unwrap_or(0.0)));
     let writes = base.or(row_writes)?;
-    let days = counter_days(snapshot).filter(|d| *d >= 0.02)?;
+    let days = counter_days_for_rate(snapshot)?;
     Some((writes, days))
 }
 
@@ -957,15 +957,25 @@ pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -
 }
 
 /// Never read since the counters started, and not one the database needs for something else: a key, a constraint or
-/// the table's storage. A filtered (partial) index counts: unread, it is only upkeep on every write it matches. An index
-/// that may be younger than a week isn't unused yet: the queries it was made for may not have run, or been deployed.
+/// the table's storage. A filtered (partial) index counts: unread, it is only upkeep on every write it matches. No
+/// reads says something only after a week of watching: an index that may be younger than that, or counters that started
+/// less than a week ago (a restart, a failover, a statistics reset), haven't seen a weekly job run yet.
 pub(crate) fn is_unused(snapshot: &Snapshot, i: &IndexStat) -> bool {
     let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled;
-    is_candidate && i.reads == Some(0.0) && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0 && !too_new(snapshot, i)
+    is_candidate
+        && i.reads == Some(0.0)
+        && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0
+        && !too_new(snapshot, i)
+        && watched_long_enough(snapshot)
 }
 
-/// Days an index must have existed before no reads says anything about it.
-const MIN_INDEX_DAYS: f64 = 7.0;
+/// Days an index, and the counters watching it, must have existed before no reads says anything about it.
+pub(crate) const MIN_INDEX_DAYS: f64 = 7.0;
+
+/// Whether the usage counters have counted for a week ([`MIN_INDEX_DAYS`]). Unknown counts as not.
+pub(crate) fn watched_long_enough(snapshot: &Snapshot) -> bool {
+    counter_days(snapshot).is_some_and(|d| d >= MIN_INDEX_DAYS)
+}
 
 /// Days since the latest it may have been created, when a scan found reason to think it may be new.
 fn index_age_days(snapshot: &Snapshot, i: &IndexStat) -> Option<f64> {
@@ -1534,7 +1544,9 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
         .map(|(q, node)| culprit_core::QueryRef { id: q.id.clone(), plan_node: Some(*node), note: None })
         .collect();
     f.metrics.push(Metric::new("Share of DB time", impact.share, Unit::Ratio));
-    f.metrics.push(Metric::new("DB time per day", impact.per_day_ms, Unit::Ms));
+    if let Some(per_day_ms) = impact.per_day_ms {
+        f.metrics.push(Metric::new("DB time per day", per_day_ms, Unit::Ms));
+    }
     f.metrics.push(Metric::new("Rows scanned per run", g.rows, Unit::Rows));
     f.metrics.push(Metric::new("Queries", queries.len() as f64, Unit::Count));
     f.fix = Some(Fix {

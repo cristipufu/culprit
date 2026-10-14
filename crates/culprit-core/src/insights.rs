@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::finding::Severity;
 use crate::format;
-use crate::model::Engine;
+use crate::model::{ColumnInfo, Engine, Snapshot};
 use crate::plan::{INDEX_KEEPS_AT_MOST, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
 
 /// What kind of change fixes it, for grouping and icons.
@@ -812,16 +812,17 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Mssql {
         return Vec::new();
     }
-    // Only the warnings about a converted column (see `converts_column`); older scans flagged every conversion.
+    // Only the warnings about a converted column the table still has (see `current_conversions`); older scans flagged
+    // every conversion, and a plan captured before a column changed type still shows its old conversion.
     let plan_lines: Vec<String> = cx
         .prop("PlanAffectingConvert")
-        .map(|v| v.lines().filter(|l| converts_column(l)).map(str::to_string).collect())
+        .map(|v| v.lines().filter(|l| !current_conversions(cx.plan, l).is_empty()).map(str::to_string).collect())
         .unwrap_or_default();
     let node = cx
         .nodes
         .iter()
         // A converted column is the problem; a converted parameter, variable or literal costs nothing.
-        .filter(|n| converts_column(&conditions(n)) || n.warnings.contains(&PlanWarning::ImplicitConversion))
+        .filter(|n| !current_conversions(cx.plan, &conditions(n)).is_empty())
         .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
         .copied();
     if plan_lines.is_empty() && node.is_none() {
@@ -830,35 +831,54 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     let seek_line = plan_lines.iter().find(|l| l.starts_with("Seek Plan"));
     let text =
         seek_line.cloned().or_else(|| plan_lines.first().cloned()).or_else(|| node.map(conditions)).unwrap_or_default();
-    let blocks_seek = seek_line.is_some() || node.is_some_and(|n| n.kind == NodeKind::Scan);
-    let column = convert_operands(&text)
-        .into_iter()
-        .find(|op| is_column_operand(op))
-        .and_then(column_label)
-        .or_else(|| convert_column(&text));
+    // What the conversion costs is SQL Server's own verdict, never inferred from the plan's shape: a scan may have no
+    // index on the column to seek, or be the right plan for a small table. "Seek Plan" means it kept SQL Server from
+    // seeking an index; "Cardinality Estimate" that it swayed the row estimates; no warning, that it changed nothing.
+    let blocks_seek = seek_line.is_some();
+    let converted = current_conversions(cx.plan, &text).into_iter().next();
+    let column = converted.as_ref().map(|(c, _)| c.clone()).or_else(|| convert_column(&text));
+    let target = converted.map(|(_, t)| t);
     let impact = node.map_or(0.05, |n| cx.share(n));
     let mut d =
         Draft::new("implicit-conversion", InsightArea::Query, impact, node.map(|n| vec![n.id]).unwrap_or_default());
     let col = column.clone().unwrap_or_else(|| "a column".into());
+    let to = target.as_deref().map(|t| format!(" to {t}")).unwrap_or_default();
+    let expression = format::predicate(&convert_expression(&text));
     if blocks_seek {
         d.floor = Severity::Medium;
         d.title = format!("A type mismatch on {col} stops SQL Server from seeking an index");
         d.detail = format!(
-            "The value it's compared with has a different type, so SQL Server converts {col} on every row (`{}`) and can't seek the index. The usual cause is an application sending strings as nvarchar to a varchar column.",
-            format::predicate(&convert_expression(&text))
+            "The value it's compared with has a different type, so SQL Server converts {col}{to} on every row (`{expression}`) and, by its own warning, can't seek the index."
+        );
+    } else if !plan_lines.is_empty() {
+        d.cap = Severity::Low;
+        d.title = format!("A type mismatch on {col} turns row estimates into guesses");
+        d.detail = format!(
+            "SQL Server converts {col}{to} before comparing it (`{expression}`), which by its own warning only affects how many rows it expects here; an index can still be used."
         );
     } else {
         d.cap = Severity::Low;
-        d.title = format!("A type mismatch on {col} turns row estimates into guesses");
-        d.detail = "SQL Server converts the column before comparing it, which only affects how many rows it expects here; the index can still be used.".into();
+        d.title = format!("A type mismatch on {col} adds a conversion to every row");
+        d.detail = format!(
+            "SQL Server converts {col}{to} on every row it reads to compare it with a value of that type (`{expression}`). It didn't warn that this changes the plan, so the cost is the conversion itself."
+        );
     }
-    d.fix = "Send the parameter with the column's exact type: VarChar instead of NVarChar (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM).".into();
-    d.verify = "Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek.".into();
+    d.fix = mismatch_fix(column.as_deref(), target.as_deref());
+    d.verify = if blocks_seek {
+        "Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek.".into()
+    } else {
+        format!("Explain again: no CONVERT_IMPLICIT on {col} in the plan.")
+    };
     vec![d]
 }
 
 /// Each CONVERT_IMPLICIT operand in a predicate as written: `[db].[s].[t].[c]`, `[@1]`, `N'x'`, `[Expr1004]`.
 fn convert_operands(text: &str) -> Vec<&str> {
+    convert_calls(text).into_iter().map(|(_, operand)| operand).collect()
+}
+
+/// Each CONVERT_IMPLICIT as (the type it converts to, its operand): `nvarchar(64)`, `[db].[s].[t].[c]`.
+fn convert_calls(text: &str) -> Vec<(&str, &str)> {
     const CALL: &str = "CONVERT_IMPLICIT(";
     let mut out = Vec::new();
     let mut rest = text;
@@ -899,11 +919,122 @@ fn convert_operands(text: &str) -> Vec<&str> {
                     _ => {}
                 }
             }
-            out.push(operand[..end].trim());
+            out.push((after[..start - 1].trim(), operand[..end].trim()));
         }
         rest = after;
     }
     out
+}
+
+/// Plan prop: columns this plan converts that the catalog says already have the type it converts them to, one
+/// `table.column type` a line. The plan was captured before they changed: Query Store keeps a plan's first XML when a
+/// recompile after the schema change keeps the plan's shape, so its text can describe types the table no longer has.
+pub const CHANGED_SINCE_CAPTURE: &str = "Columns changed since capture";
+
+/// The columns `text` implicitly converts, as ("table.column", the type SQL Server converts it to), leaving out those
+/// `plan` was captured before they changed (see `CHANGED_SINCE_CAPTURE`): the mismatches the database still has.
+/// `CONVERT_IMPLICIT(nvarchar(64),[db].[s].[jobs].[name],0)=[@p1]` → [("jobs.name", "nvarchar(64)")].
+pub fn current_conversions(plan: &Plan, text: &str) -> Vec<(String, String)> {
+    let changed: Vec<String> = plan
+        .props
+        .get(CHANGED_SINCE_CAPTURE)
+        .map(|v| v.lines().filter_map(|l| l.split_whitespace().next()).map(str::to_ascii_lowercase).collect())
+        .unwrap_or_default();
+    convert_calls(text)
+        .into_iter()
+        .filter(|(_, operand)| is_column_operand(operand))
+        .filter_map(|(target, operand)| Some((column_label(operand)?, target.to_string())))
+        .filter(|(label, _)| !changed.contains(&label.to_ascii_lowercase()))
+        .collect()
+}
+
+/// Mark the columns `plan` converts that `columns` (the catalog now) says already have the converted-to type (see
+/// `CHANGED_SINCE_CAPTURE`). SQL Server never converts a column to its own type, and compares text of any length without
+/// converting it, so such a conversion is from before the column changed.
+pub fn mark_changed_columns(plan: &mut Plan, columns: &[ColumnInfo]) {
+    if plan.engine != Engine::Mssql || columns.is_empty() {
+        return;
+    }
+    let mut texts: Vec<String> = plan.props.get("PlanAffectingConvert").map(|v| vec![v.clone()]).unwrap_or_default();
+    texts.extend(plan.nodes().into_iter().map(conditions));
+    let mut changed: Vec<String> = Vec::new();
+    for text in &texts {
+        for (target, operand) in convert_calls(text).into_iter().filter(|(_, operand)| is_column_operand(operand)) {
+            let parts: Vec<String> = operand.split('.').map(clean_identifier).collect();
+            let [.., schema, table, column] = parts.as_slice() else {
+                if let [table, column] = parts.as_slice() {
+                    mark_if_same(&mut changed, columns, None, table, column, target);
+                }
+                continue;
+            };
+            mark_if_same(&mut changed, columns, Some(schema), table, column, target);
+        }
+    }
+    if !changed.is_empty() {
+        plan.props.insert(CHANGED_SINCE_CAPTURE.into(), changed.join("\n"));
+    }
+}
+
+fn mark_if_same(
+    changed: &mut Vec<String>,
+    columns: &[ColumnInfo],
+    schema: Option<&String>,
+    table: &str,
+    column: &str,
+    converted_to: &str,
+) {
+    let now = columns.iter().find(|c| {
+        c.table.eq_ignore_ascii_case(table)
+            && c.name.eq_ignore_ascii_case(column)
+            && schema.is_none_or(|s| c.schema.eq_ignore_ascii_case(s))
+    });
+    let Some(now) = now.filter(|c| same_type(&c.data_type, converted_to)) else { return };
+    let line = format!("{table}.{column} {}", now.data_type);
+    if !changed.contains(&line) {
+        changed.push(line);
+    }
+}
+
+/// Whether a column of type `now` needs no conversion to `converted_to`: the same type, or text of the same kind.
+fn same_type(now: &str, converted_to: &str) -> bool {
+    let norm = |t: &str| t.to_ascii_lowercase().replace(' ', "");
+    let (now, to) = (norm(now), norm(converted_to));
+    let base = |t: &str| t.split('(').next().unwrap_or("").to_string();
+    now == to || (matches!(base(&now).as_str(), "varchar" | "nvarchar" | "char" | "nchar") && base(&now) == base(&to))
+}
+
+/// `mark_changed_columns` on every plan of the snapshot's workload, against the snapshot's own catalog.
+pub fn mark_snapshot(snapshot: &mut Snapshot) {
+    let columns = &snapshot.columns;
+    if let Some(workload) = snapshot.workload.as_mut() {
+        for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
+            mark_changed_columns(plan, columns);
+        }
+    }
+}
+
+/// How to fix a column SQL Server converts to `target` to compare it with a value of that type: make the types match,
+/// from either side. Which side is right depends on the schema (a team that keeps text as Unicode changes the column),
+/// so both are offered. The one wording for every type mismatch, in plan insights and in findings.
+pub fn mismatch_fix(column: Option<&str>, target: Option<&str>) -> String {
+    let col = column.unwrap_or("the column");
+    let change = match target {
+        Some(t) => format!("change {col} to {t}"),
+        None => format!("change {col} to the type the application sends"),
+    };
+    let unicode = target.is_some_and(|t| {
+        let t = t.to_ascii_lowercase();
+        t.starts_with("nvarchar") || t.starts_with("nchar")
+    });
+    if unicode {
+        format!(
+            "Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, {change}. Changing a column rewrites it and the indexes on it."
+        )
+    } else {
+        format!(
+            "Make the types match: send the value with {col}'s own type, or {change} if that's what it should hold. Changing a column rewrites it and the indexes on it."
+        )
+    }
 }
 
 /// A CONVERT_IMPLICIT operand that is a column, not a parameter (`@1`), variable, literal or a value the optimizer made
@@ -2422,6 +2553,39 @@ mod tests {
             "PlanAffectingConvert".into(),
             "Cardinality Estimate: CONVERT_IMPLICIT(varchar(64),[@P1],0)".into(),
         );
+        assert!(!rules(&p).contains(&"implicit-conversion".to_string()));
+    }
+
+    #[test]
+    fn a_plan_captured_before_the_column_changed_type_has_no_mismatch() {
+        // Query Store keeps a plan's first XML: after `jobs.name` became nvarchar(64), a recompile with the same shape
+        // still shows the varchar-era conversion.
+        let mut scan = node(1, "Clustered Index Scan", NodeKind::Scan);
+        scan.predicate = Some("CONVERT_IMPLICIT(nvarchar(64),[db].[shop].[jobs].[name],0)=[@p1]".into());
+        let mut p = plan(Engine::Mssql, scan);
+        p.props.insert(
+            "PlanAffectingConvert".into(),
+            "Seek Plan: CONVERT_IMPLICIT(nvarchar(64),[db].[shop].[jobs].[name],0)=[@p1]".into(),
+        );
+        let column = |data_type: &str| ColumnInfo {
+            schema: "shop".into(),
+            table: "jobs".into(),
+            name: "name".into(),
+            data_type: data_type.into(),
+            nullable: false,
+            default: None,
+            generated: false,
+            ordinal: 2,
+        };
+        let mut still_varchar = p.clone();
+        mark_changed_columns(&mut still_varchar, &[column("varchar(64)")]);
+        let found =
+            insights(&still_varchar).into_iter().find(|i| i.rule == "implicit-conversion").expect("still varchar");
+        assert!(found.severity >= Severity::Medium, "{:?}", found.severity);
+        assert!(found.fix.contains("change jobs.name to nvarchar(64)"), "{}", found.fix);
+
+        mark_changed_columns(&mut p, &[column("nvarchar(64)")]);
+        assert_eq!(p.props.get(CHANGED_SINCE_CAPTURE).map(String::as_str), Some("jobs.name nvarchar(64)"));
         assert!(!rules(&p).contains(&"implicit-conversion".to_string()));
     }
 
