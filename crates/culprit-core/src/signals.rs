@@ -173,6 +173,9 @@ pub struct Replica {
     pub state: Option<String>,
     /// Synchronous or asynchronous, when known.
     pub sync: Option<String>,
+    /// How far behind it is beyond any apply delay it is configured with (`delay_seconds`). On a PostgreSQL standby,
+    /// counted only while it has received changes it hasn't replayed: with nothing to replay, the time since the last
+    /// replayed commit is how long the primary has been quiet, not lag.
     pub lag_seconds: Option<f64>,
     /// Bytes not yet applied (PostgreSQL replay lag, SQL Server redo queue) or kept for a slot.
     pub lag_bytes: Option<f64>,
@@ -180,6 +183,51 @@ pub struct Replica {
     pub unsent_bytes: Option<f64>,
     /// The last replication error, as the engine reports it (database text).
     pub error: Option<String>,
+    /// A delay it is configured to apply changes with, on purpose (MySQL SQL_Delay, PostgreSQL
+    /// recovery_min_apply_delay); already taken out of `lag_seconds`.
+    #[serde(default)]
+    pub delay_seconds: Option<f64>,
+    /// A logical consumer (a subscription, a CDC tool such as Debezium or Fivetran) rather than a copy of the server.
+    #[serde(default)]
+    pub logical: Option<bool>,
+    /// How long a replication slot has been without a consumer (PostgreSQL 17+ `inactive_since`).
+    #[serde(default)]
+    pub inactive_seconds: Option<f64>,
+    /// Whether a slot's WAL is still kept for it: reserved, extended, unreserved (about to be given up) or lost
+    /// (PostgreSQL 13+).
+    #[serde(default)]
+    pub wal_status: Option<String>,
+    /// WAL that can still be written before the slot is given up under max_slot_wal_keep_size; `None` when nothing
+    /// caps what slots keep (PostgreSQL 13+ `safe_wal_size`).
+    #[serde(default)]
+    pub safe_wal_bytes: Option<f64>,
+}
+
+impl Replica {
+    /// A replica, slot or this server by name, with nothing measured yet.
+    pub fn new(name: impl Into<String>, role: ReplicaRole) -> Replica {
+        Replica {
+            name: name.into(),
+            role,
+            state: None,
+            sync: None,
+            lag_seconds: None,
+            lag_bytes: None,
+            unsent_bytes: None,
+            error: None,
+            delay_seconds: None,
+            logical: None,
+            inactive_seconds: None,
+            wal_status: None,
+            safe_wal_bytes: None,
+        }
+    }
+
+    /// A logical consumer: a walsender or slot that decodes changes for a subscription or a CDC tool. Slots said so
+    /// in `sync` (their type) before `logical` existed.
+    pub fn is_logical(&self) -> bool {
+        self.logical.unwrap_or(self.role == ReplicaRole::Slot && self.sync.as_deref() == Some("logical"))
+    }
 }
 
 /// Lock and latch waits on one index since its metadata was last loaded (SQL Server sys.dm_db_index_operational_stats).
@@ -332,6 +380,10 @@ pub struct ConstraintIssue {
     pub kind: ConstraintKind,
     /// Switched off entirely (SQL Server NOCHECK CONSTRAINT): new rows aren't checked either.
     pub disabled: bool,
+    /// The table inherits from another (PostgreSQL legacy inheritance, not a declarative partition): the planner reads
+    /// CHECK constraints there to skip it (constraint exclusion), and only validated ones.
+    #[serde(default)]
+    pub inheritance_child: bool,
 }
 
 /// A column histogram the optimizer can use (MySQL 8 COLUMN_STATISTICS, MariaDB mysql.column_stats).
@@ -358,6 +410,15 @@ pub struct TableStorage {
     pub fillfactor: Option<f64>,
     /// Bytes beyond what the live rows need, estimated from column statistics (no pgstattuple needed).
     pub bloat_bytes: Option<f64>,
+    /// Hours the update counters have been counting: since the database's statistics were last reset. `None` when
+    /// that is unknown: PostgreSQL 15+ leaves `stats_reset` empty until the first reset, and the counters outlive a
+    /// clean restart, so they may be far older than the server's start.
+    #[serde(default)]
+    pub counter_hours: Option<f64>,
+    /// The planner's row count (pg_class.reltuples), which a statistics reset, crash or failover doesn't zero the way
+    /// it does the live-row counter.
+    #[serde(default)]
+    pub planner_rows: Option<f64>,
 }
 
 #[cfg(test)]

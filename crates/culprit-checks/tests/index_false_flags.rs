@@ -540,6 +540,7 @@ fn a_disabled_foreign_key_needs_no_index() {
         name: "fk_ticket_events_ticket".into(),
         kind: ConstraintKind::ForeignKey,
         disabled: true,
+        inheritance_child: false,
     });
     let report = analyze(s);
     assert!(finding(&report, id).is_none());

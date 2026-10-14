@@ -1,13 +1,14 @@
 //! Signals beyond time and reads: planning, JIT and WAL per statement (pg_stat_statements); I/O latency (pg_stat_io,
 //! pg_stat_database, pg_stat_wal); sessions opened and abandoned; replicas, standby lag and replication slots; HOT
-//! updates, fillfactor and estimated bloat per table; constraints not yet validated. PostgreSQL keeps no per-statement
-//! error count. Each read is independent and cheap; a failure becomes a note, never a failed scan.
+//! updates, fillfactor and estimated bloat per table; constraints not yet validated; the settings their advice depends
+//! on (wal_compression, constraint_exclusion, max_slot_wal_keep_size). PostgreSQL keeps no per-statement error count.
+//! Each read is independent and cheap; a failure becomes a note, never a failed scan.
 
 use std::collections::HashMap;
 
 use culprit_core::{
     CollectorNote, ConstraintIssue, ConstraintKind, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole,
-    Signal, SignalScope, SignalUnit, Snapshot, TableStorage,
+    Setting, Signal, SignalScope, SignalUnit, Snapshot, TableStorage,
 };
 use tokio_postgres::Client;
 
@@ -35,9 +36,19 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
         }
         Err(e) => notes.push(("table storage", e.message)),
     }
-    match constraints(client).await {
+    match constraints(client, probe.version_num).await {
         Ok(list) => snapshot.constraints = list,
         Err(e) => notes.push(("constraints", e.message)),
+    }
+    match advice_settings(client).await {
+        Ok(found) => {
+            for setting in found {
+                if snapshot.setting(&setting.name).is_none() {
+                    snapshot.settings.push(setting);
+                }
+            }
+        }
+        Err(e) => notes.push(("settings", e.message)),
     }
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
     match files(client, probe.version_num).await {
@@ -51,7 +62,7 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
         }
     }
     if probe.version_num >= 100_000 {
-        match replicas(client).await {
+        match replicas(client, probe.version_num, probe.cloud.as_deref()).await {
             Ok(replicas) => pressure.replicas = replicas,
             Err(e) => notes.push(("replication", e.message)),
         }
@@ -146,13 +157,19 @@ async fn attach_costs(
 
 // ── per table ──────────────────────────────────────────────────────────────────────────────────────
 
-/// HOT and new-page updates and fillfactor per table, plus a bloat estimate for tables over 10 MB.
+/// HOT and new-page updates and fillfactor per table, how long its counters have counted and the planner's row count,
+/// plus a bloat estimate for tables over 10 MB.
 async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<HashMap<(String, String), TableStorage>> {
     let new_page = if version_num >= 160_000 { "s.n_tup_newpage_upd" } else { "NULL::float8" };
+    // The counters run from the database's last statistics reset. PostgreSQL 15+ leaves stats_reset empty until the
+    // first one, and the counters outlive a clean restart: their age is then unknown, never the server's uptime.
     let sql = format!(
         "SELECT s.schemaname AS schema_name, s.relname AS table_name, s.n_tup_hot_upd AS hot, {new_page} AS new_page,
                 (SELECT substring(o FROM 'fillfactor=([0-9]+)')::float8 FROM unnest(c.reloptions) AS o
-                  WHERE o LIKE 'fillfactor=%') AS fillfactor
+                  WHERE o LIKE 'fillfactor=%') AS fillfactor,
+                CASE WHEN c.reltuples >= 0 THEN c.reltuples::float8 END AS planner_rows,
+                (SELECT extract(epoch FROM now() - d.stats_reset) / 3600 FROM pg_stat_database d
+                  WHERE d.datname = current_database()) AS counter_hours
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
@@ -166,6 +183,8 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                     new_page_updates: r.number("new_page"),
                     fillfactor: Some(r.number("fillfactor").unwrap_or(100.0)),
                     bloat_bytes: None,
+                    counter_hours: r.number("counter_hours").filter(|h| *h > 0.0),
+                    planner_rows: r.number("planner_rows"),
                 },
             )
         })
@@ -206,13 +225,19 @@ SELECT schema_name, table_name,
          AS bloat_bytes
   FROM t WHERE complete";
 
-/// CHECK constraints added NOT VALID: the planner skips them for constraint exclusion until they're validated.
-async fn constraints(client: &Client) -> culprit_core::Result<Vec<ConstraintIssue>> {
-    let sql = "SELECT n.nspname AS schema_name, t.relname AS table_name, c.conname
-                 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
-                WHERE c.contype = 'c' AND NOT c.convalidated
-                  AND n.nspname NOT IN ('pg_catalog', 'information_schema')";
-    Ok(query(client, sql)
+/// CHECK constraints added NOT VALID, and whether their table is a legacy inheritance child: the one place the
+/// planner reads CHECK constraints by default (constraint exclusion), and only validated ones.
+async fn constraints(client: &Client, version_num: u32) -> culprit_core::Result<Vec<ConstraintIssue>> {
+    // Declarative partitions (10+) are pruned by their bounds, not by CHECK constraints.
+    let not_partition = if version_num >= 100_000 { " AND NOT t.relispartition" } else { "" };
+    let sql = format!(
+        "SELECT n.nspname AS schema_name, t.relname AS table_name, c.conname,
+                EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhrelid = t.oid){not_partition} AS inheritance_child
+           FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE c.contype = 'c' AND NOT c.convalidated
+            AND n.nspname NOT IN ('pg_catalog', 'information_schema')"
+    );
+    Ok(query(client, &sql)
         .await?
         .iter()
         .map(|r| ConstraintIssue {
@@ -221,6 +246,30 @@ async fn constraints(client: &Client) -> culprit_core::Result<Vec<ConstraintIssu
             name: r.string("conname"),
             kind: ConstraintKind::Check,
             disabled: false,
+            inheritance_child: r.flag("inheritance_child"),
+        })
+        .collect())
+}
+
+/// Settings the signals' advice depends on, as pg_settings has them (absent on versions without them): whether WAL
+/// full-page images are already compressed, where the planner reads CHECK constraints, and what caps a slot's WAL.
+async fn advice_settings(client: &Client) -> culprit_core::Result<Vec<Setting>> {
+    let rows = query(
+        client,
+        "SELECT name, setting, unit, boot_val FROM pg_settings
+          WHERE name IN ('wal_compression', 'constraint_exclusion', 'max_slot_wal_keep_size')",
+    )
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| {
+            let unit = r.text("unit");
+            Setting {
+                name: r.string("name"),
+                value: crate::collect::pretty_setting(&r.string("setting"), unit.as_deref()),
+                default_value: r.text("boot_val").map(|v| crate::collect::pretty_setting(&v, unit.as_deref())),
+                scope: "server".into(),
+            }
         })
         .collect())
 }
@@ -320,27 +369,41 @@ async fn files(client: &Client, version_num: u32) -> culprit_core::Result<Vec<Fi
 
 /// Sessions opened per second, how long they last and how many the client abandoned (PostgreSQL 14+).
 async fn sessions(client: &Client) -> culprit_core::Result<Vec<Signal>> {
+    // The counts run from the last statistics reset and outlive a clean restart. PostgreSQL 15+ leaves stats_reset
+    // empty until the first reset: then how long they have counted is unknown, and the server's start time would turn
+    // days of sessions into a rate many times too high. No rate then; the shares below need no time.
     let Some(r) = query_one(
         client,
-        "SELECT sessions, session_time, sessions_abandoned,
-                extract(epoch FROM now() - coalesce(stats_reset, pg_postmaster_start_time())) AS seconds
+        "SELECT sessions, session_time, sessions_abandoned, extract(epoch FROM now() - stats_reset) AS seconds
            FROM pg_stat_database WHERE datname = current_database()",
     )
     .await?
     else {
         return Ok(Vec::new());
     };
-    let (Some(sessions), Some(seconds)) =
-        (r.number("sessions").filter(|n| *n > 0.0), r.number("seconds").filter(|s| *s > 0.0))
-    else {
+    let Some(sessions) = r.number("sessions").filter(|n| *n > 0.0) else {
         return Ok(Vec::new());
     };
-    let rate = sessions / seconds;
-    let mut out = vec![
-        Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
-            .graded("under 1 a second: pooled connections are opened once", 2.0, 10.0, true),
-    ];
-    if let Some(ms) = r.number("session_time") {
+    let seconds = r.number("seconds").filter(|s| *s > 0.0);
+    Ok(session_signals(sessions, seconds, r.number("session_time"), r.number("sessions_abandoned")))
+}
+
+/// The session signals from pg_stat_database's counts; `seconds` is how long they have counted, when known.
+fn session_signals(
+    sessions: f64,
+    seconds: Option<f64>,
+    session_ms: Option<f64>,
+    abandoned: Option<f64>,
+) -> Vec<Signal> {
+    let rate = seconds.map(|s| sessions / s);
+    let mut out = Vec::new();
+    if let Some(rate) = rate {
+        out.push(
+            Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
+                .graded("under 1 a second: pooled connections are opened once", 2.0, 10.0, true),
+        );
+    }
+    if let Some(ms) = session_ms {
         let length = Signal::new(
             "session-length",
             "Average session length",
@@ -349,7 +412,7 @@ async fn sessions(client: &Client) -> culprit_core::Result<Vec<Signal>> {
             SignalScope::SinceStartup,
         );
         // Short sessions only matter when there are many of them.
-        out.push(if rate >= 1.0 {
+        out.push(if rate.is_some_and(|r| r >= 1.0) {
             length.graded(
                 "minutes: a session that lasts under a second pays more to connect than to work",
                 60.0,
@@ -360,7 +423,7 @@ async fn sessions(client: &Client) -> culprit_core::Result<Vec<Signal>> {
             length
         });
     }
-    if let Some(abandoned) = r.number("sessions_abandoned") {
+    if let Some(abandoned) = abandoned {
         out.push(
             Signal::new(
                 "sessions-abandoned",
@@ -372,73 +435,130 @@ async fn sessions(client: &Client) -> culprit_core::Result<Vec<Signal>> {
             .graded("under 1%: clients close their connections", 1.0, 10.0, true),
         );
     }
-    Ok(out)
+    out
 }
 
-/// Replicas this server streams to, its own replay lag when it is a standby, and replication slots that keep WAL.
-async fn replicas(client: &Client) -> culprit_core::Result<Vec<Replica>> {
+/// What a standby reads about itself.
+struct Standby {
+    /// WAL received and not yet replayed; `None` when nothing streams to it (archive recovery).
+    behind: Option<f64>,
+    /// Seconds since the last replayed commit was committed on the primary.
+    since_replay: Option<f64>,
+    /// pg_stat_wal_receiver's status, when a receiver runs.
+    receiver: Option<String>,
+    /// Whether primary_conninfo is set: `None` when this login can't see it (it can hold a password) or the version
+    /// keeps it in recovery.conf.
+    streaming_configured: Option<bool>,
+    /// recovery_min_apply_delay, in seconds.
+    delay: Option<f64>,
+}
+
+/// This server's own lag as a standby. Seconds since the last replayed commit are lag only while there is WAL it
+/// received and hasn't replayed: on a quiet primary they grow with nothing to apply. A standby without a WAL receiver
+/// is stopped only when it is meant to stream (primary_conninfo set); without it, it restores WAL from an archive.
+fn standby_replica(s: Standby) -> Replica {
+    let delay = s.delay.filter(|d| *d > 0.0);
+    let state = match (s.receiver, s.streaming_configured) {
+        (Some(status), _) => status,
+        (None, Some(true)) => "not receiving".to_string(),
+        (None, Some(false)) => "restoring from archive".to_string(),
+        (None, None) => "not streaming".to_string(),
+    };
+    let lag_seconds = match s.behind {
+        Some(b) if b > 0.0 => s.since_replay.map(|t| (t - delay.unwrap_or(0.0)).max(0.0)),
+        Some(_) => Some(0.0),
+        None => None,
+    };
+    Replica {
+        state: Some(state),
+        lag_seconds,
+        lag_bytes: s.behind,
+        delay_seconds: delay,
+        ..Replica::new("this server", ReplicaRole::ThisServer)
+    }
+}
+
+/// Replicas this server streams to and logical consumers it sends changes to, its own replay lag when it is a
+/// standby, and replication slots that keep WAL.
+async fn replicas(client: &Client, version_num: u32, cloud: Option<&str>) -> culprit_core::Result<Vec<Replica>> {
     let standby = query_one(client, "SELECT pg_is_in_recovery() AS standby").await?.is_some_and(|r| r.flag("standby"));
     let mut out = Vec::new();
     if standby {
+        // Aurora readers replicate through the shared storage, not WAL streaming: no receiver, nothing to measure here
+        // (Aurora reports their lag in aurora_replica_status() and CloudWatch).
+        if cloud == Some("Amazon Aurora") {
+            return Ok(out);
+        }
+        // primary_conninfo can hold a password: only whether it is set is read, and pg_settings hides it from logins
+        // that may not see it.
         if let Some(r) = query_one(
             client,
-            "SELECT extract(epoch FROM now() - pg_last_xact_replay_timestamp()) AS lag_s,
-                    pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) AS behind,
-                    (SELECT status FROM pg_stat_wal_receiver LIMIT 1) AS state",
+            "SELECT pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()) AS behind,
+                    extract(epoch FROM now() - pg_last_xact_replay_timestamp()) AS since_replay,
+                    (SELECT status FROM pg_stat_wal_receiver LIMIT 1) AS receiver,
+                    (SELECT setting <> '' FROM pg_settings WHERE name = 'primary_conninfo') AS streaming_configured,
+                    (SELECT setting::float8 / 1000 FROM pg_settings WHERE name = 'recovery_min_apply_delay') AS delay_s",
         )
         .await?
         {
-            out.push(Replica {
-                name: "this server".into(),
-                role: ReplicaRole::ThisServer,
-                state: r.text("state").or_else(|| Some("not receiving".into())),
-                sync: None,
-                lag_seconds: r.number("lag_s"),
-                lag_bytes: r.number("behind"),
-                unsent_bytes: None,
-                error: None,
-            });
+            let configured = r.text("streaming_configured").map(|v| matches!(v.as_str(), "t" | "true"));
+            out.push(standby_replica(Standby {
+                behind: r.number("behind"),
+                since_replay: r.number("since_replay"),
+                receiver: r.text("receiver"),
+                streaming_configured: configured,
+                delay: r.number("delay_s"),
+            }));
         }
         return Ok(out);
     }
+    // A walsender with a logical slot sends decoded changes to a consumer, not WAL to a copy of the server.
     for r in query(
         client,
-        "SELECT coalesce(nullif(application_name, ''), client_addr::text, pid::text) AS name, state, sync_state,
-                extract(epoch FROM replay_lag) AS lag_s, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS behind
-           FROM pg_stat_replication",
+        "SELECT coalesce(nullif(r.application_name, ''), r.client_addr::text, r.pid::text) AS name, r.state, r.sync_state,
+                extract(epoch FROM r.replay_lag) AS lag_s, pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn) AS behind,
+                coalesce(s.slot_type = 'logical', false) AS logical
+           FROM pg_stat_replication r LEFT JOIN pg_replication_slots s ON s.active_pid = r.pid",
     )
     .await?
     {
         out.push(Replica {
-            name: r.string("name"),
-            role: ReplicaRole::Replica,
             state: r.text("state"),
             sync: r.text("sync_state"),
             lag_seconds: r.number("lag_s"),
             lag_bytes: r.number("behind"),
-            unsent_bytes: None,
-            error: None,
+            logical: Some(r.flag("logical")),
+            ..Replica::new(r.string("name"), ReplicaRole::Replica)
         });
     }
-    for r in query(
-        client,
-        "SELECT slot_name, slot_type, active, pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS kept
-           FROM pg_replication_slots WHERE restart_lsn IS NOT NULL",
-    )
-    .await?
-    {
+    for r in query(client, &slots_sql(version_num)).await? {
+        let slot_type = r.text("slot_type");
         out.push(Replica {
-            name: r.string("slot_name"),
-            role: ReplicaRole::Slot,
             state: Some(if r.flag("active") { "active" } else { "inactive" }.into()),
-            sync: r.text("slot_type"),
-            lag_seconds: None,
             lag_bytes: r.number("kept"),
-            unsent_bytes: None,
-            error: None,
+            logical: slot_type.as_deref().map(|t| t == "logical"),
+            sync: slot_type,
+            inactive_seconds: r.number("inactive_s"),
+            wal_status: r.text("wal_status"),
+            safe_wal_bytes: r.number("safe_wal_size"),
+            ..Replica::new(r.string("slot_name"), ReplicaRole::Slot)
         });
     }
     Ok(out)
+}
+
+/// Replication slots and the WAL each keeps; from 13 whether that WAL is still guaranteed and what max_slot_wal_keep_size
+/// leaves before the slot is given up, from 17 since when it has had no consumer.
+fn slots_sql(version_num: u32) -> String {
+    let mut columns =
+        vec!["slot_name", "slot_type", "active", "pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS kept"];
+    if version_num >= 130_000 {
+        columns.extend(["wal_status", "safe_wal_size::float8 AS safe_wal_size"]);
+    }
+    if version_num >= 170_000 {
+        columns.push("extract(epoch FROM now() - inactive_since) AS inactive_s");
+    }
+    format!("SELECT {} FROM pg_replication_slots WHERE restart_lsn IS NOT NULL", columns.join(", "))
 }
 
 #[cfg(test)]
@@ -452,5 +572,68 @@ mod tests {
         assert!(!costs_columns(140_000).iter().any(|c| c.contains("jit")));
         assert!(costs_columns(150_000).iter().any(|c| c.contains("jit_emission_time")));
         assert!(costs_columns(170_000).iter().any(|c| c.contains("jit_deform_time")));
+    }
+
+    fn standby(behind: Option<f64>, since_replay: f64) -> Standby {
+        Standby {
+            behind,
+            since_replay: Some(since_replay),
+            receiver: Some("streaming".into()),
+            streaming_configured: Some(true),
+            delay: None,
+        }
+    }
+
+    // On a quiet primary the last replayed commit gets older by the minute while there is nothing to replay: that is
+    // the primary's silence, not lag.
+    #[test]
+    fn a_standby_with_nothing_to_replay_is_not_behind() {
+        let idle = standby_replica(standby(Some(0.0), 3_600.0));
+        assert_eq!((idle.lag_seconds, idle.state.as_deref()), (Some(0.0), Some("streaming")));
+        let behind = standby_replica(standby(Some(64.0 * 1024.0 * 1024.0), 95.0));
+        assert_eq!(behind.lag_seconds, Some(95.0));
+    }
+
+    // recovery_min_apply_delay holds replay back on purpose: only what is beyond it is lag.
+    #[test]
+    fn a_delayed_standby_counts_only_the_lag_beyond_its_delay() {
+        let delayed = standby_replica(Standby { delay: Some(3_600.0), ..standby(Some(1e9), 3_640.0) });
+        assert_eq!((delayed.lag_seconds, delayed.delay_seconds), (Some(40.0), Some(3_600.0)));
+    }
+
+    // Without a WAL receiver a standby is stopped only when it is meant to stream; log shipping restores from an
+    // archive and has no receiver at all.
+    #[test]
+    fn a_standby_without_a_receiver_is_stopped_only_when_it_should_stream() {
+        let none = |configured| Standby {
+            behind: None,
+            receiver: None,
+            streaming_configured: configured,
+            ..standby(None, 600.0)
+        };
+        assert_eq!(standby_replica(none(Some(true))).state.as_deref(), Some("not receiving"));
+        let shipping = standby_replica(none(Some(false)));
+        assert_eq!((shipping.state.as_deref(), shipping.lag_seconds), (Some("restoring from archive"), None));
+        assert_eq!(standby_replica(none(None)).state.as_deref(), Some("not streaming"));
+    }
+
+    // Without stats_reset (PostgreSQL 15+ until the first reset) how long the counts ran is unknown: no rate, but the
+    // shares that need no time stay.
+    #[test]
+    fn sessions_without_a_known_age_have_no_rate() {
+        let unknown = session_signals(400_000.0, None, Some(4.0e8), Some(4_000.0));
+        assert!(unknown.iter().all(|s| s.key != "new-connections"));
+        assert!(
+            unknown.iter().any(|s| s.key == "session-length") && unknown.iter().any(|s| s.key == "sessions-abandoned")
+        );
+        let known = session_signals(400_000.0, Some(200_000.0), None, None);
+        assert_eq!(known[0].value, 2.0);
+    }
+
+    #[test]
+    fn slot_columns_follow_the_version() {
+        assert!(!slots_sql(120_000).contains("wal_status"));
+        assert!(slots_sql(130_000).contains("safe_wal_size") && !slots_sql(160_000).contains("inactive_since"));
+        assert!(slots_sql(170_000).contains("inactive_since"));
     }
 }

@@ -9,4 +9,9 @@ export type ConstraintIssue = { schema: string, table: string, name: string, kin
 /**
  * Switched off entirely (SQL Server NOCHECK CONSTRAINT): new rows aren't checked either.
  */
-disabled: boolean, };
+disabled: boolean, 
+/**
+ * The table inherits from another (PostgreSQL legacy inheritance, not a declarative partition): the planner reads
+ * CHECK constraints there to skip it (constraint exclusion), and only validated ones.
+ */
+inheritance_child: boolean, };
