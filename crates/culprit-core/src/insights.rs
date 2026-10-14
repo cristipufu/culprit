@@ -402,9 +402,9 @@ fn rows_out(n: &PlanNode) -> f64 {
     n.act_rows.unwrap_or_else(|| n.est_rows_total())
 }
 
-/// Rows an operator read: what the engine reports read, else what it returned.
+/// Rows an operator read (see `PlanNode::rows_read_total`), else what it returned.
 fn rows_read(n: &PlanNode) -> f64 {
-    n.rows_read.unwrap_or_else(|| rows_out(n))
+    n.rows_read_total().unwrap_or_else(|| rows_out(n))
 }
 
 fn prop_f64(n: &PlanNode, key: &str) -> Option<f64> {

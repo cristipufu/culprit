@@ -257,14 +257,15 @@ fn the_advisor_adds_one_index_for_a_scan_and_the_request_that_serves_it() {
     assert_eq!(scan.finding_id.as_deref(), Some("filtered-scan:shop.order_items(order_id)"));
 }
 
-// I4a: a function around a filtered column is why the scan happens; the findings say rewrite it, and so does the advisor
-// (no index of its own).
+// I4a: a function around the filtered column is why the scan happens; the findings say rewrite it, and so does the
+// advisor (no index of its own). A filter that also compares a plain column (`customer_id = $1 AND date_trunc(…) = $2`)
+// is another case: an index on that column serves it whatever the function does, and the plan's one insight says so.
 #[test]
 fn the_advisor_adds_no_index_for_a_scan_a_rewrite_fixes() {
     let mut s = counted_for_ten_days(snapshot("postgres-demo.json"));
     let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "5308963031944094559").unwrap();
     let scan = scan_node(q).expect("the scan");
-    scan.predicate = Some("((orders.customer_id = $1) AND (date_trunc('day'::text, orders.created_at) = $2))".into());
+    scan.predicate = Some("(date_trunc('day'::text, orders.created_at) = $1)".into());
     scan.table_rows = Some(1_999_995.0);
     let report = analyze(s);
     assert!(finding(&report, "filtered-scan:public.orders(customer_id)").is_none(), "{:?}", ids(&report));

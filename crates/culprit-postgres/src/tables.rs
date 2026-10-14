@@ -77,9 +77,9 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
             && node.act_rows.is_none()
         {
             if under_append && size.partition {
-                node.props.insert("Partition Pruning".into(), UNPRUNED.into());
+                node.props.insert(culprit_core::NOT_READ_IN_FULL.into(), UNPRUNED.into());
             } else if node.predicate.as_deref().is_some_and(guessed_selectivity) {
-                node.props.insert("Selectivity".into(), GUESSED.into());
+                node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), GUESSED.into());
             } else {
                 node.rows_read = Some(size.rows);
             }

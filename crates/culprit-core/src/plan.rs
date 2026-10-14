@@ -85,6 +85,14 @@ pub struct PlanNode {
     pub children: Vec<PlanNode>,
 }
 
+/// Plan prop a collector sets on a scan a run may never read: a partition a generic plan lists, pruned only when it
+/// runs. Its table's size isn't what it reads.
+pub const NOT_READ_IN_FULL: &str = "Partition Pruning";
+
+/// Plan prop a collector sets when the rows a scan keeps are the planner's default guess (a parameter compared by range
+/// or pattern in a generic plan), so the share kept says nothing.
+pub const GUESSED_SELECTIVITY: &str = "Selectivity";
+
 /// An index pays off for a filter that keeps at most this share of the rows a scan reads. Above it, reading through the
 /// index touches most of the table's pages anyway, so the scan is the right plan and the fix is to read less. Every
 /// rule that suggests an index from a scan uses this bar.
@@ -141,9 +149,24 @@ impl PlanNode {
     /// The share of the rows this operator read that it kept, from actual counts when the plan has them, else from
     /// estimates and the table's size. None when the plan doesn't say how many rows it read.
     pub fn kept_share(&self) -> Option<f64> {
+        // A default guess for a parameter compared by range or pattern isn't a share anything can be judged on.
+        if self.props.contains_key(GUESSED_SELECTIVITY) {
+            return None;
+        }
         let kept = self.act_rows.unwrap_or_else(|| self.est_rows_total());
-        let read = self.rows_read.or_else(|| self.table_rows.map(|t| t * self.runs()))?;
+        let read = self.rows_read_total()?;
         (read > 0.0).then(|| (kept / read).min(1.0))
+    }
+
+    /// Rows this operator read over its runs: what the engine reports, else, for a scan that reads its table in full,
+    /// the table's rows for every run. None when neither is known, or when the collector marked the scan as one a run
+    /// may never read ([`NOT_READ_IN_FULL`]: a partition a generic plan lists but a run would prune).
+    pub fn rows_read_total(&self) -> Option<f64> {
+        self.rows_read.or_else(|| {
+            (self.kind == NodeKind::Scan && !self.props.contains_key(NOT_READ_IN_FULL))
+                .then(|| self.table_rows.map(|t| t * self.runs()))
+                .flatten()
+        })
     }
 
     /// How far off the estimate was for the executions that happened, as a factor ≥ 1, signed: positive means more
