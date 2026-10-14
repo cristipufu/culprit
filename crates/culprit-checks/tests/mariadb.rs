@@ -23,10 +23,16 @@ fn findings_use_mariadb_words_and_syntax() {
     if let Some(p) = s.pressure.as_mut() {
         p.uptime_hours = Some(240.0);
     }
+    // MariaDB estimates that a filter on an unindexed column keeps every row. The demo's statement ends in `LIMIT ?`,
+    // so the rows it returns say nothing about how many the filter kept: no evidence, no index.
+    let scan = "filtered-scan:shop.orders(promo_code)";
+    assert!(!analyze(s.clone()).findings.iter().any(|f| f.id == scan));
+    // The same statement returning every row it keeps: rows examined against rows returned say the filter keeps few,
+    // so the scan is found.
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.text.contains("promo_code")).unwrap();
+    q.text = q.text.split(" ORDER BY").next().unwrap().to_string();
     let report = analyze(s);
-    // MariaDB estimates that a filter on an unindexed column keeps every row; rows examined against rows returned say
-    // otherwise, so the scan is still found.
-    assert!(report.findings.iter().any(|f| f.id == "filtered-scan:shop.orders(promo_code)"));
+    assert!(report.findings.iter().any(|f| f.id == scan));
     let unused = report.findings.iter().find(|f| f.id.starts_with("unused-index:")).expect("unused index");
     let sql = unused.fix.as_ref().and_then(|f| f.sql.as_deref()).unwrap_or_default();
     assert!(sql.contains("IGNORED") && !sql.contains("INVISIBLE"), "{sql}");

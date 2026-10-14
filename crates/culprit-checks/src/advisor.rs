@@ -11,7 +11,7 @@ use culprit_core::{
 
 use crate::index_health::{hide_index_sql, overlapping_pairs};
 use crate::indexes::{
-    asking_queries, backs_foreign_key, existing_match, is_unused, merge_candidates, redundant_indexes, same_keys,
+    asking_queries, backs_foreign_key, candidate_fix, is_unused, merge_candidates, redundant_indexes, same_keys,
     scan_groups, widen_fix, write_cost, writes_per_day,
 };
 use crate::support::*;
@@ -124,12 +124,10 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 }
             }
             None => {
-                let (sql, widens) = match existing_match(s, &c, &asking) {
-                    Some(e) if !c.include.is_empty() => (widen_fix(s, e, &c.include).sql, Some(e.name.clone())),
-                    Some(e) => (None, Some(e.name.clone())),
-                    None => (Some(create_index_sql(s, &c.schema, &c.table, &keys, &c.include)), None),
-                };
-                (keys.clone(), c.include.clone(), sql, widens)
+                // The same fix the missing-index finding gives: widen or bring back the index with these keys, or
+                // create one.
+                let fix = candidate_fix(s, &c, &asking);
+                (keys.clone(), c.include.clone(), fix.fix.sql, fix.widens)
             }
         };
         let requests = c
@@ -165,22 +163,34 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         });
     }
 
-    // 2. Plans that read a whole table to keep a few rows (every engine with captured plans).
+    // 2. Plans that read a whole table to keep a few rows (every engine with captured plans), as the refined findings
+    // have them: a scan the refine stage folded into a missing-index request lends that candidate its queries, and one
+    // a rewrite fixes instead (a function or a leading wildcard on the column) gets no index of its own.
     for g in scan_groups(s) {
         let table_name = format!("{}.{}", g.schema, g.table);
         let group_queries: Vec<&QueryStat> = g.queries.iter().map(|(q, _)| *q).collect();
-        if let Some(existing) = candidates
-            .iter_mut()
-            .find(|c| same_table(&c.schema, &c.table, &g.schema, &g.table) && lower_set(&c.keys) == lower_set(&g.keys))
-        {
-            for q in &group_queries {
-                if !existing.queries.iter().any(|x| x.id == q.id) {
-                    existing.queries.push(advice_query(s, q));
+        let finding_id = format!("filtered-scan:{table_name}({})", g.keys.join(","));
+        if !ids.contains(finding_id.as_str()) {
+            let absorbed_by = report.findings.iter().find(|f| {
+                f.check == "missing-index"
+                    && g.queries
+                        .iter()
+                        .all(|(q, node)| f.queries.iter().any(|r| r.id == q.id && r.plan_node == Some(*node)))
+            });
+            if let Some(existing) =
+                absorbed_by.and_then(|f| candidates.iter_mut().find(|c| c.finding_id.as_deref() == Some(&f.id)))
+            {
+                for q in &group_queries {
+                    if !existing.queries.iter().any(|x| x.id == q.id) {
+                        existing.queries.push(advice_query(s, q));
+                    }
                 }
             }
             continue;
         }
         let share = query_impact(s, &group_queries).map(|i| i.share);
+        // A disabled index with these keys is brought back rather than built twice.
+        let disabled = crate::indexes::disabled_leading_index(s, &g);
         candidates.push(IndexCandidate {
             schema: g.schema.clone(),
             table: g.table.clone(),
@@ -202,8 +212,11 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 format::list(&g.keys)
             )
             .replace("  ", " "),
-            sql: Some(create_index_sql(s, &g.schema, &g.table, &g.keys, &[])),
-            widens: None,
+            sql: match disabled {
+                Some(i) => widen_fix(s, i, &[]).sql,
+                None => Some(create_index_sql(s, &g.schema, &g.table, &g.keys, &[])),
+            },
+            widens: disabled.map(|i| i.name.clone()),
             queries: group_queries.iter().map(|q| advice_query(s, q)).collect(),
             requests: Vec::new(),
             db_time_share: share,
@@ -216,12 +229,12 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 format!("Explain one of the queries again: the scan of {} becomes a seek on the new index.", g.table),
                 "Re-scan after the workload has run: the queries' share of database time drops.".into(),
             ],
-            finding_id: link(format!("filtered-scan:{table_name}({})", g.keys.join(","))),
+            finding_id: link(finding_id),
         });
     }
 
-    // 3. Foreign keys no index leads with.
-    for fk in s.foreign_keys.iter().filter(|fk| !fk.columns.is_empty()) {
+    // 3. Foreign keys no index leads with, among those the database checks.
+    for fk in crate::indexes::enforced_foreign_keys(s) {
         let rows = s.table(&fk.schema, &fk.table).and_then(|t| t.rows).unwrap_or(0.0);
         if rows < crate::indexes::FK_OWN_FINDING_ROWS {
             continue;
@@ -244,13 +257,14 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             source: CandidateSource::ForeignKey,
             reason: format!(
                 "{} is the foreign key to {}. Without an index, deleting or re-keying a row in {} reads all {} rows of \
-                 {} looking for matches, and joins from {} can't seek.",
+                 {} looking for matches, and joins from {} can't seek.{}",
                 format::list(&fk.columns),
                 fk.ref_table,
                 fk.ref_table,
                 format::count(rows),
                 child,
-                fk.ref_table
+                fk.ref_table,
+                crate::indexes::parent_never_deletes(s, fk).map(|n| format!(" {n}")).unwrap_or_default()
             ),
             sql: Some(create_index_sql(s, &fk.schema, &fk.table, &fk.columns, &[])),
             widens: None,
@@ -442,8 +456,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             && rows_read >= 5_000_000.0
             && !planned.contains(&(t.schema.to_ascii_lowercase(), t.name.to_ascii_lowercase()))
         {
-            let touching: Vec<&QueryStat> =
-                queries_touching(s, &t.schema, &t.name).into_iter().filter(|q| !is_monitoring_query(q)).collect();
+            // The statements that read it in full, as the scan-heavy finding lists them.
+            let touching = crate::index_health::scanning_queries(s, &t.schema, &t.name);
             tables.push(TableAdvice {
                 kind: TableAdviceKind::ScanHeavy,
                 schema: t.schema.clone(),
@@ -496,20 +510,25 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         }
         let secondary =
             s.indexes_on(&t.schema, &t.name).filter(|i| !i.is_primary_key && !i.is_clustered && !i.is_disabled).count();
-        if secondary >= 7
-            && let Some(writes) = writes_per_day(s, &t.schema, &t.name).filter(|w| *w >= 50_000.0)
+        // As the over-indexed finding judges it: writes that maintain indexes (PostgreSQL's HOT updates write none), in
+        // the engine's unit, a day.
+        if secondary >= crate::index_health::MANY_INDEXES
+            && let Some(w) = crate::index_health::index_writes(s, t)
+            && w.total / w.days >= crate::index_health::MANY_WRITES_A_DAY
         {
+            let writes = w.total / w.days;
             tables.push(TableAdvice {
                 kind: TableAdviceKind::OverIndexed,
                 schema: t.schema.clone(),
                 table: t.name.clone(),
                 reason: format!(
-                    "{secondary} secondary indexes and about {} writes a day: every insert updates all of them.",
-                    format::count(writes)
+                    "{secondary} secondary indexes and {}: every insert updates all of them.",
+                    how_many(s, w.total, w.days, w.unit().0, w.unit().1)
                 ),
                 rows: t.rows,
                 indexes: Some(secondary as f64),
-                writes_per_day: Some(writes),
+                // A number a day only over a day's worth of counters.
+                writes_per_day: per_day_is_measured(w.days).then_some(writes),
                 full_scans_per_day: None,
                 rows_scanned_per_day: None,
                 forwarded_per_day: None,

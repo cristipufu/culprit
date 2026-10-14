@@ -25,8 +25,11 @@ pub fn overlapping_index_info() -> CheckInfo {
 }
 
 /// Indexes that compete for the same leading column, as (rarely read, well used). The well-used one must hold every key
-/// column of the other, as a key or an included column: sharing only the first column says nothing when that column
-/// isn't selective (a tenant id in a multi-tenant schema leads almost every index, and one tenant can be most rows).
+/// column of the other as a key of its own: sharing only the first column says nothing when that column isn't
+/// selective (a tenant id in a multi-tenant schema leads almost every index, and one tenant can be most rows), and an
+/// included column is no part of the index's search (PostgreSQL may check it only on the table's row). It must hold every
+/// row the other does, so no filter, and it must not be the clustered index (InnoDB's PRIMARY too): seeking that reads
+/// whole rows, which is what the narrow index spares its queries.
 pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
     let redundant: Vec<&str> = redundant_indexes(snapshot).iter().map(|(a, _)| a.name.as_str()).collect();
     let mut out: Vec<(&IndexStat, &IndexStat)> = Vec::new();
@@ -47,11 +50,17 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
         let lead = a.key_names()[0].to_ascii_lowercase();
         let better = snapshot
             .indexes_on(&a.schema, &a.table)
-            .filter(|b| b.name != a.name && !b.is_disabled && b.kind == a.kind && !same_keys(a, b))
+            .filter(|b| {
+                b.name != a.name
+                    && !b.is_disabled
+                    && !b.is_clustered
+                    && b.filter == a.filter
+                    && b.kind == a.kind
+                    && !same_keys(a, b)
+            })
             .filter(|b| b.key_names().first().is_some_and(|k| k.eq_ignore_ascii_case(&lead)))
             .filter(|b| {
-                let held: Vec<String> =
-                    b.key_names().iter().map(|k| k.to_string()).chain(b.include.iter().cloned()).collect();
+                let held = b.key_names();
                 a.key_names().iter().all(|k| held.iter().any(|h| h.eq_ignore_ascii_case(k)))
             })
             .filter(|b| b.reads.is_some_and(|r| r >= 1000.0 && reads * 100.0 <= r))
@@ -80,7 +89,7 @@ pub fn overlapping_index(snapshot: &Snapshot) -> Vec<Finding> {
             let (ra, rb) = (a.reads.unwrap_or(0.0), b.reads.unwrap_or(0.0));
             f.title = format!("{} is barely read next to {}, which also starts with {}", a.name, b.name, lead);
             f.summary = format!(
-                "{} ({}) and {} ({}) both lead with {} on {}, and the second holds every key column of the first. {} was \
+                "{} ({}) and {} ({}) both lead with {} on {}, and the second has every key column of the first among its keys. {} was \
                  read {} times {}, {} {} times. Queries that use the first can seek the second on {} and filter the rest \
                  inside it, while every write to {} keeps both up to date.",
                 a.name,
@@ -183,7 +192,38 @@ pub fn over_indexed_info() -> CheckInfo {
     }
 }
 
-const MANY_INDEXES: usize = 7;
+pub(crate) const MANY_INDEXES: usize = 7;
+
+/// Writes a day that make many secondary indexes a cost worth a finding: statements on SQL Server, rows elsewhere
+/// (see [`IndexWrites`]). A statement writes at least a row, so the bar is never looser on SQL Server.
+pub(crate) const MANY_WRITES_A_DAY: f64 = 50_000.0;
+
+/// The writes to a table that maintain its secondary indexes, since its counters started, and what the count counts.
+pub(crate) struct IndexWrites {
+    pub(crate) total: f64,
+    pub(crate) days: f64,
+    /// SQL Server counts write statements on the clustered index (`user_updates`), whatever rows each touched;
+    /// PostgreSQL and MySQL count rows.
+    pub(crate) statements: bool,
+}
+
+impl IndexWrites {
+    /// The unit, one and many: "write statement(s)" on SQL Server, "row(s) written" elsewhere.
+    pub(crate) fn unit(&self) -> (&'static str, &'static str) {
+        if self.statements { ("write statement", "write statements") } else { ("row written", "rows written") }
+    }
+}
+
+/// [`measured_writes`] without the updates that maintain no index: PostgreSQL's HOT updates change no indexed column
+/// and stay on their page, so they write no index entry at all.
+pub(crate) fn index_writes(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<IndexWrites> {
+    let (total, days) = measured_writes(snapshot, &t.schema, &t.name)?;
+    let hot = match snapshot.server.engine {
+        Engine::Postgres => t.storage.as_ref().and_then(|s| s.hot_updates).unwrap_or(0.0).min(t.updates.unwrap_or(0.0)),
+        _ => 0.0,
+    };
+    Some(IndexWrites { total: (total - hot).max(0.0), days, statements: snapshot.server.engine == Engine::Mssql })
+}
 
 pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
     let redundant: Vec<&str> = redundant_indexes(snapshot).iter().map(|(a, _)| a.name.as_str()).collect();
@@ -196,12 +236,14 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         if secondary.len() < MANY_INDEXES {
             continue;
         }
-        let Some((writes_total, days)) = measured_writes(snapshot, &t.schema, &t.name) else { continue };
+        let Some(w) = index_writes(snapshot, t) else { continue };
+        let (writes_total, days) = (w.total, w.days);
         // Judged per day; said per day only over 20 hours of counters.
         let writes = writes_total / days;
-        if writes < 50_000.0 {
+        if writes < MANY_WRITES_A_DAY {
             continue;
         }
+        let (one, many) = w.unit();
         let measured = per_day_is_measured(days);
         let idle: Vec<&IndexStat> = secondary
             .iter()
@@ -214,14 +256,30 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
             "{} has {} indexes and gets {}",
             t.name,
             secondary.len(),
-            how_many(snapshot, writes_total, days, "write", "writes")
+            how_many(snapshot, writes_total, days, one, many)
         );
+        let upkeep = match snapshot.server.engine {
+            Engine::Mssql => format!(
+                "Every insert into {table_name} updates all {} secondary indexes, and every update touching their columns \
+                 updates them too: {}, each one doing that for every row it changes.",
+                secondary.len(),
+                how_many(snapshot, writes_total, days, one, many)
+            ),
+            Engine::Postgres => format!(
+                "Every insert into {table_name} adds an entry to all {} secondary indexes, and so does every update that \
+                 isn't HOT (HOT updates change no indexed column and stay on their page): up to {}.",
+                secondary.len(),
+                how_many(snapshot, writes_total * secondary.len() as f64, days, "index entry", "index entries")
+            ),
+            Engine::Mysql => format!(
+                "Every insert into {table_name} updates all {} secondary indexes, and every update touching their columns \
+                 updates them too: up to {}.",
+                secondary.len(),
+                how_many(snapshot, writes_total * secondary.len() as f64, days, "index change", "index changes")
+            ),
+        };
         f.summary = format!(
-            "Every insert into {} updates all {} secondary indexes, and every update touching their columns updates them \
-             too: {}. {}",
-            table_name,
-            secondary.len(),
-            how_many(snapshot, writes_total * secondary.len() as f64, days, "index change", "index changes"),
+            "{upkeep} {}",
             match idle.len() {
                 0 => "All of them are read, so trim only after checking which queries rely on each.".to_string(),
                 1 => format!("{} of them is never read or duplicated by another; start there.", idle[0].name),
@@ -233,17 +291,19 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         );
         f.severity = if idle.is_empty() { Severity::Low } else { Severity::Medium };
         f.impact.score = base_score(f.severity) + (writes.log10() - 4.0).max(0.0) * 3.0;
+        let short = if w.statements { "write statements" } else { "rows written" };
         f.impact.label = if measured {
-            format!("{} indexes · {} writes/day", secondary.len(), format::count(writes))
+            format!("{} indexes · {} {short}/day", secondary.len(), format::count(writes))
         } else {
-            format!("{} indexes · {} writes", secondary.len(), format::count(writes_total))
+            format!("{} indexes · {} {short}", secondary.len(), format::count(writes_total))
         };
         f.confidence = if idle.is_empty() { Confidence::Low } else { Confidence::Medium };
         f.metrics.push(Metric::new("Secondary indexes", secondary.len() as f64, Unit::Count));
+        let label = if w.statements { "Write statements" } else { "Rows written" };
         f.metrics.push(if measured {
-            Metric::new("Writes per day", writes, Unit::Count)
+            Metric::new(format!("{label} per day"), writes, Unit::Count)
         } else {
-            Metric::new("Writes", writes_total, Unit::Count)
+            Metric::new(label, writes_total, Unit::Count)
         });
         f.metrics.push(Metric::new("Never read or duplicated", idle.len() as f64, Unit::Count));
         f.fix = Some(Fix {
@@ -274,13 +334,42 @@ pub fn scan_heavy_info() -> CheckInfo {
     }
 }
 
-/// Full-table reads and rows read without an index since the counters started, and the days that covers.
+/// Full-table reads and rows read without an index since the counters started, and the days that covers. A full read
+/// is the table's rows read once: PostgreSQL's `seq_scan` counts a scan once for every process that runs it (each
+/// parallel worker and the leader) and again on every rescan, and counts a scan a LIMIT stopped early as a whole one,
+/// so the rows it read, divided by the table's rows, is the count to say when it is lower.
 pub(crate) fn full_scans_measured(snapshot: &Snapshot, t: &culprit_core::TableStat) -> Option<(f64, f64, f64)> {
     let days = counter_days_for_rate(snapshot)?;
     let rows = t.rows.filter(|r| *r >= 50_000.0)?;
     let scanned = t.seq_rows_read?;
-    let scans = t.seq_scans.unwrap_or(scanned / rows);
+    let full_reads = (scanned / rows).round();
+    let scans = t.seq_scans.map_or(full_reads, |n| n.min(full_reads));
     Some((scans, scanned, days))
+}
+
+/// The captured statements that read a table in full: their plan scans it, or, without a plan, they read or change
+/// rows of it (SELECT, UPDATE, DELETE, MERGE) and name it. A statement that seeks the table through an index, or only
+/// inserts into it, isn't behind its full reads, so its time isn't theirs.
+pub(crate) fn scanning_queries<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -> Vec<&'a QueryStat> {
+    let qualified = format!("{schema}.{table}").to_ascii_lowercase();
+    let names_table = |object: &str| {
+        let o = object.to_ascii_lowercase().replace(['[', ']', '"', '`'], "");
+        o == qualified || o.ends_with(&format!(".{qualified}")) || o == table.to_ascii_lowercase()
+    };
+    queries_touching(snapshot, schema, table)
+        .into_iter()
+        .filter(|q| !is_monitoring_query(q))
+        .filter(|q| match &q.plan {
+            Some(plan) => plan
+                .nodes()
+                .iter()
+                .any(|n| n.kind == culprit_core::NodeKind::Scan && n.object.as_deref().is_some_and(names_table)),
+            None => {
+                let verb = q.text.trim_start_matches(|c: char| c.is_whitespace() || c == '(').to_ascii_lowercase();
+                ["select", "with", "update", "delete", "merge"].iter().any(|v| verb.starts_with(v))
+            }
+        })
+        .collect()
 }
 
 pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
@@ -304,6 +393,7 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         let table_name = t.qualified();
         let touching: Vec<&QueryStat> =
             queries_touching(snapshot, &t.schema, &t.name).into_iter().filter(|q| !is_monitoring_query(q)).collect();
+        let scanning = scanning_queries(snapshot, &t.schema, &t.name);
         let mut f = finding("scan-heavy", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
         let rows_text = if measured {
             format!("{} rows a day", format::count(rows_read))
@@ -321,21 +411,27 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             format::count(t.rows.unwrap_or(0.0)),
             how_many(snapshot, scans_total, days, "time", "times"),
             if measured { format!(" {}", since_phrase(snapshot)) } else { String::new() },
-            if touching.is_empty() {
-                "None of the captured statements names it, so the scans come from statements outside the top of the workload."
-                    .to_string()
-            } else {
+            if !scanning.is_empty() {
                 format!(
                     "{} of the captured statements read it; explain them to see which filter has no index.",
-                    touching.len()
+                    scanning.len()
                 )
+            } else if !touching.is_empty() {
+                "The captured statements that name it reach it through an index, so the full reads come from \
+                 statements outside the top of the workload."
+                    .to_string()
+            } else {
+                "None of the captured statements names it, so the scans come from statements outside the top of the workload."
+                    .to_string()
             }
         );
-        let impact = query_impact(snapshot, &touching);
+        // Only the statements that read it in full are behind the scans, and their time is the cost.
+        let impact = query_impact(snapshot, &scanning);
         match &impact {
             Some(i) if i.share >= 0.005 => {
                 apply_query_impact(&mut f, i);
-                f.severity = severity_for_share(i.share).max(Severity::Medium);
+                let time_ms: f64 = scanning.iter().map(|q| q.total_time_ms).sum();
+                f.severity = crate::indexes::severity_for_time(snapshot, time_ms, i.share);
             }
             _ => {
                 f.severity = if rows_read >= 1e9 { Severity::Medium } else { Severity::Low };
@@ -347,8 +443,8 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
                 };
             }
         }
-        f.confidence = if touching.is_empty() { Confidence::Low } else { Confidence::Medium };
-        f.queries = query_refs(&touching.iter().copied().take(5).collect::<Vec<_>>());
+        f.confidence = if scanning.is_empty() { Confidence::Low } else { Confidence::Medium };
+        f.queries = query_refs(&scanning.iter().copied().take(5).collect::<Vec<_>>());
         if measured {
             f.metrics.push(Metric::new("Full reads per day", scans, Unit::Count));
             f.metrics.push(Metric::new("Rows read without an index per day", rows_read, Unit::Rows));
