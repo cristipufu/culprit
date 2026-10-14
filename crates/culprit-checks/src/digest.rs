@@ -245,8 +245,11 @@ fn deadlocks(report: &Report, previous_at: Option<&str>, top: usize) -> DigestDe
     let at = |t: &Option<String>| t.as_deref().and_then(format::epoch_seconds);
     let after = previous_at.and_then(format::epoch_seconds);
     let mut groups: Vec<DigestDeadlockPattern> = Vec::new();
+    // Another database's deadlocks (the server keeps them for every database) are theirs, as in the deadlocks check.
+    let ours: Vec<&culprit_core::Deadlock> =
+        d.deadlocks.iter().filter(|dl| crate::deadlocks::in_this_database(dl, s)).collect();
     // Most recent first, so each group's first deadlock is its latest.
-    for dl in &d.deadlocks {
+    for dl in &ours {
         let mut tables = dl.objects.clone();
         tables.sort();
         let name = pattern_name(dl.pattern);
@@ -291,17 +294,16 @@ fn deadlocks(report: &Report, previous_at: Option<&str>, top: usize) -> DigestDe
     });
     groups.truncate(top);
     DigestDeadlocks {
-        count: (!unknown).then_some(d.deadlocks.len() as u32),
+        count: (!unknown).then_some(ours.len() as u32),
         counted: d.counted,
         counted_since: d.counted_since.clone(),
         since_hours: Some(d.since_hours),
         source: Some(d.source.clone()).filter(|s| !s.is_empty()),
-        latest_at: d.deadlocks.iter().filter_map(|x| x.at.clone()).max_by(|a, b| {
+        latest_at: ours.iter().filter_map(|x| x.at.clone()).max_by(|a, b| {
             at(&Some(a.clone())).partial_cmp(&at(&Some(b.clone()))).unwrap_or(std::cmp::Ordering::Equal)
         }),
         // Only deadlocks with a time can be placed before or after the previous scan.
-        new_since: after
-            .map(|after| d.deadlocks.iter().filter(|x| at(&x.at).is_some_and(|t| t > after)).count() as u32),
+        new_since: after.map(|after| ours.iter().filter(|x| at(&x.at).is_some_and(|t| t > after)).count() as u32),
         patterns: groups,
         note: d.note.clone(),
     }

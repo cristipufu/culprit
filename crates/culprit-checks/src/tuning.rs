@@ -973,21 +973,29 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics.push(Metric::new("Single-use plans", cache.single_use_plans, Unit::Count));
             f.metrics.push(Metric::new("Their memory", cache.single_use_bytes, Unit::Bytes));
             f.metrics.push(Metric::new("Share of the cache", share, Unit::Ratio));
+            // Where the setting lives: per database on Azure SQL Database, a server option elsewhere (the DB parameter
+            // group on RDS, which refuses sp_configure).
+            let (how, sql) = if ad_hoc_on {
+                (String::new(), None)
+            } else if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
+                (
+                    String::new(),
+                    Some("ALTER DATABASE SCOPED CONFIGURATION SET OPTIMIZE_FOR_AD_HOC_WORKLOADS = ON;".to_string()),
+                )
+            } else {
+                let change = crate::config::server_option(&snapshot.server, "optimize for ad hoc workloads", "1");
+                (if change.sql.is_none() { format!(" {}", change.how) } else { String::new() }, change.sql)
+            };
             f.fix = Some(Fix {
                 summary: if ad_hoc_on {
                     "Parameterize the statements behind it (see the families above).".into()
                 } else {
-                    "Keep only a stub for a plan's first use, and parameterize the statements behind it.".into()
+                    format!("Keep only a stub for a plan's first use, and parameterize the statements behind it.{how}")
                 },
-                sql: (!ad_hoc_on).then(|| {
-                    "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;\nEXEC sp_configure 'optimize for ad hoc workloads', 1; RECONFIGURE;".into()
-                }),
+                sql,
                 cost: None,
             });
             f.verify = vec!["Re-scan after a day: single-use plans take a much smaller share of the cache.".into()];
-            if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
-                f.caveats.push("On Azure SQL Database the setting is managed per database with ALTER DATABASE SCOPED CONFIGURATION SET OPTIMIZE_FOR_AD_HOC_WORKLOADS = ON.".into());
-            }
             out.push(f);
         }
     }

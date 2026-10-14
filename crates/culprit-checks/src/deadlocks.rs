@@ -43,7 +43,7 @@ fn tables(objects: &[String]) -> String {
 /// Whether a deadlock is this database's. SQL Server's system_health and InnoDB's report are the whole server's: a
 /// deadlock whose processes ran in other databases (SQL Server), or whose tables are all in other schemas (MySQL, where
 /// a schema is a database), belongs to them. One that names neither can't be placed, and is kept.
-fn in_this_database(d: &Deadlock, snapshot: &Snapshot) -> bool {
+pub(crate) fn in_this_database(d: &Deadlock, snapshot: &Snapshot) -> bool {
     let database = &snapshot.server.database;
     let mut named = d.processes.iter().filter_map(|p| p.database.as_deref()).peekable();
     if named.peek().is_some() {
@@ -307,6 +307,9 @@ mod tests {
         let found = deadlocks(&mysql);
         assert_eq!(found.len(), 1);
         assert!(found[0].title.contains(".orders"), "{}", found[0].title);
+        // The digest counts the same deadlocks as the check.
+        let digest = crate::digest(&crate::analyze(mysql), None, 5, 5);
+        assert_eq!(digest.deadlocks.as_ref().and_then(|d| d.count), Some(1));
     }
 
     // C1: InnoDB keeps its latest deadlock however old; one whose time is unknown claims no window and is Low.
