@@ -674,6 +674,8 @@ pub(crate) mod tests {
             trend: None,
             spread: None,
             costs: None,
+            rows_affected: None,
+            plan_id: None,
         }
     }
 }

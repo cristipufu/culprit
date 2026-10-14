@@ -95,6 +95,7 @@ pub(crate) async fn collect(
         end: window_end.map(str::to_string).unwrap_or_else(|| iso_minutes((last + 1) * i64::from(minutes))),
         time_ms: vec![0.0; len],
         executions: vec![0.0; len],
+        unknown: None,
     };
     for (bucket, time, runs) in totals {
         let i = (bucket - first) as usize;

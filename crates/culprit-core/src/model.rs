@@ -178,6 +178,16 @@ pub struct Workload {
     /// earlier scans of this connection to compare with.
     #[serde(default)]
     pub timeline: Option<Timeline>,
+    /// Time the source measured but couldn't put on any statement, so it is in neither `queries` nor `total_time_ms`:
+    /// MySQL's catch-all digest row once its digest table is full. That row is server-wide (it doesn't say which
+    /// database ran it), so shares are of the attributed time and this says how much more there may be. `None` when
+    /// nothing was left out or the source can't say.
+    #[serde(default)]
+    pub untracked_time_ms: Option<f64>,
+    /// Only runs slower than this were recorded (the slow query log's `long_query_time`), so totals, shares and run
+    /// counts are of logged slow runs, not of everything the database ran. `None` when every run is counted.
+    #[serde(default)]
+    pub min_logged_ms: Option<f64>,
 }
 
 /// "7 days", "10 hours", "35 minutes": a window's length in words.
@@ -222,6 +232,8 @@ impl Workload {
     pub fn window_phrase(&self) -> String {
         if self.windowed {
             format!("the last {}", span_words(self.window_hours))
+        } else if self.window_unknown() {
+            "the time since statistics were last reset".to_string()
         } else {
             format!("the {} since statistics were reset", span_words(self.window_hours))
         }
@@ -239,6 +251,12 @@ impl Workload {
                 self.window_phrase()
             ),
         }
+    }
+
+    /// The source's running totals started at a time nobody can say (pg_stat_statements before PostgreSQL 14 keeps no
+    /// reset time, and its statistics outlive restarts): `window_hours` is 0 and no rate can be derived from it.
+    pub fn window_unknown(&self) -> bool {
+        !self.windowed && self.window_start.is_none() && self.window_hours <= 0.0
     }
 
     pub fn share(&self, time_ms: f64) -> f64 {
@@ -286,6 +304,15 @@ pub struct QueryStat {
     /// Failed runs, planning, JIT, log volume and result size, as far as the engine keeps them.
     #[serde(default)]
     pub costs: Option<crate::signals::QueryCosts>,
+    /// Rows the statement changed (inserted, updated or deleted), where the engine counts them apart from the rows it
+    /// returned (`rows`): MySQL and MariaDB's performance_schema. `None` where the engine doesn't separate them.
+    #[serde(default)]
+    pub rows_affected: Option<f64>,
+    /// Which of `plans` the attached `plan` is (Query Store's plan_id): the plan still in use (the heaviest of the
+    /// variants no newer variant replaced), not merely the heaviest over the window. `None` when the source keeps one
+    /// plan per statement.
+    #[serde(default)]
+    pub plan_id: Option<String>,
 }
 
 /// How a statement's run times spread. Every engine keeps something different: SQL Server and Postgres the fastest
@@ -341,6 +368,11 @@ pub struct Timeline {
     pub end: String,
     pub time_ms: Vec<f64>,
     pub executions: Vec<f64>,
+    /// Buckets the source can't account for in full, by index: its running totals shrank between two scans without a
+    /// reset (entries evicted from pg_stat_statements, plans dropped from the cache), so `time_ms` and `executions`
+    /// there hold only the growth of the statements Culprit tracks, a lower bound. `None` when every bucket is known.
+    #[serde(default)]
+    pub unknown: Option<Vec<bool>>,
 }
 
 impl Timeline {
@@ -356,6 +388,11 @@ impl Timeline {
     pub fn bounds(&self, i: usize) -> (&str, &str) {
         let end = self.starts.get(i + 1).unwrap_or(&self.end);
         (self.starts[i].as_str(), end.as_str())
+    }
+
+    /// Whether bucket `i` holds only part of what ran in it (see [`Timeline::unknown`]).
+    pub fn is_unknown(&self, i: usize) -> bool {
+        self.unknown.as_ref().and_then(|u| u.get(i).copied()).unwrap_or(false)
     }
 }
 
@@ -455,6 +492,15 @@ pub struct TableStat {
     /// Bytes of variable-length values pushed off a row that outgrew its page (SQL Server row-overflow pages).
     #[serde(default)]
     pub overflow_bytes: Option<f64>,
+    /// The partitioned table this one is a partition of (`schema.table`, PostgreSQL). Its rows, sizes and counters are
+    /// the partition's own; judge the table as a whole at the parent. `None` for a table that isn't a partition.
+    #[serde(default)]
+    pub partition_of: Option<String>,
+    /// The latest its usage counters (scans, reads, writes) may have started over (UTC), when a scan saw them shrink
+    /// since the scan before without the server restarting: a statistics reset for the table, a database taken offline,
+    /// restored or failed over. What they count covers the time since then at least. `None`: as old as the server's.
+    #[serde(default)]
+    pub counters_since: Option<String>,
 }
 
 impl TableStat {
@@ -490,9 +536,27 @@ pub struct IndexStat {
     pub contention: Option<crate::signals::IndexContention>,
     /// The latest it may have been created (UTC), set by a scan only when something says it may be new: an earlier
     /// scan saw its table without it, or the database dated a change to its table that no earlier scan was there to
-    /// see. Its usage counters cover the time since at least. `None`: as old as the counters, as far as anyone knows.
+    /// see, or its usage counters started over (`counters_since`). Its usage counters cover the time since at least.
+    /// `None`: as old as the counters, as far as anyone knows.
     #[serde(default)]
     pub created_at_latest: Option<String>,
+    /// The partitioned index this one is a partition of (`schema.index`, PostgreSQL): every partition of a table gets its
+    /// own copy of the parent's index. Judge it (unused, duplicate) at the parent. `None` for an index of its own.
+    #[serde(default)]
+    pub partition_of: Option<String>,
+    /// Per key column, what the index compares it by when that isn't the column type's default: an operator class
+    /// (`text_pattern_ops`, `jsonb_path_ops`) and/or a collation (`COLLATE "C"`), empty for a key that uses the
+    /// defaults. Two indexes on the same columns with different ones serve different queries, so neither duplicates
+    /// the other. `None` when every key uses the defaults, or the engine has no such thing.
+    #[serde(default)]
+    pub opclasses: Option<Vec<String>>,
+    /// The latest its usage counters may have started over (UTC), when a scan saw them shrink or vanish since the scan
+    /// before without the server restarting: a database taken offline, restored or failed over (SQL Server keeps index
+    /// usage per database), an ALTER or OPTIMIZE of its table (MySQL), a statistics reset. No reads says nothing about
+    /// the time before it; `created_at_latest` moves to it too, so a check that waits for a young index waits for these
+    /// counters as well. `None`: as old as the server's counters, as far as anyone knows.
+    #[serde(default)]
+    pub counters_since: Option<String>,
 }
 
 impl IndexStat {
@@ -573,6 +637,11 @@ pub struct WaitStat {
     pub wait_ms: f64,
     pub tasks: Option<f64>,
 }
+
+/// The setting a provider adds when the connection reached a replica (a readable secondary, a standby, a replicating
+/// MySQL): its value says which kind. A replica's usage counters count only the reads run on it, so they say nothing
+/// about what the primary's workload uses.
+pub const REPLICA_SETTING: &str = "replica";
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
@@ -809,12 +878,21 @@ mod tests {
             query_count: 0.0,
             queries: vec![],
             timeline: None,
+            untracked_time_ms: None,
+            min_logged_ms: None,
         };
         // 4 runs in 10 hours is not "~9.6 runs a day".
         assert_eq!(w(10.0, true).how_often(4.0), "4 runs over the last 10 hours");
         assert_eq!(w(10.0, true).per_day_measured(4.0), None);
         assert_eq!(w(0.5, false).how_often(1.0), "1 run over the 30 minutes since statistics were reset");
         assert_eq!(w(48.0, true).how_often(4200.0), "about 2.1K runs a day");
+        // A cumulative source that can't say when it started counting has no window to put a rate on.
+        let mut unknown = w(0.0, false);
+        assert!(unknown.window_unknown());
+        assert_eq!(unknown.how_often(3.0), "3 runs over the time since statistics were last reset");
+        assert_eq!(unknown.rate_per_day(3.0), None);
+        unknown.window_start = Some("2026-10-01T00:00:00Z".into());
+        assert!(!unknown.window_unknown());
     }
 
     use super::*;

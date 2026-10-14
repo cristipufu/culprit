@@ -468,6 +468,7 @@ mod tests {
             end: at(60),
             time_ms: (first..60).map(|h| ms(60 - h)).collect(),
             executions: vec![0.0; hours],
+            unknown: None,
         });
         w
     }

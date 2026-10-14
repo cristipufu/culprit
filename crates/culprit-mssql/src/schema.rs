@@ -170,6 +170,11 @@ FROM sys.databases WHERE database_id = DB_ID()
 
 const SCOPED_CONFIGURATIONS_SQL: &str = "SELECT * FROM sys.database_scoped_configurations";
 
+/// This database's role where it is replicated (an availability group, Azure SQL's replicas): a readable secondary
+/// counts index usage for the reads run on it, while Query Store's history is the primary's.
+const REPLICA_ROLE_SQL: &str = "SELECT CAST(rs.is_primary_replica AS int) AS is_primary
+FROM sys.dm_hadr_database_replica_states rs WHERE rs.database_id = DB_ID() AND rs.is_local = 1";
+
 const SERVER_CONFIGURATIONS_SQL: &str = r#"
 SELECT name, CAST(value_in_use AS nvarchar(64)) AS value
 FROM sys.configurations
@@ -355,6 +360,8 @@ fn table_of(r: &Rec) -> TableStat {
         in_row_bytes: r.f64("in_row_bytes"),
         lob_bytes: r.f64("lob_bytes"),
         overflow_bytes: r.f64("overflow_bytes"),
+        partition_of: None,
+        counters_since: None,
     }
 }
 
@@ -369,6 +376,10 @@ pub(crate) async fn indexes(client: &mut MsClient, with_dmvs: bool) -> tiberius:
 
 fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
     let index_type = r.f64("type").unwrap_or(0.0) as i64;
+    // dm_db_index_usage_stats adds an index's row the first time anything uses it after the database comes online, so
+    // no row is a count of zero since the counters started, not an unknown: the unused-index check rests on exactly
+    // these indexes. Counters that started over without a restart (the database taken offline, restored, failed over)
+    // are told apart by the scans (`counters_since`).
     let usage = |name: &str| with_usage.then(|| r.f64_or_zero(name));
     let (seeks, scans, lookups) = (usage("user_seeks"), usage("user_scans"), usage("user_lookups"));
     let reads = with_usage.then(|| seeks.unwrap_or(0.0) + scans.unwrap_or(0.0) + lookups.unwrap_or(0.0));
@@ -395,6 +406,9 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
         definition: None,
         contention: None,
         created_at_latest: None,
+        partition_of: None,
+        opclasses: None,
+        counters_since: None,
     }
 }
 
@@ -576,6 +590,16 @@ pub(crate) async fn settings(
             });
         }
     }
+    if let Ok(rows) = query(client, REPLICA_ROLE_SQL).await
+        && let Some(role) = replica_role(rows.first().and_then(|r| r.f64("is_primary")))
+    {
+        out.push(Setting {
+            name: culprit_core::REPLICA_SETTING.into(),
+            value: role.into(),
+            default_value: None,
+            scope: "database".into(),
+        });
+    }
     if let Ok(rows) = query(client, SCOPED_CONFIGURATIONS_SQL).await {
         for r in rows {
             let value = r.string("value");
@@ -611,6 +635,12 @@ pub(crate) async fn settings(
     Ok(out)
 }
 
+/// "readable secondary" when this connection reached a replica that isn't the primary (`is_primary` 0); nothing for a
+/// primary or a database that isn't replicated (no row).
+fn replica_role(is_primary: Option<f64>) -> Option<&'static str> {
+    (is_primary == Some(0.0)).then_some("readable secondary")
+}
+
 fn render(value: &crate::value::Val) -> String {
     use crate::value::Val;
     match value {
@@ -633,6 +663,14 @@ fn render(value: &crate::value::Val) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_readable_secondary_says_so() {
+        assert_eq!(replica_role(Some(0.0)), Some("readable secondary"));
+        assert_eq!(replica_role(Some(1.0)), None);
+        assert_eq!(replica_role(None), None);
+        assert!(REPLICA_ROLE_SQL.contains("rs.is_local = 1") && REPLICA_ROLE_SQL.contains("DB_ID()"));
+    }
 
     #[test]
     fn splits_bracketed_lists() {

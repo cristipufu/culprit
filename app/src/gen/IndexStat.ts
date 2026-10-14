@@ -9,6 +9,27 @@ contention: IndexContention | null,
 /**
  * The latest it may have been created (UTC), set by a scan only when something says it may be new: an earlier
  * scan saw its table without it, or the database dated a change to its table that no earlier scan was there to
- * see. Its usage counters cover the time since at least. `None`: as old as the counters, as far as anyone knows.
+ * see, or its usage counters started over (`counters_since`). Its usage counters cover the time since at least.
+ * `None`: as old as the counters, as far as anyone knows.
  */
-created_at_latest: string | null, };
+created_at_latest: string | null, 
+/**
+ * The partitioned index this one is a partition of (`schema.index`, PostgreSQL): every partition of a table gets its
+ * own copy of the parent's index. Judge it (unused, duplicate) at the parent. `None` for an index of its own.
+ */
+partition_of: string | null, 
+/**
+ * Per key column, what the index compares it by when that isn't the column type's default: an operator class
+ * (`text_pattern_ops`, `jsonb_path_ops`) and/or a collation (`COLLATE "C"`), empty for a key that uses the
+ * defaults. Two indexes on the same columns with different ones serve different queries, so neither duplicates
+ * the other. `None` when every key uses the defaults, or the engine has no such thing.
+ */
+opclasses: Array<string> | null, 
+/**
+ * The latest its usage counters may have started over (UTC), when a scan saw them shrink or vanish since the scan
+ * before without the server restarting: a database taken offline, restored or failed over (SQL Server keeps index
+ * usage per database), an ALTER or OPTIMIZE of its table (MySQL), a statistics reset. No reads says nothing about
+ * the time before it; `created_at_latest` moves to it too, so a check that waits for a young index waits for these
+ * counters as well. `None`: as old as the server's counters, as far as anyone knows.
+ */
+counters_since: string | null, };

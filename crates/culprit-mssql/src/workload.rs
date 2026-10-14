@@ -113,6 +113,24 @@ impl QueryAgg {
         self.plans.iter().max_by(|a, b| a.total_ms.total_cmp(&b.total_ms))
     }
 
+    /// The plan the statement runs with now: the heaviest of the plans no other replaced. A plan is replaced when another
+    /// first ran after it last ran (an index or a statistics update made SQL Server compile a new one), so a fix's old
+    /// plan stops speaking for the statement. Plans that take turns (parameter sensitivity) are all current; the
+    /// heaviest of them leads, as before. Without run times, the heaviest.
+    fn current_plan(&self) -> Option<&PlanAgg> {
+        let replaced = |p: &PlanAgg| {
+            let Some(last) = p.last_seen.as_deref() else { return false };
+            self.plans
+                .iter()
+                .any(|q| q.plan_id != p.plan_id && q.first_seen.as_deref().is_some_and(|first| first > last))
+        };
+        self.plans
+            .iter()
+            .filter(|p| !replaced(p))
+            .max_by(|a, b| a.total_ms.total_cmp(&b.total_ms))
+            .or_else(|| self.dominant_plan())
+    }
+
     fn stddev_ms(&self) -> Option<f64> {
         let n = self.executions();
         if n < 2.0 {
@@ -171,19 +189,22 @@ GROUP BY p.query_id, rs.plan_id
     )
 }
 
+/// The window's end: the open interval's scheduled end is in the future, so it ends now.
+const CAPPED_END: &str =
+    "CASE WHEN MAX(end_time) > SYSDATETIMEOFFSET() THEN SYSDATETIMEOFFSET() ELSE MAX(end_time) END";
+
 fn window_sql(window_minutes: u32) -> String {
     format!(
         r#"
 DECLARE @since datetimeoffset = DATEADD(minute, -{window_minutes}, SYSDATETIMEOFFSET());
 SELECT {start} AS window_start, {end} AS window_end,
-  DATEDIFF(second, MIN(start_time), MAX(end_time)) / 3600.0 AS window_hours
+  DATEDIFF(second, MIN(start_time), {capped}) / 3600.0 AS window_hours
 FROM sys.query_store_runtime_stats_interval
 WHERE end_time >= @since
 "#,
         start = utc_offset_iso("MIN(start_time)"),
-        end = utc_offset_iso(
-            "CASE WHEN MAX(end_time) > SYSDATETIMEOFFSET() THEN SYSDATETIMEOFFSET() ELSE MAX(end_time) END"
-        ),
+        end = utc_offset_iso(CAPPED_END),
+        capped = CAPPED_END,
     )
 }
 
@@ -272,7 +293,7 @@ WHERE q.query_id IN ({})
     let plan_ids: Vec<String> = selected
         .iter()
         .take(options.plans as usize)
-        .filter_map(|q| q.dominant_plan().map(|p| p.plan_id.clone()))
+        .filter_map(|q| q.current_plan().map(|p| p.plan_id.clone()))
         .collect();
     let plan_sql =
         format!("SELECT plan_id, query_plan FROM sys.query_store_plan WHERE plan_id IN ({})", id_list(&plan_ids));
@@ -341,8 +362,8 @@ GROUP BY ws.wait_category_desc
     let mut queries: Vec<QueryStat> = selected
         .iter()
         .map(|q| {
-            let dominant = q.dominant_plan();
-            let plan = dominant.and_then(|p| plans_xml.get(&p.plan_id)).and_then(|xml| match plan_xml::parse(xml) {
+            let current = q.current_plan();
+            let plan = current.and_then(|p| plans_xml.get(&p.plan_id)).and_then(|xml| match plan_xml::parse(xml) {
                 Ok(plan) => {
                     plans_parsed += 1;
                     Some(plan)
@@ -356,6 +377,7 @@ GROUP BY ws.wait_category_desc
             let query_waits =
                 fold_waits(q.plans.iter().flat_map(|p| plan_waits.get(&p.plan_id).cloned().unwrap_or_default()));
             let mut stat = to_query_stat(q, text, plan, query_waits);
+            stat.plan_id = stat.plan.as_ref().and(current).map(|p| p.plan_id.clone());
             stat.trend = trends.remove(&q.query_id);
             stat
         })
@@ -375,6 +397,8 @@ GROUP BY ws.wait_category_desc
         query_count: all.len() as f64,
         queries,
         timeline,
+        untracked_time_ms: None,
+        min_logged_ms: None,
     };
     Ok(WorkloadResult { workload, waits, plans_parsed, plan_errors })
 }
@@ -431,6 +455,8 @@ fn to_query_stat(
         trend: None,
         spread: q.min_ms().map(|min_ms| culprit_core::Spread { min_ms: Some(min_ms), ..Default::default() }),
         costs: None,
+        rows_affected: None,
+        plan_id: None,
     }
 }
 
@@ -548,6 +574,9 @@ FROM db_stats
 GROUP BY query_hash
 "#;
 
+/// The statement text and plan behind each of `hashes`: this database's (the plan attribute `dbid`, as the workload
+/// itself is read), never another database's statement that happens to share a query_hash, and the one that ran last,
+/// so the plan shown is the one in use.
 fn plan_cache_detail_sql(hashes: &[String]) -> String {
     let list: Vec<&str> = hashes
         .iter()
@@ -559,9 +588,12 @@ fn plan_cache_detail_sql(hashes: &[String]) -> String {
         r#"
 WITH ranked AS (
   SELECT qs.query_hash, qs.sql_handle, qs.plan_handle, qs.statement_start_offset, qs.statement_end_offset,
-    ROW_NUMBER() OVER (PARTITION BY qs.query_hash ORDER BY qs.total_elapsed_time DESC) AS rn
+    ROW_NUMBER() OVER (PARTITION BY qs.query_hash ORDER BY qs.last_execution_time DESC, qs.total_elapsed_time DESC) AS rn
   FROM sys.dm_exec_query_stats qs
-  WHERE qs.query_hash IN ({list})
+  CROSS APPLY sys.dm_exec_plan_attributes(qs.plan_handle) pa
+  CROSS APPLY sys.dm_exec_sql_text(qs.sql_handle) qt
+  WHERE qs.query_hash IN ({list}) AND pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID()
+    AND qt.text NOT LIKE N'%{marker}%'
 )
 SELECT CONVERT(varchar(20), r.query_hash, 1) AS query_hash,
   SUBSTRING(st.text, r.statement_start_offset / 2 + 1,
@@ -572,7 +604,8 @@ FROM ranked r
 CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) st
 OUTER APPLY sys.dm_exec_text_query_plan(r.plan_handle, r.statement_start_offset, r.statement_end_offset) qp
 WHERE r.rn = 1
-"#
+"#,
+        marker = OWN_QUERY_MARKER,
     )
 }
 
@@ -656,6 +689,8 @@ pub(crate) async fn from_plan_cache(
         query_count: all.len() as f64,
         queries,
         timeline: None,
+        untracked_time_ms: None,
+        min_logged_ms: None,
     };
     Ok(WorkloadResult { workload, waits: Vec::new(), plans_parsed, plan_errors })
 }
@@ -690,6 +725,69 @@ mod tests {
                 ..PlanAgg::default()
             }],
         }
+    }
+
+    fn plan(id: &str, ms: f64, first: &str, last: &str) -> PlanAgg {
+        PlanAgg {
+            plan_id: id.into(),
+            total_ms: ms,
+            executions: 1.0,
+            first_seen: Some(first.into()),
+            last_seen: Some(last.into()),
+            ..PlanAgg::default()
+        }
+    }
+
+    #[test]
+    fn the_plan_shown_is_the_one_still_in_use() {
+        // The old plan ran most of the week; an index made SQL Server compile a new one, which has run since.
+        let fixed = QueryAgg {
+            query_id: "1".into(),
+            plans: vec![
+                plan("old", 9_000.0, "2026-10-01T00:00:00Z", "2026-10-06T10:00:00Z"),
+                plan("new", 100.0, "2026-10-06T10:05:00Z", "2026-10-07T09:00:00Z"),
+            ],
+        };
+        assert_eq!(fixed.dominant_plan().map(|p| p.plan_id.as_str()), Some("old"));
+        assert_eq!(fixed.current_plan().map(|p| p.plan_id.as_str()), Some("new"));
+        // Plans that take turns (parameter sensitivity) are both in use: the heaviest leads.
+        let turns = QueryAgg {
+            query_id: "2".into(),
+            plans: vec![
+                plan("a", 9_000.0, "2026-10-01T00:00:00Z", "2026-10-07T08:00:00Z"),
+                plan("b", 100.0, "2026-10-02T00:00:00Z", "2026-10-07T09:00:00Z"),
+            ],
+        };
+        assert_eq!(turns.current_plan().map(|p| p.plan_id.as_str()), Some("a"));
+        // Without run times, the heaviest.
+        let unknown = QueryAgg {
+            query_id: "3".into(),
+            plans: vec![
+                PlanAgg { plan_id: "x".into(), total_ms: 5.0, ..PlanAgg::default() },
+                PlanAgg { plan_id: "y".into(), total_ms: 50.0, ..PlanAgg::default() },
+            ],
+        };
+        assert_eq!(unknown.current_plan().map(|p| p.plan_id.as_str()), Some("y"));
+        let stat = to_query_stat(&fixed, None, None, Vec::new());
+        assert_eq!(stat.plan_id, None, "no plan attached, no plan id");
+    }
+
+    #[test]
+    fn the_plan_cache_answers_for_this_database_only() {
+        let sql = plan_cache_detail_sql(&["0x1A2B".into()]);
+        assert!(sql.contains("pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID()"), "{sql}");
+        assert!(sql.contains(OWN_QUERY_MARKER));
+        assert!(sql.contains("ORDER BY qs.last_execution_time DESC"), "the plan in use, not the heaviest");
+        assert!(PLAN_CACHE_SQL.contains("CAST(pa.value AS int) = DB_ID()"));
+    }
+
+    #[test]
+    fn the_open_interval_ends_now() {
+        let sql = window_sql(60);
+        assert!(
+            sql.contains(&format!("DATEDIFF(second, MIN(start_time), {CAPPED_END}) / 3600.0 AS window_hours")),
+            "{sql}"
+        );
     }
 
     #[test]

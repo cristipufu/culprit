@@ -41,6 +41,11 @@ fn ms_of(column: &str) -> String {
 
 /// Runs logged for `database` between `since` and `until` (UTC, `YYYY-MM-DD HH:MM:SS`), newest first.
 pub async fn read(conn: &mut Conn, database: &str, since: &str, until: Option<&str>) -> Result<Vec<Run>> {
+    Ok(read_runs(conn, database, since, until).await?.0)
+}
+
+/// [`read`], and whether the read stopped at [`MAX_ROWS`] before reaching `since`.
+pub async fn read_runs(conn: &mut Conn, database: &str, since: &str, until: Option<&str>) -> Result<(Vec<Run>, bool)> {
     let sql = format!(
         "SELECT DATE_FORMAT(start_time, '%Y-%m-%dT%H:%i:%sZ') AS at, UNIX_TIMESTAMP(start_time) AS epoch,
                 {query} AS ms, {lock} AS lock_ms, rows_sent, rows_examined, CONVERT(sql_text USING utf8mb4) AS sql_text
@@ -55,8 +60,9 @@ pub async fn read(conn: &mut Conn, database: &str, since: &str, until: Option<&s
     if let Some(until) = until {
         params.push(Value::from(until));
     }
-    Ok(query_with(conn, &sql, params)
-        .await?
+    let rows = query_with(conn, &sql, params).await?;
+    let truncated = rows.len() >= MAX_ROWS as usize;
+    let runs = rows
         .into_iter()
         .filter_map(|r| {
             let sql = r.text("sql_text")?;
@@ -73,7 +79,8 @@ pub async fn read(conn: &mut Conn, database: &str, since: &str, until: Option<&s
                 sql,
             })
         })
-        .collect())
+        .collect();
+    Ok((runs, truncated))
 }
 
 /// Culprit's own statements, plans, and the driver handshakes nobody can act on.
@@ -172,17 +179,29 @@ pub struct Collected {
     pub threshold_note: String,
 }
 
-/// The workload from logged runs, keeping the heaviest `top` statement shapes by time.
-pub fn workload(runs: &[Run], window_start: &str, now: &str, threshold_s: Option<f64>, top: usize) -> Collected {
+/// The workload from logged runs, keeping the heaviest `top` statement shapes by time. The window is the one asked for
+/// (`window_start` to `now`): the log was read over all of it, and a quiet stretch with no slow run is still part of
+/// it. Only when the read stopped at [`MAX_ROWS`] (`truncated`) does it start at the oldest run read. Totals are of
+/// logged runs only (`min_logged_ms`).
+pub fn workload(
+    runs: &[Run],
+    window_start: &str,
+    now: &str,
+    threshold_s: Option<f64>,
+    top: usize,
+    truncated: bool,
+) -> Collected {
     let prints: Vec<fingerprint::Fingerprint> = runs.iter().map(|r| fingerprint(&r.sql)).collect();
     let mut groups = group(runs, &prints);
     groups.sort_by(|a, b| b.runs.iter().sum::<f64>().total_cmp(&a.runs.iter().sum::<f64>()));
     let total_time_ms: f64 = runs.iter().map(|r| r.ms).sum();
     let total_executions = runs.len() as f64;
     let query_count = groups.len() as f64;
-    let start = runs.iter().map(|r| (r.at, &r.at_text)).min_by(|a, b| a.0.total_cmp(&b.0));
-    let window_start_text = start.map(|s| s.1.clone()).unwrap_or_else(|| window_start.to_string());
-    // The log only knows the time since it was turned on (or emptied): the window starts at its oldest run.
+    let oldest = runs.iter().map(|r| (r.at, &r.at_text)).min_by(|a, b| a.0.total_cmp(&b.0));
+    let window_start_text = match oldest {
+        Some((_, at)) if truncated => at.clone(),
+        _ => window_start.to_string(),
+    };
     let window_hours = match (culprit_core::changes::epoch(&window_start_text), culprit_core::changes::epoch(now)) {
         (Some(a), Some(b)) if b > a => (b - a) / 3600.0,
         _ => 1.0 / 60.0,
@@ -231,6 +250,8 @@ pub fn workload(runs: &[Run], window_start: &str, now: &str, threshold_s: Option
                     .collect(),
                 trend,
                 costs: None,
+                rows_affected: None,
+                plan_id: None,
                 spread: Some(Spread {
                     min_ms: sorted.first().copied(),
                     p50_ms: percentile(&sorted, 0.5),
@@ -263,6 +284,8 @@ pub fn workload(runs: &[Run], window_start: &str, now: &str, threshold_s: Option
             query_count,
             queries,
             timeline: timeline.map(|(t, _)| t),
+            untracked_time_ms: None,
+            min_logged_ms: threshold_s.filter(|s| *s > 0.0).map(|s| s * 1000.0),
         },
         samples,
         threshold_note,
@@ -291,6 +314,7 @@ fn timeline(runs: &[Run], start: &str, end: &str) -> Option<(Timeline, f64)> {
         end: end.to_string(),
         time_ms: vec![0.0; len],
         executions: vec![0.0; len],
+        unknown: None,
     };
     for run in runs {
         let i = ((run.at / size).floor() - first_bucket).clamp(0.0, len as f64 - 1.0) as usize;
@@ -417,7 +441,7 @@ mod tests {
         runs.push(run(t0 + 90.0, 1.0, "/* culprit */ SELECT 1"));
         runs.retain(|r| !ignored(&r.sql));
         runs.reverse();
-        let c = workload(&runs, &iso(t0), &iso(t0 + 3600.0), Some(0.1), 10);
+        let c = workload(&runs, &iso(t0), &iso(t0 + 3600.0), Some(0.1), 10, false);
         let w = &c.workload;
         assert_eq!((w.source.as_str(), w.windowed, w.queries.len()), ("slow query log", true, 2));
         assert_eq!(w.total_executions, 41.0);
@@ -434,6 +458,27 @@ mod tests {
         assert_eq!(trend.executions.iter().flatten().sum::<f64>(), 40.0);
         assert_eq!(c.samples[0].1, "SELECT * FROM t WHERE id = 39", "the newest run is the sample");
         assert!(c.threshold_note.contains("100 ms"));
+        assert_eq!(w.min_logged_ms, Some(100.0), "totals are of runs slower than long_query_time");
+    }
+
+    #[test]
+    fn the_window_is_the_one_read_not_the_first_slow_run() {
+        // A week read, with the only slow runs in the last hour: the week is what was watched.
+        let now = 1_791_734_400.0;
+        let runs = vec![
+            run(now - 600.0, 2000.0, "SELECT * FROM t WHERE a = 1"),
+            run(now - 1200.0, 2500.0, "SELECT * FROM t WHERE a = 2"),
+        ];
+        let week = iso(now - 7.0 * 86_400.0);
+        let c = workload(&runs, &week, &iso(now), Some(1.0), 10, false);
+        assert_eq!(c.workload.window_start.as_deref(), Some(week.as_str()));
+        assert!((c.workload.window_hours - 168.0).abs() < 1e-6);
+        // A read cut short at the row limit covers only what it reached.
+        let c = workload(&runs, &week, &iso(now), Some(1.0), 10, true);
+        assert_eq!(c.workload.window_start, Some(iso(now - 1200.0)));
+        assert!((c.workload.window_hours - 1200.0 / 3600.0).abs() < 1e-6);
+        // Every statement logged: nothing left out.
+        assert_eq!(workload(&runs, &week, &iso(now), Some(0.0), 10, false).workload.min_logged_ms, None);
     }
 
     #[test]

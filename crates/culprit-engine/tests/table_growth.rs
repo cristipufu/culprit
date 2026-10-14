@@ -1,5 +1,5 @@
-//! How fast a table grows is told by comparing its size with the scan before: each scan keeps the sizes the previous
-//! one read.
+//! How fast a table grows is told by comparing its size with an earlier scan of the same database, a day or more
+//! before: each scan keeps the sizes that one read.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ impl Provider for Replay {
 }
 
 #[tokio::test]
-async fn each_scan_keeps_the_sizes_the_scan_before_read() {
+async fn each_scan_keeps_the_sizes_a_scan_a_day_before_read() {
     let home = std::env::temp_dir().join(format!("culprit-table-growth-{}", std::process::id()));
     let size = Arc::new(AtomicU64::new(2_331));
     let replay = size.clone();
@@ -84,14 +84,30 @@ async fn each_scan_keeps_the_sizes_the_scan_before_read() {
     assert!(first.snapshot.sizes_before.is_none());
     assert!(!finding(&first).summary.contains("previous scan"));
 
-    // The next one keeps what the first read: the size each table had, and when.
+    // A scan moments later has nothing old enough to measure growth from: minutes of noise aren't a rate.
     size.store(2_931, Ordering::SeqCst);
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let second = scan().await;
-    let before = second.snapshot.sizes_before.as_ref().expect("the first scan's sizes");
-    assert_eq!(before.taken_at, first.snapshot.taken_at);
-    assert_eq!(before.bytes("shop.support_tickets"), Some(2_331.0 * MB));
-    // Moments apart, so no rate is drawn from them.
+    assert!(second.snapshot.sizes_before.is_none(), "the scan before is moments old");
     assert!(!finding(&second).metrics.iter().any(|m| m.label == "Growth a day"));
+
+    // A scan a day and more before, of the same database, is the baseline; a newer one of another database isn't.
+    let dir = home.join("reports").join("shop");
+    let backdated = |hours: i64, database: &str| {
+        let mut r = first.clone();
+        let at = chrono::Utc::now() - chrono::Duration::hours(hours);
+        r.snapshot.id = at.format("%Y%m%dT%H%M%S%.3fZ").to_string();
+        r.snapshot.taken_at = at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        r.snapshot.server.database = database.to_string();
+        culprit_engine::reports::save(&dir, &r).expect("save a backdated scan");
+        r.snapshot.taken_at
+    };
+    backdated(22, "another_database");
+    let day_before = backdated(30, &first.snapshot.server.database);
+    let third = scan().await;
+    let before = third.snapshot.sizes_before.as_ref().expect("the sizes of the scan a day before");
+    assert_eq!(before.taken_at, day_before);
+    assert_eq!(before.bytes("shop.support_tickets"), Some(2_331.0 * MB));
+    assert!(finding(&third).metrics.iter().any(|m| m.label == "Growth a day"));
     let _ = std::fs::remove_dir_all(home);
 }

@@ -34,6 +34,8 @@ pub struct Probe {
     pub long_query_time: Option<f64>,
     /// MariaDB's (and Percona's) per-table and per-index read counters; `None` where the server has no such setting.
     pub userstat: Option<bool>,
+    /// `read_only` or `innodb_read_only` is on: how replicas (and Aurora's readers) are usually set up.
+    pub read_only: bool,
 }
 
 impl Probe {
@@ -172,7 +174,8 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
         conn,
         "SELECT VERSION() AS version, @@version_comment AS comment, @@basedir AS basedir, CURRENT_USER() AS user_name,
                 @@performance_schema AS ps, DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now,
-                @@log_output AS log_output, @@slow_query_log AS slow_log, @@long_query_time AS long_query_time",
+                @@log_output AS log_output, @@slow_query_log AS slow_log, @@long_query_time AS long_query_time,
+                @@read_only AS read_only",
     )
     .await?
     .ok_or_else(|| Error::internal("The server returned no information about itself"))?;
@@ -235,6 +238,9 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
         user: row.string("user_name"),
         cloud,
         performance_schema: row.flag("ps"),
+        // innodb_read_only (Aurora's readers) is read on its own: a server without it must not fail the probe.
+        read_only: row.flag("read_only")
+            || query_one(conn, "SELECT @@innodb_read_only AS v").await.ok().flatten().is_some_and(|r| r.flag("v")),
     })
 }
 
@@ -290,7 +296,15 @@ pub async fn snapshot(
         },
         async {
             let mut conn = connector.connect(Scope::Server).await?;
-            let settings = settings(&mut conn, probe.flavor).await;
+            let mut settings = settings(&mut conn, probe.flavor).await;
+            if let (Ok(settings), Some(role)) = (settings.as_mut(), replica_role(&mut conn, &probe).await) {
+                settings.push(Setting {
+                    name: culprit_core::REPLICA_SETTING.into(),
+                    value: role.into(),
+                    default_value: None,
+                    scope: "server".into(),
+                });
+            }
             let waits = crate::pressure::waits(&mut conn).await;
             let pressure = crate::pressure::collect(&mut conn).await;
             Ok::<_, Error>((settings, waits, pressure))
@@ -476,7 +490,35 @@ struct CollectedWorkload {
 struct Digest {
     stat: QueryStat,
     sample: Option<String>,
+    /// Where `sample` came from, said on the plan made from it.
+    sample_from: SampleFrom,
     rows_examined: f64,
+}
+
+/// Where the statement a digest is planned from came from: its values are that run's, which may not be typical.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SampleFrom {
+    /// The digest table's QUERY_SAMPLE_TEXT: the slowest run of the last minute or so (performance_schema keeps the
+    /// sample with the longest wait until it ages out), so its values lean to an outlier's.
+    Digest,
+    /// The statement history: the latest run.
+    History,
+    /// The slow query log: a run slower than long_query_time.
+    SlowLog,
+}
+
+impl SampleFrom {
+    fn sentence(self) -> &'static str {
+        match self {
+            SampleFrom::Digest => {
+                "Planned from the sample performance_schema keeps for this statement: its slowest recent run, so the values may be an outlier's rather than a typical run's."
+            }
+            SampleFrom::History => "Planned from the latest run in performance_schema's statement history.",
+            SampleFrom::SlowLog => {
+                "Planned from a run in the slow query log: a slow run, so the values may be an outlier's rather than a typical run's."
+            }
+        }
+    }
 }
 
 const PICOS_PER_MS: f64 = 1e9;
@@ -514,7 +556,7 @@ async fn collect_workload(
         "SELECT DIGEST AS digest, DIGEST_TEXT AS digest_text, COUNT_STAR AS calls, SUM_TIMER_WAIT AS total_ps,
                 MAX_TIMER_WAIT AS max_ps, MIN_TIMER_WAIT AS min_ps, SUM_ROWS_SENT AS rows_sent, SUM_ROWS_EXAMINED AS rows_examined,
                 SUM_CREATED_TMP_DISK_TABLES AS tmp_disk, SUM_NO_INDEX_USED AS no_index, SUM_LOCK_TIME AS lock_ps,
-                {cpu}, {sample}, {p95}, {p99},
+                {cpu}, {sample}, {p95}, {p99}, {affected},
                 DATE_FORMAT(FIRST_SEEN, '%Y-%m-%dT%H:%i:%sZ') AS first_seen,
                 DATE_FORMAT(LAST_SEEN, '%Y-%m-%dT%H:%i:%sZ') AS last_seen
            FROM performance_schema.events_statements_summary_by_digest
@@ -525,6 +567,7 @@ async fn collect_workload(
         sample = optional("QUERY_SAMPLE_TEXT"),
         p95 = optional("QUANTILE_95"),
         p99 = optional("QUANTILE_99"),
+        affected = optional("SUM_ROWS_AFFECTED"),
     );
     let rows = query_with(conn, &sql, vec![Value::from(probe.database.clone())]).await?;
     let all: Vec<Digest> = rows
@@ -570,6 +613,16 @@ async fn collect_workload(
         }
     }
     let queries = kept.into_iter().map(|d| d.stat).collect();
+    let untracked_time_ms = untracked_ms(conn).await;
+    if let Some(ms) = untracked_time_ms {
+        notes.push((
+            "workload",
+            format!(
+                "performance_schema's digest table is full (performance_schema_digests_size), so {} of statement time across the server went into one catch-all row and isn't in these totals: shares are of the time it could attribute.",
+                culprit_core::format::duration(ms)
+            ),
+        ));
+    }
     Ok(Some(CollectedWorkload {
         waits: Vec::new(),
         workload: Workload {
@@ -584,10 +637,27 @@ async fn collect_workload(
             query_count,
             queries,
             timeline: None,
+            untracked_time_ms,
+            min_logged_ms: None,
         },
         notes,
         no_plans,
     }))
+}
+
+/// Statement time performance_schema couldn't keep per digest once its table was full: the row with no digest. It is
+/// the whole server's (it has no schema). `None` when there is none, or it can't be read.
+async fn untracked_ms(conn: &mut Conn) -> Option<f64> {
+    query_one(
+        conn,
+        "SELECT SUM_TIMER_WAIT AS total_ps FROM performance_schema.events_statements_summary_by_digest WHERE DIGEST IS NULL",
+    )
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.number("total_ps"))
+    .map(|ps| ps / PICOS_PER_MS)
+    .filter(|ms| *ms > 0.0)
 }
 
 /// Statements recorded in the slow query log table over the scan window, grouped by shape.
@@ -599,17 +669,23 @@ async fn slow_log_workload(
 ) -> Result<Option<CollectedWorkload>> {
     let now = culprit_core::changes::epoch(&probe.now).unwrap_or(0.0);
     let since = slowlog::iso(now - f64::from(options.window_in_minutes()) * 60.0);
-    let runs = slowlog::read(conn, &probe.database, &slowlog::sql_time(&since), None).await?;
+    let (runs, truncated) = slowlog::read_runs(conn, &probe.database, &slowlog::sql_time(&since), None).await?;
     if runs.is_empty() {
         return Ok(None);
     }
-    let collected = slowlog::workload(&runs, &since, &probe.now, probe.long_query_time, options.top_queries as usize);
+    let collected =
+        slowlog::workload(&runs, &since, &probe.now, probe.long_query_time, options.top_queries as usize, truncated);
     let samples: HashMap<String, String> = collected.samples.into_iter().collect();
     let mut kept: Vec<Digest> = collected
         .workload
         .queries
         .iter()
-        .map(|q| Digest { sample: samples.get(&q.id).cloned(), rows_examined: 0.0, stat: q.clone() })
+        .map(|q| Digest {
+            sample: samples.get(&q.id).cloned(),
+            sample_from: SampleFrom::SlowLog,
+            rows_examined: 0.0,
+            stat: q.clone(),
+        })
         .collect();
     let mut notes = vec![("workload", collected.threshold_note)];
     let mut no_plans = None;
@@ -686,8 +762,12 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
                 ..Default::default()
             }),
             costs: None,
+            // `rows` is what the statement sent back (none for an UPDATE); this is what it changed.
+            rows_affected: r.number("sum_rows_affected"),
+            plan_id: None,
         },
         sample: r.text("query_sample_text"),
+        sample_from: SampleFrom::Digest,
         rows_examined: r.number("rows_examined").unwrap_or(0.0),
     }
 }
@@ -885,6 +965,7 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
                         if connector.flavor() == Flavor::Mariadb {
                             plan.props.insert("flavor".into(), "MariaDB".into());
                         }
+                        plan.props.insert("Sample".into(), digest.sample_from.sentence().into());
                         digest.stat.plan = Some(plan);
                         outcome.planned += 1;
                     }
@@ -938,6 +1019,7 @@ async fn attach_samples(conn: &mut Conn, probe: &Probe, options: &SnapshotOption
         for d in kept.iter_mut().filter(|d| wanted(d)) {
             if let Some(text) = d.stat.query_hash.as_ref().and_then(|h| found.remove(h)) {
                 d.sample = Some(text);
+                d.sample_from = SampleFrom::History;
             }
         }
     }
@@ -951,6 +1033,7 @@ async fn attach_samples(conn: &mut Conn, probe: &Probe, options: &SnapshotOption
                     keyed.iter().find(|(key, text)| plannable(text) && matches_digest(key, &d.stat.text))
                 {
                     d.sample = Some(text.to_string());
+                    d.sample_from = SampleFrom::SlowLog;
                 }
             }
         }
@@ -1104,6 +1187,8 @@ async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> {
                 in_row_bytes: None,
                 lob_bytes: None,
                 overflow_bytes: None,
+                partition_of: None,
+                counters_since: None,
             }
         })
         .collect())
@@ -1182,9 +1267,12 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
     let (usage, usage_note) = if probe.performance_schema {
         match query_with(
             conn,
-            "SELECT OBJECT_NAME AS t, INDEX_NAME AS i, COUNT_FETCH AS read_count, COUNT_INSERT + COUNT_UPDATE + COUNT_DELETE AS write_count
-               FROM performance_schema.table_io_waits_summary_by_index_usage
-              WHERE OBJECT_SCHEMA = ? AND INDEX_NAME IS NOT NULL",
+            "SELECT i.OBJECT_NAME AS t, i.INDEX_NAME AS i, i.COUNT_FETCH AS read_count,
+                    t.COUNT_INSERT + t.COUNT_UPDATE + t.COUNT_DELETE AS write_count
+               FROM performance_schema.table_io_waits_summary_by_index_usage i
+               LEFT JOIN performance_schema.table_io_waits_summary_by_table t
+                 ON t.OBJECT_TYPE = i.OBJECT_TYPE AND t.OBJECT_SCHEMA = i.OBJECT_SCHEMA AND t.OBJECT_NAME = i.OBJECT_NAME
+              WHERE i.OBJECT_SCHEMA = ? AND i.INDEX_NAME IS NOT NULL",
             vec![Value::from(db)],
         )
         .await
@@ -1261,6 +1349,8 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             size_bytes: sizes.get(&key).copied(),
             // No row means the table hasn't been opened since the server started: usage is unknown, not zero.
             reads: used.and_then(|u| u.0),
+            // Writes to the table the index is kept up for: performance_schema files every insert under no index, and
+            // counts an update or delete under the index that found its rows, so per-index counts aren't its upkeep.
             writes: used.and_then(|u| u.1),
             seeks: None,
             scans: None,
@@ -1272,6 +1362,9 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             columns,
             contention: None,
             created_at_latest: None,
+            partition_of: None,
+            opclasses: None,
+            counters_since: None,
         });
     }
     Ok((out, usage_note))
@@ -1371,6 +1464,21 @@ const SETTINGS: [(&str, Option<&str>, Option<&str>); 21] = [
     ("userstat", None, Some("OFF")),
 ];
 
+/// "replica" when this server replicates from another: its replication status has a row, or, where this login can't
+/// read that status, it is read-only (how replicas and Aurora's readers run). Its usage counters count the reads run on
+/// it (and the replication applier's), not the primary's workload.
+async fn replica_role(conn: &mut Conn, probe: &Probe) -> Option<&'static str> {
+    let status = match query(conn, "SHOW REPLICA STATUS").await {
+        Ok(rows) => Ok(rows),
+        Err(_) => query(conn, "SHOW SLAVE STATUS").await,
+    };
+    match status {
+        Ok(rows) if !rows.is_empty() => Some("replica"),
+        Ok(_) => None,
+        Err(_) => probe.read_only.then_some("replica"),
+    }
+}
+
 async fn settings(conn: &mut Conn, flavor: Flavor) -> Result<Vec<Setting>> {
     let default_of = |name: &str| {
         SETTINGS.iter().find(|(n, _, _)| *n == name).and_then(|(_, mysql, maria)| match flavor {
@@ -1455,8 +1563,11 @@ mod tests {
                 trend: None,
                 spread: None,
                 costs: None,
+                rows_affected: None,
+                plan_id: None,
             },
             sample: None,
+            sample_from: SampleFrom::Digest,
             rows_examined: examined,
         }
     }
@@ -1477,7 +1588,16 @@ mod tests {
             slow_query_log: false,
             long_query_time: Some(10.0),
             userstat: (flavor == Flavor::Mariadb).then_some(false),
+            read_only: false,
         }
+    }
+
+    #[test]
+    fn a_plan_says_which_run_it_was_planned_from() {
+        // performance_schema keeps a digest's slowest recent run as its sample: its values may be an outlier's.
+        assert!(SampleFrom::Digest.sentence().contains("slowest recent run"));
+        assert!(SampleFrom::SlowLog.sentence().contains("a slow run"));
+        assert!(!SampleFrom::History.sentence().contains("outlier"));
     }
 
     #[test]

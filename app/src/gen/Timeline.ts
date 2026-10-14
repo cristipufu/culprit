@@ -8,4 +8,10 @@ export type Timeline = { source: TimelineSource,
 /**
  * Start of each bucket (UTC, ISO 8601). Bucket `i` ends where bucket `i + 1` starts; the last one ends at `end`.
  */
-starts: Array<string>, end: string, time_ms: Array<number>, executions: Array<number>, };
+starts: Array<string>, end: string, time_ms: Array<number>, executions: Array<number>, 
+/**
+ * Buckets the source can't account for in full, by index: its running totals shrank between two scans without a
+ * reset (entries evicted from pg_stat_statements, plans dropped from the cache), so `time_ms` and `executions`
+ * there hold only the growth of the statements Culprit tracks, a lower bound. `None` when every bucket is known.
+ */
+unknown: Array<boolean> | null, };

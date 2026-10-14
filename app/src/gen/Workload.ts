@@ -12,4 +12,16 @@ windowed: boolean, window_start: string | null, window_end: string | null, windo
  * Database time across the window, oldest first. `None` when the source keeps no history and Culprit has no
  * earlier scans of this connection to compare with.
  */
-timeline: Timeline | null, };
+timeline: Timeline | null, 
+/**
+ * Time the source measured but couldn't put on any statement, so it is in neither `queries` nor `total_time_ms`:
+ * MySQL's catch-all digest row once its digest table is full. That row is server-wide (it doesn't say which
+ * database ran it), so shares are of the attributed time and this says how much more there may be. `None` when
+ * nothing was left out or the source can't say.
+ */
+untracked_time_ms: number | null, 
+/**
+ * Only runs slower than this were recorded (the slow query log's `long_query_time`), so totals, shares and run
+ * counts are of logged slow runs, not of everything the database ran. `None` when every run is counted.
+ */
+min_logged_ms: number | null, };
