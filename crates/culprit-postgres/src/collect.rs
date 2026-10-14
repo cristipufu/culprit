@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
 use culprit_core::{
@@ -578,12 +577,8 @@ async fn collect_with_base(
             plan_id: None,
         })
         .collect();
-    // Whose statement each is (the busiest role's), to plan it with that role's search_path.
-    let owners: HashMap<String, String> =
-        rows.iter().filter_map(|r| Some((r.string("id"), r.text("owner")?))).collect();
-
     let plan_note = if probe.generic_plans() {
-        attach_plans(client, &mut queries, &owners, options.plans, probe.version_num).await
+        attach_plans(client, &mut queries, options.plans, probe.version_num).await
     } else {
         None
     };
@@ -725,7 +720,7 @@ fn aggregated_base(relation: &str, c: &EntryColumns) -> String {
                               - (sum({total}) / nullif(sum(calls), 0)::float8) ^ 2, 0)) AS stddev_ms,
                 sum(rows) AS rows, sum(shared_blks_hit + shared_blks_read) AS reads, sum(shared_blks_read) AS phys,
                 sum(temp_blks_written) AS temp, sum({io}) AS io_ms, {first_seen} AS first_seen,
-                (array_agg(userid ORDER BY {total} DESC))[1]::text AS owner, count(*) AS entries
+                count(*) AS entries
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
            AND query NOT LIKE '%{TAG}'
@@ -773,62 +768,27 @@ fn statements_base_legacy(relation: &str) -> String {
 }
 
 /// Attach generic plans to the heaviest plannable statements. Returns a note when some could not be planned.
-async fn attach_plans(
-    client: &Client,
-    queries: &mut [QueryStat],
-    owners: &HashMap<String, String>,
-    budget: u32,
-    version_num: u32,
-) -> Option<String> {
+async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, version_num: u32) -> Option<String> {
     let mut order: Vec<usize> = (0..queries.len()).collect();
     order.sort_by(|a, b| queries[*b].total_time_ms.total_cmp(&queries[*a].total_time_ms));
     let (mut attempted, mut planned) = (0u32, 0u32);
-    // Culprit's own search_path, put back after planning a statement under its owner's.
-    let own_path = query_one(client, "SELECT current_setting('search_path') AS path")
-        .await
-        .ok()
-        .flatten()
-        .map(|r| r.string("path"));
-    let mut paths: HashMap<String, Option<String>> = HashMap::new();
-    let mut current = own_path.clone();
+    // Every statement is planned under Culprit's own search_path, never the role's that ran it: the planner runs
+    // IMMUTABLE functions while planning, so a search_path someone else chose (a schema of theirs ahead of pg_catalog)
+    // would run their functions with this login's privileges. A statement whose names don't resolve here stays
+    // unplanned.
     for index in order {
         if attempted >= budget {
             break;
         }
         let Some(statement) = plannable(&queries[index].text) else { continue };
         attempted += 1;
-        // The same text resolves to different tables under different search_paths (a schema per tenant): plan it as
-        // the role that ran it most would, as far as the catalog says.
-        let wanted = match owners.get(&queries[index].id) {
-            Some(owner) => match paths.get(owner) {
-                Some(path) => path.clone(),
-                None => {
-                    let path = owner_search_path(client, owner).await;
-                    paths.insert(owner.clone(), path.clone());
-                    path
-                }
-            },
-            None => None,
-        }
-        .or_else(|| own_path.clone());
-        if wanted != current
-            && let Some(path) = wanted.as_deref()
-            && set_search_path(client, path).await
-        {
-            current = wanted.clone();
-        }
         let Some(json) = generic_plan_json(client, statement, version_num).await else { continue };
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
             crate::tables::fill(client, &mut plan).await;
-            mark_generic(&mut plan, current.as_deref().filter(|p| Some(*p) != own_path.as_deref()));
+            mark_generic(&mut plan);
             queries[index].plan = Some(plan);
             planned += 1;
         }
-    }
-    if current != own_path
-        && let Some(path) = own_path.as_deref()
-    {
-        set_search_path(client, path).await;
     }
     (planned < attempted).then(|| {
         format!(
@@ -838,55 +798,12 @@ async fn attach_plans(
 }
 
 /// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values (estimates for `$n`
-/// use default selectivities), and partitions pruned only when it runs. `search_path`: the one it was planned under,
-/// when it was the statement owner's rather than Culprit's.
-pub(crate) fn mark_generic(plan: &mut culprit_core::Plan, search_path: Option<&str>) {
+/// use default selectivities), and partitions pruned only when it runs.
+pub(crate) fn mark_generic(plan: &mut culprit_core::Plan) {
     plan.props.insert(
         "Generic Plan".into(),
         "Planned without parameter values: estimates for $n use default selectivities, and partitions are pruned only when it runs.".into(),
     );
-    if let Some(path) = search_path {
-        plan.props.insert("search_path".into(), path.to_string());
-    }
-}
-
-/// The search_path a role (an oid from pg_stat_statements) runs with, as far as the catalog says: its own setting for
-/// this database or for every database, else this database's, else the server's; `$user` read as the role.
-async fn owner_search_path(client: &Client, owner: &str) -> Option<String> {
-    // pg_stat_statements' userid is an oid; anything else never reaches the SQL text.
-    if owner.is_empty() || !owner.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let sql = format!(
-        "SELECT r.rolname,
-                coalesce(
-                  (SELECT substring(c FROM '^search_path=(.*)$') FROM pg_db_role_setting s, unnest(s.setconfig) AS c
-                    WHERE s.setrole = r.oid AND c LIKE 'search_path=%'
-                      AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
-                    ORDER BY s.setdatabase DESC LIMIT 1),
-                  (SELECT substring(c FROM '^search_path=(.*)$') FROM pg_db_role_setting s, unnest(s.setconfig) AS c
-                    WHERE s.setrole = 0 AND c LIKE 'search_path=%'
-                      AND s.setdatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) LIMIT 1),
-                  (SELECT reset_val FROM pg_settings WHERE name = 'search_path')) AS path
-           FROM pg_roles r WHERE r.oid = {owner}"
-    );
-    let row = query_one(client, &sql).await.ok().flatten()?;
-    Some(resolve_user(&row.text("path")?, &row.text("rolname")?))
-}
-
-/// A search_path with `$user` read as `role`.
-pub(crate) fn resolve_user(path: &str, role: &str) -> String {
-    path.split(',')
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(|p| if p == "$user" || p == "\"$user\"" { quote_ident(role) } else { p.to_string() })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Set this session's search_path; the path is bound as a parameter, never spliced into the SQL.
-async fn set_search_path(client: &Client, path: &str) -> bool {
-    client.query(crate::rows::tagged("SELECT set_config('search_path', $1, false)").as_str(), &[&path]).await.is_ok()
 }
 
 async fn generic_plan_json(client: &Client, statement: &str, version_num: u32) -> Option<String> {
@@ -1351,7 +1268,6 @@ mod tests {
         // Pooled spread: each entry's own and how far its mean sits from the statement's.
         assert!(base.contains("sum(calls * (stddev_exec_time ^ 2 + mean_exec_time ^ 2))"));
         assert!(base.contains(" AND toplevel") && base.contains(&format!("NOT LIKE '%{TAG}'")));
-        assert!(base.contains("(array_agg(userid ORDER BY total_exec_time DESC))[1]::text AS owner"));
         assert_eq!(base_relation(&base), Some("public.pg_stat_statements"));
         let old = statements_base("public.pg_stat_statements", 120_000);
         assert!(
@@ -1391,20 +1307,13 @@ mod tests {
     }
 
     #[test]
-    fn a_search_path_reads_user_as_the_statements_owner() {
-        assert_eq!(resolve_user("\"$user\", public", "tenant_a"), "tenant_a, public");
-        assert_eq!(resolve_user("$user,public", "Tenant B"), "\"Tenant B\", public");
-        assert_eq!(resolve_user("app, public", "x"), "app, public");
-    }
-
-    #[test]
     fn a_generic_plan_says_what_it_cannot_know() {
         let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
             "Plan Rows": 5, "Total Cost": 4500.0, "Filter": "(customer_id = $1)"}}]"#;
         let mut plan = plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
-        mark_generic(&mut plan, Some("tenant_a, public"));
+        mark_generic(&mut plan);
         assert!(plan.props["Generic Plan"].contains("default selectivities"));
-        assert_eq!(plan.props.get("search_path").map(String::as_str), Some("tenant_a, public"));
+        assert!(!plan.props.contains_key("search_path"));
     }
 
     #[test]
