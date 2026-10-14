@@ -181,6 +181,7 @@ You decide what agents may do, per connection: nothing, read statistics and plan
 ## Safe on production
 
 - **Read-only by design.** Scans read statistics and catalog views only, with short lock timeouts. Estimated plans never execute anything.
+- **Planning never lends your privileges.** On PostgreSQL the planner runs the functions a statement reaches, so a login with more than `pg_monitor` doesn't plan while functions other roles wrote are in reach, and every plan is made in a read-only transaction that is rolled back.
 - **Production is guarded.** Statements Culprit can prove only read run in a read-only transaction. Anything else on a production connection needs an explicit confirmation that says what it will do, and destructive statements need the connection's name typed.
 - **Fixes are suggestions.** Every fix is shown and copied, never applied, and uses online or concurrent operations where the server supports them.
 - **Secrets stay put.** Passwords live in the OS keychain, Entra ID uses your `az login`, and nothing about your servers leaves your machine. Exports redact literal values by default.

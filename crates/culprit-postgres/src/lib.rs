@@ -12,6 +12,7 @@ mod rows;
 mod sessions;
 mod signals;
 mod tables;
+mod trust;
 
 use std::time::Instant;
 
@@ -72,17 +73,22 @@ impl Provider for PostgresProvider {
             ExplainMode::Estimated => {
                 let client = self.connector.connect(INTERACTIVE).await?;
                 let parameters = parameter_count(&client, statement).await?;
+                // Planning runs the code a statement reaches, with this login's privileges (`trust`).
+                let elevated = trust::elevated(&client).await?;
                 let mut plan = if parameters == 0 {
-                    explain_text(
+                    trust::begin(&client, elevated).await?;
+                    let explained = explain_text(
                         &client,
                         &format!("EXPLAIN (FORMAT JSON, VERBOSE) {statement}"),
                         PlanKind::Estimated,
                         statement,
                     )
-                    .await?
+                    .await;
+                    trust::end(&client).await;
+                    explained?
                 } else {
                     // Placeholders ($1, $2… as pg_stat_statements records statements): the generic plan, never run.
-                    let json = generic::plan_json(&client, statement, server_version(&client).await?).await?;
+                    let json = generic::plan_json(&client, statement, server_version(&client).await?, elevated).await?;
                     plan_json::parse(&json, PlanKind::Generic, Some(statement))?
                 };
                 tables::fill(&client, &mut plan).await;

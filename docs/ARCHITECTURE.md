@@ -34,9 +34,11 @@ from its engine's sources: Query Store and the plan cache on SQL Server, `pg_sta
 `performance_schema` digests or the slow log on MySQL and MariaDB, and on every engine the catalog, index and table
 usage views, waits, settings and pressure counters.
 
-Each source either delivers a `Capability` or doesn't. A provider keeps that account in a `culprit_core::Coverage`:
-`delivered`, `lacking` (with the reason and the fix), `failed` (a read error: a note, and the capability locked with
-why). A failing source never fails the scan; the checks that need it are listed as locked, with the fix.
+Each source either delivers a `Capability` or doesn't. A provider keeps that account in a `culprit_core::Coverage`,
+starting from what its probe found: `delivered`, `lacking` (with the reason and the fix), `lost` (the probe expected it,
+the source couldn't read it, with the source's own reason), `withdraw` (expected, but it held nothing), `failed` (a
+read error: a note, and the capability locked with why) and `note`. A failing source never fails the scan; the checks
+that need it are listed as locked, with the fix.
 
 Rules every source follows:
 
@@ -49,6 +51,11 @@ Rules every source follows:
   `UPDATE` and zero waits are claims.
 - **Say what a number covers.** A window says how many hours it really holds; cumulative counters say since when (a
   restart, a statistics reset), and a drop in a running total is a reset only when the source's own marker moved.
+- **Planning never lends this login's privileges.** PostgreSQL's planner runs the functions and operators a statement
+  reaches (constants folded, a column's common values compared), with the privileges of whoever plans it, and neither
+  `search_path` nor `SET ROLE` keeps someone else's code out. `culprit-postgres/src/trust.rs` makes every plan in a
+  read-only transaction that is rolled back, and a login that can do more than read statistics doesn't plan while
+  functions or operators other roles wrote are in reach.
 - **The plan that runs now.** A plan describes the database when it was captured. Query Store keeps a plan's first XML,
   so a plan older than its table is marked in the prepare stage.
 

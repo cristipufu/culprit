@@ -33,6 +33,9 @@ pub struct Probe {
     /// The server is a standby replaying another's WAL (`pg_is_in_recovery()`): its usage counters count only the reads
     /// run on it.
     pub standby: bool,
+    /// The login can do more than read statistics (`crate::trust::ELEVATED`): it doesn't plan while another role's code
+    /// is in reach.
+    pub elevated: bool,
 }
 
 pub enum StatementsAccess {
@@ -176,8 +179,10 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
                   OR EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN ('rds_superuser', 'azure_pg_admin', 'cloudsqlsuperuser')
                                AND pg_has_role(current_user, r.oid, 'MEMBER'))
                   OR has_database_privilege(current_database(), 'CREATE') AS can_create_extension,
-                pg_is_in_recovery() AS in_recovery",
+                pg_is_in_recovery() AS in_recovery,
+                {elevated} AS elevated",
         started = iso("pg_postmaster_start_time()"),
+        elevated = crate::trust::ELEVATED,
         now = iso("now()"),
     );
     let row = query_one(client, &sql).await?.ok_or_else(|| culprit_core::Error::internal("Probe returned nothing"))?;
@@ -197,6 +202,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
         preloaded: row.flag("preloaded"),
         can_create_extension: row.flag("can_create_extension"),
         standby: row.flag("in_recovery"),
+        elevated: row.flag("elevated"),
     };
     if let Some(schema) = row.text("pgss_schema") {
         probe.statements = statements_access(client, &schema, version_num).await;
@@ -299,9 +305,13 @@ pub async fn snapshot(
             if let Some(message) = collected.plan_note {
                 coverage.note("plans", message);
             }
+            let withheld = collected.plans_withheld.is_some();
+            if let Some(e) = collected.plans_withheld {
+                coverage.lost(Capability::QueryPlans, e.message, e.hint);
+            }
             families = collected.families;
             statement_status = collected.status;
-            if collected.workload.queries.iter().all(|q| q.plan.is_none()) {
+            if !withheld && collected.workload.queries.iter().all(|q| q.plan.is_none()) {
                 coverage.withdraw(Capability::QueryPlans);
             }
             Some(collected.workload)
@@ -460,6 +470,8 @@ pub async fn snapshot(
 struct CollectedWorkload {
     workload: Workload,
     plan_note: Option<String>,
+    /// Why no statement was planned, when the login may not plan here (`crate::trust`).
+    plans_withheld: Option<culprit_core::Error>,
     families: Vec<QueryFamily>,
     /// pg_stat_statements' own counters (entries evicted since reset), surfaced as status settings.
     status: Vec<Setting>,
@@ -568,10 +580,13 @@ async fn collect_with_base(
             plan_id: None,
         })
         .collect();
-    let plan_note = if probe.generic_plans() {
-        attach_plans(client, &mut queries, options.plans, probe.version_num).await
+    let (plan_note, plans_withheld) = if probe.generic_plans() {
+        match attach_plans(client, &mut queries, probe, options.plans).await {
+            Ok(note) => (note, None),
+            Err(withheld) => (None, Some(withheld)),
+        }
     } else {
-        None
+        (None, None)
     };
     // Families and eviction counts are extras: a failure leaves them out, never the workload.
     let families = query_families(client, base).await.unwrap_or_default();
@@ -606,6 +621,7 @@ async fn collect_with_base(
             min_logged_ms: None,
         },
         plan_note,
+        plans_withheld,
         families,
         status,
         io_ms,
@@ -758,22 +774,34 @@ fn statements_base_legacy(relation: &str) -> String {
     )
 }
 
-/// Attach generic plans to the heaviest plannable statements. Returns a note when some could not be planned.
-async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, version_num: u32) -> Option<String> {
+/// Attach generic plans to the heaviest plannable statements. Returns a note when some could not be planned, or why
+/// this login plans none here.
+async fn attach_plans(
+    client: &Client,
+    queries: &mut [QueryStat],
+    probe: &Probe,
+    budget: u32,
+) -> Result<Option<String>> {
+    // Planning runs the code a statement reaches with this login's privileges (`crate::trust`): a login that can do
+    // more than read statistics plans nothing while another role's code is in reach. Each plan checks again, in its
+    // own read-only transaction. Statements are planned under Culprit's own search_path, never the role's that ran
+    // them: a statement whose names don't resolve here stays unplanned.
+    if probe.elevated {
+        let owners = crate::trust::foreign_code(client).await?;
+        if !owners.is_empty() {
+            return Err(crate::trust::withheld(&owners));
+        }
+    }
     let mut order: Vec<usize> = (0..queries.len()).collect();
     order.sort_by(|a, b| queries[*b].total_time_ms.total_cmp(&queries[*a].total_time_ms));
     let (mut attempted, mut planned) = (0u32, 0u32);
-    // Every statement is planned under Culprit's own search_path, never the role's that ran it: the planner runs
-    // IMMUTABLE functions while planning, so a search_path someone else chose (a schema of theirs ahead of pg_catalog)
-    // would run their functions with this login's privileges. A statement whose names don't resolve here stays
-    // unplanned.
     for index in order {
         if attempted >= budget {
             break;
         }
         let Some(statement) = plannable(&queries[index].text) else { continue };
         attempted += 1;
-        let Some(json) = generic_plan_json(client, statement, version_num).await else { continue };
+        let Some(json) = generic_plan_json(client, statement, probe).await else { continue };
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
             crate::tables::fill(client, &mut plan).await;
             mark_generic(&mut plan);
@@ -781,11 +809,11 @@ async fn attach_plans(client: &Client, queries: &mut [QueryStat], budget: u32, v
             planned += 1;
         }
     }
-    (planned < attempted).then(|| {
+    Ok((planned < attempted).then(|| {
         format!(
             "Planned {planned} of {attempted} heavy statements. The rest could not be planned: their recorded text is truncated, is not valid SQL once constants are replaced by placeholders, or uses objects this login cannot see."
         )
-    })
+    }))
 }
 
 /// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values (estimates for `$n`
@@ -797,15 +825,16 @@ pub(crate) fn mark_generic(plan: &mut culprit_core::Plan) {
     );
 }
 
-async fn generic_plan_json(client: &Client, statement: &str, version_num: u32) -> Option<String> {
+async fn generic_plan_json(client: &Client, statement: &str, probe: &Probe) -> Option<String> {
     // Statement text was written by whoever ran it; it must lex as exactly one statement before it reaches EXPLAIN.
     let statement = culprit_core::sql::single_statement(statement, Engine::Postgres).ok()?;
-    match crate::generic::plan_json(client, statement, version_num).await {
+    let (version_num, elevated) = (probe.version_num, probe.elevated);
+    match crate::generic::plan_json(client, statement, version_num, elevated).await {
         Ok(json) => Some(json),
         Err(_) => {
             let rewritten = cast_typed_placeholders(statement)?;
             let rewritten = culprit_core::sql::single_statement(&rewritten, Engine::Postgres).ok()?;
-            crate::generic::plan_json(client, rewritten, version_num).await.ok()
+            crate::generic::plan_json(client, rewritten, version_num, elevated).await.ok()
         }
     }
 }
