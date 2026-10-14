@@ -108,13 +108,13 @@
           "label": "Rows in table",
           "text": null,
           "unit": "rows",
-          "value": 800000
+          "value": 800000.0
         },
         {
           "label": "Foreign key",
           "text": "fk_ticket_events_ticket",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -143,7 +143,7 @@
       "impact": {
         "db_time_share": null,
         "label": "1 deadlock",
-        "score": 9,
+        "score": 9.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -153,19 +153,19 @@
           "label": "Deadlocks",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         },
         {
           "label": "Pattern",
           "text": "key-lookup deadlock",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         },
         {
           "label": "Rolled back",
           "text": "orders-api",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -195,7 +195,7 @@
       "impact": {
         "db_time_share": null,
         "label": "1 deadlock",
-        "score": 9,
+        "score": 9.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -205,19 +205,19 @@
           "label": "Deadlocks",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         },
         {
           "label": "Pattern",
           "text": "opposite access order",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         },
         {
           "label": "Rolled back",
           "text": "SQLCMD",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -231,60 +231,6 @@
       "verify": [
         "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 32.3 MB and makes writes to shop.orders cheaper.",
-        "sql": "ALTER INDEX [ix_orders_status_created] ON [shop].[orders] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "32.3 MB unused",
-        "score": 8.031562805175781,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 33890304
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.0014930555555555556
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "No query has read ix_orders_status_created in the 2 minutes since the server last restarted, and shop.orders hasn't been written to either. It takes 32.3 MB of storage and buffer memory.",
-      "title": "ix_orders_status_created on orders is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
       ]
     },
     {
@@ -313,13 +259,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 27795456
+          "value": 27795456.0
         },
         {
           "label": "Reads of ix_orders_status",
           "text": null,
           "unit": "count",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -331,116 +277,6 @@
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
       "verify": []
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
-        "ix_order_items_product_id (foreign key fk_order_items_product) also supports a foreign key: without it, deleting or updating parent rows scans this table."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 26.4 MB and makes writes to shop.order_items cheaper.",
-        "sql": "ALTER INDEX [ix_order_items_product_id] ON [shop].[order_items] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.order_items",
-      "impact": {
-        "db_time_share": null,
-        "label": "26.4 MB unused",
-        "score": 8.025825500488281,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 27729920
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.0014930555555555556
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.order_items"
-      },
-      "summary": "No query has read ix_order_items_product_id in the 2 minutes since the server last restarted, and shop.order_items hasn't been written to either. It takes 26.4 MB of storage and buffer memory.",
-      "title": "ix_order_items_product_id on order_items is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
-        "ix_support_tickets_customer_id (foreign key fk_support_tickets_customer) also supports a foreign key: without it, deleting or updating parent rows scans this table."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 4.3 MB and makes writes to shop.support_tickets cheaper.",
-        "sql": "ALTER INDEX [ix_support_tickets_customer_id] ON [shop].[support_tickets] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.support_tickets",
-      "impact": {
-        "db_time_share": null,
-        "label": "4.3 MB unused",
-        "score": 8.004158020019531,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 4464640
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.0014930555555555556
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.support_tickets"
-      },
-      "summary": "No query has read ix_support_tickets_customer_id in the 2 minutes since the server last restarted, and shop.support_tickets hasn't been written to either. It takes 4.3 MB of storage and buffer memory.",
-      "title": "ix_support_tickets_customer_id on support_tickets is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
-      ]
     },
     {
       "category": "indexes",
@@ -466,13 +302,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 663552
+          "value": 663552.0
         },
         {
           "label": "Reads of ix_products_sku",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         }
       ],
       "queries": [],
@@ -599,7 +435,7 @@
     {
       "check": {
         "category": "queries",
-        "description": "Plan-forcing recommendations from automatic tuning, forced plans and Query Store hints that stopped applying, and automatic plan correction left off.",
+        "description": "Plan-forcing and index recommendations from automatic tuning, forced plans (those that stopped applying, and those that scan where an index added since could seek), Query Store hints that stopped applying, and automatic plan correction left off.",
         "engines": [
           "mssql"
         ],
@@ -1075,7 +911,7 @@
               "host": "web-1",
               "id": "processa14d1e4e8",
               "isolation": "read committed",
-              "log_used": 240,
+              "log_used": 240.0,
               "login": "sa",
               "procedure": null,
               "session": "75",
@@ -1089,7 +925,7 @@
               "host": "web-1",
               "id": "processa007b4ca8",
               "isolation": "read committed",
-              "log_used": 244,
+              "log_used": 244.0,
               "login": "sa",
               "procedure": null,
               "session": "73",
@@ -1174,7 +1010,7 @@
               "host": "web-1",
               "id": "process61",
               "isolation": "read committed",
-              "log_used": 0,
+              "log_used": 0.0,
               "login": "app",
               "procedure": null,
               "session": "61",
@@ -1188,7 +1024,7 @@
               "host": "worker-2",
               "id": "process64",
               "isolation": "read committed",
-              "log_used": 1240,
+              "log_used": 1240.0,
               "login": "app",
               "procedure": null,
               "session": "64",
@@ -1239,11 +1075,12 @@
         }
       ],
       "note": null,
-      "since_hours": 6,
+      "since_hours": 6.0,
       "source": "system_health event files and ring buffer"
     },
     "duration_ms": 456.244667,
     "environment": "staging",
+    "escalations_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -1320,6 +1157,7 @@
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1329,21 +1167,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 600,
+        "lookups": 600.0,
         "name": "pk_customers",
-        "reads": 600,
-        "scans": 0,
+        "reads": 600.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 17506304,
+        "seeks": 0.0,
+        "size_bytes": 17506304.0,
         "table": "customers",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "email"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1353,21 +1192,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_customers_email",
-        "reads": 602,
-        "scans": 602,
+        "reads": 602.0,
+        "scans": 602.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 7413760,
+        "seeks": 0.0,
+        "size_bytes": 7413760.0,
         "table": "customers",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1377,21 +1217,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:25Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_products",
-        "reads": 30000,
-        "scans": 0,
+        "reads": 30000.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 30000,
-        "size_bytes": 1646592,
+        "seeks": 30000.0,
+        "size_bytes": 1646592.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "sku"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1401,21 +1242,22 @@
         "is_unique": true,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "uq_products_sku",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 663552,
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "sku"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1425,21 +1267,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_products_sku",
-        "reads": 1,
-        "scans": 1,
+        "reads": 1.0,
+        "scans": 1.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 663552,
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1449,15 +1292,15 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:40Z",
-        "lookups": 2000,
+        "lookups": 2000.0,
         "name": "pk_orders",
-        "reads": 2150,
-        "scans": 150,
+        "reads": 2150.0,
+        "scans": 150.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 62070784,
+        "seeks": 0.0,
+        "size_bytes": 62070784.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
@@ -1465,6 +1308,7 @@
           "created_at"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1474,21 +1318,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:20Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_customer_id",
-        "reads": 2000,
-        "scans": 0,
+        "reads": 2000.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 2000,
-        "size_bytes": 24649728,
+        "seeks": 2000.0,
+        "size_bytes": 24649728.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "status"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1498,15 +1343,15 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_status",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27795456,
+        "seeks": 0.0,
+        "size_bytes": 27795456.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
@@ -1514,6 +1359,7 @@
           "created_at"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1523,21 +1369,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_status_created",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 33890304,
+        "seeks": 0.0,
+        "size_bytes": 33890304.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "channel"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1547,21 +1394,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_by_channel",
-        "reads": 1,
-        "scans": 1,
+        "reads": 1.0,
+        "scans": 1.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 22290432,
+        "seeks": 0.0,
+        "size_bytes": 22290432.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1571,21 +1419,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:44Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_order_items",
-        "reads": 300,
-        "scans": 300,
+        "reads": 300.0,
+        "scans": 300.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 64495616,
+        "seeks": 0.0,
+        "size_bytes": 64495616.0,
         "table": "order_items",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "product_id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1595,21 +1444,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_order_items_product_id",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27729920,
+        "seeks": 0.0,
+        "size_bytes": 27729920.0,
         "table": "order_items",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1619,21 +1469,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:47Z",
-        "lookups": 2005,
+        "lookups": 2005.0,
         "name": "pk_support_tickets",
-        "reads": 2005,
-        "scans": 0,
+        "reads": 2005.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27992064,
+        "seeks": 0.0,
+        "size_bytes": 27992064.0,
         "table": "support_tickets",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "customer_id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1643,21 +1494,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_support_tickets_customer_id",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 4464640,
+        "seeks": 0.0,
+        "size_bytes": 4464640.0,
         "table": "support_tickets",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1667,21 +1519,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_ticket_events",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 39460864,
+        "seeks": 0.0,
+        "size_bytes": 39460864.0,
         "table": "ticket_events",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "order_id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -1697,7 +1550,7 @@
         "scans": null,
         "schema": "shop",
         "seeks": null,
-        "size_bytes": 27729920,
+        "size_bytes": 27729920.0,
         "table": "order_items",
         "writes": null
       }
@@ -1727,7 +1580,7 @@
         "data_io_pct": 10.75,
         "log_write_pct": 47.75,
         "memory_pct": 72.15,
-        "workers_pct": 6
+        "workers_pct": 6.0
       },
       {
         "at": "2026-10-11T11:00:30Z",
@@ -2069,7 +1922,7 @@
         "at": "2026-10-11T11:11:00Z",
         "cpu_pct": 53.91,
         "data_io_pct": 20.33,
-        "log_write_pct": 37,
+        "log_write_pct": 37.0,
         "memory_pct": 73.33,
         "workers_pct": 9.43
       },
@@ -2132,7 +1985,7 @@
       {
         "at": "2026-10-11T11:13:00Z",
         "cpu_pct": 59.69,
-        "data_io_pct": 20,
+        "data_io_pct": 20.0,
         "log_write_pct": 99.6,
         "memory_pct": 75.64,
         "workers_pct": 8.02
@@ -2539,7 +2392,7 @@
       },
       {
         "at": "2026-10-11T11:25:45Z",
-        "cpu_pct": 22,
+        "cpu_pct": 22.0,
         "data_io_pct": 13.4,
         "log_write_pct": 49.12,
         "memory_pct": 74.72,
@@ -2579,7 +2432,7 @@
       },
       {
         "at": "2026-10-11T11:27:00Z",
-        "cpu_pct": 27,
+        "cpu_pct": 27.0,
         "data_io_pct": 12.12,
         "log_write_pct": 32.34,
         "memory_pct": 72.59,
@@ -2678,7 +2531,7 @@
         "cpu_pct": 36.2,
         "data_io_pct": 6.98,
         "log_write_pct": 26.35,
-        "memory_pct": 76,
+        "memory_pct": 76.0,
         "workers_pct": 3.55
       },
       {
@@ -2694,7 +2547,7 @@
         "cpu_pct": 45.04,
         "data_io_pct": 5.87,
         "log_write_pct": 35.05,
-        "memory_pct": 73,
+        "memory_pct": 73.0,
         "workers_pct": 3.04
       },
       {
@@ -2838,7 +2691,7 @@
         "cpu_pct": 71.14,
         "data_io_pct": 5.87,
         "log_write_pct": 99.6,
-        "memory_pct": 72,
+        "memory_pct": 72.0,
         "workers_pct": 5.2
       },
       {
@@ -3023,7 +2876,7 @@
         "data_io_pct": 2.7,
         "log_write_pct": 59.56,
         "memory_pct": 73.49,
-        "workers_pct": 9
+        "workers_pct": 9.0
       },
       {
         "at": "2026-10-11T11:41:00Z",
@@ -3447,7 +3300,7 @@
         "data_io_pct": 19.72,
         "log_write_pct": 99.6,
         "memory_pct": 73.51,
-        "workers_pct": 7
+        "workers_pct": 7.0
       },
       {
         "at": "2026-10-11T11:54:15Z",
@@ -3646,7 +3499,7 @@
       ],
       "cloud": null,
       "database": "culprit_demo",
-      "database_size_bytes": 411041792,
+      "database_size_bytes": 411041792.0,
       "edition": "Developer Edition (64-bit)",
       "engine": "mssql",
       "missing": [
@@ -4071,34 +3924,35 @@
         "value": ""
       }
     ],
+    "sizes_before": null,
     "statistics": [
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:06Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_customers",
-        "rows": 200000,
-        "rows_sampled": 110814,
+        "rows": 200000.0,
+        "rows_sampled": 110814.0,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:25Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_customers_email",
-        "rows": 200000,
-        "rows_sampled": 111593,
+        "rows": 200000.0,
+        "rows_sampled": 111593.0,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:20Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_products",
-        "rows": 20000,
-        "rows_sampled": 20000,
+        "rows": 20000.0,
+        "rows_sampled": 20000.0,
         "schema": "shop",
         "table": "products"
       },
@@ -4125,130 +3979,130 @@
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_orders",
-        "rows": 1000000,
-        "rows_sampled": 175627,
+        "rows": 1000000.0,
+        "rows_sampled": 175627.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_customer_id",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_status",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_status_created",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_channel",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000006_3A81B327",
-        "rows": 1000000,
-        "rows_sampled": 178273,
+        "rows": 1000000.0,
+        "rows_sampled": 178273.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:45Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000007_3A81B327",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_order_items",
-        "rows": 1500000,
-        "rows_sampled": 243358,
+        "rows": 1500000.0,
+        "rows_sampled": 243358.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_order_items_product_id",
-        "rows": 1500000,
-        "rows_sampled": 220800,
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000002_3D5E1FD2",
-        "rows": 1500000,
-        "rows_sampled": 220800,
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_support_tickets",
-        "rows": 300000,
-        "rows_sampled": 100832,
+        "rows": 300000.0,
+        "rows_sampled": 100832.0,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_support_tickets_customer_id",
-        "rows": 300000,
-        "rows_sampled": 108383,
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_support_tickets_priority",
-        "rows": 300000,
-        "rows_sampled": 108383,
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
         "schema": "shop",
         "table": "support_tickets"
       },
@@ -4265,146 +4119,164 @@
     ],
     "tables": [
       {
-        "data_bytes": 17506304,
+        "data_bytes": 17506304.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7413760,
+        "in_row_bytes": null,
+        "index_bytes": 7413760.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "customers",
-        "rows": 200000,
+        "overflow_bytes": null,
+        "rows": 200000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 24920064,
+        "total_bytes": 24920064.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 64495616,
+        "data_bytes": 64495616.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 27729920,
+        "in_row_bytes": null,
+        "index_bytes": 27729920.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "order_items",
-        "rows": 1500000,
+        "overflow_bytes": null,
+        "rows": 1500000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 92225536,
+        "total_bytes": 92225536.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 62070784,
+        "data_bytes": 62070784.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 108625920,
+        "in_row_bytes": null,
+        "index_bytes": 108625920.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "orders",
-        "rows": 1000000,
+        "overflow_bytes": null,
+        "rows": 1000000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 170696704,
+        "total_bytes": 170696704.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 1646592,
+        "data_bytes": 1646592.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 1327104,
+        "in_row_bytes": null,
+        "index_bytes": 1327104.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "products",
-        "rows": 20000,
+        "overflow_bytes": null,
+        "rows": 20000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 2973696,
+        "total_bytes": 2973696.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 27992064,
+        "data_bytes": 27992064.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7946240,
+        "in_row_bytes": null,
+        "index_bytes": 7946240.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "support_tickets",
-        "rows": 300000,
+        "overflow_bytes": null,
+        "rows": 300000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 35938304,
+        "total_bytes": 35938304.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 39460864,
+        "data_bytes": 39460864.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 0,
+        "in_row_bytes": null,
+        "index_bytes": 0.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "ticket_events",
-        "rows": 800000,
+        "overflow_bytes": null,
+        "rows": 800000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 39460864,
+        "total_bytes": 39460864.0,
         "updates": null,
         "xid_age": null
       }
@@ -4415,31 +4287,31 @@
       {
         "category": "Latch",
         "tasks": null,
-        "wait_ms": 82441,
+        "wait_ms": 82441.0,
         "wait_type": "Latch"
       },
       {
         "category": "Parallelism",
         "tasks": null,
-        "wait_ms": 17665,
+        "wait_ms": 17665.0,
         "wait_type": "Parallelism"
       },
       {
         "category": "Memory",
         "tasks": null,
-        "wait_ms": 5947,
+        "wait_ms": 5947.0,
         "wait_type": "Memory"
       },
       {
         "category": "CPU",
         "tasks": null,
-        "wait_ms": 423,
+        "wait_ms": 423.0,
         "wait_type": "CPU"
       },
       {
         "category": "Lock",
         "tasks": null,
-        "wait_ms": 15,
+        "wait_ms": 15.0,
         "wait_type": "Lock"
       }
     ],
@@ -4449,7 +4321,7 @@
     "by_category": [
       {
         "category": "indexes",
-        "count": 6
+        "count": 3
       },
       {
         "category": "queries",
@@ -4470,12 +4342,12 @@
         "severity": "medium"
       },
       {
-        "count": 11,
+        "count": 8,
         "severity": "low"
       }
     ],
-    "headline": "13 opportunities.",
-    "opportunities": 13,
+    "headline": "10 opportunities.",
+    "opportunities": 10,
     "top_share": null
   }
 }

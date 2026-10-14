@@ -89,7 +89,11 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             Category::Queries,
             subject(SubjectKind::Query, query_id.to_string()),
         );
-        let gain = r.estimated_gain.map(|g| format!(" (estimated {} faster)", format::percent(g))).unwrap_or_default();
+        // SQL Server's gain compares the two plans' average CPU per run, not their duration.
+        let gain = r
+            .estimated_gain
+            .map(|g| format!(" (estimated {} less CPU per run)", format::percent(g)))
+            .unwrap_or_default();
         f.title = format!(
             "SQL Server suggests forcing plan {plan_id} for {}{gain}",
             q.map(query_handle).unwrap_or_else(|| format!("query {query_id}"))
@@ -121,7 +125,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         }
         f.confidence = Confidence::High;
         if let Some(g) = r.estimated_gain {
-            f.metrics.push(Metric::new("Estimated gain", g, Unit::Ratio));
+            f.metrics.push(Metric::new("Estimated CPU saved per run", g, Unit::Ratio));
         }
         f.metrics.push(Metric::text("Recommended plan", plan_id.clone()));
         if let Some(bad) = &r.regressed_plan_id {
@@ -249,8 +253,9 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             }
             _ => "forced".to_string(),
         };
+        let forced_at = applied.and_then(|r| r.applied_at.as_deref());
         match q.and_then(|q| seekable_scan(snapshot, q, &p.plan_id).map(|scan| (q, scan))) {
-            Some((q, scan)) => out.push(forced_scan_finding(snapshot, p, q, &how, scan)),
+            Some((q, scan)) => out.push(forced_scan_finding(snapshot, p, q, &how, forced_at, scan)),
             None => kept.push((p, q, how)),
         }
     }
@@ -359,10 +364,18 @@ struct SeekableScan<'a> {
     columns: Vec<String>,
     rows: f64,
     index: &'a IndexStat,
+    /// The share of the rows read that the scan keeps.
+    kept: f64,
+    /// Columns the scan returns that the index doesn't hold, so a seek would look each row up in the table; empty when
+    /// it covers them.
+    lookups: Vec<String>,
 }
 
 /// Tables of this many rows or more: reading one in full where a seek would do costs something.
 const SCAN_ROWS: f64 = 10_000.0;
+/// An index that doesn't hold every column the query reads costs a lookup per row it finds: worth it over a scan only
+/// for a filter far narrower than an index's usual bar.
+const LOOKUPS_KEEP_AT_MOST: f64 = 0.01;
 
 fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Option<SeekableScan<'a>> {
     // The captured plan is the one that took the most time: the forced one, once the forcing has taken hold.
@@ -379,6 +392,13 @@ fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Op
         if rows < SCAN_ROWS {
             return None;
         }
+        // The bar every index claim uses (`PlanNode::kept_share`): a scan that keeps much of what it reads is the right
+        // plan, forced or not. Rows read as `scan_rows` counts them: a whole table, unless the index is filtered.
+        let kept =
+            (node.act_rows.unwrap_or_else(|| node.est_rows_total()) / (rows * node.est_executions.max(1.0))).min(1.0);
+        if kept > culprit_core::INDEX_KEEPS_AT_MOST {
+            return None;
+        }
         let cols = predicate_columns(node.predicate.as_deref()?);
         let mut columns = cols.equality.clone();
         columns.extend(cols.range.into_iter().take(1));
@@ -386,11 +406,48 @@ fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: &str) -> Op
             return None;
         }
         let index = leading_index(snapshot, &schema, &table, &cols.equality, &columns)?;
-        Some(SeekableScan { node: node.id, schema, table, columns, rows, index })
+        // Without the plan's output columns, coverage is unknown: count it as lookups.
+        let lookups = match node.props.get("OutputList") {
+            Some(list) => uncovered(snapshot, index, list),
+            None => vec!["the columns it returns".to_string()],
+        };
+        if !lookups.is_empty() && kept > LOOKUPS_KEEP_AT_MOST {
+            return None;
+        }
+        Some(SeekableScan { node: node.id, schema, table, columns, rows, index, kept, lookups })
     })
 }
 
-fn forced_scan_finding(snapshot: &Snapshot, p: &ForcedPlan, q: &QueryStat, how: &str, scan: SeekableScan) -> Finding {
+/// Columns of a plan's output list the index doesn't hold: not a key, not included, and not the clustered key every
+/// nonclustered index carries.
+fn uncovered(snapshot: &Snapshot, index: &IndexStat, output: &str) -> Vec<String> {
+    if index.is_clustered {
+        return Vec::new();
+    }
+    let clustered = snapshot.indexes_on(&index.schema, &index.table).find(|i| i.is_clustered);
+    let held: Vec<String> = index
+        .key_names()
+        .into_iter()
+        .map(str::to_string)
+        .chain(index.include.iter().cloned())
+        .chain(clustered.map(|c| c.key_names().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    output
+        .split(',')
+        .map(|c| c.trim().rsplit('.').next().unwrap_or_default().trim_matches(['[', ']', '"']).to_string())
+        .filter(|c| !c.is_empty() && !c.starts_with("Expr") && !held.contains(&c.to_ascii_lowercase()))
+        .collect()
+}
+
+fn forced_scan_finding(
+    snapshot: &Snapshot,
+    p: &ForcedPlan,
+    q: &QueryStat,
+    how: &str,
+    forced_at: Option<&str>,
+    scan: SeekableScan,
+) -> Finding {
     let table_name = format!("{}.{}", scan.schema, scan.table);
     let index = &scan.index.name;
     let columns = format::list(&scan.columns);
@@ -401,13 +458,38 @@ fn forced_scan_finding(snapshot: &Snapshot, p: &ForcedPlan, q: &QueryStat, how: 
         subject(SubjectKind::Query, p.query_id.clone()),
     );
     f.title = format!("A forced plan makes {} scan {} though {index} could seek it", query_handle(q), scan.table);
+    let lookups = if scan.lookups.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {index} doesn't hold {}, so a seek would look each row it finds up in the table: still far less than \
+             reading every row for the {} it keeps.",
+            format::list(&scan.lookups),
+            format::percent(scan.kept)
+        )
+    };
+    // "Forced before the index existed" only where something dates the index as new (a scan saw it appear, or the
+    // database dated a change to its table), and not to before the forcing.
+    let before_forcing = |at: &str| match (parse_epoch_seconds(at), forced_at.and_then(parse_epoch_seconds)) {
+        (Some(created), Some(forced)) => created <= forced,
+        _ => false,
+    };
+    let newer = match scan.index.created_at_latest.as_deref().filter(|at| !before_forcing(at)) {
+        Some(at) => format!(
+            " {index} may be new (Culprit dates it to {} at the latest), so this plan was most likely forced before it \
+             existed.",
+            format::friendly_date(at, &snapshot.taken_at)
+        ),
+        None => String::new(),
+    };
     f.summary = format!(
-        "Plan {} is {how} for query {}. SQL Server runs a forced plan as it is, so this one reads all of {table_name} \
-         ({} rows) to find the rows by {columns}, while {index} leads with {} and could seek them. A forced plan \
-         doesn't change when an index is added: this one was most likely forced before {index} existed.",
+        "Plan {} is {how} for query {}. SQL Server runs a forced plan as it is, even after an index is added, so this \
+         one reads all of {table_name} ({} rows) and keeps about {} of them to find the rows by {columns}, while \
+         {index} leads with {} and could seek them.{lookups}{newer}",
         p.plan_id,
         p.query_id,
         format::count(scan.rows),
+        format::percent(scan.kept),
         if scan.columns.len() == 1 { "it" } else { "them" },
     );
     match query_impact(snapshot, &[q]) {
@@ -738,15 +820,34 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
     let threshold = if engine == Engine::Mssql { 20.0 } else { 5.0 };
     let total_ms = snapshot.workload.as_ref().map(|w| w.total_time_ms).unwrap_or(0.0);
     for family in snapshot.query_families.iter().filter(|f| f.variants >= threshold) {
+        // What the copies differ in decides the fix; copies whose text is the same are split by something no
+        // parameterization changes (the role that ran them, the schema a name resolved in, the module they're in).
+        let Some(split) = family_split(snapshot, family) else { continue };
         let mut f = finding(
             "query-family",
             &family.key.chars().take(40).collect::<String>(),
             Category::Queries,
             subject(SubjectKind::Query, family.key.clone()),
         );
-        let handle = statement_handle(&family.sample);
-        let (title, why) = match engine {
-            Engine::Mssql => (
+        let handle = statement_handle(without_declaration(&family.sample));
+        let (title, why) = match (&split, engine) {
+            (FamilySplit::Declarations(examples), _) => (
+                format!(
+                    "The app sends {} versions of {} that differ only in how their parameters are declared",
+                    format::count(family.variants),
+                    handle
+                ),
+                format!(
+                    "because their parameters are declared differently from call to call ({}): drivers do this when a \
+                     string parameter's size comes from each value (ADO.NET's AddWithValue, for one). SQL Server \
+                     compiles and keeps a plan for each declaration",
+                    match examples.as_slice() {
+                        [one] => format!("this one declares `{one}`"),
+                        _ => examples.iter().map(|e| format!("`{e}`")).collect::<Vec<_>>().join(" and "),
+                    }
+                ),
+            ),
+            (_, Engine::Mssql) => (
                 format!(
                     "The app sends {} versions of {} that differ only in literal values",
                     format::count(family.variants),
@@ -796,8 +897,17 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
             .filter(|id| snapshot.workload.as_ref().is_some_and(|w| w.query(id).is_some()))
             .map(|id| QueryRef { id: id.clone(), plan_node: None, note: None })
             .collect();
-        f.fix = Some(match engine {
-            Engine::Mssql => Fix {
+        f.fix = Some(match (&split, engine) {
+            (FamilySplit::Declarations(_), _) => Fix {
+                summary: "Declare each string parameter with a fixed size, the column's length, instead of letting the \
+                    driver size it from the value (in ADO.NET, set SqlParameter.Size or use Add with a SqlDbType and \
+                    size rather than AddWithValue; other drivers have a similar setting). Then one plan serves every \
+                    value. Forced parameterization can't help: these statements are already parameterized."
+                    .into(),
+                sql: None,
+                cost: None,
+            },
+            (_, Engine::Mssql) => Fix {
                 summary: "Send values as parameters (sp_executesql, or your driver's parameterized queries) so one plan \
                     serves every value. If you can't change the app, forced parameterization does it for the whole \
                     database."
@@ -816,6 +926,12 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
                 cost: None,
             },
         });
+        if matches!(&split, FamilySplit::Unknown) || matches!(&split, FamilySplit::Declarations(e) if e.len() < 2) {
+            f.confidence = Confidence::Medium;
+            f.caveats.push(
+                "Culprit sees one of these statements' text, so what the others differ in is inferred from it.".into(),
+            );
+        }
         f.verify = vec!["Re-scan after a deploy: this family shrinks to one or a few statements.".into()];
         if !family.sample.is_empty() {
             f.caveats.push(format!("One of them, as recorded:\n{}", family.sample.trim()));
@@ -876,6 +992,143 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// What the copies of a statement family differ in, as far as their texts show.
+#[derive(Debug, PartialEq)]
+enum FamilySplit {
+    /// Literal values (SQL Server) or value-list lengths (PostgreSQL): what parameterizing fixes.
+    Values,
+    /// The same parameterized statement with its parameters declared differently (sizes taken from each value).
+    Declarations(Vec<String>),
+    /// Inferred from the one text Culprit has.
+    Unknown,
+}
+
+/// None when the copies are the same text: the split is by who ran them (PostgreSQL keeps an entry per role), the
+/// schema a name resolved in, the module they belong to or the connection's settings, which no change to how values
+/// are sent fixes.
+fn family_split(snapshot: &Snapshot, family: &culprit_core::QueryFamily) -> Option<FamilySplit> {
+    let members: Vec<&QueryStat> = snapshot
+        .workload
+        .as_ref()
+        .map(|w| family.query_ids.iter().filter_map(|id| w.query(id)).collect())
+        .unwrap_or_default();
+    if members.len() >= 2 {
+        let first = normalized(&members[0].text);
+        if members.iter().any(|q| normalized(&q.text) != first) {
+            return Some(FamilySplit::Values);
+        }
+        let mut declarations: Vec<String> = Vec::new();
+        for d in members.iter().filter_map(|q| q.parameters.as_deref()) {
+            if !declarations.iter().any(|x| x == d) {
+                declarations.push(d.to_string());
+            }
+        }
+        return (declarations.len() >= 2)
+            .then(|| FamilySplit::Declarations(declarations.into_iter().take(2).collect()));
+    }
+    match snapshot.server.engine {
+        Engine::Mssql => match split_declaration(&family.sample) {
+            // Parameters the application named (`@p0`, `@P1`, `@id`) and no literal left in the text: the copies can't
+            // differ in values, so the declarations are what differs.
+            (Some(declaration), body) if !auto_parameterized(declaration) && !has_literals(body) => {
+                Some(FamilySplit::Declarations(vec![declaration.trim().to_string()]))
+            }
+            _ => Some(FamilySplit::Unknown),
+        },
+        // Entries are grouped with their value lists collapsed: without a list, the copies are the same text.
+        _ => has_value_list(&family.sample).then_some(FamilySplit::Values),
+    }
+}
+
+/// `(@p0 nvarchar(7),@p1 int)SELECT …` as (declaration, statement), the way Query Store keeps a parameterized text.
+fn split_declaration(text: &str) -> (Option<&str>, &str) {
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('(') || !trimmed[1..].trim_start().starts_with('@') {
+        return (None, text);
+    }
+    let mut depth = 0usize;
+    for (i, c) in trimmed.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (Some(&trimmed[1..i]), trimmed[i + 1..].trim_start());
+                }
+            }
+            _ => {}
+        }
+    }
+    (None, text)
+}
+
+fn without_declaration(text: &str) -> &str {
+    split_declaration(text).1
+}
+
+/// SQL Server's own parameterization names parameters by number (`@1`, `@2`): the application sent literals.
+fn auto_parameterized(declaration: &str) -> bool {
+    declaration
+        .split(',')
+        .any(|d| d.trim().strip_prefix('@').is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit())))
+}
+
+/// A string or number literal in a statement (outside names, parameters and `TOP (n)`).
+fn has_literals(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    let chars: Vec<char> = lower.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' {
+            return true;
+        }
+        if c == '[' {
+            while i < chars.len() && chars[i] != ']' {
+                i += 1;
+            }
+        } else if c.is_ascii_digit() {
+            let prev = i.checked_sub(1).map(|p| chars[p]);
+            let in_name = prev.is_some_and(|p| p.is_ascii_alphanumeric() || matches!(p, '_' | '@' | '#' | '$'));
+            let before: String = chars[..i].iter().collect();
+            let top = before.trim_end().trim_end_matches('(').trim_end().ends_with("top");
+            if !in_name && !top {
+                return true;
+            }
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '.') {
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// An IN list, multi-row VALUES or ARRAY of parameters: what PostgreSQL entries of different lengths come from.
+fn has_value_list(text: &str) -> bool {
+    let t = text.to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().join(" ").replace("( ", "(");
+    [" in ($", " in($", "values ($", "values($", "array[$", "any(array[$"].iter().any(|m| t.contains(m))
+}
+
+/// Statement text without comments and with whitespace collapsed, to compare two copies.
+fn normalized(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, r)| r);
+        } else if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, r)| r);
+        } else {
+            let c = rest.chars().next().expect("non-empty");
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn capitalize(text: &str) -> String {

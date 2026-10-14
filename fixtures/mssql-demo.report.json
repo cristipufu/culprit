@@ -15,7 +15,7 @@
         "db_time_share": 0.34120252699679854,
         "label": "2 min waiting on locks",
         "score": 58.41101195528443,
-        "time_ms_per_day": 602035.4008753019
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T14:19:10Z",
@@ -24,7 +24,7 @@
           "label": "Lock wait",
           "text": null,
           "unit": "ms",
-          "value": 114966
+          "value": 114966.0
         },
         {
           "label": "Share of its time",
@@ -72,7 +72,7 @@
         "db_time_share": 0.2673650901995407,
         "label": "100% of runs fail",
         "score": 51.707358296430186,
-        "time_ms_per_day": 471752.8052183859
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:55:55Z",
@@ -81,19 +81,19 @@
           "label": "Runs",
           "text": null,
           "unit": "count",
-          "value": 6
+          "value": 6.0
         },
         {
           "label": "Didn't finish",
           "text": null,
           "unit": "ratio",
-          "value": 1
+          "value": 1.0
         },
         {
           "label": "Cancelled",
           "text": null,
           "unit": "count",
-          "value": 6
+          "value": 6.0
         },
         {
           "label": "Cancelled after",
@@ -137,7 +137,7 @@
         "db_time_share": 0.2673650901995407,
         "label": "27% of DB time",
         "score": 51.707358296430186,
-        "time_ms_per_day": 471752.8052183859
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:55:55Z",
@@ -197,7 +197,7 @@
         "db_time_share": 0.2673650901995407,
         "label": "27% of DB time",
         "score": 51.707358296430186,
-        "time_ms_per_day": 471752.8052183859
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:55:55Z",
@@ -255,7 +255,7 @@
         "db_time_share": 0.014778470818232064,
         "label": "3.4× slower",
         "score": 46.52198220388902,
-        "time_ms_per_day": 34445.43560695719
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T12:13:40Z",
@@ -282,7 +282,13 @@
           "label": "Started",
           "text": "Oct 11, 10:45 UTC",
           "unit": "text",
-          "value": 0
+          "value": 0.0
+        },
+        {
+          "label": "Plan change",
+          "text": "8 → 47",
+          "unit": "text",
+          "value": 0.0
         }
       ],
       "queries": [
@@ -318,7 +324,7 @@
         "db_time_share": 0.21278048143517983,
         "label": "1 min waiting on locks",
         "score": 46.12595466007194,
-        "time_ms_per_day": 375440.89595933794
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T14:19:10Z",
@@ -327,7 +333,7 @@
           "label": "Lock wait",
           "text": null,
           "unit": "ms",
-          "value": 71692
+          "value": 71692.0
         },
         {
           "label": "Share of its time",
@@ -374,8 +380,8 @@
       "impact": {
         "db_time_share": 0.000027041685060225765,
         "label": "25% of runs fail",
-        "score": 45,
-        "time_ms_per_day": 47.713748924636285
+        "score": 45.0,
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:54:55Z",
@@ -384,7 +390,7 @@
           "label": "Runs",
           "text": null,
           "unit": "count",
-          "value": 200
+          "value": 200.0
         },
         {
           "label": "Didn't finish",
@@ -396,7 +402,7 @@
           "label": "Errors",
           "text": null,
           "unit": "count",
-          "value": 50
+          "value": 50.0
         }
       ],
       "queries": [
@@ -475,17 +481,11 @@
         "db_time_share": 0.002440152984950049,
         "label": "84% of executions",
         "score": 38.54100010970061,
-        "time_ms_per_day": 4305.5322404023445
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T12:13:25Z",
       "metrics": [
-        {
-          "label": "Runs per day",
-          "text": null,
-          "unit": "count",
-          "value": 314181.84103140666
-        },
         {
           "label": "Share of executions",
           "text": null,
@@ -511,7 +511,7 @@
         "kind": "query",
         "name": "6"
       },
-      "summary": "This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The database time is small (<1%), but each call costs a network round trip and a connection.",
+      "summary": "This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (<1% of database time), but each call costs a network round trip and a connection.",
       "title": "A read from products runs 60K times in 5 hours, one row at a time",
       "verify": [
         "After the change, this statement's executions per day should drop by orders of magnitude."
@@ -525,14 +525,14 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Send the parameter with the column's exact type. In Node.js (mssql/tedious) declare the parameter as VarChar instead of the default NVarChar; in .NET set SqlDbType.VarChar; with an ORM, map the column as non-Unicode."
+        "summary": "Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it."
       },
       "id": "plan-warnings:implicit-conversion:customers.email",
       "impact": {
         "db_time_share": 0.06577964676947273,
         "label": "7% of DB time",
         "score": 25.647543112250094,
-        "time_ms_per_day": 116065.0138229101
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T12:13:36Z",
@@ -553,7 +553,7 @@
           "label": "Column",
           "text": "customers.email",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [
@@ -591,7 +591,7 @@
         "db_time_share": 0.060338932147242445,
         "label": "6% of DB time",
         "score": 24.563984234493077,
-        "time_ms_per_day": 106465.13530655531
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": null,
@@ -606,7 +606,7 @@
           "label": "Lookups that wanted it",
           "text": null,
           "unit": "count",
-          "value": 300
+          "value": 300.0
         },
         {
           "label": "Estimated improvement",
@@ -618,7 +618,7 @@
           "label": "Rows in table",
           "text": null,
           "unit": "rows",
-          "value": 1500000
+          "value": 1500000.0
         }
       ],
       "queries": [
@@ -685,63 +685,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [],
-      "check": "log-volume",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Log per row this high usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, update only the columns that change, and drop indexes nobody reads (see Indexes)."
-      },
-      "id": "log-volume:255",
-      "impact": {
-        "db_time_share": 0.0015681536081671112,
-        "label": "232 MB of transaction log",
-        "score": 22,
-        "time_ms_per_day": 2766.931401231375
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T15:55:31Z",
-      "metrics": [
-        {
-          "label": "Log written",
-          "text": null,
-          "unit": "bytes",
-          "value": 242946788
-        },
-        {
-          "label": "Share of log",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.829868577958574
-        },
-        {
-          "label": "Per row",
-          "text": null,
-          "unit": "bytes",
-          "value": 8098.226266666667
-        }
-      ],
-      "queries": [
-        {
-          "id": "255",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "255"
-      },
-      "summary": "It wrote 232 MB of transaction log in the last 4 h 35 min: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
-      "title": "An update of wide writes 7.9 KB of transaction log per row it changes",
-      "verify": [
-        "Re-scan: its share of the transaction log and the bytes per row should drop."
-      ]
-    },
-    {
       "category": "indexes",
       "caveats": [
         "Counted since the index's metadata was loaded into memory, usually since SQL Server started."
@@ -757,7 +700,7 @@
       "impact": {
         "db_time_share": null,
         "label": "3 min waiting on locks",
-        "score": 22,
+        "score": 22.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -767,19 +710,19 @@
           "label": "Lock waits",
           "text": null,
           "unit": "count",
-          "value": 5
+          "value": 5.0
         },
         {
           "label": "Time waiting",
           "text": null,
           "unit": "ms",
-          "value": 186660
+          "value": 186660.0
         },
         {
           "label": "Average wait",
           "text": null,
           "unit": "ms",
-          "value": 37332
+          "value": 37332.0
         }
       ],
       "queries": [
@@ -824,7 +767,7 @@
       "impact": {
         "db_time_share": null,
         "label": "53.6 s latch waits",
-        "score": 22,
+        "score": 22.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -834,19 +777,19 @@
           "label": "Page latch waits",
           "text": null,
           "unit": "count",
-          "value": 105601
+          "value": 105601.0
         },
         {
           "label": "Time waiting",
           "text": null,
           "unit": "ms",
-          "value": 53595
+          "value": 53595.0
         },
         {
           "label": "Inserts",
           "text": null,
           "unit": "count",
-          "value": 128000
+          "value": 128000.0
         }
       ],
       "queries": [],
@@ -878,7 +821,7 @@
         "db_time_share": 0.040328933964958874,
         "label": "34% planning",
         "score": 20.082065124124778,
-        "time_ms_per_day": 71158.45870243337
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:55:21Z",
@@ -899,13 +842,13 @@
           "label": "Plans",
           "text": null,
           "unit": "count",
-          "value": 300
+          "value": 300.0
         },
         {
           "label": "Runs",
           "text": null,
           "unit": "count",
-          "value": 300
+          "value": 300.0
         }
       ],
       "queries": [
@@ -975,7 +918,7 @@
         "db_time_share": 0.014778470818232064,
         "label": "1% of DB time",
         "score": 12.156673401153814,
-        "time_ms_per_day": 26075.89891461083
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": null,
@@ -990,7 +933,7 @@
           "label": "Lookups that wanted it",
           "text": null,
           "unit": "count",
-          "value": 150
+          "value": 150.0
         },
         {
           "label": "Estimated improvement",
@@ -1002,7 +945,7 @@
           "label": "Rows in table",
           "text": null,
           "unit": "rows",
-          "value": 1000000
+          "value": 1000000.0
         }
       ],
       "queries": [
@@ -1048,13 +991,13 @@
           "label": "Rows in table",
           "text": null,
           "unit": "rows",
-          "value": 800000
+          "value": 800000.0
         },
         {
           "label": "Foreign key",
           "text": "fk_ticket_events_ticket",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -1083,7 +1026,7 @@
       "impact": {
         "db_time_share": null,
         "label": "1 deadlock",
-        "score": 9,
+        "score": 9.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -1093,19 +1036,19 @@
           "label": "Deadlocks",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         },
         {
           "label": "Pattern",
           "text": "key-lookup deadlock",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         },
         {
           "label": "Rolled back",
           "text": "orders-api",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -1135,7 +1078,7 @@
       "impact": {
         "db_time_share": null,
         "label": "1 deadlock",
-        "score": 9,
+        "score": 9.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -1145,19 +1088,19 @@
           "label": "Deadlocks",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         },
         {
           "label": "Pattern",
           "text": "opposite access order",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         },
         {
           "label": "Rolled back",
           "text": "SQLCMD",
           "unit": "text",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -1171,60 +1114,6 @@
       "verify": [
         "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 32.3 MB and makes writes to shop.orders cheaper.",
-        "sql": "ALTER INDEX [ix_orders_status_created] ON [shop].[orders] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "32.3 MB unused",
-        "score": 8.031562805175781,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 33890304
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.046689814814814816
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "No query has read ix_orders_status_created in the hour since the server last restarted, and shop.orders hasn't been written to either. It takes 32.3 MB of storage and buffer memory.",
-      "title": "ix_orders_status_created on orders is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
       ]
     },
     {
@@ -1253,13 +1142,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 27795456
+          "value": 27795456.0
         },
         {
           "label": "Reads of ix_orders_status",
           "text": null,
           "unit": "count",
-          "value": 0
+          "value": 0.0
         }
       ],
       "queries": [],
@@ -1271,116 +1160,6 @@
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
       "verify": []
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
-        "ix_order_items_product_id (foreign key fk_order_items_product) also supports a foreign key: without it, deleting or updating parent rows scans this table."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 26.4 MB and makes writes to shop.order_items cheaper.",
-        "sql": "ALTER INDEX [ix_order_items_product_id] ON [shop].[order_items] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.order_items",
-      "impact": {
-        "db_time_share": null,
-        "label": "26.4 MB unused",
-        "score": 8.025825500488281,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 27729920
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.046689814814814816
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.order_items"
-      },
-      "summary": "No query has read ix_order_items_product_id in the hour since the server last restarted, and shop.order_items hasn't been written to either. It takes 26.4 MB of storage and buffer memory.",
-      "title": "ix_order_items_product_id on order_items is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Usage counters reset when the server restarts or fails over, so an index used only by a monthly job can look unused.",
-        "Reads on read replicas or secondaries are not counted here. Check them before dropping.",
-        "ix_support_tickets_customer_id (foreign key fk_support_tickets_customer) also supports a foreign key: without it, deleting or updating parent rows scans this table."
-      ],
-      "check": "unused-index",
-      "confidence": "low",
-      "fix": {
-        "cost": "Frees 4.3 MB and makes writes to shop.support_tickets cheaper.",
-        "sql": "ALTER INDEX [ix_support_tickets_customer_id] ON [shop].[support_tickets] DISABLE;",
-        "summary": "Disable first: the definition stays, nothing reads it, and `ALTER INDEX … REBUILD` brings it back. Drop it after a full business cycle without complaints."
-      },
-      "id": "unused-index:shop.support_tickets",
-      "impact": {
-        "db_time_share": null,
-        "label": "4.3 MB unused",
-        "score": 8.004158020019531,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Size",
-          "text": null,
-          "unit": "bytes",
-          "value": 4464640
-        },
-        {
-          "label": "Writes to the table",
-          "text": null,
-          "unit": "count",
-          "value": 0
-        },
-        {
-          "label": "Counting for",
-          "text": null,
-          "unit": "days",
-          "value": 0.046689814814814816
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.support_tickets"
-      },
-      "summary": "No query has read ix_support_tickets_customer_id in the hour since the server last restarted, and shop.support_tickets hasn't been written to either. It takes 4.3 MB of storage and buffer memory.",
-      "title": "ix_support_tickets_customer_id on support_tickets is never read",
-      "verify": [
-        "Watch the queries on this table for a week after disabling; none should get slower."
-      ]
     },
     {
       "category": "indexes",
@@ -1406,13 +1185,13 @@
           "label": "Size",
           "text": null,
           "unit": "bytes",
-          "value": 663552
+          "value": 663552.0
         },
         {
           "label": "Reads of ix_products_sku",
           "text": null,
           "unit": "count",
-          "value": 1
+          "value": 1.0
         }
       ],
       "queries": [],
@@ -1439,8 +1218,8 @@
       "impact": {
         "db_time_share": 0.0009765751996705851,
         "label": "20K rows per run",
-        "score": 8,
-        "time_ms_per_day": 1723.1198344087152
+        "score": 8.0,
+        "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T15:55:40Z",
@@ -1449,13 +1228,13 @@
           "label": "Rows per run",
           "text": null,
           "unit": "rows",
-          "value": 20000
+          "value": 20000.0
         },
         {
           "label": "Runs",
           "text": null,
           "unit": "count",
-          "value": 25
+          "value": 25.0
         }
       ],
       "queries": [
@@ -1490,7 +1269,7 @@
       "impact": {
         "db_time_share": null,
         "label": "2 untrusted",
-        "score": 8,
+        "score": 8.0,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -1500,7 +1279,7 @@
           "label": "Constraints",
           "text": null,
           "unit": "count",
-          "value": 2
+          "value": 2.0
         }
       ],
       "queries": [],
@@ -1604,6 +1383,66 @@
       "summary": "With no limit on parallelism, a single large query can occupy all schedulers and make everything else queue behind it. Microsoft's guidance is at most 8, or the cores in one NUMA node.",
       "title": "One query may use every CPU core (MAXDOP 0)",
       "verify": []
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "This statement ran once in the last 5 hours. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running."
+      ],
+      "check": "log-volume",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Log per row this high usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, update only the columns that change, and drop indexes nobody reads (see Indexes)."
+      },
+      "id": "log-volume:255",
+      "impact": {
+        "db_time_share": 0.0015681536081671112,
+        "label": "232 MB of transaction log",
+        "score": 5.5,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T15:55:31Z",
+      "metrics": [
+        {
+          "label": "Log written",
+          "text": null,
+          "unit": "bytes",
+          "value": 242946788.0
+        },
+        {
+          "label": "Share of log",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.829868577958574
+        },
+        {
+          "label": "Per row",
+          "text": null,
+          "unit": "bytes",
+          "value": 8098.226266666667
+        }
+      ],
+      "queries": [
+        {
+          "id": "255",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "255"
+      },
+      "summary": "It wrote 232 MB of transaction log in the last 4 h 35 min: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
+      "title": "An update of wide writes 7.9 KB of transaction log per row it changes",
+      "verify": [
+        "Re-scan later: if it hasn't run again, there is nothing to do.",
+        "Re-scan: its share of the transaction log and the bytes per row should drop."
+      ]
     },
     {
       "category": "configuration",
@@ -2060,7 +1899,7 @@
               "host": "web-1",
               "id": "processa14d1e4e8",
               "isolation": "read committed",
-              "log_used": 240,
+              "log_used": 240.0,
               "login": "sa",
               "procedure": null,
               "session": "75",
@@ -2074,7 +1913,7 @@
               "host": "web-1",
               "id": "processa007b4ca8",
               "isolation": "read committed",
-              "log_used": 244,
+              "log_used": 244.0,
               "login": "sa",
               "procedure": null,
               "session": "73",
@@ -2159,7 +1998,7 @@
               "host": "web-1",
               "id": "process61",
               "isolation": "read committed",
-              "log_used": 0,
+              "log_used": 0.0,
               "login": "app",
               "procedure": null,
               "session": "61",
@@ -2173,7 +2012,7 @@
               "host": "worker-2",
               "id": "process64",
               "isolation": "read committed",
-              "log_used": 1240,
+              "log_used": 1240.0,
               "login": "app",
               "procedure": null,
               "session": "64",
@@ -2224,11 +2063,12 @@
         }
       ],
       "note": null,
-      "since_hours": 6,
+      "since_hours": 6.0,
       "source": "system_health event files and ring buffer"
     },
     "duration_ms": 456.244667,
     "environment": "local",
+    "escalations_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -2305,17 +2145,19 @@
           "id"
         ],
         "contention": {
-          "leaf_inserts": 0,
-          "lock_escalations": 0,
+          "leaf_inserts": 0.0,
+          "lock_escalation_attempts": 0.0,
+          "lock_escalations": 0.0,
           "optimize_for_sequential_key": false,
-          "page_latch_wait_ms": 0,
-          "page_latch_waits": 0,
-          "page_lock_wait_ms": 0,
-          "page_lock_waits": 0,
-          "row_lock_wait_ms": 2704,
-          "row_lock_waits": 1,
+          "page_latch_wait_ms": 0.0,
+          "page_latch_waits": 0.0,
+          "page_lock_wait_ms": 0.0,
+          "page_lock_waits": 0.0,
+          "row_lock_wait_ms": 2704.0,
+          "row_lock_waits": 1.0,
           "sequential_key": true
         },
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2325,21 +2167,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 600,
+        "lookups": 600.0,
         "name": "pk_customers",
-        "reads": 600,
-        "scans": 0,
+        "reads": 600.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 17506304,
+        "seeks": 0.0,
+        "size_bytes": 17506304.0,
         "table": "customers",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "email"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2349,21 +2192,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:36Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_customers_email",
-        "reads": 602,
-        "scans": 602,
+        "reads": 602.0,
+        "scans": 602.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 7413760,
+        "seeks": 0.0,
+        "size_bytes": 7413760.0,
         "table": "customers",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2373,21 +2217,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:25Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_products",
-        "reads": 30000,
-        "scans": 0,
+        "reads": 30000.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 30000,
-        "size_bytes": 1646592,
+        "seeks": 30000.0,
+        "size_bytes": 1646592.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "sku"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2397,21 +2242,22 @@
         "is_unique": true,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "uq_products_sku",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 663552,
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "sku"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2421,32 +2267,34 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_products_sku",
-        "reads": 1,
-        "scans": 1,
+        "reads": 1.0,
+        "scans": 1.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 663552,
+        "seeks": 0.0,
+        "size_bytes": 663552.0,
         "table": "products",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": {
-          "leaf_inserts": 0,
-          "lock_escalations": 0,
+          "leaf_inserts": 0.0,
+          "lock_escalation_attempts": 0.0,
+          "lock_escalations": 0.0,
           "optimize_for_sequential_key": false,
-          "page_latch_wait_ms": 0,
-          "page_latch_waits": 1,
-          "page_lock_wait_ms": 0,
-          "page_lock_waits": 0,
-          "row_lock_wait_ms": 186660,
-          "row_lock_waits": 5,
+          "page_latch_wait_ms": 0.0,
+          "page_latch_waits": 1.0,
+          "page_lock_wait_ms": 0.0,
+          "page_lock_waits": 0.0,
+          "row_lock_wait_ms": 186660.0,
+          "row_lock_waits": 5.0,
           "sequential_key": true
         },
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2456,15 +2304,15 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:40Z",
-        "lookups": 2000,
+        "lookups": 2000.0,
         "name": "pk_orders",
-        "reads": 2150,
-        "scans": 150,
+        "reads": 2150.0,
+        "scans": 150.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 62070784,
+        "seeks": 0.0,
+        "size_bytes": 62070784.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
@@ -2472,6 +2320,7 @@
           "created_at"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2481,21 +2330,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:20Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_customer_id",
-        "reads": 2000,
-        "scans": 0,
+        "reads": 2000.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 2000,
-        "size_bytes": 24649728,
+        "seeks": 2000.0,
+        "size_bytes": 24649728.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "status"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2505,15 +2355,15 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_status",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27795456,
+        "seeks": 0.0,
+        "size_bytes": 27795456.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
@@ -2521,6 +2371,7 @@
           "created_at"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2530,21 +2381,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_status_created",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 33890304,
+        "seeks": 0.0,
+        "size_bytes": 33890304.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "channel"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2554,21 +2406,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_orders_channel",
-        "reads": 1,
-        "scans": 1,
+        "reads": 1.0,
+        "scans": 1.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 22290432,
+        "seeks": 0.0,
+        "size_bytes": 22290432.0,
         "table": "orders",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2578,21 +2431,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:44Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_order_items",
-        "reads": 300,
-        "scans": 300,
+        "reads": 300.0,
+        "scans": 300.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 64495616,
+        "seeks": 0.0,
+        "size_bytes": 64495616.0,
         "table": "order_items",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "product_id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2602,21 +2456,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_order_items_product_id",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27729920,
+        "seeks": 0.0,
+        "size_bytes": 27729920.0,
         "table": "order_items",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2626,21 +2481,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:47Z",
-        "lookups": 2005,
+        "lookups": 2005.0,
         "name": "pk_support_tickets",
-        "reads": 2005,
-        "scans": 0,
+        "reads": 2005.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 27992064,
+        "seeks": 0.0,
+        "size_bytes": 27992064.0,
         "table": "support_tickets",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "customer_id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2650,32 +2506,34 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_support_tickets_customer_id",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 4464640,
+        "seeks": 0.0,
+        "size_bytes": 4464640.0,
         "table": "support_tickets",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "priority"
         ],
         "contention": {
-          "leaf_inserts": 0,
-          "lock_escalations": 5,
+          "leaf_inserts": 0.0,
+          "lock_escalation_attempts": 0.0,
+          "lock_escalations": 5.0,
           "optimize_for_sequential_key": false,
-          "page_latch_wait_ms": 0,
-          "page_latch_waits": 0,
-          "page_lock_wait_ms": 0,
-          "page_lock_waits": 0,
-          "row_lock_wait_ms": 0,
-          "row_lock_waits": 0,
+          "page_latch_wait_ms": 0.0,
+          "page_latch_waits": 0.0,
+          "page_lock_wait_ms": 0.0,
+          "page_lock_waits": 0.0,
+          "row_lock_wait_ms": 0.0,
+          "row_lock_waits": 0.0,
           "sequential_key": false
         },
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2685,21 +2543,22 @@
         "is_unique": false,
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:47Z",
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "ix_support_tickets_priority",
-        "reads": 2005,
-        "scans": 0,
+        "reads": 2005.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 2005,
-        "size_bytes": 3481600,
+        "seeks": 2005.0,
+        "size_bytes": 3481600.0,
         "table": "support_tickets",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2709,21 +2568,22 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_ticket_events",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 0,
-        "size_bytes": 39460864,
+        "seeks": 0.0,
+        "size_bytes": 39460864.0,
         "table": "ticket_events",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": null,
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2733,32 +2593,34 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "PK__child__3213E83F2BAF9907",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "archive",
-        "seeks": 0,
-        "size_bytes": 0,
+        "seeks": 0.0,
+        "size_bytes": 0.0,
         "table": "child",
-        "writes": 0
+        "writes": 0.0
       },
       {
         "columns": [
           "id"
         ],
         "contention": {
-          "leaf_inserts": 128000,
-          "lock_escalations": 0,
+          "leaf_inserts": 128000.0,
+          "lock_escalation_attempts": 0.0,
+          "lock_escalations": 0.0,
           "optimize_for_sequential_key": false,
-          "page_latch_wait_ms": 53595,
-          "page_latch_waits": 105601,
-          "page_lock_wait_ms": 0,
-          "page_lock_waits": 0,
-          "row_lock_wait_ms": 0,
-          "row_lock_waits": 0,
+          "page_latch_wait_ms": 53595.0,
+          "page_latch_waits": 105601.0,
+          "page_lock_wait_ms": 0.0,
+          "page_lock_waits": 0.0,
+          "row_lock_wait_ms": 0.0,
+          "row_lock_waits": 0.0,
           "sequential_key": true
         },
+        "created_at_latest": null,
         "definition": null,
         "filter": null,
         "include": [],
@@ -2768,20 +2630,20 @@
         "is_unique": true,
         "kind": "clustered",
         "last_read": null,
-        "lookups": 0,
+        "lookups": 0.0,
         "name": "pk_hot",
-        "reads": 0,
-        "scans": 0,
+        "reads": 0.0,
+        "scans": 0.0,
         "schema": "archive",
-        "seeks": 0,
-        "size_bytes": 3743744,
+        "seeks": 0.0,
+        "size_bytes": 3743744.0,
         "table": "hot",
-        "writes": 128000
+        "writes": 128000.0
       }
     ],
     "missing_indexes": [
       {
-        "avg_impact_pct": 81,
+        "avg_impact_pct": 81.0,
         "avg_query_cost": 5.8849191921102575,
         "equality": [],
         "include": [
@@ -2794,9 +2656,9 @@
         "query_hashes": [
           "0x11CC33E7EA9F4952"
         ],
-        "scans": 0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 150,
+        "seeks": 150.0,
         "table": "orders"
       },
       {
@@ -2811,9 +2673,9 @@
         "query_hashes": [
           "0xBBCBE1D0C08154BC"
         ],
-        "scans": 0,
+        "scans": 0.0,
         "schema": "shop",
-        "seeks": 300,
+        "seeks": 300.0,
         "table": "order_items"
       }
     ],
@@ -2830,333 +2692,333 @@
           "database": "culprit_demo",
           "kind": "log",
           "name": "culprit_demo_log",
-          "read_bytes": 26447872,
-          "read_ms": 3,
-          "reads": 104,
-          "write_bytes": 372588544,
-          "write_ms": 16454,
-          "writes": 26035
+          "read_bytes": 26447872.0,
+          "read_ms": 3.0,
+          "reads": 104.0,
+          "write_bytes": 372588544.0,
+          "write_ms": 16454.0,
+          "writes": 26035.0
         },
         {
           "database": "culprit_demo",
           "kind": "data",
           "name": "culprit_demo",
-          "read_bytes": 341606400,
-          "read_ms": 124,
-          "reads": 3080,
-          "write_bytes": 348225536,
-          "write_ms": 256,
-          "writes": 1164
+          "read_bytes": 341606400.0,
+          "read_ms": 124.0,
+          "reads": 3080.0,
+          "write_bytes": 348225536.0,
+          "write_ms": 256.0,
+          "writes": 1164.0
         },
         {
           "database": "tempdb",
           "kind": "log",
           "name": "templog",
-          "read_bytes": 1015808,
-          "read_ms": 0,
-          "reads": 8,
-          "write_bytes": 7221248,
-          "write_ms": 330,
-          "writes": 148
+          "read_bytes": 1015808.0,
+          "read_ms": 0.0,
+          "reads": 8.0,
+          "write_bytes": 7221248.0,
+          "write_ms": 330.0,
+          "writes": 148.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev",
-          "read_bytes": 5890048,
-          "read_ms": 3,
-          "reads": 96,
-          "write_bytes": 4022272,
-          "write_ms": 5,
-          "writes": 84
+          "read_bytes": 5890048.0,
+          "read_ms": 3.0,
+          "reads": 96.0,
+          "write_bytes": 4022272.0,
+          "write_ms": 5.0,
+          "writes": 84.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev2",
-          "read_bytes": 4128768,
-          "read_ms": 1,
-          "reads": 66,
-          "write_bytes": 3989504,
-          "write_ms": 3,
-          "writes": 63
+          "read_bytes": 4128768.0,
+          "read_ms": 1.0,
+          "reads": 66.0,
+          "write_bytes": 3989504.0,
+          "write_ms": 3.0,
+          "writes": 63.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev3",
-          "read_bytes": 4087808,
-          "read_ms": 1,
-          "reads": 65,
-          "write_bytes": 3948544,
-          "write_ms": 3,
-          "writes": 62
+          "read_bytes": 4087808.0,
+          "read_ms": 1.0,
+          "reads": 65.0,
+          "write_bytes": 3948544.0,
+          "write_ms": 3.0,
+          "writes": 62.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev5",
-          "read_bytes": 4153344,
-          "read_ms": 1,
-          "reads": 67,
-          "write_bytes": 4014080,
-          "write_ms": 3,
-          "writes": 63
+          "read_bytes": 4153344.0,
+          "read_ms": 1.0,
+          "reads": 67.0,
+          "write_bytes": 4014080.0,
+          "write_ms": 3.0,
+          "writes": 63.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev6",
-          "read_bytes": 4087808,
-          "read_ms": 1,
-          "reads": 65,
-          "write_bytes": 3956736,
-          "write_ms": 3,
-          "writes": 63
+          "read_bytes": 4087808.0,
+          "read_ms": 1.0,
+          "reads": 65.0,
+          "write_bytes": 3956736.0,
+          "write_ms": 3.0,
+          "writes": 63.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev4",
-          "read_bytes": 4153344,
-          "read_ms": 1,
-          "reads": 66,
-          "write_bytes": 4014080,
-          "write_ms": 2,
-          "writes": 63
+          "read_bytes": 4153344.0,
+          "read_ms": 1.0,
+          "reads": 66.0,
+          "write_bytes": 4014080.0,
+          "write_ms": 2.0,
+          "writes": 63.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev7",
-          "read_bytes": 3956736,
-          "read_ms": 1,
-          "reads": 63,
-          "write_bytes": 3817472,
-          "write_ms": 2,
-          "writes": 60
+          "read_bytes": 3956736.0,
+          "read_ms": 1.0,
+          "reads": 63.0,
+          "write_bytes": 3817472.0,
+          "write_ms": 2.0,
+          "writes": 60.0
         },
         {
           "database": "tempdb",
           "kind": "temp",
           "name": "tempdev8",
-          "read_bytes": 3956736,
-          "read_ms": 1,
-          "reads": 63,
-          "write_bytes": 3817472,
-          "write_ms": 2,
-          "writes": 60
+          "read_bytes": 3956736.0,
+          "read_ms": 1.0,
+          "reads": 63.0,
+          "write_bytes": 3817472.0,
+          "write_ms": 2.0,
+          "writes": 60.0
         }
       ],
       "grants": [
         {
-          "avg_granted_kb": 14904,
+          "avg_granted_kb": 14904.0,
           "avg_used_kb": 596.551724137931,
-          "executions": 58,
-          "max_granted_kb": 14904,
+          "executions": 58.0,
+          "max_granted_kb": 14904.0,
           "query_hash": "0x538D93CAC1A21CF3"
         },
         {
-          "avg_granted_kb": 97448,
-          "avg_used_kb": 16800,
-          "executions": 1,
-          "max_granted_kb": 97448,
+          "avg_granted_kb": 97448.0,
+          "avg_used_kb": 16800.0,
+          "executions": 1.0,
+          "max_granted_kb": 97448.0,
           "query_hash": "0xB93AFEAC88B87A44"
         },
         {
-          "avg_granted_kb": 10274,
-          "avg_used_kb": 1260,
-          "executions": 4,
-          "max_granted_kb": 11688,
+          "avg_granted_kb": 10274.0,
+          "avg_used_kb": 1260.0,
+          "executions": 4.0,
+          "max_granted_kb": 11688.0,
           "query_hash": "0x7DD3A80BED46C41C"
         },
         {
           "avg_granted_kb": 10266.666666666666,
           "avg_used_kb": 1197.3333333333333,
-          "executions": 3,
-          "max_granted_kb": 13336,
+          "executions": 3.0,
+          "max_granted_kb": 13336.0,
           "query_hash": "0xCA2A071DE2E5CB4E"
         },
         {
-          "avg_granted_kb": 38872,
-          "avg_used_kb": 13560,
-          "executions": 1,
-          "max_granted_kb": 38872,
+          "avg_granted_kb": 38872.0,
+          "avg_used_kb": 13560.0,
+          "executions": 1.0,
+          "max_granted_kb": 38872.0,
           "query_hash": "0x26B5AF33C3FE80E4"
         },
         {
-          "avg_granted_kb": 5464,
-          "avg_used_kb": 1096,
-          "executions": 5,
-          "max_granted_kb": 5464,
+          "avg_granted_kb": 5464.0,
+          "avg_used_kb": 1096.0,
+          "executions": 5.0,
+          "max_granted_kb": 5464.0,
           "query_hash": "0xB7580776ABAF5C89"
         },
         {
-          "avg_granted_kb": 2672,
+          "avg_granted_kb": 2672.0,
           "avg_used_kb": 329.77777777777777,
-          "executions": 9,
-          "max_granted_kb": 2672,
+          "executions": 9.0,
+          "max_granted_kb": 2672.0,
           "query_hash": "0x2E70EF6C50F8B425"
         },
         {
-          "avg_granted_kb": 3760,
-          "avg_used_kb": 392,
-          "executions": 4,
-          "max_granted_kb": 3760,
+          "avg_granted_kb": 3760.0,
+          "avg_used_kb": 392.0,
+          "executions": 4.0,
+          "max_granted_kb": 3760.0,
           "query_hash": "0x79A740AB01010E76"
         },
         {
-          "avg_granted_kb": 6296,
-          "avg_used_kb": 960,
-          "executions": 2,
-          "max_granted_kb": 6408,
+          "avg_granted_kb": 6296.0,
+          "avg_used_kb": 960.0,
+          "executions": 2.0,
+          "max_granted_kb": 6408.0,
           "query_hash": "0xA82DBA5F031BB8DE"
         },
         {
-          "avg_granted_kb": 8704,
-          "avg_used_kb": 1408,
-          "executions": 1,
-          "max_granted_kb": 8704,
+          "avg_granted_kb": 8704.0,
+          "avg_used_kb": 1408.0,
+          "executions": 1.0,
+          "max_granted_kb": 8704.0,
           "query_hash": "0xC6BEBE5FF49E8119"
         },
         {
-          "avg_granted_kb": 3312,
-          "avg_used_kb": 912,
-          "executions": 3,
-          "max_granted_kb": 3312,
+          "avg_granted_kb": 3312.0,
+          "avg_used_kb": 912.0,
+          "executions": 3.0,
+          "max_granted_kb": 3312.0,
           "query_hash": "0x111E3E5969A5D833"
         },
         {
-          "avg_granted_kb": 3232,
-          "avg_used_kb": 960,
-          "executions": 3,
-          "max_granted_kb": 3232,
+          "avg_granted_kb": 3232.0,
+          "avg_used_kb": 960.0,
+          "executions": 3.0,
+          "max_granted_kb": 3232.0,
           "query_hash": "0x499E6D8549462667"
         },
         {
-          "avg_granted_kb": 2112,
-          "avg_used_kb": 442,
-          "executions": 4,
-          "max_granted_kb": 2112,
+          "avg_granted_kb": 2112.0,
+          "avg_used_kb": 442.0,
+          "executions": 4.0,
+          "max_granted_kb": 2112.0,
           "query_hash": "0x851AB8B7F8AA5975"
         },
         {
-          "avg_granted_kb": 6528,
-          "avg_used_kb": 32,
-          "executions": 1,
-          "max_granted_kb": 6528,
+          "avg_granted_kb": 6528.0,
+          "avg_used_kb": 32.0,
+          "executions": 1.0,
+          "max_granted_kb": 6528.0,
           "query_hash": "0x2A6AABAD09433795"
         },
         {
-          "avg_granted_kb": 6240,
-          "avg_used_kb": 1264,
-          "executions": 1,
-          "max_granted_kb": 6240,
+          "avg_granted_kb": 6240.0,
+          "avg_used_kb": 1264.0,
+          "executions": 1.0,
+          "max_granted_kb": 6240.0,
           "query_hash": "0x9ED977B68BF6BDF8"
         },
         {
-          "avg_granted_kb": 7528,
-          "avg_used_kb": 2592,
-          "executions": 1,
-          "max_granted_kb": 7528,
+          "avg_granted_kb": 7528.0,
+          "avg_used_kb": 2592.0,
+          "executions": 1.0,
+          "max_granted_kb": 7528.0,
           "query_hash": "0x3DF2B9A646FEB7F0"
         },
         {
-          "avg_granted_kb": 3392,
-          "avg_used_kb": 960,
-          "executions": 2,
-          "max_granted_kb": 3432,
+          "avg_granted_kb": 3392.0,
+          "avg_used_kb": 960.0,
+          "executions": 2.0,
+          "max_granted_kb": 3432.0,
           "query_hash": "0x1E1D244420C4CF14"
         },
         {
-          "avg_granted_kb": 6328,
-          "avg_used_kb": 1584,
-          "executions": 1,
-          "max_granted_kb": 6328,
+          "avg_granted_kb": 6328.0,
+          "avg_used_kb": 1584.0,
+          "executions": 1.0,
+          "max_granted_kb": 6328.0,
           "query_hash": "0x618F4B31843C5BC7"
         },
         {
-          "avg_granted_kb": 5624,
-          "avg_used_kb": 960,
-          "executions": 1,
-          "max_granted_kb": 5624,
+          "avg_granted_kb": 5624.0,
+          "avg_used_kb": 960.0,
+          "executions": 1.0,
+          "max_granted_kb": 5624.0,
           "query_hash": "0x447B66D0CE677154"
         },
         {
-          "avg_granted_kb": 3104,
-          "avg_used_kb": 784,
-          "executions": 2,
-          "max_granted_kb": 3104,
+          "avg_granted_kb": 3104.0,
+          "avg_used_kb": 784.0,
+          "executions": 2.0,
+          "max_granted_kb": 3104.0,
           "query_hash": "0xCC3150A6157C7C1A"
         },
         {
-          "avg_granted_kb": 1088,
-          "avg_used_kb": 16,
-          "executions": 4,
-          "max_granted_kb": 1088,
+          "avg_granted_kb": 1088.0,
+          "avg_used_kb": 16.0,
+          "executions": 4.0,
+          "max_granted_kb": 1088.0,
           "query_hash": "0x243C1C62E0CA19B4"
         },
         {
-          "avg_granted_kb": 6456,
-          "avg_used_kb": 2240,
-          "executions": 1,
-          "max_granted_kb": 6456,
+          "avg_granted_kb": 6456.0,
+          "avg_used_kb": 2240.0,
+          "executions": 1.0,
+          "max_granted_kb": 6456.0,
           "query_hash": "0x8908531C5A846D44"
         },
         {
-          "avg_granted_kb": 1024,
-          "avg_used_kb": 0,
-          "executions": 4,
-          "max_granted_kb": 1024,
+          "avg_granted_kb": 1024.0,
+          "avg_used_kb": 0.0,
+          "executions": 4.0,
+          "max_granted_kb": 1024.0,
           "query_hash": "0x484FA8388BE0B441"
         },
         {
-          "avg_granted_kb": 1024,
-          "avg_used_kb": 16,
-          "executions": 4,
-          "max_granted_kb": 1024,
+          "avg_granted_kb": 1024.0,
+          "avg_used_kb": 16.0,
+          "executions": 4.0,
+          "max_granted_kb": 1024.0,
           "query_hash": "0x5E54E6762DCA7E03"
         },
         {
-          "avg_granted_kb": 1024,
-          "avg_used_kb": 16,
-          "executions": 4,
-          "max_granted_kb": 1024,
+          "avg_granted_kb": 1024.0,
+          "avg_used_kb": 16.0,
+          "executions": 4.0,
+          "max_granted_kb": 1024.0,
           "query_hash": "0xD4C09FC424B514A4"
         },
         {
-          "avg_granted_kb": 1024,
-          "avg_used_kb": 16,
-          "executions": 4,
-          "max_granted_kb": 1024,
+          "avg_granted_kb": 1024.0,
+          "avg_used_kb": 16.0,
+          "executions": 4.0,
+          "max_granted_kb": 1024.0,
           "query_hash": "0xF5C3CFD762D1282A"
         },
         {
-          "avg_granted_kb": 5712,
-          "avg_used_kb": 1928,
-          "executions": 1,
-          "max_granted_kb": 5712,
+          "avg_granted_kb": 5712.0,
+          "avg_used_kb": 1928.0,
+          "executions": 1.0,
+          "max_granted_kb": 5712.0,
           "query_hash": "0xD02C0FE32C192DC3"
         },
         {
-          "avg_granted_kb": 3240,
-          "avg_used_kb": 672,
-          "executions": 1,
-          "max_granted_kb": 3240,
+          "avg_granted_kb": 3240.0,
+          "avg_used_kb": 672.0,
+          "executions": 1.0,
+          "max_granted_kb": 3240.0,
           "query_hash": "0x52EE73CE6AAD32B5"
         },
         {
-          "avg_granted_kb": 3408,
-          "avg_used_kb": 960,
-          "executions": 1,
-          "max_granted_kb": 3408,
+          "avg_granted_kb": 3408.0,
+          "avg_used_kb": 960.0,
+          "executions": 1.0,
+          "max_granted_kb": 3408.0,
           "query_hash": "0xA7A4F409DDE32082"
         },
         {
-          "avg_granted_kb": 3208,
-          "avg_used_kb": 888,
-          "executions": 1,
-          "max_granted_kb": 3208,
+          "avg_granted_kb": 3208.0,
+          "avg_used_kb": 888.0,
+          "executions": 1.0,
+          "max_granted_kb": 3208.0,
           "query_hash": "0x320D04EAEE594F1A"
         }
       ],
@@ -3188,7 +3050,7 @@
           "scope": "now",
           "status": "good",
           "unit": "seconds",
-          "value": 4032
+          "value": 4032.0
         },
         {
           "healthy": "0 is healthy",
@@ -3197,7 +3059,7 @@
           "scope": "now",
           "status": "good",
           "unit": "count",
-          "value": 0
+          "value": 0.0
         },
         {
           "healthy": "under 20% of waiting is healthy; more means queries queue for a processor",
@@ -3224,7 +3086,7 @@
           "scope": "now",
           "status": "good",
           "unit": "count",
-          "value": 0
+          "value": 0.0
         },
         {
           "healthy": "small, and shrinking when transactions end",
@@ -3233,7 +3095,7 @@
           "scope": "now",
           "status": "good",
           "unit": "bytes",
-          "value": 0
+          "value": 0.0
         },
         {
           "healthy": "under 5 a second: pooled connections log in once and are reused",
@@ -3263,7 +3125,7 @@
       ],
       "cloud": null,
       "database": "culprit_demo",
-      "database_size_bytes": 411041792,
+      "database_size_bytes": 411041792.0,
       "edition": "Developer Edition (64-bit)",
       "engine": "mssql",
       "missing": [],
@@ -3682,34 +3544,35 @@
         "value": ""
       }
     ],
+    "sizes_before": null,
     "statistics": [
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:06Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_customers",
-        "rows": 200000,
-        "rows_sampled": 110814,
+        "rows": 200000.0,
+        "rows_sampled": 110814.0,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:25Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_customers_email",
-        "rows": 200000,
-        "rows_sampled": 111593,
+        "rows": 200000.0,
+        "rows_sampled": 111593.0,
         "schema": "shop",
         "table": "customers"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T12:13:20Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_products",
-        "rows": 20000,
-        "rows_sampled": 20000,
+        "rows": 20000.0,
+        "rows_sampled": 20000.0,
         "schema": "shop",
         "table": "products"
       },
@@ -3736,130 +3599,130 @@
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_orders",
-        "rows": 1000000,
-        "rows_sampled": 175627,
+        "rows": 1000000.0,
+        "rows_sampled": 175627.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_customer_id",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_status",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_status_created",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_orders_channel",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:27Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000006_3A81B327",
-        "rows": 1000000,
-        "rows_sampled": 178273,
+        "rows": 1000000.0,
+        "rows_sampled": 178273.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:45Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000007_3A81B327",
-        "rows": 1000000,
-        "rows_sampled": 168777,
+        "rows": 1000000.0,
+        "rows_sampled": 168777.0,
         "schema": "shop",
         "table": "orders"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_order_items",
-        "rows": 1500000,
-        "rows_sampled": 243358,
+        "rows": 1500000.0,
+        "rows_sampled": 243358.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_order_items_product_id",
-        "rows": 1500000,
-        "rows_sampled": 220800,
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": true,
         "last_updated": "2026-10-11T07:44:47Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "_WA_Sys_00000002_3D5E1FD2",
-        "rows": 1500000,
-        "rows_sampled": 220800,
+        "rows": 1500000.0,
+        "rows_sampled": 220800.0,
         "schema": "shop",
         "table": "order_items"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "pk_support_tickets",
-        "rows": 300000,
-        "rows_sampled": 100832,
+        "rows": 300000.0,
+        "rows_sampled": 100832.0,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_support_tickets_customer_id",
-        "rows": 300000,
-        "rows_sampled": 108383,
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
         "schema": "shop",
         "table": "support_tickets"
       },
       {
         "auto_created": false,
         "last_updated": "2026-10-11T07:44:50Z",
-        "modifications": 0,
+        "modifications": 0.0,
         "name": "ix_support_tickets_priority",
-        "rows": 300000,
-        "rows_sampled": 108383,
+        "rows": 300000.0,
+        "rows_sampled": 108383.0,
         "schema": "shop",
         "table": "support_tickets"
       },
@@ -3876,194 +3739,218 @@
     ],
     "tables": [
       {
-        "data_bytes": 17506304,
+        "data_bytes": 17506304.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7413760,
+        "in_row_bytes": null,
+        "index_bytes": 7413760.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "customers",
-        "rows": 200000,
+        "overflow_bytes": null,
+        "rows": 200000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 24920064,
+        "total_bytes": 24920064.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 64495616,
+        "data_bytes": 64495616.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 27729920,
+        "in_row_bytes": null,
+        "index_bytes": 27729920.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "order_items",
-        "rows": 1500000,
+        "overflow_bytes": null,
+        "rows": 1500000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 92225536,
+        "total_bytes": 92225536.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 62070784,
+        "data_bytes": 62070784.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 108625920,
+        "in_row_bytes": null,
+        "index_bytes": 108625920.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "orders",
-        "rows": 1000000,
+        "overflow_bytes": null,
+        "rows": 1000000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 170696704,
+        "total_bytes": 170696704.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 1646592,
+        "data_bytes": 1646592.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 1327104,
+        "in_row_bytes": null,
+        "index_bytes": 1327104.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "products",
-        "rows": 20000,
+        "overflow_bytes": null,
+        "rows": 20000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 2973696,
+        "total_bytes": 2973696.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 27992064,
+        "data_bytes": 27992064.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 7946240,
+        "in_row_bytes": null,
+        "index_bytes": 7946240.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "support_tickets",
-        "rows": 300000,
+        "overflow_bytes": null,
+        "rows": 300000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 35938304,
+        "total_bytes": 35938304.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 39460864,
+        "data_bytes": 39460864.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 0,
+        "in_row_bytes": null,
+        "index_bytes": 0.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "ticket_events",
-        "rows": 800000,
+        "overflow_bytes": null,
+        "rows": 800000.0,
         "schema": "shop",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 39460864,
+        "total_bytes": 39460864.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 0,
+        "data_bytes": 0.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 0,
+        "in_row_bytes": null,
+        "index_bytes": 0.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "child",
-        "rows": 0,
+        "overflow_bytes": null,
+        "rows": 0.0,
         "schema": "archive",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 0,
+        "total_bytes": 0.0,
         "updates": null,
         "xid_age": null
       },
       {
-        "data_bytes": 3743744,
+        "data_bytes": 3743744.0,
         "dead_rows": null,
         "deletes": null,
         "forwarded_fetches": null,
         "forwarded_records": null,
         "has_primary_key": true,
-        "index_bytes": 0,
+        "in_row_bytes": null,
+        "index_bytes": 0.0,
         "index_scans": null,
         "inserts": null,
         "is_heap": false,
         "last_analyze": null,
         "last_vacuum": null,
+        "lob_bytes": null,
         "modifications_since_analyze": null,
         "name": "hot",
-        "rows": 128000,
+        "overflow_bytes": null,
+        "rows": 128000.0,
         "schema": "archive",
         "seq_rows_read": null,
         "seq_scans": null,
         "storage": null,
-        "total_bytes": 3743744,
+        "total_bytes": 3743744.0,
         "updates": null,
         "xid_age": null
       }
@@ -4074,31 +3961,31 @@
       {
         "category": "Latch",
         "tasks": null,
-        "wait_ms": 82441,
+        "wait_ms": 82441.0,
         "wait_type": "Latch"
       },
       {
         "category": "Parallelism",
         "tasks": null,
-        "wait_ms": 17665,
+        "wait_ms": 17665.0,
         "wait_type": "Parallelism"
       },
       {
         "category": "Memory",
         "tasks": null,
-        "wait_ms": 5947,
+        "wait_ms": 5947.0,
         "wait_type": "Memory"
       },
       {
         "category": "CPU",
         "tasks": null,
-        "wait_ms": 423,
+        "wait_ms": 423.0,
         "wait_type": "CPU"
       },
       {
         "category": "Lock",
         "tasks": null,
-        "wait_ms": 15,
+        "wait_ms": 15.0,
         "wait_type": "Lock"
       }
     ],
@@ -4106,31 +3993,31 @@
       "queries": [
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 221.93399999999997,
-            "plans": 3,
-            "row_bytes": 127,
+            "plans": 3.0,
+            "row_bytes": 127.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 22164.034,
-          "executions": 1200,
+          "executions": 1200.0,
           "first_seen": "2026-10-11T07:44:33Z",
           "id": "7",
           "last_seen": "2026-10-11T12:13:36Z",
-          "logical_reads": 1068000,
+          "logical_reads": 1068000.0,
           "max_time_ms": 33.537,
           "mean_time_ms": 18.470993333333332,
           "object_name": null,
           "parameters": "@P1 nvarchar(4000)",
-          "physical_reads": 311,
+          "physical_reads": 311.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -4164,7 +4051,7 @@
                   "act_time_ms": null,
                   "children": [],
                   "detail": null,
-                  "est_executions": 1,
+                  "est_executions": 1.0,
                   "est_rows": 1.00025,
                   "id": 2,
                   "index": "ix_customers_email",
@@ -4194,12 +4081,12 @@
                     "Storage": "RowStore",
                     "TableCardinality": "200000"
                   },
-                  "rows_read": 200000,
+                  "rows_read": 200000.0,
                   "runtime": null,
                   "seek_predicate": null,
                   "self_cost": 0.872171,
                   "subtree_cost": 0.872171,
-                  "table_rows": 200000,
+                  "table_rows": 200000.0,
                   "warnings": [
                     "residual-predicate"
                   ]
@@ -4211,7 +4098,7 @@
                   "children": [],
                   "detail": null,
                   "est_executions": 1.00025424,
-                  "est_rows": 1,
+                  "est_rows": 1.0,
                   "id": 4,
                   "index": "pk_customers",
                   "kind": "lookup",
@@ -4245,12 +4132,12 @@
                   "seek_predicate": "[id] = [culprit_demo].[shop].[customers].[id]",
                   "self_cost": 0.00328314,
                   "subtree_cost": 0.00328314,
-                  "table_rows": 200000,
+                  "table_rows": 200000.0,
                   "warnings": []
                 }
               ],
               "detail": "Inner Join",
-              "est_executions": 1,
+              "est_executions": 1.0,
               "est_rows": 1.00025,
               "id": 1,
               "index": null,
@@ -4289,7 +4176,7 @@
           "plans": [
             {
               "compiled": "@P1 = N'user141017@example.com'",
-              "executions": 1200,
+              "executions": 1200.0,
               "first_seen": "2026-10-11T07:44:33Z",
               "id": "7",
               "is_forced": false,
@@ -4303,7 +4190,7 @@
             }
           ],
           "query_hash": "0xE9B9B9AEF7209B51",
-          "rows": 1200,
+          "rows": 1200.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4313,30 +4200,30 @@
             "p99_ms": null
           },
           "stddev_time_ms": 0.7882754897894857,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [id], [name], [segment] FROM [shop].[customers] WHERE [email] = @P1",
           "total_time_ms": 22165.192,
           "trend": {
             "executions": [
-              2,
-              71,
-              82,
-              80,
-              87,
-              84,
-              77,
-              76,
-              64,
-              61,
-              50,
-              46,
-              48,
-              53,
-              49,
-              55,
-              66,
-              77,
-              72
+              2.0,
+              71.0,
+              82.0,
+              80.0,
+              87.0,
+              84.0,
+              77.0,
+              76.0,
+              64.0,
+              61.0,
+              50.0,
+              46.0,
+              48.0,
+              53.0,
+              49.0,
+              55.0,
+              66.0,
+              77.0,
+              72.0
             ],
             "time_ms": [
               36.86,
@@ -4364,33 +4251,33 @@
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 11,
+              "wait_ms": 11.0,
               "wait_type": "CPU"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 196.353,
-            "plans": 3,
-            "row_bytes": 24,
+            "plans": 3.0,
+            "row_bytes": 24.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 34296.422,
-          "executions": 600,
+          "executions": 600.0,
           "first_seen": "2026-10-11T07:44:47Z",
           "id": "9",
           "last_seen": "2026-10-11T12:13:44Z",
-          "logical_reads": 4795800,
+          "logical_reads": 4795800.0,
           "max_time_ms": 132.967,
           "mean_time_ms": 11.237656666666666,
           "object_name": null,
@@ -4438,7 +4325,7 @@
                   "act_time_ms": null,
                   "children": [],
                   "detail": null,
-                  "est_executions": 1,
+                  "est_executions": 1.0,
                   "est_rows": 1.8457,
                   "id": 1,
                   "index": "pk_order_items",
@@ -4467,19 +4354,19 @@
                     "Storage": "RowStore",
                     "TableCardinality": "1.5e+06"
                   },
-                  "rows_read": 1500000,
+                  "rows_read": 1500000.0,
                   "runtime": null,
                   "seek_predicate": null,
                   "self_cost": 6.02553,
                   "subtree_cost": 6.02553,
-                  "table_rows": 1500000,
+                  "table_rows": 1500000.0,
                   "warnings": [
                     "residual-predicate"
                   ]
                 }
               ],
               "detail": "Gather Streams",
-              "est_executions": 1,
+              "est_executions": 1.0,
               "est_rows": 1.8457,
               "id": 0,
               "index": null,
@@ -4516,7 +4403,7 @@
           "plans": [
             {
               "compiled": "@P1 = (408418)",
-              "executions": 600,
+              "executions": 600.0,
               "first_seen": "2026-10-11T07:44:47Z",
               "id": "9",
               "is_forced": false,
@@ -4530,7 +4417,7 @@
             }
           ],
           "query_hash": "0xBBCBE1D0C08154BC",
-          "rows": 906,
+          "rows": 906.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4540,30 +4427,30 @@
             "p99_ms": null
           },
           "stddev_time_ms": 5.616261453910221,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1",
           "total_time_ms": 6742.594,
           "trend": {
             "executions": [
-              1,
-              35,
-              41,
-              40,
-              43,
-              42,
-              38,
-              38,
-              32,
-              30,
-              25,
-              23,
-              24,
-              27,
-              24,
-              28,
-              33,
-              39,
-              37
+              1.0,
+              35.0,
+              41.0,
+              40.0,
+              43.0,
+              42.0,
+              38.0,
+              38.0,
+              32.0,
+              30.0,
+              25.0,
+              23.0,
+              24.0,
+              27.0,
+              24.0,
+              28.0,
+              33.0,
+              39.0,
+              37.0
             ],
             "time_ms": [
               10.62,
@@ -4579,7 +4466,7 @@
               300.67,
               242.34,
               308.96,
-              269,
+              269.0,
               263.42,
               339.37,
               332.56,
@@ -4591,56 +4478,56 @@
             {
               "category": "Latch",
               "tasks": null,
-              "wait_ms": 47061,
+              "wait_ms": 47061.0,
               "wait_type": "Latch"
             },
             {
               "category": "Parallelism",
               "tasks": null,
-              "wait_ms": 8565,
+              "wait_ms": 8565.0,
               "wait_type": "Parallelism"
             },
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 1630,
+              "wait_ms": 1630.0,
               "wait_type": "Memory"
             },
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 5,
+              "wait_ms": 5.0,
               "wait_type": "CPU"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 128.66299999999998,
-            "plans": 3,
-            "row_bytes": 233,
+            "plans": 3.0,
+            "row_bytes": 233.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 5802.675,
-          "executions": 4010,
+          "executions": 4010.0,
           "first_seen": "2026-10-11T07:44:50Z",
           "id": "10",
           "last_seen": "2026-10-11T12:13:47Z",
-          "logical_reads": 12442994,
+          "logical_reads": 12442994.0,
           "max_time_ms": 376.75,
           "mean_time_ms": 1.4473511221945137,
           "object_name": null,
           "parameters": "@P1 tinyint",
-          "physical_reads": 3768,
+          "physical_reads": 3768.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -4673,7 +4560,7 @@
                   "act_time_ms": null,
                   "children": [],
                   "detail": null,
-                  "est_executions": 1,
+                  "est_executions": 1.0,
                   "est_rows": 287.868,
                   "id": 2,
                   "index": "ix_support_tickets_priority",
@@ -4709,7 +4596,7 @@
                   "seek_predicate": "[priority] = [@P1]",
                   "self_cost": 0.00359865,
                   "subtree_cost": 0.00359865,
-                  "table_rows": 300000,
+                  "table_rows": 300000.0,
                   "warnings": []
                 },
                 {
@@ -4719,7 +4606,7 @@
                   "children": [],
                   "detail": null,
                   "est_executions": 287.868,
-                  "est_rows": 1,
+                  "est_rows": 1.0,
                   "id": 4,
                   "index": "pk_support_tickets",
                   "kind": "lookup",
@@ -4753,12 +4640,12 @@
                   "seek_predicate": "[id] = [culprit_demo].[shop].[support_tickets].[id]",
                   "self_cost": 0.905129,
                   "subtree_cost": 0.905129,
-                  "table_rows": 300000,
+                  "table_rows": 300000.0,
                   "warnings": []
                 }
               ],
               "detail": "Inner Join",
-              "est_executions": 1,
+              "est_executions": 1.0,
               "est_rows": 287.868,
               "id": 0,
               "index": null,
@@ -4795,7 +4682,7 @@
           "plans": [
             {
               "compiled": "@P1 = (5)",
-              "executions": 4010,
+              "executions": 4010.0,
               "first_seen": "2026-10-11T07:44:50Z",
               "id": "10",
               "is_forced": false,
@@ -4809,7 +4696,7 @@
             }
           ],
           "query_hash": "0xFEBD637132E1276E",
-          "rows": 3900000,
+          "rows": 3900000.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4819,30 +4706,30 @@
             "p99_ms": null
           },
           "stddev_time_ms": 17.49761392102848,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1",
           "total_time_ms": 5803.878,
           "trend": {
             "executions": [
-              2,
-              237,
-              275,
-              268,
-              290,
-              280,
-              256,
-              253,
-              213,
-              203,
-              169,
-              155,
-              160,
-              177,
-              163,
-              185,
-              222,
-              258,
-              244
+              2.0,
+              237.0,
+              275.0,
+              268.0,
+              290.0,
+              280.0,
+              256.0,
+              253.0,
+              213.0,
+              203.0,
+              169.0,
+              155.0,
+              160.0,
+              177.0,
+              163.0,
+              185.0,
+              222.0,
+              258.0,
+              244.0
             ],
             "time_ms": [
               2.93,
@@ -4870,44 +4757,44 @@
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 20,
+              "wait_ms": 20.0,
               "wait_type": "Memory"
             },
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 2,
+              "wait_ms": 2.0,
               "wait_type": "CPU"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 79.255,
-            "plans": 3,
-            "row_bytes": 24,
+            "plans": 3.0,
+            "row_bytes": 24.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 27752.211,
-          "executions": 300,
+          "executions": 300.0,
           "first_seen": "2026-10-11T07:44:45Z",
           "id": "8",
           "last_seen": "2026-10-11T12:13:40Z",
-          "logical_reads": 2308200,
+          "logical_reads": 2308200.0,
           "max_time_ms": 29.618,
           "mean_time_ms": 16.599239999999998,
           "object_name": null,
           "parameters": "@P1 int,@P2 int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [
@@ -4952,7 +4839,7 @@
                   "act_time_ms": null,
                   "children": [],
                   "detail": null,
-                  "est_executions": 1,
+                  "est_executions": 1.0,
                   "est_rows": 3282.66,
                   "id": 1,
                   "index": "pk_orders",
@@ -4981,19 +4868,19 @@
                     "Storage": "RowStore",
                     "TableCardinality": "1e+06"
                   },
-                  "rows_read": 1000000,
+                  "rows_read": 1000000.0,
                   "runtime": null,
                   "seek_predicate": null,
                   "self_cost": 5.72918,
                   "subtree_cost": 5.72918,
-                  "table_rows": 1000000,
+                  "table_rows": 1000000.0,
                   "warnings": [
                     "residual-predicate"
                   ]
                 }
               ],
               "detail": "Gather Streams",
-              "est_executions": 1,
+              "est_executions": 1.0,
               "est_rows": 3282.66,
               "id": 0,
               "index": null,
@@ -5030,7 +4917,7 @@
           "plans": [
             {
               "compiled": null,
-              "executions": 93,
+              "executions": 93.0,
               "first_seen": "2026-10-11T10:46:12Z",
               "id": "47",
               "is_forced": false,
@@ -5044,7 +4931,7 @@
             },
             {
               "compiled": "@P2 = (1), @P1 = (0)",
-              "executions": 207,
+              "executions": 207.0,
               "first_seen": "2026-10-11T07:44:45Z",
               "id": "8",
               "is_forced": false,
@@ -5058,7 +4945,7 @@
             }
           ],
           "query_hash": "0x11CC33E7EA9F4952",
-          "rows": 984960,
+          "rows": 984960.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5068,33 +4955,33 @@
             "p99_ms": null
           },
           "stddev_time_ms": 4.8133084203694985,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')",
           "total_time_ms": 4979.772,
           "trend": {
             "executions": [
-              0,
-              18,
-              20,
-              20,
-              22,
-              21,
-              19,
-              19,
-              16,
-              15,
-              13,
-              12,
-              12,
-              13,
-              12,
-              14,
-              17,
-              19,
-              18
+              0.0,
+              18.0,
+              20.0,
+              20.0,
+              22.0,
+              21.0,
+              19.0,
+              19.0,
+              16.0,
+              15.0,
+              13.0,
+              12.0,
+              12.0,
+              13.0,
+              12.0,
+              14.0,
+              17.0,
+              19.0,
+              18.0
             ],
             "time_ms": [
-              0,
+              0.0,
               183.82,
               178.72,
               196.07,
@@ -5119,56 +5006,56 @@
             {
               "category": "Latch",
               "tasks": null,
-              "wait_ms": 35198,
+              "wait_ms": 35198.0,
               "wait_type": "Latch"
             },
             {
               "category": "Parallelism",
               "tasks": null,
-              "wait_ms": 5776,
+              "wait_ms": 5776.0,
               "wait_type": "Parallelism"
             },
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 35,
+              "wait_ms": 35.0,
               "wait_type": "CPU"
             },
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 14,
+              "wait_ms": 14.0,
               "wait_type": "Memory"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 25.719,
-            "plans": 3,
-            "row_bytes": 224,
+            "plans": 3.0,
+            "row_bytes": 224.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 814.21,
-          "executions": 60000,
+          "executions": 60000.0,
           "first_seen": "2026-10-11T07:44:28Z",
           "id": "6",
           "last_seen": "2026-10-11T12:13:25Z",
-          "logical_reads": 120000,
+          "logical_reads": 120000.0,
           "max_time_ms": 0.277,
           "mean_time_ms": 0.01370395,
           "object_name": null,
           "parameters": "@P1 int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -5196,8 +5083,8 @@
               "act_time_ms": null,
               "children": [],
               "detail": null,
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": "pk_products",
               "kind": "seek",
@@ -5227,12 +5114,12 @@
                 "Storage": "RowStore",
                 "TableCardinality": "20000"
               },
-              "rows_read": 1,
+              "rows_read": 1.0,
               "runtime": null,
               "seek_predicate": "[id] = [@P1]",
               "self_cost": 0.0032831,
               "subtree_cost": 0.0032831,
-              "table_rows": 20000,
+              "table_rows": 20000.0,
               "warnings": []
             },
             "statement": "SELECT [id], [name], [price] FROM [shop].[products] WHERE [id] = @P1",
@@ -5242,7 +5129,7 @@
           "plans": [
             {
               "compiled": "@P1 = (12148)",
-              "executions": 60000,
+              "executions": 60000.0,
               "first_seen": "2026-10-11T07:44:28Z",
               "id": "6",
               "is_forced": false,
@@ -5256,7 +5143,7 @@
             }
           ],
           "query_hash": "0xBD30C1112C2A5560",
-          "rows": 60000,
+          "rows": 60000.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5266,30 +5153,30 @@
             "p99_ms": null
           },
           "stddev_time_ms": 0.006748578541708695,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [id], [name], [price] FROM [shop].[products] WHERE [id] = @P1",
           "total_time_ms": 822.237,
           "trend": {
             "executions": [
-              117,
-              3542,
-              4115,
-              4010,
-              4340,
-              4191,
-              3837,
-              3791,
-              3187,
-              3043,
-              2532,
-              2317,
-              2395,
-              2646,
-              2433,
-              2762,
-              3323,
-              3857,
-              3562
+              117.0,
+              3542.0,
+              4115.0,
+              4010.0,
+              4340.0,
+              4191.0,
+              3837.0,
+              3791.0,
+              3187.0,
+              3043.0,
+              2532.0,
+              2317.0,
+              2395.0,
+              2646.0,
+              2433.0,
+              2762.0,
+              3323.0,
+              3857.0,
+              3562.0
             ],
             "time_ms": [
               1.57,
@@ -5317,31 +5204,31 @@
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 381.95900000000006,
-            "plans": 3,
+            "plans": 3.0,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 232.009,
-          "executions": 4000,
+          "executions": 4000.0,
           "first_seen": "2026-10-11T07:44:27Z",
           "id": "5",
           "last_seen": "2026-10-11T12:13:20Z",
-          "logical_reads": 72110,
+          "logical_reads": 72110.0,
           "max_time_ms": 1.534,
           "mean_time_ms": 0.05814425,
           "object_name": null,
           "parameters": "@P1 int",
-          "physical_reads": 10560,
+          "physical_reads": 10560.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -5380,7 +5267,7 @@
                       "act_time_ms": null,
                       "children": [],
                       "detail": null,
-                      "est_executions": 1,
+                      "est_executions": 1.0,
                       "est_rows": 5.00205,
                       "id": 2,
                       "index": "ix_orders_customer_id",
@@ -5416,7 +5303,7 @@
                       "seek_predicate": "[customer_id] = [@P1]",
                       "self_cost": 0.0032875,
                       "subtree_cost": 0.0032875,
-                      "table_rows": 1000000,
+                      "table_rows": 1000000.0,
                       "warnings": []
                     },
                     {
@@ -5426,7 +5313,7 @@
                       "children": [],
                       "detail": null,
                       "est_executions": 5.00205,
-                      "est_rows": 1,
+                      "est_rows": 1.0,
                       "id": 4,
                       "index": "pk_orders",
                       "kind": "lookup",
@@ -5460,12 +5347,12 @@
                       "seek_predicate": "[id] = [culprit_demo].[shop].[orders].[id]",
                       "self_cost": 0.0132947,
                       "subtree_cost": 0.0132947,
-                      "table_rows": 1000000,
+                      "table_rows": 1000000.0,
                       "warnings": []
                     }
                   ],
                   "detail": "Inner Join",
-                  "est_executions": 1,
+                  "est_executions": 1.0,
                   "est_rows": 5.00205,
                   "id": 1,
                   "index": null,
@@ -5497,7 +5384,7 @@
                 }
               ],
               "detail": null,
-              "est_executions": 1,
+              "est_executions": 1.0,
               "est_rows": 5.00205,
               "id": 0,
               "index": null,
@@ -5534,7 +5421,7 @@
           "plans": [
             {
               "compiled": "@P1 = (115003)",
-              "executions": 4000,
+              "executions": 4000.0,
               "first_seen": "2026-10-11T07:44:27Z",
               "id": "5",
               "is_forced": false,
@@ -5548,7 +5435,7 @@
             }
           ],
           "query_hash": "0x1C16A4743BB078B3",
-          "rows": 20016,
+          "rows": 20016.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5558,30 +5445,30 @@
             "p99_ms": null
           },
           "stddev_time_ms": 0.06775048598026806,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT TOP (20) [id], [status], [total], [created_at] FROM [shop].[orders] WHERE [customer_id] = @P1 ORDER BY [created_at] DESC",
           "total_time_ms": 232.577,
           "trend": {
             "executions": [
-              8,
-              236,
-              274,
-              267,
-              289,
-              280,
-              256,
-              253,
-              213,
-              203,
-              169,
-              155,
-              160,
-              176,
-              162,
-              184,
-              222,
-              257,
-              236
+              8.0,
+              236.0,
+              274.0,
+              267.0,
+              289.0,
+              280.0,
+              256.0,
+              253.0,
+              213.0,
+              203.0,
+              169.0,
+              155.0,
+              160.0,
+              176.0,
+              162.0,
+              184.0,
+              222.0,
+              257.0,
+              236.0
             ],
             "time_ms": [
               0.51,
@@ -5609,7 +5496,7 @@
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 22,
+              "wait_ms": 22.0,
               "wait_type": "Memory"
             }
           ]
@@ -5617,16 +5504,16 @@
         {
           "costs": null,
           "cpu_time_ms": 0.337,
-          "executions": 2,
+          "executions": 2.0,
           "first_seen": "2026-10-11T11:54:28Z",
           "id": "35",
           "last_seen": "2026-10-11T12:13:25Z",
-          "logical_reads": 0,
+          "logical_reads": 0.0,
           "max_time_ms": 0.223,
           "mean_time_ms": 0.1685,
           "object_name": null,
           "parameters": null,
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -5653,8 +5540,8 @@
               "act_time_ms": null,
               "children": [],
               "detail": null,
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": "FFtUpdateIdx",
               "kind": "scan",
@@ -5684,12 +5571,12 @@
                 "Storage": "RowStore",
                 "TableCardinality": "0"
               },
-              "rows_read": 1,
+              "rows_read": 1.0,
               "runtime": null,
               "seek_predicate": null,
               "self_cost": 0.0032831,
               "subtree_cost": 0.0032831,
-              "table_rows": 0,
+              "table_rows": 0.0,
               "warnings": []
             },
             "statement": "select table_id, item_guid, oplsn_fseqno, oplsn_bOffset, oplsn_slotid\n from [culprit_demo].[sys].[filetable_updates_2105058535] with (readpast) order by table_id",
@@ -5699,7 +5586,7 @@
           "plans": [
             {
               "compiled": null,
-              "executions": 2,
+              "executions": 2.0,
               "first_seen": "2026-10-11T11:54:28Z",
               "id": "44",
               "is_forced": false,
@@ -5713,7 +5600,7 @@
             }
           ],
           "query_hash": "0x80E844211996BFCC",
-          "rows": 0,
+          "rows": 0.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5723,49 +5610,49 @@
             "p99_ms": null
           },
           "stddev_time_ms": 0.05069078373388554,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "select table_id, item_guid, oplsn_fseqno, oplsn_bOffset, oplsn_slotid\n from [culprit_demo].[sys].[filetable_updates_2105058535] with (readpast) order by table_id",
           "total_time_ms": 0.337,
           "trend": {
             "executions": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              1,
-              1
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              1.0
             ],
             "time_ms": [
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
-              0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
               0.19,
               0.15
             ]
@@ -5775,21 +5662,21 @@
         {
           "costs": null,
           "cpu_time_ms": 2590.315,
-          "executions": 771,
+          "executions": 771.0,
           "first_seen": "2026-10-11T13:56:51Z",
           "id": "146",
           "last_seen": "2026-10-11T14:01:45Z",
-          "logical_reads": 1064803,
+          "logical_reads": 1064803.0,
           "max_time_ms": 39.105,
           "mean_time_ms": 3.360639429312581,
           "object_name": null,
           "parameters": "@t int,@c int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": null,
           "plans": [
             {
               "compiled": "@c = NULL, @t = (1)",
-              "executions": 251,
+              "executions": 251.0,
               "first_seen": "2026-10-11T14:01:42Z",
               "id": "198",
               "is_forced": false,
@@ -5803,7 +5690,7 @@
             },
             {
               "compiled": "@c = NULL, @t = (2)",
-              "executions": 520,
+              "executions": 520.0,
               "first_seen": "2026-10-11T13:56:51Z",
               "id": "163",
               "is_forced": false,
@@ -5817,7 +5704,7 @@
             }
           ],
           "query_hash": "0x4139ABA55C1459B3",
-          "rows": 771,
+          "rows": 771.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5827,7 +5714,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 5.2209070520776315,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT @c = COUNT(*) FROM telemetry.events WHERE tenant = @t AND payload <> 'y'",
           "total_time_ms": 2591.053,
           "trend": null,
@@ -5835,44 +5722,44 @@
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 14,
+              "wait_ms": 14.0,
               "wait_type": "Memory"
             },
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 13,
+              "wait_ms": 13.0,
               "wait_type": "CPU"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
-            "log_bytes": 420,
+            "log_bytes": 420.0,
             "log_full_pages": null,
-            "log_share": 0.00000143465491193323,
+            "log_share": 1.43465491193323e-6,
             "plan_ms": 2.466,
-            "plans": 1,
-            "row_bytes": 9,
+            "plans": 1.0,
+            "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 4.487,
-          "executions": 4,
+          "executions": 4.0,
           "first_seen": "2026-10-11T13:56:49Z",
           "id": "138",
           "last_seen": "2026-10-11T14:19:10Z",
-          "logical_reads": 21,
+          "logical_reads": 21.0,
           "max_time_ms": 43351.597,
           "mean_time_ms": 28743.0075,
           "object_name": null,
           "parameters": "@1 tinyint",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -5920,8 +5807,8 @@
                               "act_time_ms": null,
                               "children": [],
                               "detail": null,
-                              "est_executions": 1,
-                              "est_rows": 1,
+                              "est_executions": 1.0,
+                              "est_rows": 1.0,
                               "id": 5,
                               "index": "pk_orders",
                               "kind": "seek",
@@ -5951,18 +5838,18 @@
                                 "Storage": "RowStore",
                                 "TableCardinality": "1e+06"
                               },
-                              "rows_read": 1,
+                              "rows_read": 1.0,
                               "runtime": null,
                               "seek_predicate": "[id] = CONVERT_IMPLICIT(bigint,[@1],0)",
                               "self_cost": 0.0032831,
                               "subtree_cost": 0.0032831,
-                              "table_rows": 1000000,
+                              "table_rows": 1000000.0,
                               "warnings": []
                             }
                           ],
                           "detail": null,
-                          "est_executions": 1,
-                          "est_rows": 1,
+                          "est_executions": 1.0,
+                          "est_rows": 1.0,
                           "id": 4,
                           "index": null,
                           "kind": "other",
@@ -5993,8 +5880,8 @@
                         }
                       ],
                       "detail": null,
-                      "est_executions": 1,
-                      "est_rows": 1,
+                      "est_executions": 1.0,
+                      "est_rows": 1.0,
                       "id": 3,
                       "index": null,
                       "kind": "compute",
@@ -6025,8 +5912,8 @@
                     }
                   ],
                   "detail": null,
-                  "est_executions": 1,
-                  "est_rows": 1,
+                  "est_executions": 1.0,
+                  "est_rows": 1.0,
                   "id": 2,
                   "index": null,
                   "kind": "compute",
@@ -6050,15 +5937,15 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 0,
+                  "self_cost": 0.0,
                   "subtree_cost": 0.0032833,
                   "table_rows": null,
                   "warnings": []
                 }
               ],
               "detail": "Update",
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 1,
               "index": "pk_orders",
               "kind": "modify",
@@ -6093,7 +5980,7 @@
           "plans": [
             {
               "compiled": "@1 = (1)",
-              "executions": 4,
+              "executions": 4.0,
               "first_seen": "2026-10-11T13:56:49Z",
               "id": "154",
               "is_forced": false,
@@ -6107,7 +5994,7 @@
             }
           ],
           "query_hash": "0x2E60BD5F2B1B322C",
-          "rows": 4,
+          "rows": 4.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6117,7 +6004,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 17682.814172870185,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "UPDATE [shop].[orders] set [status] = [status]  WHERE [id]=@1",
           "total_time_ms": 114972.03,
           "trend": null,
@@ -6125,38 +6012,38 @@
             {
               "category": "Lock",
               "tasks": null,
-              "wait_ms": 114966,
+              "wait_ms": 114966.0,
               "wait_type": "Lock"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 1.225,
-            "plans": 1,
-            "row_bytes": 21,
+            "plans": 1.0,
+            "row_bytes": 21.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 5.919,
-          "executions": 3,
+          "executions": 3.0,
           "first_seen": "2026-10-11T13:56:51Z",
           "id": "143",
           "last_seen": "2026-10-11T14:19:10Z",
-          "logical_reads": 15,
+          "logical_reads": 15.0,
           "max_time_ms": 43348.858,
           "mean_time_ms": 23899.592333333338,
           "object_name": null,
           "parameters": "@1 tinyint",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -6184,8 +6071,8 @@
               "act_time_ms": null,
               "children": [],
               "detail": null,
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": "pk_orders",
               "kind": "seek",
@@ -6215,12 +6102,12 @@
                 "Storage": "RowStore",
                 "TableCardinality": "1e+06"
               },
-              "rows_read": 1,
+              "rows_read": 1.0,
               "runtime": null,
               "seek_predicate": "[id] = CONVERT_IMPLICIT(bigint,[@1],0)",
               "self_cost": 0.0032831,
               "subtree_cost": 0.0032831,
-              "table_rows": 1000000,
+              "table_rows": 1000000.0,
               "warnings": []
             },
             "statement": "SELECT [status] FROM [shop].[orders] WHERE [id]=@1",
@@ -6230,7 +6117,7 @@
           "plans": [
             {
               "compiled": "@1 = (1)",
-              "executions": 3,
+              "executions": 3.0,
               "first_seen": "2026-10-11T13:56:51Z",
               "id": "159",
               "is_forced": false,
@@ -6244,7 +6131,7 @@
             }
           ],
           "query_hash": "0xBFDD28B1F8A5DB44",
-          "rows": 3,
+          "rows": 3.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6254,7 +6141,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 17974.577463416757,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT [status] FROM [shop].[orders] WHERE [id]=@1",
           "total_time_ms": 71698.777,
           "trend": null,
@@ -6262,38 +6149,38 @@
             {
               "category": "Lock",
               "tasks": null,
-              "wait_ms": 71692,
+              "wait_ms": 71692.0,
               "wait_type": "Lock"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 1,
+            "failed": 1.0,
             "jit_functions": null,
             "jit_ms": null,
-            "log_bytes": 732,
+            "log_bytes": 732.0,
             "log_full_pages": null,
-            "log_share": 0.0000025003985607979153,
+            "log_share": 2.5003985607979153e-6,
             "plan_ms": 2.173,
-            "plans": 1,
-            "row_bytes": 9,
+            "plans": 1.0,
+            "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 5.268,
-          "executions": 4,
+          "executions": 4.0,
           "first_seen": "2026-10-11T13:58:56Z",
           "id": "161",
           "last_seen": "2026-10-11T14:18:40Z",
-          "logical_reads": 12,
+          "logical_reads": 12.0,
           "max_time_ms": 2403.944,
           "mean_time_ms": 601.31325,
           "object_name": null,
           "parameters": "@2 tinyint,@1 int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -6321,8 +6208,8 @@
               "act_time_ms": null,
               "children": [],
               "detail": "Update",
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": "pk_orders",
               "kind": "modify",
@@ -6357,7 +6244,7 @@
           "plans": [
             {
               "compiled": "@1 = (1), @2 = (2)",
-              "executions": 4,
+              "executions": 4.0,
               "first_seen": "2026-10-11T13:58:56Z",
               "id": "178",
               "is_forced": false,
@@ -6371,7 +6258,7 @@
             }
           ],
           "query_hash": "0x70DEB9137DC844BA",
-          "rows": 3,
+          "rows": 3.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6381,7 +6268,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 1040.7493898728394,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "UPDATE [shop].[orders] set [total] = [total]+@1  WHERE [id]=@2",
           "total_time_ms": 2405.253,
           "trend": null,
@@ -6389,43 +6276,43 @@
             {
               "category": "Lock",
               "tasks": null,
-              "wait_ms": 2400,
+              "wait_ms": 2400.0,
               "wait_type": "Lock"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 50,
+            "failed": 50.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 1.258,
-            "plans": 1,
+            "plans": 1.0,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 9.095,
-          "executions": 200,
+          "executions": 200.0,
           "first_seen": "2026-10-11T15:54:49Z",
           "id": "246",
           "last_seen": "2026-10-11T15:54:55Z",
-          "logical_reads": 600,
+          "logical_reads": 600.0,
           "max_time_ms": 5.549,
           "mean_time_ms": 0.04556,
           "object_name": null,
           "parameters": "@d int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": null,
           "plans": [
             {
               "compiled": null,
-              "executions": 200,
+              "executions": 200.0,
               "first_seen": "2026-10-11T15:54:49Z",
               "id": "278",
               "is_forced": false,
@@ -6439,7 +6326,7 @@
             }
           ],
           "query_hash": "0xDF29AECD4582DE17",
-          "rows": 150,
+          "rows": 150.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6449,7 +6336,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 0.3909658471443936,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT TOP (1) total / @d AS share FROM shop.orders WHERE id = 42",
           "total_time_ms": 9.112,
           "trend": null,
@@ -6457,31 +6344,31 @@
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 6893.007,
-            "plans": 300,
-            "row_bytes": 11,
+            "plans": 300.0,
+            "row_bytes": 11.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 39782.742000000006,
-          "executions": 300,
+          "executions": 300.0,
           "first_seen": "2026-10-11T15:55:00Z",
           "id": "249",
           "last_seen": "2026-10-11T15:55:21Z",
-          "logical_reads": 4809920,
+          "logical_reads": 4809920.0,
           "max_time_ms": 148.672,
           "mean_time_ms": 45.29762666666666,
           "object_name": null,
           "parameters": "@id int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [
@@ -6569,8 +6456,8 @@
                                               "act_time_ms": null,
                                               "children": [],
                                               "detail": null,
-                                              "est_executions": 1,
-                                              "est_rows": 1,
+                                              "est_executions": 1.0,
+                                              "est_rows": 1.0,
                                               "id": 9,
                                               "index": "pk_orders",
                                               "kind": "seek",
@@ -6600,18 +6487,18 @@
                                                 "Storage": "RowStore",
                                                 "TableCardinality": "1e+06"
                                               },
-                                              "rows_read": 1,
+                                              "rows_read": 1.0,
                                               "runtime": null,
                                               "seek_predicate": "[id] = (1)",
                                               "self_cost": 0.0032831,
                                               "subtree_cost": 0.0032831,
-                                              "table_rows": 1000000,
+                                              "table_rows": 1000000.0,
                                               "warnings": []
                                             }
                                           ],
                                           "detail": "Distribute Streams",
-                                          "est_executions": 1,
-                                          "est_rows": 1,
+                                          "est_executions": 1.0,
+                                          "est_rows": 1.0,
                                           "id": 8,
                                           "index": null,
                                           "kind": "parallelism",
@@ -6656,8 +6543,8 @@
                                                   "act_time_ms": null,
                                                   "children": [],
                                                   "detail": null,
-                                                  "est_executions": 1,
-                                                  "est_rows": 1,
+                                                  "est_executions": 1.0,
+                                                  "est_rows": 1.0,
                                                   "id": 12,
                                                   "index": "pk_order_items",
                                                   "kind": "scan",
@@ -6685,20 +6572,20 @@
                                                     "Storage": "RowStore",
                                                     "TableCardinality": "1.5e+06"
                                                   },
-                                                  "rows_read": 1500000,
+                                                  "rows_read": 1500000.0,
                                                   "runtime": null,
                                                   "seek_predicate": null,
                                                   "self_cost": 6.02553,
                                                   "subtree_cost": 6.02553,
-                                                  "table_rows": 1500000,
+                                                  "table_rows": 1500000.0,
                                                   "warnings": [
                                                     "residual-predicate"
                                                   ]
                                                 }
                                               ],
                                               "detail": "Repartition Streams",
-                                              "est_executions": 1,
-                                              "est_rows": 1,
+                                              "est_executions": 1.0,
+                                              "est_rows": 1.0,
                                               "id": 11,
                                               "index": null,
                                               "kind": "parallelism",
@@ -6734,7 +6621,7 @@
                                               "children": [],
                                               "detail": null,
                                               "est_executions": 1.0000000053196,
-                                              "est_rows": 1,
+                                              "est_rows": 1.0,
                                               "id": 13,
                                               "index": "pk_products",
                                               "kind": "seek",
@@ -6763,18 +6650,18 @@
                                                 "Storage": "RowStore",
                                                 "TableCardinality": "20000"
                                               },
-                                              "rows_read": 1,
+                                              "rows_read": 1.0,
                                               "runtime": null,
                                               "seek_predicate": "[id] = [culprit_demo].[shop].[order_items].[product_id] as [i1].[product_id]",
                                               "self_cost": 0.0032831,
                                               "subtree_cost": 0.0032831,
-                                              "table_rows": 20000,
+                                              "table_rows": 20000.0,
                                               "warnings": []
                                             }
                                           ],
                                           "detail": "Inner Join",
-                                          "est_executions": 1,
-                                          "est_rows": 1,
+                                          "est_executions": 1.0,
+                                          "est_rows": 1.0,
                                           "id": 10,
                                           "index": null,
                                           "kind": "join",
@@ -6797,15 +6684,15 @@
                                           "rows_read": null,
                                           "runtime": null,
                                           "seek_predicate": null,
-                                          "self_cost": 0,
+                                          "self_cost": 0.0,
                                           "subtree_cost": 6.13167,
                                           "table_rows": null,
                                           "warnings": []
                                         }
                                       ],
                                       "detail": "Inner Join",
-                                      "est_executions": 1,
-                                      "est_rows": 1,
+                                      "est_executions": 1.0,
+                                      "est_rows": 1.0,
                                       "id": 7,
                                       "index": null,
                                       "kind": "join",
@@ -6829,7 +6716,7 @@
                                       "rows_read": null,
                                       "runtime": null,
                                       "seek_predicate": null,
-                                      "self_cost": 0.000004999999999810711,
+                                      "self_cost": 4.999999999810711e-6,
                                       "subtree_cost": 6.16346,
                                       "table_rows": null,
                                       "warnings": []
@@ -6876,12 +6763,12 @@
                                       "seek_predicate": "[customer_id] = [culprit_demo].[shop].[orders].[customer_id] as [o1].[customer_id]",
                                       "self_cost": 0.00328751,
                                       "subtree_cost": 0.00328751,
-                                      "table_rows": 1000000,
+                                      "table_rows": 1000000.0,
                                       "warnings": []
                                     }
                                   ],
                                   "detail": "Inner Join",
-                                  "est_executions": 1,
+                                  "est_executions": 1.0,
                                   "est_rows": 5.00834,
                                   "id": 5,
                                   "index": null,
@@ -6906,7 +6793,7 @@
                                   "rows_read": null,
                                   "runtime": null,
                                   "seek_predicate": null,
-                                  "self_cost": 0.000002490000000854309,
+                                  "self_cost": 2.490000000854309e-6,
                                   "subtree_cost": 6.16675,
                                   "table_rows": null,
                                   "warnings": []
@@ -6917,8 +6804,8 @@
                                   "act_time_ms": null,
                                   "children": [],
                                   "detail": null,
-                                  "est_executions": 1,
-                                  "est_rows": 15,
+                                  "est_executions": 1.0,
+                                  "est_rows": 15.0,
                                   "id": 16,
                                   "index": "pk_order_items",
                                   "kind": "scan",
@@ -6947,19 +6834,19 @@
                                     "Storage": "RowStore",
                                     "TableCardinality": "1.5e+06"
                                   },
-                                  "rows_read": 1500000,
+                                  "rows_read": 1500000.0,
                                   "runtime": null,
                                   "seek_predicate": null,
                                   "self_cost": 6.02531,
                                   "subtree_cost": 6.02531,
-                                  "table_rows": 1500000,
+                                  "table_rows": 1500000.0,
                                   "warnings": [
                                     "residual-predicate"
                                   ]
                                 }
                               ],
                               "detail": "Inner Join",
-                              "est_executions": 1,
+                              "est_executions": 1.0,
                               "est_rows": 8.93328,
                               "id": 4,
                               "index": null,
@@ -6996,7 +6883,7 @@
                               "children": [],
                               "detail": null,
                               "est_executions": 8.933282992,
-                              "est_rows": 1,
+                              "est_rows": 1.0,
                               "id": 17,
                               "index": "pk_products",
                               "kind": "seek",
@@ -7025,17 +6912,17 @@
                                 "Storage": "RowStore",
                                 "TableCardinality": "20000"
                               },
-                              "rows_read": 1,
+                              "rows_read": 1.0,
                               "runtime": null,
                               "seek_predicate": "[id] = [culprit_demo].[shop].[order_items].[product_id] as [i2].[product_id]",
                               "self_cost": 0.0257257,
                               "subtree_cost": 0.0257257,
-                              "table_rows": 20000,
+                              "table_rows": 20000.0,
                               "warnings": []
                             }
                           ],
                           "detail": "Inner Join",
-                          "est_executions": 1,
+                          "est_executions": 1.0,
                           "est_rows": 8.93328,
                           "id": 3,
                           "index": null,
@@ -7066,7 +6953,7 @@
                         }
                       ],
                       "detail": "Gather Streams",
-                      "est_executions": 1,
+                      "est_executions": 1.0,
                       "est_rows": 8.93328,
                       "id": 2,
                       "index": null,
@@ -7097,8 +6984,8 @@
                     }
                   ],
                   "detail": "Aggregate",
-                  "est_executions": 1,
-                  "est_rows": 1,
+                  "est_executions": 1.0,
+                  "est_rows": 1.0,
                   "id": 1,
                   "index": null,
                   "kind": "aggregate",
@@ -7122,15 +7009,15 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 0,
+                  "self_cost": 0.0,
                   "subtree_cost": 12.2481,
                   "table_rows": null,
                   "warnings": []
                 }
               ],
               "detail": null,
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": null,
               "kind": "compute",
@@ -7154,7 +7041,7 @@
               "rows_read": null,
               "runtime": null,
               "seek_predicate": null,
-              "self_cost": 0,
+              "self_cost": 0.0,
               "subtree_cost": 12.2481,
               "table_rows": null,
               "warnings": []
@@ -7166,7 +7053,7 @@
           "plans": [
             {
               "compiled": null,
-              "executions": 300,
+              "executions": 300.0,
               "first_seen": "2026-10-11T15:55:00Z",
               "id": "281",
               "is_forced": false,
@@ -7180,7 +7067,7 @@
             }
           ],
           "query_hash": "0xE5DE7151675598B3",
-          "rows": 300,
+          "rows": 300.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7190,7 +7077,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 30.44940285063075,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT COUNT(*) FROM shop.orders o1 JOIN shop.customers c1 ON c1.id = o1.customer_id JOIN shop.order_items i1 ON i1.order_id = o1.id JOIN shop.products p1 ON p1.id = i1.product_id JOIN shop.orders o2 ON o2.customer_id = c1.id JOIN shop.order_items i2 ON i2.order_id = o2.id JOIN shop.products p2 ON p2.id = i2.product_id JOIN shop.customers c2 ON c2.id = o2.customer_id WHERE o1.id = @id AND p1.price > 0 AND p2.price > 0 AND c2.segment IS NOT NULL OPTION (RECOMPILE)",
           "total_time_ms": 13589.288,
           "trend": null,
@@ -7198,56 +7085,56 @@
             {
               "category": "Parallelism",
               "tasks": null,
-              "wait_ms": 136233,
+              "wait_ms": 136233.0,
               "wait_type": "Parallelism"
             },
             {
               "category": "Latch",
               "tasks": null,
-              "wait_ms": 66944,
+              "wait_ms": 66944.0,
               "wait_type": "Latch"
             },
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 539,
+              "wait_ms": 539.0,
               "wait_type": "Memory"
             },
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 190,
+              "wait_ms": 190.0,
               "wait_type": "CPU"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
-            "log_bytes": 242946788,
+            "log_bytes": 242946788.0,
             "log_full_pages": null,
             "log_share": 0.829868577958574,
             "plan_ms": 1.096,
-            "plans": 1,
-            "row_bytes": 9,
+            "plans": 1.0,
+            "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 528.263,
-          "executions": 1,
+          "executions": 1.0,
           "first_seen": "2026-10-11T15:55:31Z",
           "id": "255",
           "last_seen": "2026-10-11T15:55:31Z",
-          "logical_reads": 15057,
+          "logical_reads": 15057.0,
           "max_time_ms": 528.407,
           "mean_time_ms": 528.407,
           "object_name": null,
           "parameters": null,
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -7284,8 +7171,8 @@
                       "act_time_ms": null,
                       "children": [],
                       "detail": null,
-                      "est_executions": 1,
-                      "est_rows": 1,
+                      "est_executions": 1.0,
+                      "est_rows": 1.0,
                       "id": 2,
                       "index": "pk_wide",
                       "kind": "scan",
@@ -7313,18 +7200,18 @@
                         "Storage": "RowStore",
                         "TableCardinality": "0"
                       },
-                      "rows_read": 1,
+                      "rows_read": 1.0,
                       "runtime": null,
                       "seek_predicate": null,
                       "self_cost": 0.0032831,
                       "subtree_cost": 0.0032831,
-                      "table_rows": 0,
+                      "table_rows": 0.0,
                       "warnings": []
                     }
                   ],
                   "detail": null,
-                  "est_executions": 1,
-                  "est_rows": 1,
+                  "est_executions": 1.0,
+                  "est_rows": 1.0,
                   "id": 1,
                   "index": null,
                   "kind": "compute",
@@ -7355,8 +7242,8 @@
                 }
               ],
               "detail": "Update",
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": "pk_wide",
               "kind": "modify",
@@ -7391,7 +7278,7 @@
           "plans": [
             {
               "compiled": null,
-              "executions": 1,
+              "executions": 1.0,
               "first_seen": "2026-10-11T15:55:31Z",
               "id": "290",
               "is_forced": false,
@@ -7405,7 +7292,7 @@
             }
           ],
           "query_hash": "0xAC0F7C57637DD3EA",
-          "rows": 30000,
+          "rows": 30000.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7415,7 +7302,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": null,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "UPDATE archive.wide SET pad = REPLICATE('y', 4000)",
           "total_time_ms": 528.407,
           "trend": null,
@@ -7423,44 +7310,44 @@
             {
               "category": "Other",
               "tasks": null,
-              "wait_ms": 49,
+              "wait_ms": 49.0,
               "wait_type": "Preemptive"
             },
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 4,
+              "wait_ms": 4.0,
               "wait_type": "Memory"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 6,
+            "aborted": 6.0,
             "aborted_mean_ms": 15015.279166666667,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
-            "log_bytes": 1032,
+            "log_bytes": 1032.0,
             "log_full_pages": null,
-            "log_share": 0.000003525152069321651,
+            "log_share": 3.525152069321651e-6,
             "plan_ms": 3.463,
-            "plans": 1,
-            "row_bytes": 15,
+            "plans": 1.0,
+            "row_bytes": 15.0,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 74950.066,
-          "executions": 6,
+          "executions": 6.0,
           "first_seen": "2026-10-11T15:55:55Z",
           "id": "263",
           "last_seen": "2026-10-11T15:55:55Z",
-          "logical_reads": 4555117,
+          "logical_reads": 4555117.0,
           "max_time_ms": 15018.617,
           "mean_time_ms": 15015.279166666667,
           "object_name": null,
           "parameters": null,
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
             "index_hints": [],
@@ -7503,8 +7390,8 @@
                           "act_time_ms": null,
                           "children": [],
                           "detail": null,
-                          "est_executions": 1,
-                          "est_rows": 1500000,
+                          "est_executions": 1.0,
+                          "est_rows": 1500000.0,
                           "id": 3,
                           "index": "ix_order_items_product_id",
                           "kind": "scan",
@@ -7533,18 +7420,18 @@
                             "Storage": "RowStore",
                             "TableCardinality": "1.5e+06"
                           },
-                          "rows_read": 1500000,
+                          "rows_read": 1500000.0,
                           "runtime": null,
                           "seek_predicate": null,
                           "self_cost": 4.12736,
                           "subtree_cost": 4.12736,
-                          "table_rows": 1500000,
+                          "table_rows": 1500000.0,
                           "warnings": []
                         }
                       ],
                       "detail": null,
-                      "est_executions": 1,
-                      "est_rows": 1500000,
+                      "est_executions": 1.0,
+                      "est_rows": 1500000.0,
                       "id": 2,
                       "index": null,
                       "kind": "compute",
@@ -7594,8 +7481,8 @@
                                   "act_time_ms": null,
                                   "children": [],
                                   "detail": null,
-                                  "est_executions": 1,
-                                  "est_rows": 1500000,
+                                  "est_executions": 1.0,
+                                  "est_rows": 1500000.0,
                                   "id": 7,
                                   "index": "ix_order_items_product_id",
                                   "kind": "scan",
@@ -7624,18 +7511,18 @@
                                     "Storage": "RowStore",
                                     "TableCardinality": "1.5e+06"
                                   },
-                                  "rows_read": 1500000,
+                                  "rows_read": 1500000.0,
                                   "runtime": null,
                                   "seek_predicate": null,
                                   "self_cost": 4.12736,
                                   "subtree_cost": 4.12736,
-                                  "table_rows": 1500000,
+                                  "table_rows": 1500000.0,
                                   "warnings": []
                                 }
                               ],
                               "detail": null,
-                              "est_executions": 1,
-                              "est_rows": 1500000,
+                              "est_executions": 1.0,
+                              "est_rows": 1500000.0,
                               "id": 6,
                               "index": null,
                               "kind": "compute",
@@ -7666,8 +7553,8 @@
                             }
                           ],
                           "detail": "Aggregate",
-                          "est_executions": 1,
-                          "est_rows": 999,
+                          "est_executions": 1.0,
+                          "est_rows": 999.0,
                           "id": 5,
                           "index": null,
                           "kind": "aggregate",
@@ -7698,8 +7585,8 @@
                         }
                       ],
                       "detail": "Lazy Spool",
-                      "est_executions": 1500001,
-                      "est_rows": 999,
+                      "est_executions": 1500001.0,
+                      "est_rows": 999.0,
                       "id": 4,
                       "index": null,
                       "kind": "spool",
@@ -7730,8 +7617,8 @@
                     }
                   ],
                   "detail": "Inner Join",
-                  "est_executions": 1,
-                  "est_rows": 1498500,
+                  "est_executions": 1.0,
+                  "est_rows": 1498500.0,
                   "id": 1,
                   "index": null,
                   "kind": "join",
@@ -7762,8 +7649,8 @@
                 }
               ],
               "detail": "Aggregate",
-              "est_executions": 1,
-              "est_rows": 1,
+              "est_executions": 1.0,
+              "est_rows": 1.0,
               "id": 0,
               "index": null,
               "kind": "aggregate",
@@ -7799,7 +7686,7 @@
           "plans": [
             {
               "compiled": null,
-              "executions": 6,
+              "executions": 6.0,
               "first_seen": "2026-10-11T15:55:55Z",
               "id": "298",
               "is_forced": false,
@@ -7813,7 +7700,7 @@
             }
           ],
           "query_hash": "0xCE8A3BF747BC6C47",
-          "rows": 0,
+          "rows": 0.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7823,7 +7710,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 3.4840133242784823,
-          "temp_writes": 56,
+          "temp_writes": 56.0,
           "text": "SELECT COUNT_BIG(*) FROM shop.order_items a JOIN shop.order_items b ON a.id % 1000 = b.id % 999 OPTION (LOOP JOIN, MAXDOP 1)",
           "total_time_ms": 90091.675,
           "trend": null,
@@ -7831,49 +7718,49 @@
             {
               "category": "CPU",
               "tasks": null,
-              "wait_ms": 15189,
+              "wait_ms": 15189.0,
               "wait_type": "CPU"
             },
             {
               "category": "Memory",
               "tasks": null,
-              "wait_ms": 3,
+              "wait_ms": 3.0,
               "wait_type": "Memory"
             }
           ]
         },
         {
           "costs": {
-            "aborted": 0,
+            "aborted": 0.0,
             "aborted_mean_ms": null,
-            "failed": 0,
+            "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
             "plan_ms": 0.979,
-            "plans": 1,
+            "plans": 1.0,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
           },
           "cpu_time_ms": 126.722,
-          "executions": 25,
+          "executions": 25.0,
           "first_seen": "2026-10-11T15:55:40Z",
           "id": "264",
           "last_seen": "2026-10-11T15:55:40Z",
-          "logical_reads": 2700,
+          "logical_reads": 2700.0,
           "max_time_ms": 59.436,
           "mean_time_ms": 13.16272,
           "object_name": null,
           "parameters": "@n int",
-          "physical_reads": 0,
+          "physical_reads": 0.0,
           "plan": null,
           "plans": [
             {
               "compiled": null,
-              "executions": 25,
+              "executions": 25.0,
               "first_seen": "2026-10-11T15:55:40Z",
               "id": "299",
               "is_forced": false,
@@ -7887,7 +7774,7 @@
             }
           ],
           "query_hash": "0x5DA4E11A569A7C0C",
-          "rows": 500000,
+          "rows": 500000.0,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7897,7 +7784,7 @@
             "p99_ms": null
           },
           "stddev_time_ms": 18.253915434229445,
-          "temp_writes": 0,
+          "temp_writes": 0.0,
           "text": "SELECT id, order_id, product_id, quantity FROM shop.order_items WHERE id <= @n",
           "total_time_ms": 329.068,
           "trend": null,
@@ -7905,36 +7792,36 @@
             {
               "category": "Network",
               "tasks": null,
-              "wait_ms": 202,
+              "wait_ms": 202.0,
               "wait_type": "Network IO"
             }
           ]
         }
       ],
-      "query_count": 16,
+      "query_count": 16.0,
       "source": "Query Store",
       "timeline": {
         "end": "2026-10-11T12:13:47Z",
         "executions": [
-          130,
-          4139,
-          4807,
-          4685,
-          5071,
-          4898,
-          4483,
-          4430,
-          3725,
-          3555,
-          2958,
-          2708,
-          2799,
-          3092,
-          2843,
-          3228,
-          3883,
-          4508,
-          4170
+          130.0,
+          4139.0,
+          4807.0,
+          4685.0,
+          5071.0,
+          4898.0,
+          4483.0,
+          4430.0,
+          3725.0,
+          3555.0,
+          2958.0,
+          2708.0,
+          2799.0,
+          3092.0,
+          2843.0,
+          3228.0,
+          3883.0,
+          4508.0,
+          4170.0
         ],
         "source": "query-store",
         "starts": [
@@ -7981,7 +7868,7 @@
         ]
       },
       "total_cpu_ms": 91061.898,
-      "total_executions": 71426,
+      "total_executions": 71426.0,
       "total_time_ms": 336961.25000000006,
       "window_end": "2026-10-11T12:13:47Z",
       "window_hours": 4.583333,
@@ -7993,7 +7880,7 @@
     "by_category": [
       {
         "category": "indexes",
-        "count": 11
+        "count": 8
       },
       {
         "category": "queries",
@@ -8014,16 +7901,16 @@
         "severity": "high"
       },
       {
-        "count": 11,
+        "count": 10,
         "severity": "medium"
       },
       {
-        "count": 15,
+        "count": 13,
         "severity": "low"
       }
     ],
-    "headline": "32 opportunities. The top ones touch 61% of database time over the last 5 hours.",
-    "opportunities": 32,
+    "headline": "29 opportunities. The top ones touch 61% of database time over the last 5 hours.",
+    "opportunities": 29,
     "top_share": 0.6085676171963393
   }
 }

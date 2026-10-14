@@ -5,7 +5,11 @@ use culprit_core::{
     Snapshot, SubjectKind, Timeline, TimelineSource, Unit, format,
 };
 
+use crate::queries::{apply_impact, time_noun};
 use crate::support::*;
+
+/// The metric a regression carries when a plan change coincides with it: "815 → 685".
+pub(crate) const PLAN_CHANGE: &str = "Plan change";
 
 /// "Much slower": the average run takes at least twice as long as before, and a few milliseconds more.
 const MIN_FACTOR: f64 = 2.0;
@@ -124,10 +128,12 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
 
     let mut f = finding("regression", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
     if let Some(impact) = query_impact(snapshot, &[q]) {
-        apply_query_impact(&mut f, &impact);
+        apply_impact(snapshot, &mut f, &impact);
     }
+    let time = time_noun(snapshot);
     let extra_per_day = s.extra_ms() * 24.0 / after_hours;
-    f.impact.time_ms_per_day = Some(extra_per_day);
+    // A day's worth only when the slow period covers most of one; under that it would be an extrapolation.
+    f.impact.time_ms_per_day = (after_hours >= culprit_core::PER_DAY_MIN_HOURS).then_some(extra_per_day);
     f.impact.score = score_for_share(share_after.max(extra_share));
     f.impact.label = format!("{} slower", times(factor));
     f.severity = severity_for_share(share_after);
@@ -142,9 +148,9 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
         if plan.is_some() { ", when its plan changed" } else { "" }
     );
     let extra = if after_hours >= 20.0 {
-        format!("about {} of extra database time a day", format::duration(extra_per_day))
+        format!("about {} of extra {time} a day", format::duration(extra_per_day))
     } else {
-        format!("{} of extra database time in {}", format::duration(s.extra_ms()), hours_phrase(after_hours))
+        format!("{} of extra {time} in {}", format::duration(s.extra_ms()), hours_phrase(after_hours))
     };
     let mut summary = format!(
         "Until {} it averaged {} per run; since then {}, over {} runs: {extra}.",
@@ -162,6 +168,8 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
             change.old.id,
             format::duration(change.old.mean_time_ms)
         )),
+        // Several plans, none new around the step: it didn't come with a plan change, which isn't "the plan never changed".
+        None if q.plans.len() > 1 => summary.push_str(" No new plan started when it got slower, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
         None => summary.push_str(" The plan Culprit sees did not change, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
     }
     f.summary = summary;
@@ -174,6 +182,9 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
         f.metrics.push(Metric::new("Extra time", s.extra_ms(), Unit::Ms));
     }
     f.metrics.push(Metric::text("Started", short_when(since)));
+    if let Some(change) = &plan {
+        f.metrics.push(Metric::text(PLAN_CHANGE, format!("{} → {}", change.old.id, change.new.id)));
+    }
     f.fix = Some(match (&plan, snapshot.server.engine) {
         (Some(change), Engine::Mssql) if numeric(&q.id) && numeric(&change.old.id) => Fix {
             summary: format!(

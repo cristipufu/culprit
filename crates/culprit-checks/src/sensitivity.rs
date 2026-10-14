@@ -9,6 +9,7 @@ use culprit_core::{
     format,
 };
 
+use crate::queries::{apply_impact, slow_log_only};
 use crate::support::*;
 
 /// Enough calls that "most" and "some" mean something.
@@ -42,11 +43,27 @@ enum Shape<'a> {
     Tail { typical_ms: f64, p99_ms: f64, slow_share: Option<f64> },
 }
 
-fn plans_shape(q: &QueryStat) -> Option<Shape<'_>> {
+/// "Most calls": the fast plan carries at least this share of them, so forcing it changes little for most callers.
+const MOST_CALLS: f64 = 0.5;
+/// A slow plan quiet for this many of its typical intervals between runs (and at least an hour) has stopped.
+const QUIET_INTERVALS: f64 = 20.0;
+
+fn plans_shape<'a>(snapshot: &Snapshot, q: &'a QueryStat) -> Option<Shape<'a>> {
+    // A forced plan already decides for every call; what it does is tuning-advice's to say.
+    if q.plans.iter().any(|p| p.is_forced) {
+        return None;
+    }
     let busy: Vec<&PlanVariant> =
         q.plans.iter().filter(|p| p.executions >= 10.0 && p.executions >= q.executions * MIN_PLAN_SHARE).collect();
-    let fast = busy.iter().min_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms))?;
-    let slow = busy.iter().max_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms))?;
+    // The plan most calls run with, fast for them; a rare fast plan beside a slow common one isn't "fast for most calls".
+    let fast = busy.iter().max_by(|a, b| a.executions.total_cmp(&b.executions))?;
+    if fast.executions < q.executions * MOST_CALLS {
+        return None;
+    }
+    let slow = busy.iter().filter(|p| p.id != fast.id).max_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms))?;
+    if slow_plan_stopped(snapshot, slow) {
+        return None;
+    }
     // Both plans in use at the same time: values pick the plan. A fast plan that was replaced is a regression instead.
     let overlap = match (
         fast.last_seen.as_deref(),
@@ -66,6 +83,20 @@ fn plans_shape(q: &QueryStat) -> Option<Shape<'_>> {
         .then_some(Shape::Plans { fast, slow })
 }
 
+/// The slow plan hasn't run for a long while before the data ends: whatever made it slow is behind the query.
+fn slow_plan_stopped(snapshot: &Snapshot, slow: &PlanVariant) -> bool {
+    let end = snapshot.workload.as_ref().and_then(|w| w.window_end.as_deref()).and_then(parse_epoch_seconds);
+    let (Some(end), Some(last)) = (end, slow.last_seen.as_deref().and_then(parse_epoch_seconds)) else {
+        return false;
+    };
+    let first = slow.first_seen.as_deref().and_then(parse_epoch_seconds).unwrap_or(last);
+    let interval = (last - first).max(1.0) / slow.executions.max(1.0);
+    end - last >= (interval * QUIET_INTERVALS).max(3600.0)
+}
+
+/// Runs in the slow tail the shape needs: with fewer, "1 in 100 runs" is one or two runs.
+const MIN_TAIL_RUNS: f64 = 3.0;
+
 fn tail_shape(q: &QueryStat) -> Option<Shape<'_>> {
     let spread = q.spread.as_ref()?;
     let typical = spread.p50_ms.or(spread.p95_ms.map(|p| p.min(q.mean_time_ms)))?;
@@ -76,6 +107,11 @@ fn tail_shape(q: &QueryStat) -> Option<Shape<'_>> {
     let threshold = typical * MIN_TAIL_FACTOR;
     let total: f64 = spread.histogram.iter().map(|b| b[2]).sum();
     let slow: f64 = spread.histogram.iter().filter(|b| b[0] >= threshold).map(|b| b[2]).sum();
+    // The tail has to be several runs: a histogram counts them; without one, a hundredth of the runs must be.
+    let enough = if total > 0.0 { slow >= MIN_TAIL_RUNS } else { q.executions * 0.01 >= MIN_TAIL_RUNS };
+    if !enough {
+        return None;
+    }
     let slow_share = (total > 0.0 && slow > 0.0).then(|| slow / total);
     Some(Shape::Tail { typical_ms: typical, p99_ms: p99, slow_share })
 }
@@ -85,7 +121,7 @@ pub fn parameter_sensitive(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = app_queries(snapshot)
         .filter(|q| q.executions >= MIN_RUNS)
         .filter_map(|q| {
-            let shape = plans_shape(q).or_else(|| tail_shape(q))?;
+            let shape = plans_shape(snapshot, q).or_else(|| tail_shape(q))?;
             let share = workload.share(q.total_time_ms);
             let slow_time_share = match &shape {
                 Shape::Plans { slow, .. } => workload.share(slow.total_time_ms),
@@ -130,7 +166,7 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
     let handle = capitalize(&query_handle(q));
     let mut f = finding("parameter-sensitive", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
     if let Some(impact) = query_impact(snapshot, &[q]) {
-        apply_query_impact(&mut f, &impact);
+        apply_impact(snapshot, &mut f, &impact);
     }
     f.severity = severity_for_share(share);
     f.impact.score = score_for_share(share);
@@ -149,8 +185,10 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             let compiled_for =
                 |p: &PlanVariant| compiled(p, q).map(|c| format!(", compiled for `{c}`")).unwrap_or_default();
             f.summary = format!(
-                "SQL Server keeps two plans for this statement. Plan {} averages {}{}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
+                "SQL Server runs this statement with {} plans side by side. Plan {} handles {} of the calls and averages {}{}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
+                if q.plans.len() == 2 { "two".to_string() } else { format::count(q.plans.len() as f64) },
                 fast.id,
+                format::percent(fast.executions / q.executions.max(1.0)),
                 run(fast.mean_time_ms),
                 compiled_for(fast),
                 slow.id,
@@ -161,33 +199,49 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             f.metrics.push(Metric::new("Fast plan", fast.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Slow plan", slow.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Calls on the slow plan", slow_share, Unit::Ratio));
+            f.metrics.push(Metric::text(PLAN_MOST_CALLS_USE, fast.id.clone()));
             f.confidence = Confidence::High;
-            f.fix = Some(mssql_fix(q, Some(fast)));
+            f.fix = Some(mssql_fix(snapshot, q, Some(fast)));
         }
         Shape::Tail { typical_ms, p99_ms, slow_share } => {
+            // The slow query log keeps only runs over long_query_time: its "typical" run is a typical slow one.
+            let logged = slow_log_only(snapshot);
+            let percentile_99 = q.executions >= 100.0;
+            let subject = if logged { format!("Logged runs of {}", query_handle(q)) } else { handle.clone() };
+            let usual = if logged { "usually take" } else { "usually takes" };
             f.title = match slow_share {
                 Some(s) if *s >= 0.001 => format!(
-                    "{handle} usually takes {} but {} of its runs take over {}",
+                    "{subject} {usual} {} but {} of {} take over {}",
                     run(*typical_ms),
                     format::percent(*s),
+                    if logged { "them" } else { "its runs" },
                     run(typical_ms * MIN_TAIL_FACTOR)
                 ),
-                _ => {
-                    format!("{handle} usually takes {} but 1 in 100 runs takes over {}", run(*typical_ms), run(*p99_ms))
-                }
+                _ => format!("{subject} {usual} {} but 1 in 100 takes over {}", run(*typical_ms), run(*p99_ms)),
             };
             f.impact.label = format!("{} slower for some runs", times(p99_ms / typical_ms.max(0.001)));
             let locks = q.spread.as_ref().and_then(|s| s.lock_ms).filter(|l| *l > 0.0);
             let lock_share = locks.map(|l| (l / q.total_time_ms.max(0.001)).clamp(0.0, 1.0)).unwrap_or(0.0);
             let name = snapshot.server.name();
-            let source = match snapshot.workload.as_ref().map(|w| w.source.as_str()) {
-                Some("slow query log") => "The slow query log's runs of this statement".to_string(),
-                _ => format!("{name}'s run-time histogram for this statement"),
+            let from_log = snapshot.workload.as_ref().is_some_and(|w| w.source == "slow query log");
+            let source = if from_log && !logged {
+                "The slow query log's runs of this statement (it keeps every run)".to_string()
+            } else if logged {
+                let threshold = snapshot
+                    .setting("long_query_time")
+                    .and_then(|s| s.value.trim().parse::<f64>().ok())
+                    .map(|s| format!(", {}", format::duration(s * 1000.0)))
+                    .unwrap_or_default();
+                format!(
+                    "Of the runs of this statement the slow query log kept (only those over long_query_time{threshold}, so faster runs aren't counted)"
+                )
+            } else {
+                format!("{name}'s run-time histogram for this statement")
             };
             f.summary = format!(
-                "{source}: half the runs finish within {}, 99 in 100 within {}, the slowest took {}. {name} plans every call afresh, so slow calls usually touch far more rows for some values (skewed data) or wait for locks.{}",
+                "{source}: half finished within {}{}, the slowest took {}. {name} plans every call afresh, so slow calls usually touch far more rows for some values (skewed data) or wait for locks.{}",
                 run(*typical_ms),
-                run(*p99_ms),
+                if percentile_99 { format!(", 99 in 100 within {}", run(*p99_ms)) } else { String::new() },
                 q.max_time_ms.map(run).unwrap_or_else(|| "longer".into()),
                 if lock_share >= 0.2 {
                     format!(
@@ -198,12 +252,18 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
                     String::new()
                 }
             );
-            f.metrics.push(Metric::new("Typical run", *typical_ms, Unit::Ms));
-            f.metrics.push(Metric::new("1 in 100 runs", *p99_ms, Unit::Ms));
+            f.metrics.push(Metric::new(
+                if logged { "Typical logged run" } else { "Typical run" },
+                *typical_ms,
+                Unit::Ms,
+            ));
+            if percentile_99 {
+                f.metrics.push(Metric::new("1 in 100 runs", *p99_ms, Unit::Ms));
+            }
             if let Some(s) = slow_share {
                 f.metrics.push(Metric::new("Slow runs", *s, Unit::Ratio));
             }
-            f.confidence = Confidence::High;
+            f.confidence = if logged { Confidence::Medium } else { Confidence::High };
             f.fix = Some(mysql_fix(lock_share, snapshot.server.name() == "MariaDB"));
         }
     }
@@ -215,27 +275,82 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
     f
 }
 
-pub(crate) fn mssql_fix(q: &QueryStat, fast: Option<&PlanVariant>) -> Fix {
+/// The metric naming the plan most calls run with (refine reads it to compare with SQL Server's own recommendation).
+pub(crate) const PLAN_MOST_CALLS_USE: &str = "Plan most calls use";
+
+/// The fix ladder for SQL Server, lightest first, with only the steps this server has: Query Store hints and
+/// parameter-sensitive plan optimization came with SQL Server 2022 (Azure SQL has both), and the optimization needs
+/// compatibility level 160. Forcing is offered only for a plan most calls already run with.
+pub(crate) fn mssql_fix(snapshot: &Snapshot, q: &QueryStat, fast: Option<&PlanVariant>) -> Fix {
     let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
-    let mut sql = Vec::new();
-    if let Some(fast) = fast.filter(|p| numeric(&q.id) && numeric(&p.id)) {
-        sql.push(format!(
-            "-- 1. Keep the fast plan for every call (no code change; undo with sp_query_store_unforce_plan):\nEXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};",
-            q.id, fast.id
+    let server = &snapshot.server;
+    let azure = server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure SQL"));
+    let sql2022 = azure || culprit_core::version_at_least(&server.version, [16, 0, 0]);
+    let compat = snapshot.setting("compatibility_level").and_then(|s| s.value.trim().parse::<u32>().ok());
+    let psp_on = snapshot
+        .setting("PARAMETER_SENSITIVE_PLAN_OPTIMIZATION")
+        .is_some_and(|s| matches!(s.value.trim().to_ascii_uppercase().as_str(), "1" | "ON"));
+    // (what it does, the SQL or the change to make, the option in a sentence)
+    let mut steps: Vec<(String, String, &str)> = Vec::new();
+    let force = fast.filter(|p| numeric(&q.id) && numeric(&p.id) && p.executions >= q.executions * MOST_CALLS);
+    if let Some(fast) = force {
+        steps.push((
+            "Keep the plan most calls run fast with, for every call (no code change; undo with sp_query_store_unforce_plan)".into(),
+            format!("EXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};", q.id, fast.id),
+            "force the plan most calls run fast with",
         ));
     }
-    if numeric(&q.id) {
-        sql.push(format!(
-            "-- 2. Or plan each call for its own values (costs compile CPU per call; SQL Server 2022 / Azure SQL):\nEXEC sys.sp_query_store_set_hints @query_id = {}, @query_hints = N'OPTION (RECOMPILE)';",
-            q.id
+    if numeric(&q.id) && sql2022 {
+        steps.push((
+            "Plan each call for its own values (costs compile CPU per call)".into(),
+            format!("EXEC sys.sp_query_store_set_hints @query_id = {}, @query_hints = N'OPTION (RECOMPILE)';", q.id),
+            "plan per call for this statement only",
+        ));
+    } else {
+        steps.push((
+            "Plan each call for its own values (costs compile CPU per call), in the application".into(),
+            "--    append OPTION (RECOMPILE) to the statement".into(),
+            "plan per call for this statement only",
         ));
     }
-    sql.push("-- 3. Or let SQL Server keep a plan per range of values (SQL Server 2022, compatibility level 160):\nALTER DATABASE SCOPED CONFIGURATION SET PARAMETER_SENSITIVE_PLAN_OPTIMIZATION = ON;".into());
-    sql.push("-- 4. Or, in the application, plan for the typical value instead of the first one seen:\n--    append OPTION (OPTIMIZE FOR UNKNOWN) to the statement".into());
+    if sql2022 && !psp_on && compat.is_none_or(|c| c >= 160) {
+        steps.push((
+            "Let SQL Server keep a plan per range of values".into(),
+            "ALTER DATABASE SCOPED CONFIGURATION SET PARAMETER_SENSITIVE_PLAN_OPTIMIZATION = ON;".into(),
+            "let SQL Server keep several plans",
+        ));
+    }
+    steps.push((
+        "In the application, plan for the typical value instead of the first one seen".into(),
+        "--    append OPTION (OPTIMIZE FOR UNKNOWN) to the statement".into(),
+        "plan for the typical value",
+    ));
+    let sql: Vec<String> = steps
+        .iter()
+        .enumerate()
+        .map(|(i, (what, sql, _))| {
+            let what = if i == 0 { what.clone() } else { format!("Or {}{}", what[..1].to_lowercase(), &what[1..]) };
+            format!("-- {}. {what}:\n{sql}", i + 1)
+        })
+        .collect();
+    let options: Vec<String> = steps.iter().map(|(_, _, option)| option.to_string()).collect();
     Fix {
-        summary: "Pick the lightest option that works: force the plan that is fast for everyone, plan per call for this statement only, or let SQL Server 2022 keep several plans. Each is reversible.".into(),
+        summary: format!("Pick the lightest option that works: {}. Each is reversible.", or_list(&options)),
         sql: Some(sql.join("\n\n")),
-        cost: Some("Forcing a plan pins it until you unforce it; RECOMPILE spends a compile on every call.".into()),
+        cost: Some(if force.is_some() {
+            "Forcing a plan pins it for every value until you unforce it: try a value from a slow call under it first. RECOMPILE spends a compile on every call.".into()
+        } else {
+            "RECOMPILE spends a compile on every call.".into()
+        }),
+    }
+}
+
+/// "a, b or c".
+fn or_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
     }
 }
 
@@ -298,21 +413,77 @@ mod tests {
         p
     }
 
+    fn mssql() -> Snapshot {
+        crate::waits::snapshot_with(Engine::Mssql)
+    }
+
     #[test]
     fn two_plans_one_slow_is_sensitivity() {
+        let s = mssql();
         let mut q = sample();
         q.executions = 1000.0;
         q.plans = vec![plan("815", 980.0, 2.0), plan("685", 20.0, 3400.0)];
-        match plans_shape(&q) {
+        match plans_shape(&s, &q) {
             Some(Shape::Plans { fast, slow }) => assert_eq!((fast.id.as_str(), slow.id.as_str()), ("815", "685")),
             other => panic!("{other:?}"),
         }
         q.plans = vec![plan("1", 500.0, 2.0), plan("2", 500.0, 3.0)];
-        assert!(plans_shape(&q).is_none(), "1.5× apart is not two different worlds");
+        assert!(plans_shape(&s, &q).is_none(), "1.5× apart is not two different worlds");
+    }
+
+    #[test]
+    fn the_fast_plan_has_to_carry_most_calls() {
+        // 10 runs at 5 ms beside 290 at 60 ms: most calls are slow, so "fast for most calls" would be false, and
+        // forcing the rare plan is the classic sniffing trap.
+        let s = mssql();
+        let mut q = sample();
+        q.executions = 300.0;
+        q.plans = vec![plan("1", 290.0, 60.0), plan("2", 10.0, 5.0)];
+        assert!(plans_shape(&s, &q).is_none());
+    }
+
+    #[test]
+    fn a_forced_plan_or_a_slow_plan_that_stopped_is_not_sensitivity() {
+        let s = mssql();
+        let mut q = sample();
+        q.executions = 1000.0;
+        q.plans = vec![plan("815", 980.0, 2.0), plan("685", 20.0, 3400.0)];
+        q.plans[0].is_forced = true;
+        assert!(plans_shape(&s, &q).is_none(), "a forced plan already decides");
+        q.plans[0].is_forced = false;
+        // The demo's data ends at 12:13; the slow plan last ran at 08:00, after 20 runs in two hours.
+        q.plans[1].first_seen = Some("2026-10-11T06:00:00Z".into());
+        q.plans[1].last_seen = Some("2026-10-11T08:00:00Z".into());
+        assert!(plans_shape(&s, &q).is_none(), "the slow plan stopped running");
+        q.plans[1].last_seen = Some("2026-10-11T12:00:00Z".into());
+        assert!(plans_shape(&s, &q).is_some());
+    }
+
+    #[test]
+    fn the_fix_ladder_offers_what_the_server_has() {
+        let mut s = mssql();
+        let mut q = sample();
+        q.id = "42".into();
+        q.executions = 1000.0;
+        let fast = plan("815", 980.0, 2.0);
+        // SQL Server 2022 with parameter-sensitive plan optimization already on (the demo).
+        let sql = mssql_fix(&s, &q, Some(&fast)).sql.unwrap();
+        assert!(sql.starts_with("-- 1. Keep the plan most calls run fast with"), "{sql}");
+        assert!(sql.contains("sp_query_store_set_hints"), "{sql}");
+        assert!(!sql.contains("PARAMETER_SENSITIVE_PLAN_OPTIMIZATION"), "it is already on: {sql}");
+        // SQL Server 2019: no Query Store hints, no parameter-sensitive plans.
+        s.server.version = "15.0.4355.3".into();
+        let sql = mssql_fix(&s, &q, Some(&fast)).sql.unwrap();
+        assert!(!sql.contains("sp_query_store_set_hints") && !sql.contains("PARAMETER_SENSITIVE"), "{sql}");
+        assert!(sql.contains("-- 2. Or plan each call for its own values (costs compile CPU per call), in the application:\n--    append OPTION (RECOMPILE)"), "{sql}");
+        // A plan that ran for a minority of calls is never the one to force.
+        let rare = plan("2", 100.0, 2.0);
+        assert!(!mssql_fix(&s, &q, Some(&rare)).sql.unwrap().contains("sp_query_store_force_plan"));
     }
 
     #[test]
     fn a_replaced_plan_is_a_regression_not_sensitivity() {
+        let s = mssql();
         let mut q = sample();
         q.executions = 1000.0;
         let mut old = plan("1", 500.0, 2.0);
@@ -322,7 +493,27 @@ mod tests {
         new.first_seen = Some("2026-10-10T13:00:00Z".into());
         new.last_seen = Some("2026-10-11T00:00:00Z".into());
         q.plans = vec![old, new];
-        assert!(plans_shape(&q).is_none());
+        assert!(plans_shape(&s, &q).is_none());
+    }
+
+    #[test]
+    fn a_tail_of_one_or_two_runs_is_not_a_shape() {
+        let mut q = sample();
+        q.executions = 80.0;
+        q.spread = Some(culprit_core::Spread {
+            p50_ms: Some(2.0),
+            p99_ms: Some(900.0),
+            histogram: vec![[0.0, 2.0, 60.0], [2.0, 4.0, 18.0], [500.0, 1000.0, 2.0]],
+            ..Default::default()
+        });
+        assert!(tail_shape(&q).is_none(), "two slow runs");
+        q.spread.as_mut().unwrap().histogram[2][2] = 3.0;
+        assert!(tail_shape(&q).is_some());
+        // Without a histogram, a hundredth of the runs has to be three runs.
+        q.spread.as_mut().unwrap().histogram.clear();
+        assert!(tail_shape(&q).is_none());
+        q.executions = 400.0;
+        assert!(tail_shape(&q).is_some());
     }
 
     #[test]
