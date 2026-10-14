@@ -35,7 +35,12 @@ pub(crate) fn overlapping_pairs(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexS
     let mut out: Vec<(&IndexStat, &IndexStat)> = Vec::new();
     for a in &snapshot.indexes {
         let plain = |i: &IndexStat| {
-            !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled && i.filter.is_none()
+            !i.is_primary_key
+                && !i.is_unique
+                && !i.is_clustered
+                && !i.is_disabled
+                && i.filter.is_none()
+                && !crate::indexes::is_partition_copy(i)
         };
         // Rarely read says nothing about an index that may have been created this week.
         if !plain(a)
@@ -228,7 +233,8 @@ pub(crate) fn index_writes(snapshot: &Snapshot, t: &culprit_core::TableStat) -> 
 pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
     let redundant: Vec<&str> = redundant_indexes(snapshot).iter().map(|(a, _)| a.name.as_str()).collect();
     let mut out = Vec::new();
-    for t in &snapshot.tables {
+    // A partition carries its parent's indexes: one finding per partition would be one cause many times.
+    for t in snapshot.tables.iter().filter(|t| t.partition_of.is_none()) {
         let secondary: Vec<&IndexStat> = snapshot
             .indexes_on(&t.schema, &t.name)
             .filter(|i| !i.is_primary_key && !i.is_clustered && !i.is_disabled)
@@ -378,7 +384,9 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         .map(|g| (g.schema.to_ascii_lowercase(), g.table.to_ascii_lowercase()))
         .collect();
     let mut out = Vec::new();
-    for t in &snapshot.tables {
+    // A statement that reads every partition reads each one in full: judged per partition it would be one finding per
+    // partition for one cause.
+    for t in snapshot.tables.iter().filter(|t| t.partition_of.is_none()) {
         let Some((scans_total, read_total, days)) = full_scans_measured(snapshot, t) else { continue };
         // Judged per day; said per day only over 20 hours of counters, otherwise as counted.
         let (scans, rows_read) = (scans_total / days, read_total / days);

@@ -574,6 +574,15 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     if !s.server.has(Capability::QueryPlans) {
         notes.push("No plans were captured, so plan-based candidates are missing.".into());
     }
+    let partition_copies = s.indexes.iter().filter(|i| crate::indexes::is_partition_copy(i)).count();
+    if partition_copies > 0 {
+        notes.push(format!(
+            "{} {} on partitions {} left out of the clean-ups: each is a partition's copy of its partitioned table's index, a cold partition reads as unused because queries skip it, and a copy can't be dropped on its own.",
+            partition_copies,
+            if partition_copies == 1 { "index" } else { "indexes" },
+            if partition_copies == 1 { "is" } else { "are" }
+        ));
+    }
     if let Some(f) = report.findings.iter().find(|f| f.id == "unindexed-fk:schema") {
         let threshold = crate::indexes::FK_OWN_FINDING_ROWS;
         let small = crate::indexes::unindexed_foreign_keys(s)

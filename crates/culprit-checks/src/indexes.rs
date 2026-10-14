@@ -1188,7 +1188,7 @@ pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -
 /// reads says something only after a week of watching: an index that may be younger than that, or counters that started
 /// less than a week ago (a restart, a failover, a statistics reset), haven't seen a weekly job run yet.
 pub(crate) fn is_unused(snapshot: &Snapshot, i: &IndexStat) -> bool {
-    let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled;
+    let is_candidate = !i.is_primary_key && !i.is_unique && !i.is_clustered && !i.is_disabled && !is_partition_copy(i);
     is_candidate
         && i.reads == Some(0.0)
         && i.size_bytes.unwrap_or(0.0) >= 64.0 * 1024.0
@@ -1295,7 +1295,26 @@ pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
 }
 
 pub(crate) fn same_keys(a: &IndexStat, b: &IndexStat) -> bool {
-    a.columns.len() == b.columns.len() && a.columns.iter().zip(&b.columns).all(|(x, y)| x.eq_ignore_ascii_case(y))
+    a.columns.len() == b.columns.len()
+        && a.columns.iter().zip(&b.columns).all(|(x, y)| x.eq_ignore_ascii_case(y))
+        && same_opclasses(a, b, a.columns.len())
+}
+
+/// Whether the first `n` keys of `a` and `b` use the same operator class and collation. On the same column,
+/// `text_pattern_ops` (or `COLLATE "C"`) serves `LIKE 'abc%'` and the default serves ORDER BY and range reads: two
+/// indexes that differ there serve different queries, and neither duplicates the other.
+pub(crate) fn same_opclasses(a: &IndexStat, b: &IndexStat, n: usize) -> bool {
+    let class = |i: &IndexStat, k: usize| {
+        i.opclasses.as_ref().and_then(|v| v.get(k)).map(|c| c.trim().to_ascii_lowercase()).unwrap_or_default()
+    };
+    (0..n).all(|k| class(a, k) == class(b, k))
+}
+
+/// Whether the index is a partition's copy of a partitioned index (PostgreSQL). Every partition gets one, and a cold
+/// partition reads as unused because queries prune it, not because the index is useless; such copies can't be dropped
+/// one by one either. They are judged at their parent, never alone.
+pub(crate) fn is_partition_copy(i: &IndexStat) -> bool {
+    i.partition_of.is_some()
 }
 
 /// `b` makes `a` redundant when a's keys are a leading prefix of b's keys and everything a includes is available in b.
@@ -1303,7 +1322,8 @@ fn makes_redundant(b: &IndexStat, a: &IndexStat) -> bool {
     if b.columns.len() < a.columns.len() {
         return false;
     }
-    let prefix = a.columns.iter().zip(&b.columns).all(|(x, y)| x.eq_ignore_ascii_case(y));
+    let prefix = a.columns.iter().zip(&b.columns).all(|(x, y)| x.eq_ignore_ascii_case(y))
+        && same_opclasses(a, b, a.columns.len());
     let available: Vec<String> = b.key_names().iter().map(|s| s.to_string()).chain(b.include.iter().cloned()).collect();
     let includes_ok = a.include.iter().all(|c| available.iter().any(|x| x.eq_ignore_ascii_case(c)));
     prefix && includes_ok
@@ -1404,8 +1424,11 @@ pub(crate) fn unindexed_foreign_keys(snapshot: &Snapshot) -> Vec<(&culprit_core:
     let same_table = |a: &culprit_core::ForeignKey, b: &culprit_core::ForeignKey| {
         a.schema.eq_ignore_ascii_case(&b.schema) && a.table.eq_ignore_ascii_case(&b.table)
     };
+    // A foreign key on a partition is the partitioned table's key, copied: judged once, at the parent.
+    let is_partition =
+        |fk: &culprit_core::ForeignKey| snapshot.table(&fk.schema, &fk.table).is_some_and(|t| t.partition_of.is_some());
     let candidates: Vec<&culprit_core::ForeignKey> =
-        enforced_foreign_keys(snapshot).filter(|fk| !fk_is_indexed(snapshot, fk)).collect();
+        enforced_foreign_keys(snapshot).filter(|fk| !fk_is_indexed(snapshot, fk) && !is_partition(fk)).collect();
     let mut out: Vec<(&culprit_core::ForeignKey, Option<f64>)> = Vec::new();
     for fk in &candidates {
         let (mine, longer) = (keys(fk), |o: &&culprit_core::ForeignKey| {
@@ -1931,7 +1954,13 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
 pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
     let mut out = Vec::new();
     for a in &snapshot.indexes {
-        if a.is_primary_key || a.is_unique || a.is_clustered || a.is_disabled || a.columns.is_empty() {
+        if a.is_primary_key
+            || a.is_unique
+            || a.is_clustered
+            || a.is_disabled
+            || a.columns.is_empty()
+            || is_partition_copy(a)
+        {
             continue;
         }
         let keeper = snapshot
