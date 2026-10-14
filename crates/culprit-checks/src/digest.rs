@@ -348,21 +348,27 @@ fn day_over_day(w: &Workload) -> Option<DigestDay> {
     if covered < DAY - SLACK {
         return None;
     }
-    let within = |from: f64, to: f64| -> f64 {
-        starts
-            .iter()
-            .enumerate()
-            .map(|(i, &start)| {
-                let stop = starts.get(i + 1).copied().unwrap_or(end);
-                let width = stop - start;
-                let overlap = (stop.min(to) - start.max(from)).max(0.0);
-                if width > 0.0 { t.time_ms.get(i).copied().unwrap_or(0.0) * overlap / width } else { 0.0 }
-            })
-            .sum()
+    // A day that holds a bucket with only a lower bound (a running total that fell without a reset) has no total to
+    // state or compare.
+    let within = |from: f64, to: f64| -> Option<f64> {
+        let mut total = 0.0;
+        for (i, &start) in starts.iter().enumerate() {
+            let stop = starts.get(i + 1).copied().unwrap_or(end);
+            let width = stop - start;
+            let overlap = (stop.min(to) - start.max(from)).max(0.0);
+            if width <= 0.0 || overlap <= 0.0 {
+                continue;
+            }
+            if t.is_unknown(i) {
+                return None;
+            }
+            total += t.time_ms.get(i).copied().unwrap_or(0.0) * overlap / width;
+        }
+        Some(total)
     };
     Some(DigestDay {
-        last_ms: within(end - DAY, end),
-        before_ms: (covered >= 2.0 * DAY - SLACK).then(|| within(end - 2.0 * DAY, end - DAY)),
+        last_ms: within(end - DAY, end)?,
+        before_ms: (covered >= 2.0 * DAY - SLACK).then(|| within(end - 2.0 * DAY, end - DAY)).flatten(),
     })
 }
 
@@ -491,6 +497,25 @@ mod tests {
         let day = day_over_day(&w).expect("a day");
         assert_eq!(day.last_ms, 2_400.0);
         assert!((day.before_ms.expect("day before") - 2_400.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_day_holding_a_lower_bound_is_not_compared() {
+        // The bucket 30 hours ago holds only a lower bound (a running total fell without a reset): the day before has
+        // no total to compare; one 3 hours ago leaves the last day without one either.
+        let mut w = hourly(49, |_| 100.0);
+        let mark = |w: &mut Workload, ago: usize| {
+            let t = w.timeline.as_mut().unwrap();
+            let mut unknown = t.unknown.clone().unwrap_or_else(|| vec![false; t.starts.len()]);
+            let at = t.starts.len() - ago;
+            unknown[at] = true;
+            t.unknown = Some(unknown);
+        };
+        mark(&mut w, 30);
+        let day = day_over_day(&w).expect("the last day is whole");
+        assert_eq!(day.before_ms, None);
+        mark(&mut w, 3);
+        assert_eq!(day_over_day(&w), None);
     }
 
     #[test]

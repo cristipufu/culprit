@@ -178,8 +178,9 @@ fn trend(w: &Workload) -> Option<Trend> {
     if span < 2.0 {
         return None;
     }
-    let recent_hours = if span >= 72.0 { 24.0 } else { span / 4.0 };
+    let mut recent_hours = if span >= 72.0 { 24.0 } else { span / 4.0 };
     let cut = end - recent_hours * 3600.0;
+    let mut baseline_hours = span - recent_hours;
     let (mut recent, mut baseline) = (0.0, 0.0);
     for (i, start) in starts.iter().enumerate() {
         let stop = starts.get(i + 1).copied().unwrap_or(end);
@@ -189,10 +190,19 @@ fn trend(w: &Workload) -> Option<Trend> {
             continue;
         }
         let after = ((stop - start.max(cut)).max(0.0) / width).min(1.0);
+        // A bucket holding only a lower bound (a running total that fell without a reset) is left out of both sides,
+        // time and hours alike: the comparison is of rates over the time that was fully counted.
+        if t.is_unknown(i) {
+            recent_hours -= width * after / 3600.0;
+            baseline_hours -= width * (1.0 - after) / 3600.0;
+            continue;
+        }
         recent += time * after;
         baseline += time * (1.0 - after);
     }
-    let baseline_hours = span - recent_hours;
+    if recent_hours <= 0.0 {
+        return None;
+    }
     // Under a second of database time either side, a ratio is noise.
     if recent + baseline < 1_000.0 || baseline <= 0.0 || baseline_hours <= 0.0 {
         return None;
@@ -1765,6 +1775,27 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_bucket_holding_a_lower_bound_is_left_out_of_the_comparison() {
+        // Eight hours at a steady second an hour, except a bucket that holds only a lower bound (a running total fell
+        // without a reset). Counted as 50 ms it would make the earlier hours look quieter and today look busier.
+        let mut w = crate::waits::snapshot_with(culprit_core::Engine::Postgres).workload.expect("workload");
+        let at = |h: usize| format!("2026-10-12T{h:02}:00:00Z");
+        w.window_start = Some(at(0));
+        let mut time_ms = vec![1_000.0; 8];
+        time_ms[2] = 50.0;
+        w.timeline = Some(culprit_core::Timeline {
+            source: Default::default(),
+            starts: (0..8).map(at).collect(),
+            end: at(8),
+            time_ms,
+            executions: vec![0.0; 8],
+            unknown: Some((0..8).map(|i| i == 2).collect()),
+        });
+        let t = trend(&w).expect("a trend");
+        assert!((t.ratio - 1.0).abs() < 1e-9, "{}", t.ratio);
+    }
 
     #[test]
     fn fix_statements_come_out_of_sentences() {
