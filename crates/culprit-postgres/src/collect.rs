@@ -580,11 +580,12 @@ async fn collect_with_base(
             plan_id: None,
         })
         .collect();
-    // The statements this login ran itself (among the roles that ran each): the only ones an elevated login plans.
-    let mine: std::collections::HashSet<String> =
-        rows.iter().filter(|r| r.flag("mine")).map(|r| r.string("id")).collect();
+    // The text of each statement as this login ran it, when it did: the only text an elevated login plans, so what is
+    // planned is what passed that check, never another role's copy of the same statement.
+    let own: std::collections::HashMap<String, String> =
+        rows.iter().filter_map(|r| Some((r.string("id"), r.text("own_query")?))).collect();
     let (plan_note, plans_withheld) = if probe.generic_plans() {
-        match attach_plans(client, &mut queries, &mine, probe, options.plans).await {
+        match attach_plans(client, &mut queries, &own, probe, options.plans).await {
             Ok(note) => (note, None),
             Err(withheld) => (None, Some(withheld)),
         }
@@ -731,7 +732,7 @@ fn aggregated_base(relation: &str, c: &EntryColumns) -> String {
                 sum(rows) AS rows, sum(shared_blks_hit + shared_blks_read) AS reads, sum(shared_blks_read) AS phys,
                 sum(temp_blks_written) AS temp, sum({io}) AS io_ms, {first_seen} AS first_seen,
                 count(*) AS entries,
-                bool_or(userid = current_user::regrole::oid) AS mine
+                (array_agg(query ORDER BY {total} DESC) FILTER (WHERE pg_get_userbyid(userid) = current_user))[1] AS own_query
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
            AND query NOT LIKE '%{TAG}'
@@ -783,7 +784,7 @@ fn statements_base_legacy(relation: &str) -> String {
 async fn attach_plans(
     client: &Client,
     queries: &mut [QueryStat],
-    mine: &std::collections::HashSet<String>,
+    own: &std::collections::HashMap<String, String>,
     probe: &Probe,
     budget: u32,
 ) -> Result<Option<String>> {
@@ -804,11 +805,18 @@ async fn attach_plans(
         if attempted >= budget {
             break;
         }
-        let Some(statement) = plannable(&queries[index].text) else { continue };
-        if probe.elevated && !mine.contains(&queries[index].id) {
-            others += 1;
-            continue;
-        }
+        let text = if probe.elevated {
+            match own.get(&queries[index].id) {
+                Some(text) => text.as_str(),
+                None => {
+                    others += plannable(&queries[index].text).is_some() as u32;
+                    continue;
+                }
+            }
+        } else {
+            queries[index].text.as_str()
+        };
+        let Some(statement) = plannable(text) else { continue };
         attempted += 1;
         let Some(json) = generic_plan_json(client, statement, probe).await else { continue };
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
@@ -1307,8 +1315,10 @@ mod tests {
         assert!(base.contains("sum(calls * (stddev_exec_time ^ 2 + mean_exec_time ^ 2))"));
         assert!(base.contains(" AND toplevel") && base.contains(&format!("NOT LIKE '%{TAG}'")));
         assert_eq!(base_relation(&base), Some("public.pg_stat_statements"));
-        // Whether this login ran it, without a subquery whose FROM would hide the relation.
-        assert!(base.contains("bool_or(userid = current_user::regrole::oid) AS mine"), "{base}");
+        // The login's own text of it, compared by role name (never a role name parsed as an identifier, which an Entra
+        // login like someone@example.com isn't), and without a subquery whose FROM would hide the relation.
+        assert!(base.contains("FILTER (WHERE pg_get_userbyid(userid) = current_user))[1] AS own_query"), "{base}");
+        assert!(!base.contains("regrole"), "{base}");
         let old = statements_base("public.pg_stat_statements", 120_000);
         assert!(
             old.contains("sum(total_time)") && !old.contains("toplevel") && old.contains("NULL::text AS first_seen")
