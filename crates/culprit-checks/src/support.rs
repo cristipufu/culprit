@@ -807,7 +807,8 @@ fn split_top_level<'a>(text: &'a str, separator: &str) -> Vec<&'a str> {
             b'\'' => quoted = !quoted,
             b'(' if !quoted => depth += 1,
             b')' if !quoted => depth -= 1,
-            _ if !quoted && depth == 0 && upper[i..].starts_with(separator) => {
+            // Bytes, not a string slice: `i` can be inside a multi-byte character, where slicing would panic.
+            _ if !quoted && depth == 0 && bytes[i..].starts_with(separator.as_bytes()) => {
                 parts.push(&text[start..i]);
                 i += separator.len();
                 start = i;
