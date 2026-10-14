@@ -1,5 +1,7 @@
+use culprit_core::insights::EXCHANGE_SPILL;
 use culprit_core::{
-    Engine, Error, NodeKind, NodeRuntime, Plan, PlanIndexHint, PlanKind, PlanNode, PlanWarning, Properties, Result,
+    Engine, Error, NodeKind, NodeRuntime, PARALLEL_THREADS, Plan, PlanIndexHint, PlanKind, PlanNode, PlanWarning,
+    Properties, Result,
 };
 use roxmltree::{Document, Node, ParsingOptions};
 
@@ -12,6 +14,7 @@ const RELOP_PROPS: &[&str] = &[
     "PhysicalOp",
     "LogicalOp",
     "EstimateRows",
+    "EstimateRowsWithoutRowGoal",
     "EstimatedRowsRead",
     "TableCardinality",
     "EstimateIO",
@@ -94,15 +97,24 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
             ("RequestedMemory", "MemoryRequestedKB"),
             ("GrantedMemory", "MemoryGrantedKB"),
             ("MaxUsedMemory", "MemoryMaxUsedKB"),
-            ("GrantWaitTime", "MemoryGrantWaitMs"),
         ] {
             if let Some(v) = grant.attribute(attr) {
                 props.insert(key.into(), v.into());
             }
         }
+        // The showplan schema gives the wait for a memory grant in seconds.
+        if let Some(seconds) = grant.attribute("GrantWaitTime").and_then(|v| v.parse::<f64>().ok()) {
+            props.insert("MemoryGrantWaitMs".into(), (seconds * 1000.0).to_string());
+        }
     }
     if let Some(time) = child(query_plan, "QueryTimeStats") {
-        for (attr, key) in [("ElapsedTime", "ElapsedMs"), ("CpuTime", "CpuMs")] {
+        // Time in scalar user-defined functions is counted apart (SQL Server 2016 SP2+): the plan's costs leave it out.
+        for (attr, key) in [
+            ("ElapsedTime", "ElapsedMs"),
+            ("CpuTime", "CpuMs"),
+            ("UdfElapsedTime", "UdfElapsedMs"),
+            ("UdfCpuTime", "UdfCpuMs"),
+        ] {
             if let Some(v) = time.attribute(attr) {
                 props.insert(key.into(), v.into());
             }
@@ -137,7 +149,7 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
         props.insert("MemoryGrantWarning".into(), kind.into());
     }
     if is_actual {
-        flag_misestimates(&mut root);
+        root.flag_misestimates();
     }
 
     let mut plan = Plan {
@@ -215,6 +227,10 @@ fn parse_relop(relop: Node) -> PlanNode {
         if pages > 0.0 {
             props.insert("TempdbWritesPages".into(), pages.to_string());
         }
+        // An exchange spills its buffers to resolve a deadlock between parallel threads, not for lack of memory.
+        if child(w, "ExchangeSpillDetails").is_some() {
+            props.insert(EXCHANGE_SPILL.into(), "true".into());
+        }
     }
     if let Some(columns) = child(relop, "Warnings").and_then(|w| child(w, "ColumnsWithNoStatistics")) {
         let names: Vec<String> = children(columns, "ColumnReference").map(column_name).map(|c| unbracket(&c)).collect();
@@ -229,7 +245,6 @@ fn parse_relop(relop: Node) -> PlanNode {
 
     let est_rows = attr_f64(relop, "EstimateRows");
     let est_executions = 1.0 + attr_f64(relop, "EstimateRebinds") + attr_f64(relop, "EstimateRewinds");
-    let rows_read = relop.attribute("EstimatedRowsRead").and_then(|v| v.parse().ok());
     let table_rows = relop.attribute("TableCardinality").and_then(|v| v.parse().ok());
 
     let (act_rows, act_executions, act_time_ms, mut runtime) = match child(relop, "RunTimeInformation") {
@@ -246,22 +261,14 @@ fn parse_relop(relop: Node) -> PlanNode {
         runtime.get_or_insert_with(NodeRuntime::default).spill_pages = Some(spilled);
     }
 
-    let mut warnings = child(relop, "Warnings").map(warnings_of).unwrap_or_default();
-    let read_compared = props.get("ActualRowsRead").and_then(|v| v.parse::<f64>().ok()).or(rows_read);
-    let returned = act_rows.unwrap_or(est_rows * est_executions);
-    if predicate.is_some()
-        && read_compared
-            .is_some_and(|read| read >= RESIDUAL_MIN_ROWS_READ && read >= RESIDUAL_READ_FACTOR * returned.max(1.0))
-    {
-        push_unique(&mut warnings, PlanWarning::ResidualPredicate);
-    }
-
+    let warnings = child(relop, "Warnings").map(warnings_of).unwrap_or_default();
     let mut child_ops = Vec::new();
     if let Some(o) = operator {
         collect_relops(o, &mut child_ops);
     }
+    let estimated_read = relop.attribute("EstimatedRowsRead").and_then(|v| v.parse::<f64>().ok());
 
-    PlanNode {
+    let mut node = PlanNode {
         id: relop.attribute("NodeId").and_then(|v| v.parse().ok()).unwrap_or(0),
         kind: node_kind(&op, &logical),
         detail: (!logical.is_empty() && logical != physical && logical != op).then_some(logical),
@@ -274,7 +281,7 @@ fn parse_relop(relop: Node) -> PlanNode {
         est_executions,
         act_rows,
         act_executions,
-        rows_read,
+        rows_read: None,
         table_rows,
         subtree_cost: attr_f64(relop, "EstimatedTotalSubtreeCost"),
         self_cost: 0.0,
@@ -283,7 +290,23 @@ fn parse_relop(relop: Node) -> PlanNode {
         warnings,
         props,
         children: child_ops.into_iter().map(parse_relop).collect(),
+    };
+    // Rows read across every execution, like `act_rows`: counted by SQL Server when it did (ActualRowsRead), else its
+    // estimate per execution times the executions (the measured ones in an actual plan).
+    node.rows_read = node
+        .props
+        .get("ActualRowsRead")
+        .and_then(|v| v.parse::<f64>().ok())
+        .or_else(|| estimated_read.map(|per_run| per_run * node.runs()));
+    let returned = node.act_rows.unwrap_or_else(|| node.est_rows_total());
+    if node.predicate.is_some()
+        && node
+            .rows_read
+            .is_some_and(|read| read >= RESIDUAL_MIN_ROWS_READ && read >= RESIDUAL_READ_FACTOR * returned.max(1.0))
+    {
+        push_unique(&mut node.warnings, PlanWarning::ResidualPredicate);
     }
+    node
 }
 
 fn operator_element<'a, 'i>(relop: Node<'a, 'i>) -> Option<Node<'a, 'i>> {
@@ -426,6 +449,8 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
     let mut rows = 0.0;
     let mut executions = 0.0;
     let mut rows_read = 0.0;
+    let (mut rebinds, mut rewinds): (Option<f64>, Option<f64>) = (None, None);
+    let mut threads_run = 0.0;
     let mut elapsed: Option<f64> = None;
     let mut seen = false;
     let mut runtime = NodeRuntime::default();
@@ -446,8 +471,15 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
             workers += 1.0;
             busiest = busiest.max(thread_rows);
         }
-        executions += attr_f64(thread, "ActualExecutions");
+        let thread_executions = attr_f64(thread, "ActualExecutions");
+        executions += thread_executions;
+        if thread_executions > 0.0 && thread.attribute("Thread").is_some_and(|t| t != "0") {
+            threads_run += 1.0;
+        }
         rows_read += attr_f64(thread, "ActualRowsRead");
+        // Spools: a rebind runs the input again, a rewind replays the rows the spool already holds.
+        add(&mut rebinds, opt(thread, "ActualRebinds"));
+        add(&mut rewinds, opt(thread, "ActualRewinds"));
         if let Some(ms) = opt(thread, "ActualElapsedms") {
             elapsed = Some(elapsed.map_or(ms, |e: f64| e.max(ms)));
         }
@@ -478,6 +510,14 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
     if rows_read > 0.0 {
         props.insert("ActualRowsRead".into(), rows_read.to_string());
     }
+    if threads_run >= 2.0 {
+        props.insert(PARALLEL_THREADS.into(), threads_run.to_string());
+    }
+    for (key, value) in [("ActualRebinds", rebinds), ("ActualRewinds", rewinds)] {
+        if let Some(v) = value {
+            props.insert(key.into(), v.to_string());
+        }
+    }
     (Some(rows), Some(executions), elapsed, (!runtime.is_empty()).then_some(runtime))
 }
 
@@ -503,9 +543,9 @@ fn warnings_of(warnings: Node) -> Vec<PlanWarning> {
                 .attribute("Expression")
                 .is_some_and(culprit_core::insights::converts_column)
                 .then_some(PlanWarning::ImplicitConversion),
-            "SpillToTempDb" | "SortSpillDetails" | "HashSpillDetails" | "ExchangeSpillDetails" | "SpillOccurred" => {
-                Some(PlanWarning::Spill)
-            }
+            // A sort or hash that ran out of memory. An exchange spill is told apart (`EXCHANGE_SPILL`): it resolves a
+            // deadlock between parallel threads, and memory advice doesn't apply to it.
+            "SpillToTempDb" | "SortSpillDetails" | "HashSpillDetails" | "SpillOccurred" => Some(PlanWarning::Spill),
             "ColumnsWithNoStatistics" => Some(PlanWarning::MissingStatistics),
             "MemoryGrantWarning" => Some(PlanWarning::MemoryGrant),
             "NoJoinPredicate" => Some(PlanWarning::NoJoinPredicate),
@@ -516,19 +556,6 @@ fn warnings_of(warnings: Node) -> Vec<PlanWarning> {
         }
     }
     out
-}
-
-/// Flags operators whose actual row count is at least 10× away from the estimate, on plans with runtime data.
-fn flag_misestimates(node: &mut PlanNode) {
-    const FACTOR: f64 = 10.0;
-    const MIN_ROWS: f64 = 100.0;
-    if let Some(m) = node.misestimate() {
-        let larger = node.act_rows.unwrap_or(0.0).max(node.est_rows_total());
-        if m.abs() >= FACTOR && larger >= MIN_ROWS {
-            push_unique(&mut node.warnings, PlanWarning::Misestimate);
-        }
-    }
-    node.children.iter_mut().for_each(flag_misestimates);
 }
 
 fn index_hints(query_plan: Node) -> Vec<PlanIndexHint> {
@@ -784,6 +811,81 @@ mod tests {
         assert_eq!(plan.props.get("UsedThreads").map(String::as_str), Some("2"));
         let summary = culprit_core::actual_summary(&plan).unwrap();
         assert_eq!((summary.elapsed_ms, summary.cpu_ms, summary.spilled), (Some(61.0), Some(80.0), true));
+    }
+
+    #[test]
+    fn actual_counts_are_totals_and_units_follow_the_schema() {
+        let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
+          <StmtSimple StatementText="SELECT 1" StatementSubTreeCost="20">
+            <QueryPlan>
+              <MemoryGrantInfo GrantedMemory="1024" MaxUsedMemory="1024" GrantWaitTime="2" />
+              <QueryTimeStats CpuTime="900" ElapsedTime="700" UdfCpuTime="500" UdfElapsedTime="450" />
+              <RelOp NodeId="0" PhysicalOp="Nested Loops" LogicalOp="Inner Join" EstimateRows="1000" EstimatedTotalSubtreeCost="20">
+                <OutputList />
+                <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualExecutions="1" /></RunTimeInformation>
+                <NestedLoops Optimized="0">
+                  <RelOp NodeId="1" PhysicalOp="Parallelism" LogicalOp="Gather Streams" EstimateRows="1000" EstimatedTotalSubtreeCost="5">
+                    <OutputList />
+                    <Warnings><ExchangeSpillDetails WritesToTempDb="640" /></Warnings>
+                    <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="1000" ActualExecutions="1" /></RunTimeInformation>
+                    <Parallelism>
+                      <RelOp NodeId="2" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1000" EstimatedRowsRead="500000" TableCardinality="500000" Parallel="1" EstimatedTotalSubtreeCost="4">
+                        <OutputList />
+                        <RunTimeInformation>
+                          <RunTimeCountersPerThread Thread="1" ActualRows="400" ActualRowsRead="250000" ActualExecutions="1" />
+                          <RunTimeCountersPerThread Thread="2" ActualRows="600" ActualRowsRead="250000" ActualExecutions="1" />
+                        </RunTimeInformation>
+                        <IndexScan><Object Database="[db]" Schema="[dbo]" Table="[t]" Index="[pk]" />
+                          <Predicate><ScalarOperator ScalarString="[db].[dbo].[t].[a]=(1)" /></Predicate></IndexScan>
+                      </RelOp>
+                    </Parallelism>
+                  </RelOp>
+                  <RelOp NodeId="3" PhysicalOp="Table Spool" LogicalOp="Lazy Spool" EstimateRows="50" EstimateRebinds="0" EstimateRewinds="999" EstimatedTotalSubtreeCost="10">
+                    <OutputList />
+                    <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="50000" ActualExecutions="1000" ActualRebinds="1" ActualRewinds="999" /></RunTimeInformation>
+                    <Spool>
+                      <RelOp NodeId="4" PhysicalOp="Index Seek" LogicalOp="Index Seek" EstimateRows="50" EstimatedRowsRead="80" EstimatedTotalSubtreeCost="1">
+                        <OutputList />
+                        <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="0" ActualExecutions="0" /></RunTimeInformation>
+                        <IndexScan><Object Database="[db]" Schema="[dbo]" Table="[u]" Index="[ix]" /></IndexScan>
+                      </RelOp>
+                    </Spool>
+                  </RelOp>
+                </NestedLoops>
+              </RelOp>
+            </QueryPlan>
+          </StmtSimple>
+        </Statements></Batch></BatchSequence></ShowPlanXML>"#;
+        let plan = parse(xml).unwrap();
+        // The showplan schema gives GrantWaitTime in seconds.
+        assert_eq!(plan.props.get("MemoryGrantWaitMs").map(String::as_str), Some("2000"));
+        assert_eq!(plan.props.get("UdfElapsedMs").map(String::as_str), Some("450"));
+        let gather = &plan.root.children[0];
+        // An exchange spill isn't a sort or hash short of memory.
+        assert!(!gather.warnings.contains(&PlanWarning::Spill));
+        assert_eq!(gather.props.get(EXCHANGE_SPILL).map(String::as_str), Some("true"));
+        let scan = &gather.children[0];
+        // Rows read is the measured total across threads, like actual rows; the scan ran once on each of two threads,
+        // one execution as the estimate counts it, and returned the 1,000 rows it expected.
+        assert_eq!(scan.rows_read, Some(500_000.0));
+        assert_eq!(scan.props.get(PARALLEL_THREADS).map(String::as_str), Some("2"));
+        assert_eq!(scan.runs(), 1.0);
+        assert!(!scan.warnings.contains(&PlanWarning::Misestimate));
+        assert!(scan.warnings.contains(&PlanWarning::ResidualPredicate));
+        let spool = &plan.root.children[1];
+        assert_eq!(spool.props.get("ActualRebinds").map(String::as_str), Some("1"));
+        assert_eq!(spool.props.get("ActualRewinds").map(String::as_str), Some("999"));
+        // Never ran: nothing to compare, and nothing read.
+        let never = &spool.children[0];
+        assert_eq!(never.runs(), 0.0);
+        assert_eq!(never.rows_read, Some(0.0));
+        assert!(!never.warnings.contains(&PlanWarning::Misestimate));
+
+        // An estimated plan: EstimatedRowsRead is per execution, so the total multiplies by the executions.
+        let estimated = parse(ESTIMATED).unwrap();
+        let lookup = &estimated.root.children[1];
+        assert_eq!(lookup.est_executions, 40.0);
+        assert_eq!(estimated.root.children[0].rows_read, Some(1_800_000.0));
     }
 
     #[test]

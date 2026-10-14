@@ -272,10 +272,13 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     node.rows_read = examined;
     node.est_rows = produced.or(examined).unwrap_or(0.0);
     let filtered = number_field(table, "filtered");
+    // MySQL's fixed guesses for conditions it has no statistics on say nothing about how much the filter keeps.
+    let conditions = node.predicate.as_deref().map_or(1, culprit_core::insights::condition_count);
     if kind == NodeKind::Scan
         && let (Some(examined), Some(filtered)) = (examined, filtered)
         && examined >= 1_000.0
         && filtered < 10.0
+        && !culprit_core::insights::mysql_guessed_filtered(filtered, conditions)
     {
         node.warnings.push(PlanWarning::ResidualPredicate);
     }
@@ -572,6 +575,20 @@ mod tests {
         assert_eq!(scan.est_rows, 4972.0);
         assert!(scan.warnings.contains(&PlanWarning::ResidualPredicate));
         assert_eq!(plan.hottest().id, scan.id);
+    }
+
+    #[test]
+    fn guessed_filters_are_not_flagged() {
+        // Two conditions without statistics: MySQL multiplies its 10% guesses into 1.00, which says nothing.
+        let guessed = SCAN.replace(
+            "(`shop`.`o`.`promo_code` = 'SPRING')",
+            "((`shop`.`o`.`promo_code` = 'SPRING') and (`shop`.`o`.`channel` = 'web'))",
+        );
+        let plan = parse(&guessed, PlanKind::Estimated, None, Some("shop")).unwrap();
+        assert!(!plan.root.children[0].children[0].warnings.contains(&PlanWarning::ResidualPredicate));
+        // One condition can't make 1.00 from guesses: that share comes from statistics.
+        let plan = parse(SCAN, PlanKind::Estimated, None, Some("shop")).unwrap();
+        assert!(plan.root.children[0].children[0].warnings.contains(&PlanWarning::ResidualPredicate));
     }
 
     #[test]

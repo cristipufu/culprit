@@ -46,6 +46,7 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
         root.children.push(sibling);
     }
     fill_missing_costs(&mut root);
+    root.flag_misestimates();
     let mut props = Properties::new();
     // The root's time is the statement's: the same name every engine uses.
     if let Some(ms) = root.act_time_ms.or_else(|| root.children.iter().filter_map(|c| c.act_time_ms).reduce(f64::max)) {
@@ -174,12 +175,6 @@ fn node_from(text: &str, names: &HashMap<String, (Option<String>, String)>, sche
             node.act_rows = Some(0.0);
         }
     }
-    if let Some(misestimate) = node.misestimate()
-        && misestimate.abs() >= 10.0
-        && node.act_rows.is_some_and(|r| r >= 100.0)
-    {
-        node.warnings.push(PlanWarning::Misestimate);
-    }
     node
 }
 
@@ -242,7 +237,7 @@ fn insert(map: &mut HashMap<&'static str, f64>, key: &'static str, value: &str) 
 fn kind_of(op: &str) -> NodeKind {
     let lower = op.to_ascii_lowercase();
     match lower.as_str() {
-        "table scan" | "index scan" | "full-text index search" => NodeKind::Scan,
+        "table scan" | "index scan" | "covering index scan" | "full-text index search" => NodeKind::Scan,
         l if l.contains("index lookup") || l.contains("index range scan") || l.contains("index skip scan") => {
             NodeKind::Seek
         }
@@ -296,6 +291,20 @@ mod tests {
         assert_eq!(scan.act_rows, Some(500_000.0));
         assert_eq!(scan.act_time_ms, Some(141.0));
         assert!(scan.warnings.contains(&PlanWarning::ResidualPredicate));
+    }
+
+    #[test]
+    fn misestimates_are_per_loop_and_need_a_run() {
+        let tree = "-> Limit: 20 row(s)  (cost=20000 rows=20) (actual time=0.1..0.5 rows=20 loops=1)
+    -> Nested loop inner join  (cost=20000 rows=200000) (actual time=0.1..0.5 rows=20 loops=1)
+        -> Covering index scan on c using ix_customers_region  (cost=20000 rows=200000) (actual time=0.1..0.2 rows=20 loops=1)
+        -> Index lookup on o using fk_orders_customer (customer_id=c.id)  (cost=0.6 rows=2.5) (actual time=0.01..0.01 rows=2.5 loops=20)
+            -> Filter: (o.status = 'x')  (cost=0.6 rows=900) (never executed)
+";
+        let plan = parse(tree, None, Some("shop")).unwrap();
+        // The scan stopped because the Limit had its 20 rows; the lookup returned 2.5 a loop, as expected per loop.
+        assert!(plan.nodes().iter().all(|n| !n.warnings.contains(&PlanWarning::Misestimate)), "{:?}", plan.root);
+        assert_eq!(plan.root.children[0].children[0].kind, NodeKind::Scan, "a covering index scan reads it all");
     }
 
     #[test]

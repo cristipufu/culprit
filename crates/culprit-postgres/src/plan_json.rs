@@ -40,7 +40,8 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         .ok_or_else(|| Error::internal("PostgreSQL plan has no root node"))?;
 
     let mut next_id = 0;
-    let root = node(root, &mut next_id, 1.0);
+    let (mut root, _) = node(root, &mut next_id, 1.0, None);
+    root.flag_misestimates();
     let mut props = Properties::new();
     for (key, value) in top {
         if key == "Plan" {
@@ -112,9 +113,20 @@ fn runtime(map: &Map<String, Value>) -> Option<NodeRuntime> {
     (!runtime.is_empty()).then_some(runtime)
 }
 
+/// PostgreSQL's share of a partial plan's rows each process is expected to handle: the workers planned, plus what the
+/// leader contributes while it also gathers (`get_parallel_divisor`: 30% less per worker, none from four workers on).
+fn parallel_divisor(workers: f64) -> f64 {
+    let leader = 1.0 - 0.3 * workers;
+    workers + if leader > 0.0 { leader } else { 0.0 }
+}
+
 /// `parallelism`: how many processes share the loops of this node (the workers a Gather launched plus the leader), so
-/// loops that ran side by side don't add up to more time than the query took.
-fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64) -> PlanNode {
+/// loops that ran side by side don't add up to more time than the query took. `divisor`: below a Gather, the
+/// [`parallel_divisor`] of its planned workers. Returns the node and whether it is partial: one process's share of a
+/// parallel scan (a parallel-aware node, or one fed by a partial outer input), whose `Plan Rows` PostgreSQL gives per
+/// process. An estimated plan's partial nodes are scaled to all processes, like every other row count Culprit shows;
+/// an analyzed plan's runs (`Actual Loops`, one per process) do that already.
+fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: Option<f64>) -> (PlanNode, bool) {
     let id = *next_id;
     *next_id += 1;
     let op = text(map, "Node Type").unwrap_or_else(|| "Unknown".to_string());
@@ -165,22 +177,39 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64) -> PlanNo
         }
     }
 
-    let children = map
-        .get("Plans")
-        .and_then(Value::as_array)
-        .map(|plans| {
-            // Below a Gather, its workers and the leader each run the subtree at the same time.
-            let below = match op.as_str() {
-                "Gather" | "Gather Merge" => {
-                    1.0 + number(map, "Workers Launched").or(number(map, "Workers Planned")).unwrap_or(0.0)
-                }
-                _ => parallelism,
-            };
-            plans.iter().filter_map(Value::as_object).map(|child| node(child, next_id, below)).collect()
-        })
-        .unwrap_or_default();
+    let gather = matches!(op.as_str(), "Gather" | "Gather Merge");
+    // Below a Gather, its workers and the leader each run the subtree at the same time.
+    let below = if gather {
+        1.0 + number(map, "Workers Launched").or(number(map, "Workers Planned")).unwrap_or(0.0)
+    } else {
+        parallelism
+    };
+    let children_divisor = if gather { number(map, "Workers Planned").map(parallel_divisor) } else { divisor };
+    let mut children = Vec::new();
+    let mut outer_partial = None;
+    for child in map.get("Plans").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_object) {
+        let (built, partial) = node(child, next_id, below, children_divisor);
+        // The outer input decides: a join's first input, an aggregate's only one; a SubPlan or InitPlan doesn't.
+        let side = child.get("Parent Relationship").and_then(Value::as_str);
+        if outer_partial.is_none() && !matches!(side, Some("SubPlan" | "InitPlan")) {
+            outer_partial = Some(partial);
+        }
+        children.push(built);
+    }
+    // A Gather's output is whole again.
+    let partial = !gather
+        && divisor.is_some()
+        && (map.get("Parallel Aware").and_then(Value::as_bool) == Some(true) || outer_partial == Some(true));
+    let plan_rows = number(map, "Plan Rows").unwrap_or(0.0);
+    let est_rows = match divisor {
+        Some(d) if partial && !analyzed => plan_rows * d,
+        _ => plan_rows,
+    };
 
-    let mut result = PlanNode {
+    if partial && !analyzed {
+        props.insert("Plan Rows per process".into(), plan_rows.to_string());
+    }
+    let result = PlanNode {
         id,
         kind: kind_of(&op),
         detail: detail(map),
@@ -189,7 +218,7 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64) -> PlanNo
         index: text(map, "Index Name"),
         seek_predicate,
         predicate,
-        est_rows: number(map, "Plan Rows").unwrap_or(0.0),
+        est_rows,
         est_executions: if analyzed { loops_or_one } else { 1.0 },
         act_rows,
         act_executions: loops,
@@ -203,13 +232,7 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64) -> PlanNo
         props,
         children,
     };
-    if let Some(factor) = result.misestimate()
-        && factor.abs() >= 10.0
-        && result.est_rows_total().max(result.act_rows.unwrap_or(0.0)) >= 100.0
-    {
-        result.warnings.push(PlanWarning::Misestimate);
-    }
-    result
+    (result, partial)
 }
 
 fn kind_of(op: &str) -> NodeKind {
@@ -303,6 +326,48 @@ mod tests {
         assert_eq!(scan.act_time_ms, Some(56.0));
         assert_eq!(scan.act_rows, Some(14.0));
         assert_eq!(plan.root.act_time_ms, Some(60.0));
+    }
+
+    #[test]
+    fn estimated_parallel_rows_are_scaled_to_every_process() {
+        // Plan Rows below a Gather are one process's share: divided by 2 workers plus 0.4 of a leader.
+        let json = r#"[{"Plan": {"Node Type": "Gather", "Workers Planned": 2, "Plan Rows": 10000, "Total Cost": 47000,
+            "Plans": [{"Node Type": "Nested Loop", "Parent Relationship": "Outer", "Join Type": "Inner", "Plan Rows": 4167, "Total Cost": 46000,
+              "Plans": [
+                {"Node Type": "Seq Scan", "Parent Relationship": "Outer", "Parallel Aware": true, "Relation Name": "orders",
+                 "Plan Rows": 4167, "Total Cost": 45000, "Filter": "(status = 'x')"},
+                {"Node Type": "Index Scan", "Parent Relationship": "Inner", "Parallel Aware": false, "Relation Name": "customers",
+                 "Index Name": "customers_pkey", "Plan Rows": 1, "Total Cost": 0.4, "Index Cond": "(id = orders.customer_id)"}]}]}}]"#;
+        let plan = parse(json, PlanKind::Estimated, None).unwrap();
+        assert_eq!(plan.root.est_rows, 10_000.0, "a Gather's rows are already whole");
+        let join = &plan.root.children[0];
+        let scan = &join.children[0];
+        assert!((scan.est_rows - 4_167.0 * 2.4).abs() < 1e-6, "{}", scan.est_rows);
+        assert!((join.est_rows - 4_167.0 * 2.4).abs() < 1e-6, "fed by the partial scan: {}", join.est_rows);
+        assert_eq!(scan.props.get("Plan Rows per process").map(String::as_str), Some("4167"));
+        // The inner side of the loop runs per outer row in each process: its rows are per run, not shared out.
+        assert_eq!(join.children[1].est_rows, 1.0);
+
+        // Measured, each process's loop counts: rows per loop times loops is the total already.
+        let analyzed = r#"[{"Plan": {"Node Type": "Gather", "Workers Planned": 2, "Workers Launched": 2, "Plan Rows": 10000,
+            "Actual Rows": 9000, "Actual Loops": 1, "Total Cost": 47000,
+            "Plans": [{"Node Type": "Seq Scan", "Parallel Aware": true, "Relation Name": "orders", "Plan Rows": 4167,
+              "Actual Rows": 3000, "Actual Loops": 3, "Total Cost": 45000}]}}]"#;
+        let plan = parse(analyzed, PlanKind::Actual, None).unwrap();
+        assert_eq!(plan.root.children[0].est_rows, 4_167.0);
+        assert!(plan.nodes().iter().all(|n| !n.warnings.contains(&PlanWarning::Misestimate)));
+    }
+
+    #[test]
+    fn early_stops_and_operators_that_never_ran_are_not_misestimates() {
+        let json = r#"[{"Plan": {"Node Type": "Limit", "Plan Rows": 20, "Actual Rows": 20, "Actual Loops": 1, "Total Cost": 15,
+            "Plans": [{"Node Type": "Nested Loop", "Join Type": "Inner", "Plan Rows": 399599, "Actual Rows": 20, "Actual Loops": 1,
+              "Total Cost": 292890, "Plans": [
+                {"Node Type": "Index Scan", "Relation Name": "orders", "Plan Rows": 399599, "Actual Rows": 20, "Actual Loops": 1, "Total Cost": 141997},
+                {"Node Type": "Index Scan", "Relation Name": "customers", "Plan Rows": 1, "Actual Rows": 0, "Actual Loops": 0, "Total Cost": 0.46}
+              ]}]}}]"#;
+        let plan = parse(json, PlanKind::Actual, None).unwrap();
+        assert!(plan.nodes().iter().all(|n| !n.warnings.contains(&PlanWarning::Misestimate)));
     }
 
     #[test]

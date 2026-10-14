@@ -152,7 +152,7 @@
           "label": "Share of the plan's work",
           "text": null,
           "unit": "ratio",
-          "value": 0.939
+          "value": 0.999
         },
         {
           "label": "Average duration",
@@ -164,7 +164,7 @@
       "queries": [
         {
           "id": "263",
-          "note": "A nested loop repeating its inner side thousands of times",
+          "note": "A nested loop rereading its inner side thousands of times",
           "plan_node": 1
         }
       ],
@@ -173,10 +173,10 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "A nested loop is the right choice for a few rows; at 1.5M repetitions a hash join over a single pass of order_items is usually cheaper. Seen in a read from order_items.",
-      "title": "Repeats its read of order_items 1.5M times, once per row of order_items",
+      "summary": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.",
+      "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
       "verify": [
-        "Run with actual rows: a hash join, or far fewer executions of order_items.",
+        "Explain again without the hint: a hash or merge join instead of the loop.",
         "Re-scan: this finding is gone."
       ]
     },
