@@ -14,7 +14,7 @@ use ts_rs::TS;
 use crate::finding::Severity;
 use crate::format;
 use crate::model::{ColumnInfo, Engine, Snapshot};
-use crate::plan::{INDEX_KEEPS_AT_MOST, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
+use crate::plan::{INDEX_KEEPS_AT_MOST, MISESTIMATE_FACTOR, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
 
 /// What kind of change fixes it, for grouping and icons.
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -75,16 +75,16 @@ pub const RULES: &[(&str, &[Engine], &str)] = &[
     ("implicit-conversion", &[Engine::Mssql], "A type mismatch that blocks an index seek (CONVERT_IMPLICIT)"),
     ("non-sargable", ALL, "A function or cast around a filtered column"),
     ("leading-wildcard", ALL, "LIKE '%…' that can't use an index"),
-    ("not-in", ALL, "NOT IN that can't become an anti-join"),
+    ("not-in", ALL, "NOT IN that checks the subquery row by row"),
     ("scalar-udf", &[Engine::Mssql], "A scalar function called once per row"),
     ("table-variable", &[Engine::Mssql], "A table variable estimated at one row"),
     ("parallelism-blocked", &[Engine::Mssql], "An expensive plan that can't go parallel"),
     ("parallel-skew", &[Engine::Mssql, Engine::Postgres], "One thread or worker doing most of the work"),
     ("eager-spool", &[Engine::Mssql], "A temporary index built on every run"),
-    ("spill", &[Engine::Mssql, Engine::Postgres], "A sort or hash that ran out of memory and wrote to disk"),
+    ("spill", ALL, "A sort or hash that ran out of memory and wrote to disk, or an exchange that spilled"),
     ("memory-grant", &[Engine::Mssql], "A memory grant far larger than what the query uses, or a wait for one"),
     ("misestimate", ALL, "Actual rows far from the estimate"),
-    ("nested-loops", ALL, "A nested loop repeating its inner side thousands of times"),
+    ("nested-loops", ALL, "A nested loop rereading its inner side thousands of times"),
     ("big-sort", ALL, "A large sort that dominates the plan"),
     ("no-join-predicate", ALL, "Two inputs joined without a condition"),
     ("missing-statistics", &[Engine::Mssql], "Columns without statistics"),
@@ -109,6 +109,14 @@ const ALL: &[Engine] = &[Engine::Mssql, Engine::Postgres, Engine::Mysql];
 const MANY_RUNS: f64 = 1_000.0;
 const MANY_LOOPS: f64 = 10_000.0;
 
+/// The materiality gate (`Draft::finish`): an insight is more than Low only when the operators it is about handle at
+/// least this many rows…
+const MANY_ROWS: f64 = 10_000.0;
+/// …in a plan that does real work: a measured run of at least this long, or, unmeasured, an estimated cost of at least
+/// what reading about `MANY_ROWS` rows costs in the engine's own units (`cheap_below`). A problem measured in time of
+/// its own (compiling, JIT, waiting for memory) is material when that time reaches this.
+const MATERIAL_MS: f64 = 10.0;
+
 /// Compute and attach insights (and the coverage note) to a plan.
 pub fn annotate(plan: &mut Plan) {
     plan.insights = Some(PlanInsights { items: insights(plan), note: coverage_note(plan) });
@@ -117,9 +125,7 @@ pub fn annotate(plan: &mut Plan) {
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
     let actual = has_actuals(plan);
-    // MariaDB's own plan reader sets the flavor; plans of logged statements carry the server's version instead.
-    let mariadb = plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
-        || plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"));
+    let mariadb = is_mariadb(plan);
     match (plan.engine, actual) {
         (Engine::Mysql, false) if mariadb => Some(
             "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.".into(),
@@ -198,7 +204,7 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
             if out.iter().any(|o| o.rule == d.rule && o.nodes.first() == d.nodes.first()) {
                 continue;
             }
-            out.push(d.finish());
+            out.push(d.finish(&cx));
         }
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(b.impact.total_cmp(&a.impact)));
@@ -212,6 +218,8 @@ struct Cx<'a> {
     nodes: Vec<&'a PlanNode>,
     parent: HashMap<u32, &'a PlanNode>,
     total: f64,
+    /// Whether the plan does real work (see `MATERIAL_MS`).
+    material: bool,
 }
 
 impl<'a> Cx<'a> {
@@ -226,11 +234,24 @@ impl<'a> Cx<'a> {
         // Under a Postgres Limit, children's costs assume they run to completion and add up to more than the root's.
         let own: f64 = nodes.iter().map(|n| n.self_cost).sum();
         let total = plan.total_cost.max(plan.root.subtree_cost).max(own);
-        Cx { plan, nodes, parent, total: if total > 0.0 { total } else { 1.0 } }
+        // A measured run says what the plan costs; without one, the optimizer's estimate does.
+        let material = match elapsed_ms(plan) {
+            Some(ms) => ms >= MATERIAL_MS,
+            None => plan.total_cost.max(plan.root.subtree_cost) >= cheap_below(plan),
+        };
+        Cx { plan, nodes, parent, total: if total > 0.0 { total } else { 1.0 }, material }
     }
 
     fn engine(&self) -> Engine {
         self.plan.engine
+    }
+
+    fn node(&self, id: u32) -> Option<&'a PlanNode> {
+        self.nodes.iter().find(|n| n.id == id).copied()
+    }
+
+    fn mariadb(&self) -> bool {
+        is_mariadb(self.plan)
     }
 
     fn share(&self, n: &PlanNode) -> f64 {
@@ -261,6 +282,12 @@ struct Draft {
     cap: Severity,
     impact: f64,
     nodes: Vec<u32>,
+    /// The insight is about everything below its first operator (the whole plan, a parallel branch): the materiality
+    /// gate counts the rows of the busiest operator there.
+    subtree: bool,
+    /// Time the problem itself measurably costs (compiling, JIT, waiting for memory): the gate weighs that instead of
+    /// rows.
+    cost_ms: Option<f64>,
     title: String,
     detail: String,
     fix: String,
@@ -277,6 +304,8 @@ impl Draft {
             cap: Severity::High,
             impact,
             nodes,
+            subtree: false,
+            cost_ms: None,
             title: String::new(),
             detail: String::new(),
             fix: String::new(),
@@ -285,7 +314,10 @@ impl Draft {
         }
     }
 
-    fn finish(self) -> PlanInsight {
+    /// Severity from the share of the plan's work, within the rule's floor and cap, then the one materiality gate: at
+    /// most Low unless the problem costs real work (`MANY_ROWS` rows in a material plan, or `MATERIAL_MS` of its own),
+    /// so no floor lifts a cheap plan's quirk.
+    fn finish(self, cx: &Cx) -> PlanInsight {
         let by_impact = if self.impact >= 0.3 {
             Severity::High
         } else if self.impact >= 0.08 {
@@ -293,10 +325,14 @@ impl Draft {
         } else {
             Severity::Low
         };
+        let mut severity = by_impact.max(self.floor).min(self.cap);
+        if !self.material(cx) {
+            severity = severity.min(Severity::Low);
+        }
         PlanInsight {
             rule: self.rule.into(),
             area: self.area,
-            severity: by_impact.max(self.floor).min(self.cap),
+            severity,
             impact: (self.impact * 1000.0).round() / 1000.0,
             nodes: self.nodes,
             title: self.title,
@@ -306,6 +342,57 @@ impl Draft {
             verify: self.verify,
         }
     }
+
+    fn material(&self, cx: &Cx) -> bool {
+        if let Some(ms) = self.cost_ms {
+            return ms >= MATERIAL_MS;
+        }
+        let mut involved: Vec<&PlanNode> = Vec::new();
+        for n in self.nodes.iter().filter_map(|id| cx.node(*id)) {
+            if self.subtree {
+                n.walk(&mut involved);
+            } else {
+                involved.push(n);
+            }
+        }
+        cx.material && involved.into_iter().map(handled).fold(0.0, f64::max) >= MANY_ROWS
+    }
+}
+
+/// The statement's measured run time, when the plan has one.
+fn elapsed_ms(plan: &Plan) -> Option<f64> {
+    let prop = |key: &str| plan.props.get(key).and_then(|v| v.trim().parse::<f64>().ok());
+    prop("ElapsedMs")
+        .or_else(|| prop("Execution Time"))
+        .or_else(|| plan.root.act_time_ms.filter(|_| plan.kind == PlanKind::Actual))
+}
+
+/// The estimated cost of reading about `MANY_ROWS` rows, in each engine's own units: a plan estimated below it is cheap
+/// whatever its shape.
+fn cheap_below(plan: &Plan) -> f64 {
+    match plan.engine {
+        // A 10K-row clustered index scan costs about 0.1.
+        Engine::Mssql => 0.1,
+        // seq_page_cost is 1: about 100 pages plus the per-row CPU of 10K rows.
+        Engine::Postgres => 250.0,
+        // MariaDB before 11 reports no costs; Culprit counts rows examined instead.
+        Engine::Mysql if is_mariadb(plan) && plan.props.contains_key("cost_basis") => MANY_ROWS,
+        // MariaDB 11's costs are close to milliseconds: about 0.1 per thousand rows scanned.
+        Engine::Mysql if is_mariadb(plan) => 1.0,
+        // MySQL costs about 0.1 per row evaluated.
+        Engine::Mysql => 1_000.0,
+    }
+}
+
+/// MariaDB's own plan reader sets the flavor; plans of logged statements carry the server's version instead.
+fn is_mariadb(plan: &Plan) -> bool {
+    plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
+        || plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"))
+}
+
+/// Rows an operator handles: what it reads, returns, or takes from its inputs.
+fn handled(n: &PlanNode) -> f64 {
+    n.children.iter().map(rows_out).fold(rows_read(n).max(rows_out(n)), f64::max)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -621,12 +708,10 @@ fn key_lookups(cx: &Cx) -> Vec<Draft> {
         let cols = output_columns(n);
         let seek = cx.parent(n).and_then(|p| p.children.first()).filter(|s| s.id != n.id && s.index.is_some());
         let index = seek.and_then(|s| s.index.clone());
-        let keys = seek.map(|s| filter_columns(&conditions(s))).unwrap_or_default();
         let impact = cx.share(n) + cx.parent(n).filter(|p| p.kind == NodeKind::Join).map_or(0.0, |p| cx.share(p));
         let mut nodes = vec![n.id];
         nodes.extend(seek.map(|s| s.id));
         let mut d = Draft::new("key-lookups", InsightArea::Index, impact, nodes);
-        d.floor = Severity::Medium;
         d.title = format!("Looks up {} in {table} one at a time", plural(runs, "row", "rows"));
         let heap = n.op.starts_with("RID");
         d.detail = match (&index, cols.is_empty()) {
@@ -642,27 +727,18 @@ fn key_lookups(cx: &Cx) -> Vec<Draft> {
                 format::percent(impact)
             ),
         };
-        d.fix = if heap {
-            format!(
-                "{table} has no clustered index, so every lookup follows a row pointer. Give it a clustered index, or add the looked-up columns to the index as INCLUDE columns."
-            )
-        } else {
-            match &index {
-                Some(ix) => format!(
-                    "Add the looked-up columns to {ix} as included columns so the seek answers the query by itself, or select fewer columns."
-                ),
-                None => "Add the looked-up columns to the index as included columns, or select fewer columns.".into(),
-            }
-        };
-        d.fix_sql = match (&index, keys.is_empty()) {
-            (Some(ix), false) if !cols.is_empty() && !heap => Some(format!(
-                "CREATE NONCLUSTERED INDEX {}\n    ON {} ({})\n    INCLUDE ({})\n    WITH (DROP_EXISTING = ON);",
-                quote(Engine::Mssql, ix),
-                qualified(Engine::Mssql, &table),
-                keys.iter().map(|k| quote(Engine::Mssql, k)).collect::<Vec<_>>().join(", "),
-                cols.iter().map(|k| quote(Engine::Mssql, k)).collect::<Vec<_>>().join(", ")
-            )),
-            _ => None,
+        // Said in words only: rebuilding the index needs its whole definition (key order, existing included columns,
+        // uniqueness, filter, compression), which the plan doesn't carry.
+        let include = if cols.is_empty() { "the looked-up columns".to_string() } else { format::list(&cols) };
+        d.fix = match (&index, heap) {
+            (_, true) => format!(
+                "{table} has no clustered index, so every lookup follows a row pointer. Give it a clustered index, or add {include} to {} as included columns.",
+                index.as_deref().unwrap_or("the index")
+            ),
+            (Some(ix), false) => format!(
+                "Add {include} to {ix} as included columns (keep its keys and its existing included columns) so the seek answers the query by itself, or select fewer columns."
+            ),
+            (None, false) => format!("Add {include} to the index as included columns, or select fewer columns."),
         };
         d.verify = format!(
             "Explain again: the {} is gone and {} returns the rows by itself.",
@@ -712,9 +788,6 @@ fn missing_index_hint(cx: &Cx) -> Vec<Draft> {
             let include: Vec<String> = h.include.iter().map(|c| clean_identifier(c)).collect();
             let impact = node.map_or(0.0, |n| cx.share(n)).max(h.impact_pct / 100.0 * 0.5);
             let mut d = Draft::new("missing-index-hint", InsightArea::Index, impact, node.map(|n| vec![n.id]).unwrap_or_default());
-            if h.impact_pct >= 50.0 {
-                d.floor = Severity::Medium;
-            }
             d.title = format!(
                 "SQL Server estimates an index on {} ({}) would make this {} cheaper",
                 h.table,
@@ -739,67 +812,152 @@ fn missing_index_hint(cx: &Cx) -> Vec<Draft> {
         .collect()
 }
 
+/// MySQL's fixed guesses for the share of rows a condition keeps when it has neither index statistics nor a histogram
+/// for the column: 10% for an equality, 11.11% for a range or LIKE, 33.33% for an inequality, multiplied together for
+/// several conditions. A `filtered` that is exactly such a product (to the two decimals MySQL prints) says nothing about
+/// the data, so it is never read as the share a filter keeps; a histogram that happens to give one of these values is
+/// taken as a guess too. `conditions`: how many conditions are ANDed in the filter.
+pub fn mysql_guessed_filtered(filtered: f64, conditions: usize) -> bool {
+    const GUESSES: [f64; 3] = [0.1, 1.0 / 9.0, 1.0 / 3.0];
+    let mut products = vec![1.0];
+    let mut all = Vec::new();
+    for _ in 0..conditions.clamp(1, 3) {
+        products = products.iter().flat_map(|p| GUESSES.iter().map(move |g| p * g)).collect();
+        all.extend(products.iter().copied());
+    }
+    all.into_iter().any(|g| (g * 100.0 - filtered).abs() < 0.006)
+}
+
+/// How many conditions a filter ANDs together, for [`mysql_guessed_filtered`].
+pub fn condition_count(filter: &str) -> usize {
+    filter.to_ascii_lowercase().matches(" and ").count() + 1
+}
+
+/// The filter a scan applies: its own, or MySQL EXPLAIN ANALYZE's Filter node above it.
+fn scan_filter_text(cx: &Cx, n: &PlanNode) -> Option<String> {
+    n.predicate.clone().or_else(|| cx.parent(n).filter(|p| p.op == "Filter").and_then(|f| f.predicate.clone()))
+}
+
+/// The share of the rows a scan reads that its filter keeps, from the plan's own numbers: measured counts when the
+/// plan has them (MySQL's EXPLAIN ANALYZE keeps the filter in a Filter node above the scan), else the optimizer's
+/// estimate. None when the plan can't say: no rows-read figure (a PostgreSQL estimate without the table's size), or
+/// one of MySQL's fixed guesses ([`mysql_guessed_filtered`]).
+fn filter_keeps(cx: &Cx, n: &PlanNode) -> Option<f64> {
+    if let (Some(read), Some(filter)) = (n.act_rows, cx.parent(n).filter(|p| p.op == "Filter"))
+        && n.rows_read.is_none()
+    {
+        let kept = filter.act_rows?;
+        return (read > 0.0).then(|| (kept / read).min(1.0));
+    }
+    if cx.engine() == Engine::Mysql
+        && n.act_rows.is_none()
+        && let Some(filtered) = prop_f64(n, "filtered")
+    {
+        // Per scan: rows examined, and the share the condition is expected to keep.
+        let conditions = n.predicate.as_deref().map_or(1, condition_count);
+        return (!mysql_guessed_filtered(filtered, conditions)).then_some((filtered / 100.0).clamp(0.0, 1.0));
+    }
+    n.kept_share()
+}
+
+/// Whether an index could pay off for a scan, judged from the plan's own numbers. Every rule that advises an index, or
+/// a rewrite that lets one be used, from a scan passes this: a scan (a seek already uses an index) of rowstore data (a
+/// columnstore index is read by segments and batches, not seeks), reading at least `MANY_ROWS` rows, whose filter keeps
+/// at most `INDEX_KEEPS_AT_MOST` of them. When the plan can't tell how much the filter keeps, none of them speaks.
+fn index_could_pay(cx: &Cx, n: &PlanNode) -> bool {
+    n.kind == NodeKind::Scan
+        && !n.props.get("Storage").is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
+        && rows_read(n) >= MANY_ROWS
+        && filter_keeps(cx, n).is_some_and(|k| k <= INDEX_KEEPS_AT_MOST)
+}
+
+/// What keeps a scan's filter from an index, when the filter itself does: one insight per scan, from the first that
+/// applies (a converted column, a leading wildcard, then a function or cast around a column).
+#[derive(PartialEq)]
+enum Blocker {
+    Conversion,
+    Wildcard(usize),
+    Function(String, String),
+}
+
+fn blocker(cx: &Cx, n: &PlanNode, filter: &str) -> Option<Blocker> {
+    if !current_conversions(cx.plan, &conditions(n)).is_empty() {
+        return Some(Blocker::Conversion);
+    }
+    if let Some(at) = wildcard_at(filter) {
+        return Some(Blocker::Wildcard(at));
+    }
+    wrapped_column(filter, cx.engine()).map(|(f, c)| Blocker::Function(f, c))
+}
+
+/// MySQL's possible keys for a scan that could serve its filter. MySQL lists keys for the WHERE clause and for joins
+/// alike, and names them without their columns: with one table in the query every key comes from the filter; in a
+/// join, a key counts when its name carries a filtered column (`ix_orders_promo_code` for `promo_code`), so an index on
+/// the join column isn't taken for one on the filter.
+fn possible_keys_for_filter(cx: &Cx, n: &PlanNode) -> Vec<String> {
+    let Some(keys) = n.props.get("possible_keys") else { return Vec::new() };
+    let keys: Vec<String> = keys.split(", ").map(str::trim).filter(|k| !k.is_empty()).map(str::to_string).collect();
+    let mut up = cx.parent(n);
+    let mut joined = false;
+    while let Some(p) = up {
+        joined |= p.kind == NodeKind::Join;
+        up = cx.parent(p);
+    }
+    if !joined {
+        return keys;
+    }
+    let columns: Vec<String> =
+        n.predicate.as_deref().map(filter_columns).unwrap_or_default().iter().map(|c| c.to_ascii_lowercase()).collect();
+    keys.into_iter()
+        .filter(|k| {
+            let name = k.to_ascii_lowercase();
+            columns.iter().any(|c| {
+                name.match_indices(c.as_str()).any(|(at, _)| {
+                    let before = name[..at].chars().last();
+                    let after = name[at + c.len()..].chars().next();
+                    before.is_none_or(|b| !b.is_ascii_alphanumeric())
+                        && after.is_none_or(|a| !a.is_ascii_alphanumeric())
+                })
+            })
+        })
+        .collect()
+}
+
 fn scan_filter(cx: &Cx) -> Vec<Draft> {
     let hinted: Vec<String> = cx.plan.index_hints.iter().map(|h| table_leaf(&h.table).to_ascii_lowercase()).collect();
     let mut out = Vec::new();
-    // MySQL's JSON estimate: a scan that expects to keep a tenth of what it examines.
-    let mysql_estimate = |n: &PlanNode| {
-        n.kind == NodeKind::Scan
-            && prop_f64(n, "filtered").is_some_and(|f| f <= INDEX_KEEPS_AT_MOST * 100.0)
-            && n.rows_read.is_some_and(|r| r >= 10_000.0)
-            && n.predicate.is_some()
-    };
-    // PostgreSQL's estimate: a sequential scan of a big table expected to keep almost none of it (the table's size
-    // comes from the planner's statistics, filled in with the plan).
-    let postgres_estimate = |n: &PlanNode| {
-        cx.engine() == Engine::Postgres
-            && n.kind == NodeKind::Scan
-            && n.act_rows.is_none()
-            && n.predicate.is_some()
-            && n.table_rows.is_some_and(|t| t >= 10_000.0 && rows_out(n) <= t * INDEX_KEEPS_AT_MOST)
-    };
-    for n in cx
-        .nodes
-        .iter()
-        .filter(|n| n.warnings.contains(&PlanWarning::ResidualPredicate) || mysql_estimate(n) || postgres_estimate(n))
-    {
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
         let Some(table) = n.object.clone() else { continue };
-        if hinted.contains(&table_leaf(&table).to_ascii_lowercase()) {
+        let Some(filter) = scan_filter_text(cx, n) else { continue };
+        // SQL Server's own suggestion, a conversion, a function or a leading wildcard explain the scan better, and
+        // MySQL's ignored index says why there's no seek: their rules say so.
+        if hinted.contains(&table_leaf(&table).to_ascii_lowercase())
+            || blocker(cx, n, &filter).is_some()
+            || (cx.engine() == Engine::Mysql && !possible_keys_for_filter(cx, n).is_empty())
+        {
             continue;
         }
-        // MySQL's EXPLAIN ANALYZE puts the filter in a Filter node above the scan.
-        let filter_node = cx.parent(n).filter(|p| p.op == "Filter");
         let read = rows_read(n);
-        let kept = filter_node.map_or_else(|| rows_out(n), rows_out);
-        let filter = n.predicate.clone().or_else(|| filter_node.and_then(|f| f.predicate.clone())).unwrap_or_default();
-        // A conversion, function or leading wildcard explains the scan better; their rules say so.
-        let explained = conditions(n).contains("CONVERT_IMPLICIT")
-            || wrapped_column(&filter).is_some()
-            || wildcard_at(&filter).is_some();
-        if explained || kept > read * INDEX_KEEPS_AT_MOST {
-            continue;
-        }
+        let kept = read * filter_keeps(cx, n).unwrap_or(1.0);
         let cols = filter_columns(&filter);
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
         let mut d = Draft::new("scan-filter", InsightArea::Index, impact, vec![n.id]);
         d.title = format!("Reads {} of {table} to keep {}", plural(read, "row", "rows"), rows_text(kept));
         let estimated = n.act_rows.is_none();
         d.detail = format!(
-            "{} {} checks `{}` on every row it reads{}, so most of the reading is thrown away. {} of this plan's work.",
+            "{} {} reads the rows and checks `{}` on each one, so most of the reading is thrown away. {} of this plan's work.",
             if estimated { "As planned, the" } else { "The" },
             n.op,
             format::predicate(&filter),
-            if cols.is_empty() {
-                String::new()
-            } else {
-                format!(" because no index starts with {}", format::list(&cols))
-            },
             capitalize(&format::percent(impact))
         );
         d.fix = if cols.is_empty() {
-            "Add an index on the filtered columns so the database can go straight to the matching rows.".into()
+            "An index on the filtered columns lets the database go straight to the matching rows.".into()
         } else {
-            format!("Add an index on {} so the database can go straight to the matching rows.", format::list(&cols))
+            format!(
+                "An index on {} lets the database go straight to the matching rows; if one already exists, the optimizer didn't use it, so refresh the table's statistics first.",
+                format::list(&cols)
+            )
         };
         d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
         d.verify = format!("Explain again: {} reads about as many rows as it keeps.", table_leaf(&table));
@@ -1130,8 +1288,9 @@ const WRAPPERS: &[&str] = &[
     "round",
 ];
 
-/// `(function, column)` for the first function wrapped around a column in a filter, or a cast on a column.
-fn wrapped_column(text: &str) -> Option<(String, String)> {
+/// `(function, column)` for the first function wrapped around a column in a filter, or a cast on a column. SQL Server
+/// seeks through a cast of a date and time column to `date` (a dynamic seek), so that one doesn't count there.
+fn wrapped_column(text: &str, engine: Engine) -> Option<(String, String)> {
     let lower = text.to_ascii_lowercase();
     for f in WRAPPERS {
         let mut from = 0;
@@ -1144,7 +1303,12 @@ fn wrapped_column(text: &str) -> Option<(String, String)> {
             }
             let args_start = start + f.len() + 1;
             let args = balanced(&text[args_start..]);
-            if args.to_ascii_lowercase().contains("convert_implicit") {
+            let args_lower = args.to_ascii_lowercase();
+            if args_lower.contains("convert_implicit") {
+                continue;
+            }
+            let to_date = args_lower.trim_start().starts_with("date,") || args_lower.trim_end().ends_with(" as date");
+            if engine == Engine::Mssql && matches!(*f, "convert" | "cast") && to_date {
                 continue;
             }
             if let Some(col) = identifiers(args).into_iter().next() {
@@ -1190,12 +1354,9 @@ fn balanced(text: &str) -> &str {
 
 fn non_sargable(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Scan | NodeKind::Seek)) {
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
         let Some(filter) = n.predicate.as_deref() else { continue };
-        let Some((func, col)) = wrapped_column(filter) else { continue };
-        if rows_read(n) < 1_000.0 && n.table_rows.is_none_or(|t| t < 1_000.0) {
-            continue;
-        }
+        let Some(Blocker::Function(func, col)) = blocker(cx, n, filter) else { continue };
         let table = what(n);
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
         let mut d = Draft::new("non-sargable", InsightArea::Query, impact, vec![n.id]);
@@ -1206,10 +1367,11 @@ fn non_sargable(cx: &Cx) -> Vec<Draft> {
             format!("{func}() around {col} keeps the database from using an index on {}", table_leaf(&table))
         };
         d.detail = format!(
-            "Each row's {col} is computed before it can be compared (`{}`), so an index on {col} can't narrow the search: {} reads {} rows. {} of this plan's work.",
+            "Each row's {col} is computed before it can be compared (`{}`), so an index on {col} can't narrow the search: {} reads {} rows to keep {}. {} of this plan's work.",
             format::predicate(filter),
             n.op,
             format::count(rows_read(n)),
+            format::percent(filter_keeps(cx, n).unwrap_or(1.0)),
             capitalize(&format::percent(impact))
         );
         let lower = func.to_ascii_lowercase();
@@ -1259,18 +1421,19 @@ fn non_sargable(cx: &Cx) -> Vec<Draft> {
 
 fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Scan | NodeKind::Seek)) {
+    for n in cx.nodes.iter().filter(|n| index_could_pay(cx, n)) {
         let Some(filter) = n.predicate.as_deref() else { continue };
-        let Some(at) = wildcard_at(filter) else { continue };
+        let Some(Blocker::Wildcard(at)) = blocker(cx, n, filter) else { continue };
         let column = identifiers(&filter[..at]).into_iter().last().unwrap_or_else(|| "the column".into());
         let table = what(n);
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
         let mut d = Draft::new("leading-wildcard", InsightArea::Query, impact, vec![n.id]);
         d.title = format!("LIKE '%…' on {column} reads all of {}", table_leaf(&table));
         d.detail = format!(
-            "A pattern that starts with a wildcard can't use an index, so {} checks every row's {column} ({} rows).",
+            "A pattern that starts with a wildcard can't use an index, so {} checks every row's {column} ({} rows) to keep {} of them.",
             n.op,
-            format::count(rows_read(n).max(n.table_rows.unwrap_or(0.0)))
+            format::count(rows_read(n)),
+            format::percent(filter_keeps(cx, n).unwrap_or(1.0))
         );
         d.fix = match cx.engine() {
             Engine::Postgres => format!(
@@ -1341,30 +1504,53 @@ fn cross_joins(cx: &Cx) -> Vec<u32> {
     ids
 }
 
+/// A NOT IN that checks the subquery row by row, and the operators that work exists for (what NOT EXISTS removes).
+/// NOT IN that is one build and a probe per row isn't one: PostgreSQL's hashed SubPlan, MySQL's materialized subquery
+/// and its antijoin (`Not exists`, MySQL 8.0.17+).
+fn not_in_work<'a>(cx: &Cx<'a>, n: &'a PlanNode) -> Option<Vec<&'a PlanNode>> {
+    let statement = cx.statement();
+    // The same plan shapes come from NOT EXISTS under an OR; when the statement is known, it must say NOT IN.
+    let says_not_in = statement.is_empty() || statement.contains("not in");
+    match cx.engine() {
+        Engine::Mssql => {
+            let spools: Vec<&PlanNode> = n
+                .children
+                .iter()
+                .flat_map(|c| std::iter::once(c).chain(c.children.iter()))
+                .filter(|c| c.op == "Row Count Spool")
+                .collect();
+            (n.detail.as_deref().is_some_and(|d| d.contains("Anti Semi Join")) && !spools.is_empty()).then_some(spools)
+        }
+        Engine::Postgres => {
+            let l = n.predicate.as_deref()?.to_ascii_lowercase();
+            let per_row = l.contains("not (") && l.contains("subplan") && !l.contains("hashed subplan");
+            let subplans: Vec<&PlanNode> = n
+                .children
+                .iter()
+                .filter(|c| c.props.get("Parent Relationship").is_some_and(|r| r == "SubPlan"))
+                .collect();
+            (per_row && says_not_in).then_some(subplans)
+        }
+        Engine::Mysql => {
+            let l = n.predicate.as_deref()?.to_ascii_lowercase();
+            let negated = l.contains("<not>(<in_optimizer>") || l.contains("not(<in_optimizer>");
+            // `<exists>` is the subquery run for each row; `<materialize>` is built once and looked up.
+            let per_row = negated && l.contains("<exists>") && !l.contains("<materialize>");
+            (per_row && says_not_in && !is_true(n.props.get("not_exists"))).then(|| n.children.iter().collect())
+        }
+    }
+}
+
 fn not_in(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
     for n in &cx.nodes {
-        let hit = match cx.engine() {
-            Engine::Mssql => {
-                n.detail.as_deref().is_some_and(|d| d.contains("Anti Semi Join"))
-                    && n.children
-                        .iter()
-                        .any(|c| c.op == "Row Count Spool" || c.children.iter().any(|g| g.op == "Row Count Spool"))
-            }
-            Engine::Postgres => n.predicate.as_deref().is_some_and(|p| {
-                let l = p.to_ascii_lowercase();
-                (l.contains("not (any") || l.contains("not (hashed subplan")) && l.contains("subplan")
-            }),
-            Engine::Mysql => n.predicate.as_deref().is_some_and(|p| {
-                let l = p.to_ascii_lowercase();
-                l.contains("is_not_null_compl") || (l.contains("<not>") && l.contains("<in_optimizer>"))
-            }),
-        };
-        if !hit {
-            continue;
-        }
-        let impact = cx.subtree(n).max(cx.share(n));
-        let mut d = Draft::new("not-in", InsightArea::Query, impact, vec![n.id]);
+        let Some(work) = not_in_work(cx, n) else { continue };
+        // NOT IN's own work: the operator testing each row and the NULL handling or subquery it repeats, not the
+        // input it filters, which NOT EXISTS reads all the same.
+        let impact = (cx.share(n) + work.iter().map(|w| cx.subtree(w)).sum::<f64>()).min(1.0);
+        let mut nodes = vec![n.id];
+        nodes.extend(work.iter().map(|w| w.id));
+        let mut d = Draft::new("not-in", InsightArea::Query, impact, nodes);
         d.title = match cx.engine() {
             Engine::Mssql => {
                 "NOT IN against a column that can be NULL makes SQL Server check for NULLs row by row".into()
@@ -1372,12 +1558,12 @@ fn not_in(cx: &Cx) -> Vec<Draft> {
             Engine::Postgres => {
                 "NOT IN (subquery) can't run as an anti-join, so PostgreSQL tests every row against the subquery".into()
             }
-            Engine::Mysql => "NOT IN (subquery) needs NULL handling MySQL can't turn into an anti-join".into(),
+            Engine::Mysql => "NOT IN (subquery) makes MySQL run the subquery once per row".into(),
         };
         d.detail = match cx.engine() {
             Engine::Mssql => format!("Because the subquery's column allows NULL, NOT IN must prove no NULL exists before it can return anything, which adds the Row Count Spool under {}.", n.op),
-            Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops PostgreSQL from using a Hash Anti Join, so it probes the subquery for each row instead.".into(),
-            Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, so MySQL materializes it and checks NULLs separately instead of a straight anti-join.".into(),
+            Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops PostgreSQL from using a Hash Anti Join, and it expected the subquery's rows too many to hash in work_mem, so it searches them again for each row.".into(),
+            Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, and here MySQL could neither turn it into an antijoin nor materialize the subquery once, so it runs the subquery for each row.".into(),
         };
         d.fix = "Rewrite as NOT EXISTS, which means what you almost certainly intend and runs as an anti-join: `WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`. Declaring the column NOT NULL also helps.".into();
         d.verify = match cx.engine() {
@@ -1385,7 +1571,7 @@ fn not_in(cx: &Cx) -> Vec<Draft> {
             Engine::Postgres => {
                 "Explain again: a Hash Anti Join (or Nested Loop Anti Join) instead of a SubPlan filter.".into()
             }
-            Engine::Mysql => "Explain again: an antijoin instead of <in_optimizer> checks.".into(),
+            Engine::Mysql => "Explain again: an antijoin (Not exists) instead of a dependent subquery.".into(),
         };
         out.push(d);
     }
@@ -1400,16 +1586,33 @@ fn scalar_udf(cx: &Cx) -> Vec<Draft> {
     }
     let blocks_parallel = cx.prop("NonParallelPlanReason") == Some("TSQLUserDefinedFunctionsNotParallelizable");
     let mut out = Vec::new();
+    // Time spent in scalar functions, measured apart from the plan's costs (SQL Server 2016 SP2+ actual plans).
+    let measured = match (cx.prop("UdfElapsedMs"), elapsed_ms(cx.plan)) {
+        (Some(udf), Some(total)) if total > 0.0 => udf.parse::<f64>().ok().map(|u| (u, (u / total).min(1.0))),
+        _ => None,
+    };
     for n in cx.nodes.iter().filter(|n| n.props.contains_key("UserDefinedFunctions")) {
         let names = n.props["UserDefinedFunctions"].clone();
         let calls = rows_out(n).max(n.children.first().map_or(0.0, rows_out));
-        let impact = cx.subtree(n).max(0.1);
+        // The plan's costs leave the function's body out, so its own share says little: the measured time does, and
+        // without it the number of calls is the evidence.
+        let impact = measured.map_or_else(|| cx.share(n), |(_, share)| share);
         let mut d = Draft::new("scalar-udf", InsightArea::Query, impact, vec![n.id]);
-        d.floor = if calls >= MANY_RUNS { Severity::Medium } else { Severity::Low };
+        if measured.is_none() && calls >= MANY_ROWS {
+            d.floor = Severity::Medium;
+        }
         d.title = format!("{names} runs once for every row (about {} calls per run)", format::count(calls));
         d.detail = format!(
-            "A scalar function runs like a small separate query for each row{}. Its cost doesn't even show in the plan's numbers, which makes it easy to miss.",
-            if blocks_parallel { ", and it keeps the whole plan on one CPU" } else { "" }
+            "A scalar function runs like a small separate query for each row{}. {}",
+            if blocks_parallel { ", and it keeps the whole plan on one CPU" } else { "" },
+            match measured {
+                Some((ms, share)) => format!(
+                    "This run spent {} in it, {} of the statement's time.",
+                    format::duration(ms),
+                    format::percent(share)
+                ),
+                None => "Its cost doesn't show in the plan's numbers, which makes it easy to miss.".into(),
+            }
         );
         d.fix = "Inline it: rewrite the function as an inline table-valued function or a plain expression in the query. SQL Server 2019+ inlines scalar functions automatically unless they use things like GETDATE(), table variables or loops.".into();
         d.verify = "Explain again: no UserDefinedFunction in the plan, and no NonParallelPlanReason.".into();
@@ -1417,6 +1620,7 @@ fn scalar_udf(cx: &Cx) -> Vec<Draft> {
     }
     if out.is_empty() && blocks_parallel {
         let mut d = Draft::new("scalar-udf", InsightArea::Query, 0.1, vec![cx.plan.root.id]);
+        d.subtree = true;
         d.floor = Severity::Medium;
         d.title = "A scalar function keeps this plan on one CPU and runs once per row".into();
         d.detail = "SQL Server reports TSQLUserDefinedFunctionsNotParallelizable: a T-SQL scalar function in the query can't run in parallel, and it's called for each row.".into();
@@ -1427,15 +1631,20 @@ fn scalar_udf(cx: &Cx) -> Vec<Draft> {
     out
 }
 
+/// The table variable an operator reads (`@t`): SQL Server keeps no statistics on those.
+fn table_variable_of(n: &PlanNode) -> Option<String> {
+    n.object.as_deref().map(table_leaf).filter(|t| t.starts_with('@'))
+}
+
 fn table_variable(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Mssql {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| n.object.as_deref().is_some_and(|o| table_leaf(o).starts_with('@'))) {
-        let name = table_leaf(n.object.as_deref().unwrap_or_default());
+    for n in cx.nodes.iter().filter(|n| table_variable_of(n).is_some()) {
+        let name = table_variable_of(n).unwrap_or_default();
         let actual = n.act_rows;
-        if n.est_rows_total() > 1.5 && actual.is_none_or(|a| a < 10.0 * n.est_rows_total()) {
+        if n.est_rows_total() > 1.5 && actual.is_none_or(|a| a < 10.0 * n.est_rows_for_runs()) {
             continue;
         }
         let mut d = Draft::new("table-variable", InsightArea::Query, cx.subtree(n), vec![n.id]);
@@ -1483,59 +1692,141 @@ fn nested_loops(cx: &Cx) -> Vec<Draft> {
         {
             continue;
         }
-        let runs = inner
-            .act_executions
-            .or_else(|| (inner.est_executions > 1.0).then_some(inner.est_executions))
-            .unwrap_or_else(|| rows_out(outer));
-        if runs < MANY_LOOPS {
+        // An eager index spool is the eager-spool rule's: it is built once per run, not repeated per row.
+        if inner_nodes.iter().any(|x| x.op == "Index Spool" && x.detail.as_deref() == Some("Eager Spool")) {
             continue;
         }
-        let inner_name = first_object(inner).unwrap_or_else(|| inner.op.clone());
-        let outer_name = first_object(outer).unwrap_or_else(|| outer.op.clone());
-        let impact = cx.subtree(inner).max(cx.share(n));
-        let mut d = Draft::new("nested-loops", InsightArea::Query, impact, vec![n.id, inner.id]);
-        d.cap = Severity::Medium;
-        d.title = format!(
-            "Repeats its read of {} {} times, once per row of {}",
-            table_leaf(&inner_name),
-            format::count(runs),
-            table_leaf(&outer_name)
-        );
-        let expected = outer.est_rows_total();
-        let misjudged = outer.act_rows.is_some_and(|a| a >= 10.0 * expected.max(1.0));
-        d.detail = if misjudged {
-            format!(
-                "The optimizer expected {} rows from {} and chose a nested loop; it got {}. At that size one pass with a hash join is usually much cheaper.",
-                format::count(expected),
-                table_leaf(&outer_name),
-                rows_text(rows_out(outer))
-            )
-        } else {
-            format!(
-                "A nested loop is the right choice for a few rows; at {} repetitions a hash join over a single pass of {} is usually cheaper.",
-                format::count(runs),
-                table_leaf(&inner_name)
-            )
+        // Times the inner side is asked for rows: once per outer row.
+        let asked =
+            if inner.act_executions.is_some() || inner.est_executions > 1.0 { inner.runs() } else { rows_out(outer) };
+        // A cache in front of the inner side (PostgreSQL's Memoize and Materialize, SQL Server's lazy spools, MySQL's
+        // materialized subqueries) replays rows it holds: its input runs again only on a cache miss or a rebind, which
+        // is how often that input ran.
+        let materializes = |x: &PlanNode| {
+            matches!(x.op.as_str(), "Memoize" | "Table Spool" | "Index Spool" | "Query block" | "Materialized subquery")
+                || x.op.starts_with("Materialize")
         };
+        let cached_input = if materializes(inner) {
+            inner.children.first()
+        } else if inner.object.is_none() {
+            inner.children.iter().find(|c| materializes(c))
+        } else {
+            None
+        };
+        let cache = materializes(inner) || cached_input.is_some();
+        let reads = if cache { cached_input.map_or(0.0, |c| c.runs()) } else { asked };
+        let outer_name = table_leaf(&first_object(outer).unwrap_or_else(|| outer.op.clone()));
+        let inner_name = table_leaf(&first_object(inner).unwrap_or_else(|| inner.op.clone()));
         let hinted = {
             let s = cx.statement();
             s.contains("loop join") || s.contains("option (loop")
         };
-        d.fix = if hinted {
-            "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose.".into()
-        } else if misjudged {
+        // The optimizer's choice stands unless the plan shows it was made on wrong numbers, or is forced, or each run
+        // rereads much of a table: an accurate outer estimate means a loop was costed against a hash join and won.
+        let expected = outer.est_rows_for_runs();
+        let misjudged = outer.act_rows.is_some_and(|a| a >= MISESTIMATE_FACTOR * expected.max(1.0));
+        let leaf = inner_nodes.iter().find(|x| x.object.is_some() && x.kind != NodeKind::Other).copied();
+        let per_read = leaf.map(|l| rows_read(l) / l.runs().max(1.0));
+        let table = leaf.and_then(|l| l.table_rows).filter(|t| *t > 0.0);
+        let rereads = !cache
+            && per_read.is_some_and(|per| {
+                per >= 100.0
+                    && match table {
+                        Some(t) => per >= t * INDEX_KEEPS_AT_MOST,
+                        None => leaf.is_some_and(|l| l.kind == NodeKind::Scan),
+                    }
+            });
+        // Each outer row meets every row the cache replays, and the join tests its condition on every pair.
+        let per_replay = rows_out(inner) / asked.max(1.0);
+        let pairs = cache && n.predicate.is_some() && asked >= MANY_LOOPS && per_replay >= 100.0;
+        let repeated = reads >= MANY_LOOPS && (hinted || misjudged || rereads);
+        if !repeated && !pairs {
+            continue;
+        }
+        let impact = (cx.subtree(inner) + cx.share(n)).min(1.0);
+        let mut d = Draft::new("nested-loops", InsightArea::Query, impact, vec![n.id, inner.id]);
+        d.cap = Severity::Medium;
+        let mysql = cx.engine() == Engine::Mysql;
+        d.title = if repeated {
+            format!("Repeats its read of {inner_name} {} times, once per row of {outer_name}", format::count(reads))
+        } else {
             format!(
-                "Fix the estimate for {}: update its statistics. With the right row count the optimizer picks a hash join by itself.",
-                table_leaf(&outer_name)
+                "Compares each of {} rows of {outer_name} with {} rows the {} replays ({} pairs)",
+                format::count(asked),
+                format::count(per_replay),
+                inner.op,
+                format::count(asked * per_replay)
+            )
+        };
+        let forced = "The query forces a loop join, so the optimizer didn't weigh a hash or merge join.";
+        d.detail = if hinted && repeated {
+            forced.to_string()
+        } else if misjudged && repeated {
+            format!(
+                "The optimizer expected {} rows from {outer_name} and chose a nested loop; it got {}. {}",
+                format::count(expected),
+                rows_text(rows_out(outer)),
+                if mysql {
+                    "MySQL joins through an index whenever one fits; the estimate decides the join order, so a wrong one can start from the bigger side."
+                } else {
+                    "At that size one pass with a hash join is usually much cheaper, and the optimizer would have weighed one."
+                }
+            )
+        } else if repeated {
+            format!(
+                "Each run reads about {} rows of {inner_name}{}, so the loop reads it {} times over. {} of this plan's work.",
+                format::count(per_read.unwrap_or(0.0)),
+                table
+                    .map(|t| format!(" ({} of the table)", format::percent((per_read.unwrap_or(0.0) / t).min(1.0))))
+                    .unwrap_or_default(),
+                format::count(reads),
+                capitalize(&format::percent(impact))
             )
         } else {
             format!(
-                "Filter {} earlier so fewer rows reach the loop, or make sure the join columns are indexed on both sides so a merge or hash join is an option.",
-                table_leaf(&outer_name)
+                "The {} reads {inner_name} once and replays its {} rows for each row of {outer_name}; the join then checks `{}` on every pair. {} of this plan's work.{}",
+                inner.op,
+                format::count(per_replay),
+                format::predicate(n.predicate.as_deref().unwrap_or_default()),
+                capitalize(&format::percent(impact)),
+                if hinted { format!(" {forced}") } else { String::new() }
             )
         };
-        d.verify =
-            format!("Run with actual rows: a hash join, or far fewer executions of {}.", table_leaf(&inner_name));
+        d.fix = if hinted {
+            "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose.".into()
+        } else if misjudged && repeated {
+            if mysql {
+                format!(
+                    "Fix the estimate for {outer_name}: ANALYZE TABLE, and a histogram on its filtered columns, so MySQL plans the join for the real row count; filtering {outer_name} earlier means fewer rows reach the loop."
+                )
+            } else {
+                format!(
+                    "Fix the estimate for {outer_name}: update its statistics. With the right row count the optimizer can choose a hash join by itself."
+                )
+            }
+        } else if repeated && leaf.is_some_and(|l| l.kind == NodeKind::Seek) {
+            // It already seeks an index, one that narrows each run too little.
+            format!(
+                "Give {inner_name} an index that leads with the join column and the columns the inner side filters on, so each run reads only its matching rows; or filter {outer_name} earlier so fewer rows reach the loop."
+            )
+        } else if repeated {
+            format!(
+                "Index {inner_name} on the join column so each run reads only its matching rows, or filter {outer_name} earlier so fewer rows reach the loop."
+            )
+        } else {
+            format!(
+                "Give the join a condition it can seek or hash on: compare stored columns with = (no functions or computed values around them), indexed on the inner side, or filter {outer_name} earlier so fewer rows reach the loop."
+            )
+        };
+        d.verify = if mysql {
+            format!("Explain again: {inner_name} is read with ref or eq_ref access, and far fewer rows reach the loop.")
+        } else if hinted {
+            "Explain again without the hint: a hash or merge join instead of the loop.".to_string()
+        } else if repeated {
+            format!("Run with actual rows: a hash join, or far fewer rows read per execution of {inner_name}.")
+        } else {
+            format!("Explain again: no {} under the join, or a join that seeks its matches.", inner.op)
+        };
         out.push(d);
     }
     out
@@ -1577,12 +1868,29 @@ fn no_join_predicate(cx: &Cx) -> Vec<Draft> {
         .copied()
         .collect::<Vec<&PlanNode>>()
         .into_iter()
+        // A side of one row (a total, a setting) multiplies nothing: joining to it without a condition is harmless.
+        .filter(|n| {
+            // Under a TOP, SQL Server estimates each side for the rows it expects to need; the side itself is bigger.
+            let per_run = |c: &PlanNode| {
+                (rows_out(c) / c.runs().max(1.0)).max(prop_f64(c, "EstimateRowsWithoutRowGoal").unwrap_or(0.0))
+            };
+            let sides: Vec<f64> = if n.children.len() >= 2 {
+                n.children.iter().map(per_run).collect()
+            } else {
+                // MySQL's table joined through a join buffer: the table, and the rows joined before it.
+                let before = cx.parent(n).and_then(|p| {
+                    let at = p.children.iter().position(|c| c.id == n.id)?;
+                    (at > 0).then(|| rows_out(&p.children[at - 1]))
+                });
+                vec![rows_read(n) / n.runs().max(1.0), before.unwrap_or(0.0)]
+            };
+            sides.iter().all(|rows| *rows >= 2.0)
+        })
         .take(1)
         .map(|n| {
             let sides: Vec<String> = n.children.iter().filter_map(first_object).map(|o| table_leaf(&o)).collect();
-            let impact = cx.subtree(n).max(0.1);
+            let impact = cx.subtree(n);
             let mut d = Draft::new("no-join-predicate", InsightArea::Query, impact, vec![n.id]);
-            d.floor = Severity::Medium;
             d.title = if sides.len() >= 2 {
                 format!("{} and {} are joined without a condition: every row with every row", sides[0], sides[1])
             } else {
@@ -1599,44 +1907,61 @@ fn no_join_predicate(cx: &Cx) -> Vec<Draft> {
 // ── rules: estimates and statistics ──────────────────────────────────────────────────────────────
 
 fn misestimate(cx: &Cx) -> Vec<Draft> {
+    // The plan's misestimates by the one shared rule (`PlanNode::misestimates`), judged here again so a plan saved
+    // before that rule reads the same as a fresh one.
+    let found: HashMap<u32, f64> = cx.plan.root.misestimates().into_iter().collect();
     // The deepest misestimated operators are the causes; everything above inherits their error.
-    let flagged: Vec<&PlanNode> =
-        cx.nodes.iter().filter(|n| n.warnings.contains(&PlanWarning::Misestimate)).copied().collect();
-    let causes: Vec<&PlanNode> = flagged
+    let causes: Vec<&PlanNode> = cx
+        .nodes
         .iter()
+        .filter(|n| found.contains_key(&n.id))
         .filter(|n| {
             let mut below = Vec::new();
             n.children.iter().for_each(|c| c.walk(&mut below));
-            !below.iter().any(|b| b.warnings.contains(&PlanWarning::Misestimate))
+            !below.iter().any(|b| found.contains_key(&b.id))
         })
+        // A table variable estimated at one row is the table-variable rule's: no statistics to refresh.
+        .filter(|n| !(table_variable_of(n).is_some() && n.est_rows_total() <= 1.5))
         .copied()
         .collect();
     let mut causes = causes;
     causes.sort_by(|a, b| {
-        let w =
-            |n: &PlanNode| n.misestimate().unwrap_or(1.0).abs() * rows_out(n).max(n.est_rows_total()).log10().max(1.0);
+        let w = |n: &PlanNode| found[&n.id].abs() * rows_out(n).max(n.est_rows_for_runs()).log10().max(1.0);
         w(b).total_cmp(&w(a))
     });
     causes
         .into_iter()
         .take(2)
         .map(|n| {
-            let factor = n.misestimate().unwrap_or(1.0);
-            let est = n.est_rows_total();
+            let factor = found[&n.id];
+            let est = n.est_rows_for_runs();
             let act = rows_out(n);
-            let subject = n.object.clone().unwrap_or_else(|| n.op.clone());
-            let above: f64 = {
-                let mut chain = 0.0;
-                let mut cur = cx.parent(n);
-                while let Some(p) = cur {
-                    chain += cx.share(p);
-                    cur = cx.parent(p);
-                }
-                chain
-            };
-            let impact = (cx.subtree(n) + above).clamp(0.1, 1.0);
+            // MySQL's EXPLAIN ANALYZE estimates the filter in a Filter node above the table it reads.
+            let table = n.object.clone().or_else(|| (n.op == "Filter").then(|| first_object(n)).flatten());
+            let subject = table.clone().unwrap_or_else(|| n.op.clone());
+            let mut above = 0.0;
+            // A sort or hash above that ran out of memory was sized for the wrong number of rows.
+            let mut spill_above = false;
+            // What was planned from this estimate: joins, sorts, aggregates, spools, parallelism above it.
+            let mut consumers = false;
+            let mut cur = cx.parent(n);
+            while let Some(p) = cur {
+                above += cx.share(p);
+                spill_above |= p.warnings.contains(&PlanWarning::Spill);
+                consumers |= matches!(
+                    p.kind,
+                    NodeKind::Join | NodeKind::Sort | NodeKind::Aggregate | NodeKind::Spool | NodeKind::Parallelism
+                ) || p.op.contains("Hash");
+                cur = cx.parent(p);
+            }
+            let impact = (cx.subtree(n) + above).min(1.0);
             let mut d = Draft::new("misestimate", InsightArea::Statistics, impact, vec![n.id]);
             d.floor = if factor.abs() >= 100.0 { Severity::Medium } else { Severity::Low };
+            if !consumers {
+                // Nothing in this plan was sized from it; the statistics still decide other plans on the table.
+                d.floor = Severity::Low;
+                d.cap = Severity::Low;
+            }
             d.title = format!(
                 "Expected {} from {}, got {} ({}× {})",
                 plural(est, "row", "rows"),
@@ -1649,12 +1974,18 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
             // Multi-column statistics only describe plain columns; a filter on an expression (id % 4, lower(x)) needs
             // expression statistics instead, so the advice changes.
             let on_expression = cond.split([' ', '(', ')']).any(|t| matches!(t, "%" | "+" | "-" | "*" | "/"))
-                || wrapped_column(&cond).is_some();
+                || wrapped_column(&cond, cx.engine()).is_some();
             let cols: Vec<String> = if on_expression { Vec::new() } else { filter_columns(&cond) };
-            let spilled = cx.nodes.iter().any(|x| x.warnings.contains(&PlanWarning::Spill));
             d.detail = format!(
-                "Everything above this operator was planned for the wrong number of rows: join types, memory grants and parallelism{}.{}",
-                if spilled { " (here a sort or hash ran out of memory as a result)" } else { "" },
+                "{}{}",
+                if consumers {
+                    format!(
+                        "Everything above this operator was planned for the wrong number of rows: join types, memory grants and parallelism{}.",
+                        if spill_above { " (here a sort or hash above it ran out of memory as a result)" } else { "" }
+                    )
+                } else {
+                    "Nothing above it in this plan was sized from that estimate, but the same statistics decide every plan that reads this table.".to_string()
+                },
                 if cols.len() >= 2 {
                     format!(" The filter combines {}; databases assume such columns are independent, which is wrong when they move together.", format::list(&cols))
                 } else if on_expression {
@@ -1663,8 +1994,20 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                     String::new()
                 }
             );
-            let table = n.object.clone();
+            let mysql_histograms = !cx
+                .prop("server_version")
+                .is_some_and(|v| !v.contains("MariaDB") && !crate::version_at_least(v, [8, 0, 0]));
             let (fix, sql) = match (cx.engine(), &table) {
+                // Table variables have no statistics, and a temporary table's belong to the session that filled it:
+                // nothing Culprit could hand over to run would reach them.
+                (Engine::Mssql, Some(t)) if table_variable_of(n).is_some() => (
+                    format!("{} is a table variable, so it has no statistics: use a temporary table instead, or add OPTION (RECOMPILE) so the row count at run time is used.", table_leaf(t)),
+                    None,
+                ),
+                (Engine::Mssql, Some(t)) if table_leaf(t).starts_with('#') => (
+                    format!("{} is a temporary table: update its statistics in the session that fills it, after loading it, or add OPTION (RECOMPILE) to the query that reads it.", table_leaf(t)),
+                    None,
+                ),
                 (Engine::Mssql, Some(t)) => (
                     format!("Refresh the statistics on {} with a full scan{}.", table_leaf(t), if cols.len() >= 2 { ", and create statistics on the filtered columns together" } else { "" }),
                     Some(if cols.len() >= 2 {
@@ -1691,13 +2034,18 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                         format!("ANALYZE {};", qualified(Engine::Postgres, t))
                     }),
                 ),
+                // MariaDB collects histograms with its engine-independent statistics; MySQL has them from 8.0.
+                (Engine::Mysql, Some(t)) if cx.mariadb() && !cols.is_empty() => (
+                    format!("Refresh the statistics on {}, with column statistics (histograms) on {}.", table_leaf(t), format::list(&cols)),
+                    Some(format!("ANALYZE TABLE {} PERSISTENT FOR COLUMNS ({}) INDEXES ();", qualified(Engine::Mysql, t), cols.iter().map(|c| quote(Engine::Mysql, c)).collect::<Vec<_>>().join(", "))),
+                ),
+                (Engine::Mysql, Some(t)) if mysql_histograms && !cols.is_empty() => (
+                    format!("Refresh the statistics on {} and add a histogram on {}.", table_leaf(t), format::list(&cols)),
+                    Some(format!("ANALYZE TABLE {} UPDATE HISTOGRAM ON {};", qualified(Engine::Mysql, t), cols.iter().map(|c| quote(Engine::Mysql, c)).collect::<Vec<_>>().join(", "))),
+                ),
                 (Engine::Mysql, Some(t)) => (
-                    format!("Refresh {}'s statistics{}.", table_leaf(t), if cols.is_empty() { String::new() } else { format!(" and add a histogram on {}", format::list(&cols)) }),
-                    Some(if cols.is_empty() {
-                        format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t))
-                    } else {
-                        format!("ANALYZE TABLE {} UPDATE HISTOGRAM ON {};", qualified(Engine::Mysql, t), cols.iter().map(|c| quote(Engine::Mysql, c)).collect::<Vec<_>>().join(", "))
-                    }),
+                    format!("Refresh the statistics on {}.", table_leaf(t)),
+                    Some(format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t))),
                 ),
                 (_, None) => ("Refresh statistics on the tables below this operator.".into(), None),
             };
@@ -1712,16 +2060,17 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
 fn missing_statistics(cx: &Cx) -> Vec<Draft> {
     cx.nodes
         .iter()
-        .filter(|n| n.warnings.contains(&PlanWarning::MissingStatistics))
+        // A table variable never has statistics; the table-variable rule says what to do about it.
+        .filter(|n| n.warnings.contains(&PlanWarning::MissingStatistics) && table_variable_of(n).is_none())
         .take(1)
         .map(|n| {
             let cols = n.props.get("ColumnsWithNoStatistics").cloned();
             let mut d = Draft::new("missing-statistics", InsightArea::Statistics, cx.subtree(n), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = format!("No statistics on {}, so its row counts are guesses", cols.clone().unwrap_or_else(|| format!("some columns of {}", table_leaf(&what(n)))));
-            d.detail = "Without statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size.".into();
-            d.fix = "Turn automatic statistics creation back on (it's on by default), or create statistics on those columns.".into();
-            d.fix_sql = Some("ALTER DATABASE CURRENT SET AUTO_CREATE_STATISTICS ON;".into());
+            d.detail = "Without statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size. SQL Server creates them by itself unless AUTO_CREATE_STATISTICS is off for the database or it can't write to the database (read-only).".into();
+            d.fix = "Check the database's settings: if automatic statistics creation is off, turn it back on (it's on by default); if the database is read-only, create the statistics while it is writable (or on the primary, for a readable secondary) so they come with it.".into();
+            d.fix_sql = Some("SELECT name, is_auto_create_stats_on, is_read_only\n  FROM sys.databases\n WHERE database_id = DB_ID();\n-- If is_auto_create_stats_on is 0:\n-- ALTER DATABASE CURRENT SET AUTO_CREATE_STATISTICS ON;".into());
             d.verify = "Explain again: the ColumnsWithNoStatistics warning is gone.".into();
             d
         })
@@ -1734,6 +2083,7 @@ fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
         cx.prop("StatementOptmEarlyAbortReason").filter(|r| matches!(*r, "TimeOut" | "MemoryLimitExceeded"))
     {
         let mut d = Draft::new("optimizer-timeout", InsightArea::Query, 0.1, vec![cx.plan.root.id]);
+        d.subtree = true;
         d.cap = Severity::Medium;
         let memory = reason.eq_ignore_ascii_case("MemoryLimitExceeded");
         d.title = if memory {
@@ -1750,6 +2100,7 @@ fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
     }
     if cx.prop("CardinalityEstimationModelVersion") == Some("70") {
         let mut d = Draft::new("legacy-ce", InsightArea::Server, 0.02, vec![cx.plan.root.id]);
+        d.subtree = true;
         d.cap = Severity::Low;
         d.title = "Planned with the legacy cardinality estimator (the SQL Server 2012 model)".into();
         d.detail = "The database has LEGACY_CARDINALITY_ESTIMATION on, a compatibility level below 120, or the query uses the FORCE_LEGACY_CARDINALITY_ESTIMATION hint. The newer estimator handles correlated filters and joins better.".into();
@@ -1774,15 +2125,31 @@ fn slow_compile(cx: &Cx) -> Vec<Draft> {
     if planning < 500.0 && !slower_than_running {
         return Vec::new();
     }
-    let mut d = Draft::new("slow-compile", InsightArea::Query, 0.1, vec![cx.plan.root.id]);
+    let running = running.or_else(|| elapsed_ms(cx.plan));
+    let impact = running.map_or(0.1, |r| planning / (planning + r).max(1.0));
+    let mut d = Draft::new("slow-compile", InsightArea::Query, impact, vec![cx.plan.root.id]);
+    d.cost_ms = Some(planning);
     d.cap = Severity::Medium;
+    // PostgreSQL's first planning on a connection also loads the tables' metadata into the backend's caches, and
+    // Culprit's EXPLAIN runs on a fresh connection: a few tens of milliseconds may never recur.
+    let cold = cx.engine() == Engine::Postgres;
+    if cold && planning < 500.0 {
+        d.cap = Severity::Low;
+    }
     d.title = match running {
         Some(r) if slower_than_running => {
             format!("Planning takes {}, longer than running it ({})", format::duration(planning), format::duration(r))
         }
         _ => format!("Compiling this plan took {}", format::duration(planning)),
     };
-    d.detail = "When the plan isn't reused, every run pays this again. Many joins, many partitions or long IN lists make planning expensive.".into();
+    d.detail = format!(
+        "When the plan isn't reused, every run pays this again. Many joins, many partitions or long IN lists make planning expensive.{}",
+        if cold {
+            " This is one measurement, and the first planning on a new connection also reads the tables' metadata: explain it twice in one session to see the time a warm connection pays."
+        } else {
+            ""
+        }
+    );
     d.fix = match cx.engine() {
         Engine::Postgres => "Reuse the plan with prepared statements, keep IN lists short (use = ANY($1) with an array), and make sure partition pruning can happen at plan time.".into(),
         _ => "Make sure the plan is reused: send the query parameterized rather than with literal values, and avoid OPTION (RECOMPILE) on frequent queries.".into(),
@@ -1793,37 +2160,84 @@ fn slow_compile(cx: &Cx) -> Vec<Draft> {
 
 // ── rules: memory ────────────────────────────────────────────────────────────────────────────────
 
+/// Node prop (SQL Server): a Parallelism exchange wrote its buffers to tempdb. That resolves a deadlock between parallel
+/// threads (an order-preserving exchange fed unevenly); it isn't a sort or hash short of memory.
+pub const EXCHANGE_SPILL: &str = "ExchangeSpill";
+
+/// A spill smaller than this is at most Low: it costs little next to the work around it.
+const SPILL_MATERIAL_BYTES: f64 = 1024.0 * 1024.0;
+
+/// What a spilling operator wrote to disk, when the plan says: tempdb pages (SQL Server), the sort's or hash
+/// aggregate's own disk use, or the temporary blocks the operator itself wrote (PostgreSQL with BUFFERS).
+fn spilled_bytes(n: &PlanNode) -> Option<f64> {
+    let own_temp_pages = n.runtime.as_ref().and_then(|r| r.spill_pages).filter(|p| *p > 0.0);
+    let disk_kb = prop_f64(n, "Sort Space Used")
+        .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"))
+        .or_else(|| prop_f64(n, "Disk Usage").filter(|kb| *kb > 0.0));
+    disk_kb
+        .map(|kb| kb * 1024.0)
+        .or_else(|| prop_f64(n, "TempdbWritesPages").map(|p| p * 8192.0))
+        .or_else(|| own_temp_pages.map(|p| p * 8192.0))
+}
+
 fn spill(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
+    for n in cx.nodes.iter().filter(|n| is_true(n.props.get(EXCHANGE_SPILL))) {
+        let mut d = Draft::new("spill", InsightArea::Parallelism, cx.share(n), vec![n.id]);
+        d.title = match spilled_bytes(n) {
+            Some(b) => format!(
+                "The {} exchange wrote {} to tempdb to keep its threads from waiting on each other",
+                n.op,
+                format::bytes(b)
+            ),
+            None => format!("The {} exchange wrote to tempdb to keep its threads from waiting on each other", n.op),
+        };
+        d.detail = "SQL Server spills an exchange's buffers to tempdb when its parallel threads would otherwise wait on each other for good, usually at an exchange that keeps rows in order (merging streams) fed unevenly. It isn't a memory grant problem.".into();
+        d.fix = "Remove the need for order at that exchange (an ORDER BY or merge join above it that an index or a hash join could serve), and check whether one value holds most of the rows; comparing a run with OPTION (MAXDOP 1) shows what parallelism costs here.".into();
+        d.verify = "Run with an actual plan: no ExchangeSpillDetails on the Parallelism operator.".into();
+        out.push(d);
+    }
     for n in cx.nodes.iter().filter(|n| n.warnings.contains(&PlanWarning::Spill)) {
-        let impact = cx.share(n).max(0.1);
-        let mut d = Draft::new("spill", InsightArea::Memory, impact, vec![n.id]);
-        d.floor = Severity::Medium;
+        let mut d = Draft::new("spill", InsightArea::Memory, cx.share(n), vec![n.id]);
+        // The plan's costs were estimated before the spill happened; its size is the evidence of what it cost.
+        match spilled_bytes(n) {
+            Some(bytes) if bytes < SPILL_MATERIAL_BYTES => d.cap = Severity::Low,
+            Some(_) => d.floor = Severity::Medium,
+            None => {}
+        }
         let underestimated = {
             let mut below = Vec::new();
             n.walk(&mut below);
-            below.iter().any(|b| b.misestimate().is_some_and(|m| m >= 10.0))
+            below.iter().any(|b| b.misestimate().is_some_and(|m| m >= MISESTIMATE_FACTOR))
         };
         match cx.engine() {
             Engine::Postgres => {
                 let disk_kb = prop_f64(n, "Sort Space Used")
                     .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"));
                 let batches = prop_f64(n, "Hash Batches").filter(|b| *b > 1.0);
-                let temp_kb = prop_f64(n, "Temp Written Blocks").map(|b| b * 8.0);
-                d.title = match (disk_kb, batches) {
-                    (Some(kb), _) => format!(
+                let agg_batches = prop_f64(n, "HashAgg Batches").filter(|b| *b > 1.0);
+                d.title = match (disk_kb, batches, agg_batches, spilled_bytes(n)) {
+                    (Some(kb), _, _, _) => format!(
                         "The sort writes {} to disk because it didn't fit in work_mem",
                         format::bytes(kb * 1024.0)
                     ),
-                    (None, Some(b)) => format!(
+                    (None, Some(b), _, _) => format!(
                         "The hash split its input into {} batches on disk because it didn't fit in work_mem",
                         format::count(b)
                     ),
-                    _ => format!(
+                    (None, None, _, Some(bytes)) => format!(
                         "{} writes {} of temporary files because it didn't fit in work_mem",
                         n.op,
-                        format::bytes(temp_kb.unwrap_or(0.0) * 1024.0)
+                        format::bytes(bytes)
                     ),
+                    (None, None, Some(b), None) => format!(
+                        "{} split its groups into {} batches on disk because they didn't fit in work_mem",
+                        n.op,
+                        format::count(b)
+                    ),
+                    (None, None, None, None) => {
+                        format!("{} wrote temporary files because it didn't fit in work_mem", n.op)
+                    }
                 };
                 d.detail = format!(
                     "Disk is many times slower than memory for sorting and hashing.{}",
@@ -1838,7 +2252,23 @@ fn spill(cx: &Cx) -> Vec<Draft> {
                 d.verify =
                     "Explain analyze again: Sort Method is quicksort/top-N (in memory) and Hash Batches is 1.".into();
             }
-            _ => {
+            // MariaDB's ANALYZE counts a sort's merge passes: it didn't fit in sort_buffer_size.
+            Engine::Mysql => {
+                let passes = prop_f64(n, "r_sort_passes").unwrap_or(1.0);
+                d.title = format!(
+                    "The sort needed {} through temporary files because it didn't fit in sort_buffer_size",
+                    plural(passes, "merge pass", "merge passes")
+                );
+                d.detail = format!(
+                    "Each merge pass writes the sorted runs to a temporary file and reads them back.{}",
+                    if underestimated { " The rows feeding it were badly underestimated." } else { "" }
+                );
+                d.fix = "Raise sort_buffer_size for the session that runs it rather than server-wide (it's allocated per sort), or add an index that returns rows already in order so the sort disappears.".into();
+                d.fix_sql =
+                    Some("-- Try it in your session first:\nSET SESSION sort_buffer_size = 8 * 1024 * 1024;".into());
+                d.verify = "Run ANALYZE again: r_sort_passes is 0.".into();
+            }
+            Engine::Mssql => {
                 d.title = match prop_f64(n, "TempdbWritesPages") {
                     Some(pages) => {
                         format!("{} ran out of memory and wrote {} to tempdb", n.op, format::bytes(pages * 8192.0))
@@ -1876,6 +2306,7 @@ fn memory_grant(cx: &Cx) -> Vec<Draft> {
         && used < 0.25 * granted
     {
         let mut d = Draft::new("memory-grant", InsightArea::Memory, 0.15, vec![memory_node(cx).unwrap_or(root)]);
+        d.subtree = true;
         d.floor = if granted >= 1024.0 * 1024.0 { Severity::High } else { Severity::Medium };
         d.title = format!(
             "Reserves {} of memory per run and uses {}",
@@ -1894,6 +2325,7 @@ fn memory_grant(cx: &Cx) -> Vec<Draft> {
         && desired >= 1024.0 * 1024.0
     {
         let mut d = Draft::new("memory-grant", InsightArea::Memory, 0.1, vec![memory_node(cx).unwrap_or(root)]);
+        d.subtree = true;
         d.title = format!("Asks for {} of memory per run", format::bytes(desired * 1024.0));
         d.detail =
             "Large grants are reserved for the whole run; a few of these at once make other queries queue for memory."
@@ -1904,6 +2336,7 @@ fn memory_grant(cx: &Cx) -> Vec<Draft> {
     }
     if let Some(wait) = kb("MemoryGrantWaitMs").filter(|w| *w >= 100.0) {
         let mut d = Draft::new("memory-grant", InsightArea::Memory, 0.2, vec![root]);
+        d.cost_ms = Some(wait);
         d.floor = Severity::Medium;
         d.title = format!("Waited {} for memory before it could start", format::duration(wait));
         d.detail = "Other queries held the memory it needed. The run was slow before it did any work.".into();
@@ -1925,8 +2358,13 @@ fn memory_node(cx: &Cx) -> Option<u32> {
 // ── rules: parallelism ───────────────────────────────────────────────────────────────────────────
 
 fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
+    // The plan doesn't carry the server's cost threshold for parallelism: below its default (5) no setting would make
+    // the plan parallel, and only above the 50 it's commonly raised to does running serially say much.
+    const DEFAULT_THRESHOLD: f64 = 5.0;
+    const COMMON_THRESHOLD: f64 = 50.0;
     let Some(reason) = cx.prop("NonParallelPlanReason") else { return Vec::new() };
-    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cx.plan.total_cost < 30.0 {
+    let cost = cx.plan.total_cost;
+    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < DEFAULT_THRESHOLD {
         return Vec::new();
     }
     let plain = match reason {
@@ -1942,15 +2380,20 @@ fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
         _ => "",
     };
     let mut d = Draft::new("parallelism-blocked", InsightArea::Parallelism, 0.1, vec![cx.plan.root.id]);
-    d.cap = Severity::Medium;
+    d.subtree = true;
+    d.cap = if cost >= COMMON_THRESHOLD { Severity::Medium } else { Severity::Low };
     d.title = if plain.is_empty() {
         format!("This plan runs on one CPU: SQL Server reports {reason}")
     } else {
         format!("This plan runs on one CPU because {plain}")
     };
     d.detail = format!(
-        "With a cost of {:.0} it would normally be split across CPUs; the whole run happens on a single core instead.",
-        cx.plan.total_cost
+        "Its estimated cost is {cost:.0}. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50){}; the whole run happens on a single core instead.",
+        if cost >= COMMON_THRESHOLD {
+            ", which this plan passes either way"
+        } else {
+            ", so whether it would split depends on that setting"
+        }
     );
     d.fix = match reason {
         "MaxDOPSetToOne" => "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server.".into(),
@@ -2011,7 +2454,7 @@ fn parallel_skew(cx: &Cx) -> Vec<Draft> {
         }
         // Skew costs time only in proportion to the work involved, and a TOP makes uneven threads normal.
         let has_top = cx.nodes.iter().any(|x| x.op == "Top" || x.op == "Limit");
-        let mut d = Draft::new("parallel-skew", InsightArea::Parallelism, (cx.share(n) * 0.3).max(0.02), vec![n.id]);
+        let mut d = Draft::new("parallel-skew", InsightArea::Parallelism, cx.share(n) * 0.3, vec![n.id]);
         d.cap = if has_top || total < 100_000.0 { Severity::Low } else { Severity::Medium };
         let who = if cx.engine() == Engine::Postgres { "process" } else { "thread" };
         d.title =
@@ -2028,6 +2471,8 @@ fn parallel_skew(cx: &Cx) -> Vec<Draft> {
 fn workers_short(cx: &Cx) -> Vec<Draft> {
     cx.nodes
         .iter()
+        // A Gather that never ran launched no workers because it never asked for any.
+        .filter(|n| n.act_executions.is_none_or(|runs| runs > 0.0))
         .filter_map(|n| {
             let planned = prop_f64(n, "Workers Planned")?;
             let launched = prop_f64(n, "Workers Launched")?;
@@ -2035,7 +2480,8 @@ fn workers_short(cx: &Cx) -> Vec<Draft> {
         })
         .take(1)
         .map(|(n, planned, launched)| {
-            let mut d = Draft::new("workers-short", InsightArea::Server, cx.subtree(n).max(0.1), vec![n.id]);
+            let mut d = Draft::new("workers-short", InsightArea::Server, cx.subtree(n), vec![n.id]);
+            d.subtree = true;
             d.cap = Severity::Medium;
             d.title = format!("Planned {} parallel workers, only {} started", format::count(planned), format::count(launched));
             d.detail = "The server had no free parallel workers when this ran (max_parallel_workers / max_worker_processes), so it ran with less help than it was planned for.".into();
@@ -2079,7 +2525,7 @@ fn many_to_many(cx: &Cx) -> Vec<Draft> {
         .filter(|n| n.op == "Merge Join" && is_true(n.props.get("ManyToMany")))
         .take(1)
         .map(|n| {
-            let mut d = Draft::new("many-to-many", InsightArea::Index, cx.share(n).max(0.05), vec![n.id]);
+            let mut d = Draft::new("many-to-many", InsightArea::Index, cx.share(n), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = "The merge join is many-to-many, so it replays duplicates through a tempdb worktable".into();
             d.detail = "When neither input is unique on the join columns, SQL Server rewinds the inner side for every duplicate on the outer side.".into();
@@ -2096,12 +2542,22 @@ fn remote_query(cx: &Cx) -> Vec<Draft> {
         .filter(|n| n.op.starts_with("Remote"))
         .take(1)
         .map(|n| {
-            let mut d = Draft::new("remote-query", InsightArea::Query, cx.subtree(n).max(0.05), vec![n.id]);
+            let mut d = Draft::new("remote-query", InsightArea::Query, cx.subtree(n), vec![n.id]);
             d.cap = Severity::Medium;
-            d.title = format!("Pulls {} from a linked server", plural(rows_out(n), "row", "rows"));
-            d.detail = "Rows from another server travel over the network, and filters that can't be sent along are applied locally after the transfer.".into();
-            d.fix = "Filter on the remote side (OPENQUERY with the WHERE clause inside), or copy the data you need locally on a schedule.".into();
-            d.verify = "Explain again: far fewer rows come back from the Remote operator.".into();
+            // Remote Insert, Update and Delete send rows the other way: each one is a round trip to the other server.
+            let writes = ["Remote Insert", "Remote Update", "Remote Delete"].contains(&n.op.as_str());
+            if writes {
+                let rows = n.children.first().map_or_else(|| rows_out(n), rows_out);
+                d.title = format!("Sends {} to a linked server ({})", plural(rows, "row", "rows"), n.op);
+                d.detail = "Each row written through a linked server crosses the network, usually one statement per row on the other side.".into();
+                d.fix = "Run the change on the remote server itself (EXEC (…) AT the linked server, or a procedure there) with the rows it needs, rather than row by row from here.".into();
+                d.verify = "Explain again: no Remote Insert, Update or Delete over many rows.".into();
+            } else {
+                d.title = format!("Pulls {} from a linked server", plural(rows_out(n), "row", "rows"));
+                d.detail = "Rows from another server travel over the network, and filters that can't be sent along are applied locally after the transfer.".into();
+                d.fix = "Filter on the remote side (OPENQUERY with the WHERE clause inside), or copy the data you need locally on a schedule.".into();
+                d.verify = "Explain again: far fewer rows come back from the Remote operator.".into();
+            }
             d
         })
         .collect()
@@ -2120,7 +2576,7 @@ fn heap_fetches(cx: &Cx) -> Vec<Draft> {
         .take(1)
         .map(|(n, fetches)| {
             let table = what(n);
-            let mut d = Draft::new("heap-fetches", InsightArea::Server, cx.share(n).max(0.05), vec![n.id]);
+            let mut d = Draft::new("heap-fetches", InsightArea::Server, cx.share(n), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = format!("The index-only scan on {} still visits the table {} times", table_leaf(&table), rows_text(fetches));
             d.detail = "PostgreSQL can only skip the table for pages the visibility map marks all-visible, which VACUUM maintains; this table hasn't been vacuumed since many of its rows changed.".into();
@@ -2137,12 +2593,14 @@ fn lossy_bitmap(cx: &Cx) -> Vec<Draft> {
         .iter()
         .filter_map(|n| {
             let lossy = prop_f64(n, "Lossy Heap Blocks")?;
-            (lossy > 0.0).then_some((n, lossy))
+            // A BRIN index only ever gives lossy pages: no exact ones means nothing was lost for want of work_mem.
+            let exact = prop_f64(n, "Exact Heap Blocks").unwrap_or(0.0);
+            (lossy > 0.0 && exact > 0.0).then_some((n, lossy))
         })
         .take(1)
         .map(|(n, lossy)| {
             let rechecked = prop_f64(n, "Rows Removed by Index Recheck").unwrap_or(0.0);
-            let mut d = Draft::new("lossy-bitmap", InsightArea::Memory, cx.share(n).max(0.05), vec![n.id]);
+            let mut d = Draft::new("lossy-bitmap", InsightArea::Memory, cx.share(n), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = format!("The bitmap scan on {} ran out of work_mem and went lossy", table_leaf(&what(n)));
             d.detail = format!(
@@ -2174,18 +2632,37 @@ fn jit(cx: &Cx) -> Vec<Draft> {
     if total < 10.0 || execution.is_some_and(|e| total < 0.2 * e) {
         return Vec::new();
     }
-    let mut d =
-        Draft::new("jit", InsightArea::Server, execution.map_or(0.2, |e| (total / e).min(1.0)), vec![cx.plan.root.id]);
-    d.cap = Severity::Medium;
+    let share = execution.map(|e| (total / e.max(total)).min(1.0));
+    // Execution Time includes the compiling. When compiling took at least as long as everything else, the compiled
+    // code can't have won that back; below that it may have, and only a run without JIT can tell.
+    let dominates = share.is_some_and(|s| s >= 0.5);
+    let mut d = Draft::new("jit", InsightArea::Server, share.unwrap_or(0.2), vec![cx.plan.root.id]);
+    d.cost_ms = Some(total);
+    d.cap = if dominates { Severity::Medium } else { Severity::Low };
     d.title = match execution {
         Some(e) => {
             format!("JIT compilation took {} of the {} this query ran", format::duration(total), format::duration(e))
         }
         None => format!("JIT compilation took {}", format::duration(total)),
     };
-    d.detail = "PostgreSQL compiled parts of this query to machine code because its estimated cost crossed jit_above_cost; for queries that run briefly, compiling costs more than it saves.".into();
-    d.fix = "Turn JIT off for this workload, or raise jit_above_cost so only long analytical queries use it.".into();
-    d.fix_sql = Some("ALTER ROLE app_user SET jit = off;".into());
+    d.detail = format!(
+        "PostgreSQL compiled parts of this query to machine code because its estimated cost crossed jit_above_cost. {}",
+        if dominates {
+            "Compiling took longer than everything else the query did, so it can't have paid for itself here."
+        } else {
+            "Compiled code evaluates each row faster, so on a long run it can pay for itself; only a run without it tells."
+        }
+    );
+    d.fix = if dominates {
+        "Check with JIT off in your session; if it's faster, turn JIT off for this workload's role, or raise jit_above_cost so only long analytical queries use it.".into()
+    } else {
+        "Compare with JIT off in your session before changing anything.".into()
+    };
+    d.fix_sql = Some(if dominates {
+        "-- In your session, then EXPLAIN ANALYZE again and compare:\nSET jit = off;\n-- If it's faster, for the application's role:\n-- ALTER ROLE app_user SET jit = off;".into()
+    } else {
+        "-- In your session only, then EXPLAIN ANALYZE again and compare:\nSET jit = off;".into()
+    });
     d.verify = "Explain analyze again: no JIT section, and a shorter execution time.".into();
     vec![d]
 }
@@ -2193,39 +2670,64 @@ fn jit(cx: &Cx) -> Vec<Draft> {
 fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
     for n in &cx.nodes {
-        let (runs, outer) = match cx.engine() {
+        let Some(parent) = cx.parent(n) else { continue };
+        // NOT IN explains its own subquery and has the better fix.
+        if not_in_work(cx, parent).is_some() {
+            continue;
+        }
+        let (runs, outer, impact) = match cx.engine() {
             Engine::Postgres => {
                 if n.props.get("Parent Relationship").map(String::as_str) != Some("SubPlan") {
                     continue;
                 }
-                let parent = cx.parent(n);
-                let not_in = parent.and_then(|p| p.predicate.as_deref()).is_some_and(|f| {
-                    let l = f.to_ascii_lowercase();
-                    l.contains("not (") && l.contains("subplan")
-                });
-                if not_in {
-                    continue; // not-in explains it and has the better fix
+                // A hashed SubPlan runs once and is probed per row: `(hashed SubPlan 1)` in the parent's condition.
+                let name = n.props.get("Subplan Name").map_or("subplan".to_string(), |s| s.to_ascii_lowercase());
+                let parent_text =
+                    parent.props.values().chain(parent.predicate.iter()).cloned().collect::<Vec<_>>().join(" ");
+                if parent_text.to_ascii_lowercase().contains(&format!("hashed {name}")) {
+                    continue;
                 }
-                let runs = n.act_executions.unwrap_or_else(|| parent.map_or(0.0, rows_out));
-                (runs, parent.and_then(first_object))
+                // Measured runs; else once for each row the parent evaluates the condition on.
+                let runs = n.act_executions.unwrap_or_else(|| rows_read(parent));
+                // PostgreSQL charges every run of the SubPlan to the parent's own cost.
+                (runs, first_object(parent), (cx.share(parent) + cx.subtree(n)).min(1.0))
             }
             Engine::Mysql => {
                 if !is_true(n.props.get("dependent")) || is_true(n.props.get("cacheable")) {
                     continue;
                 }
-                let parent = cx.parent(n);
-                let outer = parent.and_then(|p| p.children.iter().find(|c| c.id != n.id).and_then(first_object));
-                let runs = parent.and_then(|p| p.children.iter().find(|c| c.id != n.id)).map_or(0.0, rows_out);
-                (runs, outer)
+                let runs = if n.props.contains_key("cache_state") {
+                    // MariaDB's expression cache answers repeated outer values: only measured misses are runs.
+                    let Some(runs) = n.act_executions else { continue };
+                    runs
+                } else if parent.object.is_some() {
+                    // Attached to a table's condition: run for each row the table reads.
+                    rows_read(parent)
+                } else {
+                    // In the select list: run for each row the query block returns.
+                    parent.est_rows
+                };
+                let outer = if parent.object.is_some() {
+                    parent.object.clone()
+                } else {
+                    parent
+                        .children
+                        .iter()
+                        .find(|c| !matches!(c.op.as_str(), "Subquery" | "Dependent subquery"))
+                        .and_then(first_object)
+                };
+                // MySQL costs one run of the subquery; the plan's row count says how many there are.
+                let one = n.subtree_cost.max(0.0);
+                let all = one * runs.max(1.0);
+                let impact = if all > 0.0 { all / (cx.total - one + all) } else { 0.0 };
+                (runs, outer, impact.clamp(0.0, 1.0))
             }
             Engine::Mssql => continue,
         };
         if runs < MANY_RUNS {
             continue;
         }
-        let impact = cx.subtree(n).max(0.1);
         let mut d = Draft::new("correlated-subquery", InsightArea::Query, impact, vec![n.id]);
-        d.floor = Severity::Medium;
         let outer_name = outer.as_deref().map(table_leaf).unwrap_or_else(|| "the outer query".into());
         d.title = format!("A subquery runs {} times, once per row of {outer_name}", format::count(runs));
         d.detail = format!(
@@ -2280,19 +2782,32 @@ fn join_buffer(cx: &Cx) -> Vec<Draft> {
             .collect();
         let impact = cx.share(n).max(cx.subtree(n) * 0.5);
         let mut d = Draft::new("join-buffer", InsightArea::Index, impact, vec![n.id]);
-        d.floor = Severity::Medium;
-        d.title = format!("Joins {} without an index ({how} over a full read)", table_leaf(&table));
-        d.detail = format!(
-            "MySQL has no index to look up matching rows of {} for each row it joins, so it reads all {} rows into a join buffer and matches them there.",
-            table_leaf(&table),
-            format::count(rows_read(n))
-        );
-        d.fix = if cols.is_empty() {
-            format!("Index the join column of {} so MySQL can look rows up directly.", table_leaf(&table))
-        } else {
-            format!("Index {} on {} so MySQL can look rows up directly.", table_leaf(&table), format::list(&cols))
-        };
-        d.fix_sql = index_sql(Engine::Mysql, &table, &cols, &[]);
+        let leaf = table_leaf(&table);
+        let join_cols = if cols.is_empty() { "the join column".to_string() } else { format::list(&cols) };
+        // MySQL listed indexes it could use on this table, yet joins through the buffer: it judged a full read
+        // cheaper, or those indexes serve another condition. Either way the plan doesn't show an index is missing.
+        match n.props.get("possible_keys").filter(|k| !k.is_empty()) {
+            Some(keys) => {
+                d.title = format!("Joins {leaf} through a join buffer ({how}) over a full read instead of an index");
+                d.detail = format!(
+                    "MySQL listed {keys} as possible for {leaf}, yet reads all {} rows into a join buffer and matches them there, rather than looking up each row's matches.",
+                    format::count(rows_read(n))
+                );
+                d.fix = format!(
+                    "Check whether {keys} starts with {join_cols}: if not, an index that does lets MySQL look rows up directly; if it does, refresh {leaf}'s statistics so MySQL weighs it right."
+                );
+                d.fix_sql = n.object.as_ref().map(|t| format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t)));
+            }
+            None => {
+                d.title = format!("Joins {leaf} without an index ({how} over a full read)");
+                d.detail = format!(
+                    "MySQL has no index to look up matching rows of {leaf} for each row it joins, so it reads all {} rows into a join buffer and matches them there.",
+                    format::count(rows_read(n))
+                );
+                d.fix = format!("Index {leaf} on {join_cols} so MySQL can look rows up directly.");
+                d.fix_sql = index_sql(Engine::Mysql, &table, &cols, &[]);
+            }
+        }
         d.verify =
             format!("Explain again: {} is read with ref or eq_ref access, without a join buffer.", table_leaf(&table));
         out.push(d);
@@ -2301,9 +2816,7 @@ fn join_buffer(cx: &Cx) -> Vec<Draft> {
 }
 
 fn temp_table_sort(cx: &Cx) -> Vec<Draft> {
-    let mariadb = cx.plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
-        || cx.plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"));
-    let server = if mariadb { "MariaDB" } else { "MySQL" };
+    let server = if cx.mariadb() { "MariaDB" } else { "MySQL" };
     let in_temp =
         |n: &PlanNode| n.op == "Temporary table" || n.detail.as_deref().is_some_and(|d| d.contains("temporary table"));
     // MySQL marks the grouping step (`grouping_operation`, op Group) or the ordering step (`ordering_operation`, op
@@ -2322,10 +2835,13 @@ fn temp_table_sort(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
     for n in cx.nodes.iter().filter(|n| in_temp(n)) {
         let rows = n.children.iter().map(rows_out).fold(0.0, f64::max).max(rows_out(n));
-        if rows < 10_000.0 {
+        if rows < MANY_ROWS {
             continue;
         }
-        let impact = cx.subtree(n).max(0.1);
+        // The temporary table's own work and the sort of it, not the reads below it, which happen either way. MySQL
+        // leaves most of it uncosted, so this is often small next to the scan feeding it.
+        let sort_above = cx.parent(n).filter(|p| p.kind == NodeKind::Sort).map_or(0.0, |p| cx.share(p));
+        let impact = (cx.share(n) + sort_above).min(1.0);
         if grouping(n) {
             let mut d = Draft::new("temp-table-sort", InsightArea::Index, impact, vec![n.id]);
             d.title = if sorted(n) {
@@ -2366,19 +2882,21 @@ fn index_ignored(cx: &Cx) -> Vec<Draft> {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| n.op == "Table scan") {
-        let Some(possible) = n.props.get("possible_keys") else { continue };
-        let filtered = prop_f64(n, "filtered").unwrap_or(100.0);
-        if rows_read(n) < 10_000.0 || filtered >= 20.0 {
+    for n in cx.nodes.iter().filter(|n| n.op == "Table scan" && index_could_pay(cx, n)) {
+        let keys = possible_keys_for_filter(cx, n);
+        if keys.is_empty() {
             continue;
         }
-        let mut d = Draft::new("index-ignored", InsightArea::Statistics, cx.share(n).max(0.05), vec![n.id]);
+        let kept = filter_keeps(cx, n).unwrap_or(1.0);
+        let mut d = Draft::new("index-ignored", InsightArea::Statistics, cx.share(n), vec![n.id]);
         d.cap = Severity::Medium;
-        d.title = format!("MySQL could use {possible} but reads all of {} instead", table_leaf(&what(n)));
+        d.title = format!("MySQL could use {} but reads all of {} instead", keys.join(", "), table_leaf(&what(n)));
         d.detail = format!(
-            "It expects the filter to keep {} of {} rows, yet judged the index not worth it; that usually means stale statistics or a type mismatch in the comparison.",
-            format::percent(filtered / 100.0),
-            format::count(rows_read(n))
+            "{} {} of {} rows, yet MySQL judged {} not worth it; that usually means stale statistics or a type mismatch in the comparison.",
+            if n.act_rows.is_some() { "The filter kept" } else { "MySQL expects the filter to keep" },
+            format::percent(kept),
+            format::count(rows_read(n)),
+            if keys.len() == 1 { "the index" } else { "those indexes" }
         );
         d.fix = "Refresh the table's statistics and compare the column with a value of its own type; if it still scans, compare with FORCE INDEX to see which is really faster.".into();
         d.fix_sql = n.object.as_ref().map(|t| format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t)));
@@ -2562,6 +3080,8 @@ mod tests {
         // still shows the varchar-era conversion.
         let mut scan = node(1, "Clustered Index Scan", NodeKind::Scan);
         scan.predicate = Some("CONVERT_IMPLICIT(nvarchar(64),[db].[shop].[jobs].[name],0)=[@p1]".into());
+        // A scan of 200K rows: enough work for the mismatch to matter.
+        scan.rows_read = Some(200_000.0);
         let mut p = plan(Engine::Mssql, scan);
         p.props.insert(
             "PlanAffectingConvert".into(),
@@ -2617,22 +3137,31 @@ mod tests {
     #[test]
     fn wrapped_columns_are_found_on_every_engine() {
         assert_eq!(
-            wrapped_column("datepart(year,[db].[shop].[orders].[created_at])=(2026)"),
+            wrapped_column("datepart(year,[db].[shop].[orders].[created_at])=(2026)", Engine::Mssql),
             Some(("DATEPART".into(), "created_at".into()))
         );
         assert_eq!(
-            wrapped_column("(date_trunc('day'::text, orders.created_at) = '2026-03-01')"),
+            wrapped_column("(date_trunc('day'::text, orders.created_at) = '2026-03-01')", Engine::Postgres),
             Some(("DATE_TRUNC".into(), "created_at".into()))
         );
         assert_eq!(
-            wrapped_column("(cast(`shop`.`orders`.`created_at` as date) = '2026-03-01')"),
+            wrapped_column("(cast(`shop`.`orders`.`created_at` as date) = '2026-03-01')", Engine::Mysql),
             Some(("CAST".into(), "created_at".into()))
         );
-        assert_eq!(wrapped_column("((o.total)::integer = 5)"), Some(("::integer".into(), "total".into())));
+        assert_eq!(
+            wrapped_column("((o.total)::integer = 5)", Engine::Postgres),
+            Some(("::integer".into(), "total".into()))
+        );
         // varchar → text casts are how Postgres prints varchar comparisons; the index still works.
-        assert_eq!(wrapped_column("((c.email)::text = 'x'::text)"), None);
+        assert_eq!(wrapped_column("((c.email)::text = 'x'::text)", Engine::Postgres), None);
         // A conversion of the parameter, not the column.
-        assert_eq!(wrapped_column("[db].[shop].[orders].[status]=CONVERT(varchar(20),[@P1],0)"), None);
+        assert_eq!(wrapped_column("[db].[shop].[orders].[status]=CONVERT(varchar(20),[@P1],0)", Engine::Mssql), None);
+        // SQL Server seeks through a cast of a datetime column to date (a dynamic seek): nothing blocks the index.
+        let to_date = "CONVERT(date,[db].[shop].[orders].[created_at],0)=CONVERT_IMPLICIT(date,[@1],0)";
+        assert_eq!(wrapped_column(to_date, Engine::Mssql), None);
+        assert!(
+            wrapped_column("CONVERT(varchar(10),[db].[shop].[orders].[created_at],120)='x'", Engine::Mssql).is_some()
+        );
     }
 
     #[test]
@@ -2653,11 +3182,20 @@ mod tests {
         let i = found.iter().find(|i| i.rule == "key-lookups").expect("key lookups");
         assert_eq!(i.nodes[0], 2);
         assert!(i.title.contains("20K rows"), "{}", i.title);
-        let sql = i.fix_sql.as_deref().unwrap();
-        assert!(
-            sql.contains("INCLUDE ([total], [channel])") && sql.contains("([status])") && sql.contains("DROP_EXISTING")
-        );
+        // Rebuilding the index from the seek's columns would drop its descending keys, included columns, uniqueness,
+        // filter and compression: the fix names the index and the columns, and leaves the statement to the catalog.
+        assert_eq!(i.fix_sql, None);
+        assert!(i.fix.contains("total and channel to ix_orders_status"), "{}", i.fix);
         assert!(!rules(&p).contains(&"nested-loops".to_string()), "lookups aren't double-reported as loops");
+
+        // A thousand lookups at a sliver of the plan stay Low: no floor lifts them.
+        let mut small = p.clone();
+        small.root.children[1].est_executions = 1_000.0;
+        small.root.children[1].self_cost = 0.5;
+        small.root.children[0].self_cost = 100.0;
+        let small = plan(Engine::Mssql, small.root);
+        let i = insights(&small).into_iter().find(|i| i.rule == "key-lookups").expect("still said");
+        assert_eq!(i.severity, Severity::Low);
     }
 
     #[test]
@@ -2703,12 +3241,637 @@ mod tests {
 
     #[test]
     fn severity_follows_impact_within_rule_limits() {
+        let scan = |rows: f64, cost: f64| {
+            let mut n = node(0, "Seq Scan", NodeKind::Scan);
+            n.est_rows = rows;
+            n.self_cost = cost;
+            plan(Engine::Postgres, n)
+        };
+        let material = scan(50_000.0, 5_000.0);
+        let cx = Cx::new(&material);
         let mut d = Draft::new("legacy-ce", InsightArea::Server, 0.9, vec![0]);
         d.cap = Severity::Low;
-        assert_eq!(d.finish().severity, Severity::Low);
-        let mut d = Draft::new("spill", InsightArea::Memory, 0.01, vec![0]);
-        d.floor = Severity::Medium;
-        assert_eq!(d.finish().severity, Severity::Medium);
+        assert_eq!(d.finish(&cx).severity, Severity::Low);
+        let floored = || {
+            let mut d = Draft::new("spill", InsightArea::Memory, 0.01, vec![0]);
+            d.floor = Severity::Medium;
+            d
+        };
+        assert_eq!(floored().finish(&cx).severity, Severity::Medium);
+        assert_eq!(Draft::new("scan-filter", InsightArea::Index, 0.5, vec![0]).finish(&cx).severity, Severity::High);
+
+        // The materiality gate comes before any floor: a cheap plan, or operators handling few rows, stay Low.
+        let cheap = scan(50_000.0, 40.0);
+        assert_eq!(floored().finish(&Cx::new(&cheap)).severity, Severity::Low);
+        let few = scan(800.0, 5_000.0);
+        assert_eq!(floored().finish(&Cx::new(&few)).severity, Severity::Low);
+        // A measured run decides over the estimate: 3 ms is cheap whatever the plan expected.
+        let mut fast = scan(50_000.0, 5_000.0);
+        fast.props.insert("ElapsedMs".into(), "3".into());
+        assert_eq!(floored().finish(&Cx::new(&fast)).severity, Severity::Low);
+        // A problem measured in its own time is material by that time.
+        let mut d = floored();
+        d.cost_ms = Some(400.0);
+        assert_eq!(d.finish(&Cx::new(&few)).severity, Severity::Medium);
+        // About the whole plan: the busiest operator below counts.
+        let mut root = node(0, "Aggregate", NodeKind::Aggregate);
+        let mut child = node(1, "Seq Scan", NodeKind::Scan);
+        child.est_rows = 80_000.0;
+        child.self_cost = 5_000.0;
+        root.children = vec![child];
+        let whole = plan(Engine::Postgres, root);
+        let mut d = floored();
+        d.nodes = vec![0];
+        assert_eq!(d.finish(&Cx::new(&whole)).severity, Severity::Medium, "the scan is the aggregate's input");
+    }
+
+    /// An actual plan of `root`, timed at `ms`, with costs summed bottom-up.
+    fn actual(engine: Engine, root: PlanNode, ms: f64) -> Plan {
+        let mut p = plan(engine, root);
+        p.kind = PlanKind::Actual;
+        p.props.insert("ElapsedMs".into(), ms.to_string());
+        p
+    }
+
+    fn measured(id: u32, op: &str, kind: NodeKind, est: f64, act: f64, runs: f64) -> PlanNode {
+        let mut n = node(id, op, kind);
+        n.est_rows = est;
+        n.act_rows = Some(act);
+        n.act_executions = Some(runs);
+        n.est_executions = runs.max(1.0);
+        n
+    }
+
+    fn found(p: &Plan) -> Vec<u32> {
+        p.root.misestimates().into_iter().map(|(id, _)| id).collect()
+    }
+
+    #[test]
+    fn misestimates_compare_per_run_and_ignore_operators_stopped_early() {
+        // Under a Limit, PostgreSQL's estimate is for a full run: 20 rows of an expected 5M is the Limit, not a
+        // misestimate.
+        let mut limit = measured(0, "Limit", NodeKind::Other, 20.0, 20.0, 1.0);
+        limit.children = vec![measured(1, "Seq Scan", NodeKind::Scan, 5_000_000.0, 20.0, 1.0)];
+        assert!(found(&plan(Engine::Postgres, limit.clone())).is_empty());
+        // A sort under it hands over only what the Limit takes, but reads all its input: that count is real.
+        let mut sort = measured(1, "Sort", NodeKind::Sort, 5_000_000.0, 20.0, 1.0);
+        sort.children = vec![measured(2, "Seq Scan", NodeKind::Scan, 5_000_000.0, 3_000.0, 1.0)];
+        limit.children = vec![sort];
+        assert_eq!(found(&plan(Engine::Postgres, limit)), vec![2]);
+        // More rows than expected is evidence anywhere.
+        let mut top = measured(0, "Top", NodeKind::Other, 20.0, 20.0, 1.0);
+        top.children = vec![measured(1, "Index Seek", NodeKind::Seek, 10.0, 5_000.0, 1.0)];
+        assert_eq!(found(&plan(Engine::Mssql, top)), vec![1]);
+
+        // The inner side of a semi or anti join stops at its first match; merge join inputs stop when the other ends.
+        let mut semi = measured(0, "Nested Loop", NodeKind::Join, 900.0, 900.0, 1.0);
+        semi.detail = Some("Anti join".into());
+        semi.children = vec![
+            measured(1, "Seq Scan", NodeKind::Scan, 1_000.0, 1_000.0, 1.0),
+            measured(2, "Index Scan", NodeKind::Seek, 400.0, 1_000.0, 1_000.0),
+        ];
+        assert!(found(&plan(Engine::Postgres, semi)).is_empty());
+        let mut merge = measured(0, "Merge Join", NodeKind::Join, 50.0, 50.0, 1.0);
+        merge.children = vec![
+            measured(1, "Index Scan", NodeKind::Seek, 2_000_000.0, 60.0, 1.0),
+            measured(2, "Index Scan", NodeKind::Seek, 50.0, 50.0, 1.0),
+        ];
+        assert!(found(&plan(Engine::Postgres, merge)).is_empty());
+
+        // An operator that never ran has nothing to compare.
+        let never = measured(0, "Index Scan", NodeKind::Seek, 5_000.0, 0.0, 0.0);
+        assert!(found(&plan(Engine::Postgres, never)).is_empty());
+
+        // Nested loop: the outer side was misjudged (100 expected, 10K came); the inner seek returned the one row per
+        // run it expected, so only the outer side is a misestimate.
+        let mut nl = measured(0, "Nested Loops", NodeKind::Join, 100.0, 10_000.0, 1.0);
+        let mut inner = measured(2, "Clustered Index Seek", NodeKind::Seek, 1.0, 10_000.0, 10_000.0);
+        inner.est_executions = 100.0;
+        nl.children = vec![measured(1, "Index Seek", NodeKind::Seek, 100.0, 10_000.0, 1.0), inner];
+        let p = plan(Engine::Mssql, nl);
+        assert_eq!(found(&p), vec![0, 1]);
+        let mis = insights(&p).into_iter().filter(|i| i.rule == "misestimate").collect::<Vec<_>>();
+        assert_eq!(mis.len(), 1, "{mis:?}");
+        assert_eq!(mis[0].nodes, vec![1]);
+
+        // A parallel scan runs once on each of 8 threads, which SQL Server's estimate counts as one execution.
+        let mut parallel = measured(0, "Clustered Index Scan", NodeKind::Scan, 1_000_000.0, 1_000_000.0, 8.0);
+        parallel.est_executions = 1.0;
+        parallel.props.insert(crate::plan::PARALLEL_THREADS.into(), "8".into());
+        assert_eq!(parallel.runs(), 1.0);
+        assert!(found(&plan(Engine::Mssql, parallel)).is_empty());
+
+        // A hash join's bitmap pushed into the probe-side scan isn't in the scan's estimate.
+        let mut probe = measured(0, "Index Scan", NodeKind::Scan, 1_000_000.0, 30_000.0, 1.0);
+        probe.predicate = Some("PROBE([Bitmap1005],[db].[shop].[orders].[id],N'[IN ROW]')".into());
+        assert!(found(&plan(Engine::Mssql, probe)).is_empty());
+    }
+
+    #[test]
+    fn misestimate_advice_fits_the_table_and_the_server() {
+        let scan = |object: &str| {
+            let mut s = measured(1, "Table Scan", NodeKind::Scan, 10.0, 50_000.0, 1.0);
+            s.object = Some(object.into());
+            s.predicate = Some("[t].[a]=(1)".into());
+            let mut join = measured(0, "Hash Match", NodeKind::Join, 10.0, 50_000.0, 1.0);
+            join.children = vec![s];
+            actual(Engine::Mssql, join, 400.0)
+        };
+        let fix = |p: &Plan| insights(p).into_iter().find(|i| i.rule == "misestimate").expect("misestimate");
+        // A table variable estimated at one row is the table-variable rule's; never UPDATE STATISTICS on it.
+        let mut one = scan("@t");
+        one.root.children[0].est_rows = 1.0;
+        assert!(!rules(&one).contains(&"misestimate".to_string()));
+        assert!(rules(&one).contains(&"table-variable".to_string()));
+        let tv = fix(&scan("@t"));
+        assert_eq!(tv.fix_sql, None);
+        assert!(tv.fix.contains("table variable"), "{}", tv.fix);
+        assert_eq!(fix(&scan("#work")).fix_sql, None, "a temporary table's statistics belong to its session");
+        assert!(fix(&scan("dbo.orders")).fix_sql.unwrap().starts_with("UPDATE STATISTICS [dbo].[orders]"));
+        // No spill above the operator, so no "ran out of memory as a result".
+        assert!(!fix(&scan("dbo.orders")).detail.contains("out of memory"));
+
+        let mysql = |flavor: Option<&str>, version: Option<&str>| {
+            let mut s = measured(1, "Table scan", NodeKind::Scan, 10.0, 50_000.0, 1.0);
+            s.object = Some("shop.orders".into());
+            s.predicate = Some("(shop.orders.status = 'x')".into());
+            let mut join = measured(0, "Nested loop inner join", NodeKind::Join, 10.0, 50_000.0, 1.0);
+            join.children = vec![s];
+            let mut p = actual(Engine::Mysql, join, 400.0);
+            if let Some(f) = flavor {
+                p.props.insert("flavor".into(), f.into());
+            }
+            if let Some(v) = version {
+                p.props.insert("server_version".into(), v.into());
+            }
+            fix(&p).fix_sql.unwrap()
+        };
+        assert!(mysql(None, Some("8.0.36")).contains("UPDATE HISTOGRAM ON `status`"));
+        assert_eq!(mysql(None, Some("5.7.44")), "ANALYZE TABLE `shop`.`orders`;", "no histograms before 8.0");
+        assert!(mysql(Some("MariaDB"), None).contains("PERSISTENT FOR COLUMNS (`status`) INDEXES ()"));
+
+        // A misestimate nothing above depends on changed nothing in this plan.
+        let mut root = measured(0, "Filter", NodeKind::Other, 50_000.0, 0.0, 1.0);
+        let mut table = measured(1, "Table scan", NodeKind::Scan, 500_000.0, 500_000.0, 1.0);
+        table.object = Some("shop.orders".into());
+        root.predicate = Some("(orders.promo_code = 'X')".into());
+        root.children = vec![table];
+        let lone = fix(&actual(Engine::Mysql, root, 80.0));
+        assert_eq!(lone.severity, Severity::Low);
+        assert!(lone.title.contains("from orders"), "{}", lone.title);
+    }
+
+    #[test]
+    fn index_advice_from_a_scan_needs_a_scan_that_an_index_would_shrink() {
+        let scan = |op: &str, kind: NodeKind, read: f64, kept: f64, filter: &str| {
+            let mut n = node(1, op, kind);
+            n.object = Some("dbo.orders".into());
+            n.predicate = Some(filter.into());
+            n.est_rows = kept;
+            n.rows_read = Some(read);
+            n.self_cost = 50.0;
+            let mut p = plan(Engine::Mssql, n);
+            p.root.warnings.push(PlanWarning::ResidualPredicate);
+            p
+        };
+        let isnull = "isnull([db].[dbo].[orders].[deleted],(0))=(0)";
+        // A seek reading 3 rows: the function blocks nothing worth having.
+        assert!(rules(&scan("Index Seek", NodeKind::Seek, 3.0, 2.0, isnull)).is_empty());
+        // A scan that keeps most of what it reads: an index wouldn't pay.
+        assert!(rules(&scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 1_900_000.0, isnull)).is_empty());
+        // A selective scan: now the function is what keeps the index out.
+        let selective = scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, isnull);
+        assert_eq!(rules(&selective), vec!["non-sargable"]);
+        // SQL Server seeks through CONVERT(date, …): the scan needs an index, not a rewrite.
+        let to_date = "CONVERT(date,[db].[dbo].[orders].[created_at],0)='2026-03-01'";
+        assert_eq!(
+            rules(&scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, to_date)),
+            vec!["scan-filter"]
+        );
+        // A leading wildcard on a seek, or on a scan that keeps everything, isn't the problem.
+        let like = "[db].[dbo].[orders].[email] like N'%@example.com'";
+        assert!(rules(&scan("Index Seek", NodeKind::Seek, 2_000_000.0, 3_000.0, like)).is_empty());
+        assert!(rules(&scan("Clustered Index Scan", NodeKind::Scan, 200_000.0, 200_000.0, like)).is_empty());
+        let wildcard = insights(&scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, like));
+        assert_eq!(wildcard.iter().map(|i| i.rule.as_str()).collect::<Vec<_>>(), vec!["leading-wildcard"]);
+        assert!(
+            wildcard[0].detail.contains("2,000,000 rows") || wildcard[0].detail.contains("2.0M"),
+            "{}",
+            wildcard[0].detail
+        );
+        // A function and a wildcard on one scan: one insight for it.
+        let both = format!("upper([db].[dbo].[orders].[email]) like N'%X%' AND {isnull}");
+        assert_eq!(
+            rules(&scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, &both)),
+            vec!["leading-wildcard"]
+        );
+        // A columnstore is read by segments, not seeks.
+        let mut columnstore =
+            scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, "[db].[dbo].[orders].[status]=(3)");
+        assert_eq!(rules(&columnstore), vec!["scan-filter"]);
+        columnstore.root.props.insert("Storage".into(), "ColumnStore".into());
+        assert!(rules(&columnstore).is_empty());
+        // Said as the plan shows it, not inferred: no claim about which indexes exist.
+        let filtered =
+            scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, "[db].[dbo].[orders].[status]=(3)");
+        let i = insights(&filtered).into_iter().next().unwrap();
+        assert!(!i.detail.contains("no index starts with"), "{}", i.detail);
+    }
+
+    #[test]
+    fn mysql_guesses_are_not_evidence() {
+        assert!(
+            mysql_guessed_filtered(10.0, 1) && mysql_guessed_filtered(11.11, 1) && mysql_guessed_filtered(33.33, 1)
+        );
+        assert!(mysql_guessed_filtered(1.0, 2) && mysql_guessed_filtered(3.33, 2) && mysql_guessed_filtered(1.23, 2));
+        assert!(!mysql_guessed_filtered(1.0, 1), "one condition can't be two guesses multiplied");
+        assert!(!mysql_guessed_filtered(0.5, 2) && !mysql_guessed_filtered(4.2, 1));
+        let scan = |filtered: &str, possible: Option<&str>| {
+            let mut n = node(1, "Table scan", NodeKind::Scan);
+            n.object = Some("shop.orders".into());
+            n.predicate = Some("(shop.o.promo_code = 'SPRING3')".into());
+            n.rows_read = Some(498_573.0);
+            n.est_rows = 498_573.0 * filtered.parse::<f64>().unwrap() / 100.0;
+            n.self_cost = 50_000.0;
+            n.props.insert("filtered".into(), filtered.into());
+            if let Some(k) = possible {
+                n.props.insert("possible_keys".into(), k.into());
+            }
+            n
+        };
+        // 10.00 is MySQL's guess for an equality it has no statistics on: nothing to advise from.
+        assert!(rules(&plan(Engine::Mysql, scan("10.00", None))).is_empty());
+        let measured_share = rules(&plan(Engine::Mysql, scan("0.50", None)));
+        assert_eq!(measured_share, vec!["scan-filter"]);
+        // A possible key on the filtered column: MySQL ignored an index; that's index-ignored's, not scan-filter's.
+        assert_eq!(rules(&plan(Engine::Mysql, scan("0.50", Some("ix_orders_promo_code")))), vec!["index-ignored"]);
+        // In a join, a possible key on the join column can't serve the filter.
+        let mut join = node(0, "Nested loop", NodeKind::Join);
+        let mut other = node(2, "Unique index lookup", NodeKind::Seek);
+        other.object = Some("shop.customers".into());
+        join.children = vec![scan("0.50", Some("fk_orders_customer")), other];
+        let joined = rules(&plan(Engine::Mysql, join.clone()));
+        assert!(!joined.contains(&"index-ignored".to_string()), "{joined:?}");
+        assert!(joined.contains(&"scan-filter".to_string()), "{joined:?}");
+        join.children[0] = scan("0.50", Some("fk_orders_customer, ix_orders_promo_code"));
+        assert!(rules(&plan(Engine::Mysql, join)).contains(&"index-ignored".to_string()));
+        // Above a tenth kept, an index wouldn't pay either way.
+        assert!(rules(&plan(Engine::Mysql, scan("15.00", Some("ix_orders_promo_code")))).is_empty());
+    }
+
+    #[test]
+    fn nested_loops_speak_only_when_the_loop_was_not_the_right_choice() {
+        let nl = |outer: PlanNode, inner: PlanNode| {
+            let mut n = measured(0, "Nested Loop", NodeKind::Join, 400_000.0, 400_000.0, 1.0);
+            n.children = vec![outer, inner];
+            actual(Engine::Postgres, n, 300.0)
+        };
+        let outer = |est: f64| {
+            let mut o = measured(1, "Seq Scan", NodeKind::Scan, est, 400_000.0, 1.0);
+            o.object = Some("public.orders".into());
+            o.self_cost = 100.0;
+            o
+        };
+        let seek = || {
+            let mut s = measured(2, "Index Scan", NodeKind::Seek, 1.0, 400_000.0, 400_000.0);
+            s.object = Some("public.customers".into());
+            s.seek_predicate = Some("(c.id = o.customer_id)".into());
+            s.table_rows = Some(200_000.0);
+            s.self_cost = 100.0;
+            s
+        };
+        // An accurate outer estimate and a one-row seek per run: the optimizer weighed a hash join and chose this.
+        assert!(!rules(&nl(outer(390_000.0), seek())).contains(&"nested-loops".to_string()));
+        // It expected 400 rows and got 400K: the loop was chosen on wrong numbers.
+        let wrong = insights(&nl(outer(400.0), seek()));
+        let loops = wrong.iter().find(|i| i.rule == "nested-loops").expect("misjudged outer side");
+        assert!(loops.detail.contains("expected 400 rows"), "{}", loops.detail);
+        // Each run rereading most of a table is a problem whatever the estimate.
+        let mut rescan = measured(2, "Seq Scan", NodeKind::Scan, 1.0, 400_000.0, 20_000.0);
+        rescan.object = Some("public.regions".into());
+        rescan.predicate = Some("(r.code = o.region_code)".into());
+        rescan.rows_read = Some(20_000.0 * 900.0);
+        rescan.table_rows = Some(1_000.0);
+        rescan.self_cost = 100.0;
+        let mut o = outer(20_000.0);
+        o.act_rows = Some(20_000.0);
+        let reread = insights(&nl(o, rescan));
+        let r = reread.iter().find(|i| i.rule == "nested-loops").expect("rereads");
+        assert!(r.fix.contains("Index regions"), "{}", r.fix);
+
+        // Memoize answers repeats from its cache: only the 120 misses ran the index scan.
+        let mut memo = measured(2, "Memoize", NodeKind::Spool, 1.0, 400_000.0, 400_000.0);
+        let mut below = seek();
+        below.act_executions = Some(120.0);
+        below.est_executions = 120.0;
+        below.act_rows = Some(120.0);
+        memo.children = vec![below];
+        assert!(!rules(&nl(outer(400.0), memo)).contains(&"nested-loops".to_string()));
+
+        // SQL Server's lazy Table Spool reads its input once and replays it: never a reread of the table.
+        let spool_plan = |predicate: Option<&str>| {
+            let mut n = node(0, "Nested Loops", NodeKind::Join);
+            n.predicate = predicate.map(str::to_string);
+            n.self_cost = 6_000.0;
+            let mut o = node(1, "Index Scan", NodeKind::Scan);
+            o.object = Some("shop.order_items".into());
+            o.est_rows = 1_500_000.0;
+            let mut spool = node(2, "Table Spool", NodeKind::Spool);
+            spool.detail = Some("Lazy Spool".into());
+            spool.est_rows = 999.0;
+            spool.est_executions = 1_500_001.0;
+            let mut agg = node(3, "Hash Match", NodeKind::Aggregate);
+            agg.est_rows = 999.0;
+            let mut scan = node(4, "Index Scan", NodeKind::Scan);
+            scan.object = Some("shop.order_items".into());
+            scan.est_rows = 1_500_000.0;
+            agg.children = vec![scan];
+            spool.children = vec![agg];
+            n.children = vec![o, spool];
+            plan(Engine::Mssql, n)
+        };
+        let pairs = insights(&spool_plan(Some("[Expr1003]=[Expr1004]")));
+        let p = pairs.iter().find(|i| i.rule == "nested-loops").expect("every pair tested");
+        assert!(!p.title.contains("Repeats its read of order_items"), "{}", p.title);
+        assert!(p.title.contains("1.5B pairs"), "{}", p.title);
+        assert!(!rules(&spool_plan(None)).contains(&"nested-loops".to_string()), "a seekable inner side");
+
+        // An eager index spool is built once per run: eager-spool's, not a repeated read.
+        let mut eager = node(0, "Nested Loops", NodeKind::Join);
+        let mut o = node(1, "Clustered Index Scan", NodeKind::Scan);
+        o.est_rows = 50_000.0;
+        let mut spool = node(2, "Index Spool", NodeKind::Spool);
+        spool.detail = Some("Eager Spool".into());
+        spool.est_executions = 50_000.0;
+        let mut feed = node(3, "Clustered Index Scan", NodeKind::Scan);
+        feed.object = Some("shop.ticket_events".into());
+        feed.est_rows = 2_000_000.0;
+        spool.children = vec![feed];
+        eager.children = vec![o, spool];
+        let eager = rules(&plan(Engine::Mssql, eager));
+        assert!(
+            eager.contains(&"eager-spool".to_string()) && !eager.contains(&"nested-loops".to_string()),
+            "{eager:?}"
+        );
+
+        // MySQL joins through an index whenever one fits: the advice is its estimate and join order, not a hash join.
+        let mut mysql = measured(0, "Nested loop inner join", NodeKind::Join, 400_000.0, 400_000.0, 1.0);
+        let mut c = measured(1, "Table scan", NodeKind::Scan, 400.0, 400_000.0, 1.0);
+        c.object = Some("shop.orders".into());
+        let mut lookup = measured(2, "Single-row index lookup", NodeKind::Seek, 1.0, 400_000.0, 400_000.0);
+        lookup.object = Some("shop.customers".into());
+        mysql.children = vec![c, lookup];
+        let m = insights(&actual(Engine::Mysql, mysql, 300.0));
+        let m = m.iter().find(|i| i.rule == "nested-loops").expect("misjudged outer side");
+        assert!(!m.detail.contains("hash join") && !m.fix.contains("merge"), "{} / {}", m.detail, m.fix);
+        assert!(m.fix.contains("ANALYZE TABLE"), "{}", m.fix);
+    }
+
+    #[test]
+    fn spills_say_what_spilled_and_how_much() {
+        // An exchange spill resolves a deadlock between parallel threads: no memory-grant advice.
+        let mut exchange = node(0, "Parallelism", NodeKind::Parallelism);
+        exchange.props.insert(EXCHANGE_SPILL.into(), "true".into());
+        exchange.props.insert("TempdbWritesPages".into(), "800".into());
+        let p = actual(Engine::Mssql, exchange, 500.0);
+        let i = insights(&p).into_iter().find(|i| i.rule == "spill").expect("exchange spill");
+        assert_eq!(i.area, InsightArea::Parallelism);
+        assert!(!i.fix.contains("grant") && !i.detail.contains("granted"), "{} / {}", i.detail, i.fix);
+
+        // MariaDB's sort merge passes get MariaDB's words.
+        let mut sort = node(0, "Sort", NodeKind::Sort);
+        sort.warnings = vec![PlanWarning::Spill];
+        sort.props.insert("r_sort_passes".into(), "3".into());
+        let mut p = actual(Engine::Mysql, sort, 500.0);
+        p.props.insert("flavor".into(), "MariaDB".into());
+        let i = insights(&p).into_iter().find(|i| i.rule == "spill").expect("sort passes");
+        assert!(i.title.contains("3 merge passes") && i.fix.contains("sort_buffer_size"), "{}", i.title);
+        assert!(!i.title.contains("tempdb") && !i.fix.contains("memory grant"), "{}", i.fix);
+
+        // PostgreSQL's hash aggregate: its own disk use, not the temp blocks its inputs wrote.
+        let mut agg = node(0, "Aggregate", NodeKind::Aggregate);
+        agg.warnings = vec![PlanWarning::Spill];
+        agg.props.insert("HashAgg Batches".into(), "5".into());
+        agg.props.insert("Disk Usage".into(), "7600".into());
+        agg.props.insert("Temp Written Blocks".into(), "18432".into());
+        let i =
+            insights(&actual(Engine::Postgres, agg.clone(), 500.0)).into_iter().find(|i| i.rule == "spill").unwrap();
+        assert!(i.title.contains("7.4 MB"), "{}", i.title);
+        // Without BUFFERS or Disk Usage, no made-up size.
+        agg.props.remove("Disk Usage");
+        agg.props.remove("Temp Written Blocks");
+        let i = insights(&actual(Engine::Postgres, agg, 500.0)).into_iter().find(|i| i.rule == "spill").unwrap();
+        assert!(i.title.contains("5 batches") && !i.title.contains(" 0 B"), "{}", i.title);
+
+        // A 64 KB spill is small next to the work around it.
+        let mut small = node(0, "Sort", NodeKind::Sort);
+        small.warnings = vec![PlanWarning::Spill];
+        small.act_rows = Some(80_000.0);
+        small.props.insert("TempdbWritesPages".into(), "8".into());
+        let i = insights(&actual(Engine::Mssql, small, 500.0)).into_iter().find(|i| i.rule == "spill").unwrap();
+        assert_eq!(i.severity, Severity::Low);
+    }
+
+    #[test]
+    fn not_in_is_only_row_by_row_probing() {
+        let pg = |filter: &str| {
+            let mut scan = node(1, "Seq Scan", NodeKind::Scan);
+            scan.object = Some("public.customers".into());
+            scan.predicate = Some(filter.into());
+            scan.est_rows = 100_000.0;
+            scan.self_cost = 1_000_000.0;
+            let mut sub = node(2, "Seq Scan", NodeKind::Scan);
+            sub.props.insert("Parent Relationship".into(), "SubPlan".into());
+            sub.props.insert("Subplan Name".into(), "SubPlan 1".into());
+            sub.est_rows = 400_000.0;
+            scan.children = vec![sub];
+            let mut p = plan(Engine::Postgres, scan);
+            p.statement = Some("SELECT * FROM customers WHERE id NOT IN (SELECT customer_id FROM orders)".into());
+            rules(&p)
+        };
+        // One build, one hash probe per row: PostgreSQL's hashed SubPlan, before and from 17.
+        assert!(pg("(NOT (hashed SubPlan 1))").is_empty());
+        assert!(pg("(NOT (ANY (customers.id = (hashed SubPlan 1).col1)))").is_empty());
+        // Searched again for each row: that is NOT IN's cost.
+        assert_eq!(pg("(NOT (SubPlan 1))"), vec!["not-in"]);
+        assert_eq!(pg("(NOT (ANY (customers.id = (SubPlan 1).col1)))"), vec!["not-in"]);
+
+        let mysql = |condition: &str, not_exists: bool| {
+            let mut t = node(1, "Table scan", NodeKind::Scan);
+            t.object = Some("shop.customers".into());
+            t.predicate = Some(condition.into());
+            t.est_rows = 199_000.0;
+            t.self_cost = 20_000.0;
+            if not_exists {
+                t.props.insert("not_exists".into(), "true".into());
+            }
+            let mut p = plan(Engine::Mysql, t);
+            p.statement = Some("SELECT * FROM customers WHERE id NOT IN (SELECT customer_id FROM orders)".into());
+            rules(&p)
+        };
+        // MySQL 8.0.17+ runs it as an antijoin.
+        assert!(
+            mysql("<if>(is_not_null_compl(<subquery2>), <if>(found_match(<subquery2>), false, true), true)", true)
+                .is_empty()
+        );
+        // Materialized once and looked up per row.
+        assert!(mysql("(not(<in_optimizer>(customers.id,customers.id in ( <materialize> (select orders.customer_id from orders), <primary_index_lookup>(customers.id in <temporary table> on <auto_key>)))))", false).is_empty());
+        // The subquery run for each row.
+        assert_eq!(
+            mysql(
+                "(not(<in_optimizer>(customers.id,<exists>(<index_lookup>(<cache>(customers.id) in orders on fk_orders_customer)))))",
+                false
+            ),
+            vec!["not-in"]
+        );
+    }
+
+    #[test]
+    fn subqueries_count_the_runs_they_really_make() {
+        // A hashed SubPlan runs once, however many rows probe it.
+        let mut scan = node(1, "Seq Scan", NodeKind::Scan);
+        scan.object = Some("public.orders".into());
+        scan.est_rows = 500_000.0;
+        scan.self_cost = 10_000.0;
+        scan.predicate = Some("(ANY (customer_id = (hashed SubPlan 1).col1))".into());
+        let mut sub = node(2, "Seq Scan", NodeKind::Scan);
+        sub.object = Some("public.customers".into());
+        sub.props.insert("Parent Relationship".into(), "SubPlan".into());
+        sub.props.insert("Subplan Name".into(), "SubPlan 1".into());
+        scan.children = vec![sub];
+        let mut p = plan(Engine::Postgres, scan);
+        assert!(!rules(&p).contains(&"correlated-subquery".to_string()));
+        p.root.predicate = Some("(total > (SubPlan 1))".into());
+        assert!(rules(&p).contains(&"correlated-subquery".to_string()));
+
+        // MySQL: a subquery attached to a table's condition runs once per row of that table, not of a sibling.
+        let mut table = node(1, "Table scan", NodeKind::Scan);
+        table.object = Some("shop.customers".into());
+        table.rows_read = Some(199_000.0);
+        table.est_rows = 199_000.0;
+        let dependent = |id: u32, rows: f64| {
+            let mut d = node(id, "Dependent subquery", NodeKind::Other);
+            d.props.insert("dependent".into(), "true".into());
+            d.props.insert("cacheable".into(), "false".into());
+            d.est_rows = rows;
+            d.self_cost = 50.0;
+            d
+        };
+        table.children = vec![dependent(2, 3.0), dependent(3, 5.0)];
+        let found = insights(&plan(Engine::Mysql, table));
+        let titles: Vec<&str> =
+            found.iter().filter(|i| i.rule == "correlated-subquery").map(|i| i.title.as_str()).collect();
+        assert!(
+            !titles.is_empty() && titles.iter().all(|t| t.contains("199K times, once per row of customers")),
+            "{titles:?}"
+        );
+    }
+
+    #[test]
+    fn smaller_rules_hold_for_this_plan() {
+        // A Gather that never ran started no workers because it never asked for any.
+        let mut gather = node(0, "Gather", NodeKind::Parallelism);
+        gather.act_executions = Some(0.0);
+        gather.act_rows = Some(0.0);
+        gather.props.insert("Workers Planned".into(), "2".into());
+        gather.props.insert("Workers Launched".into(), "0".into());
+        assert!(!rules(&actual(Engine::Postgres, gather.clone(), 50.0)).contains(&"workers-short".to_string()));
+        gather.act_executions = Some(1.0);
+        assert!(rules(&actual(Engine::Postgres, gather, 50.0)).contains(&"workers-short".to_string()));
+
+        // A BRIN bitmap is lossy by design.
+        let mut heap = node(0, "Bitmap Heap Scan", NodeKind::Lookup);
+        heap.props.insert("Lossy Heap Blocks".into(), "900".into());
+        heap.props.insert("Exact Heap Blocks".into(), "0".into());
+        assert!(!rules(&actual(Engine::Postgres, heap.clone(), 50.0)).contains(&"lossy-bitmap".to_string()));
+        heap.props.insert("Exact Heap Blocks".into(), "40".into());
+        assert!(rules(&actual(Engine::Postgres, heap, 50.0)).contains(&"lossy-bitmap".to_string()));
+
+        // JIT that took most of the run can't have paid off; a fifth of it may have.
+        let jit = |jit_ms: f64, run_ms: f64| {
+            let mut p = actual(Engine::Postgres, node(0, "Seq Scan", NodeKind::Scan), run_ms);
+            p.props.insert("Execution Time".into(), run_ms.to_string());
+            p.props.insert("JIT".into(), format!("{{\"Timing\": {{\"Total\": {jit_ms}}}}}"));
+            insights(&p).into_iter().find(|i| i.rule == "jit").expect("jit")
+        };
+        let most = jit(300.0, 400.0);
+        assert_eq!(most.severity, Severity::Medium);
+        assert!(most.fix_sql.as_deref().unwrap().starts_with("-- In your session"), "{:?}", most.fix_sql);
+        let some = jit(100.0, 400.0);
+        assert_eq!(some.severity, Severity::Low);
+        assert!(!some.fix_sql.as_deref().unwrap().contains("ALTER ROLE"), "{:?}", some.fix_sql);
+
+        // PostgreSQL's planning on Culprit's fresh connection includes loading table metadata.
+        let mut p = actual(Engine::Postgres, node(0, "Seq Scan", NodeKind::Scan), 3.0);
+        p.props.insert("Planning Time".into(), "30".into());
+        p.props.insert("Execution Time".into(), "3".into());
+        let compile = insights(&p).into_iter().find(|i| i.rule == "slow-compile").expect("slow compile");
+        assert_eq!(compile.severity, Severity::Low);
+        assert!(compile.detail.contains("twice in one session"), "{}", compile.detail);
+
+        // The optimizer giving up on a cheap plan costs nothing.
+        let mut cheap = plan(Engine::Mssql, node(0, "Clustered Index Seek", NodeKind::Seek));
+        cheap.total_cost = 0.01;
+        cheap.root.subtree_cost = 0.01;
+        cheap.props.insert("StatementOptmEarlyAbortReason".into(), "TimeOut".into());
+        let timeout = insights(&cheap).into_iter().find(|i| i.rule == "optimizer-timeout").expect("timeout");
+        assert_eq!(timeout.severity, Severity::Low);
+
+        // Below the commonly used cost threshold of 50, running serially may be the server's own choice.
+        let blocked = |cost: f64| {
+            let mut root = node(0, "Hash Match", NodeKind::Join);
+            root.est_rows = 500_000.0;
+            root.self_cost = cost;
+            let mut p = plan(Engine::Mssql, root);
+            p.props.insert("NonParallelPlanReason".into(), "MaxDOPSetToOne".into());
+            insights(&p).into_iter().find(|i| i.rule == "parallelism-blocked")
+        };
+        assert!(blocked(3.0).is_none(), "below the default threshold nothing would go parallel");
+        let mid = blocked(30.0).unwrap();
+        assert_eq!(mid.severity, Severity::Low);
+        assert!(!mid.detail.contains("would normally"), "{}", mid.detail);
+        assert_eq!(blocked(200.0).unwrap().severity, Severity::Medium);
+
+        // A cross join to a single row (a total, a setting) multiplies nothing.
+        let mut cross = node(0, "Nested Loops", NodeKind::Join);
+        cross.warnings = vec![PlanWarning::NoJoinPredicate];
+        cross.est_rows = 200_000.0;
+        let mut big = node(1, "Clustered Index Scan", NodeKind::Scan);
+        big.object = Some("shop.orders".into());
+        big.est_rows = 200_000.0;
+        let mut total = node(2, "Stream Aggregate", NodeKind::Aggregate);
+        total.est_rows = 1.0;
+        total.est_executions = 1.0;
+        cross.children = vec![big, total];
+        assert!(!rules(&plan(Engine::Mssql, cross)).contains(&"no-join-predicate".to_string()));
+
+        // A remote insert sends rows; it doesn't pull them.
+        let mut remote = node(0, "Remote Insert", NodeKind::Modify);
+        let mut rows = node(1, "Clustered Index Scan", NodeKind::Scan);
+        rows.est_rows = 5_000.0;
+        remote.children = vec![rows];
+        let i = insights(&plan(Engine::Mssql, remote)).into_iter().find(|i| i.rule == "remote-query").unwrap();
+        assert!(i.title.starts_with("Sends 5,000 rows") || i.title.starts_with("Sends 5.0K"), "{}", i.title);
+
+        // A table variable never has statistics: missing-statistics leaves it to table-variable.
+        let mut tv = node(0, "Table Scan", NodeKind::Scan);
+        tv.object = Some("@t".into());
+        tv.warnings = vec![PlanWarning::MissingStatistics];
+        assert!(!rules(&plan(Engine::Mssql, tv.clone())).contains(&"missing-statistics".to_string()));
+        tv.object = Some("dbo.orders".into());
+        let stats = insights(&plan(Engine::Mssql, tv)).into_iter().find(|i| i.rule == "missing-statistics").unwrap();
+        assert!(stats.fix_sql.unwrap().starts_with("SELECT name, is_auto_create_stats_on"));
+
+        // MySQL's join buffer where possible keys exist: no claim that there is no index.
+        let mut buffered = node(0, "Table scan", NodeKind::Scan);
+        buffered.object = Some("shop.items".into());
+        buffered.predicate = Some("(shop.i.price = shop.o.total)".into());
+        buffered.props.insert("using_join_buffer".into(), "hash join".into());
+        buffered.props.insert("possible_keys".into(), "ix_items_price".into());
+        buffered.rows_read = Some(800_000.0);
+        let i = insights(&plan(Engine::Mysql, buffered)).into_iter().find(|i| i.rule == "join-buffer").unwrap();
+        assert!(!i.title.contains("without an index") && i.detail.contains("ix_items_price"), "{}", i.title);
+        assert!(i.fix_sql.as_deref().unwrap().starts_with("ANALYZE TABLE"), "{:?}", i.fix_sql);
     }
 
     #[test]

@@ -65,6 +65,9 @@ pub fn parse(value: &Value, json: &str, kind: PlanKind, statement: Option<&str>,
     let mut next_id = 0;
     let mut root = query_block(block, &cx, &mut next_id, costed);
     fill_times(&mut root);
+    if measured {
+        root.flag_misestimates();
+    }
 
     let mut props = Properties::new();
     props.insert("flavor".into(), "MariaDB".into());
@@ -368,7 +371,13 @@ fn table_node(
     node.rows_read = read;
     node.est_executions = loops;
     node.est_rows = read.map(|r| r * filtered / 100.0).unwrap_or(0.0);
-    if kind == NodeKind::Scan && read.is_some_and(|r| r >= 1_000.0) && filtered < 10.0 {
+    // A fixed guess for a condition without statistics says nothing about how much the filter keeps.
+    let conditions = node.predicate.as_deref().map_or(1, culprit_core::insights::condition_count);
+    if kind == NodeKind::Scan
+        && read.is_some_and(|r| r >= 1_000.0)
+        && filtered < 10.0
+        && !culprit_core::insights::mysql_guessed_filtered(filtered, conditions)
+    {
         node.warnings.push(PlanWarning::ResidualPredicate);
     }
 
@@ -416,12 +425,6 @@ fn table_node(
             if !runtime.is_empty() {
                 node.runtime = Some(runtime);
             }
-        }
-        if let Some(misestimate) = node.misestimate()
-            && misestimate.abs() >= 10.0
-            && node.act_rows.is_some_and(|r| r >= 100.0)
-        {
-            node.warnings.push(PlanWarning::Misestimate);
         }
     }
     copy_scalars(table, &mut node.props);
@@ -601,6 +604,22 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!((nodes[0].rows, nodes[0].est_rows), (367.0, 1499.0));
         assert_eq!((nodes[1].rows, nodes[1].est_rows), (367.0, 1499.0));
+    }
+
+    #[test]
+    fn misestimates_compare_rows_per_loop_with_the_loops_that_ran() {
+        // The lookup expected one row a loop and got one; only the outer table returned far more rows than expected, so
+        // it ran 50K loops where 10 were planned. That is the outer table's misestimate, not the lookup's.
+        let json = r#"{"query_block": {"select_id": 1, "r_loops": 1, "r_total_time_ms": 300, "nested_loop": [
+            {"table": {"table_name": "o", "access_type": "ALL", "loops": 1, "r_loops": 1, "rows": 10, "r_rows": 50000,
+                       "filtered": 100, "r_filtered": 100}},
+            {"table": {"table_name": "c", "access_type": "eq_ref", "key": "PRIMARY", "used_key_parts": ["id"],
+                       "ref": ["shop.o.customer_id"], "loops": 10, "r_loops": 50000, "rows": 1, "r_rows": 1,
+                       "filtered": 100, "r_filtered": 100}}]}}"#;
+        let plan = crate::plan_json::parse(json, PlanKind::Actual, None, Some("shop")).unwrap();
+        let join = &plan.root.children[0];
+        assert!(join.children[0].warnings.contains(&PlanWarning::Misestimate));
+        assert!(!join.children[1].warnings.contains(&PlanWarning::Misestimate));
     }
 
     #[test]
