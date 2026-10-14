@@ -568,6 +568,32 @@ pub fn lower_set(items: &[String]) -> Vec<String> {
 pub(crate) mod tests {
     use super::*;
 
+    /// Names and statements come from the database in any script: every text helper slices only at character
+    /// boundaries, so none of them can panic on a scan.
+    #[test]
+    fn text_helpers_never_panic_on_non_ascii() {
+        let texts = [
+            "SELECT * FROM [dbo].[Bestellungen_Übersicht] AS b JOIN İstanbul_şube s ON s.id = b.id WHERE b.ñ = N'ç' AND b.x::text LIKE 'é%'",
+            "UPDATE 顧客 SET 名前 = @p1 WHERE ид = @p2",
+            "INSERT INTO `tábla` (`ő`) VALUES (?)",
+            "CALL `prøcédure`(?)",
+            "ǅ İ ß ﬁ 𝔘 :: AS İ AND ǅ",
+            "",
+        ];
+        for text in texts {
+            let _ = mentions_word(text, "i̇stanbul_şube");
+            let _ = mentions_word(text, "ß");
+            let _ = predicate_columns(text);
+            let _ = parse_epoch_seconds(text);
+            let _ = parse_epoch_seconds("2026-10-14T08:54:29+İ");
+            let mut q = crate::waits::snapshot_with(Engine::Mssql).queries()[0].clone();
+            q.text = text.into();
+            let _ = query_handle(&q);
+        }
+        let server = crate::waits::snapshot_with(Engine::Postgres).server;
+        let _ = setting_change(&server, "work_mem", "64MB ünï");
+    }
+
     #[test]
     fn usage_windows_say_how_long_the_server_has_been_up() {
         let mut s = crate::waits::snapshot_with(Engine::Mssql);
