@@ -19,4 +19,9 @@ fillfactor: number | null,
 /**
  * Bytes beyond what the live rows need, estimated from column statistics (no pgstattuple needed).
  */
-bloat_bytes: number | null, };
+bloat_bytes: number | null, 
+/**
+ * The table's own storage parameters as set (`autovacuum_vacuum_scale_factor=0.01`, `fillfactor=70`): what
+ * overrides the server's autovacuum settings for it. Empty when it has none, or the scan predates them.
+ */
+options: Array<string>, };

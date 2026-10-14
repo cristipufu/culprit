@@ -15,7 +15,7 @@ export const WAIT_LABEL: Record<string, string> = {
   log: "Log writes",
   network: "Sending results",
   parallelism: "Parallel queries",
-  memory: "Memory grants",
+  memory: "Memory",
   compilation: "Compiling plans",
   other: "Everything else",
 };

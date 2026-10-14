@@ -2539,6 +2539,7 @@ mod tests {
             new_page_updates: Some(80_000.0),
             fillfactor: Some(100.0),
             bloat_bytes: None,
+            ..Default::default()
         });
         let name = t.name.clone();
         let f = hot_updates(&s);

@@ -90,8 +90,8 @@ pub(crate) async fn recent(client: &mut MsClient, since_hours: f64) -> tiberius:
     let mut report = DeadlockReport { since_hours: hours as f64, ..Default::default() };
     let server =
         query_one(client, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS int) AS edition, DB_NAME() AS db").await?;
+    let database = server.string("db");
     if server.f64("edition") == Some(AZURE_SQL_DB) {
-        let database = server.string("db");
         report.source = TELEMETRY.into();
         match query(client, &telemetry_sql(hours)).await {
             Ok(rows) => {
@@ -140,6 +140,8 @@ pub(crate) async fn recent(client: &mut MsClient, since_hours: f64) -> tiberius:
             }
         }
     }
+    // system_health is the instance's: other databases' deadlocks are theirs, not this database's.
+    report.deadlocks.retain(|d| involves(d, &database));
     report.deadlocks.sort_by(|a, b| b.at.cmp(&a.at));
     report.deadlocks.truncate(READ_LIMIT);
     report.source =
@@ -155,6 +157,13 @@ pub(crate) async fn recent(client: &mut MsClient, since_hours: f64) -> tiberius:
             Some("Read from system_health's in-memory buffer, which only keeps the most recent events.".into());
     }
     Ok(report)
+}
+
+/// Whether a deadlock from the instance-wide system_health session involves `database`: one of its processes ran in
+/// it. A graph that names no database for any process can't be placed and is kept.
+fn involves(d: &Deadlock, database: &str) -> bool {
+    let mut named = d.processes.iter().filter_map(|p| p.database.as_deref()).peekable();
+    named.peek().is_none() || named.any(|db| db.eq_ignore_ascii_case(database))
 }
 
 /// `2026-10-11T12:05:01.1230000` (UTC, no zone) → `2026-10-11T12:05:01Z`.
@@ -361,6 +370,16 @@ mod tests {
         assert_eq!(victim.isolation.as_deref(), Some("read committed"));
         assert!(victim.statement.as_deref().unwrap().starts_with("SELECT id, name"));
         assert_eq!(d.resources[0].holders[0].mode.as_deref(), Some("X"));
+    }
+
+    // system_health records every database's deadlocks; a scan of one database keeps only its own.
+    #[test]
+    fn instance_wide_deadlocks_are_kept_only_for_this_database() {
+        let found = parse_deadlock_xml(KEY_LOOKUP_XDL, "system_health").unwrap();
+        assert!(involves(&found[0], "SHOP"), "both processes ran in shop");
+        assert!(!involves(&found[0], "billing"), "another database's deadlock");
+        let unnamed = parse_deadlock_xml(&KEY_LOOKUP_XDL.replace(r#" currentdbname="shop""#, ""), "pasted").unwrap();
+        assert!(involves(&unnamed[0], "billing"), "a graph without databases can't be placed, so it stays");
     }
 
     #[test]

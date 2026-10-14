@@ -5,10 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use culprit_core::deadlock::classify;
 use culprit_core::{Deadlock, DeadlockProcess, DeadlockReport, DeadlockResource, Engine, LockHolder, LockWait, Result};
-use mysql_async::Conn;
+use mysql_async::{Conn, Value};
 
 use crate::connect::Flavor;
-use crate::rows::{Rec, query, query_one};
+use crate::rows::{Rec, query, query_one, query_with};
 
 /// MySQL 8.0+: performance_schema's lock views.
 const LOCK_WAITS_SQL: &str = "SELECT t.PROCESSLIST_ID AS session, b.PROCESSLIST_ID AS blocking, rl.LOCK_MODE AS mode,
@@ -129,12 +129,19 @@ pub(crate) async fn recent(conn: &mut Conn, since_hours: f64) -> Result<Deadlock
             return Ok(report);
         }
     };
-    let utc = query_one(conn, "SELECT @@system_time_zone AS tz")
+    // InnoDB prints the time in the server's own (system) time zone; the server converts it to UTC, daylight saving
+    // included. When it can't, the deadlock stays undated: never guessed, and never counted in a window.
+    let at = match local_time(&status) {
+        Some(local) => query_with(
+            conn,
+            "SELECT DATE_FORMAT(CONVERT_TZ(?, 'SYSTEM', '+00:00'), '%Y-%m-%dT%H:%i:%sZ') AS at",
+            vec![Value::from(local)],
+        )
         .await
         .ok()
-        .flatten()
-        .and_then(|r| r.text("tz"))
-        .is_some_and(|tz| matches!(tz.to_ascii_uppercase().as_str(), "UTC" | "GMT" | "+00:00" | "Z" | "ETC/UTC"));
+        .and_then(|rows| rows.first().and_then(|r| r.text("at"))),
+        None => None,
+    };
     // RFC 3339 UTC times compare as text.
     let cutoff = query_one(
         conn,
@@ -147,17 +154,34 @@ pub(crate) async fn recent(conn: &mut Conn, since_hours: f64) -> Result<Deadlock
     .ok()
     .flatten()
     .and_then(|r| r.text("cutoff"));
-    let mut found = parse_innodb_status(&status, utc);
+    let mut found = parse_at(&status, at);
     found.retain(|d| match (d.at.as_deref(), cutoff.as_deref()) {
         (Some(at), Some(cutoff)) => at >= cutoff,
         _ => true,
     });
+    let undated = found.iter().any(|d| d.at.is_none());
     report.deadlocks = found;
-    report.note = Some(
-        "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log."
-            .into(),
-    );
+    report.note = Some(format!(
+        "InnoDB keeps only its most recent deadlock{}. Turn on innodb_print_all_deadlocks to write every one to the error log.",
+        if undated {
+            ", and Culprit couldn't convert its time from the server's time zone, so when it happened is unknown (it may be from long ago)"
+        } else {
+            ""
+        }
+    ));
     Ok(report)
+}
+
+/// The time on the LATEST DETECTED DEADLOCK section, as InnoDB printed it (`2026-10-11 13:48:08`, the server's local
+/// time).
+fn local_time(text: &str) -> Option<String> {
+    let start = text.find("LATEST DETECTED DEADLOCK")?;
+    let line = text[start..].lines().skip(1).map(str::trim).find(|l| !l.is_empty() && !l.starts_with('-'))?;
+    let mut p = line.split_whitespace();
+    let (date, time) = (p.next()?, p.next()?);
+    let looks_like_date = date.len() == 10 && date.chars().filter(|c| *c == '-').count() == 2;
+    let looks_like_time = time.len() == 8 && time.chars().filter(|c| *c == ':').count() == 2;
+    (looks_like_date && looks_like_time).then(|| format!("{date} {time}"))
 }
 
 #[derive(Default)]
@@ -178,16 +202,16 @@ struct Txn {
 /// WAITING FOR and the locks it is CONFLICTING WITH, which belong to the other transaction: every lock line names its
 /// owner (`trx id 76`), so holders are attributed by that, whichever format it is.
 pub fn parse_innodb_status(text: &str, utc: bool) -> Vec<Deadlock> {
+    let at = local_time(text).filter(|_| utc).map(|t| format!("{}Z", t.replace(' ', "T")));
+    parse_at(text, at)
+}
+
+/// [`parse_innodb_status`] with the deadlock's time (RFC 3339 UTC) already known.
+fn parse_at(text: &str, at: Option<String>) -> Vec<Deadlock> {
     let Some(start) = text.find("LATEST DETECTED DEADLOCK") else { return Vec::new() };
     let section = &text[start..];
     let end = section.find("\nTRANSACTIONS\n").unwrap_or(section.len());
     let lines: Vec<&str> = section[..end].lines().skip(1).collect();
-
-    let at = lines.iter().map(|l| l.trim()).find(|l| !l.is_empty() && !l.starts_with('-')).and_then(|l| {
-        let mut p = l.split_whitespace();
-        let (date, time) = (p.next()?, p.next()?);
-        (utc && date.len() == 10 && date.contains('-')).then(|| format!("{date}T{time}Z"))
-    });
 
     let mut txns: Vec<Txn> = Vec::new();
     let mut resources: Vec<DeadlockResource> = Vec::new();
@@ -499,6 +523,20 @@ TRANSACTIONS
             (Some("45"), Some("UPDATE customers SET name = name WHERE id = 1"))
         );
         assert!(!serde_json::to_string(d).unwrap().contains("customer0@example.com"));
+    }
+
+    // The time InnoDB prints is the server's local time: it is converted by the server (CONVERT_TZ from SYSTEM), and
+    // a deadlock whose time can't be converted stays undated instead of being taken as UTC.
+    #[test]
+    fn the_deadlock_time_is_read_as_local_and_dated_only_when_converted() {
+        assert_eq!(local_time(STATUS).as_deref(), Some("2026-10-11 13:48:08"));
+        assert_eq!(local_time(MARIADB_STATUS).as_deref(), Some("2026-10-11 15:28:06"));
+        assert_eq!(local_time("no deadlock here"), None);
+        assert_eq!(
+            parse_at(STATUS, Some("2026-10-11T11:48:08Z".into()))[0].at.as_deref(),
+            Some("2026-10-11T11:48:08Z")
+        );
+        assert!(parse_at(STATUS, None)[0].at.is_none());
     }
 
     #[test]

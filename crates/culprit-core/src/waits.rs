@@ -176,19 +176,50 @@ pub struct GrantStat {
     pub max_granted_kb: f64,
 }
 
-/// The oldest open transaction that keeps old row versions alive (version store, VACUUM horizon, InnoDB undo).
-#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+/// What holds cleanup back: an open transaction in a session, or (PostgreSQL) a replication slot or a prepared
+/// transaction, which keep the VACUUM horizon where they started just as a session does.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum CleanupHolder {
+    Session,
+    ReplicationSlot,
+    PreparedTransaction,
+}
+
+/// The open transaction that holds the scanned database's cleanup back: the one whose snapshot or changes keep old row
+/// versions (or log) alive. Collectors report only a transaction that does hold it: one in this database with a
+/// snapshot or changes of its own (SQL Server, PostgreSQL), or one with a read view on a server whose undo history is
+/// shared by every database (InnoDB).
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Default)]
 #[ts(export)]
 pub struct OpenTransaction {
+    /// The session id; for a replication slot its name, for a prepared transaction its global id.
     pub session: String,
+    /// How long it has been open. Zero when the engine doesn't say (a replication slot).
     pub seconds: f64,
     pub program: Option<String>,
     /// What it's doing: "idle in transaction", "running", "snapshot".
     pub state: Option<String>,
-    /// Bytes of old versions held (SQL Server version store).
+    /// Bytes of old versions held (SQL Server version store of this database).
     pub held_bytes: Option<f64>,
-    /// Old row versions held (InnoDB history list length).
+    /// No longer filled: InnoDB's history list length is the whole server's and counts undo logs, not this
+    /// transaction's row versions (see the `history-length` signal). Kept so older scans still read.
     pub held_versions: Option<f64>,
+    /// What it is; `None` in scans taken before Culprit told them apart (a session).
+    #[serde(default)]
+    pub holder: Option<CleanupHolder>,
+    /// Transactions started since its snapshot (PostgreSQL `age(backend_xmin)`): how far back it holds the horizon.
+    #[serde(default)]
+    pub xid_age: Option<f64>,
+    /// It changed data in the scanned database and hasn't committed (SQL Server, MySQL): its locks stay held, and on
+    /// SQL Server the log can't be reused past its first change.
+    #[serde(default)]
+    pub wrote: Option<bool>,
+    /// The database its session is connected to, when that may not be the scanned one (MySQL: InnoDB's purge is the
+    /// whole server's, so a transaction in another database holds this one's cleanup too).
+    #[serde(default)]
+    pub database: Option<String>,
 }
 
 /// Pressure signals from cheap counters, collected with every scan.
@@ -206,6 +237,12 @@ pub struct Pressure {
     /// Replicas and replication slots, and how far behind they are.
     #[serde(default)]
     pub replicas: Vec<crate::signals::Replica>,
+    /// Logical processors the server schedules work on (SQL Server `cpu_count`), when the engine says.
+    #[serde(default)]
+    pub cpus: Option<f64>,
+    /// NUMA nodes those processors are split into (SQL Server), when the engine says.
+    #[serde(default)]
+    pub numa_nodes: Option<f64>,
 }
 
 impl Pressure {
@@ -220,7 +257,11 @@ pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
     match key {
         "cpu" => (
             "CPU",
-            "Running on a processor, or queued for one. When CPU dominates, queries usually do more work than they need to: scans, conversions, functions evaluated on every row.".into(),
+            match engine {
+                // SQL Server folds THREADPOOL (Query Store's "Worker Thread") in here: a request that hasn't started.
+                Engine::Mssql => "Running on a processor, queued for one, or (THREADPOOL) waiting for a worker thread before the request could start at all. When CPU dominates, queries usually do more work than they need to: scans, conversions, functions evaluated on every row. Worker waits instead point at blocking chains or heavy parallelism holding the workers.".into(),
+                _ => "Running on a processor, or queued for one. When CPU dominates, queries usually do more work than they need to: scans, conversions, functions evaluated on every row.".into(),
+            },
         ),
         "io" => (
             "Disk reads",
@@ -255,8 +296,8 @@ pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
             "Threads of a parallel query waiting for each other. Often a big scan that an index would avoid, or work split unevenly across threads.".into(),
         ),
         "memory" => (
-            "Memory grants",
-            "Queries waiting for memory to sort or hash. A few queries that reserve far more than they use can make everyone else queue.".into(),
+            "Memory",
+            "Waiting for memory: a grant to sort or hash before a query can start (RESOURCE_SEMAPHORE), or an allocation inside the server (CMEMTHREAD, MEMORY_ALLOCATION_EXT). Grant waits usually mean a few queries reserve far more than they use; allocation waits mean many sessions contend for one of the server's memory objects.".into(),
         ),
         "compilation" => (
             "Compiling plans",

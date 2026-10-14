@@ -20,4 +20,12 @@ files: Array<FileIo>,
 /**
  * Replicas and replication slots, and how far behind they are.
  */
-replicas: Array<Replica>, };
+replicas: Array<Replica>, 
+/**
+ * Logical processors the server schedules work on (SQL Server `cpu_count`), when the engine says.
+ */
+cpus: number | null, 
+/**
+ * NUMA nodes those processors are split into (SQL Server), when the engine says.
+ */
+numa_nodes: number | null, };

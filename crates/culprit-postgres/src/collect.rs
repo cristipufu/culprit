@@ -1006,6 +1006,8 @@ const SETTINGS: &[&str] = &[
     "autovacuum",
     "autovacuum_vacuum_scale_factor",
     "autovacuum_analyze_scale_factor",
+    "autovacuum_vacuum_threshold",
+    "autovacuum_freeze_max_age",
     "jit",
     "jit_above_cost",
     "track_io_timing",

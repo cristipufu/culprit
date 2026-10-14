@@ -152,7 +152,8 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
     let sql = format!(
         "SELECT s.schemaname AS schema_name, s.relname AS table_name, s.n_tup_hot_upd AS hot, {new_page} AS new_page,
                 (SELECT substring(o FROM 'fillfactor=([0-9]+)')::float8 FROM unnest(c.reloptions) AS o
-                  WHERE o LIKE 'fillfactor=%') AS fillfactor
+                  WHERE o LIKE 'fillfactor=%') AS fillfactor,
+                array_to_string(c.reloptions, ',') AS options
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
@@ -166,6 +167,11 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                     new_page_updates: r.number("new_page"),
                     fillfactor: Some(r.number("fillfactor").unwrap_or(100.0)),
                     bloat_bytes: None,
+                    // Storage parameters hold no commas; their values are numbers and booleans.
+                    options: r
+                        .text("options")
+                        .map(|o| o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                        .unwrap_or_default(),
                 },
             )
         })

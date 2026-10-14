@@ -326,7 +326,7 @@
   },
   {
     "category": "configuration",
-    "description": "Memory-grant waits (RESOURCE_SEMAPHORE) take a real share of waiting, or queries were queueing for a grant when the scan ran.",
+    "description": "Waiting for memory takes a real amount of time (a minute an hour or more), or queries in this database were queueing for a memory grant when the scan ran.",
     "engines": [
       "mssql"
     ],
@@ -358,7 +358,7 @@
   },
   {
     "category": "maintenance",
-    "description": "The oldest open transaction keeps old row versions alive: the SQL Server version store, PostgreSQL's VACUUM horizon, or InnoDB's undo history.",
+    "description": "The transaction that holds this database's cleanup back: one with uncommitted changes or row versions here (SQL Server), the oldest snapshot, replication slot or prepared transaction behind VACUUM's horizon (PostgreSQL), or the oldest read view behind InnoDB's purge (MySQL).",
     "engines": [
       "mssql",
       "postgres",
@@ -400,7 +400,7 @@
   },
   {
     "category": "queries",
-    "description": "InnoDB row-lock waits are frequent and long, from long transactions or updates that scan instead of using an index.",
+    "description": "InnoDB row-lock waits add up to real time (a minute an hour or more across the server), from long transactions or updates that scan instead of using an index.",
     "engines": [
       "mysql"
     ],

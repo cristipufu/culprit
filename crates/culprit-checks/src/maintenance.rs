@@ -41,6 +41,11 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             let table_name = format!("{}.{}", s.schema, s.table);
             let ratio = s.modifications / s.rows.max(1.0);
             let hot = !queries_touching(snapshot, &s.schema, &s.table).is_empty();
+            // With AUTO_UPDATE_STATISTICS on, SQL Server refreshes a statistic past its threshold the moment a query
+            // compiles with it: one still stale is one no query has used since. Off (or a statistic created with
+            // NORECOMPUTE, which the scan doesn't see) it stays stale for everyone.
+            let unused_since =
+                snapshot.server.engine == Engine::Mssql && !mssql_auto_update_off(snapshot);
             let mut f = finding("stale-stats", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             f.title = format!(
                 "Statistics on {} are stale: {} rows changed ({} of the table)",
@@ -56,7 +61,10 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                 s.last_updated.as_deref().map(|d| format!(" ({})", short_date(d))).unwrap_or_default(),
                 if hot { " Heavy queries in this workload read this table." } else { "" }
             );
-            f.severity = if hot && ratio >= 0.5 { Severity::Medium } else { Severity::Low };
+            f.severity = if hot && ratio >= 0.5 && !unused_since { Severity::Medium } else { Severity::Low };
+            if unused_since {
+                f.caveats.push("AUTO_UPDATE_STATISTICS is on, so SQL Server updates a statistic this far behind as soon as a query compiles with it: no query has used it since it fell behind. It matters only if one starts to (or if it was created with NORECOMPUTE).".into());
+            }
             f.impact.score = base_score(f.severity) + ratio.min(2.0) * 3.0;
             f.impact.label = format!("{} changed", format::count(s.modifications));
             f.confidence = Confidence::Medium;
@@ -91,8 +99,22 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
         .collect()
 }
 
-/// SQL Server statistics changed by a fifth of the table. A filtered statistic covers only some rows (`rows` counts those)
-/// while its modification counter counts changes anywhere in its column, so the table's row count is the measure.
+/// Whether the database says AUTO_UPDATE_STATISTICS is off (unknown counts as on, SQL Server's default).
+fn mssql_auto_update_off(snapshot: &Snapshot) -> bool {
+    snapshot.setting("is_auto_update_stats_on").is_some_and(|s| matches!(s.value.trim(), "0" | "false" | "False"))
+}
+
+/// The changes after which SQL Server itself considers a statistic out of date: 500 + 20% of the rows, or on
+/// compatibility level 130 and later the smaller √(1000 × rows). A statistic below it is as fresh as SQL Server keeps it.
+fn mssql_update_threshold(snapshot: &Snapshot, rows: f64) -> f64 {
+    let classic = 500.0 + 0.2 * rows;
+    let level = snapshot.setting("compatibility_level").and_then(|s| s.value.trim().parse::<u32>().ok());
+    if level.is_none_or(|l| l >= 130) { classic.min((1000.0 * rows).sqrt()) } else { classic }
+}
+
+/// SQL Server statistics past SQL Server's own update threshold, and changed by a fifth of the table. A filtered
+/// statistic covers only some rows (`rows` counts those) while its modification counter counts changes anywhere in
+/// its column, so the table's row count is the measure.
 fn mssql_stale(snapshot: &Snapshot) -> Vec<Stale> {
     let mut out: Vec<Stale> = Vec::new();
     for s in &snapshot.statistics {
@@ -101,7 +123,7 @@ fn mssql_stale(snapshot: &Snapshot) -> Vec<Stale> {
         };
         let table_rows = snapshot.table(&s.schema, &s.table).and_then(|t| t.rows).unwrap_or(0.0);
         let rows = stat_rows.max(table_rows);
-        let threshold = (rows * 0.2).max(1000.0);
+        let threshold = (rows * 0.2).max(1000.0).max(mssql_update_threshold(snapshot, rows));
         if rows < 10_000.0 || mods < threshold {
             continue;
         }
@@ -233,6 +255,26 @@ pub fn dead_rows_info() -> CheckInfo {
     }
 }
 
+/// Dead rows past this many times a table's autovacuum trigger mean autovacuum is behind on it, not about to run.
+const DEAD_MARGIN: f64 = 2.0;
+
+/// When autovacuum vacuums `t`: its own storage parameters, else the server's settings, else PostgreSQL's defaults
+/// (50 rows + 20% of the table). `None` when autovacuum is off for it (or for the server).
+fn vacuum_trigger(snapshot: &Snapshot, t: &culprit_core::TableStat, live: f64) -> Option<f64> {
+    let server = |name: &str| snapshot.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
+    let own = |name: &str| t.storage.as_ref().and_then(|s| s.option(name));
+    let off = t.storage.as_ref().is_some_and(|s| s.autovacuum_off())
+        || snapshot.setting("autovacuum").is_some_and(|s| !matches!(s.value.trim(), "on" | "true" | "1"));
+    if off {
+        return None;
+    }
+    let threshold =
+        own("autovacuum_vacuum_threshold").or_else(|| server("autovacuum_vacuum_threshold")).unwrap_or(50.0);
+    let factor =
+        own("autovacuum_vacuum_scale_factor").or_else(|| server("autovacuum_vacuum_scale_factor")).unwrap_or(0.2);
+    Some(threshold + factor * live)
+}
+
 pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
     if snapshot.server.engine != Engine::Postgres {
         return Vec::new();
@@ -243,21 +285,36 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
         .filter_map(|t| {
             let live = t.rows?;
             let dead = t.dead_rows?;
-            if dead < 10_000.0 || dead < live * 0.2 {
+            // A busy table reaches its trigger (by default 20% of it dead) between every two autovacuum runs: that is
+            // autovacuum's rhythm. Past twice the trigger it is behind; with autovacuum off for the table, any real
+            // pile of dead rows stays.
+            let trigger = vacuum_trigger(snapshot, t, live);
+            let limit = trigger.map_or(live * 0.2, |tr| tr * DEAD_MARGIN);
+            if dead < 10_000.0 || dead < limit {
                 return None;
             }
             let table_name = t.qualified();
             let ratio = dead / (live + dead).max(1.0);
+            let last = t.last_vacuum.as_deref().and_then(|d| days_between(d, &snapshot.taken_at)).filter(|d| *d >= 0.0);
             let mut f = finding("dead-rows", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             f.title = format!("{} of {} is dead rows", format::percent(ratio), t.name);
             f.summary = format!(
-                "{table_name} holds {} dead rows next to {} live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be.{}",
+                "{table_name} holds {} dead rows next to {} live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. {}{}",
                 format::count(dead),
                 format::count(live),
-                t.last_vacuum
-                    .as_deref()
-                    .map(|d| format!(" It was last vacuumed {}.", short_date(d)))
-                    .unwrap_or_else(|| " It has never been vacuumed since statistics were reset.".into())
+                match trigger {
+                    Some(tr) => format!(
+                        "Autovacuum should visit it at about {} dead rows; it has {:.1} times that, so it is behind.",
+                        format::count(tr),
+                        dead / tr.max(1.0)
+                    ),
+                    None => "Autovacuum is off for it, so nothing cleans them up.".into(),
+                },
+                match (t.last_vacuum.as_deref(), last) {
+                    (Some(_), Some(days)) => format!(" It was last vacuumed {} ago.", format::duration(days * 86_400_000.0)),
+                    (Some(d), None) => format!(" It was last vacuumed {}.", short_date(d)),
+                    (None, _) => " It has never been vacuumed since statistics were reset.".into(),
+                }
             );
             f.severity = if ratio >= 0.5 && dead >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
             f.impact.score = base_score(f.severity) + ratio * 10.0;
@@ -266,6 +323,9 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics.push(Metric::new("Dead rows", dead, Unit::Rows));
             f.metrics.push(Metric::new("Live rows", live, Unit::Rows));
             f.metrics.push(Metric::new("Dead share", ratio, Unit::Ratio));
+            if let Some(tr) = trigger {
+                f.metrics.push(Metric::new("Autovacuum trigger", tr, Unit::Rows));
+            }
             let target = qualified(Engine::Postgres, &t.schema, &t.name);
             f.fix = Some(Fix {
                 summary: "Vacuum it now, and make autovacuum visit this table sooner. If dead rows come back quickly, look for long-running transactions in Live: they stop vacuum from cleaning up.".into(),
@@ -304,7 +364,12 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|t| t.xid_age.is_some())
         .max_by(|a, b| a.xid_age.unwrap_or(0.0).total_cmp(&b.xid_age.unwrap_or(0.0)));
     let age = db_age.or(oldest.and_then(|t| t.xid_age)).unwrap_or(0.0);
-    if age < 500_000_000.0 {
+    // Autovacuum starts freezing a table on its own once its age passes autovacuum_freeze_max_age (200M by default,
+    // and often raised on big databases): an age a little past it is freezing in progress. Twice it, or 500M when the
+    // setting is unknown or low, means freezing is falling behind; never later than 1.2B, with 2B the hard stop.
+    let freeze_max = snapshot.setting("autovacuum_freeze_max_age").and_then(|s| s.value.trim().parse::<f64>().ok());
+    let threshold = freeze_max.map_or(500_000_000.0, |m| (m * 2.0).max(500_000_000.0)).min(1_200_000_000.0);
+    if age < threshold {
         return Vec::new();
     }
     let remaining = (WRAPAROUND - age).max(0.0);
@@ -316,8 +381,15 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
     );
     f.title = format!("Transaction IDs are {} of the way to wraparound", format::percent(age / WRAPAROUND));
     f.summary = format!(
-        "The oldest unfrozen transaction ID in this database is {} transactions old. At about 2 billion PostgreSQL stops accepting writes until a full vacuum completes. {} transactions remain.",
+        "The oldest unfrozen transaction ID in this database is {} transactions old.{} At about 2 billion PostgreSQL stops accepting writes until a full vacuum completes. {} transactions remain.",
         format::count(age),
+        freeze_max
+            .map(|m| format!(
+                " Autovacuum starts freezing a table at autovacuum_freeze_max_age ({}), and this is {:.1} times that: freezing isn't keeping up.",
+                format::count(m),
+                age / m.max(1.0)
+            ))
+            .unwrap_or_default(),
         format::count(remaining)
     );
     f.severity = if age >= 1_200_000_000.0 { Severity::High } else { Severity::Medium };

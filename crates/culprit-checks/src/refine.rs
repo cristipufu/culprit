@@ -28,6 +28,11 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("statements that ran once", ran_once_only),
         // Wording.
         rule("names without the database", names_without_database),
+        // Pressure, config, maintenance: one cause, one finding.
+        rule("the plan cache finding carries the compile load", plan_cache_carries_compiles),
+        rule("dead rows absorb the table's stale statistics", dead_rows_absorb_stale_stats),
+        rule("a replication slot's finding carries the cleanup it holds back", slot_carries_held_cleanup),
+        rule("waiting on the application explains a heavy query", network_wait_explains_heavy_query),
     ]
 }
 
@@ -141,7 +146,14 @@ fn regression_carries_plan_change(_: &Snapshot, findings: &mut Vec<Finding>) {
 fn explained_heavy_query(_: &Snapshot, findings: &mut Vec<Finding>) {
     let explained: BTreeSet<String> = findings
         .iter()
-        .filter(|f| !matches!(f.check.as_str(), "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats"))
+        // An over-sized grant slows others, not the query itself; waiting on the application explains a query only
+        // when it is most of its time (`network_wait_explains_heavy_query`).
+        .filter(|f| {
+            !matches!(
+                f.check.as_str(),
+                "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats" | "memory-grant" | "network-wait"
+            )
+        })
         .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
         .collect();
     findings.retain(|f| f.check != "heavy-query" || !f.queries.iter().any(|q| explained.contains(&q.id)));
@@ -357,6 +369,97 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             ),
         );
     }
+}
+
+// ── pressure, config, maintenance ──────────────────────────────────────────────────────────────────
+
+/// Plans compiled for statements with literal values show twice on SQL Server: as compiles on almost every batch
+/// (compile-pressure, the CPU) and as single-use plans filling the cache (query-family:plan-cache, the memory). One
+/// cause, one fix (parameters): the plan-cache finding stays, with the compile numbers in it.
+fn plan_cache_carries_compiles(_: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(compiles) = findings.iter().position(|f| f.check == "compile-pressure") else { return };
+    let Some(cache) = findings.iter().position(|f| f.id == "query-family:plan-cache") else { return };
+    let absorbed = findings[compiles].clone();
+    let f = &mut findings[cache];
+    f.summary.push_str(&format!(" The CPU side of the same cause: {}.", absorbed.title.trim_end_matches('.')));
+    f.metrics.extend(absorbed.metrics.into_iter().filter(|m| m.label.starts_with("Compiles")));
+    f.severity = f.severity.max(absorbed.severity);
+    f.impact.score = f.impact.score.max(absorbed.impact.score);
+    f.verify.extend(absorbed.verify);
+    findings.remove(compiles);
+}
+
+/// A table full of dead rows has had many changes since its last analyze too: the stale-stats finding for it is the
+/// same backlog, and VACUUM (ANALYZE), the dead-rows fix, refreshes the statistics as well.
+fn dead_rows_absorb_stale_stats(_: &Snapshot, findings: &mut Vec<Finding>) {
+    let dead: Vec<String> =
+        findings.iter().filter(|f| f.check == "dead-rows").map(|f| f.subject.name.to_ascii_lowercase()).collect();
+    let mut absorbed: Vec<Finding> = Vec::new();
+    findings.retain(|f| {
+        let same = f.check == "stale-stats" && dead.contains(&f.subject.name.to_ascii_lowercase());
+        if same {
+            absorbed.push(f.clone());
+        }
+        !same
+    });
+    for stale in absorbed {
+        let Some(f) = findings
+            .iter_mut()
+            .find(|f| f.check == "dead-rows" && f.subject.name.eq_ignore_ascii_case(&stale.subject.name))
+        else {
+            continue;
+        };
+        let changed = stale.metrics.iter().find(|m| m.label == "Rows changed since update").map(|m| m.value);
+        f.summary.push_str(&format!(
+            " Its statistics are behind too{}: VACUUM (ANALYZE) refreshes them in the same pass.",
+            changed.map(|c| format!(" ({} rows changed since the last analyze)", format::count(c))).unwrap_or_default()
+        ));
+        f.severity = f.severity.max(stale.severity);
+        f.impact.score = f.impact.score.max(stale.impact.score);
+        if let Some(fix) = f.fix.as_mut()
+            && !fix.sql.as_deref().is_some_and(|s| s.contains("ANALYZE"))
+        {
+            fix.sql = fix.sql.take().map(|s| format!("{s}\nANALYZE {};", stale.subject.name));
+        }
+    }
+}
+
+/// An abandoned replication slot keeps WAL (replica-lag) and, when it has an xmin, holds VACUUM back too
+/// (held-cleanup): one slot, one finding, the slot's, with both effects.
+fn slot_carries_held_cleanup(_: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(held) =
+        findings.iter().position(|f| f.check == "held-cleanup" && f.title.starts_with("Replication slot "))
+    else {
+        return;
+    };
+    let slot = findings[held].id.trim_start_matches("held-cleanup:").to_string();
+    let Some(lag) = findings.iter().position(|f| f.check == "replica-lag" && f.id == format!("replica-lag:{slot}"))
+    else {
+        return;
+    };
+    let absorbed = findings[held].clone();
+    let f = &mut findings[lag];
+    let effect = absorbed.title.trim_start_matches(&format!("Replication slot {slot} ")).to_string();
+    f.summary.push_str(&format!(
+        " It also {effect}: rows deleted or updated after it can't be removed from any table, in any database."
+    ));
+    f.metrics.extend(absorbed.metrics.into_iter().filter(|m| m.label == "Transactions behind"));
+    f.severity = f.severity.max(absorbed.severity);
+    f.impact.score = f.impact.score.max(absorbed.impact.score);
+    findings.remove(held);
+}
+
+/// A query that spends most of its time waiting for the application to read its results is explained by that: the
+/// network-wait finding replaces the generic heavy-query one. Under half its time, the rest is its own work and the
+/// heavy-query finding stays.
+fn network_wait_explains_heavy_query(_: &Snapshot, findings: &mut Vec<Finding>) {
+    let explained: BTreeSet<String> = findings
+        .iter()
+        .filter(|f| f.check == "network-wait")
+        .filter(|f| f.metrics.iter().any(|m| m.label == "Waiting on the app" && m.value >= 0.5))
+        .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
+        .collect();
+    findings.retain(|f| f.check != "heavy-query" || !f.queries.iter().any(|q| explained.contains(&q.id)));
 }
 
 #[cfg(test)]
