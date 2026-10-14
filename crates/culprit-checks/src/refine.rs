@@ -22,6 +22,7 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("an index to add covers the foreign key", index_covers_foreign_key),
         rule("an index to add replaces a histogram", index_replaces_histogram),
         rule("a regression carries its plan change", regression_carries_plan_change),
+        rule("one plan story per query", one_plan_story),
         rule("a heavy query another finding explains", explained_heavy_query),
         // Statements whose cost is behind them.
         rule("statements that stopped running", stopped_running),
@@ -367,6 +368,100 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
 /// best be scanned, so that scan keeps its own finding and its own index.
 pub(crate) fn missing_index_serves_scan(missing_keys: &[String], scan_keys: &[String]) -> bool {
     missing_keys.first().is_some_and(|lead| scan_keys.iter().any(|k| k.eq_ignore_ascii_case(lead)))
+}
+
+// ── queries ──
+
+/// One finding per query's plan change. SQL Server's own recommendation to force a plan (`tuning-advice:force:`) is
+/// the one to act on: a `regression` or `plan-regression` finding for the same query would tell the same change again,
+/// possibly forcing another plan, so it becomes the recommendation's timeline evidence. When the query's plans run
+/// side by side for different values (`parameter-sensitive`), that finding is the story and the recommendation becomes
+/// a caveat on it: forcing one plan for every value is only the first step of its fix, and may be the wrong plan.
+fn one_plan_story(_: &Snapshot, findings: &mut Vec<Finding>) {
+    let recommendations: Vec<(usize, String)> = findings
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.id.starts_with("tuning-advice:force:"))
+        .filter_map(|(i, f)| f.queries.first().map(|q| (i, q.id.clone())))
+        .collect();
+    let mut drop = BTreeSet::new();
+    for (t, query) in recommendations {
+        let about = |f: &Finding| f.queries.iter().any(|q| q.id == query);
+        let told: Vec<usize> = findings
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| *i != t && matches!(f.check.as_str(), "regression" | "plan-regression") && about(f))
+            .map(|(i, _)| i)
+            .collect();
+        for e in told {
+            let source = findings[e].clone();
+            let rec = &mut findings[t];
+            // The first sentence says when and by how much; the rest is the other finding's own reading of the cause.
+            if let Some((first, _)) = source.summary.split_once(". ").or(Some((source.summary.as_str(), ""))) {
+                let first = first.trim_end_matches('.');
+                let sentence = match first.strip_prefix("Until ") {
+                    Some(rest) => format!("Query Store's timeline: until {rest}."),
+                    None => format!("{first}."),
+                };
+                rec.summary = format!("{} {sentence}", rec.summary.trim_end());
+            }
+            for m in source.metrics {
+                if !rec.metrics.iter().any(|x| x.label == m.label) {
+                    rec.metrics.push(m);
+                }
+            }
+            for line in source.verify {
+                if !rec.verify.contains(&line) {
+                    rec.verify.push(line);
+                }
+            }
+            for line in source.caveats {
+                if !rec.caveats.contains(&line) {
+                    rec.caveats.push(line);
+                }
+            }
+            rec.severity = rec.severity.max(source.severity);
+            rec.impact.score = rec.impact.score.max(source.impact.score);
+            rec.impact.time_ms_per_day = rec.impact.time_ms_per_day.or(source.impact.time_ms_per_day);
+            drop.insert(e);
+        }
+        if let Some(s) = findings.iter().position(|f| f.check == "parameter-sensitive" && about(f)) {
+            let caveat = recommendation_caveat(&findings[t], &findings[s]);
+            let (severity, score) = (findings[t].severity, findings[t].impact.score);
+            let sensitive = &mut findings[s];
+            sensitive.caveats.push(caveat);
+            sensitive.severity = sensitive.severity.max(severity);
+            sensitive.impact.score = sensitive.impact.score.max(score);
+            drop.insert(t);
+        }
+    }
+    let mut index = 0;
+    findings.retain(|_| {
+        let keep = !drop.contains(&index);
+        index += 1;
+        keep
+    });
+}
+
+/// SQL Server's recommendation, said on the parameter-sensitivity finding for the same query.
+fn recommendation_caveat(recommendation: &Finding, sensitive: &Finding) -> String {
+    let text = |f: &Finding, label: &str| f.metrics.iter().find(|m| m.label == label).and_then(|m| m.text.clone());
+    let plan = text(recommendation, "Recommended plan").unwrap_or_else(|| "another plan".into());
+    let gain = recommendation
+        .metrics
+        .iter()
+        .find(|m| m.label == "Estimated CPU saved per run")
+        .map(|m| format!(" (estimated {} less CPU per run)", format::percent(m.value)))
+        .unwrap_or_default();
+    match text(sensitive, crate::sensitivity::PLAN_MOST_CALLS_USE) {
+        Some(fast) if fast == plan => format!(
+            "SQL Server's automatic tuning also recommends forcing plan {plan}{gain}: the plan most calls run fast with, the fix's first step."
+        ),
+        Some(fast) => format!(
+            "SQL Server's automatic tuning recommends forcing plan {plan}{gain}, while most calls run fast with plan {fast}. With plans used side by side for different values, forcing one for every value can slow the calls the other suits: try a value from a slow call under it first."
+        ),
+        None => format!("SQL Server's automatic tuning recommends forcing plan {plan}{gain}."),
+    }
 }
 
 #[cfg(test)]
