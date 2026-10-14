@@ -1,19 +1,21 @@
 {
   "findings": [
     {
-      "category": "queries",
-      "caveats": [],
-      "check": "lock-time",
+      "category": "indexes",
+      "caveats": [
+        "Counted since the indexes' metadata was loaded into memory, usually since SQL Server started."
+      ],
+      "check": "hot-rows",
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": null,
-        "summary": "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
+        "sql": "-- Readers stop waiting for writers; test first\nALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
+        "summary": "Keep the transactions that change orders short and commit before slow work; make their WHERE use an index so they lock only the rows they change. If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first."
       },
-      "id": "lock-time:138",
+      "id": "hot-rows:shop.orders",
       "impact": {
         "db_time_share": 0.34120252699679854,
-        "label": "2 min waiting on locks",
+        "label": "3 min waiting on locks",
         "score": 58.41101195528443,
         "time_ms_per_day": null
       },
@@ -21,40 +23,50 @@
       "last_seen": "2026-10-11T14:19:10Z",
       "metrics": [
         {
-          "label": "Lock wait",
+          "label": "Lock waits",
           "text": null,
-          "unit": "ms",
-          "value": 114966.0
+          "unit": "count",
+          "value": 5.0
         },
         {
-          "label": "Share of its time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.9999475524612378
-        },
-        {
-          "label": "Per run",
+          "label": "Time waiting",
           "text": null,
           "unit": "ms",
-          "value": 28741.5
+          "value": 186660.0
+        },
+        {
+          "label": "Average wait",
+          "text": null,
+          "unit": "ms",
+          "value": 37332.0
         }
       ],
       "queries": [
         {
           "id": "138",
+          "note": "Waited 2 min on locks, nearly all of its time in the last 5 hours.",
+          "plan_node": null
+        },
+        {
+          "id": "143",
+          "note": "Waited 1 min on locks, nearly all of its time in the last 5 hours.",
+          "plan_node": null
+        },
+        {
+          "id": "161",
           "note": null,
           "plan_node": null
         }
       ],
       "severity": "high",
       "subject": {
-        "kind": "query",
-        "name": "138"
+        "kind": "index",
+        "name": "shop.orders.pk_orders"
       },
-      "summary": "Of its 2 min in the last 4 h 35 min, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will.",
-      "title": "An update of orders spends nearly all its time waiting on locks, 28.7 s per run",
+      "summary": "Since pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
+      "title": "Sessions wait 37.3 s each on row locks in orders",
       "verify": [
-        "Re-scan: lock waits should be a small part of its time."
+        "Re-scan a day later: lock waits on orders should stop growing."
       ]
     },
     {
@@ -233,7 +245,7 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "With a cost of 7152 it would normally be split across CPUs; the whole run happens on a single core instead. Seen in a read from order_items.",
+      "summary": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead. Seen in a read from order_items.",
       "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
       "verify": [
         "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
@@ -307,63 +319,6 @@
       "title": "A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed",
       "verify": [
         "Re-scan after the fix: this query's trend in Queries should drop back to about 10 ms per run."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "lock-time",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
-      },
-      "id": "lock-time:143",
-      "impact": {
-        "db_time_share": 0.21278048143517983,
-        "label": "1 min waiting on locks",
-        "score": 46.12595466007194,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T14:19:10Z",
-      "metrics": [
-        {
-          "label": "Lock wait",
-          "text": null,
-          "unit": "ms",
-          "value": 71692.0
-        },
-        {
-          "label": "Share of its time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.9999054795592957
-        },
-        {
-          "label": "Per run",
-          "text": null,
-          "unit": "ms",
-          "value": 23897.333333333332
-        }
-      ],
-      "queries": [
-        {
-          "id": "143",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "high",
-      "subject": {
-        "kind": "query",
-        "name": "143"
-      },
-      "summary": "Of its 1 min in the last 4 h 35 min, 1 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will.",
-      "title": "A read from orders spends nearly all its time waiting on locks, 23.9 s per run",
-      "verify": [
-        "Re-scan: lock waits should be a small part of its time."
       ]
     },
     {
@@ -458,10 +413,61 @@
         "kind": "table",
         "name": "shop.support_tickets"
       },
-      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says whether any happened since. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
+      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
       "title": "Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)",
       "verify": [
         "Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "last-page-insert",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER INDEX [pk_hot] ON [archive].[hot] SET (OPTIMIZE_FOR_SEQUENTIAL_KEY = ON);",
+        "summary": "SQL Server 2019 can pace inserts into a sequential key so the page isn't handed back and forth: turn OPTIMIZE_FOR_SEQUENTIAL_KEY on for this index. It's a metadata change and takes effect at once."
+      },
+      "id": "last-page-insert:archive.hot.pk_hot",
+      "impact": {
+        "db_time_share": null,
+        "label": "53.6 s latch waits",
+        "score": 45.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Page latch waits",
+          "text": null,
+          "unit": "count",
+          "value": 105601.0
+        },
+        {
+          "label": "Time waiting",
+          "text": null,
+          "unit": "ms",
+          "value": 53595.0
+        },
+        {
+          "label": "Inserts",
+          "text": null,
+          "unit": "count",
+          "value": 128000.0
+        }
+      ],
+      "queries": [],
+      "severity": "high",
+      "subject": {
+        "kind": "index",
+        "name": "archive.hot.pk_hot"
+      },
+      "summary": "pk_hot starts with a value that only grows (id), so every insert goes to the same last page. Concurrent inserts wait for each other's latch on it (PAGELATCH_EX): 106K waits, 53.6 s in all since the index was loaded. It gets worse with more concurrent writers.",
+      "title": "Inserts into hot queue for the last page of pk_hot",
+      "verify": [
+        "Re-scan under the same load: page latch waits on this index should stop growing."
       ]
     },
     {
@@ -590,7 +596,7 @@
       "impact": {
         "db_time_share": 0.060338932147242445,
         "label": "6% of DB time",
-        "score": 24.563984234493077,
+        "score": 24.498803196658827,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -646,168 +652,9 @@
       ]
     },
     {
-      "category": "configuration",
-      "caveats": [],
-      "check": "memory-queue",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Shrink the biggest over-sized grants first (see the memory-grant findings), then look at plans that sort or hash large scans. Raising max server memory, or the tier, treats the symptom."
-      },
-      "id": "memory-queue:server",
-      "impact": {
-        "db_time_share": null,
-        "label": "6% of waits",
-        "score": 24.23380379562592,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Share of waits",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.05584509489064804
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "database",
-        "name": "culprit_demo"
-      },
-      "summary": "Memory-grant waits are 6% of all waiting. A query needs its memory grant to sort or hash before it starts; when the pool is spoken for, the rest wait (RESOURCE_SEMAPHORE). The usual cause is a few queries that reserve far more than they use.",
-      "title": "Waiting for memory takes 6% of all waiting",
-      "verify": [
-        "Re-scan, or sample Right now in Waits: memory waits should fall under 1% and nothing should be waiting for a grant."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Counted since the index's metadata was loaded into memory, usually since SQL Server started."
-      ],
-      "check": "hot-rows",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": "-- Readers stop waiting for writers; test first\nALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
-        "summary": "Keep the transactions that change orders short and commit before slow work; make their WHERE use an index so they lock only the rows they change. If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first."
-      },
-      "id": "hot-rows:shop.orders.pk_orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "3 min waiting on locks",
-        "score": 22.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Lock waits",
-          "text": null,
-          "unit": "count",
-          "value": 5.0
-        },
-        {
-          "label": "Time waiting",
-          "text": null,
-          "unit": "ms",
-          "value": 186660.0
-        },
-        {
-          "label": "Average wait",
-          "text": null,
-          "unit": "ms",
-          "value": 37332.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "138",
-          "note": null,
-          "plan_node": null
-        },
-        {
-          "id": "143",
-          "note": null,
-          "plan_node": null
-        },
-        {
-          "id": "161",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "index",
-        "name": "shop.orders.pk_orders"
-      },
-      "summary": "Since pk_orders was loaded into memory, sessions waited 5 times for locks on its rows and pages, 3 min in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change.",
-      "title": "Sessions wait 37.3 s each on row locks in orders",
-      "verify": [
-        "Re-scan a day later: lock waits on this index should stop growing."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [],
-      "check": "last-page-insert",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": "ALTER INDEX [pk_hot] ON [archive].[hot] SET (OPTIMIZE_FOR_SEQUENTIAL_KEY = ON);",
-        "summary": "SQL Server 2019 can pace inserts into a sequential key so the page isn't handed back and forth: turn OPTIMIZE_FOR_SEQUENTIAL_KEY on for this index. It's a metadata change and takes effect at once."
-      },
-      "id": "last-page-insert:archive.hot.pk_hot",
-      "impact": {
-        "db_time_share": null,
-        "label": "53.6 s latch waits",
-        "score": 22.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Page latch waits",
-          "text": null,
-          "unit": "count",
-          "value": 105601.0
-        },
-        {
-          "label": "Time waiting",
-          "text": null,
-          "unit": "ms",
-          "value": 53595.0
-        },
-        {
-          "label": "Inserts",
-          "text": null,
-          "unit": "count",
-          "value": 128000.0
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "index",
-        "name": "archive.hot.pk_hot"
-      },
-      "summary": "pk_hot starts with a value that only grows (id), so every insert goes to the same last page. Concurrent inserts wait for each other's latch on it (PAGELATCH_EX): 106K waits, 53.6 s in all since the index was loaded. It gets worse with more concurrent writers.",
-      "title": "Inserts into hot queue for the last page of pk_hot",
-      "verify": [
-        "Re-scan under the same load: page latch waits on this index should stop growing."
-      ]
-    },
-    {
       "category": "queries",
       "caveats": [
-        "Query Store keeps compile time for the query's whole life, so the time is spread over the window's runs."
+        "Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate."
       ],
       "check": "planning-time",
       "confidence": "medium",
@@ -890,82 +737,23 @@
       },
       "inactive": false,
       "last_seen": null,
-      "metrics": [],
+      "metrics": [
+        {
+          "label": "Reads waiting on locks",
+          "text": null,
+          "unit": "ms",
+          "value": 71692.0
+        }
+      ],
       "queries": [],
       "severity": "medium",
       "subject": {
         "kind": "setting",
         "name": "read-committed-snapshot"
       },
-      "summary": "With row versioning off, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
+      "summary": "With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
       "title": "Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)",
       "verify": []
-    },
-    {
-      "category": "indexes",
-      "caveats": [
-        "Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together."
-      ],
-      "check": "missing-index",
-      "confidence": "high",
-      "fix": {
-        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
-        "sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
-        "summary": "Create an index on shipped_at, including total. Equality columns come first; put the most selective one at the front if you know it."
-      },
-      "id": "missing-index:shop.orders(shipped_at)",
-      "impact": {
-        "db_time_share": 0.014778470818232064,
-        "label": "1% of DB time",
-        "score": 12.156673401153814,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.014778470818232064
-        },
-        {
-          "label": "Lookups that wanted it",
-          "text": null,
-          "unit": "count",
-          "value": 150.0
-        },
-        {
-          "label": "Estimated improvement",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.81
-        },
-        {
-          "label": "Rows in table",
-          "text": null,
-          "unit": "rows",
-          "value": 1000000.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "8",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.",
-      "title": "orders is searched by shipped_at without a supporting index",
-      "verify": [
-        "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
-        "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
-      ]
     },
     {
       "category": "indexes",
@@ -1010,6 +798,72 @@
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
       "verify": [
         "Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together."
+      ],
+      "check": "missing-index",
+      "confidence": "high",
+      "fix": {
+        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
+        "sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
+        "summary": "Create an index on shipped_at, including total. Equality columns come first; put the most selective one at the front if you know it."
+      },
+      "id": "missing-index:shop.orders(shipped_at)",
+      "impact": {
+        "db_time_share": 0.014778470818232064,
+        "label": "1% of DB time",
+        "score": 10.941006061038433,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.014778470818232064
+        },
+        {
+          "label": "Lookups that wanted it",
+          "text": null,
+          "unit": "count",
+          "value": 150.0
+        },
+        {
+          "label": "Estimated improvement",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.81
+        },
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 1000000.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "8",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.orders"
+      },
+      "summary": "SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.",
+      "title": "orders is searched by shipped_at without a supporting index",
+      "verify": [
+        "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
+        "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
       ]
     },
     {
@@ -1301,8 +1155,8 @@
       "confidence": "medium",
       "fix": {
         "cost": null,
-        "sql": "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50; RECONFIGURE;",
-        "summary": "A common starting point is 50; adjust with your workload."
+        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
+        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
       },
       "id": "config:cost-threshold-for-parallelism",
       "impact": {
@@ -1352,36 +1206,6 @@
       },
       "summary": "Capture mode ALL keeps statements that ran once or cost nothing (it tracks 16 statements now). They crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
       "title": "Query Store records every statement, including one-off ones",
-      "verify": []
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "low",
-      "fix": {
-        "cost": null,
-        "sql": "ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 8;",
-        "summary": "Cap it for this database (or server-wide with sp_configure)."
-      },
-      "id": "config:maxdop",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "maxdop"
-      },
-      "summary": "With no limit on parallelism, a single large query can occupy all schedulers and make everything else queue behind it. Microsoft's guidance is at most 8, or the cores in one NUMA node.",
-      "title": "One query may use every CPU core (MAXDOP 0)",
       "verify": []
     },
     {
@@ -1845,6 +1669,7 @@
     "constraints": [
       {
         "disabled": false,
+        "inheritance_child": false,
         "kind": "foreign-key",
         "name": "fk_child_parent",
         "schema": "archive",
@@ -1852,6 +1677,7 @@
       },
       {
         "disabled": false,
+        "inheritance_child": false,
         "kind": "check",
         "name": "ck_child_amount",
         "schema": "archive",
@@ -2157,6 +1983,7 @@
           "row_lock_waits": 1.0,
           "sequential_key": true
         },
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2169,6 +1996,8 @@
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 600.0,
         "name": "pk_customers",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 600.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2182,6 +2011,7 @@
           "email"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2194,6 +2024,8 @@
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 0.0,
         "name": "ix_customers_email",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 602.0,
         "scans": 602.0,
         "schema": "shop",
@@ -2207,6 +2039,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2219,6 +2052,8 @@
         "last_read": "2026-10-11T12:13:25Z",
         "lookups": 0.0,
         "name": "pk_products",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 30000.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2232,6 +2067,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2244,6 +2080,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "uq_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2257,6 +2095,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2269,6 +2108,8 @@
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
         "name": "ix_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 1.0,
         "scans": 1.0,
         "schema": "shop",
@@ -2294,6 +2135,7 @@
           "row_lock_waits": 5.0,
           "sequential_key": true
         },
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2306,6 +2148,8 @@
         "last_read": "2026-10-11T12:13:40Z",
         "lookups": 2000.0,
         "name": "pk_orders",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2150.0,
         "scans": 150.0,
         "schema": "shop",
@@ -2320,6 +2164,7 @@
           "created_at"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2332,6 +2177,8 @@
         "last_read": "2026-10-11T12:13:20Z",
         "lookups": 0.0,
         "name": "ix_orders_customer_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2000.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2345,6 +2192,7 @@
           "status"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2357,6 +2205,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_orders_status",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2371,6 +2221,7 @@
           "created_at"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2383,6 +2234,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_orders_status_created",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2396,6 +2249,7 @@
           "channel"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2408,6 +2262,8 @@
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
         "name": "ix_orders_channel",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 1.0,
         "scans": 1.0,
         "schema": "shop",
@@ -2421,6 +2277,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2433,6 +2290,8 @@
         "last_read": "2026-10-11T12:13:44Z",
         "lookups": 0.0,
         "name": "pk_order_items",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 300.0,
         "scans": 300.0,
         "schema": "shop",
@@ -2446,6 +2305,7 @@
           "product_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2458,6 +2318,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_order_items_product_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2471,6 +2333,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2483,6 +2346,8 @@
         "last_read": "2026-10-11T12:13:47Z",
         "lookups": 2005.0,
         "name": "pk_support_tickets",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2005.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2496,6 +2361,7 @@
           "customer_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2508,6 +2374,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_support_tickets_customer_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2533,6 +2401,7 @@
           "row_lock_waits": 0.0,
           "sequential_key": false
         },
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2545,6 +2414,8 @@
         "last_read": "2026-10-11T12:13:47Z",
         "lookups": 0.0,
         "name": "ix_support_tickets_priority",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2005.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2558,6 +2429,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2570,6 +2442,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "pk_ticket_events",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -2583,6 +2457,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2595,6 +2470,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "PK__child__3213E83F2BAF9907",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "archive",
@@ -2620,6 +2497,7 @@
           "row_lock_waits": 0.0,
           "sequential_key": true
         },
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -2632,6 +2510,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "pk_hot",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "archive",
@@ -2687,6 +2567,7 @@
     },
     "plan_cache": null,
     "pressure": {
+      "cpus": null,
       "files": [
         {
           "database": "culprit_demo",
@@ -3022,6 +2903,7 @@
           "query_hash": "0x320D04EAEE594F1A"
         }
       ],
+      "numa_nodes": null,
       "oldest_transaction": null,
       "replicas": [],
       "signals": [
@@ -3739,6 +3621,7 @@
     ],
     "tables": [
       {
+        "counters_since": null,
         "data_bytes": 17506304.0,
         "dead_rows": null,
         "deletes": null,
@@ -3756,6 +3639,7 @@
         "modifications_since_analyze": null,
         "name": "customers",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 200000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3766,6 +3650,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 64495616.0,
         "dead_rows": null,
         "deletes": null,
@@ -3783,6 +3668,7 @@
         "modifications_since_analyze": null,
         "name": "order_items",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 1500000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3793,6 +3679,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 62070784.0,
         "dead_rows": null,
         "deletes": null,
@@ -3810,6 +3697,7 @@
         "modifications_since_analyze": null,
         "name": "orders",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 1000000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3820,6 +3708,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 1646592.0,
         "dead_rows": null,
         "deletes": null,
@@ -3837,6 +3726,7 @@
         "modifications_since_analyze": null,
         "name": "products",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 20000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3847,6 +3737,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 27992064.0,
         "dead_rows": null,
         "deletes": null,
@@ -3864,6 +3755,7 @@
         "modifications_since_analyze": null,
         "name": "support_tickets",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 300000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3874,6 +3766,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 39460864.0,
         "dead_rows": null,
         "deletes": null,
@@ -3891,6 +3784,7 @@
         "modifications_since_analyze": null,
         "name": "ticket_events",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 800000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -3901,6 +3795,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 0.0,
         "dead_rows": null,
         "deletes": null,
@@ -3918,6 +3813,7 @@
         "modifications_since_analyze": null,
         "name": "child",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 0.0,
         "schema": "archive",
         "seq_rows_read": null,
@@ -3928,6 +3824,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 3743744.0,
         "dead_rows": null,
         "deletes": null,
@@ -3945,6 +3842,7 @@
         "modifications_since_analyze": null,
         "name": "hot",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 128000.0,
         "schema": "archive",
         "seq_rows_read": null,
@@ -3990,6 +3888,7 @@
       }
     ],
     "workload": {
+      "min_logged_ms": null,
       "queries": [
         {
           "costs": {
@@ -4173,6 +4072,7 @@
               "implicit-conversion"
             ]
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@P1 = N'user141017@example.com'",
@@ -4191,6 +4091,7 @@
           ],
           "query_hash": "0xE9B9B9AEF7209B51",
           "rows": 1200.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4400,6 +4301,7 @@
             "total_cost": 6.15689,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@P1 = (408418)",
@@ -4418,6 +4320,7 @@
           ],
           "query_hash": "0xBBCBE1D0C08154BC",
           "rows": 906.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4679,6 +4582,7 @@
             "total_cost": 0.909931,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@P1 = (5)",
@@ -4697,6 +4601,7 @@
           ],
           "query_hash": "0xFEBD637132E1276E",
           "rows": 3900000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -4914,6 +4819,7 @@
             "total_cost": 5.88492,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -4946,6 +4852,7 @@
           ],
           "query_hash": "0x11CC33E7EA9F4952",
           "rows": 984960.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5126,6 +5033,7 @@
             "total_cost": 0.0032831,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@P1 = (12148)",
@@ -5144,6 +5052,7 @@
           ],
           "query_hash": "0xBD30C1112C2A5560",
           "rows": 60000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5418,6 +5327,7 @@
             "total_cost": 0.0166036,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@P1 = (115003)",
@@ -5436,6 +5346,7 @@
           ],
           "query_hash": "0x1C16A4743BB078B3",
           "rows": 20016.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5583,6 +5494,7 @@
             "total_cost": 0.0032831,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -5601,6 +5513,7 @@
           ],
           "query_hash": "0x80E844211996BFCC",
           "rows": 0.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5673,6 +5586,7 @@
           "parameters": "@t int,@c int",
           "physical_reads": 0.0,
           "plan": null,
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@c = NULL, @t = (1)",
@@ -5705,6 +5619,7 @@
           ],
           "query_hash": "0x4139ABA55C1459B3",
           "rows": 771.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -5977,6 +5892,7 @@
             "total_cost": 0.0332863,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@1 = (1)",
@@ -5995,6 +5911,7 @@
           ],
           "query_hash": "0x2E60BD5F2B1B322C",
           "rows": 4.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6114,6 +6031,7 @@
             "total_cost": 0.0032831,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@1 = (1)",
@@ -6132,6 +6050,7 @@
           ],
           "query_hash": "0xBFDD28B1F8A5DB44",
           "rows": 3.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6241,6 +6160,7 @@
             "total_cost": 0.0132842,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": "@1 = (1), @2 = (2)",
@@ -6259,6 +6179,7 @@
           ],
           "query_hash": "0x70DEB9137DC844BA",
           "rows": 3.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -6309,6 +6230,7 @@
           "parameters": "@d int",
           "physical_reads": 0.0,
           "plan": null,
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -6327,6 +6249,7 @@
           ],
           "query_hash": "0xDF29AECD4582DE17",
           "rows": 150.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7050,6 +6973,7 @@
             "total_cost": 12.2481,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -7068,6 +6992,7 @@
           ],
           "query_hash": "0xE5DE7151675598B3",
           "rows": 300.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7275,6 +7200,7 @@
             "total_cost": 0.0132842,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -7293,6 +7219,7 @@
           ],
           "query_hash": "0xAC0F7C57637DD3EA",
           "rows": 30000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7683,6 +7610,7 @@
             "total_cost": 7151.94,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -7701,6 +7629,7 @@
           ],
           "query_hash": "0xCE8A3BF747BC6C47",
           "rows": 0.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7757,6 +7686,7 @@
           "parameters": "@n int",
           "physical_reads": 0.0,
           "plan": null,
+          "plan_id": null,
           "plans": [
             {
               "compiled": null,
@@ -7775,6 +7705,7 @@
           ],
           "query_hash": "0x5DA4E11A569A7C0C",
           "rows": 500000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": null,
@@ -7865,11 +7796,13 @@
           2457.37,
           3079.04,
           2629.31
-        ]
+        ],
+        "unknown": null
       },
       "total_cpu_ms": 91061.898,
       "total_executions": 71426.0,
       "total_time_ms": 336961.25000000006,
+      "untracked_time_ms": null,
       "window_end": "2026-10-11T12:13:47Z",
       "window_hours": 4.583333,
       "window_start": "2026-10-11T07:40:00Z",
@@ -7884,7 +7817,7 @@
       },
       {
         "category": "queries",
-        "count": 14
+        "count": 12
       },
       {
         "category": "maintenance",
@@ -7892,7 +7825,7 @@
       },
       {
         "category": "configuration",
-        "count": 6
+        "count": 4
       }
     ],
     "by_severity": [
@@ -7901,7 +7834,7 @@
         "severity": "high"
       },
       {
-        "count": 10,
+        "count": 6,
         "severity": "medium"
       },
       {
@@ -7909,8 +7842,8 @@
         "severity": "low"
       }
     ],
-    "headline": "29 opportunities. The top ones touch 61% of database time over the last 5 hours.",
-    "opportunities": 29,
-    "top_share": 0.6085676171963393
+    "headline": "25 opportunities. The top ones touch 83% of database time over the last 5 hours.",
+    "opportunities": 25,
+    "top_share": 0.8284861686618267
   }
 }

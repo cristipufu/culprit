@@ -1,6 +1,70 @@
 {
   "findings": [
     {
+      "category": "indexes",
+      "caveats": [
+        "Counters accumulate since statistics were last reset; one nightly report can make up much of them."
+      ],
+      "check": "scan-heavy",
+      "confidence": "medium",
+      "fix": {
+        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
+        "sql": null,
+        "summary": "Explain the statements below and index the columns in their WHERE clause; small lookup tables are fine to scan."
+      },
+      "id": "scan-heavy:shop.orders",
+      "impact": {
+        "db_time_share": 0.9255406753671113,
+        "label": "93% of DB time",
+        "score": 96.2050245760122,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Full reads",
+          "text": null,
+          "unit": "count",
+          "value": 80.0
+        },
+        {
+          "label": "Rows read without an index",
+          "text": null,
+          "unit": "rows",
+          "value": 40000300.0
+        },
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 498573.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "375c64398248650e",
+          "note": null,
+          "plan_node": null
+        },
+        {
+          "id": "258e3c9b580f1ecc",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.orders"
+      },
+      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 2 of the captured statements read it; explain them to see which filter has no index.",
+      "title": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
+      "verify": [
+        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
+      ]
+    },
+    {
       "category": "queries",
       "caveats": [],
       "check": "temp-spill",
@@ -51,7 +115,9 @@
     },
     {
       "category": "queries",
-      "caveats": [],
+      "caveats": [
+        "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
+      ],
       "check": "lock-time",
       "confidence": "high",
       "fix": {
@@ -95,7 +161,7 @@
           "plan_node": null
         }
       ],
-      "severity": "high",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "375c64398248650e"
@@ -104,6 +170,59 @@
       "title": "A read from orders spends nearly all its time waiting on locks, 2.5 s per run",
       "verify": [
         "Re-scan: lock waits should be a small part of its time."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:a92bb0be330ac53a",
+      "impact": {
+        "db_time_share": 0.010408117938943744,
+        "label": "75% of executions",
+        "score": 40.142138158298046,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:50Z",
+      "metrics": [
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.7485029940119761
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.019573826366666665
+        }
+      ],
+      "queries": [
+        {
+          "id": "a92bb0be330ac53a",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "a92bb0be330ac53a"
+      },
+      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (1% of database time), but each call costs a network round trip and a connection.",
+      "title": "A read from products runs 30K times in 1 minute, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
       ]
     },
     {
@@ -167,64 +286,6 @@
       "title": "A read from orders takes 6% of database time",
       "verify": [
         "After the change ships, re-scan and compare this query's share of database time and reads per run."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [],
-      "check": "filtered-scan",
-      "confidence": "high",
-      "fix": {
-        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
-        "summary": "Create an index on promo_code so these queries seek instead of scanning."
-      },
-      "id": "filtered-scan:shop.orders(promo_code)",
-      "impact": {
-        "db_time_share": 0.03995229630841756,
-        "label": "4% of DB time",
-        "score": 19.98807051929164,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T16:04:49Z",
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.03995229630841756
-        },
-        {
-          "label": "Rows scanned per run",
-          "text": null,
-          "unit": "rows",
-          "value": 498573.0
-        },
-        {
-          "label": "Queries",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "258e3c9b580f1ecc",
-          "note": null,
-          "plan_node": 2
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "One query plans to read every row of shop.orders (499K rows) and keep only those matching `o.promo_code = 'SPRING9'`. No index starts with promo_code, so the database has no faster way in. Together they account for 4% of database time.",
-      "title": "orders is read in full to find rows by promo_code",
-      "verify": [
-        "Explain one of the queries again: the scan of orders should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
       ]
     },
     {
@@ -368,6 +429,65 @@
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
       "verify": []
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "MariaDB counts row-lock waits for the whole server, so other databases' waits are in these numbers."
+      ],
+      "check": "row-lock-waits",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Keep transactions short (no user input or slow calls inside them), make UPDATE and DELETE filter on indexed columns, and touch tables in the same order everywhere. Live shows who blocks whom right now."
+      },
+      "id": "row-lock-waits:server",
+      "impact": {
+        "db_time_share": null,
+        "label": "2 min/h lock waits",
+        "score": 8.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Lock waits since start",
+          "text": null,
+          "unit": "count",
+          "value": 20.0
+        },
+        {
+          "label": "Time waiting since start",
+          "text": null,
+          "unit": "ms",
+          "value": 152020.0
+        },
+        {
+          "label": "Average wait",
+          "text": null,
+          "unit": "ms",
+          "value": 7601.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "375c64398248650e",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "database",
+        "name": "shop"
+      },
+      "summary": "Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 3 min in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. In this database, a read from orders waited longest on locks (50.0 s in total). Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.",
+      "title": "Transactions on this server waited 3 min for row locks since MariaDB started 69 minutes ago, 7.6 s each on average",
+      "verify": [
+        "Sample Waits → Right now during normal load: it counts row-lock waits over the sample, which should be rare and short."
+      ]
     }
   ],
   "locked": [],
@@ -768,6 +888,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`customers` ADD PRIMARY KEY (id)",
         "filter": null,
@@ -780,6 +901,8 @@
         "last_read": null,
         "lookups": null,
         "name": "PRIMARY",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2.0,
         "scans": null,
         "schema": "shop",
@@ -793,6 +916,7 @@
           "region"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_customers_region` ON `shop`.`customers` (region)",
         "filter": null,
@@ -805,6 +929,8 @@
         "last_read": null,
         "lookups": null,
         "name": "ix_customers_region",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -818,6 +944,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`order_items` ADD PRIMARY KEY (id)",
         "filter": null,
@@ -830,6 +957,8 @@
         "last_read": null,
         "lookups": null,
         "name": "PRIMARY",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -843,6 +972,7 @@
           "order_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_items_order` ON `shop`.`order_items` (order_id)",
         "filter": null,
@@ -855,6 +985,8 @@
         "last_read": null,
         "lookups": null,
         "name": "fk_items_order",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 10398.0,
         "scans": null,
         "schema": "shop",
@@ -868,6 +1000,7 @@
           "product_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_items_product` ON `shop`.`order_items` (product_id)",
         "filter": null,
@@ -880,6 +1013,8 @@
         "last_read": null,
         "lookups": null,
         "name": "fk_items_product",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -893,6 +1028,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`orders` ADD PRIMARY KEY (id)",
         "filter": null,
@@ -905,6 +1041,8 @@
         "last_read": null,
         "lookups": null,
         "name": "PRIMARY",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2.0,
         "scans": null,
         "schema": "shop",
@@ -918,6 +1056,7 @@
           "customer_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_orders_customer` ON `shop`.`orders` (customer_id)",
         "filter": null,
@@ -930,6 +1069,8 @@
         "last_read": null,
         "lookups": null,
         "name": "fk_orders_customer",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 19982.0,
         "scans": null,
         "schema": "shop",
@@ -943,6 +1084,7 @@
           "status"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_orders_status` ON `shop`.`orders` (status)",
         "filter": null,
@@ -955,6 +1097,8 @@
         "last_read": null,
         "lookups": null,
         "name": "ix_orders_status",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -969,6 +1113,7 @@
           "created_at"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_orders_status_created` ON `shop`.`orders` (status, created_at)",
         "filter": null,
@@ -981,6 +1126,8 @@
         "last_read": null,
         "lookups": null,
         "name": "ix_orders_status_created",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 21430710.0,
         "scans": null,
         "schema": "shop",
@@ -994,6 +1141,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`products` ADD PRIMARY KEY (id)",
         "filter": null,
@@ -1006,6 +1154,8 @@
         "last_read": null,
         "lookups": null,
         "name": "PRIMARY",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 34000.0,
         "scans": null,
         "schema": "shop",
@@ -1019,6 +1169,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_products_sku` ON `shop`.`products` (sku)",
         "filter": null,
@@ -1031,6 +1182,8 @@
         "last_read": null,
         "lookups": null,
         "name": "ix_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -1044,6 +1197,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX `uq_products_sku` ON `shop`.`products` (sku)",
         "filter": null,
@@ -1056,6 +1210,8 @@
         "last_read": null,
         "lookups": null,
         "name": "uq_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": null,
         "schema": "shop",
@@ -1079,6 +1235,7 @@
     },
     "plan_cache": null,
     "pressure": {
+      "cpus": null,
       "files": [
         {
           "database": null,
@@ -1346,6 +1503,7 @@
         }
       ],
       "grants": [],
+      "numa_nodes": null,
       "oldest_transaction": null,
       "replicas": [],
       "signals": [
@@ -1633,6 +1791,7 @@
     "statistics": [],
     "tables": [
       {
+        "counters_since": null,
         "data_bytes": 17317888.0,
         "dead_rows": null,
         "deletes": 0.0,
@@ -1650,6 +1809,7 @@
         "modifications_since_analyze": null,
         "name": "customers",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 199116.0,
         "schema": "shop",
         "seq_rows_read": 0.0,
@@ -1660,6 +1820,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 1589248.0,
         "dead_rows": null,
         "deletes": 0.0,
@@ -1677,6 +1838,7 @@
         "modifications_since_analyze": null,
         "name": "products",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 20174.0,
         "schema": "shop",
         "seq_rows_read": 0.0,
@@ -1687,6 +1849,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 28901376.0,
         "dead_rows": null,
         "deletes": 0.0,
@@ -1704,6 +1867,7 @@
         "modifications_since_analyze": null,
         "name": "orders",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 498573.0,
         "schema": "shop",
         "seq_rows_read": 40000300.0,
@@ -1714,6 +1878,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 34144256.0,
         "dead_rows": null,
         "deletes": 0.0,
@@ -1731,6 +1896,7 @@
         "modifications_since_analyze": null,
         "name": "order_items",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 798336.0,
         "schema": "shop",
         "seq_rows_read": 0.0,
@@ -1764,6 +1930,7 @@
       }
     ],
     "workload": {
+      "min_logged_ms": null,
       "queries": [
         {
           "costs": null,
@@ -1894,9 +2061,11 @@
             "total_cost": 83.0178672,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [],
           "query_hash": "375c64398248650e848f6c600d7e2143",
           "rows": 400.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 49963.346,
@@ -2015,9 +2184,11 @@
             "total_cost": 2.15041973,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [],
           "query_hash": "decf59629e790076bee034e582b5053a",
           "rows": 2000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 21.033,
@@ -2158,9 +2329,11 @@
             "total_cost": 83.0178672,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [],
           "query_hash": "258e3c9b580f1ecccd48f76c4f83acb1",
           "rows": 300.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 2251.482,
@@ -2210,9 +2383,11 @@
           "parameters": null,
           "physical_reads": null,
           "plan": null,
+          "plan_id": null,
           "plans": [],
           "query_hash": "a92bb0be330ac53ad0b54014b3f02efa",
           "rows": 30000.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 177.46,
@@ -2357,9 +2532,11 @@
             "total_cost": 0.00708384,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [],
           "query_hash": "46db559fdff712fd13e0107d6e1cd6f2",
           "rows": 9991.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 44.303,
@@ -2534,9 +2711,11 @@
             "total_cost": 0.0051722,
             "warnings": []
           },
+          "plan_id": null,
           "plans": [],
           "query_hash": "d1f45c9664edccf9dc77a3076d1ad0b7",
           "rows": 6398.0,
+          "rows_affected": null,
           "spread": {
             "histogram": [],
             "lock_ms": 52.766,
@@ -2595,11 +2774,13 @@
           103814.91,
           103200.46,
           168149.38
-        ]
+        ],
+        "unknown": null
       },
       "total_cpu_ms": null,
       "total_executions": 40080.0,
       "total_time_ms": 56418.921696,
+      "untracked_time_ms": null,
       "window_end": "2026-10-11T16:05:40Z",
       "window_hours": 0.016666666666666666,
       "window_start": "2026-10-11T16:04:46Z",
@@ -2614,12 +2795,12 @@
       },
       {
         "category": "queries",
-        "count": 4
+        "count": 6
       }
     ],
     "by_severity": [
       {
-        "count": 2,
+        "count": 1,
         "severity": "high"
       },
       {
@@ -2627,12 +2808,12 @@
         "severity": "medium"
       },
       {
-        "count": 3,
+        "count": 6,
         "severity": "low"
       }
     ],
-    "headline": "7 opportunities. The top ones touch 94% of database time over the 1 minute since statistics were reset.",
-    "opportunities": 7,
-    "top_share": 0.94172731829731
+    "headline": "9 opportunities. The top ones touch 93% of database time over the 1 minute since statistics were reset.",
+    "opportunities": 9,
+    "top_share": 0.9255406753671113
   }
 }

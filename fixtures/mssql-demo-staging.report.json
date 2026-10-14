@@ -46,45 +46,6 @@
       ]
     },
     {
-      "category": "configuration",
-      "caveats": [],
-      "check": "memory-queue",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Shrink the biggest over-sized grants first (see the memory-grant findings), then look at plans that sort or hash large scans. Raising max server memory, or the tier, treats the symptom."
-      },
-      "id": "memory-queue:server",
-      "impact": {
-        "db_time_share": null,
-        "label": "6% of waits",
-        "score": 24.23380379562592,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Share of waits",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.05584509489064804
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "database",
-        "name": "culprit_demo"
-      },
-      "summary": "Memory-grant waits are 6% of all waiting. A query needs its memory grant to sort or hash before it starts; when the pool is spoken for, the rest wait (RESOURCE_SEMAPHORE). The usual cause is a few queries that reserve far more than they use.",
-      "title": "Waiting for memory takes 6% of all waiting",
-      "verify": [
-        "Re-scan, or sample Right now in Waits: memory waits should fall under 1% and nothing should be waiting for a grant."
-      ]
-    },
-    {
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -328,8 +289,8 @@
       "confidence": "medium",
       "fix": {
         "cost": null,
-        "sql": "EXEC sp_configure 'show advanced options', 1; RECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50; RECONFIGURE;",
-        "summary": "A common starting point is 50; adjust with your workload."
+        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
+        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
       },
       "id": "config:cost-threshold-for-parallelism",
       "impact": {
@@ -379,36 +340,6 @@
       },
       "summary": "Capture mode ALL keeps statements that ran once or cost nothing. They crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
       "title": "Query Store records every statement, including one-off ones",
-      "verify": []
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "low",
-      "fix": {
-        "cost": null,
-        "sql": "ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP = 8;",
-        "summary": "Cap it for this database (or server-wide with sp_configure)."
-      },
-      "id": "config:maxdop",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "maxdop"
-      },
-      "summary": "With no limit on parallelism, a single large query can occupy all schedulers and make everything else queue behind it. Microsoft's guidance is at most 8, or the cores in one NUMA node.",
-      "title": "One query may use every CPU core (MAXDOP 0)",
       "verify": []
     }
   ],
@@ -1157,6 +1088,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1169,6 +1101,8 @@
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 600.0,
         "name": "pk_customers",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 600.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1182,6 +1116,7 @@
           "email"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1194,6 +1129,8 @@
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 0.0,
         "name": "ix_customers_email",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 602.0,
         "scans": 602.0,
         "schema": "shop",
@@ -1207,6 +1144,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1219,6 +1157,8 @@
         "last_read": "2026-10-11T12:13:25Z",
         "lookups": 0.0,
         "name": "pk_products",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 30000.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1232,6 +1172,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1244,6 +1185,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "uq_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1257,6 +1200,7 @@
           "sku"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1269,6 +1213,8 @@
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
         "name": "ix_products_sku",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 1.0,
         "scans": 1.0,
         "schema": "shop",
@@ -1282,6 +1228,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1294,6 +1241,8 @@
         "last_read": "2026-10-11T12:13:40Z",
         "lookups": 2000.0,
         "name": "pk_orders",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2150.0,
         "scans": 150.0,
         "schema": "shop",
@@ -1308,6 +1257,7 @@
           "created_at"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1320,6 +1270,8 @@
         "last_read": "2026-10-11T12:13:20Z",
         "lookups": 0.0,
         "name": "ix_orders_customer_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2000.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1333,6 +1285,7 @@
           "status"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1345,6 +1298,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_orders_status",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1359,6 +1314,7 @@
           "created_at"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1371,6 +1327,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_orders_status_created",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1384,6 +1342,7 @@
           "channel"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1396,6 +1355,8 @@
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
         "name": "ix_orders_by_channel",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 1.0,
         "scans": 1.0,
         "schema": "shop",
@@ -1409,6 +1370,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1421,6 +1383,8 @@
         "last_read": "2026-10-11T12:13:44Z",
         "lookups": 0.0,
         "name": "pk_order_items",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 300.0,
         "scans": 300.0,
         "schema": "shop",
@@ -1434,6 +1398,7 @@
           "product_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1446,6 +1411,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_order_items_product_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1459,6 +1426,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1471,6 +1439,8 @@
         "last_read": "2026-10-11T12:13:47Z",
         "lookups": 2005.0,
         "name": "pk_support_tickets",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 2005.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1484,6 +1454,7 @@
           "customer_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1496,6 +1467,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "ix_support_tickets_customer_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1509,6 +1482,7 @@
           "id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1521,6 +1495,8 @@
         "last_read": null,
         "lookups": 0.0,
         "name": "pk_ticket_events",
+        "opclasses": null,
+        "partition_of": null,
         "reads": 0.0,
         "scans": 0.0,
         "schema": "shop",
@@ -1534,6 +1510,7 @@
           "order_id"
         ],
         "contention": null,
+        "counters_since": null,
         "created_at_latest": null,
         "definition": null,
         "filter": null,
@@ -1546,6 +1523,8 @@
         "last_read": null,
         "lookups": null,
         "name": "ix_order_items_order_id",
+        "opclasses": null,
+        "partition_of": null,
         "reads": null,
         "scans": null,
         "schema": "shop",
@@ -4119,6 +4098,7 @@
     ],
     "tables": [
       {
+        "counters_since": null,
         "data_bytes": 17506304.0,
         "dead_rows": null,
         "deletes": null,
@@ -4136,6 +4116,7 @@
         "modifications_since_analyze": null,
         "name": "customers",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 200000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4146,6 +4127,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 64495616.0,
         "dead_rows": null,
         "deletes": null,
@@ -4163,6 +4145,7 @@
         "modifications_since_analyze": null,
         "name": "order_items",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 1500000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4173,6 +4156,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 62070784.0,
         "dead_rows": null,
         "deletes": null,
@@ -4190,6 +4174,7 @@
         "modifications_since_analyze": null,
         "name": "orders",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 1000000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4200,6 +4185,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 1646592.0,
         "dead_rows": null,
         "deletes": null,
@@ -4217,6 +4203,7 @@
         "modifications_since_analyze": null,
         "name": "products",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 20000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4227,6 +4214,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 27992064.0,
         "dead_rows": null,
         "deletes": null,
@@ -4244,6 +4232,7 @@
         "modifications_since_analyze": null,
         "name": "support_tickets",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 300000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4254,6 +4243,7 @@
         "xid_age": null
       },
       {
+        "counters_since": null,
         "data_bytes": 39460864.0,
         "dead_rows": null,
         "deletes": null,
@@ -4271,6 +4261,7 @@
         "modifications_since_analyze": null,
         "name": "ticket_events",
         "overflow_bytes": null,
+        "partition_of": null,
         "rows": 800000.0,
         "schema": "shop",
         "seq_rows_read": null,
@@ -4329,7 +4320,7 @@
       },
       {
         "category": "configuration",
-        "count": 5
+        "count": 3
       }
     ],
     "by_severity": [
@@ -4338,16 +4329,12 @@
         "severity": "high"
       },
       {
-        "count": 1,
-        "severity": "medium"
-      },
-      {
-        "count": 8,
+        "count": 7,
         "severity": "low"
       }
     ],
-    "headline": "10 opportunities.",
-    "opportunities": 10,
+    "headline": "8 opportunities.",
+    "opportunities": 8,
     "top_share": null
   }
 }

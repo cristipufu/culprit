@@ -2,6 +2,31 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.8
+
+Every check, plan insight and collector was reviewed for findings the statistics don't support. Findings are fewer, quieter on quiet databases, and each says only what the scan measured.
+
+### Fixes
+
+- **A report is about the database you scanned.** Deadlocks, the transaction holding up cleanup, plan-cache statements and pending memory grants come from this database only, never from another tenant's on the same server or pool. Signals the server keeps for all its databases (InnoDB's history length, Azure's shared compile and login counters) are said to be the server's and aren't graded as this database's.
+- **Severity needs an amount, not just a share.** Medium needs about a minute of database time a day and High ten, so a query that takes 40% of a quiet database's time, seconds a day, is Low. Quiet databases now show mostly Low findings.
+- **"Never read" needs a week of counters.** Unused, overlapping and over-indexed findings and the index advisor's clean-ups wait until the usage counters have counted a week, and the advisor says why its list is empty until then.
+- **No daily rates from a few minutes of data.** A threshold on a rate needs an hour of history, and "a day" needs 20 hours, unless the count is already past the daily bar. Pressure counted since the server started (THREADPOOL, row-lock waits, connection peaks) is a total with "since" wording, at most Medium.
+- **Index advice the database agrees with.** Widening an index keeps it UNIQUE, keeps its filter, key order and ONLINE, and is never offered for a primary key or a clustered index. A disabled or invalid index is brought back rather than built twice. PostgreSQL partitions are judged at their parent, and an index with another operator class (`text_pattern_ops`) isn't a duplicate. An index is suggested only where a scan keeps at most a tenth of the rows it reads.
+- **Plans tell the story of the plan in use.** A regression needs the slow plan to have replaced the fast one. Plans used side by side are parameter sensitivity, and SQL Server's own recommendation to force a plan is folded into that query's finding. Estimates are compared per run, and never for an operator that didn't run or that stopped early under a `LIMIT`/`TOP`. A plan insight is more than Low only when the plan does real work.
+- **Settings advice holds where it runs.** On RDS, Aurora, Azure and Cloud SQL the fix names the platform's control instead of `ALTER SYSTEM` or `SET GLOBAL`, and no suggestion lowers a setting below today's value.
+- **MySQL and MariaDB writes are writes.** A busy single-row `INSERT` is a row-by-row write, not a poll that finds nothing. Rows changed are counted apart from rows sent, and index writes at the table.
+- **PostgreSQL counts each statement once**, even when several roles run it, and after a statistics reset it reads row counts from the planner until the next vacuum or analyze.
+- **Replicas and standbys aren't reported as lagging or broken when they're only idle or delayed on purpose.** A configured apply delay isn't lag, and a quiet primary's standby is caught up.
+
+### Safety
+
+- **Planning never lends your privileges.** To estimate a statement, PostgreSQL's planner runs the functions it reaches with the privileges of whoever plans it. Culprit now makes every plan in a read-only transaction that is rolled back. A login with more than `pg_monitor` doesn't plan while functions or operators written by other roles are in reach; the scan says which roles own them and how to get plans back.
+
+### For developers
+
+- **The analysis is a pipeline: prepare, detect, refine, rank.** Checks, prepare steps and refine rules all plug in from outside without forking, and every provider records what its sources could read in one `Coverage`. `docs/ARCHITECTURE.md` maps the code and lists the evidence rules a check must follow.
+
 ## 0.2.7
 
 ### Fixes

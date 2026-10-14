@@ -137,7 +137,9 @@ fn findings_count_by_severity_and_show_the_top_three() {
     let d = dashboard(&report("pg-demo"));
     let f = tile(&d, TileKey::Findings);
     assert_eq!(f.status, TileStatus::Bad);
-    assert_eq!(f.metric("high").and_then(|m| m.value), Some(2.0));
+    // One High (the read that spills to temp files); the scan of orders by customer_id is Medium, under ten minutes
+    // of database time a day.
+    assert_eq!(f.metric("high").and_then(|m| m.value), Some(1.0));
     assert_eq!(f.items.len(), 3);
     assert!(f.items.iter().all(|i| i.finding_id.is_some()));
 }

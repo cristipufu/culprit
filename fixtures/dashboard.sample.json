@@ -4,15 +4,14 @@
       "findings",
       "health",
       "statistics",
-      "deadlocks",
-      "plans"
+      "deadlocks"
     ],
     "connection": "mariadb-demo",
     "coverage": "performance_schema, the 1 minute since statistics were reset",
     "database": "shop",
     "engine": "mysql",
     "environment": "development",
-    "headline": "10 opportunities; the top 3 touch 90% of database time.",
+    "headline": "9 opportunities; the top 3 touch 93% of database time.",
     "product": "MariaDB 11.8.9",
     "report_id": "20261011T160540.394Z",
     "taken_at": "2026-10-11T16:05:40Z",
@@ -33,7 +32,7 @@
             "key": "runs",
             "label": "Runs",
             "text": "40K",
-            "value": 40080
+            "value": 40080.0
           },
           {
             "key": "window-hours",
@@ -42,7 +41,7 @@
             "value": 0.016666666666666666
           }
         ],
-        "next": null,
+        "next": "culprit changes mariadb-demo",
         "status": "info",
         "takeaway": "56.4 s of database time over the 1 minute since statistics were reset.",
         "title": "Database time"
@@ -53,10 +52,21 @@
         "items": [
           {
             "at": null,
+            "finding_id": "scan-heavy:shop.orders",
+            "id": "scan-heavy:shop.orders",
+            "kind": "finding",
+            "label": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
+            "query_id": null,
+            "share": 0.9255406753671112,
+            "status": "info",
+            "value": "93% of DB time"
+          },
+          {
+            "at": null,
             "finding_id": "temp-spill:375c64398248650e",
             "id": "temp-spill:375c64398248650e",
             "kind": "finding",
-            "label": "A read from orders builds an on-disk temporary table on 100% of its runs",
+            "label": "A read from orders builds an on-disk temporary table about once per run",
             "query_id": null,
             "share": 0.8855883790586936,
             "status": "bad",
@@ -70,19 +80,8 @@
             "label": "A read from orders spends nearly all its time waiting on locks, 2.5 s per run",
             "query_id": null,
             "share": 0.8855883790586936,
-            "status": "bad",
+            "status": "info",
             "value": "50.0 s waiting on locks"
-          },
-          {
-            "at": null,
-            "finding_id": "chatty-query:a92bb0be330ac53a",
-            "id": "chatty-query:a92bb0be330ac53a",
-            "kind": "finding",
-            "label": "A read from products runs 30K times in 1 minute, one row at a time",
-            "query_id": null,
-            "share": 0.010408117938943744,
-            "status": "watch",
-            "value": "75% of executions"
           }
         ],
         "key": "findings",
@@ -90,25 +89,25 @@
           {
             "key": "high",
             "label": "High",
-            "text": "2",
-            "value": 2
+            "text": "1",
+            "value": 1.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "3",
-            "value": 3
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "5",
-            "value": 5
+            "text": "6",
+            "value": 6.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mariadb-demo",
         "status": "bad",
-        "takeaway": "10 opportunities; the top 3 touch 90% of database time.",
+        "takeaway": "9 opportunities; the top 3 touch 93% of database time.",
         "title": "Findings"
       },
       {
@@ -189,10 +188,10 @@
             "key": "queries",
             "label": "Queries",
             "text": "6",
-            "value": 6
+            "value": 6.0
           }
         ],
-        "next": null,
+        "next": "culprit top mariadb-demo",
         "status": "info",
         "takeaway": "One query is 89% of database time: a read from orders.",
         "title": "Top queries"
@@ -230,7 +229,7 @@
             "kind": "wait",
             "label": "Locks",
             "query_id": "375c64398248650e",
-            "share": 0.000040298532683243014,
+            "share": 4.0298532683243014e-05,
             "status": null,
             "value": "<1%"
           }
@@ -244,7 +243,7 @@
             "value": 463670.206726155
           }
         ],
-        "next": null,
+        "next": "culprit waits mariadb-demo",
         "status": "info",
         "takeaway": "Most time goes to row access (99%).",
         "title": "Where time goes"
@@ -255,7 +254,7 @@
         "items": [],
         "key": "now",
         "metrics": [],
-        "next": null,
+        "next": "culprit live mariadb-demo",
         "status": "info",
         "takeaway": "Sessions weren't read for this dashboard.",
         "title": "Right now"
@@ -359,22 +358,22 @@
             "key": "bad",
             "label": "Bad",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "watch",
             "label": "Watch",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
             "text": "5",
-            "value": 5
+            "value": 5.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mariadb-demo",
         "status": "bad",
         "takeaway": "Average row-lock wait: 7.6 s; under 50 ms is healthy.",
         "title": "Health"
@@ -401,10 +400,10 @@
             "key": "count",
             "label": "Deadlocks",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit deadlocks mariadb-demo",
         "status": "watch",
         "takeaway": "One deadlock in the last day: opposite access order on shop.customers, shop.orders.",
         "title": "Deadlocks"
@@ -413,17 +412,6 @@
         "detail": "MariaDB doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema).",
         "fix_sql": null,
         "items": [
-          {
-            "at": null,
-            "finding_id": "filtered-scan:shop.orders(promo_code)",
-            "id": "shop.orders(promo_code)",
-            "kind": "index-add",
-            "label": "orders (promo_code)",
-            "query_id": "258e3c9b580f1ecc",
-            "share": 0.03995229630841756,
-            "status": null,
-            "value": "4%"
-          },
           {
             "at": null,
             "finding_id": "duplicate-index:shop.orders.ix_orders_status",
@@ -437,14 +425,14 @@
           },
           {
             "at": null,
-            "finding_id": "unused-index:shop.customers",
-            "id": "shop.customers.ix_customers_region",
+            "finding_id": "duplicate-index:shop.products.ix_products_sku",
+            "id": "shop.products.ix_products_sku",
             "kind": "index-cleanup",
-            "label": "ix_customers_region on customers",
+            "label": "ix_products_sku on products",
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "4.5 MB"
+            "value": "432 KB"
           }
         ],
         "key": "indexes",
@@ -452,31 +440,31 @@
           {
             "key": "add",
             "label": "To add",
-            "text": "1",
-            "value": 1
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "cleanup",
             "label": "To clean up",
-            "text": "3",
-            "value": 3
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "reclaim",
             "label": "Space back",
-            "text": "14.5 MB",
-            "value": 15155200
+            "text": "9.9 MB",
+            "value": 10420224.0
           },
           {
             "key": "tables",
             "label": "Tables to look at",
-            "text": "0",
-            "value": 0
+            "text": "1",
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit indexes mariadb-demo",
         "status": "info",
-        "takeaway": "One new index would help queries that take 4% of database time; 3 indexes can go (14.5 MB).",
+        "takeaway": "No new indexes needed; 2 existing indexes can go (9.9 MB).",
         "title": "Indexes"
       },
       {
@@ -491,7 +479,7 @@
             "label": "A temporary table and filesort",
             "query_id": "375c64398248650e",
             "share": 0.8855883790586936,
-            "status": "bad",
+            "status": "info",
             "value": "1 plan"
           }
         ],
@@ -501,17 +489,17 @@
             "key": "captured",
             "label": "Captured",
             "text": "5",
-            "value": 5
+            "value": 5.0
           },
           {
             "key": "flagged",
             "label": "With problems",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
-        "status": "watch",
+        "next": "culprit explain mariadb-demo --query-id 375c64398248650e",
+        "status": "info",
         "takeaway": "One of the 5 captured plans has something to fix: a temporary table and filesort (89% of database time).",
         "title": "Plans"
       },
@@ -562,7 +550,7 @@
             "value": 0.042947746202236715
           }
         ],
-        "next": null,
+        "next": "culprit waits mariadb-demo",
         "status": "good",
         "takeaway": "Storage answers quickly: reads average 43 µs.",
         "title": "Storage"
@@ -589,10 +577,10 @@
             "key": "per-minute",
             "label": "New per minute",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mariadb-demo",
         "status": "good",
         "takeaway": "Connections are reused: 1 new a minute.",
         "title": "Connections"
@@ -603,7 +591,7 @@
         "items": [],
         "key": "replication",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mariadb-demo",
         "status": "good",
         "takeaway": "MariaDB isn't a replica here and reports none: nothing can fall behind.",
         "title": "Replication"
@@ -614,7 +602,7 @@
         "items": [],
         "key": "failures",
         "metrics": [],
-        "next": null,
+        "next": "culprit findings mariadb-demo",
         "status": "unavailable",
         "takeaway": "MariaDB reported no failed or cancelled runs per statement in this scan.",
         "title": "Failing queries"
@@ -629,13 +617,13 @@
             "key": "queries",
             "label": "Queries",
             "text": "6",
-            "value": 6
+            "value": 6.0
           },
           {
             "key": "plans",
             "label": "With plans",
             "text": "5",
-            "value": 5
+            "value": 5.0
           },
           {
             "key": "window-hours",
@@ -647,10 +635,10 @@
             "key": "locked",
             "label": "Locked checks",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit doctor mariadb-demo",
         "status": "watch",
         "takeaway": "performance_schema covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
         "title": "Query statistics"
@@ -680,7 +668,7 @@
         "items": [],
         "key": "db-time",
         "metrics": [],
-        "next": null,
+        "next": "culprit changes mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "No query history, so database time isn't measured.",
         "title": "Database time"
@@ -702,17 +690,6 @@
           },
           {
             "at": null,
-            "finding_id": "memory-queue:server",
-            "id": "memory-queue:server",
-            "kind": "finding",
-            "label": "Waiting for memory takes 6% of all waiting",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "6% of waits"
-          },
-          {
-            "at": null,
             "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
             "id": "unindexed-fk:shop.ticket_events(ticket_id)",
             "kind": "finding",
@@ -721,6 +698,17 @@
             "share": null,
             "status": "info",
             "value": "800K rows unindexed"
+          },
+          {
+            "at": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
+            "id": "deadlocks:key-lookup:shop.customers",
+            "kind": "finding",
+            "label": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "1 deadlock"
           }
         ],
         "key": "findings",
@@ -729,24 +717,24 @@
             "key": "high",
             "label": "High",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "1",
-            "value": 1
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "11",
-            "value": 11
+            "text": "7",
+            "value": 7.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mssql-demo-staging",
         "status": "bad",
-        "takeaway": "13 opportunities, 1 of them high.",
+        "takeaway": "8 opportunities, 1 of them high.",
         "title": "Findings"
       },
       {
@@ -755,7 +743,7 @@
         "items": [],
         "key": "top-queries",
         "metrics": [],
-        "next": null,
+        "next": "culprit top mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "No query history, so there is no query list.",
         "title": "Top queries"
@@ -791,7 +779,7 @@
             "finding_id": null,
             "id": "memory",
             "kind": "wait",
-            "label": "Memory grants",
+            "label": "Memory",
             "query_id": null,
             "share": 0.05584509489064804,
             "status": null,
@@ -826,10 +814,10 @@
             "key": "total",
             "label": "Waiting since start",
             "text": "2 min",
-            "value": 106491
+            "value": 106491.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mssql-demo-staging",
         "status": "watch",
         "takeaway": "Most time goes to in-memory contention (77%), then parallel queries (17%).",
         "title": "Where time goes"
@@ -840,7 +828,7 @@
         "items": [],
         "key": "now",
         "metrics": [],
-        "next": null,
+        "next": "culprit live mssql-demo-staging",
         "status": "info",
         "takeaway": "Sessions weren't read for this dashboard.",
         "title": "Right now"
@@ -851,7 +839,7 @@
         "items": [],
         "key": "health",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "This scan recorded no health counters.",
         "title": "Health"
@@ -889,16 +877,16 @@
             "key": "count",
             "label": "Deadlocks",
             "text": "2",
-            "value": 2
+            "value": 2.0
           }
         ],
-        "next": null,
+        "next": "culprit deadlocks mssql-demo-staging",
         "status": "watch",
         "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
         "title": "Deadlocks"
       },
       {
-        "detail": "No plans were captured, so plan-based candidates are missing.",
+        "detail": "Index usage counters have counted for 2 min; an index has to go unread for a week before it's listed to clean up.",
         "fix_sql": null,
         "items": [
           {
@@ -914,17 +902,6 @@
           },
           {
             "at": null,
-            "finding_id": "unused-index:shop.orders",
-            "id": "shop.orders.ix_orders_status_created",
-            "kind": "index-cleanup",
-            "label": "ix_orders_status_created on orders",
-            "query_id": null,
-            "share": null,
-            "status": null,
-            "value": "32.3 MB"
-          },
-          {
-            "at": null,
             "finding_id": "duplicate-index:shop.orders.ix_orders_status",
             "id": "shop.orders.ix_orders_status",
             "kind": "index-cleanup",
@@ -933,6 +910,17 @@
             "share": null,
             "status": null,
             "value": "26.5 MB"
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:shop.products.ix_products_sku",
+            "id": "shop.products.ix_products_sku",
+            "kind": "index-cleanup",
+            "label": "ix_products_sku on products",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "648 KB"
           }
         ],
         "key": "indexes",
@@ -941,30 +929,30 @@
             "key": "add",
             "label": "To add",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "cleanup",
             "label": "To clean up",
-            "text": "5",
-            "value": 5
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "reclaim",
             "label": "Space back",
-            "text": "90.2 MB",
-            "value": 94543872
+            "text": "27.1 MB",
+            "value": 28459008.0
           },
           {
             "key": "tables",
             "label": "Tables to look at",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit indexes mssql-demo-staging",
         "status": "info",
-        "takeaway": "One new index is worth a look; 5 indexes can go (90.2 MB).",
+        "takeaway": "One new index is worth a look; 2 indexes can go (27.1 MB).",
         "title": "Indexes"
       },
       {
@@ -984,7 +972,7 @@
         "items": [],
         "key": "storage",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "This scan has no storage timings.",
         "title": "Storage"
@@ -995,7 +983,7 @@
         "items": [],
         "key": "connections",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "This scan has no connection counters.",
         "title": "Connections"
@@ -1006,7 +994,7 @@
         "items": [],
         "key": "replication",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mssql-demo-staging",
         "status": "good",
         "takeaway": "No availability group or geo-replica: nothing can fall behind.",
         "title": "Replication"
@@ -1017,7 +1005,7 @@
         "items": [],
         "key": "failures",
         "metrics": [],
-        "next": null,
+        "next": "culprit findings mssql-demo-staging",
         "status": "unavailable",
         "takeaway": "No query history, so failed runs aren't counted.",
         "title": "Failing queries"
@@ -1044,10 +1032,10 @@
             "key": "locked",
             "label": "Locked checks",
             "text": "5",
-            "value": 5
+            "value": 5.0
           }
         ],
-        "next": null,
+        "next": "culprit doctor mssql-demo-staging",
         "status": "bad",
         "takeaway": "No query history: Query Store is OFF on this database.",
         "title": "Query statistics"
@@ -1067,7 +1055,7 @@
     "database": "culprit_demo",
     "engine": "mssql",
     "environment": "local",
-    "headline": "31 opportunities; the top 3 touch 61% of database time.",
+    "headline": "25 opportunities; the top 3 touch 83% of database time.",
     "product": "SQL Server 2022",
     "report_id": "20261011T121347.162Z",
     "taken_at": "2026-10-11T12:13:47Z",
@@ -1088,7 +1076,7 @@
             "key": "runs",
             "label": "Runs",
             "text": "71K",
-            "value": 71426
+            "value": 71426.0
           },
           {
             "key": "cpu-share",
@@ -1103,7 +1091,7 @@
             "value": 4.583333
           }
         ],
-        "next": null,
+        "next": "culprit changes mssql-demo",
         "status": "good",
         "takeaway": "Database time is steady: 6 min over the last 5 hours.",
         "title": "Database time"
@@ -1114,14 +1102,14 @@
         "items": [
           {
             "at": null,
-            "finding_id": "lock-time:138",
-            "id": "lock-time:138",
+            "finding_id": "hot-rows:shop.orders",
+            "id": "hot-rows:shop.orders",
             "kind": "finding",
-            "label": "An update of orders spends nearly all its time waiting on locks, 28.7 s per run",
+            "label": "Sessions wait 37.3 s each on row locks in orders",
             "query_id": null,
             "share": 0.34120252699679854,
             "status": "bad",
-            "value": "2 min waiting on locks"
+            "value": "3 min waiting on locks"
           },
           {
             "at": null,
@@ -1139,7 +1127,7 @@
             "finding_id": "plan-insights:nested-loops:query-263",
             "id": "plan-insights:nested-loops:query-263",
             "kind": "finding",
-            "label": "Repeats its read of order_items 1.5M times, once per row of order_items",
+            "label": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
             "query_id": null,
             "share": 0.2673650901995407,
             "status": "watch",
@@ -1151,25 +1139,25 @@
           {
             "key": "high",
             "label": "High",
-            "text": "5",
-            "value": 5
+            "text": "6",
+            "value": 6.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "11",
-            "value": 11
+            "text": "6",
+            "value": 6.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "15",
-            "value": 15
+            "text": "13",
+            "value": 13.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mssql-demo",
         "status": "bad",
-        "takeaway": "31 opportunities; the top 3 touch 61% of database time.",
+        "takeaway": "25 opportunities; the top 3 touch 83% of database time.",
         "title": "Findings"
       },
       {
@@ -1250,10 +1238,10 @@
             "key": "queries",
             "label": "Queries",
             "text": "16",
-            "value": 16
+            "value": 16.0
           }
         ],
-        "next": null,
+        "next": "culprit top mssql-demo",
         "status": "info",
         "takeaway": "One query is 34% of database time: an update of orders.",
         "title": "Top queries"
@@ -1289,7 +1277,7 @@
             "finding_id": null,
             "id": "memory",
             "kind": "wait",
-            "label": "Memory grants",
+            "label": "Memory",
             "query_id": "9",
             "share": 0.05584509489064804,
             "status": null,
@@ -1324,10 +1312,10 @@
             "key": "total",
             "label": "Waiting",
             "text": "2 min",
-            "value": 106491
+            "value": 106491.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mssql-demo",
         "status": "watch",
         "takeaway": "Most time goes to in-memory contention (77%), then parallel queries (17%).",
         "title": "Where time goes"
@@ -1338,7 +1326,7 @@
         "items": [],
         "key": "now",
         "metrics": [],
-        "next": null,
+        "next": "culprit live mssql-demo",
         "status": "info",
         "takeaway": "Sessions weren't read for this dashboard.",
         "title": "Right now"
@@ -1442,22 +1430,22 @@
             "key": "bad",
             "label": "Bad",
             "text": "0",
-            "value": 0
+            "value": 0.0
           },
           {
             "key": "watch",
             "label": "Watch",
             "text": "0",
-            "value": 0
+            "value": 0.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
             "text": "7",
-            "value": 7
+            "value": 7.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mssql-demo",
         "status": "good",
         "takeaway": "All 7 graded signals look healthy.",
         "title": "Health"
@@ -1495,16 +1483,16 @@
             "key": "count",
             "label": "Deadlocks",
             "text": "2",
-            "value": 2
+            "value": 2.0
           }
         ],
-        "next": null,
+        "next": "culprit deadlocks mssql-demo",
         "status": "watch",
         "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
         "title": "Deadlocks"
       },
       {
-        "detail": "Index usage counted in the hour since the server last restarted.",
+        "detail": "Index usage counters have counted for 1 h 7 min; an index has to go unread for a week before it's listed to clean up.",
         "fix_sql": null,
         "items": [
           {
@@ -1542,17 +1530,6 @@
           },
           {
             "at": null,
-            "finding_id": "unused-index:shop.orders",
-            "id": "shop.orders.ix_orders_status_created",
-            "kind": "index-cleanup",
-            "label": "ix_orders_status_created on orders",
-            "query_id": null,
-            "share": null,
-            "status": null,
-            "value": "32.3 MB"
-          },
-          {
-            "at": null,
             "finding_id": "duplicate-index:shop.orders.ix_orders_status",
             "id": "shop.orders.ix_orders_status",
             "kind": "index-cleanup",
@@ -1561,6 +1538,17 @@
             "share": null,
             "status": null,
             "value": "26.5 MB"
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:shop.products.ix_products_sku",
+            "id": "shop.products.ix_products_sku",
+            "kind": "index-cleanup",
+            "label": "ix_products_sku on products",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "648 KB"
           }
         ],
         "key": "indexes",
@@ -1569,30 +1557,30 @@
             "key": "add",
             "label": "To add",
             "text": "3",
-            "value": 3
+            "value": 3.0
           },
           {
             "key": "cleanup",
             "label": "To clean up",
-            "text": "5",
-            "value": 5
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "reclaim",
             "label": "Space back",
-            "text": "90.2 MB",
-            "value": 94543872
+            "text": "27.1 MB",
+            "value": 28459008.0
           },
           {
             "key": "tables",
             "label": "Tables to look at",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit indexes mssql-demo",
         "status": "info",
-        "takeaway": "3 new indexes would help queries that take 8% of database time; 5 indexes can go (90.2 MB).",
+        "takeaway": "3 new indexes would help queries that take 8% of database time; 2 indexes can go (27.1 MB).",
         "title": "Indexes"
       },
       {
@@ -1649,19 +1637,19 @@
           {
             "key": "captured",
             "label": "Captured",
-            "text": "13",
-            "value": 13
+            "text": "12",
+            "value": 12.0
           },
           {
             "key": "flagged",
             "label": "With problems",
             "text": "5",
-            "value": 5
+            "value": 5.0
           }
         ],
-        "next": null,
+        "next": "culprit explain mssql-demo --query-id 249",
         "status": "watch",
-        "takeaway": "5 of 13 captured plans have something to fix; a missing index shows up in 3 plans (8% of database time).",
+        "takeaway": "5 of 12 captured plans have something to fix; a missing index shows up in 3 plans (8% of database time).",
         "title": "Plans"
       },
       {
@@ -1706,7 +1694,7 @@
             "value": 0.63199539082005
           }
         ],
-        "next": null,
+        "next": "culprit waits mssql-demo",
         "status": "good",
         "takeaway": "Storage answers quickly: reads average 40 µs, log writes 632 µs.",
         "title": "Storage"
@@ -1721,10 +1709,10 @@
             "key": "per-minute",
             "label": "New per minute",
             "text": "3",
-            "value": 3
+            "value": 3.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mssql-demo",
         "status": "good",
         "takeaway": "Connections are reused: 3 new a minute.",
         "title": "Connections"
@@ -1735,7 +1723,7 @@
         "items": [],
         "key": "replication",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mssql-demo",
         "status": "good",
         "takeaway": "No availability group or geo-replica: nothing can fall behind.",
         "title": "Replication"
@@ -1762,7 +1750,7 @@
             "kind": "query",
             "label": "a read from order_items",
             "query_id": "263",
-            "share": 1,
+            "share": 1.0,
             "status": "bad",
             "value": "every run"
           },
@@ -1784,16 +1772,16 @@
             "key": "statements",
             "label": "Statements",
             "text": "3",
-            "value": 3
+            "value": 3.0
           },
           {
             "key": "runs",
             "label": "Unfinished runs",
             "text": "57",
-            "value": 57
+            "value": 57.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mssql-demo",
         "status": "bad",
         "takeaway": "A read from order_items times out on every run, at about 15 s.",
         "title": "Failing queries"
@@ -1820,13 +1808,13 @@
             "key": "queries",
             "label": "Queries",
             "text": "16",
-            "value": 16
+            "value": 16.0
           },
           {
             "key": "plans",
             "label": "With plans",
             "text": "13",
-            "value": 13
+            "value": 13.0
           },
           {
             "key": "window-hours",
@@ -1838,10 +1826,10 @@
             "key": "locked",
             "label": "Locked checks",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit doctor mssql-demo",
         "status": "info",
         "takeaway": "Query Store covers the last 5 hours: 16 queries, 13 with plans.",
         "title": "Query statistics"
@@ -1854,15 +1842,14 @@
       "failures",
       "health",
       "statistics",
-      "deadlocks",
-      "plans"
+      "deadlocks"
     ],
     "connection": "mysql-demo",
     "coverage": "performance_schema, the 2 minutes since statistics were reset",
     "database": "shop",
     "engine": "mysql",
     "environment": "local",
-    "headline": "14 opportunities; the top 3 touch 84% of database time.",
+    "headline": "13 opportunities; the top 3 touch 84% of database time.",
     "product": "MySQL 8.4.11",
     "report_id": "20261011T120900.394Z",
     "taken_at": "2026-10-11T12:09:00Z",
@@ -1883,7 +1870,7 @@
             "key": "runs",
             "label": "Runs",
             "text": "40K",
-            "value": 40160
+            "value": 40160.0
           },
           {
             "key": "window-hours",
@@ -1892,7 +1879,7 @@
             "value": 0.029722222222222223
           }
         ],
-        "next": null,
+        "next": "culprit changes mysql-demo",
         "status": "info",
         "takeaway": "5 min of database time over the 2 minutes since statistics were reset.",
         "title": "Database time"
@@ -1909,7 +1896,7 @@
             "label": "A read from orders spends nearly all its time waiting on locks, 28.8 s per run",
             "query_id": null,
             "share": 0.400906129644737,
-            "status": "bad",
+            "status": "info",
             "value": "2 min waiting on locks"
           },
           {
@@ -1920,7 +1907,7 @@
             "label": "An update of orders spends nearly all its time waiting on locks, 14.4 s per run",
             "query_id": null,
             "share": 0.4009056543313076,
-            "status": "bad",
+            "status": "info",
             "value": "2 min waiting on locks"
           },
           {
@@ -1940,25 +1927,25 @@
           {
             "key": "high",
             "label": "High",
-            "text": "3",
-            "value": 3
+            "text": "1",
+            "value": 1.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "4",
-            "value": 4
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "7",
-            "value": 7
+            "text": "10",
+            "value": 10.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mysql-demo",
         "status": "bad",
-        "takeaway": "14 opportunities; the top 3 touch 84% of database time.",
+        "takeaway": "13 opportunities; the top 3 touch 84% of database time.",
         "title": "Findings"
       },
       {
@@ -2039,10 +2026,10 @@
             "key": "queries",
             "label": "Queries",
             "text": "10",
-            "value": 10
+            "value": 10.0
           }
         ],
-        "next": null,
+        "next": "culprit top mysql-demo",
         "status": "info",
         "takeaway": "One query is 40% of database time: a read from orders.",
         "title": "Top queries"
@@ -2080,7 +2067,7 @@
             "kind": "wait",
             "label": "Locks",
             "query_id": "4167fe7f2c20deb7",
-            "share": 0.00007810784989775007,
+            "share": 7.810784989775007e-05,
             "status": null,
             "value": "<1%"
           }
@@ -2094,7 +2081,7 @@
             "value": 82095.7673703
           }
         ],
-        "next": null,
+        "next": "culprit waits mysql-demo",
         "status": "info",
         "takeaway": "Most time goes to row access (61%), then disk reads (39%).",
         "title": "Where time goes"
@@ -2105,7 +2092,7 @@
         "items": [],
         "key": "now",
         "metrics": [],
-        "next": null,
+        "next": "culprit live mysql-demo",
         "status": "info",
         "takeaway": "Sessions weren't read for this dashboard.",
         "title": "Right now"
@@ -2209,22 +2196,22 @@
             "key": "bad",
             "label": "Bad",
             "text": "2",
-            "value": 2
+            "value": 2.0
           },
           {
             "key": "watch",
             "label": "Watch",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
             "text": "5",
-            "value": 5
+            "value": 5.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mysql-demo",
         "status": "bad",
         "takeaway": "Temporary tables on disk: 68%; under 10% of temporary tables is healthy.",
         "title": "Health"
@@ -2251,10 +2238,10 @@
             "key": "count",
             "label": "Deadlocks",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit deadlocks mysql-demo",
         "status": "watch",
         "takeaway": "One deadlock in the last 6 hours: opposite access order on shop.customers, shop.orders.",
         "title": "Deadlocks"
@@ -2287,14 +2274,14 @@
           },
           {
             "at": null,
-            "finding_id": "unused-index:shop.customers",
-            "id": "shop.customers.ix_customers_region",
+            "finding_id": "duplicate-index:shop.products.ix_products_sku",
+            "id": "shop.products.ix_products_sku",
             "kind": "index-cleanup",
-            "label": "ix_customers_region on customers",
+            "label": "ix_products_sku on products",
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "4.5 MB"
+            "value": "432 KB"
           }
         ],
         "key": "indexes",
@@ -2303,30 +2290,30 @@
             "key": "add",
             "label": "To add",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "cleanup",
             "label": "To clean up",
-            "text": "3",
-            "value": 3
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "reclaim",
             "label": "Space back",
-            "text": "15.5 MB",
-            "value": 16203776
+            "text": "10.9 MB",
+            "value": 11468800.0
           },
           {
             "key": "tables",
             "label": "Tables to look at",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit indexes mysql-demo",
         "status": "info",
-        "takeaway": "One new index would help queries that take 1% of database time; 3 indexes can go (15.5 MB).",
+        "takeaway": "One new index would help queries that take 1% of database time; 2 indexes can go (10.9 MB).",
         "title": "Indexes"
       },
       {
@@ -2341,18 +2328,7 @@
             "label": "A temporary table and filesort",
             "query_id": "04cd7be9c366fadc",
             "share": 0.11989445082158064,
-            "status": "bad",
-            "value": "1 plan"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "scan-filter",
-            "kind": "rule",
-            "label": "A scan reading far more rows than it keeps",
-            "query_id": "19bd4ff468839ea3",
-            "share": 0.014800847333966714,
-            "status": "bad",
+            "status": "info",
             "value": "1 plan"
           }
         ],
@@ -2362,18 +2338,18 @@
             "key": "captured",
             "label": "Captured",
             "text": "8",
-            "value": 8
+            "value": 8.0
           },
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "2",
-            "value": 2
+            "text": "1",
+            "value": 1.0
           }
         ],
-        "next": null,
-        "status": "watch",
-        "takeaway": "2 of 8 captured plans have something to fix; the costliest is a temporary table and filesort (12% of database time).",
+        "next": "culprit explain mysql-demo --query-id 04cd7be9c366fadc",
+        "status": "info",
+        "takeaway": "One of the 8 captured plans has something to fix: a temporary table and filesort (12% of database time).",
         "title": "Plans"
       },
       {
@@ -2440,7 +2416,7 @@
             "value": 0.00460215403164557
           }
         ],
-        "next": null,
+        "next": "culprit waits mysql-demo",
         "status": "good",
         "takeaway": "Storage answers quickly: reads average 8 µs, log writes 5 µs.",
         "title": "Storage"
@@ -2467,10 +2443,10 @@
             "key": "per-minute",
             "label": "New per minute",
             "text": "4",
-            "value": 4
+            "value": 4.0
           }
         ],
-        "next": null,
+        "next": "culprit waits mysql-demo",
         "status": "good",
         "takeaway": "Connections are reused: 4 new a minute.",
         "title": "Connections"
@@ -2481,7 +2457,7 @@
         "items": [],
         "key": "replication",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits mysql-demo",
         "status": "good",
         "takeaway": "MySQL isn't a replica here and reports none: nothing can fall behind.",
         "title": "Replication"
@@ -2519,16 +2495,16 @@
             "key": "statements",
             "label": "Statements",
             "text": "2",
-            "value": 2
+            "value": 2.0
           },
           {
             "key": "runs",
             "label": "Unfinished runs",
             "text": "13",
-            "value": 13
+            "value": 13.0
           }
         ],
-        "next": null,
+        "next": "culprit findings mysql-demo",
         "status": "bad",
         "takeaway": "An update of orders fails 28% of the time (1205 lock wait timeout).",
         "title": "Failing queries"
@@ -2543,13 +2519,13 @@
             "key": "queries",
             "label": "Queries",
             "text": "10",
-            "value": 10
+            "value": 10.0
           },
           {
             "key": "plans",
             "label": "With plans",
             "text": "8",
-            "value": 8
+            "value": 8.0
           },
           {
             "key": "window-hours",
@@ -2561,10 +2537,10 @@
             "key": "locked",
             "label": "Locked checks",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit doctor mysql-demo",
         "status": "watch",
         "takeaway": "performance_schema covers only the 2 minutes since statistics were reset, so the numbers are thin until it has seen more.",
         "title": "Query statistics"
@@ -2585,7 +2561,7 @@
     "database": "demo",
     "engine": "postgres",
     "environment": "local",
-    "headline": "22 opportunities; the top 3 touch 67% of database time.",
+    "headline": "17 opportunities; the top 3 touch 67% of database time.",
     "product": "PostgreSQL 18.6",
     "report_id": "20261011T115421.485Z",
     "taken_at": "2026-10-11T11:54:21Z",
@@ -2606,7 +2582,7 @@
             "key": "runs",
             "label": "Runs",
             "text": "12K",
-            "value": 12029
+            "value": 12029.0
           },
           {
             "key": "window-hours",
@@ -2615,7 +2591,7 @@
             "value": 4.87542468
           }
         ],
-        "next": null,
+        "next": "culprit changes pg-demo",
         "status": "good",
         "takeaway": "Database time is steady: 3 min over the 5 hours since statistics were reset.",
         "title": "Database time"
@@ -2629,7 +2605,7 @@
             "finding_id": "temp-spill:9065391607317686058",
             "id": "temp-spill:9065391607317686058",
             "kind": "finding",
-            "label": "A read from orders writes 19.9 MB of temp files per run",
+            "label": "A read from orders writes about 19.9 MB of temp files per run",
             "query_id": null,
             "share": 0.4402906625894278,
             "status": "bad",
@@ -2654,7 +2630,7 @@
             "label": "orders is read in full to find rows by customer_id",
             "query_id": null,
             "share": 0.23358130099961572,
-            "status": "bad",
+            "status": "watch",
             "value": "23% of DB time"
           }
         ],
@@ -2663,25 +2639,25 @@
           {
             "key": "high",
             "label": "High",
-            "text": "2",
-            "value": 2
+            "text": "1",
+            "value": 1.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "11",
-            "value": 11
+            "text": "8",
+            "value": 8.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "9",
-            "value": 9
+            "text": "8",
+            "value": 8.0
           }
         ],
-        "next": null,
+        "next": "culprit findings pg-demo",
         "status": "bad",
-        "takeaway": "22 opportunities; the top 3 touch 67% of database time.",
+        "takeaway": "17 opportunities; the top 3 touch 67% of database time.",
         "title": "Findings"
       },
       {
@@ -2715,7 +2691,7 @@
             "finding_id": null,
             "id": "-8886085649470066503",
             "kind": "query",
-            "label": "a call to pg_sleep",
+            "label": "a call to pg_sleep (ran once)",
             "query_id": "-8886085649470066503",
             "share": 0.12411350992902503,
             "status": null,
@@ -2726,7 +2702,7 @@
             "finding_id": null,
             "id": "4911431806993420100",
             "kind": "query",
-            "label": "an update of products",
+            "label": "an update of products (ran once)",
             "query_id": "4911431806993420100",
             "share": 0.1175241790094473,
             "status": null,
@@ -2762,10 +2738,10 @@
             "key": "queries",
             "label": "Queries",
             "text": "19",
-            "value": 19
+            "value": 19.0
           }
         ],
-        "next": null,
+        "next": "culprit top pg-demo",
         "status": "info",
         "takeaway": "One query is 44% of database time: a read from orders.",
         "title": "Top queries"
@@ -2806,7 +2782,7 @@
             "value": 249580.2417549999
           }
         ],
-        "next": null,
+        "next": "culprit waits pg-demo",
         "status": "info",
         "takeaway": "Disk reads take 5%; the other 95% isn't broken down by PostgreSQL.",
         "title": "Where time goes"
@@ -2817,7 +2793,7 @@
         "items": [],
         "key": "now",
         "metrics": [],
-        "next": null,
+        "next": "culprit live pg-demo",
         "status": "info",
         "takeaway": "Sessions weren't read for this dashboard.",
         "title": "Right now"
@@ -2921,22 +2897,22 @@
             "key": "bad",
             "label": "Bad",
             "text": "1",
-            "value": 1
+            "value": 1.0
           },
           {
             "key": "watch",
             "label": "Watch",
             "text": "4",
-            "value": 4
+            "value": 4.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
             "text": "4",
-            "value": 4
+            "value": 4.0
           }
         ],
-        "next": null,
+        "next": "culprit waits pg-demo",
         "status": "bad",
         "takeaway": "Reads served from memory: 55%; above 99% is healthy for most workloads.",
         "title": "Health"
@@ -2951,10 +2927,10 @@
             "key": "counted",
             "label": "Counted",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit deadlocks pg-demo",
         "status": "watch",
         "takeaway": "PostgreSQL counted 1 deadlock in the 4 h 53 min since its statistics were reset; it keeps no details to explain them.",
         "title": "Deadlocks"
@@ -3009,14 +2985,14 @@
           },
           {
             "at": null,
-            "finding_id": "unused-index:public.customers",
-            "id": "public.customers.customers_region_idx",
+            "finding_id": "duplicate-index:public.products.products_sku_idx",
+            "id": "public.products.products_sku_idx",
             "kind": "index-cleanup",
-            "label": "customers_region_idx on customers",
+            "label": "products_sku_idx on products",
             "query_id": null,
             "share": null,
             "status": null,
-            "value": "1.3 MB"
+            "value": "328 KB"
           }
         ],
         "key": "indexes",
@@ -3025,30 +3001,30 @@
             "key": "add",
             "label": "To add",
             "text": "3",
-            "value": 3
+            "value": 3.0
           },
           {
             "key": "cleanup",
             "label": "To clean up",
-            "text": "4",
-            "value": 4
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "reclaim",
             "label": "Space back",
-            "text": "16.1 MB",
-            "value": 16834560
+            "text": "13.6 MB",
+            "value": 14311424.0
           },
           {
             "key": "tables",
             "label": "Tables to look at",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit indexes pg-demo",
         "status": "watch",
-        "takeaway": "3 new indexes would help queries that take 28% of database time; 4 indexes can go (16.1 MB).",
+        "takeaway": "3 new indexes would help queries that take 28% of database time; 2 indexes can go (13.6 MB).",
         "title": "Indexes"
       },
       {
@@ -3072,19 +3048,19 @@
           {
             "key": "captured",
             "label": "Captured",
-            "text": "12",
-            "value": 12
+            "text": "8",
+            "value": 8.0
           },
           {
             "key": "flagged",
             "label": "With problems",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit explain pg-demo --query-id 9065391607317686058",
         "status": "watch",
-        "takeaway": "One of the 12 captured plans has something to fix: a large sort (44% of database time).",
+        "takeaway": "One of the 8 captured plans has something to fix: a large sort (44% of database time).",
         "title": "Plans"
       },
       {
@@ -3112,7 +3088,7 @@
             "value": 0.0025107618709221523
           }
         ],
-        "next": null,
+        "next": "culprit waits pg-demo",
         "status": "good",
         "takeaway": "Storage answers quickly: reads average 3 µs.",
         "title": "Storage"
@@ -3161,10 +3137,10 @@
             "key": "per-minute",
             "label": "New per minute",
             "text": "1",
-            "value": 1
+            "value": 1.0
           }
         ],
-        "next": null,
+        "next": "culprit waits pg-demo",
         "status": "good",
         "takeaway": "Connections are reused: 1 new a minute.",
         "title": "Connections"
@@ -3187,7 +3163,7 @@
         ],
         "key": "replication",
         "metrics": [],
-        "next": null,
+        "next": "culprit waits pg-demo",
         "status": "watch",
         "takeaway": "The inactive replication slot analytics_slot keeps 1.1 GB of WAL.",
         "title": "Replication"
@@ -3198,7 +3174,7 @@
         "items": [],
         "key": "failures",
         "metrics": [],
-        "next": null,
+        "next": "culprit findings pg-demo",
         "status": "unavailable",
         "takeaway": "PostgreSQL doesn't count failed runs per statement; its log does (log_min_error_statement).",
         "title": "Failing queries"
@@ -3213,13 +3189,13 @@
             "key": "queries",
             "label": "Queries",
             "text": "19",
-            "value": 19
+            "value": 19.0
           },
           {
             "key": "plans",
             "label": "With plans",
             "text": "12",
-            "value": 12
+            "value": 12.0
           },
           {
             "key": "window-hours",
@@ -3231,10 +3207,10 @@
             "key": "locked",
             "label": "Locked checks",
             "text": "0",
-            "value": 0
+            "value": 0.0
           }
         ],
-        "next": null,
+        "next": "culprit doctor pg-demo",
         "status": "good",
         "takeaway": "pg_stat_statements covers the 5 hours since statistics were reset: 19 queries, 12 with plans.",
         "title": "Query statistics"

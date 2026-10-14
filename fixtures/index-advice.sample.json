@@ -2,7 +2,7 @@
   "mssql-demo": {
     "candidates": [
       {
-        "db_time_share": 0.16547628884843782,
+        "db_time_share": 0.060338932147242445,
         "estimated_improvement": 0.9947,
         "finding_id": "missing-index:shop.order_items(order_id)",
         "include": [],
@@ -14,11 +14,17 @@
           {
             "id": "9",
             "runs_per_day": null,
-            "share": 0.16547628884843782,
+            "share": 0.020009998182283568,
             "text": "SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1"
+          },
+          {
+            "id": "249",
+            "runs_per_day": null,
+            "share": 0.040328933964958874,
+            "text": "SELECT COUNT(*) FROM shop.orders o1 JOIN shop.customers c1 ON c1.id = o1.customer_id JOIN shop.order_items i1 ON i1.order_id = o1.id JOIN shop.products p1 ON p1.id = i1.product_id JOIN shop.orders o2 ON o2.customer_id = c1.id JOIN shop.orde"
           }
         ],
-        "reason": "SQL Server's optimizer asked for it 300 times in the hour since the server last restarted and estimates those lookups would be about 99% cheaper. The query behind it accounts for 17% of database time.",
+        "reason": "SQL Server's optimizer asked for it 300 times in the hour since the server last restarted and estimates those lookups would be about 99% cheaper. The 2 queries behind it account for 6% of database time.",
         "requests": [
           {
             "equality": [
@@ -40,11 +46,11 @@
           "The queries listed seek on the new index and read far fewer pages per run."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "shop.order_items received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       },
       {
-        "db_time_share": 0.12221322978535604,
+        "db_time_share": 0.014778470818232064,
         "estimated_improvement": 0.81,
         "finding_id": "missing-index:shop.orders(shipped_at)",
         "include": [
@@ -58,11 +64,11 @@
           {
             "id": "8",
             "runs_per_day": null,
-            "share": 0.12221322978535604,
+            "share": 0.014778470818232064,
             "text": "SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')"
           }
         ],
-        "reason": "SQL Server's optimizer asked for it 150 times in the hour since the server last restarted and estimates those lookups would be about 81% cheaper. The query behind it accounts for 12% of database time.",
+        "reason": "SQL Server's optimizer asked for it 150 times in the hour since the server last restarted and estimates those lookups would be about 81% cheaper. The query behind it accounts for 1% of database time.",
         "requests": [
           {
             "equality": [],
@@ -86,7 +92,7 @@
           "The queries listed seek on the new index and read far fewer pages per run."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       },
       {
@@ -110,89 +116,32 @@
           "Deletes from support_tickets no longer scan ticket_events."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "shop.ticket_events received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       }
     ],
     "cleanups": [
       {
-        "caveats": [],
-        "finding_id": "unused-index:shop.orders",
-        "index": "ix_orders_status_created",
-        "keys": [
-          "status",
-          "created_at"
+        "caveats": [
+          "ix_orders_status is narrower; keep it if a hot query scans it rather than seeking."
         ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.orders.",
-        "schema": "shop",
-        "size_bytes": 33890304.0,
-        "sql": "ALTER INDEX [ix_orders_status_created] ON [shop].[orders] DISABLE;",
-        "table": "orders",
-        "writes": 0.0
-      },
-      {
-        "caveats": [],
         "finding_id": "duplicate-index:shop.orders.ix_orders_status",
         "index": "ix_orders_status",
         "keys": [
           "status"
         ],
-        "kind": "unused",
+        "kind": "prefix",
         "other": "ix_orders_status_created",
         "other_keys": [
           "status",
           "created_at"
         ],
         "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, and its keys are the start of ix_orders_status_created (which isn't read either).",
+        "reason": "Its keys are the start of ix_orders_status_created's, so any seek it serves ix_orders_status_created serves too.",
         "schema": "shop",
         "size_bytes": 27795456.0,
-        "sql": "ALTER INDEX [ix_orders_status] ON [shop].[orders] DISABLE;",
+        "sql": "DROP INDEX [ix_orders_status] ON [shop].[orders];",
         "table": "orders",
-        "writes": 0.0
-      },
-      {
-        "caveats": [
-          "It supports the foreign key fk_order_items_product; deletes on the parent scan without it."
-        ],
-        "finding_id": "unused-index:shop.order_items",
-        "index": "ix_order_items_product_id",
-        "keys": [
-          "product_id"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.order_items.",
-        "schema": "shop",
-        "size_bytes": 27729920.0,
-        "sql": "ALTER INDEX [ix_order_items_product_id] ON [shop].[order_items] DISABLE;",
-        "table": "order_items",
-        "writes": 0.0
-      },
-      {
-        "caveats": [
-          "It supports the foreign key fk_support_tickets_customer; deletes on the parent scan without it."
-        ],
-        "finding_id": "unused-index:shop.support_tickets",
-        "index": "ix_support_tickets_customer_id",
-        "keys": [
-          "customer_id"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.support_tickets.",
-        "schema": "shop",
-        "size_bytes": 4464640.0,
-        "sql": "ALTER INDEX [ix_support_tickets_customer_id] ON [shop].[support_tickets] DISABLE;",
-        "table": "support_tickets",
         "writes": 0.0
       },
       {
@@ -219,14 +168,16 @@
     "connection": "mssql-demo",
     "counters": "in the hour since the server last restarted",
     "engine": "mssql",
-    "notes": [],
+    "notes": [
+      "Index usage counters have counted for 1 h 7 min; an index has to go unread for a week before it's listed to clean up."
+    ],
     "tables": [],
     "taken_at": "2026-10-11T12:13:47Z"
   },
   "pg-demo": {
     "candidates": [
       {
-        "db_time_share": 0.23975915432338366,
+        "db_time_share": 0.23358130099961572,
         "estimated_improvement": null,
         "finding_id": "filtered-scan:public.orders(customer_id)",
         "include": [],
@@ -238,7 +189,7 @@
           {
             "id": "5308963031944094559",
             "runs_per_day": null,
-            "share": 0.23975915432338366,
+            "share": 0.23358130099961572,
             "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2"
           }
         ],
@@ -254,11 +205,11 @@
           "Re-scan after the workload has run: the queries' share of database time drops."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "public.orders received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       },
       {
-        "db_time_share": 0.04319301160195652,
+        "db_time_share": 0.042080061020187354,
         "estimated_improvement": null,
         "finding_id": "filtered-scan:public.order_items(product_id)",
         "include": [],
@@ -270,7 +221,7 @@
           {
             "id": "-3722457391793582113",
             "runs_per_day": null,
-            "share": 0.04319301160195652,
+            "share": 0.042080061020187354,
             "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1"
           }
         ],
@@ -286,7 +237,7 @@
           "Re-scan after the workload has run: the queries' share of database time drops."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       },
       {
@@ -298,14 +249,7 @@
           "order_id"
         ],
         "lookups": null,
-        "queries": [
-          {
-            "id": "-3722457391793582113",
-            "runs_per_day": null,
-            "share": 0.04319301160195652,
-            "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1"
-          }
-        ],
+        "queries": [],
         "reason": "order_id is the foreign key to orders. Without an index, deleting or re-keying a row in orders reads all 1.0M rows of public.order_items looking for matches, and joins from orders can't seek.",
         "requests": [],
         "schema": "public",
@@ -317,7 +261,7 @@
           "Deletes from orders no longer scan order_items."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       }
     ],
@@ -347,24 +291,6 @@
       },
       {
         "caveats": [],
-        "finding_id": "unused-index:public.customers",
-        "index": "customers_region_idx",
-        "keys": [
-          "region"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to public.customers.",
-        "schema": "public",
-        "size_bytes": 1400832.0,
-        "sql": "DROP INDEX CONCURRENTLY public.customers_region_idx;",
-        "table": "customers",
-        "writes": null
-      },
-      {
-        "caveats": [],
         "finding_id": "duplicate-index:public.products.products_sku_idx",
         "index": "products_sku_idx",
         "keys": [
@@ -385,10 +311,11 @@
       }
     ],
     "connection": "pg-demo",
-    "counters": "in the hour since the server last restarted",
+    "counters": "in the 7 hours since the server last restarted",
     "engine": "postgres",
     "notes": [
-      "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters."
+      "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole tables, foreign keys, and the table scan counters.",
+      "Index usage counters have counted for 6 h 59 min; an index has to go unread for a week before it's listed to clean up."
     ],
     "tables": [],
     "taken_at": "2026-10-11T11:54:21Z"
@@ -396,7 +323,7 @@
   "mysql-demo": {
     "candidates": [
       {
-        "db_time_share": 0.09486494319727308,
+        "db_time_share": 0.014800847333966714,
         "estimated_improvement": null,
         "finding_id": "filtered-scan:shop.orders(promo_code)",
         "include": [],
@@ -408,7 +335,7 @@
           {
             "id": "19bd4ff468839ea3",
             "runs_per_day": null,
-            "share": 0.09486494319727308,
+            "share": 0.014800847333966714,
             "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
           }
         ],
@@ -424,7 +351,7 @@
           "Re-scan after the workload has run: the queries' share of database time drops."
         ],
         "widens": null,
-        "write_cost": null,
+        "write_cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
         "writes_per_day": null
       }
     ],
@@ -454,24 +381,6 @@
       },
       {
         "caveats": [],
-        "finding_id": "unused-index:shop.customers",
-        "index": "ix_customers_region",
-        "keys": [
-          "region"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.customers.",
-        "schema": "shop",
-        "size_bytes": 4734976.0,
-        "sql": "ALTER TABLE `shop`.`customers` ALTER INDEX `ix_customers_region` INVISIBLE;",
-        "table": "customers",
-        "writes": 0.0
-      },
-      {
-        "caveats": [],
         "finding_id": "duplicate-index:shop.products.ix_products_sku",
         "index": "ix_products_sku",
         "keys": [
@@ -495,7 +404,8 @@
     "counters": "in the hour since the server last restarted",
     "engine": "mysql",
     "notes": [
-      "MySQL doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema)."
+      "MySQL doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema).",
+      "Index usage counters have counted for 1 h 20 min; an index has to go unread for a week before it's listed to clean up."
     ],
     "tables": [],
     "taken_at": "2026-10-11T12:09:00Z"
@@ -529,83 +439,26 @@
     ],
     "cleanups": [
       {
-        "caveats": [],
-        "finding_id": "unused-index:shop.orders",
-        "index": "ix_orders_status_created",
-        "keys": [
-          "status",
-          "created_at"
+        "caveats": [
+          "ix_orders_status is narrower; keep it if a hot query scans it rather than seeking."
         ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.orders.",
-        "schema": "shop",
-        "size_bytes": 33890304.0,
-        "sql": "ALTER INDEX [ix_orders_status_created] ON [shop].[orders] DISABLE;",
-        "table": "orders",
-        "writes": 0.0
-      },
-      {
-        "caveats": [],
         "finding_id": "duplicate-index:shop.orders.ix_orders_status",
         "index": "ix_orders_status",
         "keys": [
           "status"
         ],
-        "kind": "unused",
+        "kind": "prefix",
         "other": "ix_orders_status_created",
         "other_keys": [
           "status",
           "created_at"
         ],
         "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, and its keys are the start of ix_orders_status_created (which isn't read either).",
+        "reason": "Its keys are the start of ix_orders_status_created's, so any seek it serves ix_orders_status_created serves too.",
         "schema": "shop",
         "size_bytes": 27795456.0,
-        "sql": "ALTER INDEX [ix_orders_status] ON [shop].[orders] DISABLE;",
+        "sql": "DROP INDEX [ix_orders_status] ON [shop].[orders];",
         "table": "orders",
-        "writes": 0.0
-      },
-      {
-        "caveats": [
-          "It supports the foreign key fk_order_items_product; deletes on the parent scan without it."
-        ],
-        "finding_id": "unused-index:shop.order_items",
-        "index": "ix_order_items_product_id",
-        "keys": [
-          "product_id"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.order_items.",
-        "schema": "shop",
-        "size_bytes": 27729920.0,
-        "sql": "ALTER INDEX [ix_order_items_product_id] ON [shop].[order_items] DISABLE;",
-        "table": "order_items",
-        "writes": 0.0
-      },
-      {
-        "caveats": [
-          "It supports the foreign key fk_support_tickets_customer; deletes on the parent scan without it."
-        ],
-        "finding_id": "unused-index:shop.support_tickets",
-        "index": "ix_support_tickets_customer_id",
-        "keys": [
-          "customer_id"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.support_tickets.",
-        "schema": "shop",
-        "size_bytes": 4464640.0,
-        "sql": "ALTER INDEX [ix_support_tickets_customer_id] ON [shop].[support_tickets] DISABLE;",
-        "table": "support_tickets",
         "writes": 0.0
       },
       {
@@ -630,49 +483,17 @@
       }
     ],
     "connection": "mssql-demo-staging",
-    "counters": "in the hour since the server last restarted",
+    "counters": "in the 2 minutes since the server last restarted",
     "engine": "mssql",
     "notes": [
+      "Index usage counters have counted for 2 min; an index has to go unread for a week before it's listed to clean up.",
       "No plans were captured, so plan-based candidates are missing."
     ],
     "tables": [],
     "taken_at": "2026-10-11T12:15:12Z"
   },
   "mariadb-demo": {
-    "candidates": [
-      {
-        "db_time_share": 0.03995229630841756,
-        "estimated_improvement": null,
-        "finding_id": "filtered-scan:shop.orders(promo_code)",
-        "include": [],
-        "keys": [
-          "promo_code"
-        ],
-        "lookups": null,
-        "queries": [
-          {
-            "id": "258e3c9b580f1ecc",
-            "runs_per_day": null,
-            "share": 0.03995229630841756,
-            "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
-          }
-        ],
-        "reason": "One query reads every row of shop.orders (499K rows) and keeps only those matching o.promo_code = 'SPRING9'; no index starts with promo_code.",
-        "requests": [],
-        "schema": "shop",
-        "source": "plan-scan",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
-        "table": "orders",
-        "table_rows": 498573.0,
-        "verify": [
-          "Explain one of the queries again: the scan of orders becomes a seek on the new index.",
-          "Re-scan after the workload has run: the queries' share of database time drops."
-        ],
-        "widens": null,
-        "write_cost": null,
-        "writes_per_day": null
-      }
-    ],
+    "candidates": [],
     "cleanups": [
       {
         "caveats": [
@@ -695,24 +516,6 @@
         "size_bytes": 9977856.0,
         "sql": "ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;",
         "table": "orders",
-        "writes": 0.0
-      },
-      {
-        "caveats": [],
-        "finding_id": "unused-index:shop.customers",
-        "index": "ix_customers_region",
-        "keys": [
-          "region"
-        ],
-        "kind": "unused",
-        "other": null,
-        "other_keys": [],
-        "reads": 0.0,
-        "reason": "Not read once in the hour since the server last restarted, yet updated with every write to shop.customers.",
-        "schema": "shop",
-        "size_bytes": 4734976.0,
-        "sql": "ALTER TABLE `shop`.`customers` ALTER INDEX `ix_customers_region` IGNORED;",
-        "table": "customers",
         "writes": 0.0
       },
       {
@@ -740,9 +543,39 @@
     "counters": "in the hour since the server last restarted",
     "engine": "mysql",
     "notes": [
-      "MariaDB doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema)."
+      "MariaDB doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema).",
+      "Index usage counters have counted for 1 h 9 min; an index has to go unread for a week before it's listed to clean up."
     ],
-    "tables": [],
+    "tables": [
+      {
+        "finding_id": "scan-heavy:shop.orders",
+        "forwarded_per_day": null,
+        "full_scans_per_day": null,
+        "indexes": 4.0,
+        "kind": "scan-heavy",
+        "queries": [
+          {
+            "id": "375c64398248650e",
+            "runs_per_day": null,
+            "share": 0.8855883790586936,
+            "text": "SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?"
+          },
+          {
+            "id": "258e3c9b580f1ecc",
+            "runs_per_day": null,
+            "share": 0.03995229630841756,
+            "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
+          }
+        ],
+        "reason": "Read in full 80 times in the hour since the server last restarted (40.0M rows without an index). Explain the statements below to see which filter has no index.",
+        "rows": 498573.0,
+        "rows_scanned_per_day": null,
+        "schema": "shop",
+        "sql": null,
+        "table": "orders",
+        "writes_per_day": null
+      }
+    ],
     "taken_at": "2026-10-11T16:05:40Z"
   }
 }

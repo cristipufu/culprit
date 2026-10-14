@@ -1,7 +1,113 @@
 {
+  "mariadb-demo": {
+    "258e3c9b580f1ecc": {
+      "items": [],
+      "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
+    },
+    "375c64398248650e": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MariaDB builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
+          "fix": "An index whose leading columns match the GROUP BY lets MariaDB group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
+          "fix_sql": null,
+          "impact": 0.0,
+          "nodes": [
+            2
+          ],
+          "rule": "temp-table-sort",
+          "severity": "low",
+          "title": "Groups 500K rows in an internal temporary table, then sorts them (filesort)",
+          "verify": "Explain again: no \"using temporary table\" on the grouping."
+        }
+      ],
+      "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
+    },
+    "46db559fdff712fd": {
+      "items": [],
+      "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
+    },
+    "d1f45c9664edccf9": {
+      "items": [],
+      "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
+    },
+    "decf59629e790076": {
+      "items": [],
+      "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
+    }
+  },
   "mssql-demo": {
     "10": {
       "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "138": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "143": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "161": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "249": {
+      "items": [
+        {
+          "area": "index",
+          "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
+          "fix": "Create the index on order_id.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "impact": 0.491,
+          "nodes": [
+            12
+          ],
+          "rule": "missing-index-hint",
+          "severity": "high",
+          "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 50% cheaper",
+          "verify": "Explain again: the suggestion is gone and the read of order_items becomes a seek."
+        }
+      ],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "255": {
+      "items": [],
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+    },
+    "263": {
+      "items": [
+        {
+          "area": "query",
+          "detail": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join.",
+          "fix": "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose.",
+          "fix_sql": null,
+          "impact": 0.999,
+          "nodes": [
+            1,
+            4
+          ],
+          "rule": "nested-loops",
+          "severity": "medium",
+          "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
+          "verify": "Explain again without the hint: a hash or merge join instead of the loop."
+        },
+        {
+          "area": "parallelism",
+          "detail": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead.",
+          "fix": "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server.",
+          "fix_sql": null,
+          "impact": 0.1,
+          "nodes": [
+            0
+          ],
+          "rule": "parallelism-blocked",
+          "severity": "medium",
+          "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
+          "verify": "Explain again: no NonParallelPlanReason, and Parallelism operators appear."
+        }
+      ],
       "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
     },
     "35": {
@@ -20,8 +126,8 @@
       "items": [
         {
           "area": "query",
-          "detail": "The value it's compared with has a different type, so SQL Server converts customers.email on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and can't seek the index. The usual cause is an application sending strings as nvarchar to a varchar column.",
-          "fix": "Send the parameter with the column's exact type: VarChar instead of NVarChar (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM).",
+          "detail": "The value it's compared with has a different type, so SQL Server converts customers.email to nvarchar(200) on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and, by its own warning, can't seek the index.",
+          "fix": "Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.",
           "fix_sql": null,
           "impact": 0.88,
           "nodes": [
@@ -83,13 +189,13 @@
           "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
           "fix": "An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
           "fix_sql": null,
-          "impact": 1.0,
+          "impact": 0.0,
           "nodes": [
             2
           ],
           "rule": "temp-table-sort",
-          "severity": "high",
-          "title": "Collects 499K rows in an internal temporary table",
+          "severity": "low",
+          "title": "Groups 499K rows in an internal temporary table, then sorts them (filesort)",
           "verify": "Explain again: no \"using temporary table\" on the grouping."
         }
       ],
@@ -100,22 +206,15 @@
       "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
     },
     "19bd4ff468839ea3": {
-      "items": [
-        {
-          "area": "index",
-          "detail": "As planned, the Table scan checks `(shop.o.promo_code = 'SPRING0')` on every row it reads because no index starts with promo_code, so most of the reading is thrown away. 100% of this plan's work.",
-          "fix": "Add an index on promo_code so the database can go straight to the matching rows.",
-          "fix_sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM = INPLACE LOCK = NONE;",
-          "impact": 1.0,
-          "nodes": [
-            2
-          ],
-          "rule": "scan-filter",
-          "severity": "high",
-          "title": "Reads 499K rows of shop.orders to keep 50K",
-          "verify": "Explain again: orders reads about as many rows as it keeps."
-        }
-      ],
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "4167fe7f2c20deb7": {
+      "items": [],
+      "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+    },
+    "7f47c8550af0c644": {
+      "items": [],
       "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
     },
     "9b30e6ad79d940fe": {
@@ -136,11 +235,19 @@
       "items": [],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
+    "-463560455567765064": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+    },
     "-6576252161252119529": {
       "items": [],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "-8886085649470066503": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "-967240904657798800": {
       "items": [],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
@@ -169,6 +276,10 @@
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "5308963031944094559": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+    },
+    "6425265648074738764": {
       "items": [],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
