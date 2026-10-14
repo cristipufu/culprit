@@ -334,10 +334,11 @@ Every tool call is appended to a private `audit.jsonl`, with the SQL text for `e
 
 ```
 crates/
-  culprit-core       model (Snapshot, Plan, Finding), Check trait, ranking — no I/O
-  culprit-checks     every check, each a pure fn(&Snapshot) -> Vec<Finding>
+  culprit-core       model (Snapshot, Plan, Finding), Check/Provider traits, plan insights, Coverage — no I/O
+  culprit-checks     the analysis pipeline (prepare → detect → refine → rank), every check, the refine rules
   culprit-mssql      Provider for SQL Server (tiberius): probe, snapshot, explain, live
   culprit-postgres   Provider for Postgres (tokio-postgres): same contract
+  culprit-mysql      Provider for MySQL and MariaDB: same contract
   culprit-engine     connection store (TOML + OS keychain), connection-string parsing,
                      provider registry, scan orchestration, snapshot storage,
                      agent access, approval queue, audit log
@@ -347,6 +348,8 @@ app/
   src/               React UI
   src-tauri/         Tauri shell; commands call culprit-engine
 ```
+
+`docs/ARCHITECTURE.md` is the map of the code: the stages, where each lives, the evidence rules that keep a finding from being a false flag, and how to add a provider, a source, a check or a rule.
 
 **Checks run on snapshots, never on live connections.** A snapshot is a normalized, serializable picture of the database (queries, plans, tables, indexes, foreign keys, waits, settings). This makes every check a pure, unit-testable function, lets analysis run offline, lets a snapshot be shared with someone who has no database access, and makes the app, the CLI and the MCP server produce identical results.
 

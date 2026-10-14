@@ -5,6 +5,7 @@ pub mod changes;
 pub mod check;
 pub mod cloud;
 pub mod connection;
+pub mod coverage;
 pub mod dashboard;
 pub mod deadlock;
 pub mod digest;
@@ -33,6 +34,7 @@ pub use changes::{ChangeStatus, Changes, Period, PeriodStats, PlanSwitch, QueryC
 pub use check::Check;
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
 pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, is_local_host};
+pub use coverage::Coverage;
 pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
