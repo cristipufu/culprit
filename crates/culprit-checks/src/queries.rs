@@ -516,7 +516,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|q| {
             let exec_share = q.executions / workload.total_executions;
             let busy = workload.rate_per_day(q.executions).is_some_and(|r| r >= 20_000.0);
-            let small = q.rows_per_execution().is_some_and(|r| r <= 2.0) && q.mean_time_ms < 5.0;
+            let small = q.rows_handled_per_execution().is_some_and(|r| r <= 2.0) && q.mean_time_ms < 5.0;
             small && exec_share >= 0.08 && busy
         })
         .take(4)
@@ -525,11 +525,11 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             let per_day_runs = workload.per_day_measured(q.executions);
             let impact = query_impact(snapshot, &[q]).expect("workload present");
             let mut f = finding("chatty-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
-            let rows = q.rows_per_execution().unwrap_or(1.0);
+            // Rows changed for a write, rows returned otherwise: MySQL counts a write's rows apart, and returns none.
+            let rows = q.rows_handled_per_execution().unwrap_or(1.0);
             let handle = capitalize(&query_handle(q));
             let runs = runs_phrase(snapshot, q.executions);
-            let lower = q.text.trim_start_matches(|c: char| c.is_whitespace() || c == '(').to_ascii_lowercase();
-            let writes = ["insert", "update", "delete", "merge"].iter().any(|v| lower.starts_with(v));
+            let writes = q.writes_rows();
             let share = format!("{} of {}", format::percent(impact.share), time_noun(snapshot));
             let exec = format::percent(exec_share);
             // Three shapes look alike in the counters and need different fixes: a poll that mostly finds nothing, a

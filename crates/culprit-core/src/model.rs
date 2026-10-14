@@ -420,6 +420,19 @@ impl QueryStat {
         (self.executions > 0.0).then(|| rows / self.executions)
     }
 
+    /// Whether the statement changes rows (INSERT, UPDATE, DELETE, MERGE, REPLACE), from its text.
+    pub fn writes_rows(&self) -> bool {
+        let lower = self.text.trim_start_matches(|c: char| c.is_whitespace() || c == '(').to_ascii_lowercase();
+        ["insert", "update", "delete", "merge", "replace"].iter().any(|v| lower.starts_with(v))
+    }
+
+    /// Rows a run handled: for a write, the rows it changed where the engine counts them apart from rows returned
+    /// (MySQL sends a write's client no rows, so `rows` is 0 for every INSERT); otherwise the rows it returned.
+    pub fn rows_handled_per_execution(&self) -> Option<f64> {
+        let rows = if self.writes_rows() { self.rows_affected.or(self.rows)? } else { self.rows? };
+        (self.executions > 0.0).then(|| rows / self.executions)
+    }
+
     pub fn reads_per_execution(&self) -> Option<f64> {
         let reads = self.logical_reads?;
         (self.executions > 0.0).then(|| reads / self.executions)
