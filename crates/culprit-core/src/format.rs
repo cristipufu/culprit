@@ -40,7 +40,11 @@ pub fn epoch_seconds(text: &str) -> Option<f64> {
     let t = text.trim();
     let (date, rest) = t.split_once(['T', ' '])?;
     let mut d = date.split('-');
-    let (y, m, day): (i64, i64, i64) = (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
+    // Real calendar ranges only: timestamps come from databases and saved reports, and a year near i64::MAX would
+    // overflow the day arithmetic below.
+    let y: i64 = d.next()?.parse().ok().filter(|y| (1..=9999).contains(y))?;
+    let m: i64 = d.next()?.parse().ok().filter(|m| (1..=12).contains(m))?;
+    let day: i64 = d.next()?.parse().ok().filter(|d| (1..=31).contains(d))?;
     let (time, offset) = if let Some(stripped) = rest.strip_suffix('Z') {
         (stripped, 0.0)
     } else if let Some(pos) = rest.rfind(['+', '-']).filter(|p| *p >= 5) {
@@ -54,9 +58,10 @@ pub fn epoch_seconds(text: &str) -> Option<f64> {
         (rest, 0.0)
     };
     let mut tp = time.split(':');
-    let hour: f64 = tp.next()?.parse().ok()?;
-    let minute: f64 = tp.next().unwrap_or("0").parse().ok()?;
-    let second: f64 = tp.next().unwrap_or("0").parse().ok()?;
+    let in_range = |max: f64| move |v: &f64| (0.0..=max).contains(v);
+    let hour: f64 = tp.next()?.parse().ok().filter(in_range(24.0))?;
+    let minute: f64 = tp.next().unwrap_or("0").parse().ok().filter(in_range(59.0))?;
+    let second: f64 = tp.next().unwrap_or("0").parse().ok().filter(in_range(61.0))?;
     // Days from 1970-01-01 (Howard Hinnant's civil-from-days, inverted).
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);

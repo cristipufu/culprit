@@ -302,46 +302,10 @@ pub fn days_between(from: &str, to: &str) -> Option<f64> {
     Some((b - a) / 86_400.0)
 }
 
-/// Minimal RFC 3339 / ISO 8601 parser (UTC offsets honoured) so checks stay dependency-free.
+/// Seconds since 1970 for an ISO timestamp (`2026-10-14T08:54:29Z`, with or without an offset); None for anything
+/// that isn't a real date and time. The one parser is `culprit_core::format::epoch_seconds`.
 pub fn parse_epoch_seconds(text: &str) -> Option<f64> {
-    let t = text.trim();
-    let (date, rest) = t.split_once(['T', ' '])?;
-    let mut d = date.split('-');
-    let year: i64 = d.next()?.parse().ok()?;
-    let month: i64 = d.next()?.parse().ok()?;
-    let day: i64 = d.next()?.parse().ok()?;
-    let (time, offset_seconds) = split_offset(rest);
-    let mut tp = time.split(':');
-    let hour: f64 = tp.next()?.parse().ok()?;
-    let minute: f64 = tp.next().unwrap_or("0").parse().ok()?;
-    let second: f64 = tp.next().unwrap_or("0").parse().ok()?;
-    let days = days_from_civil(year, month, day);
-    Some(days as f64 * 86_400.0 + hour * 3600.0 + minute * 60.0 + second - offset_seconds)
-}
-
-fn split_offset(time: &str) -> (&str, f64) {
-    if let Some(stripped) = time.strip_suffix('Z') {
-        return (stripped, 0.0);
-    }
-    if let Some(pos) = time.rfind(['+', '-']).filter(|p| *p >= 5) {
-        let (t, off) = time.split_at(pos);
-        let sign = if off.starts_with('-') { -1.0 } else { 1.0 };
-        let mut parts = off[1..].split(':');
-        let h: f64 = parts.next().and_then(|v| v.get(..2)).and_then(|v| v.parse().ok()).unwrap_or(0.0);
-        let m: f64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0.0);
-        return (t, sign * (h * 3600.0 + m * 60.0));
-    }
-    (time, 0.0)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    culprit_core::format::epoch_seconds(text)
 }
 
 pub fn since_phrase(snapshot: &Snapshot) -> String {
@@ -586,6 +550,11 @@ pub(crate) mod tests {
             let _ = predicate_columns(text);
             let _ = parse_epoch_seconds(text);
             let _ = parse_epoch_seconds("2026-10-14T08:54:29+İ");
+            // Out-of-range parts from a hostile saved report: no overflow, just not a time.
+            assert_eq!(parse_epoch_seconds("9223372036854775807-12-31T00:00:00Z"), None);
+            assert_eq!(parse_epoch_seconds("2026-9223372036854775807-01T00:00:00Z"), None);
+            assert_eq!(parse_epoch_seconds("2026-10-14Tinf:00:00Z"), None);
+            assert!(parse_epoch_seconds("2026-10-14T08:54:29Z").is_some());
             let mut q = crate::waits::snapshot_with(Engine::Mssql).queries()[0].clone();
             q.text = text.into();
             let _ = query_handle(&q);
