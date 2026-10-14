@@ -679,39 +679,57 @@ pub struct PredicateColumns {
     pub range: Vec<String>,
 }
 
-const OPERATORS: [(&str, bool); 11] = [
+/// Comparisons a default b-tree index can seek, as (operator, equality). Not-equal (`<>`, `!=`) and PostgreSQL's
+/// LIKE (`~~`, `~~*`) are left out on purpose: see [`predicate_columns`].
+const OPERATORS: [(&str, bool); 10] = [
     (" = ANY ", true),
     (" IN ", true),
+    (" BETWEEN ", false),
     (" LIKE ", false),
-    ("<>", false),
-    ("!=", false),
     (">=", false),
     ("<=", false),
-    ("~~", false),
+    ("<=>", true),
     ("=", true),
     ("<", false),
     (">", false),
 ];
 
+/// Comparisons no default b-tree index serves: a condition that has one names no column to index.
+const NOT_SEEKABLE: [&str; 5] = ["<>", "!=", "~~", "!~", " NOT "];
+
 /// Columns compared against a parameter or literal in a plan predicate, e.g. `(customer_id = $1)` or
-/// `[db].[dbo].[Orders].[CustomerId] as [m].[CustomerId]=[@P1]`. Column-to-column comparisons (joins) are skipped.
+/// `[db].[dbo].[Orders].[CustomerId] as [m].[CustomerId]=[@P1]`: the columns an index on the filter would seek. Only
+/// conditions every row must meet count: a branch of an OR (`status = 'open' OR priority > 3`) doesn't, since an index
+/// on one branch's column can't find the other branch's rows. Column-to-column comparisons (joins) are skipped, and so
+/// are comparisons a default b-tree index can't seek: not-equal on any engine, NOT anything, a LIKE whose pattern
+/// starts with a wildcard, and PostgreSQL's LIKE (`~~`), which needs the C collation or a `text_pattern_ops` index.
 pub fn predicate_columns(predicate: &str) -> PredicateColumns {
-    let cleaned = strip_casts(&predicate.replace(['[', ']', '"', '(', ')'], ""));
+    let cleaned = strip_casts(&predicate.replace(['[', ']', '"', '`'], ""));
     let mut out = PredicateColumns::default();
-    for conjunct in split_ci(&cleaned, " AND ") {
+    for conjunct in conjuncts(&cleaned) {
+        let conjunct = conjunct.replace(['(', ')'], " ");
+        let conjunct = conjunct.split_whitespace().collect::<Vec<_>>().join(" ");
         let upper = conjunct.to_ascii_uppercase();
+        let unquoted = format!(" {} ", upper.split('\'').step_by(2).collect::<Vec<_>>().join("''"));
+        if NOT_SEEKABLE.iter().any(|op| unquoted.contains(op)) {
+            continue;
+        }
         let Some((at, op, equality)) = OPERATORS
             .iter()
             .filter_map(|(op, eq)| upper.find(op).map(|at| (at, *op, *eq)))
-            .min_by_key(|(at, _, _)| *at)
+            .min_by_key(|(at, op, _)| (*at, std::cmp::Reverse(op.len())))
         else {
             continue;
         };
         let left = drop_alias(conjunct[..at].trim());
         let right = drop_alias(conjunct[at + op.len()..].trim());
+        // `LIKE '%abc'` reads every key: only a pattern with a fixed start can seek.
+        if op == " LIKE " && starts_with_wildcard(right) {
+            continue;
+        }
         let column = match (column_name(left), column_name(right)) {
             (Some(c), None) if is_value(right) => c,
-            (None, Some(c)) if is_value(left) => c,
+            (None, Some(c)) if is_value(left) && op != " LIKE " && op != " BETWEEN " => c,
             _ => continue,
         };
         let list = if equality { &mut out.equality } else { &mut out.range };
@@ -723,16 +741,97 @@ pub fn predicate_columns(predicate: &str) -> PredicateColumns {
     out
 }
 
-fn split_ci<'a>(text: &'a str, separator: &str) -> Vec<&'a str> {
+/// The conditions every row must meet: the parts of a predicate joined by AND at its top level, nested ANDs taken
+/// apart, and any part that holds an OR dropped (its rows can come from either branch). `x BETWEEN a AND b` stays one
+/// condition. Quoted text is never split.
+fn conjuncts(text: &str) -> Vec<String> {
+    let text = without_outer_parens(text.trim());
+    let mut merged: Vec<String> = Vec::new();
+    let mut between = false;
+    for part in split_top_level(text, " AND ") {
+        // BETWEEN's own AND joins its bounds back.
+        if between && let Some(last) = merged.last_mut() {
+            last.push_str(" AND ");
+            last.push_str(part);
+            between = false;
+            continue;
+        }
+        between = split_top_level(part, " BETWEEN ").len() == 2;
+        merged.push(part.to_string());
+    }
+    if merged.len() == 1 {
+        let only = &merged[0];
+        // An OR anywhere in a condition (`a = 1 OR b = 2`, `NOT (a = 1 OR …)`) leaves no column every row must match.
+        return if contains_keyword(only, " OR ") { Vec::new() } else { vec![only.clone()] };
+    }
+    merged.iter().flat_map(|part| conjuncts(part)).collect()
+}
+
+/// `((a = 1))` → `a = 1`: parentheses around the whole text only.
+fn without_outer_parens(mut text: &str) -> &str {
+    while text.starts_with('(') && text.ends_with(')') && closing_paren(text) == Some(text.len() - 1) {
+        text = text[1..text.len() - 1].trim();
+    }
+    text
+}
+
+/// Where the parenthesis opening `text` closes, skipping quoted text.
+fn closing_paren(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quoted = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `text` split at `separator` (an ASCII keyword with its spaces, matched case-insensitively) where it stands outside
+/// parentheses and quotes.
+fn split_top_level<'a>(text: &'a str, separator: &str) -> Vec<&'a str> {
     let upper = text.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
     let mut parts = Vec::new();
-    let mut start = 0;
-    while let Some(pos) = upper[start..].find(separator) {
-        parts.push(&text[start..start + pos]);
-        start += pos + separator.len();
+    let (mut depth, mut quoted, mut start, mut i) = (0i32, false, 0, 0);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => quoted = !quoted,
+            b'(' if !quoted => depth += 1,
+            b')' if !quoted => depth -= 1,
+            _ if !quoted && depth == 0 && upper[i..].starts_with(separator) => {
+                parts.push(&text[start..i]);
+                i += separator.len();
+                start = i;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
     }
     parts.push(&text[start..]);
     parts
+}
+
+/// Whether `keyword` (with its spaces) appears outside quotes, at any depth.
+fn contains_keyword(text: &str, keyword: &str) -> bool {
+    let unquoted: String = text.split('\'').step_by(2).collect::<Vec<_>>().join("''");
+    unquoted.replace(['(', ')'], " ").to_ascii_uppercase().contains(keyword)
+}
+
+/// `'%abc'`, `N'_bc'`: a LIKE pattern that doesn't start with fixed text.
+fn starts_with_wildcard(pattern: &str) -> bool {
+    let p = pattern.trim();
+    let p = p.strip_prefix(['N', 'n']).filter(|rest| rest.starts_with('\'')).unwrap_or(p);
+    p.strip_prefix('\'').is_some_and(|rest| rest.starts_with(['%', '_']))
 }
 
 fn strip_casts(text: &str) -> String {
@@ -779,6 +878,8 @@ fn is_value(side: &str) -> bool {
         || s.chars().next().is_some_and(|c| c.is_ascii_digit())
         || upper.starts_with("NULL")
         || upper.starts_with("N'")
+        // MySQL writes typed literals in plans: TIMESTAMP'2026-09-05 00:00:00'.
+        || ["TIMESTAMP'", "DATE'", "TIME'"].iter().any(|p| upper.starts_with(p))
         || upper.starts_with("ARRAY")
         || upper.starts_with("{")
         || upper.starts_with("CONVERT_IMPLICIT") && (upper.contains("@") || upper.contains("$"))
@@ -840,6 +941,46 @@ mod predicate_tests {
         assert_eq!(p.range, vec!["CreatedAt"]);
         let p = predicate_columns("[shop].[dbo].[Users].[TenantId]=CONVERT_IMPLICIT(uniqueidentifier,[@P1],0)");
         assert_eq!(p.equality, vec!["TenantId"]);
+    }
+
+    // An index on one branch of an OR can't find the other branch's rows, and a default b-tree can't seek not-equal,
+    // NOT, a pattern starting with a wildcard, or PostgreSQL's LIKE.
+    #[test]
+    fn only_conditions_an_index_can_seek_name_columns() {
+        let p = predicate_columns("((status)::text = 'open'::text) OR (priority > 3)");
+        assert_eq!(p, PredicateColumns::default());
+        let p = predicate_columns("[db].[dbo].[t].[status]='open' OR [db].[dbo].[t].[priority]>(3)");
+        assert_eq!(p, PredicateColumns::default());
+        // A condition every row meets still counts next to an OR.
+        let p = predicate_columns("((customer_id = $1) AND ((status = 'open') OR (priority > 3)))");
+        assert_eq!(p.equality, vec!["customer_id"]);
+        assert!(p.range.is_empty());
+        // Parentheses decide: `a OR (b AND c)` requires nothing of every row.
+        let p = predicate_columns("((a = 1) OR ((b = 2) AND (c = 3)))");
+        assert_eq!(p, PredicateColumns::default());
+        let p = predicate_columns("((status)::text <> 'closed'::text)");
+        assert_eq!(p, PredicateColumns::default());
+        let p = predicate_columns("((email)::text ~~ 'abc%'::text)");
+        assert_eq!(p, PredicateColumns::default());
+        let p = predicate_columns("(NOT (customer_id = $1))");
+        assert_eq!(p, PredicateColumns::default());
+        let p = predicate_columns("(shop.orders.status not in ('a','b'))");
+        assert_eq!(p, PredicateColumns::default());
+        // SQL Server and MySQL seek a LIKE with a fixed start, never one that starts with a wildcard.
+        let p = predicate_columns("[db].[dbo].[t].[email] like N'abc%'");
+        assert_eq!(p.range, vec!["email"]);
+        let p = predicate_columns("[db].[dbo].[t].[email] like N'%abc'");
+        assert_eq!(p, PredicateColumns::default());
+        // MySQL: typed literals, BETWEEN and the null-safe equal.
+        let p = predicate_columns(
+            "((shop.orders.status = 'shipped') and (shop.orders.created_at >= TIMESTAMP'2026-09-05 00:00:00'))",
+        );
+        assert_eq!((p.equality, p.range), (vec!["status".to_string()], vec!["created_at".to_string()]));
+        let p = predicate_columns("(shop.o.total between 10 and 20) and (shop.o.customer_id <=> 11272)");
+        assert_eq!((p.equality, p.range), (vec!["customer_id".to_string()], vec!["total".to_string()]));
+        // Quoted text is never taken apart.
+        let p = predicate_columns("(note = 'a OR b') AND (kind = 'x <> y')");
+        assert_eq!(p.equality, vec!["note", "kind"]);
     }
 }
 

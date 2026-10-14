@@ -1,6 +1,6 @@
 use culprit_core::{
     Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, IndexStat, Metric, MissingIndex, QueryStat,
-    Severity, Snapshot, SubjectKind, Unit, format, strip_direction,
+    Severity, Snapshot, SubjectKind, Unit, format,
 };
 
 use crate::support::*;
@@ -58,22 +58,19 @@ impl Candidate {
         self.schema.eq_ignore_ascii_case(&other.schema) && self.table.eq_ignore_ascii_case(&other.table)
     }
 
-    /// An index built for `other` also serves `self` when self's equality columns are a subset of other's and the range columns line up.
+    /// The index built for `other` (its [`Candidate::keys`], the order the DDL writes them) serves `self` as well as
+    /// self's own would: it leads with self's equality columns, in any order, then self's range columns in order. Only
+    /// then can self's queries seek it; an index that merely contains self's columns further along (`(CustomerId,
+    /// Status)` for a request on `Status`) could only be scanned, so the two stay apart and keep their own counts.
     fn covered_by(&self, other: &Candidate) -> bool {
         if !self.same_table(other) {
             return false;
         }
-        let mine = lower_set(&self.equality);
-        let theirs = lower_set(&other.equality);
-        if !mine.iter().all(|c| theirs.contains(c)) {
-            return false;
-        }
-        if self.inequality.is_empty() {
-            return true;
-        }
-        mine == theirs
-            && self.inequality.len() <= other.inequality.len()
-            && self.inequality.iter().zip(&other.inequality).all(|(a, b)| a.eq_ignore_ascii_case(b))
+        let theirs = other.keys();
+        let n = self.equality.len();
+        theirs.len() >= n + self.inequality.len()
+            && lower_set(&theirs[..n]) == lower_set(&self.equality)
+            && self.inequality.iter().zip(&theirs[n..]).all(|(a, b)| a.eq_ignore_ascii_case(b))
     }
 
     fn absorb(&mut self, other: Candidate) {
@@ -111,18 +108,21 @@ pub(crate) fn merge_candidates(snapshot: &Snapshot) -> Vec<Candidate> {
     merged
 }
 
-/// An existing index whose leading keys already match the suggestion: the fix is to widen it, not add another. A
-/// filtered index only when every query that `asking` names fits its filter as written (`is_deleted = 0` in the
-/// query): widening an index the queries can't use wouldn't help them, and with no query to show, nothing says they can.
+/// An existing index whose leading keys already match the suggestion: the fix is to widen it (or, disabled, to bring
+/// it back), not add another. A filtered index only when every query that `asking` names fits its filter as written
+/// (`is_deleted = 0` in the query): widening an index the queries can't use wouldn't help them, and with no query to
+/// show, nothing says they can. An enabled index is preferred to a disabled one with the same keys.
 pub(crate) fn existing_match<'a>(
     snapshot: &'a Snapshot,
     c: &Candidate,
     asking: &[&QueryStat],
 ) -> Option<&'a IndexStat> {
-    same_keys_on_table(snapshot, c).find(|i| match i.filter.as_deref() {
-        None => true,
-        Some(filter) => fits_filter(filter, asking),
-    })
+    same_keys_on_table(snapshot, c)
+        .filter(|i| match i.filter.as_deref() {
+            None => true,
+            Some(filter) => fits_filter(filter, asking),
+        })
+        .min_by_key(|i| i.is_disabled)
 }
 
 /// A filtered index with the suggestion's keys that [`existing_match`] passed over: the queries don't ask for only the
@@ -213,7 +213,12 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
                 format::percent(impact.share)
             ));
             apply_query_impact(&mut f, &impact);
-            f.severity = severity_for_share(impact.share).max(Severity::Medium);
+            // What the index saves is the queries' time times the optimizer's estimate of the gain: 11% of a query at
+            // 0.01% of database time is nothing to rank or raise above Low.
+            let gain = (c.impact_pct / 100.0).clamp(0.0, 1.0);
+            let time_ms: f64 = linked.iter().map(|q| q.total_time_ms).sum();
+            f.impact.score = score_for_share(impact.share * gain);
+            f.severity = severity_for_time(snapshot, time_ms * gain, impact.share * gain);
             f.confidence = if c.impact_pct >= 50.0 { Confidence::High } else { Confidence::Medium };
         }
         None if linked.is_empty() && snapshot.workload.is_some() => {
@@ -263,46 +268,128 @@ fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], mut c: Cand
         c.include.clear();
     }
 
-    f.fix = Some(match existing_match(snapshot, &c, &linked) {
-        Some(existing) if !c.include.is_empty() => widen_fix(snapshot, existing, &c.include),
-        Some(existing) => Fix {
-            summary: format!(
-                "{} already starts with these columns, so the remaining gap is small. Check whether the queries below use it; if not, look at their predicates for type mismatches or functions on the column.",
-                existing.name
+    if let Some((last, window)) = wanted_before_window(snapshot, &c) {
+        f.inactive = true;
+        f.severity = Severity::Low;
+        f.impact.score *= 0.25;
+        f.last_seen = Some(last.clone());
+        f.caveats.insert(
+            0,
+            format!(
+                "SQL Server's optimizer last asked for this index on {}, before {window}: the queries that wanted it have \
+                 most likely changed or stopped running. Its requests are kept until the server restarts.",
+                format::friendly_date(&last, &snapshot.taken_at),
             ),
-            sql: None,
-            cost: None,
-        },
-        None => Fix {
-            summary: format!(
-                "Create an index on {}{}. Equality columns come first; put the most selective one at the front if you know it.{}",
-                key_text,
-                if c.include.is_empty() { String::new() } else { format!(", including {}", format::list(&c.include)) },
-                filtered_bystander(snapshot, &c, &linked)
-                    .map(|i| {
-                        let rows = format!(
-                            " {} has these keys but holds only the rows where {}",
-                            i.name,
-                            readable_filter(i.filter.as_deref().unwrap_or_default())
-                        );
-                        match linked.len() {
-                            0 => format!("{rows}, and Culprit can't show that these lookups ask for only those."),
-                            1 => format!("{rows}, which the query below doesn't ask for."),
-                            _ => format!("{rows}, which the queries below don't ask for."),
-                        }
-                    })
-                    .unwrap_or_default()
-            ),
-            sql: Some(create_index_sql(snapshot, &c.schema, &c.table, &keys, &c.include)),
-            cost: write_cost(snapshot, &c.schema, &c.table),
-        },
-    });
+        );
+    }
+
+    f.fix = Some(candidate_fix(snapshot, &c, &linked).fix);
     f.verify = vec![
         "Create the index, let the workload run, then re-scan: this suggestion should disappear.".into(),
         "The queries listed here should show an Index Seek on the new index and far fewer reads per execution.".into(),
     ];
     f.caveats.push("Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.".into());
     f
+}
+
+/// Database time a day an index finding needs behind it for Medium, and for High: a share of a quiet database's time
+/// is still a small number.
+const MEDIUM_MS_A_DAY: f64 = 60_000.0;
+const HIGH_MS_A_DAY: f64 = 600_000.0;
+
+/// Severity for an index finding from the database time behind it (`time_ms` in the workload's window, `share` of all
+/// of it): the share says how much of the workload it is, the amount whether that's worth anyone's time. The amount is
+/// the time a day over at least an hour of window; under an hour, the window's own total, which a day holds at least.
+pub(crate) fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
+    let a_day = snapshot.workload.as_ref().map(|w| w.rate_per_day(time_ms).unwrap_or(time_ms)).unwrap_or(0.0);
+    let by_amount = if a_day >= HIGH_MS_A_DAY {
+        Severity::High
+    } else if a_day >= MEDIUM_MS_A_DAY {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+    severity_for_share(share).min(by_amount)
+}
+
+/// When SQL Server's optimizer last wanted the index, when that is before the scan's window (or, without query
+/// history, before the last week: a weekly job has had its chance), and the window as words: none of the window's
+/// queries wanted it. `None` when one of the merged requests was wanted within it, or when it isn't known when.
+fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option<(String, String)> {
+    let (start, window) = match &snapshot.workload {
+        Some(w) => {
+            let end = w.window_end.as_deref().unwrap_or(&snapshot.taken_at);
+            (parse_epoch_seconds(end)? - w.window_hours * 3600.0, w.window_phrase())
+        }
+        None => (parse_epoch_seconds(&snapshot.taken_at)? - MIN_INDEX_DAYS * 86_400.0, "the last week".to_string()),
+    };
+    let mut latest: Option<(f64, &str)> = None;
+    for m in &c.requests {
+        let text = m.last_used.as_deref()?;
+        let at = parse_epoch_seconds(text)?;
+        if latest.is_none_or(|(l, _)| at > l) {
+            latest = Some((at, text));
+        }
+    }
+    let (at, text) = latest?;
+    (at < start).then(|| (text.to_string(), window))
+}
+
+/// What a request's fix is, given the table's indexes, and the index it changes instead of adding one.
+pub(crate) struct CandidateFix {
+    pub(crate) fix: Fix,
+    /// The existing index the fix widens, brings back, or that already starts with the keys.
+    pub(crate) widens: Option<String>,
+}
+
+/// The fix for an optimizer request (its include list already trimmed): widen the index that has its keys, bring a
+/// disabled one back, point at one that already leads with them, or create a new one. The missing-index finding and
+/// the index advisor both take it from here, so they never disagree.
+pub(crate) fn candidate_fix(snapshot: &Snapshot, c: &Candidate, linked: &[&QueryStat]) -> CandidateFix {
+    let keys = c.keys();
+    let create = |why: Option<String>| Fix {
+        summary: format!(
+            "{}Create an index on {}{}. Equality columns come first; put the most selective one at the front if you know it.{}",
+            why.map(|w| format!("{w} ")).unwrap_or_default(),
+            format::list(&keys),
+            if c.include.is_empty() { String::new() } else { format!(", including {}", format::list(&c.include)) },
+            filtered_bystander(snapshot, c, linked)
+                .map(|i| {
+                    let rows = format!(
+                        " {} has these keys but holds only the rows where {}",
+                        i.name,
+                        readable_filter(i.filter.as_deref().unwrap_or_default())
+                    );
+                    match linked.len() {
+                        0 => format!("{rows}, and Culprit can't show that these lookups ask for only those."),
+                        1 => format!("{rows}, which the query below doesn't ask for."),
+                        _ => format!("{rows}, which the queries below don't ask for."),
+                    }
+                })
+                .unwrap_or_default()
+        ),
+        sql: Some(create_index_sql(snapshot, &c.schema, &c.table, &keys, &c.include)),
+        cost: write_cost(snapshot, &c.schema, &c.table),
+    };
+    let Some(existing) = existing_match(snapshot, c, linked) else {
+        return CandidateFix { fix: create(None), widens: None };
+    };
+    let widened = |fix: Fix| CandidateFix { fix, widens: Some(existing.name.clone()) };
+    // The clustered index holds every column: with its keys in front, the request isn't for columns to include.
+    if existing.is_disabled || (!lacking_includes(existing, &c.include).is_empty() && !existing.is_clustered) {
+        return match widen_index(snapshot, existing, &c.include) {
+            Widening::Sql(fix) => widened(fix),
+            Widening::Refused(why) => CandidateFix { fix: create(Some(why)), widens: None },
+        };
+    }
+    widened(Fix {
+        summary: format!(
+            "{} already starts with these columns, so the remaining gap is small. Check whether the queries below use it; if not, look at their predicates for type mismatches or functions on the column.",
+            existing.name
+        ),
+        sql: None,
+        cost: None,
+    })
 }
 
 /// The queries behind a candidate: linked by query_hash (SQL Server 2019+), or whose plan carries the same request.
@@ -419,7 +506,10 @@ pub(crate) fn parameterized_filter<'a>(
     c: &Candidate,
     asking: &[&QueryStat],
 ) -> Option<ParameterizedFilter<'a>> {
-    let on_table = |i: &&IndexStat| i.schema.eq_ignore_ascii_case(&c.schema) && i.table.eq_ignore_ascii_case(&c.table);
+    // A disabled index serves nothing, however its queries write the filter.
+    let on_table = |i: &&IndexStat| {
+        i.schema.eq_ignore_ascii_case(&c.schema) && i.table.eq_ignore_ascii_case(&c.table) && !i.is_disabled
+    };
     snapshot.indexes.iter().filter(on_table).find_map(|i| {
         let conditions = filter_equalities(i.filter.as_deref()?)?;
         // Every condition of the filter: the request asks for its column, and a query passes it as a parameter.
@@ -722,41 +812,192 @@ pub(crate) fn drop_large_includes(
     ))
 }
 
-pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Fix {
+/// What [`widen_index`] can do with an existing index.
+pub(crate) enum Widening {
+    /// A statement that changes only what was asked (columns included, or the index brought back), with the sentence
+    /// that says so and what it costs.
+    Sql(Fix),
+    /// No statement can do it in place without changing what the index is; the sentence says why, so the caller can
+    /// suggest a separate index instead.
+    Refused(String),
+}
+
+/// The one way Culprit widens an existing index: rebuild it with `include` added to its included columns, keeping
+/// everything else it is (unique or not, its filter, its keys in their order and direction, the columns it already
+/// includes, and ONLINE where the edition has it), or bring it back when it is disabled. Fix SQL must never damage what
+/// exists, so it refuses rather than guess:
+///
+/// - a clustered index or a primary key can't take included columns (SQL Server refuses to change a constraint's index
+///   with DROP_EXISTING, and the clustered index already holds every column);
+/// - only SQL Server rebuilds an index with new included columns in place (PostgreSQL would need a new index and
+///   MySQL has no INCLUDE).
+///
+/// A disabled index (SQL Server DISABLE, a PostgreSQL index left invalid by a failed build, a MySQL invisible or
+/// MariaDB ignored one) is brought back by a rebuild, or made visible again; on SQL Server the rebuild includes
+/// `include` when it can. Used by the missing-index finding, the index advisor and the filtered-scan finding; a plan
+/// insight that wants an index to cover a lookup can use it too.
+pub(crate) fn widen_index(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Widening {
     let engine = snapshot.server.engine;
-    let keys: Vec<String> = existing.columns.clone();
-    let mut all_include = existing.include.clone();
-    for c in include {
-        if !all_include.iter().any(|i| i.eq_ignore_ascii_case(c))
-            && !keys.iter().any(|k| strip_direction(k).eq_ignore_ascii_case(c))
-        {
-            all_include.push(c.clone());
-        }
+    let target = qualified(engine, &existing.schema, &existing.table);
+    let name = quote(engine, &existing.name);
+    let add = lacking_includes(existing, include);
+    let can_include = engine == Engine::Mssql && !existing.is_clustered && !existing.is_primary_key;
+    if existing.is_disabled && (add.is_empty() || !can_include) {
+        return Widening::Sql(bring_back(snapshot, existing, &add));
     }
-    let cols = keys.iter().map(|k| match k.strip_suffix(" DESC") {
-        Some(name) => format!("{} DESC", quote(engine, name)),
-        None => quote(engine, k),
-    });
-    let inc = all_include.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
-    let online = if supports_online_index(snapshot) { ", ONLINE = ON" } else { "" };
-    // The rebuild replaces the definition whole: without its filter, a filtered index would take every row.
-    let filter = existing.filter.as_deref().map(|f| format!("\n    WHERE {f}")).unwrap_or_default();
-    let sql = format!(
-        "CREATE NONCLUSTERED INDEX {}\n    ON {} ({})\n    INCLUDE ({inc}){filter}\n    WITH (DROP_EXISTING = ON{online});",
-        quote(engine, &existing.name),
-        qualified(engine, &existing.schema, &existing.table),
-        cols.collect::<Vec<_>>().join(", ")
-    );
-    Fix {
-        summary: format!(
-            "{} already has the right keys but makes every matching row go back to the table for {}. Rebuild it with those columns included so it covers the query.",
+    if add.is_empty() {
+        return Widening::Refused(format!(
+            "{} already has these keys and includes {}.",
             existing.name,
             format::list(include)
-        ),
+        ));
+    }
+    if existing.is_clustered {
+        return Widening::Refused(format!(
+            "{} is the table's clustered index: it already holds every column, so there is nothing to include in it.",
+            existing.name
+        ));
+    }
+    if existing.is_primary_key {
+        return Widening::Refused(format!(
+            "{} enforces the primary key, and SQL Server won't change a constraint's index to include columns.",
+            existing.name
+        ));
+    }
+    if engine != Engine::Mssql {
+        return Widening::Refused(match engine {
+            Engine::Postgres => format!(
+                "PostgreSQL can't add included columns to {} in place; a new index has to be built.",
+                existing.name
+            ),
+            _ => format!("{} has no included columns: an index there holds only its keys.", snapshot.server.name()),
+        });
+    }
+    let keys: Vec<String> = existing
+        .columns
+        .iter()
+        .map(|k| match k.strip_suffix(" DESC") {
+            Some(column) => format!("{} DESC", quote(engine, column)),
+            None => quote(engine, k),
+        })
+        .collect();
+    let all_include: Vec<String> = existing.include.iter().chain(&add).map(|c| quote(engine, c)).collect();
+    let mut options = vec!["DROP_EXISTING = ON"];
+    if supports_online_index(snapshot) {
+        options.push("ONLINE = ON");
+    }
+    // The rebuild replaces the definition whole: without UNIQUE a unique index would stop enforcing it, and without its
+    // filter a filtered index would take every row.
+    let filter = existing.filter.as_deref().map(|f| format!("\n    WHERE {f}")).unwrap_or_default();
+    let sql = format!(
+        "CREATE {}NONCLUSTERED INDEX {name}\n    ON {target} ({})\n    INCLUDE ({}){filter}\n    WITH ({});",
+        if existing.is_unique { "UNIQUE " } else { "" },
+        keys.join(", "),
+        all_include.join(", "),
+        options.join(", ")
+    );
+    let mut summary = if existing.is_disabled {
+        format!(
+            "{} has the right keys but is disabled, so SQL Server neither maintains nor reads it. Rebuilding it brings it \
+             back, with {} included so it covers the query; if it was disabled because nothing read it, the queries \
+             below now would.",
+            existing.name,
+            format::list(&add)
+        )
+    } else {
+        format!(
+            "{} already has the right keys but makes every matching row go back to the table for {}. Rebuild it with \
+             those columns included so it covers the query.",
+            existing.name,
+            format::list(&add)
+        )
+    };
+    summary.push_str(
+        " The statement keeps its keys, their order, its filter and the columns it already includes; restate \
+         DATA_COMPRESSION, FILLFACTOR or its partition scheme in it if the index uses them.",
+    );
+    if existing.is_unique {
+        summary.push_str(&format!(
+            " It stays unique. If {} enforces a UNIQUE constraint rather than being a unique index, SQL Server refuses \
+             the rebuild (error 1907): create a separate index with these keys and included columns instead.",
+            existing.name
+        ));
+    }
+    Widening::Sql(Fix {
+        summary,
         sql: Some(sql),
         cost: existing.size_bytes.map(|b| {
             format!("The index grows from {}; writes that touch the included columns maintain it.", format::bytes(b))
         }),
+    })
+}
+
+/// The columns of `include` that `existing` holds neither as a key nor as an included column, once each.
+fn lacking_includes(existing: &IndexStat, include: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for c in include {
+        let held = existing.include.iter().any(|i| i.eq_ignore_ascii_case(c))
+            || existing.key_names().iter().any(|k| k.eq_ignore_ascii_case(c));
+        if !held && !out.iter().any(|o| o.eq_ignore_ascii_case(c)) {
+            out.push(c.clone());
+        }
+    }
+    out
+}
+
+/// A disabled index brought back as it was: SQL Server rebuilds it, PostgreSQL rebuilds an invalid one, MySQL makes an
+/// invisible one visible and MariaDB stops ignoring it. `wanted` are columns a request also wanted included that this
+/// can't add.
+fn bring_back(snapshot: &Snapshot, existing: &IndexStat, wanted: &[String]) -> Fix {
+    let engine = snapshot.server.engine;
+    let target = qualified(engine, &existing.schema, &existing.table);
+    let name = quote(engine, &existing.name);
+    let (sql, how) = match engine {
+        Engine::Mssql => {
+            // SQL Server can't rebuild a disabled clustered index online.
+            let online = supports_online_index(snapshot) && !existing.is_clustered;
+            (
+                format!("ALTER INDEX {name} ON {target} REBUILD{};", if online { " WITH (ONLINE = ON)" } else { "" }),
+                "it is disabled, so SQL Server neither maintains nor reads it. Rebuilding it brings it back as it was",
+            )
+        }
+        Engine::Postgres if culprit_core::version_at_least(&snapshot.server.version, [12, 0, 0]) => (
+            format!("REINDEX INDEX CONCURRENTLY {};", qualified(engine, &existing.schema, &existing.name)),
+            "it is invalid (a build that didn't finish), so PostgreSQL never reads it. Rebuilding it makes it usable",
+        ),
+        Engine::Postgres => (
+            format!("REINDEX INDEX {};", qualified(engine, &existing.schema, &existing.name)),
+            "it is invalid (a build that didn't finish), so PostgreSQL never reads it. Rebuilding it makes it usable \
+             (this version can't rebuild concurrently: writes to the table wait meanwhile)",
+        ),
+        Engine::Mysql if snapshot.server.name() == "MariaDB" => (
+            format!("ALTER TABLE {target} ALTER INDEX {name} NOT IGNORED;"),
+            "the optimizer is told to ignore it. Letting it use the index again is instant",
+        ),
+        Engine::Mysql => (
+            format!("ALTER TABLE {target} ALTER INDEX {name} VISIBLE;"),
+            "it is invisible to the optimizer. Making it visible again is instant",
+        ),
+    };
+    let mut summary = format!(
+        "{} has these keys, but {how}; if it was set aside because nothing read it, the queries below now would.",
+        existing.name
+    );
+    if !wanted.is_empty() {
+        summary.push_str(&format!(
+            " It doesn't include {}; once it's back, the optimizer says whether it still wants {}.",
+            format::list(wanted),
+            if wanted.len() == 1 { "it" } else { "them" }
+        ));
+    }
+    Fix { summary, sql: Some(sql), cost: None }
+}
+
+/// [`widen_index`] as a fix: the statement, or, where none is safe, the sentence that says why and no SQL.
+pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[String]) -> Fix {
+    match widen_index(snapshot, existing, include) {
+        Widening::Sql(fix) => fix,
+        Widening::Refused(why) => Fix { summary: why, sql: None, cost: None },
     }
 }
 
@@ -878,7 +1119,10 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                     format::bytes(total_size)
                 ),
             };
-            f.severity = if total_size >= 1024.0 * 1024.0 * 1024.0 || writes.is_some_and(|w| w >= 1e6) {
+            // What the index costs: its size, or the upkeep of a busy table, as a rate (a total since a restart months
+            // ago says nothing about today).
+            let writes_a_day = writes.and_then(|w| counter_rate_per_day(snapshot, w));
+            f.severity = if total_size >= 1024.0 * 1024.0 * 1024.0 || writes_a_day.is_some_and(|w| w >= UPKEEP_A_DAY) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -943,6 +1187,9 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
         })
         .collect()
 }
+
+/// Writes a day to a table that make keeping an unread index up to date a Medium problem.
+const UPKEEP_A_DAY: f64 = 100_000.0;
 
 /// The foreign key whose columns this index leads with, if any: dropping it would leave that foreign key unindexed.
 pub(crate) fn backs_foreign_key<'a>(snapshot: &'a Snapshot, index: &IndexStat) -> Option<&'a culprit_core::ForeignKey> {
@@ -1084,7 +1331,7 @@ fn makes_redundant(b: &IndexStat, a: &IndexStat) -> bool {
 
 /// Between two identical indexes, drop the one that is less used, then the one with the later name, so exactly one finding is produced.
 fn prefer_drop(a: &IndexStat, b: &IndexStat) -> bool {
-    if b.is_unique || b.is_primary_key || b.is_clustered {
+    if b.is_unique || b.is_primary_key {
         return true;
     }
     let (ra, rb) = (a.reads.unwrap_or(0.0), b.reads.unwrap_or(0.0));
@@ -1150,16 +1397,35 @@ fn filtered_fk_index<'a>(snapshot: &'a Snapshot, fk: &'a culprit_core::ForeignKe
     })
 }
 
+/// Whether the database checks the key when a parent row is deleted or re-keyed. SQL Server's NOCHECK CONSTRAINT
+/// switches a foreign key off entirely (`sys.foreign_keys.is_disabled`, read with the untrusted constraints): nothing
+/// looks for child rows then, so nothing needs an index for it. A key that is only untrusted (added WITH NOCHECK) is
+/// still checked on every delete.
+pub(crate) fn fk_is_enforced(snapshot: &Snapshot, fk: &culprit_core::ForeignKey) -> bool {
+    !snapshot.constraints.iter().any(|c| {
+        c.kind == culprit_core::ConstraintKind::ForeignKey
+            && c.disabled
+            && c.name.eq_ignore_ascii_case(&fk.name)
+            && c.schema.eq_ignore_ascii_case(&fk.schema)
+            && c.table.eq_ignore_ascii_case(&fk.table)
+    })
+}
+
+/// The foreign keys the database checks (see [`fk_is_enforced`]) that have columns.
+pub(crate) fn enforced_foreign_keys(snapshot: &Snapshot) -> impl Iterator<Item = &culprit_core::ForeignKey> {
+    snapshot.foreign_keys.iter().filter(|fk| !fk.columns.is_empty() && fk_is_enforced(snapshot, fk))
+}
+
 /// Every foreign key no index can serve, with its child table's rows when known, largest first. A key repeated on the
 /// same columns (a duplicate constraint), or whose columns lead another unindexed key on the same table (one index on
-/// the longer key serves both), is listed once.
+/// the longer key serves both), is listed once. A key the database doesn't check isn't listed.
 pub(crate) fn unindexed_foreign_keys(snapshot: &Snapshot) -> Vec<(&culprit_core::ForeignKey, Option<f64>)> {
     let keys = |fk: &culprit_core::ForeignKey| fk.columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>();
     let same_table = |a: &culprit_core::ForeignKey, b: &culprit_core::ForeignKey| {
         a.schema.eq_ignore_ascii_case(&b.schema) && a.table.eq_ignore_ascii_case(&b.table)
     };
     let candidates: Vec<&culprit_core::ForeignKey> =
-        snapshot.foreign_keys.iter().filter(|fk| !fk.columns.is_empty() && !fk_is_indexed(snapshot, fk)).collect();
+        enforced_foreign_keys(snapshot).filter(|fk| !fk_is_indexed(snapshot, fk)).collect();
     let mut out: Vec<(&culprit_core::ForeignKey, Option<f64>)> = Vec::new();
     for fk in &candidates {
         let (mine, longer) = (keys(fk), |o: &&culprit_core::ForeignKey| {
@@ -1215,10 +1481,18 @@ fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows
         .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
         .filter(|q| !crate::query_is_history(snapshot, q))
         .collect();
-    f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
+    let quiet_parent = parent_never_deletes(snapshot, fk);
+    f.severity = if rows >= 1_000_000.0 && quiet_parent.is_none() { Severity::Medium } else { Severity::Low };
     f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
     f.impact.label = format!("{} rows unindexed", format::count(rows));
-    f.confidence = Confidence::High;
+    f.confidence = if quiet_parent.is_some() { Confidence::Low } else { Confidence::High };
+    if let Some(note) = &quiet_parent {
+        f.summary.push(' ');
+        f.summary.push_str(note);
+    }
+    if let Some(note) = lookup_key_caveat(snapshot, fk, rows) {
+        f.caveats.push(note);
+    }
     f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
     f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
     f.queries = query_refs(&touching.into_iter().take(5).collect::<Vec<_>>());
@@ -1233,6 +1507,43 @@ fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows
         f.caveats.push(filtered_caveat(i, &parent));
     }
     f
+}
+
+/// The sentence that says a key's parent table has deleted nothing, when PostgreSQL or MySQL counted its deletes for
+/// at least a week ([`watched_long_enough`]): the check that needs the index runs only when a parent row is deleted or
+/// its key changes, so then the index is for joins, not for the check. `None` when it deleted rows, or nobody knows.
+pub(crate) fn parent_never_deletes(snapshot: &Snapshot, fk: &culprit_core::ForeignKey) -> Option<String> {
+    let parent = snapshot.table(&fk.ref_schema, &fk.ref_table)?;
+    if parent.deletes != Some(0.0) || !watched_long_enough(snapshot) {
+        return None;
+    }
+    Some(format!(
+        "{}.{} has had no deletes {}{}, though: the database looks for matching rows only when a parent row is deleted \
+         or its key changes, so the index would mostly serve joins.",
+        fk.ref_schema,
+        fk.ref_table,
+        since_phrase(snapshot),
+        if parent.updates == Some(0.0) { " and no updates" } else { "" }
+    ))
+}
+
+/// A parent table so small (a lookup table) that each of its keys matches a large share of the child's rows: an index
+/// on the key makes a parent delete cheap, but a read of one key's rows would still scan.
+fn lookup_key_caveat(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows: f64) -> Option<String> {
+    let parent_rows = snapshot.table(&fk.ref_schema, &fk.ref_table)?.rows.filter(|r| *r >= 1.0)?;
+    if parent_rows > 1.0 / culprit_core::INDEX_KEEPS_AT_MOST {
+        return None;
+    }
+    Some(format!(
+        "{}.{} has only {} rows, so each of its keys matches about {} rows of {}.{}: the index makes deleting a parent row \
+         cheap, but a query that reads one key's rows would still read most of the table.",
+        fk.ref_schema,
+        fk.ref_table,
+        format::count(parent_rows),
+        format::count(rows / parent_rows),
+        fk.schema,
+        fk.table
+    ))
 }
 
 fn filtered_caveat(i: &IndexStat, parent: &str) -> String {
@@ -1251,7 +1562,7 @@ fn unindexed_fk_pattern(
     snapshot: &Snapshot,
     unindexed: &[(&culprit_core::ForeignKey, Option<f64>)],
 ) -> Option<Finding> {
-    let total = snapshot.foreign_keys.iter().filter(|fk| !fk.columns.is_empty()).count();
+    let total = enforced_foreign_keys(snapshot).count();
     let small: Vec<(&culprit_core::ForeignKey, f64)> =
         unindexed.iter().filter_map(|(fk, rows)| rows.filter(|r| *r < FK_OWN_FINDING_ROWS).map(|r| (*fk, r))).collect();
     if small.len() < 3 || (unindexed.len() as f64) < total as f64 * 0.25 {
@@ -1454,14 +1765,58 @@ pub(crate) fn scan_rows(snapshot: &Snapshot, node: &culprit_core::PlanNode, sche
 
 /// MySQL and MariaDB count rows examined and rows returned per statement. A statement that examines most of the
 /// table on every run and returns under a tenth of it filters after reading, whatever the optimizer estimated (MariaDB
-/// assumes a condition keeps every row when the column has no statistics).
+/// assumes a condition keeps every row when the column has no statistics). Rows returned measure what the filter kept
+/// only when the statement returns every row it keeps (see [`returns_every_kept_row`]): `SELECT COUNT(*) … WHERE
+/// created_at > ?` returns one row however many the filter keeps, so there the plan's own estimate decides.
 fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows: f64) -> bool {
-    if snapshot.server.engine != Engine::Mysql || q.executions <= 0.0 {
+    if snapshot.server.engine != Engine::Mysql || q.executions <= 0.0 || !returns_every_kept_row(&q.text) {
         return false;
     }
     let examined = q.logical_reads.map(|r| r / q.executions).unwrap_or(0.0);
     let returned = q.rows.map(|r| r / q.executions);
     examined >= table_rows * 0.5 && returned.is_some_and(|r| r <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
+}
+
+/// Whether a statement returns every row its filter keeps, so that rows returned measure the filter: a SELECT from one
+/// table, without aggregates, GROUP BY, DISTINCT, LIMIT (or TOP, FETCH), HAVING, a set operation or a subquery. Any of
+/// those returns fewer rows than the filter keeps, and a join can return fewer or more.
+fn returns_every_kept_row(text: &str) -> bool {
+    const AGGREGATES: [&str; 14] = [
+        "COUNT",
+        "SUM",
+        "AVG",
+        "MIN",
+        "MAX",
+        "GROUP_CONCAT",
+        "JSON_ARRAYAGG",
+        "JSON_OBJECTAGG",
+        "STD",
+        "STDDEV",
+        "STDDEV_POP",
+        "STDDEV_SAMP",
+        "VARIANCE",
+        "BIT_OR",
+    ];
+    let plain = text.replace(['`', '"', '[', ']'], "").to_ascii_uppercase();
+    let words: Vec<&str> =
+        plain.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|w| !w.is_empty()).collect();
+    let calls = |name: &str| {
+        plain.match_indices(name).any(|(at, _)| {
+            let before = plain[..at].chars().next_back();
+            let after = plain[at + name.len()..].trim_start();
+            !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') && after.starts_with('(')
+        })
+    };
+    words.first() == Some(&"SELECT")
+        && words.iter().filter(|w| **w == "SELECT").count() == 1
+        && !words.iter().any(|w| {
+            matches!(
+                *w,
+                "GROUP" | "DISTINCT" | "LIMIT" | "TOP" | "FETCH" | "HAVING" | "UNION" | "INTERSECT" | "EXCEPT" | "JOIN"
+            )
+        })
+        && !AGGREGATES.iter().any(|a| calls(a))
+        && culprit_core::sql::tables_in(text, Engine::Mysql).len() == 1
 }
 
 pub(crate) fn split_object(object: &str) -> Option<(String, String)> {
@@ -1472,6 +1827,22 @@ pub(crate) fn split_object(object: &str) -> Option<(String, String)> {
         [table] => Some(("dbo".to_string(), table.to_string())),
         _ => None,
     }
+}
+
+/// A disabled index that would lead with the scan's columns ([`leading_index`]'s rule): the fix is to bring it back,
+/// not to build its twin.
+pub(crate) fn disabled_leading_index<'a>(snapshot: &'a Snapshot, g: &ScanGroup) -> Option<&'a IndexStat> {
+    let cols = predicate_columns(&g.predicate);
+    let wanted: &[String] = if cols.equality.is_empty() { g.keys.get(..1)? } else { &cols.equality };
+    snapshot.indexes.iter().find(|i| {
+        let existing = i.key_names();
+        i.schema.eq_ignore_ascii_case(&g.schema)
+            && i.table.eq_ignore_ascii_case(&g.table)
+            && i.is_disabled
+            && existing.len() >= wanted.len()
+            && lower_set(&existing[..wanted.len()].iter().map(|s| s.to_string()).collect::<Vec<_>>())
+                == lower_set(wanted)
+    })
 }
 
 /// An index already leads with the equality columns: the scan has another cause (type mismatch, function on the column, stale stats).
@@ -1511,9 +1882,11 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
         subject(SubjectKind::Table, &table_name),
     );
     apply_query_impact(&mut f, &impact);
-    f.severity = severity_for_share(impact.share).max(Severity::Medium);
+    let time_ms: f64 = queries.iter().map(|q| q.total_time_ms).sum();
+    f.severity = severity_for_time(snapshot, time_ms, impact.share);
     f.confidence = Confidence::High;
     f.title = format!("{} is read in full to find rows by {}", g.table, key_text);
+    let disabled = disabled_leading_index(snapshot, &g);
     let fk = snapshot.foreign_keys.iter().find(|fk| {
         fk.schema.eq_ignore_ascii_case(&g.schema)
             && fk.table.eq_ignore_ascii_case(&g.table)
@@ -1521,7 +1894,7 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
             && fk.columns.iter().all(|c| g.keys.iter().any(|k| k.eq_ignore_ascii_case(c)))
     });
     f.summary = format!(
-        "{} read every row of {} ({} rows) and keep only those matching `{}`. No index starts with {}, so the database has no faster way in. Together they account for {} of database time.{}",
+        "{} read every row of {} ({} rows) and keep only those matching `{}`. {}, so the database has no faster way in. Together they account for {} of database time.{}",
         if queries.len() == 1 {
             "One query plans to".to_string()
         } else {
@@ -1530,7 +1903,10 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
         table_name,
         format::count(g.rows),
         g.predicate.trim(),
-        key_text,
+        match disabled {
+            Some(i) => format!("Only {}, which is disabled, starts with {}", i.name, key_text),
+            None => format!("No index starts with {key_text}"),
+        },
         format::percent(impact.share),
         fk.map(|fk| format!(
             " {} is also the foreign key to {}, so deletes there scan this table too.",
@@ -1549,19 +1925,29 @@ fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Finding {
     }
     f.metrics.push(Metric::new("Rows scanned per run", g.rows, Unit::Rows));
     f.metrics.push(Metric::new("Queries", queries.len() as f64, Unit::Count));
-    f.fix = Some(Fix {
-        summary: format!("Create an index on {} so these queries seek instead of scanning.", key_text),
-        sql: Some(create_index_sql(snapshot, &g.schema, &g.table, &g.keys, &[])),
-        cost: write_cost(snapshot, &g.schema, &g.table),
+    f.fix = Some(match disabled {
+        Some(i) => widen_fix(snapshot, i, &[]),
+        None => Fix {
+            summary: format!("Create an index on {} so these queries seek instead of scanning.", key_text),
+            sql: Some(create_index_sql(snapshot, &g.schema, &g.table, &g.keys, &[])),
+            cost: write_cost(snapshot, &g.schema, &g.table),
+        },
     });
     f.verify = vec![
-        format!("Explain one of the queries again: the scan of {} should become an index seek/scan on the new index.", g.table),
+        format!(
+            "Explain one of the queries again: the scan of {} should become an index seek/scan on {}.",
+            g.table,
+            disabled.map_or("the new index".to_string(), |i| i.name.clone())
+        ),
         "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower.".into(),
     ];
     f
 }
 
 /// Indexes another index makes redundant, mapped to the index that covers them. Shared by the duplicate and unused checks so an index is reported once.
+///
+/// The keeper is never a clustered index (InnoDB's PRIMARY included, which MySQL reports with the same kind as any
+/// other): seeking it reads whole rows, so a narrow index on its leading columns serves reads it can't serve as cheaply.
 pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
     let mut out = Vec::new();
     for a in &snapshot.indexes {
@@ -1570,7 +1956,9 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
         }
         let keeper = snapshot
             .indexes_on(&a.schema, &a.table)
-            .filter(|b| b.name != a.name && !b.is_disabled && b.filter == a.filter && b.kind == a.kind)
+            .filter(|b| {
+                b.name != a.name && !b.is_disabled && !b.is_clustered && b.filter == a.filter && b.kind == a.kind
+            })
             .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)))
             // A read index isn't redundant to one nothing reads: drop the unread one instead (the unused check says so).
             .filter(|b| !(is_unused(snapshot, b) && a.reads.is_some_and(|r| r > 0.0)));

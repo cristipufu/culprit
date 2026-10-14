@@ -192,7 +192,7 @@ fn merge_scans_into_missing_indexes(findings: &mut Vec<Finding>) {
         let target = findings.iter().position(|m| {
             m.check == "missing-index"
                 && m.subject.name.eq_ignore_ascii_case(&scan.subject.name)
-                && scan_keys.first().is_some_and(|k| keys_of(&m.id).contains(k))
+                && missing_index_serves_scan(&keys_of(&m.id), &scan_keys)
         });
         if let Some(t) = target {
             absorbed.push((i, t));
@@ -357,6 +357,16 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             ),
         );
     }
+}
+
+// ── indexes ──
+
+/// Whether the index a missing-index request creates (`missing_keys`, in its DDL's order) serves the scan a plan shows
+/// filtering on `scan_keys`: the index leads with a column the scan filters on, so the scan's rows can be sought by it.
+/// An index that holds the scan's column only further along (`(customer_id, status)` for a scan on `status`) could at
+/// best be scanned, so that scan keeps its own finding and its own index.
+pub(crate) fn missing_index_serves_scan(missing_keys: &[String], scan_keys: &[String]) -> bool {
+    missing_keys.first().is_some_and(|lead| scan_keys.iter().any(|k| k.eq_ignore_ascii_case(lead)))
 }
 
 #[cfg(test)]
