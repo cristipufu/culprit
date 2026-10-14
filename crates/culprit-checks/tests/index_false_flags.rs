@@ -19,6 +19,9 @@ fn counted_for_ten_days(mut s: Snapshot) -> Snapshot {
     s.taken_at = "2026-10-11T12:00:00Z".into();
     if let Some(p) = s.pressure.as_mut() {
         p.uptime_hours = Some(240.0);
+    } else if s.server.engine == culprit_core::Engine::Postgres {
+        // PostgreSQL's counter age is the one its scan measured, never the time since the server started.
+        s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(240.0);
     }
     s
 }

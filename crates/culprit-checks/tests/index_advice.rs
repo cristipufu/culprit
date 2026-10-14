@@ -12,10 +12,14 @@ fn snapshot(name: &str) -> Snapshot {
     serde_json::from_str(&text).expect("snapshot")
 }
 
-/// Counters that have been running for ten days, so per-day figures are meaningful.
+/// Counters that have been running for ten days, so per-day figures are meaningful. PostgreSQL's age is the one its
+/// scan measured (its counters outlive a restart), the others' the time since the server started.
 fn ten_days(mut s: Snapshot) -> Snapshot {
     s.server.started_at = Some("2026-10-01T12:00:00Z".into());
     s.taken_at = "2026-10-11T12:00:00Z".into();
+    if s.server.engine == culprit_core::Engine::Postgres {
+        s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(240.0);
+    }
     s
 }
 
@@ -233,7 +237,18 @@ fn forced_plans_are_listed_and_one_that_scans_past_a_newer_index_stands_out() {
     assert!(scan.title.ends_with("scan order_items though ix_order_items_order_id could seek it"), "{}", scan.title);
     assert!(scan.summary.contains("Plan 9 is forced by automatic tuning on Oct 3 for query 9."), "{}", scan.summary);
     assert!(scan.summary.contains("reads all of shop.order_items (1.5M rows)"), "{}", scan.summary);
-    assert!(scan.severity >= Severity::Medium);
+    // Severity needs an amount: the demo's query takes 35 s a day, so this is Low; at an hour a day it stands out.
+    assert_eq!(scan.severity, Severity::Low);
+    let mut busy = s.clone();
+    let w = busy.workload.as_mut().unwrap();
+    w.total_time_ms *= 100.0;
+    for q in &mut w.queries {
+        q.total_time_ms *= 100.0;
+        q.mean_time_ms *= 100.0;
+    }
+    let busy_scan =
+        tuning(&busy).into_iter().find(|f| f.id == "tuning-advice:forced-scan:9").expect("the scanning forced plan");
+    assert!(busy_scan.severity >= Severity::Medium, "{:?}", busy_scan.severity);
     assert_eq!(scan.queries[0].plan_node, Some(1));
     assert_eq!(
         scan.fix.as_ref().unwrap().sql.as_deref(),

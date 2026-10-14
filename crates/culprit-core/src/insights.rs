@@ -13,7 +13,7 @@ use ts_rs::TS;
 
 use crate::finding::Severity;
 use crate::format;
-use crate::model::{ColumnInfo, Engine, Snapshot};
+use crate::model::{ColumnInfo, Engine, IndexStat, Snapshot};
 use crate::plan::{INDEX_KEEPS_AT_MOST, MISESTIMATE_FACTOR, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
 
 /// What kind of change fixes it, for grouping and icons.
@@ -891,9 +891,10 @@ fn blocker(cx: &Cx, n: &PlanNode, filter: &str) -> Option<Blocker> {
 }
 
 /// MySQL's possible keys for a scan that could serve its filter. MySQL lists keys for the WHERE clause and for joins
-/// alike, and names them without their columns: with one table in the query every key comes from the filter; in a
-/// join, a key counts when its name carries a filtered column (`ix_orders_promo_code` for `promo_code`), so an index on
-/// the join column isn't taken for one on the filter.
+/// alike, and names them without their columns: with one table in the query every key comes from the filter. In a
+/// join, a key counts when it leads with a filtered column, by the catalog ([`mark_possible_keys`]), so an index on the
+/// join column isn't taken for one on the filter; on a plan the catalog didn't mark, when its name carries a filtered
+/// column (`ix_orders_promo_code` for `promo_code`).
 fn possible_keys_for_filter(cx: &Cx, n: &PlanNode) -> Vec<String> {
     let Some(keys) = n.props.get("possible_keys") else { return Vec::new() };
     let keys: Vec<String> = keys.split(", ").map(str::trim).filter(|k| !k.is_empty()).map(str::to_string).collect();
@@ -908,6 +909,17 @@ fn possible_keys_for_filter(cx: &Cx, n: &PlanNode) -> Vec<String> {
     }
     let columns: Vec<String> =
         n.predicate.as_deref().map(filter_columns).unwrap_or_default().iter().map(|c| c.to_ascii_lowercase()).collect();
+    if let Some(described) = n.props.get(POSSIBLE_KEY_COLUMNS) {
+        let leading: HashMap<&str, String> = described
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(key, cols)| (key, cols.split(',').next().unwrap_or("").to_ascii_lowercase()))
+            .collect();
+        return keys
+            .into_iter()
+            .filter(|k| leading.get(k.as_str()).is_some_and(|lead| columns.iter().any(|c| c == lead)))
+            .collect();
+    }
     keys.into_iter()
         .filter(|k| {
             let name = k.to_ascii_lowercase();
@@ -1167,6 +1179,51 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
     if let Some(workload) = snapshot.workload.as_mut() {
         for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
             mark_changed_columns(plan, columns);
+        }
+    }
+}
+
+/// Where [`mark_possible_keys`] keeps each possible key's columns: `name=col,col` per key, one per line.
+const POSSIBLE_KEY_COLUMNS: &str = "possible_keys_columns";
+
+/// MySQL names a scan's possible keys without their columns. Name each with its key columns from the catalog, so an
+/// index on the filtered column can be told from one on the join column ([`possible_keys_for_filter`]). A key the
+/// catalog doesn't show, or shows on two tables of that name, leaves the scan unmarked.
+pub fn mark_possible_keys(plan: &mut Plan, indexes: &[IndexStat]) {
+    if plan.engine != Engine::Mysql || indexes.is_empty() {
+        return;
+    }
+    fn walk(node: &mut PlanNode, indexes: &[IndexStat]) {
+        if let (Some(keys), Some(object)) = (node.props.get("possible_keys"), node.object.as_deref()) {
+            let table = table_leaf(object);
+            let described: Option<Vec<String>> = keys
+                .split(", ")
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .map(|key| {
+                    let mut found = indexes.iter().filter(|i| i.table.eq_ignore_ascii_case(&table) && i.name == key);
+                    let index = found.next()?;
+                    let same = found.all(|other| other.columns == index.columns);
+                    same.then(|| format!("{key}={}", index.columns.join(",")))
+                })
+                .collect();
+            if let Some(described) = described.filter(|d| !d.is_empty()) {
+                node.props.insert(POSSIBLE_KEY_COLUMNS.into(), described.join("\n"));
+            }
+        }
+        for child in &mut node.children {
+            walk(child, indexes);
+        }
+    }
+    walk(&mut plan.root, indexes);
+}
+
+/// [`mark_possible_keys`] on every plan in a snapshot, against its catalog.
+pub fn mark_snapshot_keys(snapshot: &mut Snapshot) {
+    let indexes = &snapshot.indexes;
+    if let Some(workload) = snapshot.workload.as_mut() {
+        for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
+            mark_possible_keys(plan, indexes);
         }
     }
 }
@@ -3514,7 +3571,30 @@ mod tests {
         assert!(!joined.contains(&"index-ignored".to_string()), "{joined:?}");
         assert!(joined.contains(&"scan-filter".to_string()), "{joined:?}");
         join.children[0] = scan("0.50", Some("fk_orders_customer, ix_orders_promo_code"));
-        assert!(rules(&plan(Engine::Mysql, join)).contains(&"index-ignored".to_string()));
+        assert!(rules(&plan(Engine::Mysql, join.clone())).contains(&"index-ignored".to_string()));
+        // With the catalog, a key counts by the column it leads with, whatever its name.
+        let index = |name: &str, columns: &[&str]| {
+            serde_json::from_value::<IndexStat>(serde_json::json!({
+                "schema": "shop", "table": "orders", "name": name, "kind": "BTREE",
+                "columns": columns, "include": [], "filter": null, "is_unique": false, "is_primary_key": false,
+                "is_clustered": false, "is_disabled": false, "size_bytes": null, "reads": null, "writes": null,
+                "seeks": null, "scans": null, "lookups": null, "last_read": null, "definition": null
+            }))
+            .unwrap()
+        };
+        let marked = |keys: &str, catalog: &[IndexStat]| {
+            let mut j = join.clone();
+            j.children[0] = scan("0.50", Some(keys));
+            let mut p = plan(Engine::Mysql, j);
+            mark_possible_keys(&mut p, catalog);
+            rules(&p)
+        };
+        let promo = [index("idx_a", &["promo_code", "created_at"]), index("fk_orders_customer", &["customer_id"])];
+        assert!(marked("fk_orders_customer, idx_a", &promo).contains(&"index-ignored".to_string()));
+        // Named for promo_code, but it leads with customer_id: it can't serve a filter on promo_code.
+        let misnamed = [index("ix_orders_promo_code", &["customer_id", "promo_code"])];
+        let unusable = marked("ix_orders_promo_code", &misnamed);
+        assert!(!unusable.contains(&"index-ignored".to_string()) && unusable.contains(&"scan-filter".to_string()));
         // Above a tenth kept, an index wouldn't pay either way.
         assert!(rules(&plan(Engine::Mysql, scan("15.00", Some("ix_orders_promo_code")))).is_empty());
     }

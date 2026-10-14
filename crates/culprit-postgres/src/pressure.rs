@@ -109,13 +109,16 @@ fn breakdown(
 pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Vec<String>) {
     let mut p = Pressure::default();
     let mut notes = Vec::new();
-    // The counters' age is known only from a reset. PostgreSQL keeps statistics across a clean restart, and stats_reset
-    // stays empty until the first reset, so the server's start time says nothing about how long they have counted:
-    // the age is then unknown, never the time since the restart.
+    // How long the counters have counted. PostgreSQL keeps statistics across a clean restart, so the server's start
+    // time says nothing about it. A reset (of the database's counters or of one table's) stamps the database's
+    // stats_reset. Until then it is empty: the counters run from when PostgreSQL last discarded its statistics (a
+    // crash, a restore, the first start), which also stamps the shared counters' stats_reset (pg_stat_bgwriter,
+    // pg_stat_archiver) with that moment; a later reset of those only makes the age shorter than it is.
     let database = query_one(
         client,
         "SELECT blks_hit, blks_read, temp_bytes, xact_commit, xact_rollback, deadlocks,
-                extract(epoch FROM now() - stats_reset) / 3600 AS hours
+                extract(epoch FROM now() - coalesce(stats_reset,
+                    (SELECT greatest(b.stats_reset, a.stats_reset) FROM pg_stat_bgwriter b, pg_stat_archiver a))) / 3600 AS hours
            FROM pg_stat_database WHERE datname = current_database()",
     )
     .await;

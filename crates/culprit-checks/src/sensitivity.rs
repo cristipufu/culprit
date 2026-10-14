@@ -37,8 +37,9 @@ pub fn parameter_sensitive_info() -> CheckInfo {
 /// How the slow calls show up in the data.
 #[derive(Debug)]
 enum Shape<'a> {
-    /// Two plans of one query: one fast, one slow (Query Store).
-    Plans { fast: &'a PlanVariant, slow: &'a PlanVariant },
+    /// Plans of one query side by side (Query Store): the fast ones most calls run with (`fast` the busiest of them,
+    /// `fast_ms` the slowest of their averages, `fast_calls` their calls together), and a slow one still in use.
+    Plans { fast: &'a PlanVariant, slow: &'a PlanVariant, fast_ms: f64, fast_calls: f64, fast_plans: usize },
     /// A latency histogram with a long tail (MySQL).
     Tail { typical_ms: f64, p99_ms: f64, slow_share: Option<f64> },
 }
@@ -55,32 +56,49 @@ fn plans_shape<'a>(snapshot: &Snapshot, q: &'a QueryStat) -> Option<Shape<'a>> {
     }
     let busy: Vec<&PlanVariant> =
         q.plans.iter().filter(|p| p.executions >= 10.0 && p.executions >= q.executions * MIN_PLAN_SHARE).collect();
-    // The plan most calls run with, fast for them; a rare fast plan beside a slow common one isn't "fast for most calls".
-    let fast = busy.iter().max_by(|a, b| a.executions.total_cmp(&b.executions))?;
-    if fast.executions < q.executions * MOST_CALLS {
+    // The slow plan: the slowest still in use. One that stopped is behind the query, but a slower one may still run.
+    let slow = busy
+        .iter()
+        .copied()
+        .filter(|p| !slow_plan_stopped(snapshot, p))
+        .max_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms))?;
+    // The fast plans: each well ahead of it. Together they carry most calls; a rare fast plan beside a slow common one
+    // isn't "fast for most calls".
+    let fast_group: Vec<&PlanVariant> = busy
+        .iter()
+        .copied()
+        .filter(|p| {
+            p.id != slow.id
+                && slow.mean_time_ms >= p.mean_time_ms * MIN_FACTOR
+                && slow.mean_time_ms - p.mean_time_ms >= MIN_GAP_MS
+        })
+        .collect();
+    let fast_calls: f64 = fast_group.iter().map(|p| p.executions).sum();
+    if fast_calls < q.executions * MOST_CALLS {
         return None;
     }
-    let slow = busy.iter().filter(|p| p.id != fast.id).max_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms))?;
-    if slow_plan_stopped(snapshot, slow) {
-        return None;
-    }
-    // Both plans in use at the same time: values pick the plan. A fast plan that was replaced is a regression instead.
-    let overlap = match (
-        fast.last_seen.as_deref(),
+    let fast = fast_group.iter().copied().max_by(|a, b| a.executions.total_cmp(&b.executions))?;
+    let fast_ms = fast_group.iter().map(|p| p.mean_time_ms).fold(0.0, f64::max);
+    // Side by side: the slow plan ran while one of the fast ones did, so values pick the plan. A fast plan that was
+    // replaced is a regression instead.
+    let ran_with_slow = |p: &PlanVariant| match (
+        p.last_seen.as_deref(),
         slow.first_seen.as_deref(),
         slow.last_seen.as_deref(),
-        fast.first_seen.as_deref(),
+        p.first_seen.as_deref(),
     ) {
         (Some(fast_last), Some(slow_first), Some(slow_last), Some(fast_first)) => {
             fast_last >= slow_first && slow_last >= fast_first
         }
         _ => true,
     };
-    (fast.id != slow.id
-        && overlap
-        && slow.mean_time_ms >= fast.mean_time_ms * MIN_FACTOR
-        && slow.mean_time_ms - fast.mean_time_ms >= MIN_GAP_MS)
-        .then_some(Shape::Plans { fast, slow })
+    fast_group.iter().any(|p| ran_with_slow(p)).then_some(Shape::Plans {
+        fast,
+        slow,
+        fast_ms,
+        fast_calls,
+        fast_plans: fast_group.len(),
+    })
 }
 
 /// The slow plan hasn't run for a long while before the data ends: whatever made it slow is behind the query.
@@ -168,29 +186,46 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
     if let Some(impact) = query_impact(snapshot, &[q]) {
         apply_impact(snapshot, &mut f, &impact);
     }
-    f.severity = severity_for_share(share);
+    f.severity = severity_for_workload_share(snapshot, share);
     f.impact.score = score_for_share(share);
     let run = culprit_core::changes::run_time;
     match shape {
-        Shape::Plans { fast, slow } => {
+        Shape::Plans { fast, slow, fast_ms, fast_calls, fast_plans } => {
             let slow_share = slow.executions / q.executions.max(1.0);
+            let calls = |n: f64| format::percent(n / q.executions.max(1.0));
+            // One plan for most calls, or several, each well ahead of the slow one: then the slowest of them is the bound.
+            let fast_time =
+                if *fast_plans == 1 { run(fast.mean_time_ms) } else { format!("{} or less", run(*fast_ms)) };
             f.title = format!(
-                "{handle} runs in {} for most calls but {} for {} of them",
-                run(fast.mean_time_ms),
+                "{handle} runs in {fast_time} for most calls but {} for {} of them",
                 run(slow.mean_time_ms),
                 format::percent(slow_share)
             );
-            f.impact.label =
-                format!("{} slower for some calls", times(slow.mean_time_ms / fast.mean_time_ms.max(0.001)));
+            f.impact.label = format!("{} slower for some calls", times(slow.mean_time_ms / fast_ms.max(0.001)));
             let compiled_for =
                 |p: &PlanVariant| compiled(p, q).map(|c| format!(", compiled for `{c}`")).unwrap_or_default();
+            let fast_side = if *fast_plans == 1 {
+                format!(
+                    "Plan {} handles {} of the calls and averages {}{}",
+                    fast.id,
+                    calls(*fast_calls),
+                    run(fast.mean_time_ms),
+                    compiled_for(fast)
+                )
+            } else {
+                format!(
+                    "{fast_plans} plans that average {} or less handle {} of the calls (plan {} the most, {} of them at {}{})",
+                    run(*fast_ms),
+                    calls(*fast_calls),
+                    fast.id,
+                    calls(fast.executions),
+                    run(fast.mean_time_ms),
+                    compiled_for(fast)
+                )
+            };
             f.summary = format!(
-                "SQL Server runs this statement with {} plans side by side. Plan {} handles {} of the calls and averages {}{}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
+                "SQL Server runs this statement with {} plans side by side. {fast_side}; plan {} averages {}{} and handled {} calls. A plan is compiled for the parameter values of the call that happened to compile it, then reused for every other value, so values that need a different strategy get the wrong one.",
                 if q.plans.len() == 2 { "two".to_string() } else { format::count(q.plans.len() as f64) },
-                fast.id,
-                format::percent(fast.executions / q.executions.max(1.0)),
-                run(fast.mean_time_ms),
-                compiled_for(fast),
                 slow.id,
                 run(slow.mean_time_ms),
                 compiled_for(slow),
@@ -199,9 +234,13 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             f.metrics.push(Metric::new("Fast plan", fast.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Slow plan", slow.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Calls on the slow plan", slow_share, Unit::Ratio));
-            f.metrics.push(Metric::text(PLAN_MOST_CALLS_USE, fast.id.clone()));
+            // Forcing is offered only for a plan that serves most calls on its own.
+            let most_calls = (fast.executions >= q.executions * MOST_CALLS).then_some(*fast);
+            if let Some(p) = most_calls {
+                f.metrics.push(Metric::text(PLAN_MOST_CALLS_USE, p.id.clone()));
+            }
             f.confidence = Confidence::High;
-            f.fix = Some(mssql_fix(snapshot, q, Some(fast)));
+            f.fix = Some(mssql_fix(snapshot, q, most_calls));
         }
         Shape::Tail { typical_ms, p99_ms, slow_share } => {
             // The slow query log keeps only runs over long_query_time: its "typical" run is a typical slow one.
@@ -424,11 +463,47 @@ mod tests {
         q.executions = 1000.0;
         q.plans = vec![plan("815", 980.0, 2.0), plan("685", 20.0, 3400.0)];
         match plans_shape(&s, &q) {
-            Some(Shape::Plans { fast, slow }) => assert_eq!((fast.id.as_str(), slow.id.as_str()), ("815", "685")),
+            Some(Shape::Plans { fast, slow, .. }) => {
+                assert_eq!((fast.id.as_str(), slow.id.as_str()), ("815", "685"))
+            }
             other => panic!("{other:?}"),
         }
         q.plans = vec![plan("1", 500.0, 2.0), plan("2", 500.0, 3.0)];
         assert!(plans_shape(&s, &q).is_none(), "1.5× apart is not two different worlds");
+    }
+
+    #[test]
+    fn fast_plans_together_carry_most_calls_and_the_slow_one_still_runs() {
+        // As on a real Azure SQL database: no single fast plan has half the calls, the slowest plan stopped days ago,
+        // and a slow one ran half an hour before the data ends, while a fast one kept running.
+        let mut s = mssql();
+        let w = s.workload.as_mut().expect("workload");
+        w.window_end = Some("2026-10-14T15:21:00Z".into());
+        let mut q = sample();
+        q.executions = 27_000.0;
+        let at = |mut p: PlanVariant, first: &str, last: &str| {
+            p.first_seen = Some(first.into());
+            p.last_seen = Some(last.into());
+            p
+        };
+        q.plans = vec![
+            at(plan("2485", 11_000.0, 1.2), "2026-10-12T13:54:00Z", "2026-10-14T12:58:00Z"),
+            at(plan("2179", 7_200.0, 0.1), "2026-10-11T16:29:00Z", "2026-10-12T13:37:00Z"),
+            at(plan("3020", 3_700.0, 0.15), "2026-10-13T17:06:00Z", "2026-10-14T15:16:00Z"),
+            at(plan("1944", 1_200.0, 27.0), "2026-10-10T12:54:00Z", "2026-10-12T11:47:00Z"),
+            at(plan("3312", 1_240.0, 19.0), "2026-10-14T14:32:00Z", "2026-10-14T14:49:00Z"),
+        ];
+        match plans_shape(&s, &q) {
+            Some(Shape::Plans { fast, slow, fast_plans, fast_calls, .. }) => {
+                assert_eq!((fast.id.as_str(), slow.id.as_str(), fast_plans), ("2485", "3312", 3));
+                assert!(fast_calls > q.executions * MOST_CALLS);
+            }
+            other => panic!("{other:?}"),
+        }
+        let f = finding_for(&s, &q, &plans_shape(&s, &q).unwrap(), 0.04);
+        assert!(f.title.contains("1.2 ms or less for most calls"), "{}", f.title);
+        // No plan serves most calls on its own: forcing one isn't offered.
+        assert!(!f.metrics.iter().any(|m| m.label == PLAN_MOST_CALLS_USE), "{:?}", f.metrics);
     }
 
     #[test]

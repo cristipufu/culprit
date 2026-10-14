@@ -225,7 +225,7 @@
           "plan_node": null
         }
       ],
-      "severity": "medium",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "9b30e6ad79d940fe"
@@ -276,7 +276,7 @@
           "plan_node": null
         }
       ],
-      "severity": "medium",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "04cd7be9c366fadc"
@@ -2587,6 +2587,7 @@
                     "filtered": "100.00",
                     "key_length": "71",
                     "possible_keys": "ix_orders_status, ix_orders_status_created",
+                    "possible_keys_columns": "ix_orders_status=status\nix_orders_status_created=status,created_at",
                     "prefix_cost": "6088.66",
                     "read_cost": "3176.06",
                     "rows_examined_per_scan": "29126",
@@ -2834,6 +2835,7 @@
                     "filtered": "100.00",
                     "key_length": "4",
                     "possible_keys": "PRIMARY",
+                    "possible_keys_columns": "PRIMARY=id",
                     "prefix_cost": "0.00",
                     "read_cost": "0.00",
                     "ref": "const",
@@ -3106,6 +3108,7 @@
                         "filtered": "100.00",
                         "key_length": "4",
                         "possible_keys": "fk_orders_customer",
+                        "possible_keys_columns": "fk_orders_customer=customer_id",
                         "prefix_cost": "2.14",
                         "read_cost": "1.84",
                         "ref": "const",
@@ -3339,6 +3342,7 @@
                         "filtered": "100.00",
                         "key_length": "4",
                         "possible_keys": "fk_items_order, fk_items_product",
+                        "possible_keys_columns": "fk_items_order=order_id\nfk_items_product=product_id",
                         "prefix_cost": "2.20",
                         "read_cost": "2.00",
                         "ref": "const",
@@ -3375,6 +3379,7 @@
                         "filtered": "100.00",
                         "key_length": "4",
                         "possible_keys": "PRIMARY",
+                        "possible_keys_columns": "PRIMARY=id",
                         "prefix_cost": "4.36",
                         "read_cost": "1.96",
                         "ref": "shop.oi.product_id",
@@ -3611,6 +3616,7 @@
                     "filtered": "100.00",
                     "key_length": "4",
                     "possible_keys": "PRIMARY",
+                    "possible_keys_columns": "PRIMARY=id",
                     "prefix_cost": "0.00",
                     "read_cost": "0.00",
                     "ref": "const",
@@ -3892,6 +3898,7 @@
                     "filtered": "100.00",
                     "key_length": "4",
                     "possible_keys": "PRIMARY",
+                    "possible_keys_columns": "PRIMARY=id",
                     "prefix_cost": "7859.91",
                     "read_cost": "3953.31",
                     "rows_examined_per_scan": "39066",
@@ -4155,11 +4162,7 @@
         "severity": "high"
       },
       {
-        "count": 2,
-        "severity": "medium"
-      },
-      {
-        "count": 10,
+        "count": 12,
         "severity": "low"
       }
     ],

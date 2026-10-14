@@ -65,7 +65,10 @@ impl Refine for Step<fn(&Snapshot, &mut Vec<Finding>)> {
 /// The built-in preparation steps, in the order they run.
 fn preparation() -> Vec<Arc<dyn Prepare>> {
     let step = |name: &'static str, run: fn(&mut Snapshot)| Arc::new(Step { name, run }) as Arc<dyn Prepare>;
-    vec![step("plans captured before a column changed type", culprit_core::insights::mark_snapshot)]
+    vec![
+        step("plans captured before a column changed type", culprit_core::insights::mark_snapshot),
+        step("MySQL's possible keys named with their columns", culprit_core::insights::mark_snapshot_keys),
+    ]
 }
 
 /// The stages and what runs in each.

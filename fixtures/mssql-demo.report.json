@@ -310,7 +310,7 @@
           "plan_node": null
         }
       ],
-      "severity": "high",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "8"
@@ -7830,7 +7830,7 @@
     ],
     "by_severity": [
       {
-        "count": 6,
+        "count": 5,
         "severity": "high"
       },
       {
@@ -7838,7 +7838,7 @@
         "severity": "medium"
       },
       {
-        "count": 13,
+        "count": 14,
         "severity": "low"
       }
     ],

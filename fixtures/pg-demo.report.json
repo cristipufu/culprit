@@ -40,7 +40,7 @@
           "plan_node": null
         }
       ],
-      "severity": "high",
+      "severity": "medium",
       "subject": {
         "kind": "query",
         "name": "9065391607317686058"
@@ -206,7 +206,7 @@
           "plan_node": null
         }
       ],
-      "severity": "medium",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "3432126458605143571"
@@ -5321,15 +5321,11 @@
     ],
     "by_severity": [
       {
-        "count": 1,
-        "severity": "high"
-      },
-      {
         "count": 8,
         "severity": "medium"
       },
       {
-        "count": 8,
+        "count": 9,
         "severity": "low"
       }
     ],

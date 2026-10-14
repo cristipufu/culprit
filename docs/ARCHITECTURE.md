@@ -51,6 +51,9 @@ Rules every source follows:
   `UPDATE` and zero waits are claims.
 - **Say what a number covers.** A window says how many hours it really holds; cumulative counters say since when (a
   restart, a statistics reset), and a drop in a running total is a reset only when the source's own marker moved.
+  PostgreSQL's counters outlive a clean restart and are discarded by a crash recovery that keeps the start time, so
+  their age is the one the scan measured (`stats_reset`, else when statistics were last discarded), never the time
+  since the server started.
 - **Planning never lends this login's privileges.** PostgreSQL's planner runs the functions and operators a statement
   reaches (constants folded, a column's common values compared), with the privileges of whoever plans it, and neither
   `search_path` nor `SET ROLE` keeps someone else's code out. `culprit-postgres/src/trust.rs` makes every plan in a
@@ -107,7 +110,7 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | A type mismatch is a column the engine converts implicitly to match a value of another type, in the plan that runs now. | `insights::converts_column`, `current_conversions`, `mark_changed_columns` |
 | An index is advice only for a filter that keeps a small share of the rows read; past that, the scan is the right plan and the advice is to read less. | `INDEX_KEEPS_AT_MOST`, `PlanNode::kept_share` |
 | A setting is changed where the server runs: SQL on a server you manage, the platform's control on a managed one, and never to a lower value than it has. | `support::setting_change` |
-| Severity needs an amount, not only a share: a large share of a quiet database's time is still a small number (Medium needs a minute a day of database time, High ten). | `support::severity_for_time` |
+| Severity needs an amount, not only a share: a large share of a quiet database's time is still a small number (Medium needs a minute a day of database time, High ten). Time spent since a recent change is rated over its own hours; a window of unknown length is never High. Counts are rated by what they cost (a chatty statement's round trips at about a millisecond each). | `support::severity_for_time`, `severity_for_workload_share`, `severity_for_recent_time` |
 | One cause, one finding. | refine rules |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 

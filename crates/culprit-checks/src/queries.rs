@@ -39,7 +39,7 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
     let time = time_noun(snapshot);
     let mut f = finding("heavy-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
     apply_impact(snapshot, &mut f, &impact);
-    f.severity = severity_for_share(impact.share);
+    f.severity = severity_for_workload_share(snapshot, impact.share);
     f.confidence = Confidence::High;
     let per_day_runs = rate_per_day(snapshot, q.executions);
     let kind = statement_kind(&q.text);
@@ -502,6 +502,10 @@ pub fn chatty_query_info() -> CheckInfo {
     }
 }
 
+/// Round trips a day for a chatty statement to be Medium: at about a millisecond each, the minute a day
+/// ([`MEDIUM_MS_A_DAY`]) Medium asks of database time.
+const MEDIUM_ROUND_TRIPS_A_DAY: f64 = MEDIUM_MS_A_DAY;
+
 pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(workload) = &snapshot.workload else {
         return Vec::new();
@@ -571,7 +575,11 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.title = title;
             f.summary = summary;
-            f.severity = if exec_share >= 0.25 { Severity::Medium } else { Severity::Low };
+            // A share of the executions is easy to reach on a quiet database; the amount is the round trips: each costs
+            // the application about a millisecond in the same region, so Medium asks for the minute a day it asks of
+            // database time.
+            let medium = exec_share >= 0.25 && at_least_per_day(snapshot, q.executions, MEDIUM_ROUND_TRIPS_A_DAY);
+            f.severity = if medium { Severity::Medium } else { Severity::Low };
             f.impact.score = (score_for_share(impact.share) + exec_share * 40.0).min(60.0);
             f.impact.db_time_share = Some(impact.share);
             f.impact.time_ms_per_day = impact.per_day_ms;
@@ -650,7 +658,7 @@ fn merge_same_cause(snapshot: &Snapshot, findings: Vec<Finding>) -> Vec<Finding>
             m.queries.iter().filter_map(|r| snapshot.workload.as_ref()?.query(&r.id)).collect();
         let Some(impact) = query_impact(snapshot, &queries) else { continue };
         apply_query_impact(m, &impact);
-        m.severity = m.severity.max(severity_for_share(impact.share));
+        m.severity = m.severity.max(severity_for_workload_share(snapshot, impact.share));
         let column = m.subject.name.clone();
         m.title = format!("A type mismatch on {column} stops {} queries from using an index", queries.len());
         m.summary.push_str(&format!(
@@ -719,8 +727,7 @@ fn plan_warning_finding(
                     None => String::new(),
                 }
             );
-            f.severity =
-                if blocks_seek { severity_for_share(impact.share).max(Severity::Medium) } else { Severity::Low };
+            f.severity = if blocks_seek { severity_for_workload_share(snapshot, impact.share) } else { Severity::Low };
             f.confidence = if blocks_seek { Confidence::High } else { Confidence::Medium };
             f.fix = Some(Fix { summary: mismatch_fix(column.as_deref(), target.as_deref()), sql: None, cost: None });
             if let Some(c) = &column {
@@ -732,7 +739,7 @@ fn plan_warning_finding(
         PlanWarning::Spill => {
             f.title = format!("{} runs out of memory and spills to disk", capitalize(&handle));
             f.summary = "A sort or hash in this plan needed more memory than it was granted and wrote the overflow to disk (tempdb or temp files). Spills usually come from a row estimate that was far too low, or a sort the index could have avoided.".into();
-            f.severity = severity_for_share(impact.share);
+            f.severity = severity_for_workload_share(snapshot, impact.share);
             f.confidence = Confidence::High;
             f.fix = Some(Fix {
                 summary: match snapshot.server.engine {
@@ -750,7 +757,7 @@ fn plan_warning_finding(
                 JoinCondition::Missing => {
                     f.title = format!("{} joins tables without a join condition", capitalize(&handle));
                     f.summary = "Part of this plan combines every row of one input with every row of another (a cross join), and the statement has no condition joining them: no ON clause and no comparison of one table's column with another's. A missing join condition multiplies the rows the query reads and returns.".into();
-                    f.severity = severity_for_share(impact.share);
+                    f.severity = severity_for_workload_share(snapshot, impact.share);
                     f.confidence = Confidence::Medium;
                     f.fix = Some(Fix {
                         summary: "Check the query's joins and add the missing condition.".into(),
@@ -934,9 +941,16 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             f.impact.time_ms_per_day = wasted_per_day;
             f.impact.score = score_for_share(latest_share.max(wasted_share));
             f.impact.label = format!("{} slower", format::factor(factor));
-            f.severity = severity_for_share(latest_share);
+            // Its time a day since it took over, so a regression that began this morning isn't diluted by the week.
+            let since = latest.first_seen.as_deref().and_then(parse_epoch_seconds);
+            let end = workload.window_end.as_deref().or(Some(snapshot.taken_at.as_str())).and_then(parse_epoch_seconds);
+            let amount = match (since, end) {
+                (Some(since), Some(end)) => severity_for_recent_time((end - since) / 3600.0, latest.total_time_ms, 1.0),
+                _ => severity_for_time(snapshot, latest.total_time_ms, 1.0),
+            };
+            f.severity = severity_for_share(latest_share).min(amount);
             if factor >= 3.0 && wasted_share >= 0.05 {
-                f.severity = f.severity.max(Severity::Medium);
+                f.severity = f.severity.max(Severity::Medium.min(amount));
             }
             f.confidence = Confidence::High;
             f.title = format!("{} got {} slower after its plan changed", capitalize(&query_handle(q)), format::factor(factor));
@@ -1021,7 +1035,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("unstable-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_impact(snapshot, &mut f, &impact);
             // What the slow runs cost, not the whole statement's time.
-            f.severity = severity_for_share(slow_share);
+            f.severity = severity_for_time(snapshot, excess, slow_share);
             f.impact.score = score_for_share(slow_share);
             f.confidence = Confidence::Medium;
             f.title = format!(
@@ -1102,7 +1116,7 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
             let spill_share = workload.share(spill_ms * q.executions);
             let mut f = finding("temp-spill", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_impact(snapshot, &mut f, &impact);
-            f.severity = severity_for_share(spill_share);
+            f.severity = severity_for_time(snapshot, spill_ms * q.executions, spill_share);
             f.impact.score = score_for_share(spill_share);
             f.confidence = Confidence::High;
             f.title = format!(
@@ -1200,7 +1214,7 @@ fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("temp-spill", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_impact(snapshot, &mut f, &impact);
             // The time of the runs that can have spilled, not the whole statement's.
-            f.severity = severity_for_share(spilled_share);
+            f.severity = severity_for_time(snapshot, q.total_time_ms * runs_share, spilled_share);
             f.impact.score = score_for_share(spilled_share);
             f.confidence = Confidence::High;
             let handle = capitalize(&query_handle(q));

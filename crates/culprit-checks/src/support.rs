@@ -51,16 +51,39 @@ pub const HIGH_MS_A_DAY: f64 = 600_000.0;
 /// Severity for a finding from the database time behind it (`time_ms` in the workload's window, `share` of all
 /// of it): the share says how much of the workload it is, the amount whether that's worth anyone's time. The amount is
 /// the time a day over at least an hour of window; under an hour, the window's own total, which a day holds at least.
+/// A window of unknown length (statistics never reset where the engine doesn't date them) says no amount a day: such
+/// time is never High.
 pub fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
-    let a_day = snapshot.workload.as_ref().map(|w| w.rate_per_day(time_ms).unwrap_or(time_ms)).unwrap_or(0.0);
-    let by_amount = if a_day >= HIGH_MS_A_DAY {
+    let by_amount = match snapshot.workload.as_ref() {
+        Some(w) if w.window_unknown() => Severity::Medium,
+        Some(w) => severity_for_amount(w.rate_per_day(time_ms).unwrap_or(time_ms)),
+        None => Severity::Low,
+    };
+    severity_for_share(share).min(by_amount)
+}
+
+/// [`severity_for_time`] for a share of all the workload's database time.
+pub fn severity_for_workload_share(snapshot: &Snapshot, share: f64) -> Severity {
+    let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
+    severity_for_time(snapshot, share * total, share)
+}
+
+/// [`severity_for_time`] for time spent over the last `hours` of the window (since a plan took over, since a change):
+/// the amount a day over those hours, or under an hour their own total, so a regression that began this morning isn't
+/// diluted by the week before it.
+pub fn severity_for_recent_time(hours: f64, time_ms: f64, share: f64) -> Severity {
+    let a_day = if hours >= culprit_core::RATE_MIN_HOURS { time_ms * 24.0 / hours } else { time_ms };
+    severity_for_share(share).min(severity_for_amount(a_day))
+}
+
+fn severity_for_amount(a_day_ms: f64) -> Severity {
+    if a_day_ms >= HIGH_MS_A_DAY {
         Severity::High
-    } else if a_day >= MEDIUM_MS_A_DAY {
+    } else if a_day_ms >= MEDIUM_MS_A_DAY {
         Severity::Medium
     } else {
         Severity::Low
-    };
-    severity_for_share(share).min(by_amount)
+    }
 }
 
 pub fn base_score(severity: Severity) -> f64 {
@@ -278,11 +301,15 @@ pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) ->
 }
 
 /// Days the cumulative counters (index usage, table stats) have been accumulating. One source for every window that
-/// says so: the counters' own age as the scan measured it (on PostgreSQL from `pg_stat_database.stats_reset`, which
-/// outlives a restart), else the server's start time.
+/// says so: the counters' own age as the scan measured it, else the server's start time where counters start with the
+/// server. Not on PostgreSQL: its counters outlive a clean restart and are discarded by a crash recovery that keeps the
+/// start time, so only the age its scan measured (from the last reset or discard) says how long they have counted.
 pub fn counter_days(snapshot: &Snapshot) -> Option<f64> {
     if let Some(hours) = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours) {
         return Some((hours / 24.0).max(0.0));
+    }
+    if snapshot.server.engine == Engine::Postgres {
+        return None;
     }
     let started = snapshot.server.started_at.as_deref()?;
     let days = days_between(started, &snapshot.taken_at)?;

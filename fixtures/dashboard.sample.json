@@ -1,7 +1,6 @@
 {
   "mariadb-demo": {
     "attention": [
-      "findings",
       "health",
       "statistics",
       "deadlocks"
@@ -11,7 +10,7 @@
     "database": "shop",
     "engine": "mysql",
     "environment": "development",
-    "headline": "9 opportunities; the top 3 touch 93% of database time.",
+    "headline": "Average row-lock wait: 7.6 s; under 50 ms is healthy.",
     "product": "MariaDB 11.8.9",
     "report_id": "20261011T160540.394Z",
     "taken_at": "2026-10-11T16:05:40Z",
@@ -69,7 +68,7 @@
             "label": "A read from orders builds an on-disk temporary table about once per run",
             "query_id": null,
             "share": 0.8855883790586936,
-            "status": "bad",
+            "status": "info",
             "value": "89% of DB time"
           },
           {
@@ -89,24 +88,24 @@
           {
             "key": "high",
             "label": "High",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "2",
-            "value": 2.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "6",
-            "value": 6.0
+            "text": "9",
+            "value": 9.0
           }
         ],
         "next": "culprit findings mariadb-demo",
-        "status": "bad",
+        "status": "info",
         "takeaway": "9 opportunities; the top 3 touch 93% of database time.",
         "title": "Findings"
       },
@@ -1139,8 +1138,8 @@
           {
             "key": "high",
             "label": "High",
-            "text": "6",
-            "value": 6.0
+            "text": "5",
+            "value": 5.0
           },
           {
             "key": "medium",
@@ -1151,8 +1150,8 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "13",
-            "value": 13.0
+            "text": "14",
+            "value": 14.0
           }
         ],
         "next": "culprit findings mssql-demo",
@@ -1933,14 +1932,14 @@
           {
             "key": "medium",
             "label": "Medium",
-            "text": "2",
-            "value": 2.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "10",
-            "value": 10.0
+            "text": "12",
+            "value": 12.0
           }
         ],
         "next": "culprit findings mysql-demo",
@@ -2549,8 +2548,8 @@
   },
   "pg-demo": {
     "attention": [
-      "findings",
       "health",
+      "findings",
       "replication",
       "deadlocks",
       "plans",
@@ -2561,7 +2560,7 @@
     "database": "demo",
     "engine": "postgres",
     "environment": "local",
-    "headline": "17 opportunities; the top 3 touch 67% of database time.",
+    "headline": "Reads served from memory: 55%; above 99% is healthy for most workloads.",
     "product": "PostgreSQL 18.6",
     "report_id": "20261011T115421.485Z",
     "taken_at": "2026-10-11T11:54:21Z",
@@ -2608,7 +2607,7 @@
             "label": "A read from orders writes about 19.9 MB of temp files per run",
             "query_id": null,
             "share": 0.4402906625894278,
-            "status": "bad",
+            "status": "watch",
             "value": "44% of DB time"
           },
           {
@@ -2639,8 +2638,8 @@
           {
             "key": "high",
             "label": "High",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "medium",
@@ -2651,12 +2650,12 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "8",
-            "value": 8.0
+            "text": "9",
+            "value": 9.0
           }
         ],
         "next": "culprit findings pg-demo",
-        "status": "bad",
+        "status": "watch",
         "takeaway": "17 opportunities; the top 3 touch 67% of database time.",
         "title": "Findings"
       },

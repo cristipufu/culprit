@@ -115,7 +115,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         match q.and_then(|q| query_impact(snapshot, &[q])) {
             Some(impact) => {
                 apply_query_impact(&mut f, &impact);
-                f.severity = severity_for_share(impact.share).max(Severity::Medium);
+                f.severity = severity_for_workload_share(snapshot, impact.share);
             }
             None => {
                 f.severity = Severity::Medium;
@@ -469,9 +469,11 @@ fn forced_scan_finding(
         )
     };
     // "Forced before the index existed" only where something dates the index as new (a scan saw it appear, or the
-    // database dated a change to its table), and not to before the forcing.
+    // database dated a change to its table), and not to before the forcing. SQL Server doesn't say which time zone the
+    // tuning view's times are in, so within the widest UTC offset (14 hours) of each other their order is unknown.
+    const ZONE_UNKNOWN_SECONDS: f64 = 14.0 * 3600.0;
     let before_forcing = |at: &str| match (parse_epoch_seconds(at), forced_at.and_then(parse_epoch_seconds)) {
-        (Some(created), Some(forced)) => created <= forced,
+        (Some(created), Some(forced)) => created <= forced + ZONE_UNKNOWN_SECONDS,
         _ => false,
     };
     let newer = match scan.index.created_at_latest.as_deref().filter(|at| !before_forcing(at)) {
@@ -495,7 +497,7 @@ fn forced_scan_finding(
     match query_impact(snapshot, &[q]) {
         Some(impact) => {
             apply_query_impact(&mut f, &impact);
-            f.severity = severity_for_share(impact.share).max(Severity::Medium);
+            f.severity = severity_for_workload_share(snapshot, impact.share);
         }
         None => {
             f.severity = Severity::Medium;

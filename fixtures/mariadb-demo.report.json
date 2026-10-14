@@ -104,7 +104,7 @@
           "plan_node": null
         }
       ],
-      "severity": "high",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "375c64398248650e"
@@ -214,7 +214,7 @@
           "plan_node": null
         }
       ],
-      "severity": "medium",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "a92bb0be330ac53a"
@@ -277,7 +277,7 @@
           "plan_node": 1
         }
       ],
-      "severity": "medium",
+      "severity": "low",
       "subject": {
         "kind": "query",
         "name": "decf59629e790076"
@@ -2147,6 +2147,7 @@
                     "key_length": "71",
                     "loops": "1",
                     "possible_keys": "ix_orders_status, ix_orders_status_created",
+                    "possible_keys_columns": "ix_orders_status=status\nix_orders_status_created=status,created_at",
                     "rows": "14154",
                     "used_key_parts": "status, created_at",
                     "using_index": "true"
@@ -2474,6 +2475,7 @@
                         "key_length": "4",
                         "loops": "1",
                         "possible_keys": "fk_orders_customer",
+                        "possible_keys_columns": "fk_orders_customer=customer_id",
                         "ref": "const",
                         "rows": "3",
                         "used_key_parts": "customer_id"
@@ -2623,6 +2625,7 @@
                         "key_length": "4",
                         "loops": "1",
                         "possible_keys": "fk_items_order, fk_items_product",
+                        "possible_keys_columns": "fk_items_order=order_id\nfk_items_product=product_id",
                         "ref": "const",
                         "rows": "1",
                         "used_key_parts": "order_id"
@@ -2655,6 +2658,7 @@
                         "key_length": "4",
                         "loops": "1",
                         "possible_keys": "PRIMARY",
+                        "possible_keys_columns": "PRIMARY=id",
                         "ref": "shop.oi.product_id",
                         "rows": "1",
                         "used_key_parts": "id"
@@ -2800,15 +2804,7 @@
     ],
     "by_severity": [
       {
-        "count": 1,
-        "severity": "high"
-      },
-      {
-        "count": 2,
-        "severity": "medium"
-      },
-      {
-        "count": 6,
+        "count": 9,
         "severity": "low"
       }
     ],

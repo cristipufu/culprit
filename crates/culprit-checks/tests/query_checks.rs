@@ -144,7 +144,13 @@ fn sql_servers_recommendation_carries_the_regression_of_its_query() {
     assert!(f.summary.contains("Query Store's timeline: until Oct 11, 10:45 UTC it averaged"), "{}", f.summary);
     assert!(f.metrics.iter().any(|m| m.label == "Plan change"), "{:?}", f.metrics);
     assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("@plan_id = 8"));
-    assert_eq!(f.severity, Severity::High, "the regression's severity carries over");
+    let alone = analyze(snapshot("mssql-demo.json"));
+    let regression = alone
+        .findings
+        .iter()
+        .find(|r| r.queries.iter().any(|q| q.id == "8") && matches!(r.check.as_str(), "regression" | "plan-regression"))
+        .expect("the regression on its own");
+    assert_eq!(f.severity, regression.severity, "the regression's severity carries over");
 }
 
 #[test]

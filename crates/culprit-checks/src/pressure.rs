@@ -771,7 +771,7 @@ pub fn network_wait(snapshot: &Snapshot) -> Vec<Finding> {
                  That is {} of this query's time. Usually the result set is bigger than needed, or the application does work for each row before reading the next.",
                 format::percent(share)
             );
-            f.severity = severity_for_share(impact.share);
+            f.severity = severity_for_workload_share(snapshot, impact.share);
             f.confidence = Confidence::High;
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Waiting on the app", share, Unit::Ratio));

@@ -843,6 +843,7 @@ impl Workspace {
         // Query Store keeps a plan's first XML: check its conversions against the latest scan's catalog.
         if let Ok(Some(report)) = self.latest_report(name, None) {
             culprit_core::insights::mark_changed_columns(&mut plan, &report.snapshot.columns);
+            culprit_core::insights::mark_possible_keys(&mut plan, &report.snapshot.indexes);
         }
         culprit_core::insights::annotate(&mut plan);
         Ok(plan)

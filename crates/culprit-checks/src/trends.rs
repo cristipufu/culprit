@@ -136,9 +136,10 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
     f.impact.time_ms_per_day = (after_hours >= culprit_core::PER_DAY_MIN_HOURS).then_some(extra_per_day);
     f.impact.score = score_for_share(share_after.max(extra_share));
     f.impact.label = format!("{} slower", times(factor));
-    f.severity = severity_for_share(share_after);
+    let amount = severity_for_recent_time(after_hours, s.after_time_ms, 1.0);
+    f.severity = severity_for_share(share_after).min(amount);
     if factor >= 3.0 && extra_share >= 0.05 {
-        f.severity = f.severity.max(Severity::Medium);
+        f.severity = f.severity.max(Severity::Medium.min(amount));
     }
     f.confidence = if timeline.source == TimelineSource::QueryStore { Confidence::High } else { Confidence::Medium };
     f.title = format!(

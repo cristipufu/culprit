@@ -3,7 +3,8 @@
 
 use culprit_checks::dashboard::{dashboard, family, with_now, without_now};
 use culprit_core::{
-    Dashboard, DeadlockReport, Engine, LiveState, Report, Session, TileKey, TileStatus, Timeline, TimelineSource,
+    Dashboard, DeadlockReport, Engine, LiveState, Report, Session, Severity, TileKey, TileStatus, Timeline,
+    TimelineSource,
 };
 
 fn report(name: &str) -> Report {
@@ -134,12 +135,16 @@ fn top_queries_and_plans_link_to_queries() {
 
 #[test]
 fn findings_count_by_severity_and_show_the_top_three() {
-    let d = dashboard(&report("pg-demo"));
+    let r = report("pg-demo");
+    let d = dashboard(&r);
     let f = tile(&d, TileKey::Findings);
-    assert_eq!(f.status, TileStatus::Bad);
-    // One High (the read that spills to temp files); the scan of orders by customer_id is Medium, under ten minutes
-    // of database time a day.
-    assert_eq!(f.metric("high").and_then(|m| m.value), Some(1.0));
+    // The demo spends about 13 minutes a day running queries: its worst findings are Medium (a minute a day or more,
+    // under ten), so the tile asks to watch rather than act.
+    let count = |s: Severity| r.findings.iter().filter(|x| x.severity == s).count() as f64;
+    assert_eq!(count(Severity::High), 0.0);
+    assert_eq!(f.status, TileStatus::Watch);
+    assert_eq!(f.metric("high").and_then(|m| m.value), Some(0.0));
+    assert_eq!(f.metric("medium").and_then(|m| m.value), Some(count(Severity::Medium)));
     assert_eq!(f.items.len(), 3);
     assert!(f.items.iter().all(|i| i.finding_id.is_some()));
 }

@@ -92,11 +92,14 @@ fn build(
     };
     let mut f = finding("plan-insights", key, Category::Queries, subject);
     let share = query_impact(snapshot, &[q]).map_or(0.0, |impact| impact.share);
-    // A plan problem matters as much as the query it slows down: a 1% query never becomes a top finding.
-    let cap = match severity_for_share(share) {
+    // A plan problem matters as much as the query it slows down: a 1% query never becomes a top finding, and one that
+    // costs seconds a day is Low whatever its share.
+    let by_share = match severity_for_share(share) {
         Severity::Low => Severity::Medium,
         _ => Severity::High,
     };
+    let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
+    let cap = by_share.min(severity_for_time(snapshot, share * total, 1.0));
     f.severity = i.severity.min(cap);
     f.confidence = if actual { Confidence::High } else { Confidence::Medium };
     f.title = i.title.clone();
