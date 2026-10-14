@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use culprit_core::{
-    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Error, ForeignKey, IndexStat, MissingCapability,
-    Plan, PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
-    TableStat, WaitStat, Workload,
+    Capability, ColumnInfo, ConnectionSpec, Coverage, Engine, Error, ForeignKey, IndexStat, MissingCapability, Plan,
+    PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread, TableStat,
+    WaitStat, Workload,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
@@ -312,44 +312,38 @@ pub async fn snapshot(
     );
 
     let mut server = probe.server_info();
-    let mut notes = Vec::new();
-    let mut note =
-        |collector: &str, message: String| notes.push(CollectorNote { collector: collector.into(), message });
+    // What the sources could read, starting from what the probe found (`culprit_core::Coverage`).
+    let mut coverage = Coverage::with(std::mem::take(&mut server.capabilities), std::mem::take(&mut server.missing));
 
     let mut source_waits = Vec::new();
     let workload = match workload {
         Ok(Some(collected)) => {
             source_waits = collected.waits;
             for (collector, message) in collected.notes {
-                note(collector, message);
+                coverage.note(collector, message);
             }
-            if collected.workload.source == slowlog::SOURCE && !server.has(Capability::SlowLog) {
-                server.capabilities.push(Capability::SlowLog);
+            if collected.workload.source == slowlog::SOURCE {
+                coverage.delivered(Capability::SlowLog);
             }
             let planned = collected.workload.queries.iter().any(|q| q.plan.is_some());
             if planned {
-                server.missing.retain(|m| m.capability != Capability::QueryPlans);
-                if !server.has(Capability::QueryPlans) {
-                    server.capabilities.push(Capability::QueryPlans);
-                }
+                coverage.delivered(Capability::QueryPlans);
             } else if let Some((reason, fix)) = collected.no_plans {
-                server.missing.retain(|m| m.capability != Capability::QueryPlans);
-                mark_missing(&mut server, Capability::QueryPlans, reason, fix);
+                coverage.lost(Capability::QueryPlans, reason, fix);
             } else {
-                server.capabilities.retain(|c| *c != Capability::QueryPlans);
+                coverage.withdraw(Capability::QueryPlans);
             }
             Some(collected.workload)
         }
         Ok(None) => None,
         Err(e) => {
-            note("workload", e.message.clone());
-            mark_missing(
-                &mut server,
+            coverage.note("workload", e.message.clone());
+            coverage.lost(
                 Capability::PerformanceSchema,
                 format!("Reading statement digests failed: {}", e.message),
                 Some(format!("{PS_GRANT} {};", probe.grant_target())),
             );
-            mark_missing(&mut server, Capability::QueryPlans, "Plans come from the statement digests.".into(), None);
+            coverage.lost(Capability::QueryPlans, "Plans come from the statement digests.", None);
             None
         }
     };
@@ -361,26 +355,20 @@ pub async fn snapshot(
             match tables {
                 Ok(t) => tables_out = t,
                 Err(e) => {
-                    note("tables", e.message.clone());
-                    mark_missing(
-                        &mut server,
-                        Capability::TableStats,
-                        format!("Reading tables failed: {}", e.message),
-                        e.hint,
-                    );
+                    coverage.note("tables", e.message.clone());
+                    coverage.lost(Capability::TableStats, format!("Reading tables failed: {}", e.message), e.hint);
                 }
             }
             match columns {
                 Ok(c) => columns_out = c,
-                Err(e) => note("columns", e.message),
+                Err(e) => coverage.note("columns", e.message),
             }
             match indexes {
                 Ok((i, usage_note)) => {
                     indexes_out = i;
                     if let Some(message) = usage_note {
-                        note("index_usage", message.clone());
-                        mark_missing(
-                            &mut server,
+                        coverage.note("index_usage", message.clone());
+                        coverage.lost(
                             Capability::IndexUsage,
                             message,
                             Some(format!("{PS_GRANT} {};", probe.grant_target())),
@@ -388,24 +376,19 @@ pub async fn snapshot(
                     }
                 }
                 Err(e) => {
-                    note("indexes", e.message.clone());
-                    mark_missing(
-                        &mut server,
-                        Capability::IndexUsage,
-                        format!("Reading indexes failed: {}", e.message),
-                        e.hint,
-                    );
+                    coverage.note("indexes", e.message.clone());
+                    coverage.lost(Capability::IndexUsage, format!("Reading indexes failed: {}", e.message), e.hint);
                 }
             }
             match fks {
                 Ok(f) => fks_out = f,
-                Err(e) => note("foreign_keys", e.message),
+                Err(e) => coverage.note("foreign_keys", e.message),
             }
         }
         Err(e) => {
-            note("schema", e.message.clone());
-            mark_missing(&mut server, Capability::TableStats, e.message.clone(), e.hint.clone());
-            mark_missing(&mut server, Capability::IndexUsage, e.message, e.hint);
+            coverage.note("schema", e.message.clone());
+            coverage.lost(Capability::TableStats, e.message.clone(), e.hint.clone());
+            coverage.lost(Capability::IndexUsage, e.message, e.hint);
         }
     }
 
@@ -413,27 +396,31 @@ pub async fn snapshot(
     match misc {
         Ok((settings, waits, (pressure, pressure_notes))) => {
             for message in pressure_notes {
-                note("pressure", message);
+                coverage.note("pressure", message);
             }
             pressure_out = Some(pressure);
             match settings {
                 Ok(s) => settings_out = s,
-                Err(e) => note("settings", e.message),
+                Err(e) => coverage.note("settings", e.message),
             }
             match waits {
                 Ok(w) if !w.is_empty() => {
                     waits_out = w;
-                    server.capabilities.push(Capability::WaitStats);
+                    coverage.delivered(Capability::WaitStats);
                 }
                 Ok(_) => {}
-                Err(e) => note("waits", e.message),
+                Err(e) => coverage.note("waits", e.message),
             }
             if waits_out.is_empty() {
                 waits_out = std::mem::take(&mut source_waits);
             }
         }
-        Err(e) => note("settings", e.message),
+        Err(e) => coverage.note("settings", e.message),
     }
+
+    let (have, missing, notes) = coverage.finish();
+    server.capabilities = have;
+    server.missing = missing;
 
     let mut snapshot = Snapshot {
         format: SNAPSHOT_FORMAT,
@@ -468,14 +455,6 @@ pub async fn snapshot(
     crate::signals::collect(connector, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(snapshot)
-}
-
-fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String, fix: Option<String>) {
-    server.capabilities.retain(|c| *c != capability);
-    if server.missing.iter().any(|m| m.capability == capability) {
-        return;
-    }
-    server.missing.push(MissingCapability { capability, reason, fix });
 }
 
 struct CollectedWorkload {

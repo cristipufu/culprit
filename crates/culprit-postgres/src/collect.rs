@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use culprit_core::{
-    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind,
+    Capability, ColumnInfo, ConnectionSpec, Coverage, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind,
     QueryFamily, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
     StatisticsInfo, TableStat, WaitStat, Workload,
 };
@@ -285,9 +285,8 @@ pub async fn snapshot(
     );
 
     let mut server = probe.server_info();
-    let mut notes = Vec::new();
-    let mut note =
-        |collector: &str, message: String| notes.push(CollectorNote { collector: collector.into(), message });
+    // What the sources could read, starting from what the probe found (`culprit_core::Coverage`).
+    let mut coverage = Coverage::with(std::mem::take(&mut server.capabilities), std::mem::take(&mut server.missing));
 
     let mut families = Vec::new();
     let mut statement_status = Vec::new();
@@ -298,20 +297,19 @@ pub async fn snapshot(
     let workload = match workload {
         Ok(Some(collected)) => {
             if let Some(message) = collected.plan_note {
-                note("plans", message);
+                coverage.note("plans", message);
             }
             families = collected.families;
             statement_status = collected.status;
             if collected.workload.queries.iter().all(|q| q.plan.is_none()) {
-                server.capabilities.retain(|c| *c != Capability::QueryPlans);
+                coverage.withdraw(Capability::QueryPlans);
             }
             Some(collected.workload)
         }
         Ok(None) => None,
         Err(e) => {
-            note("workload", e.message.clone());
-            mark_missing(
-                &mut server,
+            coverage.note("workload", e.message.clone());
+            coverage.lost(
                 Capability::PgStatStatements,
                 format!("Reading pg_stat_statements failed: {}", e.message),
                 e.hint,
@@ -320,7 +318,7 @@ pub async fn snapshot(
         }
     };
     if !probe.privileged && probe.statements_usable() {
-        note(
+        coverage.note(
             "workload",
             format!(
                 "Statements run by other roles show as <insufficient privilege>. GRANT pg_read_all_stats TO {}; to see them.",
@@ -335,27 +333,25 @@ pub async fn snapshot(
         Ok((tables, indexes, fks, cols)) => {
             match cols {
                 Ok(c) => columns_out = c,
-                Err(e) => note("columns", e.message),
+                Err(e) => coverage.note("columns", e.message),
             }
             match tables {
                 Ok(t) => tables_out = t,
                 Err(e) => {
-                    note("tables", e.message.clone());
-                    mark_missing(
-                        &mut server,
+                    coverage.note("tables", e.message.clone());
+                    coverage.lost(
                         Capability::TableStats,
                         format!("Reading table statistics failed: {}", e.message),
                         e.hint,
                     );
-                    mark_missing(&mut server, Capability::Statistics, "Table statistics are unavailable.".into(), None);
+                    coverage.lost(Capability::Statistics, "Table statistics are unavailable.", None);
                 }
             }
             match indexes {
                 Ok(i) => indexes_out = i,
                 Err(e) => {
-                    note("indexes", e.message.clone());
-                    mark_missing(
-                        &mut server,
+                    coverage.note("indexes", e.message.clone());
+                    coverage.lost(
                         Capability::IndexUsage,
                         format!("Reading index statistics failed: {}", e.message),
                         e.hint,
@@ -364,14 +360,14 @@ pub async fn snapshot(
             }
             match fks {
                 Ok(f) => fks_out = f,
-                Err(e) => note("foreign_keys", e.message),
+                Err(e) => coverage.note("foreign_keys", e.message),
             }
         }
         Err(e) => {
-            note("schema", e.message.clone());
-            mark_missing(&mut server, Capability::TableStats, e.message.clone(), e.hint.clone());
-            mark_missing(&mut server, Capability::IndexUsage, e.message.clone(), e.hint.clone());
-            mark_missing(&mut server, Capability::Statistics, e.message, e.hint);
+            coverage.note("schema", e.message.clone());
+            coverage.lost(Capability::TableStats, e.message.clone(), e.hint.clone());
+            coverage.lost(Capability::IndexUsage, e.message.clone(), e.hint.clone());
+            coverage.lost(Capability::Statistics, e.message, e.hint);
         }
     }
 
@@ -381,14 +377,14 @@ pub async fn snapshot(
         Ok((settings, (pressure, pressure_notes))) => {
             match settings {
                 Ok(s) => settings_out = s,
-                Err(e) => note("settings", e.message),
+                Err(e) => coverage.note("settings", e.message),
             }
             for message in pressure_notes {
-                note("pressure", message);
+                coverage.note("pressure", message);
             }
             pressure_out = Some(pressure);
         }
-        Err(e) => note("settings", e.message),
+        Err(e) => coverage.note("settings", e.message),
     }
     settings_out.extend(statement_status);
     // A standby's usage counters are its own reads, next to the primary's statement history: say what it is, and the
@@ -404,10 +400,13 @@ pub async fn snapshot(
     // PostgreSQL keeps no wait history: time by category comes from statement and WAL timing, when they are on.
     let waits_out = crate::pressure::history_waits(&primary, &probe, statements_ms, statements_io_ms).await;
     if waits_out.is_empty() {
-        server.capabilities.retain(|c| *c != Capability::WaitStats);
-    } else if !server.capabilities.contains(&Capability::WaitStats) {
-        server.capabilities.push(Capability::WaitStats);
+        coverage.withdraw(Capability::WaitStats);
+    } else {
+        coverage.delivered(Capability::WaitStats);
     }
+    let (have, missing, notes) = coverage.finish();
+    server.capabilities = have;
+    server.missing = missing;
 
     let statistics = tables_out
         .iter()
@@ -456,14 +455,6 @@ pub async fn snapshot(
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(snapshot)
-}
-
-fn mark_missing(server: &mut ServerInfo, capability: Capability, reason: String, fix: Option<String>) {
-    server.capabilities.retain(|c| *c != capability);
-    if server.missing.iter().any(|m| m.capability == capability) {
-        return;
-    }
-    server.missing.push(MissingCapability { capability, reason, fix });
 }
 
 struct CollectedWorkload {

@@ -26,9 +26,9 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Engine, Environment, ExplainMode, ForeignKey, IndexStat,
-    LiveState, MissingCapability, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT,
-    ServerInfo, SessionAction, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
+    Capability, CollectorNote, ColumnInfo, ConnectionSpec, Coverage, Engine, Environment, ExplainMode, ForeignKey,
+    IndexStat, LiveState, MissingIndex, Plan, Provider, ResourceSample, Result, ResultSet, SNAPSHOT_FORMAT, ServerInfo,
+    SessionAction, Setting, Snapshot, SnapshotOptions, StatisticsInfo, TableStat, WaitStat, Workload,
 };
 
 pub use ado::parse_ado;
@@ -50,51 +50,24 @@ impl MssqlProvider {
     }
 }
 
-/// What the collectors found out about the server beyond the data itself.
-#[derive(Default)]
-struct Outcome {
-    have: Vec<Capability>,
-    missing: Vec<MissingCapability>,
-    notes: Vec<CollectorNote>,
-}
+/// What a part of the scan's sources could read: the shared account every provider keeps (`culprit_core::Coverage`).
+type Outcome = Coverage;
 
-impl Outcome {
-    fn ok(&mut self, capability: Capability) {
-        if !self.have.contains(&capability) {
-            self.have.push(capability);
-        }
+/// Reading `source` failed: a note with SQL Server's error, and `capability` locked with why. A permission error says
+/// the login lacks it, with the GRANT that gives it as the fix.
+fn source_failed(
+    outcome: &mut Outcome,
+    source: &str,
+    capability: Capability,
+    err: &tiberius::error::Error,
+    probe: &Probe,
+) {
+    let denied = is_permission_error(err);
+    let mut error = map_error(err.clone());
+    if denied {
+        error.code = culprit_core::ErrorCode::PermissionDenied;
     }
-
-    fn lacking(&mut self, capability: Capability, reason: impl Into<String>, fix: Option<String>) {
-        if self.missing.iter().any(|m| m.capability == capability) {
-            return;
-        }
-        self.missing.push(MissingCapability { capability, reason: reason.into(), fix });
-    }
-
-    fn failed(&mut self, collector: &str, capability: Capability, err: &tiberius::error::Error, probe: &Probe) {
-        let mapped = map_error(err.clone());
-        self.notes.push(CollectorNote { collector: collector.into(), message: mapped.message.clone() });
-        let fix = is_permission_error(err).then(|| probe.grant_hint());
-        let reason = if is_permission_error(err) {
-            "This login lacks the permission to read it.".to_string()
-        } else {
-            format!("Reading it failed: {}", mapped.message)
-        };
-        self.lacking(capability, reason, fix);
-    }
-
-    fn merge(&mut self, other: Outcome) {
-        for c in other.have {
-            self.ok(c);
-        }
-        for m in other.missing {
-            if !self.missing.iter().any(|x| x.capability == m.capability) {
-                self.missing.push(m);
-            }
-        }
-        self.notes.extend(other.notes);
-    }
+    outcome.failed(source, capability, &error, denied.then(|| probe.grant_hint()));
 }
 
 #[derive(Default)]
@@ -154,24 +127,21 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     if probe.query_store_readable() {
         match workload::from_query_store(client, options).await {
             Ok(result) => {
-                part.outcome.ok(Capability::QueryStore);
+                part.outcome.delivered(Capability::QueryStore);
                 if result.plans_parsed > 0 {
-                    part.outcome.ok(Capability::QueryPlans);
+                    part.outcome.delivered(Capability::QueryPlans);
                 }
                 if result.plan_errors > 0 {
-                    part.outcome.notes.push(CollectorNote {
-                        collector: "plans".into(),
-                        message: format!("{} Query Store plans could not be parsed", result.plan_errors),
-                    });
+                    part.outcome.note("plans", format!("{} Query Store plans could not be parsed", result.plan_errors));
                 }
                 if !result.waits.is_empty() {
-                    part.outcome.ok(Capability::WaitStats);
+                    part.outcome.delivered(Capability::WaitStats);
                 }
                 part.waits = result.waits;
                 part.workload = Some(result.workload);
                 return part;
             }
-            Err(err) => part.outcome.failed("query_store", Capability::QueryStore, &err, probe),
+            Err(err) => source_failed(&mut part.outcome, "query_store", Capability::QueryStore, &err, probe),
         }
     }
 
@@ -185,13 +155,13 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     }
     match workload::from_plan_cache(client, options).await {
         Ok(result) => {
-            part.outcome.ok(Capability::PlanCache);
+            part.outcome.delivered(Capability::PlanCache);
             if result.plans_parsed > 0 {
-                part.outcome.ok(Capability::QueryPlans);
+                part.outcome.delivered(Capability::QueryPlans);
             }
             part.workload = Some(result.workload);
         }
-        Err(err) => part.outcome.failed("plan_cache", Capability::PlanCache, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "plan_cache", Capability::PlanCache, &err, probe),
     }
     part
 }
@@ -202,15 +172,15 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
     match schema::tables(client, dmv).await {
         Ok(tables) => {
             part.tables = tables;
-            part.outcome.ok(Capability::TableStats);
+            part.outcome.delivered(Capability::TableStats);
         }
-        Err(err) => part.outcome.failed("tables", Capability::TableStats, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "tables", Capability::TableStats, &err, probe),
     }
     match schema::indexes(client, dmv).await {
         Ok((indexes, with_usage)) => {
             part.indexes = indexes;
             if with_usage {
-                part.outcome.ok(Capability::IndexUsage);
+                part.outcome.delivered(Capability::IndexUsage);
             } else {
                 part.outcome.lacking(
                     Capability::IndexUsage,
@@ -219,22 +189,22 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
                 );
             }
         }
-        Err(err) => part.outcome.failed("indexes", Capability::IndexUsage, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "indexes", Capability::IndexUsage, &err, probe),
     }
     match schema::columns(client).await {
         Ok(columns) => part.columns = columns,
-        Err(err) => part.outcome.failed("columns", Capability::TableStats, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "columns", Capability::TableStats, &err, probe),
     }
     match schema::foreign_keys(client).await {
         Ok(fks) => part.foreign_keys = fks,
-        Err(err) => part.outcome.failed("foreign_keys", Capability::TableStats, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "foreign_keys", Capability::TableStats, &err, probe),
     }
     match schema::statistics(client).await {
         Ok(stats) => {
             part.statistics = stats;
-            part.outcome.ok(Capability::Statistics);
+            part.outcome.delivered(Capability::Statistics);
         }
-        Err(err) => part.outcome.failed("statistics", Capability::Statistics, &err, probe),
+        Err(err) => source_failed(&mut part.outcome, "statistics", Capability::Statistics, &err, probe),
     }
     part
 }
@@ -246,21 +216,21 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
         match schema::missing_indexes(client).await {
             Ok(missing) => {
                 part.missing_indexes = missing;
-                part.outcome.ok(Capability::MissingIndexes);
+                part.outcome.delivered(Capability::MissingIndexes);
             }
-            Err(err) => part.outcome.failed("missing_indexes", Capability::MissingIndexes, &err, probe),
+            Err(err) => source_failed(&mut part.outcome, "missing_indexes", Capability::MissingIndexes, &err, probe),
         }
         match schema::waits(client, probe.is_azure_sql_database()).await {
             Ok(waits) => {
                 part.waits = waits;
-                part.outcome.ok(Capability::WaitStats);
+                part.outcome.delivered(Capability::WaitStats);
             }
-            Err(err) => part.outcome.failed("waits", Capability::WaitStats, &err, probe),
+            Err(err) => source_failed(&mut part.outcome, "waits", Capability::WaitStats, &err, probe),
         }
         let (pressure, notes) = pressure::collect(client, probe).await;
-        part.outcome
-            .notes
-            .extend(notes.into_iter().map(|message| CollectorNote { collector: "pressure".into(), message }));
+        for message in notes {
+            part.outcome.note("pressure", message);
+        }
         part.pressure = Some(pressure);
     } else {
         for capability in [Capability::MissingIndexes, Capability::WaitStats] {
@@ -275,9 +245,9 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
         match schema::resources(client).await {
             Ok(resources) => {
                 part.resources = resources;
-                part.outcome.ok(Capability::ResourceUsage);
+                part.outcome.delivered(Capability::ResourceUsage);
             }
-            Err(err) => part.outcome.failed("resources", Capability::ResourceUsage, &err, probe),
+            Err(err) => source_failed(&mut part.outcome, "resources", Capability::ResourceUsage, &err, probe),
         }
     }
     if dmv {
@@ -310,7 +280,7 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
 
 impl MiscPart {
     fn notes_only(&mut self, collector: &str, err: &tiberius::error::Error) {
-        self.outcome.notes.push(CollectorNote { collector: collector.into(), message: map_error(err.clone()).message });
+        self.outcome.note(collector, map_error(err.clone()).message);
     }
 }
 
@@ -376,7 +346,7 @@ impl Provider for MssqlProvider {
         let (expected_have, expected_missing) = probe::expected_capabilities(&probe);
         for capability in [Capability::Showplan, Capability::Sessions] {
             if expected_have.contains(&capability) {
-                outcome.ok(capability);
+                outcome.delivered(capability);
             }
         }
         for m in expected_missing {
@@ -387,10 +357,10 @@ impl Provider for MssqlProvider {
         outcome.merge(workload_part.outcome);
         outcome.merge(schema_part.outcome);
         outcome.merge(misc_part.outcome);
-        outcome.notes.extend(schema_note);
-        outcome.notes.extend(misc_note);
-        outcome.missing.retain(|m| !outcome.have.contains(&m.capability));
-        outcome.have.sort();
+        for note in schema_note.into_iter().chain(misc_note) {
+            outcome.note(&note.collector, note.message);
+        }
+        let (have, missing, notes) = outcome.finish();
 
         let waits = if workload_part.waits.is_empty() { misc_part.waits } else { workload_part.waits };
         let mut tables = schema_part.tables;
@@ -404,7 +374,7 @@ impl Provider for MssqlProvider {
             environment: self.environment,
             taken_at: taken_at.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
-            server: probe::server_info(&probe, outcome.have, outcome.missing),
+            server: probe::server_info(&probe, have, missing),
             workload: workload_part.workload,
             tables,
             indexes: schema_part.indexes,
@@ -416,7 +386,7 @@ impl Provider for MssqlProvider {
             resources: misc_part.resources,
             settings: misc_part.settings,
             pressure: misc_part.pressure,
-            notes: outcome.notes,
+            notes,
             options: Some(options.clone()),
             query_families: misc_part.query_families,
             plan_cache: misc_part.plan_cache,
