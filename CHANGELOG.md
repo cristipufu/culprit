@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.7
+
+### Fixes
+
+- **A conversion the query writes isn't a type mismatch.** SQL Server warns about every `CONVERT` that may sway a plan, including ones in a select list (`CONVERT(varchar(36), id)`). Culprit read those as an application sending the wrong parameter type and advised switching to varchar. Now only a column SQL Server converts implicitly, to compare it with a value of another type, is a mismatch: in findings, in the plan's insights and in its warnings. One rule, shared by all three.
+- **A statement that ran once isn't a pattern.** On every engine, findings that rest only on statements that ran once in the window (an export, a backfill, a query someone ran by hand) are Low, rank low and say so first, with "re-scan later" as the first step. One run is no longer called "stopped running, likely changed by a deploy", and the index advisor doesn't suggest an index for it.
+- **No index advice where an index can't help.** When a heavy query's time goes to a scan whose filter keeps more than a tenth of the rows, the advice is to read fewer rows or columns, not to add an index: the same bar the index advisor, filtered scans and plan insights use.
+- **"Ran once", not "ran 1 times".**
+
 ## 0.2.6
 
 ### App

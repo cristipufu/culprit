@@ -277,9 +277,9 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     // not from which findings went inactive: a schema finding (an unindexed foreign key) can list a stopped query too.
     let inactive: HashSet<&str> = report.findings.iter().filter(|f| f.inactive).map(|f| f.id.as_str()).collect();
     let stopped =
-        |id: &str| s.workload.as_ref().and_then(|w| w.query(id)).is_some_and(|q| crate::query_stopped(s, q).is_some());
+        |id: &str| s.workload.as_ref().and_then(|w| w.query(id)).is_some_and(|q| crate::query_is_history(s, q));
     for c in candidates.iter_mut() {
-        // A query that stopped running doesn't need the index any more; keep the list to the ones that still run. A
+        // A query that stopped running, or ran once, doesn't need the index; keep the list to the ones that still run. A
         // foreign key's index is for deletes on the parent, so it stays when the queries naming it all stopped.
         if c.source == CandidateSource::ForeignKey || c.queries.iter().any(|q| !stopped(&q.id)) {
             c.queries.retain(|q| !stopped(&q.id));
@@ -564,9 +564,11 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
     if skipped > 0 {
         notes.push(if skipped == 1 {
-            "Left out 1 candidate for a table that no longer exists or queries that stopped running.".to_string()
+            "Left out 1 candidate for a table that no longer exists or queries that stopped running or ran once.".to_string()
         } else {
-            format!("Left out {skipped} candidates for tables that no longer exist or queries that stopped running.")
+            format!(
+                "Left out {skipped} candidates for tables that no longer exist or queries that stopped running or ran once."
+            )
         });
     }
 

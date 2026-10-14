@@ -85,6 +85,11 @@ pub struct PlanNode {
     pub children: Vec<PlanNode>,
 }
 
+/// An index pays off for a filter that keeps at most this share of the rows a scan reads. Above it, reading through the
+/// index touches most of the table's pages anyway, so the scan is the right plan and the fix is to read less. Every
+/// rule that suggests an index from a scan uses this bar.
+pub const INDEX_KEEPS_AT_MOST: f64 = 0.1;
+
 impl PlanNode {
     pub fn walk<'a>(&'a self, out: &mut Vec<&'a PlanNode>) {
         out.push(self);
@@ -96,6 +101,14 @@ impl PlanNode {
     /// Estimated rows across all executions of the operator, the number comparable to `act_rows`.
     pub fn est_rows_total(&self) -> f64 {
         self.est_rows * self.est_executions.max(1.0)
+    }
+
+    /// The share of the rows this operator read that it kept, from actual counts when the plan has them, else from
+    /// estimates and the table's size. None when the plan doesn't say how many rows it read.
+    pub fn kept_share(&self) -> Option<f64> {
+        let kept = self.act_rows.unwrap_or_else(|| self.est_rows_total());
+        let read = self.rows_read.or_else(|| self.table_rows.map(|t| t * self.est_executions.max(1.0)))?;
+        (read > 0.0).then(|| (kept / read).min(1.0))
     }
 
     /// How far off the estimate was, as a factor ≥ 1, signed: positive means more rows than estimated.

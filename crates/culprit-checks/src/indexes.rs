@@ -1203,7 +1203,7 @@ fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows
     let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
         .into_iter()
         .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
-        .filter(|q| crate::query_stopped(snapshot, q).is_none())
+        .filter(|q| !crate::query_is_history(snapshot, q))
         .collect();
     f.severity = if rows >= 1_000_000.0 { Severity::Medium } else { Severity::Low };
     f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
@@ -1388,7 +1388,8 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             let (Some(object), Some(predicate)) = (&node.object, &node.predicate) else { continue };
             let Some((schema, table)) = split_object(object) else { continue };
             let rows = scan_rows(snapshot, node, &schema, &table).unwrap_or(0.0);
-            let estimate_keeps_few = node.est_rows_total() * 10.0 <= rows * node.est_executions.max(1.0);
+            let estimate_keeps_few =
+                node.est_rows_total() <= rows * node.est_executions.max(1.0) * culprit_core::INDEX_KEEPS_AT_MOST;
             if rows < 10_000.0 || !(estimate_keeps_few || measured_keeps_few(snapshot, q, rows)) {
                 continue;
             }
@@ -1450,7 +1451,7 @@ fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows: f64) -> bo
     }
     let examined = q.logical_reads.map(|r| r / q.executions).unwrap_or(0.0);
     let returned = q.rows.map(|r| r / q.executions);
-    examined >= table_rows * 0.5 && returned.is_some_and(|r| r * 10.0 <= table_rows)
+    examined >= table_rows * 0.5 && returned.is_some_and(|r| r <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
 }
 
 pub(crate) fn split_object(object: &str) -> Option<(String, String)> {

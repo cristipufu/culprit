@@ -178,6 +178,7 @@ pub fn analyze_with(snapshot: Snapshot, extra: &[Arc<dyn Check>]) -> Report {
         }
     }
     mark_inactive(&snapshot, &mut findings);
+    mark_one_off(&snapshot, &mut findings);
     findings.sort_by(|a, b| {
         a.inactive.cmp(&b.inactive).then(b.impact.score.total_cmp(&a.impact.score)).then(b.severity.cmp(&a.severity))
     });
@@ -346,6 +347,10 @@ fn merge_scans_into_missing_indexes(findings: &mut Vec<Finding>) {
 pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
     const QUIET_INTERVALS: f64 = 20.0;
     const MIN_QUIET_SECONDS: f64 = 3600.0;
+    // One run has no rhythm to stop: that's `ran_once`, not a deploy.
+    if ran_once(q) {
+        return None;
+    }
     let workload = snapshot.workload.as_ref()?;
     let end = workload.window_end.as_deref().and_then(support::parse_epoch_seconds)?;
     let window_start = end - workload.window_hours * 3600.0;
@@ -367,6 +372,18 @@ pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, 
     Some((silence, last_text))
 }
 
+/// A statement seen once in the window: an export, a backfill, a migration or a query someone ran by hand looks like
+/// this. One run shows what it cost, not that it will run again, so it isn't a pattern to fix.
+pub(crate) fn ran_once(q: &QueryStat) -> bool {
+    q.executions <= 1.0
+}
+
+/// Whether a statement's cost is behind it: it stopped running, or it ran once. Advice (an index to add, a plan to
+/// look at) is for statements that keep running.
+pub(crate) fn query_is_history(snapshot: &Snapshot, q: &QueryStat) -> bool {
+    ran_once(q) || query_stopped(snapshot, q).is_some()
+}
+
 /// The longest stretch of empty timeline buckets the query came back after, widened by the two partial buckets around
 /// it (when in them it ran isn't known). None when it never paused for a whole bucket.
 fn longest_return(q: &QueryStat, workload: &culprit_core::Workload) -> Option<f64> {
@@ -380,10 +397,9 @@ fn longest_return(q: &QueryStat, workload: &culprit_core::Workload) -> Option<f6
     Some((empty + 2) as f64 * width)
 }
 
-/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled. A finding is
-/// about queries when its subject is one (lock time, tuning advice, parameter sensitivity…) or its check reads plans.
-fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
-    let Some(workload) = &snapshot.workload else { return };
+/// A finding is about queries when its subject is one (lock time, tuning advice, parameter sensitivity…) or its check
+/// reads plans: what it says rests on how those statements ran.
+fn about_queries(f: &Finding) -> bool {
     const QUERY_DRIVEN: [&str; 9] = [
         "plan-warnings",
         "plan-insights",
@@ -395,8 +411,36 @@ fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
         "regression",
         "temp-spill",
     ];
-    let about_queries = |f: &Finding| f.subject.kind == SubjectKind::Query || QUERY_DRIVEN.contains(&f.check.as_str());
-    for f in findings.iter_mut().filter(|f| !f.queries.is_empty() && about_queries(f)) {
+    !f.queries.is_empty() && (f.subject.kind == SubjectKind::Query || QUERY_DRIVEN.contains(&f.check.as_str()))
+}
+
+/// Findings about statements that each ran once in the window (see `ran_once`) stay on the list, Low, ranked low, and
+/// say so first: on any engine and for any check, a single run is what happened, not a pattern to fix.
+fn mark_one_off(snapshot: &Snapshot, findings: &mut [Finding]) {
+    let Some(workload) = &snapshot.workload else { return };
+    for f in findings.iter_mut().filter(|f| !f.inactive && about_queries(f)) {
+        let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
+        if queries.is_empty() || !queries.iter().all(|q| ran_once(q)) {
+            continue;
+        }
+        f.severity = Severity::Low;
+        f.impact.score *= 0.25;
+        f.caveats.insert(
+            0,
+            format!(
+                "{} once in {}. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.",
+                if queries.len() == 1 { "This statement ran" } else { "Each of these statements ran" },
+                workload.window_phrase()
+            ),
+        );
+        f.verify.insert(0, "Re-scan later: if it hasn't run again, there is nothing to do.".into());
+    }
+}
+
+/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled.
+fn mark_inactive(snapshot: &Snapshot, findings: &mut [Finding]) {
+    let Some(workload) = &snapshot.workload else { return };
+    for f in findings.iter_mut().filter(|f| about_queries(f)) {
         let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
         f.last_seen = queries.iter().filter_map(|q| q.last_seen.clone()).max_by(|a, b| {
             support::parse_epoch_seconds(a)

@@ -1,3 +1,4 @@
+use culprit_core::insights::converts_column;
 use culprit_core::{
     Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, NodeKind, PlanNode, PlanWarning,
     QueryRef, QueryStat, Severity, Snapshot, SubjectKind, Unit, format,
@@ -55,9 +56,10 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
         _ => format!("{} takes {} of database time", capitalize(&handle), format::percent(impact.share)),
     };
     let mut summary = format!(
-        "It ran {} at {} on average: {} of all database time in {}.",
+        "It ran {} at {}{}: {} of all database time in {}.",
         runs_phrase(snapshot, q.executions),
         format::duration(q.mean_time_ms),
+        if q.executions > 1.0 { " on average" } else { "" },
         format::percent(impact.share),
         snapshot.workload.as_ref().map(window_phrase).unwrap_or_default()
     );
@@ -88,10 +90,17 @@ fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
 fn heavy_fix_text(hot: Option<&PlanNode>, per_day_runs: f64, q: &QueryStat) -> String {
     if let Some(node) = hot {
         if node.kind == NodeKind::Scan && node.predicate.is_some() {
-            return format!(
-                "The plan scans {} and filters afterwards. An index on the filtered columns turns that into a seek; open the plan to see the predicate.",
-                node.object.as_deref().unwrap_or("the table")
-            );
+            let table = node.object.as_deref().unwrap_or("the table");
+            return match node.kept_share() {
+                // The bar every index suggestion uses: past it the scan is the right plan, and the fix is to read less.
+                Some(kept) if kept > culprit_core::INDEX_KEEPS_AT_MOST => format!(
+                    "The plan reads all of {table} and keeps about {} of the rows, too many for an index to help. Read only the rows and columns the caller needs, or page through them.",
+                    format::percent(kept)
+                ),
+                _ => format!(
+                    "The plan scans {table} and filters afterwards. An index on the filtered columns turns that into a seek; open the plan to see the predicate."
+                ),
+            };
         }
         if node.kind == NodeKind::Lookup {
             return "Most of the work is looking rows up in the table after finding them in an index. Including the selected columns in that index (a covering index) removes the lookups.".into();
@@ -316,15 +325,12 @@ fn plan_warning_finding(
         PlanWarning::ImplicitConversion => {
             let node_props = node.into_iter().flat_map(|n| n.props.values());
             let plan_props = q.plan.iter().flat_map(|p| p.props.values());
-            // A conversion of the optimizer's own values (a VALUES list's Union1006, Expr1002) or of a parameter happens
-            // once per value, not per row of a table: it can't stop an index from being used.
-            let all: Vec<&str> = node_props
-                .chain(plan_props)
-                .flat_map(|v| v.lines())
-                .filter(|l| l.contains("CONVERT_IMPLICIT"))
-                .collect();
-            let lines: Vec<&str> = all.iter().copied().filter(|l| !converts_internal_value(l)).collect();
-            if !all.is_empty() && lines.is_empty() {
+            let named: Vec<&str> =
+                node_props.chain(plan_props).flat_map(|v| v.lines()).filter(|l| l.contains("CONVERT")).collect();
+            // Only a column converted to match a value of another type is a mismatch (the rule the plan parser applies;
+            // scans saved before it flagged every conversion SQL Server warned about).
+            let lines: Vec<&str> = named.iter().copied().filter(|l| converts_column(l)).collect();
+            if !named.is_empty() && lines.is_empty() {
                 return None;
             }
             let issue = lines.iter().find(|l| l.contains("Seek Plan")).or(lines.first()).copied();
@@ -414,30 +420,6 @@ fn warning_key(w: PlanWarning) -> &'static str {
     }
 }
 
-/// Whether every CONVERT_IMPLICIT in `text` converts an expression the optimizer made up (`[Union1006]`, `[Expr1002]`)
-/// or a parameter, rather than a table's column.
-fn converts_internal_value(text: &str) -> bool {
-    let mut any = false;
-    for (at, _) in text.match_indices("CONVERT_IMPLICIT(") {
-        any = true;
-        let rest = &text[at + "CONVERT_IMPLICIT(".len()..];
-        let Some(after_type) = rest.find("),").map(|i| &rest[i + 2..]).or_else(|| rest.split_once(',').map(|(_, r)| r))
-        else {
-            return false;
-        };
-        let expr = after_type.split(',').next().unwrap_or("").trim();
-        let name = expr.trim_matches(|c| c == '[' || c == ']');
-        let internal = !name.contains('.') && {
-            let digits = name.trim_start_matches(|c: char| c.is_ascii_alphabetic());
-            digits.len() >= 3 && digits.len() < name.len() && digits.chars().all(|c| c.is_ascii_digit())
-        };
-        if !(internal || name.starts_with('@')) {
-            return false;
-        }
-    }
-    any
-}
-
 /// Pull "Users.Email" out of `CONVERT_IMPLICIT(nvarchar(256),[db].[dbo].[Users].[Email],0)`.
 fn convert_column(text: &str) -> Option<String> {
     let start = text.find("CONVERT_IMPLICIT(")? + "CONVERT_IMPLICIT(".len();
@@ -449,21 +431,6 @@ fn convert_column(text: &str) -> Option<String> {
         [.., table, column] if !column.is_empty() && !column.starts_with('@') => Some(format!("{table}.{column}")),
         [column] if !column.is_empty() && !column.starts_with('@') => Some(column.to_string()),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod convert_tests {
-    #[test]
-    fn conversions_of_the_optimizers_own_values_are_not_column_mismatches() {
-        assert!(super::converts_internal_value("CONVERT_IMPLICIT(varchar(36),[Union1006],0)"));
-        assert!(super::converts_internal_value("Cardinality Estimate: CONVERT_IMPLICIT(varchar(8),[Expr1002],0)"));
-        assert!(super::converts_internal_value("CONVERT_IMPLICIT(varchar(64),[@par2],0)"));
-        assert!(!super::converts_internal_value(
-            "CONVERT_IMPLICIT(nvarchar(255),[db].[shop].[jobs].[run_key],0)=[@par4]"
-        ));
-        assert!(!super::converts_internal_value("CONVERT_IMPLICIT(nvarchar(20),[status],0)"));
-        assert!(!super::converts_internal_value("no conversion here"));
     }
 }
 

@@ -14,7 +14,7 @@ use ts_rs::TS;
 use crate::finding::Severity;
 use crate::format;
 use crate::model::Engine;
-use crate::plan::{NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
+use crate::plan::{INDEX_KEEPS_AT_MOST, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
 
 /// What kind of change fixes it, for grouping and icons.
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -745,7 +745,7 @@ fn scan_filter(cx: &Cx) -> Vec<Draft> {
     // MySQL's JSON estimate: a scan that expects to keep a tenth of what it examines.
     let mysql_estimate = |n: &PlanNode| {
         n.kind == NodeKind::Scan
-            && prop_f64(n, "filtered").is_some_and(|f| f <= 10.0)
+            && prop_f64(n, "filtered").is_some_and(|f| f <= INDEX_KEEPS_AT_MOST * 100.0)
             && n.rows_read.is_some_and(|r| r >= 10_000.0)
             && n.predicate.is_some()
     };
@@ -756,7 +756,7 @@ fn scan_filter(cx: &Cx) -> Vec<Draft> {
             && n.kind == NodeKind::Scan
             && n.act_rows.is_none()
             && n.predicate.is_some()
-            && n.table_rows.is_some_and(|t| t >= 10_000.0 && rows_out(n) * 10.0 <= t)
+            && n.table_rows.is_some_and(|t| t >= 10_000.0 && rows_out(n) <= t * INDEX_KEEPS_AT_MOST)
     };
     for n in cx
         .nodes
@@ -776,7 +776,7 @@ fn scan_filter(cx: &Cx) -> Vec<Draft> {
         let explained = conditions(n).contains("CONVERT_IMPLICIT")
             || wrapped_column(&filter).is_some()
             || wildcard_at(&filter).is_some();
-        if explained || kept * 10.0 > read {
+        if explained || kept > read * INDEX_KEEPS_AT_MOST {
             continue;
         }
         let cols = filter_columns(&filter);
@@ -812,8 +812,11 @@ fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Mssql {
         return Vec::new();
     }
-    let plan_lines: Vec<String> =
-        cx.prop("PlanAffectingConvert").map(|v| v.lines().map(str::to_string).collect()).unwrap_or_default();
+    // Only the warnings about a converted column (see `converts_column`); older scans flagged every conversion.
+    let plan_lines: Vec<String> = cx
+        .prop("PlanAffectingConvert")
+        .map(|v| v.lines().filter(|l| converts_column(l)).map(str::to_string).collect())
+        .unwrap_or_default();
     let node = cx
         .nodes
         .iter()
@@ -903,10 +906,15 @@ fn convert_operands(text: &str) -> Vec<&str> {
     out
 }
 
-/// A CONVERT_IMPLICIT operand that is a column, not a parameter (`@1`), variable, literal or computed expression.
+/// A CONVERT_IMPLICIT operand that is a column, not a parameter (`@1`), variable, literal or a value the optimizer made
+/// up (`[Expr1002]`, `[Union1006]`, `[Bmk1000]`: letters then a number, never qualified by a table).
 fn is_column_operand(op: &str) -> bool {
     let last = op.rsplit('.').next().unwrap_or(op).trim_matches(|c| c == '[' || c == ']' || c == '"');
-    let computed = last.len() > 4 && last.starts_with("Expr") && last[4..].chars().all(|c| c.is_ascii_digit());
+    let digits = last.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    let computed = !op.contains('.')
+        && digits.len() >= 3
+        && digits.len() < last.len()
+        && digits.chars().all(|c| c.is_ascii_digit());
     !last.is_empty()
         && !op.contains('(')
         && !op.starts_with('\'')
@@ -916,8 +924,12 @@ fn is_column_operand(op: &str) -> bool {
         && !computed
 }
 
-/// Whether a predicate converts a column (the case that costs an index seek or a good estimate).
-fn converts_column(text: &str) -> bool {
+/// Whether SQL Server text (a predicate, or a conversion warning's expression) implicitly converts a table's column to
+/// compare it with a value of another type: the mismatch that costs an index seek or a good estimate. A conversion the
+/// query writes itself (`CONVERT(varchar(36), id)` in a select list) is asked for, and converting a parameter, literal
+/// or the optimizer's own value costs nothing: neither is a mismatch. The one rule the plan parser, insights and checks
+/// share.
+pub fn converts_column(text: &str) -> bool {
     convert_operands(text).into_iter().any(is_column_operand)
 }
 
@@ -2389,6 +2401,42 @@ mod tests {
             insights(&p).into_iter().find(|i| i.rule == "implicit-conversion").expect("the column is converted");
         assert!(found.title.contains("customers.email"), "{}", found.title);
         assert_eq!(convert_operands("CONVERT_IMPLICIT(nvarchar(36),[m].[c],0)=[@p1]"), vec!["[m].[c]"]);
+    }
+
+    #[test]
+    fn conversions_the_query_asks_for_are_not_a_type_mismatch() {
+        // `SELECT CONVERT(varchar(36), o.id), CONVERT(varchar(30), o.created_at, 126) … WHERE o.archived = 0`: SQL Server
+        // warns about each CONVERT in the select list, though nothing is compared with a value of another type.
+        let mut scan = node(1, "Clustered Index Scan", NodeKind::Scan);
+        scan.predicate = Some("[db].[shop].[orders].[archived] as [o].[archived]=(0)".into());
+        let mut p = plan(Engine::Mssql, scan);
+        p.warnings = vec![PlanWarning::ImplicitConversion];
+        p.props.insert(
+            "PlanAffectingConvert".into(),
+            "Cardinality Estimate: CONVERT(varchar(36),[o].[id],0)\n\
+             Cardinality Estimate: CONVERT(varchar(30),[o].[created_at],126)"
+                .into(),
+        );
+        assert!(!rules(&p).contains(&"implicit-conversion".to_string()));
+        p.props.insert(
+            "PlanAffectingConvert".into(),
+            "Cardinality Estimate: CONVERT_IMPLICIT(varchar(64),[@P1],0)".into(),
+        );
+        assert!(!rules(&p).contains(&"implicit-conversion".to_string()));
+    }
+
+    #[test]
+    fn only_an_implicitly_converted_column_is_a_mismatch() {
+        assert!(converts_column("CONVERT_IMPLICIT(nvarchar(255),[db].[shop].[jobs].[run_key],0)=[@par4]"));
+        assert!(converts_column("Seek Plan: CONVERT_IMPLICIT(nvarchar(36),[m].[CustomerId],0)=[@p1]"));
+        assert!(converts_column("CONVERT_IMPLICIT(nvarchar(20),[status],0)"));
+        // Written by the query, or of a value that isn't a column.
+        assert!(!converts_column("Cardinality Estimate: CONVERT(varchar(36),[o].[id],0)"));
+        assert!(!converts_column("CONVERT_IMPLICIT(varchar(36),[Union1006],0)"));
+        assert!(!converts_column("Cardinality Estimate: CONVERT_IMPLICIT(varchar(8),[Expr1002],0)"));
+        assert!(!converts_column("CONVERT_IMPLICIT(varchar(64),[@par2],0)"));
+        assert!(!converts_column("x=CONVERT_IMPLICIT(int,N'5',0)"));
+        assert!(!converts_column("no conversion here"));
     }
 
     #[test]

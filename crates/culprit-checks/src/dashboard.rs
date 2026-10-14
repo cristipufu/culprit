@@ -244,7 +244,7 @@ fn plan_changes<'a>(s: &'a Snapshot, w: &Workload) -> Vec<PlanChange<'a>> {
     // A plan switch of a query that has since stopped running is history, not news.
     let mut out: Vec<PlanChange> = app_queries(s)
         .filter(|q| q.plans.len() >= 2 && q.total_time_ms / total >= 0.02)
-        .filter(|q| crate::query_stopped(s, q).is_none())
+        .filter(|q| !crate::query_is_history(s, q))
         .filter_map(|q| {
             let seen = |p: &culprit_core::PlanVariant| p.first_seen.as_deref().and_then(format::epoch_seconds);
             let first = q.plans.iter().filter_map(seen).fold(f64::INFINITY, f64::min);
@@ -506,9 +506,12 @@ fn top_queries(s: &Snapshot) -> Tile {
     tile.items = top
         .iter()
         .map(|q| {
-            let label = match crate::query_stopped(s, q) {
-                Some(_) => format!("{} (stopped running)", query_handle(q)),
-                None => query_handle(q),
+            let label = if crate::ran_once(q) {
+                format!("{} (ran once)", query_handle(q))
+            } else if crate::query_stopped(s, q).is_some() {
+                format!("{} (stopped running)", query_handle(q))
+            } else {
+                query_handle(q)
             };
             let mut item = TileItem::new(ItemKind::Query, q.id.clone(), label);
             item.value = Some(format::percent(share(q)));
@@ -1101,9 +1104,10 @@ fn indexes(report: &Report) -> Tile {
 fn plans(s: &Snapshot) -> Tile {
     let Some(w) = &s.workload else { return no_workload(TileKey::Plans, "there are no plans to read") };
     let total = w.total_time_ms.max(1.0);
-    // Plans of queries that stopped running (most likely changed by a deploy) would describe code that is gone.
+    // Plans of queries that stopped running (most likely changed by a deploy) would describe code that is gone, and a
+    // statement that ran once isn't what the application runs.
     let with_plans: Vec<&QueryStat> =
-        app_queries(s).filter(|q| q.plan.is_some() && crate::query_stopped(s, q).is_none()).collect();
+        app_queries(s).filter(|q| q.plan.is_some() && !crate::query_is_history(s, q)).collect();
     if with_plans.is_empty() {
         let reason = [Capability::QueryPlans, Capability::Showplan, Capability::GenericPlans]
             .into_iter()

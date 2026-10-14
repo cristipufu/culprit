@@ -498,7 +498,11 @@ fn warnings_of(warnings: Node) -> Vec<PlanWarning> {
     }
     for w in warnings.children().filter(Node::is_element) {
         let warning = match w.tag_name().name() {
-            "PlanAffectingConvert" => Some(PlanWarning::ImplicitConversion),
+            // SQL Server warns about every conversion that may sway the plan, including ones the query writes itself.
+            "PlanAffectingConvert" => w
+                .attribute("Expression")
+                .is_some_and(culprit_core::insights::converts_column)
+                .then_some(PlanWarning::ImplicitConversion),
             "SpillToTempDb" | "SortSpillDetails" | "HashSpillDetails" | "ExchangeSpillDetails" | "SpillOccurred" => {
                 Some(PlanWarning::Spill)
             }
@@ -681,6 +685,21 @@ mod tests {
     </StmtSimple>
   </Statements></Batch></BatchSequence>
 </ShowPlanXML>"#;
+
+    #[test]
+    fn conversions_the_query_writes_are_not_a_type_mismatch() {
+        // SQL Server warns about each CONVERT in a select list; the plan keeps the text, but nothing is mismatched.
+        let written = ESTIMATED.replace(
+            r#"<PlanAffectingConvert ConvertIssue="Seek Plan" Expression="CONVERT_IMPLICIT(nvarchar(36),[m].[CustomerId],0)=[@p1]" />"#,
+            r#"<PlanAffectingConvert ConvertIssue="Cardinality Estimate" Expression="CONVERT(varchar(36),[m].[Id],0)" />"#,
+        );
+        let plan = parse(&written).unwrap();
+        assert!(!plan.warnings.contains(&PlanWarning::ImplicitConversion));
+        assert_eq!(
+            plan.props.get("PlanAffectingConvert").map(String::as_str),
+            Some("Cardinality Estimate: CONVERT(varchar(36),[m].[Id],0)")
+        );
+    }
 
     #[test]
     fn parses_an_estimated_plan() {

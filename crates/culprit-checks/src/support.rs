@@ -476,10 +476,15 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
 
 /// "about 48K times a day" over a day or more of history, otherwise the real count: extrapolating 35 minutes to a day misleads.
 pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
+    // "once", never "1 times".
+    let times = |n: f64| match format::count(n).as_str() {
+        "1" => "once".to_string(),
+        count => format!("{count} times"),
+    };
     match &snapshot.workload {
-        Some(w) if w.window_hours >= 20.0 => format!("about {} times a day", format::count(w.per_day(executions))),
-        Some(w) => format!("{} times in {}", format::count(executions), culprit_core::span_words(w.window_hours)),
-        None => format!("{} times", format::count(executions)),
+        Some(w) if w.window_hours >= 20.0 => format!("about {} a day", times(w.per_day(executions))),
+        Some(w) => format!("{} in {}", times(executions), culprit_core::span_words(w.window_hours)),
+        None => times(executions),
     }
 }
 
