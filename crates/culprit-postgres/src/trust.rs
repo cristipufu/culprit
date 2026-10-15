@@ -74,7 +74,8 @@ pub async fn elevated(client: &Client) -> Result<bool> {
     Ok(row.is_none_or(|r| r.try_get::<_, Option<bool>>("elevated").ok().flatten().unwrap_or(true)))
 }
 
-/// The roles, other than the superusers and this login, that wrote code the planner could run in this database:
+/// The roles, other than the superusers and this login (the role it authenticated as, never one it acts as, which
+/// others may act as too), that wrote code the planner could run in this database:
 /// functions and operators. Trigger functions are never called while planning. An extension's code is its authors'
 /// only when a superuser or this login owns the extension: its owner can add a function of theirs to it. At most five
 /// names. Called on [`CATALOG_PATH`].
@@ -88,13 +89,13 @@ pub async fn foreign_code(client: &Client) -> Result<Vec<String>> {
                  UNION ALL
                  SELECT o.oprowner, o.oid, 'pg_catalog.pg_operator'::pg_catalog.regclass FROM pg_catalog.pg_operator o) code
            JOIN pg_catalog.pg_roles r ON r.oid = code.owner
-          WHERE NOT r.rolsuper AND r.rolname NOT IN (current_user, session_user)
+          WHERE NOT r.rolsuper AND r.rolname <> session_user
             AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
                               JOIN pg_catalog.pg_extension e ON e.oid = d.refobjid
                               JOIN pg_catalog.pg_roles eo ON eo.oid = e.extowner
                              WHERE d.classid = code.class AND d.objid = code.obj AND d.deptype = 'e'
                                AND d.refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass
-                               AND (eo.rolsuper OR eo.rolname IN (current_user, session_user)))
+                               AND (eo.rolsuper OR eo.rolname = session_user))
           ORDER BY 1
           LIMIT 5",
     )
@@ -126,8 +127,10 @@ pub fn not_its_own() -> Error {
 const MONITORING_LOGIN: &str =
     "Connect with a login that has only pg_monitor, and SELECT on the tables: it plans every statement.";
 
-/// This login's own text of the statement pg_stat_statements records as `query_id`, when it ran it. The id is bound,
-/// never spliced; the view's schema is quoted.
+/// This login's own text of the statement pg_stat_statements records as `query_id`, when it ran it. "This login" is
+/// the role it authenticated as (`session_user`), and only while it acts as itself: one acting as a shared role (a
+/// `role` setting) can't tell its statements from anyone else's acting as that role. The id is bound, never spliced;
+/// the view's schema is quoted.
 pub async fn own_text(client: &Client, query_id: &str) -> Result<Option<String>> {
     let Ok(id) = query_id.trim().parse::<i64>() else { return Ok(None) };
     let schema = on_catalog(
@@ -141,17 +144,17 @@ pub async fn own_text(client: &Client, query_id: &str) -> Result<Option<String>>
     let Some(schema) = schema else { return Ok(None) };
     let sql = format!(
         "SELECT query FROM {}.pg_stat_statements
-          WHERE queryid = $1 AND pg_catalog.pg_get_userbyid(userid) = current_user LIMIT 1",
+          WHERE queryid = $1 AND pg_catalog.pg_get_userbyid(userid) = session_user AND current_user = session_user LIMIT 1",
         crate::collect::quote_ident(&schema)
     );
     Ok(on_catalog(client, &sql, &[&id]).await?.and_then(|r| r.try_get::<_, String>("query").ok()))
 }
 
-/// Whether the session `pid` runs as this login.
+/// Whether the session `pid` logged in as this login (`pg_stat_activity.usesysid` is a session's own login).
 pub async fn session_is_own(client: &Client, pid: i32) -> Result<bool> {
     let row = on_catalog(
         client,
-        "SELECT pg_catalog.pg_get_userbyid(usesysid) = current_user AS own FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+        "SELECT pg_catalog.pg_get_userbyid(usesysid) = session_user AS own FROM pg_catalog.pg_stat_activity WHERE pid = $1",
         &[&pid],
     )
     .await?;

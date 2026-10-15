@@ -732,7 +732,8 @@ fn aggregated_base(relation: &str, c: &EntryColumns) -> String {
                 sum(rows) AS rows, sum(shared_blks_hit + shared_blks_read) AS reads, sum(shared_blks_read) AS phys,
                 sum(temp_blks_written) AS temp, sum({io}) AS io_ms, {first_seen} AS first_seen,
                 count(*) AS entries,
-                (array_agg(query ORDER BY {total} DESC) FILTER (WHERE pg_get_userbyid(userid) = current_user))[1] AS own_query
+                (array_agg(query ORDER BY {total} DESC)
+                   FILTER (WHERE pg_get_userbyid(userid) = session_user AND current_user = session_user))[1] AS own_query
          FROM {relation}
          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()){toplevel}
            AND query NOT LIKE '%{TAG}'
@@ -1333,7 +1334,12 @@ mod tests {
         assert_eq!(base_relation(&base), Some("public.pg_stat_statements"));
         // The login's own text of it, compared by role name (never a role name parsed as an identifier, which an Entra
         // login like someone@example.com isn't), and without a subquery whose FROM would hide the relation.
-        assert!(base.contains("FILTER (WHERE pg_get_userbyid(userid) = current_user))[1] AS own_query"), "{base}");
+        assert!(
+            base.contains(
+                "FILTER (WHERE pg_get_userbyid(userid) = session_user AND current_user = session_user))[1] AS own_query"
+            ),
+            "{base}"
+        );
         assert!(!base.contains("regrole"), "{base}");
         let old = statements_base("public.pg_stat_statements", 120_000);
         assert!(
