@@ -62,7 +62,7 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
         }
     }
     if probe.version_num >= 100_000 {
-        match replicas(client, probe.version_num, probe.cloud.as_deref()).await {
+        match replicas(client, probe.version_num, probe.platform).await {
             Ok(replicas) => pressure.replicas = replicas,
             Err(e) => notes.push(("replication", e.message)),
         }
@@ -486,13 +486,17 @@ fn standby_replica(s: Standby) -> Replica {
 
 /// Replicas this server streams to and logical consumers it sends changes to, its own replay lag when it is a
 /// standby, and replication slots that keep WAL.
-async fn replicas(client: &Client, version_num: u32, cloud: Option<&str>) -> culprit_core::Result<Vec<Replica>> {
+async fn replicas(
+    client: &Client,
+    version_num: u32,
+    platform: Option<culprit_core::Platform>,
+) -> culprit_core::Result<Vec<Replica>> {
     let standby = query_one(client, "SELECT pg_is_in_recovery() AS standby").await?.is_some_and(|r| r.flag("standby"));
     let mut out = Vec::new();
     if standby {
         // Aurora readers replicate through the shared storage, not WAL streaming: no receiver, nothing to measure here
         // (Aurora reports their lag in aurora_replica_status() and CloudWatch).
-        if cloud == Some("Amazon Aurora") {
+        if platform == Some(culprit_core::Platform::AmazonAurora) {
             return Ok(out);
         }
         // primary_conninfo can hold a password: only whether it is set is read, and pg_settings hides it from logins

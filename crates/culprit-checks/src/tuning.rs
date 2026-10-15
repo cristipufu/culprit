@@ -979,7 +979,7 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
             // group on RDS, which refuses sp_configure).
             let (how, sql) = if ad_hoc_on {
                 (String::new(), None)
-            } else if snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
+            } else if snapshot.server.on(culprit_core::Platform::AzureSqlDatabase) {
                 (
                     String::new(),
                     Some("ALTER DATABASE SCOPED CONFIGURATION SET OPTIMIZE_FOR_AD_HOC_WORKLOADS = ON;".to_string()),

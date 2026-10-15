@@ -353,7 +353,7 @@ fn failing_fix(
             cost: None,
         },
         Engine::Mssql => {
-            let azure = snapshot.server.cloud.as_deref() == Some("Azure SQL Database");
+            let azure = snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
             let scope = if azure { "DATABASE" } else { "SERVER" };
             Fix {
                 summary: "Query Store counts the errors but doesn't keep them. Capture them for a while with an Extended Events session on error_reported for this database, read the ring buffer, then drop the session.".into(),
@@ -962,13 +962,13 @@ fn file_label(snapshot: &Snapshot, g: &FileGroup) -> String {
 
 /// How storage that answers slowly is fixed depends on where it runs.
 fn storage_fix(snapshot: &Snapshot) -> &'static str {
-    match snapshot.server.cloud.as_deref() {
+    match snapshot.server.platform() {
         // Azure SQL Database runs on storage you don't manage: the tier decides the latency and the I/O limits.
-        Some("Azure SQL Database") => {
+        Some(culprit_core::Platform::AzureSqlDatabase) => {
             "In Azure SQL Database the service tier decides this: General Purpose reads from remote storage (5 to 10 ms is normal there), Hyperscale serves most reads from a local cache and the rest from page servers, Business Critical uses local SSDs. Check avg_data_io_percent and avg_log_write_percent in sys.dm_db_resource_stats: near 100% means the tier's I/O limit is throttling, so add vCores or move to a faster tier; well below it, cut the reads instead (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
         }
         // Managed Instance General Purpose keeps each file on a remote disk sized from the file.
-        Some("Azure SQL Managed Instance") => {
+        Some(culprit_core::Platform::AzureSqlManagedInstance) => {
             "On Managed Instance General Purpose each data and log file is a remote disk whose IOPS and throughput come from the file's size (up to 128 GB about 500 IOPS, up to 512 GB about 2,300, up to 1 TB 5,000): growing a busy file past the next size step raises its limit, and the next-gen General Purpose tier sets IOPS apart from size. Business Critical uses local SSDs. Compare each file's latency in sys.dm_io_virtual_file_stats with its size, and cut the reads too (indexes, fewer full scans). A since-startup average hides bursts: sample Waits → Right now during the busy hour."
         }
         _ => {
@@ -1084,7 +1084,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;
     // On Azure SQL Database the login counters belong to the server process behind the database, shared by its
     // elastic pool: another database's logins aren't this one's to fix.
-    if engine == Engine::Mssql && snapshot.server.cloud.as_deref() == Some("Azure SQL Database") {
+    if engine == Engine::Mssql && snapshot.server.on(culprit_core::Platform::AzureSqlDatabase) {
         return Vec::new();
     }
     let limit = if engine == Engine::Postgres { 2.0 } else { 10.0 };
@@ -1393,7 +1393,7 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
     // recent ones from old ones.
     let before = snapshot.escalations_before.as_ref();
     let started = snapshot.server.started_at.as_deref();
-    let azure = snapshot.server.cloud.as_deref() == Some("Azure SQL Database");
+    let azure = snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
     let mut findings: Vec<Finding> = by_table
         .into_iter()
         .map(|((schema, table), t)| {

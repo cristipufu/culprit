@@ -309,7 +309,7 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
 
     let shared = value(snapshot, &["shared_buffers"]).and_then(bytes);
     let data = data_bytes(snapshot);
-    if snapshot.server.cloud.is_none()
+    if !snapshot.server.is_managed()
         && let Some(shared) = shared
         && shared <= 128.0 * 1024.0 * 1024.0
         && data >= 2.0 * 1024.0 * 1024.0 * 1024.0

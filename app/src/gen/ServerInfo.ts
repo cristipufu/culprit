@@ -2,5 +2,15 @@
 import type { Capability } from "./Capability";
 import type { Engine } from "./Engine";
 import type { MissingCapability } from "./MissingCapability";
+import type { Platform } from "./Platform";
 
-export type ServerInfo = { engine: Engine, product: string, version: string, edition: string | null, cloud: string | null, database: string, database_size_bytes: number | null, started_at: string | null, read_only_session: boolean, capabilities: Array<Capability>, missing: Array<MissingCapability>, };
+export type ServerInfo = { engine: Engine, product: string, version: string, edition: string | null, 
+/**
+ * The managed service it runs on, as a person names it ("Amazon RDS"). For sentences; [`ServerInfo::platform`]
+ * is what code asks.
+ */
+cloud: string | null, 
+/**
+ * The managed service it runs on (`None`: a server you run yourself). Older reports have only `cloud`.
+ */
+platform: Platform | null, database: string, database_size_bytes: number | null, started_at: string | null, read_only_session: boolean, capabilities: Array<Capability>, missing: Array<MissingCapability>, };

@@ -130,7 +130,7 @@ fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
                 format!("The database runs at compatibility level {level}"),
                 format!(
                     "{} supports level {latest}, but the optimizer behaves as it did at {level}. Newer levels bring adaptive joins, memory grant feedback and parameter-sensitive plans.",
-                    snapshot.server.cloud.as_deref().filter(|c| c.starts_with("Azure")).unwrap_or("The server")
+                    snapshot.server.cloud.as_deref().filter(|_| snapshot.server.platform().is_some_and(|p| p.is_azure())).unwrap_or("The server")
                 ),
                 Fix {
                     summary: "Raise it after testing; Query Store makes this safe because you can force the old plans for any query that regresses.".into(),
@@ -328,7 +328,7 @@ fn read_committed_snapshot(snapshot: &Snapshot, db: &str) -> Finding {
 /// The newest compatibility level the server offers. Azure SQL Database and Managed Instance report a product version
 /// of 12.0 whatever they run, so their level comes from the service, not the version: 160 on both today.
 fn latest_compat(server: &ServerInfo) -> u32 {
-    if server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure SQL")) {
+    if server.platform().is_some_and(|p| p.is_azure_sql()) {
         return 160;
     }
     let major: u32 = server.version.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(16);
@@ -337,7 +337,7 @@ fn latest_compat(server: &ServerInfo) -> u32 {
 
 fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();
-    let cloud = snapshot.server.cloud.is_some();
+    let cloud = snapshot.server.is_managed();
     let rpc = value(snapshot, &["random_page_cost"]).and_then(|v| v.parse::<f64>().ok());
     if let Some(rpc) = rpc.filter(|v| *v >= 4.0 && cloud) {
         {
@@ -460,9 +460,11 @@ fn buffer_pool(snapshot: &Snapshot) -> Option<Finding> {
             reads.map(|r| format!(" (about {} pages a second from disk)", format::count(r))).unwrap_or_default()
         ),
         Fix {
-            summary: match snapshot.server.cloud.as_deref() {
-                Some(cloud) => format!(
-                    "Give the buffer pool more of the instance's memory in its parameter group ({cloud} sizes it from the instance class), or move to an instance class with more memory. Leave room for connections and the operating system."
+            summary: match snapshot.server.platform() {
+                Some(platform) => format!(
+                    "Give the buffer pool more of the instance's memory{} ({} sizes it from the instance's memory), or move to an instance with more memory. Leave room for connections and the operating system.",
+                    platform.settings_control().map(|c| format!(" in {c}")).unwrap_or_default(),
+                    platform.label(snapshot.server.engine)
                 ),
                 None => "Give the buffer pool most of the server's memory (often 60–75% on a dedicated host, leaving room for connections and the operating system); it can be resized online with SET GLOBAL innodb_buffer_pool_size.".into(),
             },

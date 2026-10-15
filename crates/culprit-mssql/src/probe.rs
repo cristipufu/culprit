@@ -73,11 +73,12 @@ impl Probe {
         self.engine_edition == ENGINE_EDITION_AZURE_SQL_DATABASE
     }
 
-    pub(crate) fn cloud(&self) -> Option<String> {
+    pub(crate) fn platform(&self) -> Option<culprit_core::Platform> {
+        use culprit_core::Platform;
         match self.engine_edition {
-            ENGINE_EDITION_AZURE_SQL_DATABASE => Some("Azure SQL Database".into()),
-            ENGINE_EDITION_MANAGED_INSTANCE => Some("Azure SQL Managed Instance".into()),
-            _ if self.rds => Some("Amazon RDS".into()),
+            ENGINE_EDITION_AZURE_SQL_DATABASE => Some(Platform::AzureSqlDatabase),
+            ENGINE_EDITION_MANAGED_INSTANCE => Some(Platform::AzureSqlManagedInstance),
+            _ if self.rds => Some(Platform::AmazonRds),
             _ => None,
         }
     }
@@ -224,7 +225,8 @@ pub(crate) fn server_info(p: &Probe, capabilities: Vec<Capability>, missing: Vec
         product: p.product(),
         version: p.version.clone(),
         edition: Some(p.edition.clone()).filter(|e| !e.is_empty()),
-        cloud: p.cloud(),
+        cloud: p.platform().map(|c| c.label(culprit_core::Engine::Mssql).to_string()),
+        platform: p.platform(),
         database: p.database.clone(),
         database_size_bytes: p.data_bytes,
         started_at: p.started_at.clone(),
@@ -260,9 +262,12 @@ mod tests {
     // RDS keeps its rdsadmin database; its settings live in a DB parameter group, so the cloud has to be known.
     #[test]
     fn rds_is_told_apart_from_a_server_you_manage() {
-        assert_eq!(probe(2, true).cloud().as_deref(), Some("Amazon RDS"));
-        assert_eq!(probe(3, false).cloud(), None);
-        assert_eq!(probe(ENGINE_EDITION_AZURE_SQL_DATABASE, false).cloud().as_deref(), Some("Azure SQL Database"));
+        assert_eq!(probe(2, true).platform(), Some(culprit_core::Platform::AmazonRds));
+        assert_eq!(probe(3, false).platform(), None);
+        assert_eq!(
+            probe(ENGINE_EDITION_AZURE_SQL_DATABASE, false).platform(),
+            Some(culprit_core::Platform::AzureSqlDatabase)
+        );
         assert_eq!(probe(2, true).product(), "SQL Server 2022");
     }
 

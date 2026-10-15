@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use culprit_core::{
     Capability, ColumnInfo, ConnectionSpec, Coverage, Engine, Error, ForeignKey, IndexStat, MissingCapability, Plan,
-    PlanKind, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread, TableStat,
-    WaitStat, Workload,
+    PlanKind, Platform, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
+    TableStat, WaitStat, Workload,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Value};
@@ -25,7 +25,7 @@ pub struct Probe {
     pub started_at: Option<String>,
     pub now: String,
     pub user: String,
-    pub cloud: Option<String>,
+    pub platform: Option<Platform>,
     pub performance_schema: bool,
     pub flavor: Flavor,
     /// Where the slow query log goes (`FILE`, `TABLE`, `FILE,TABLE`, `NONE`), whether it is on, and its threshold.
@@ -150,7 +150,8 @@ impl Probe {
             product: self.product(),
             version: self.version.clone(),
             edition: Some(self.comment.clone()).filter(|c| !c.is_empty()),
-            cloud: self.cloud.clone(),
+            cloud: self.platform.map(|p| p.label(Engine::Mysql).to_string()),
+            platform: self.platform,
             database: self.database.clone(),
             database_size_bytes: self.size_bytes,
             started_at: self.started_at.clone(),
@@ -216,7 +217,7 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
     let version = row.string("version");
     let comment = row.string("comment");
     let flavor = Flavor::of_version(&version);
-    let cloud = detect_cloud(conn, &connector.host, &row.string("basedir"), &comment, flavor).await;
+    let platform = detect_platform(conn, &connector.host, &row.string("basedir"), &comment, flavor).await;
     let userstat = match flavor {
         Flavor::Mariadb => {
             query_one(conn, "SELECT @@userstat AS userstat").await.ok().flatten().map(|r| r.flag("userstat"))
@@ -236,7 +237,7 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
         started_at,
         now: row.string("now"),
         user: row.string("user_name"),
-        cloud,
+        platform,
         performance_schema: row.flag("ps"),
         // innodb_read_only (Aurora's readers) is read on its own: a server without it must not fail the probe.
         read_only: row.flag("read_only")
@@ -244,27 +245,33 @@ pub async fn probe(conn: &mut Conn, connector: &Connector) -> Result<Probe> {
     })
 }
 
-async fn detect_cloud(conn: &mut Conn, host: &str, basedir: &str, comment: &str, flavor: Flavor) -> Option<String> {
+async fn detect_platform(
+    conn: &mut Conn,
+    host: &str,
+    basedir: &str,
+    comment: &str,
+    flavor: Flavor,
+) -> Option<Platform> {
     let host = host.to_ascii_lowercase();
     if host.ends_with(".mysql.database.azure.com") {
-        return Some("Azure Database for MySQL".into());
+        return Some(Platform::AzureDatabase);
     }
     if host.ends_with(".mariadb.database.azure.com") {
-        return Some("Azure Database for MariaDB".into());
+        return Some(Platform::AzureDatabase);
     }
     if host.contains(".skysql.") || host.ends_with(".mariadb.com") {
-        return Some("MariaDB Cloud".into());
+        return Some(Platform::MariaDbCloud);
     }
     let aurora =
         flavor == Flavor::Mysql && query_one(conn, "SELECT AURORA_VERSION() AS v").await.ok().flatten().is_some();
     if aurora {
-        return Some("Amazon Aurora".into());
+        return Some(Platform::AmazonAurora);
     }
     if host.contains(".rds.amazonaws.com") || basedir.contains("/rdsdbbin/") {
-        return Some("Amazon RDS".into());
+        return Some(Platform::AmazonRds);
     }
     if comment.to_ascii_lowercase().contains("google") || basedir.contains("/cloudsql") {
-        return Some("Google Cloud SQL".into());
+        return Some(Platform::GoogleCloudSql);
     }
     None
 }
@@ -1560,7 +1567,7 @@ mod tests {
             started_at: None,
             now: "2026-10-11T12:00:00Z".into(),
             user: "app@%".into(),
-            cloud: None,
+            platform: None,
             performance_schema,
             flavor,
             log_output: "FILE".into(),

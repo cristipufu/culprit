@@ -19,6 +19,7 @@ pub mod model;
 pub mod plan;
 pub mod plan_compare;
 pub mod plan_diff;
+pub mod platform;
 pub mod provider;
 pub mod redact;
 pub mod signals;
@@ -53,6 +54,7 @@ pub use plan_compare::{CompareContext, Scenario, ScenarioKind};
 pub use plan_diff::{
     ChangeKind, NodeMatch, PlanChange, PlanDiff, PlanRegion, plan_cost_basis, plan_diff, plan_diff_in, plan_diff_named,
 };
+pub use platform::Platform;
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
 pub use signals::{
     ColumnHistogram, ConstraintIssue, ConstraintKind, EscalationBaseline, FileIo, FileKind, IndexContention,

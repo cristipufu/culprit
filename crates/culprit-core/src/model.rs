@@ -117,7 +117,12 @@ pub struct ServerInfo {
     pub product: String,
     pub version: String,
     pub edition: Option<String>,
+    /// The managed service it runs on, as a person names it ("Amazon RDS"). For sentences; [`ServerInfo::platform`]
+    /// is what code asks.
     pub cloud: Option<String>,
+    /// The managed service it runs on (`None`: a server you run yourself). Older reports have only `cloud`.
+    #[serde(default)]
+    pub platform: Option<crate::platform::Platform>,
     pub database: String,
     pub database_size_bytes: Option<f64>,
     pub started_at: Option<String>,
@@ -146,6 +151,21 @@ pub fn version_at_least(version: &str, wanted: [u32; 3]) -> bool {
 impl ServerInfo {
     pub fn has(&self, capability: Capability) -> bool {
         self.capabilities.contains(&capability)
+    }
+
+    /// The managed service it runs on: the one the provider detected, or for an older report the one its label names.
+    pub fn platform(&self) -> Option<crate::platform::Platform> {
+        self.platform.or_else(|| self.cloud.as_deref().and_then(crate::platform::Platform::from_label))
+    }
+
+    /// Whether it runs on `platform`.
+    pub fn on(&self, platform: crate::platform::Platform) -> bool {
+        self.platform() == Some(platform)
+    }
+
+    /// Whether it runs on a managed service at all: no superuser, no configuration file, no operating system.
+    pub fn is_managed(&self) -> bool {
+        self.platform().is_some() || self.cloud.is_some()
     }
 
     /// The server's name in sentences: the engine's, except MariaDB, which the MySQL provider also serves.

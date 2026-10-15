@@ -193,7 +193,7 @@ pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
         Category::Configuration,
         subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
-    let instance = snapshot.server.cloud.as_deref() != Some("Azure SQL Database");
+    let instance = !snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
     f.title = if pending > 0.0 {
         format!(
             "{} waiting for a memory grant when the scan ran",

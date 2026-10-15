@@ -219,7 +219,7 @@ pub fn index_name(table: &str, columns: &[String]) -> String {
 
 pub fn supports_online_index(snapshot: &Snapshot) -> bool {
     // Azure SQL runs every edition's features; RDS runs the edition it was bought with, read below.
-    if snapshot.server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure")) {
+    if snapshot.server.platform().is_some_and(|p| p.is_azure()) {
         return true;
     }
     snapshot
@@ -1060,19 +1060,9 @@ pub struct SettingChange {
 }
 
 pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str) -> SettingChange {
-    let managed = |control: &str| SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
-    match server.cloud.as_deref() {
-        Some("Amazon RDS") => return managed("the instance's DB parameter group"),
-        Some("Amazon Aurora") => return managed("the cluster's (or instance's) DB parameter group"),
-        Some(c) if c.starts_with("Azure Database for") => {
-            return managed("the server parameters (Azure portal or `az … server parameter set`)");
-        }
-        Some("Google Cloud SQL") => {
-            return managed(
-                "the instance's database flags (Cloud SQL console or `gcloud sql instances patch --database-flags`)",
-            );
-        }
-        _ => {}
+    // A managed service changes server settings in its own control, not with SQL (`Platform::settings_control`).
+    if let Some(control) = server.platform().and_then(|p| p.settings_control()) {
+        return SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
     }
     let quoted =
         |v: &str| if v.chars().all(|c| c.is_ascii_digit() || c == '.') { v.to_string() } else { format!("'{v}'") };

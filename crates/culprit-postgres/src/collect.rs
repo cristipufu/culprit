@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use culprit_core::{
     Capability, ColumnInfo, ConnectionSpec, Coverage, Engine, ForeignKey, IndexStat, MissingCapability, PlanKind,
-    QueryFamily, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
+    Platform, QueryFamily, QueryStat, Result, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, SnapshotOptions, Spread,
     StatisticsInfo, TableStat, WaitStat, Workload,
 };
 use tokio_postgres::Client;
@@ -23,7 +23,7 @@ pub struct Probe {
     pub now: String,
     pub user: String,
     pub privileged: bool,
-    pub cloud: Option<String>,
+    pub platform: Option<Platform>,
     pub statements: StatementsAccess,
     /// The server already loads pg_stat_statements (shared_preload_libraries), so it has been recording all along and
     /// only the extension's view is missing.
@@ -127,7 +127,8 @@ impl Probe {
             product: self.product(),
             version: self.version.clone(),
             edition: None,
-            cloud: self.cloud.clone(),
+            cloud: self.platform.map(|p| p.label(Engine::Postgres).to_string()),
+            platform: self.platform,
             database: self.database.clone(),
             database_size_bytes: self.size_bytes,
             started_at: self.started_at.clone(),
@@ -149,12 +150,9 @@ impl Probe {
                  needed and the statistics it has been recording since the last restart appear right away."
             );
         }
-        match self.cloud.as_deref() {
-            Some("Amazon RDS" | "Amazon Aurora") => "Add pg_stat_statements to shared_preload_libraries in the DB parameter group, reboot, then run CREATE EXTENSION pg_stat_statements; in this database.".into(),
-            Some("Azure Database for PostgreSQL") => "Add PG_STAT_STATEMENTS to shared_preload_libraries and azure.extensions in the server parameters, restart, then run CREATE EXTENSION pg_stat_statements; in this database.".into(),
-            Some("Google Cloud SQL") => "Run CREATE EXTENSION pg_stat_statements; in this database (Cloud SQL preloads it).".into(),
-            _ => PG_STAT_STATEMENTS_FIX.into(),
-        }
+        self.platform
+            .and_then(|p| p.preload_library("pg_stat_statements"))
+            .unwrap_or_else(|| PG_STAT_STATEMENTS_FIX.into())
     }
 }
 
@@ -187,7 +185,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
     );
     let row = query_one(client, &sql).await?.ok_or_else(|| culprit_core::Error::internal("Probe returned nothing"))?;
     let version_num = row.number("version_num").unwrap_or(0.0) as u32;
-    let cloud = detect_cloud(&row.string("cloud_settings"), row.flag("aurora"), spec_host);
+    let platform = detect_platform(&row.string("cloud_settings"), row.flag("aurora"), spec_host);
     let mut probe = Probe {
         version_num,
         version: row.string("version"),
@@ -197,7 +195,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
         now: row.string("now"),
         user: row.string("username"),
         privileged: row.flag("privileged"),
-        cloud,
+        platform,
         statements: StatementsAccess::NotInstalled,
         preloaded: row.flag("preloaded"),
         can_create_extension: row.flag("can_create_extension"),
@@ -230,27 +228,28 @@ async fn statements_access(client: &Client, schema: &str, version_num: u32) -> S
     StatementsAccess::Usable { relation, info }
 }
 
-fn detect_cloud(settings: &str, aurora: bool, host: &str) -> Option<String> {
+/// The managed service from what the server says about itself (its settings' prefixes, Aurora's own function), else
+/// from the host name.
+fn detect_platform(settings: &str, aurora: bool, host: &str) -> Option<Platform> {
     let host = host.to_ascii_lowercase();
     let has = |prefix: &str| settings.split(',').any(|s| s == prefix);
-    let name = if aurora {
-        "Amazon Aurora"
+    Some(if aurora {
+        Platform::AmazonAurora
     } else if has("rds") || host.ends_with(".rds.amazonaws.com") {
-        "Amazon RDS"
+        Platform::AmazonRds
     } else if has("azure") || host.ends_with(".postgres.database.azure.com") {
-        "Azure Database for PostgreSQL"
+        Platform::AzureDatabase
     } else if has("alloydb") {
-        "Google AlloyDB"
+        Platform::GoogleAlloyDb
     } else if has("cloudsql") {
-        "Google Cloud SQL"
+        Platform::GoogleCloudSql
     } else if has("neon") || host.ends_with(".neon.tech") {
-        "Neon"
+        Platform::Neon
     } else if host.contains("supabase.co") || host.contains("supabase.com") {
-        "Supabase"
+        Platform::Supabase
     } else {
         return None;
-    };
-    Some(name.to_string())
+    })
 }
 
 pub fn quote_ident(name: &str) -> String {
@@ -1397,12 +1396,11 @@ mod tests {
 
     #[test]
     fn cloud_detection() {
-        assert_eq!(detect_cloud("rds", false, "x").as_deref(), Some("Amazon RDS"));
-        assert_eq!(detect_cloud("", true, "x").as_deref(), Some("Amazon Aurora"));
-        assert_eq!(
-            detect_cloud("", false, "a.postgres.database.azure.com").as_deref(),
-            Some("Azure Database for PostgreSQL")
-        );
-        assert_eq!(detect_cloud("", false, "localhost"), None);
+        assert_eq!(detect_platform("rds", false, "x"), Some(Platform::AmazonRds));
+        assert_eq!(detect_platform("", true, "x"), Some(Platform::AmazonAurora));
+        assert_eq!(detect_platform("", false, "a.postgres.database.azure.com"), Some(Platform::AzureDatabase));
+        assert_eq!(detect_platform("alloydb", false, "10.0.0.5"), Some(Platform::GoogleAlloyDb));
+        assert_eq!(detect_platform("", false, "ep-cool-1.eu-central-1.aws.neon.tech"), Some(Platform::Neon));
+        assert_eq!(detect_platform("", false, "localhost"), None);
     }
 }

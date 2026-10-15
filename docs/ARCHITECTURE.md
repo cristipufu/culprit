@@ -64,6 +64,15 @@ Rules every source follows:
 - **The plan that runs now.** A plan describes the database when it was captured. Query Store keeps a plan's first XML,
   so a plan older than its table is marked in the prepare stage.
 
+### Platforms: where a database runs
+
+A managed service changes how Culprit reads and advises (no superuser, settings in a parameter group, the cloud's own
+metrics). It is one type, `culprit_core::Platform`, detected once by the provider that can see it and recorded on
+`ServerInfo::platform` (older reports carry only the `cloud` label, which `ServerInfo::platform()` reads back). Checks and
+the engine ask it (`settings_control`, `preload_library`, `metrics`, `is_azure_sql_database`); nothing matches on
+platform names. A new platform is a variant in `crates/culprit-core/src/platform.rs` with its answers there, and its
+detection in the provider.
+
 ## 2. The snapshot
 
 `culprit_core::Snapshot` is the normalized model: the workload (statements, their runs and time, plans, trends), tables,

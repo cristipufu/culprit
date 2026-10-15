@@ -100,7 +100,7 @@ fn waits_capture_note(snapshot: &Snapshot) -> String {
     const TOTALS: &str = "These are server totals since startup and can't be tied to queries.";
     let state = snapshot.setting("query_store_options.actual_state_desc").map(|s| s.value.to_ascii_uppercase());
     let on = state.as_deref().is_some_and(|s| s == "READ_WRITE" || s == "READ_ONLY");
-    let azure = snapshot.server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure SQL"));
+    let azure = snapshot.server.platform().is_some_and(|p| p.is_azure_sql());
     let major: u32 = snapshot.server.version.split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
     if !azure && major > 0 && major < 14 {
         return format!(

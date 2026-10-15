@@ -323,7 +323,7 @@ pub(crate) const PLAN_MOST_CALLS_USE: &str = "Plan most calls use";
 pub(crate) fn mssql_fix(snapshot: &Snapshot, q: &QueryStat, fast: Option<&PlanVariant>) -> Fix {
     let numeric = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit());
     let server = &snapshot.server;
-    let azure = server.cloud.as_deref().is_some_and(|c| c.starts_with("Azure SQL"));
+    let azure = server.platform().is_some_and(|p| p.is_azure_sql());
     let sql2022 = azure || culprit_core::version_at_least(&server.version, [16, 0, 0]);
     let compat = snapshot.setting("compatibility_level").and_then(|s| s.value.trim().parse::<u32>().ok());
     let psp_on = snapshot
