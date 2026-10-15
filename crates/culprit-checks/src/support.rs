@@ -255,6 +255,7 @@ fn index_sql(
     let online = if supports_online_index(snapshot) { culprit_core::Online::Yes } else { culprit_core::Online::No };
     dialect.create_index(&culprit_core::NewIndex {
         target: &dialect.qualified(&[schema, table]),
+        unique: false,
         name: &name,
         keys,
         include,
@@ -1034,6 +1035,14 @@ pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str
     let quoted =
         |v: &str| if v.chars().all(|c| c.is_ascii_digit() || c == '.') { v.to_string() } else { format!("'{v}'") };
     match server.engine {
+        // A pragma that lives in the file (journal_mode = WAL) is set once; one that lives in the connection
+        // (synchronous, cache_size) has to be set by the application each time it opens the file.
+        Engine::Sqlite => SettingChange {
+            how: format!(
+                "Set {name} to {value} with PRAGMA. If it is a per-connection pragma, the application has to set it each time it opens the file."
+            ),
+            sql: Some(format!("PRAGMA {name} = {value};")),
+        },
         Engine::Postgres => SettingChange {
             how: format!(
                 "Set {name} to {value} and reload the configuration (settings marked as needing a restart take effect after one)."

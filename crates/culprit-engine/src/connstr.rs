@@ -8,6 +8,12 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
         return Err(Error::invalid("Paste a connection string or a host name"));
     }
     let lower = input.to_ascii_lowercase();
+    if let Some(rest) = strip_any(&lower, input, &["sqlite://", "sqlite:"]) {
+        return sqlite(rest);
+    }
+    if is_sqlite_path(&lower) {
+        return sqlite(input);
+    }
     if let Some(rest) = strip_any(&lower, input, &["jdbc:sqlserver://"]) {
         return parse_jdbc_sqlserver(rest);
     }
@@ -30,6 +36,30 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
         return parse_libpq(input);
     }
     parse_bare(input)
+}
+
+/// A SQLite file: `sqlite:///abs/app.db`, `sqlite:app.db`, or a path ending in `.db`, `.sqlite` or `.sqlite3`. No host,
+/// no sign-in: the path is the database.
+fn sqlite(path: &str) -> Result<ConnectionSpec> {
+    let path = path.split('?').next().unwrap_or(path).trim();
+    if path.is_empty() {
+        return Err(Error::invalid("A SQLite connection needs the database file's path"));
+    }
+    Ok(ConnectionSpec {
+        engine: Some(Engine::Sqlite),
+        database: Some(path.to_string()),
+        auth: AuthKind::None,
+        ..Default::default()
+    })
+}
+
+fn is_sqlite_path(lower: &str) -> bool {
+    let looks_like_path = lower.starts_with('/')
+        || lower.starts_with("./")
+        || lower.starts_with("../")
+        || lower.starts_with("~/")
+        || !lower.contains("://");
+    looks_like_path && [".db", ".sqlite", ".sqlite3", ".db3"].iter().any(|ext| lower.ends_with(ext))
 }
 
 fn strip_any<'a>(lower: &str, input: &'a str, prefixes: &[&str]) -> Option<&'a str> {
@@ -253,6 +283,9 @@ fn is_azure_sql(host: &str) -> bool {
 
 /// A display form with no secrets, used in lists and error messages.
 pub fn describe(spec: &ConnectionSpec) -> String {
+    if spec.engine == Some(Engine::Sqlite) {
+        return spec.database.clone().unwrap_or_default();
+    }
     let mut out = String::new();
     if let Some(user) = &spec.user {
         out.push_str(user);
@@ -273,6 +306,17 @@ pub fn describe(spec: &ConnectionSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_files() {
+        let s = parse("sqlite:///Users/me/app.db").unwrap();
+        assert_eq!((s.engine, s.database.as_deref()), (Some(Engine::Sqlite), Some("/Users/me/app.db")));
+        assert_eq!(parse("./data/app.sqlite3").unwrap().engine, Some(Engine::Sqlite));
+        assert_eq!(parse("~/shop.db").unwrap().database.as_deref(), Some("~/shop.db"));
+        assert_eq!(describe(&parse("sqlite:app.db").unwrap()), "app.db");
+        // A host that happens to end in .db is still a host when it has a port or a scheme.
+        assert_ne!(parse("postgres://reports.db:5432/x").unwrap().engine, Some(Engine::Sqlite));
+    }
 
     #[test]
     fn postgres_url() {

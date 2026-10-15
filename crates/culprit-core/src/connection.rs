@@ -45,6 +45,8 @@ pub struct ConnectionSpec {
 pub fn entra_host_allowed(engine: Engine, host: &str) -> bool {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     let suffixes: &[&str] = match engine {
+        // A file: no server to sign in to.
+        Engine::Sqlite => &[],
         Engine::Mssql => &[
             ".database.windows.net",
             ".database.usgovcloudapi.net",

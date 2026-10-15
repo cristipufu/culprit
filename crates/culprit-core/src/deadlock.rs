@@ -378,6 +378,7 @@ pub fn classify(engine: Engine, deadlock: &mut Deadlock) {
                     Engine::Mssql => "error 1205",
                     Engine::Postgres => "SQLSTATE 40P01",
                     Engine::Mysql => "error 1213",
+                    Engine::Sqlite => "SQLITE_BUSY",
                 }
             ),
             sql: None,

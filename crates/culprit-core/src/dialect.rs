@@ -15,9 +15,11 @@ pub enum Online {
     Unknown,
 }
 
-/// An index to suggest. `target` is the table, already qualified with [`Dialect::qualified`]; `name` is used as given.
+/// An index to suggest. `target` is the table, already qualified with [`Dialect::qualified`]; `name` is used as given;
+/// a key ending in " DESC" is descending, as `IndexStat::columns` writes it.
 pub struct NewIndex<'a> {
     pub target: &'a str,
+    pub unique: bool,
     pub name: &'a str,
     pub keys: &'a [String],
     pub include: &'a [String],
@@ -55,6 +57,7 @@ impl Engine {
             Engine::Mssql => &Mssql,
             Engine::Postgres => &Postgres,
             Engine::Mysql => &Mysql,
+            Engine::Sqlite => &Sqlite,
         }
     }
 }
@@ -65,12 +68,25 @@ fn included(d: &dyn Dialect, index: &NewIndex) -> Vec<String> {
 }
 
 fn keys(d: &dyn Dialect, index: &NewIndex) -> String {
-    index.keys.iter().map(|k| d.quote(k)).collect::<Vec<_>>().join(", ")
+    index
+        .keys
+        .iter()
+        .map(|k| {
+            let name = crate::model::strip_direction(k);
+            if name.len() == k.len() { d.quote(name) } else { format!("{} DESC", d.quote(name)) }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unique(index: &NewIndex) -> &'static str {
+    if index.unique { "UNIQUE " } else { "" }
 }
 
 struct Mssql;
 struct Postgres;
 struct Mysql;
+struct Sqlite;
 
 impl Dialect for Mssql {
     fn quote(&self, ident: &str) -> String {
@@ -79,7 +95,8 @@ impl Dialect for Mssql {
 
     fn create_index(&self, index: &NewIndex) -> String {
         let mut sql = format!(
-            "CREATE NONCLUSTERED INDEX {}\n    ON {} ({})",
+            "CREATE {}NONCLUSTERED INDEX {}\n    ON {} ({})",
+            unique(index),
             self.quote(index.name),
             index.target,
             keys(self, index)
@@ -123,7 +140,8 @@ impl Dialect for Postgres {
 
     fn create_index(&self, index: &NewIndex) -> String {
         let mut sql = format!(
-            "CREATE INDEX CONCURRENTLY {}\n    ON {} ({})",
+            "CREATE {}INDEX CONCURRENTLY {}\n    ON {} ({})",
+            unique(index),
             self.quote(index.name),
             index.target,
             keys(self, index)
@@ -161,7 +179,8 @@ impl Dialect for Mysql {
         // InnoDB has no INCLUDE: secondary indexes already carry the primary key, so extra columns would have to become
         // keys. No partial indexes either.
         format!(
-            "CREATE INDEX {}\n    ON {} ({})\n    ALGORITHM=INPLACE LOCK=NONE;",
+            "CREATE {}INDEX {}\n    ON {} ({})\n    ALGORITHM=INPLACE LOCK=NONE;",
+            unique(index),
             self.quote(index.name),
             index.target,
             keys(self, index)
@@ -186,6 +205,41 @@ impl Dialect for Mysql {
     }
 }
 
+impl Dialect for Sqlite {
+    fn quote(&self, ident: &str) -> String {
+        format!("\"{}\"", ident.replace('"', "\"\""))
+    }
+
+    fn create_index(&self, index: &NewIndex) -> String {
+        // No INCLUDE and no online build: SQLite builds an index under the database's write lock, so writers wait.
+        let mut sql = format!(
+            "CREATE {}INDEX IF NOT EXISTS {}\n    ON {} ({})",
+            unique(index),
+            self.quote(index.name),
+            index.target,
+            keys(self, index)
+        );
+        if let Some(filter) = index.filter {
+            sql.push_str(&format!("\n    WHERE {filter}"));
+        }
+        sql.push_str(";\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.");
+        sql
+    }
+
+    fn drop_index(&self, schema: &str, _table: &str, index: &str) -> String {
+        format!("DROP INDEX IF EXISTS {};", self.qualified(&[schema, index]))
+    }
+
+    fn refresh_statistics(&self, target: &str) -> String {
+        format!("ANALYZE {target};")
+    }
+
+    fn end_session(&self, _session: &str) -> String {
+        "-- SQLite has no sessions to end: the application that holds the write lock has to finish its transaction."
+            .into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +259,7 @@ mod tests {
         let include = vec!["total".to_string(), "customer_id".to_string()];
         let index = |online| NewIndex {
             target: "x",
+            unique: false,
             name: "ix_t_customer_id",
             keys: &keys,
             include: &include,

@@ -1,6 +1,6 @@
 # Oracle provider: design
 
-Status: proposal, for review before any code. Nothing here ships until the decisions at the end are made.
+Status: decided (see the end); in progress.
 
 ## Why, and what it can see for free
 
@@ -55,11 +55,12 @@ to the PDB (a snapshot describes one database).
 - **Demo database.** `dev/oracle`, Oracle Database Free in Docker (`gvenzl/oracle-free`), with planted problems like the
   other demos: a missing index, a stale table, a plan change, an unused index.
 
-## Decisions for you
+## Decisions (2026-10-15)
 
-1. **Driver.** Rust's mature driver (`oracle`, on Oracle's ODPI-C) needs Oracle Instant Client at runtime. Either users
-   install it (Culprit says how when it's missing), or the release bundles it, if Oracle's Instant Client terms allow
-   redistribution for this use (to be confirmed before choosing).
-2. **Default.** Build the provider into releases from the start, marked preview, or keep it behind the cargo feature
-   until it reaches the other engines' quality.
-3. **Licensing switch.** Ship without any pack use at first (recommended), adding the opt-in AWR/ASH sources later.
+1. **Driver:** users install Oracle Instant Client. The provider loads it at runtime (the `oracle` crate, ODPI-C
+   compiled in), so builds and every non-Oracle connection are unaffected; when it's missing, connecting says what to
+   install and where Culprit looks (`CULPRIT_ORACLE_CLIENT`, then the platform's usual library paths).
+2. **Shipping:** in releases from the first working version, marked preview, with the checks that have been verified
+   against Oracle's numbers only.
+3. **Licensing:** free views only. No AWR, ASH or Tuning Pack object is read, and the test that lists every statement
+   the provider sends enforces it.

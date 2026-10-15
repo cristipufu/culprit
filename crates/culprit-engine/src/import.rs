@@ -640,6 +640,7 @@ fn target_key(engine: Engine, host: &str, port: Option<u16>, db: Option<&str>, u
         Engine::Mssql => 1433,
         Engine::Postgres => 5432,
         Engine::Mysql => 3306,
+        Engine::Sqlite => 0,
     });
     format!(
         "{engine:?}|{}|{port}|{}|{}",

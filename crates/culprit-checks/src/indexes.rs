@@ -958,6 +958,11 @@ fn bring_back(snapshot: &Snapshot, existing: &IndexStat, wanted: &[String]) -> F
             format!("ALTER TABLE {target} ALTER INDEX {name} VISIBLE;"),
             "it is invisible to the optimizer. Making it visible again is instant",
         ),
+        // SQLite has no disabled or invisible indexes: rebuilding is all there is.
+        Engine::Sqlite => (
+            format!("REINDEX {};", qualified(engine, &existing.schema, &existing.name)),
+            "rebuilding it is all SQLite offers",
+        ),
     };
     let mut summary = format!(
         "{} has these keys, but {how}; if it was set aside because nothing read it, the queries below now would.",
@@ -1130,6 +1135,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                         qualified(engine, &i.schema, &i.table)
                     ),
                     Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+                    Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
                     Engine::Mysql => crate::index_health::hide_index_sql(&snapshot.server, i),
                 })
                 .collect::<Vec<_>>()
@@ -1141,6 +1147,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                     Engine::Mysql if snapshot.server.name() == "MariaDB" && crate::index_health::mariadb_can_ignore(&snapshot.server) => "Have the optimizer ignore it first: it stays maintained, and `ALTER INDEX … NOT IGNORED` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
                     Engine::Mysql if snapshot.server.name() == "MariaDB" => "Save its definition, then drop it: this MariaDB version can't hide an index (ignored indexes arrived in 10.6).".into(),
                     Engine::Mysql if !culprit_core::version_at_least(&snapshot.server.version, [8, 0, 0]) => "Save its definition, then drop it: MySQL 5.7 can't hide an index (invisible indexes arrived in 8.0).".into(),
+                    Engine::Sqlite => "Drop it: SQLite can't hide an index first, so keep its CREATE INDEX statement to put it back if a query slows down.".into(),
                     Engine::Mysql => "Make it invisible first: the optimizer stops using it but it stays maintained, and `ALTER INDEX … VISIBLE` brings it back instantly. Drop it after a full business cycle without complaints.".into(),
                 },
                 sql: Some(sql),
@@ -1232,7 +1239,7 @@ pub fn duplicate_index_info() -> CheckInfo {
         id: "duplicate-index".into(),
         title: "Duplicate and redundant indexes".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
         requires: vec![Capability::TableStats],
         description: "Indexes with the same keys as another index, or whose keys are a leading part of a wider one."
             .into(),
@@ -1346,7 +1353,7 @@ pub fn unindexed_fk_info() -> CheckInfo {
         id: "unindexed-fk".into(),
         title: "Foreign keys without an index".into(),
         category: Category::Indexes,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
         requires: vec![Capability::TableStats],
         description: "Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.".into(),
     }
@@ -1485,7 +1492,16 @@ fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, rows
         .filter(|q| !crate::query_is_history(snapshot, q))
         .collect();
     let quiet_parent = parent_never_deletes(snapshot, fk);
-    f.severity = if rows >= 1_000_000.0 && quiet_parent.is_none() { Severity::Medium } else { Severity::Low };
+    // SQLite checks foreign keys only on connections that turn PRAGMA foreign_keys on, which Culprit can't see.
+    let sqlite = snapshot.server.engine == Engine::Sqlite;
+    f.severity =
+        if rows >= 1_000_000.0 && quiet_parent.is_none() && !sqlite { Severity::Medium } else { Severity::Low };
+    if sqlite {
+        f.caveats.push(
+            "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
+                .into(),
+        );
+    }
     f.impact.score = base_score(f.severity) + (rows.log10() - 4.0).max(0.0) * 2.0;
     f.impact.label = format!("{} rows unindexed", format::count(rows));
     f.confidence = if quiet_parent.is_some() { Confidence::Low } else { Confidence::High };

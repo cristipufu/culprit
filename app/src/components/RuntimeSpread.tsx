@@ -109,6 +109,8 @@ function coverage(engine: Engine, hasHistogram: boolean, product?: string, sourc
         : name === "MariaDB"
           ? "MariaDB keeps no run-time histogram per statement; the lane shows fastest, average and slowest. The slow query log table adds every run."
           : "This MySQL keeps no run-time histogram (8.0.19+ does); the lane shows fastest, average and slowest.";
+    case "sqlite":
+      return "SQLite keeps no run times; these come from the query log Culprit read, one entry per logged run.";
   }
 }
 

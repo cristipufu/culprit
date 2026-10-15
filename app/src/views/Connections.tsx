@@ -20,7 +20,7 @@ import { serverName } from "../lib/engines";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
-const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
+const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite" };
 
 const AUTH_LABEL: Partial<Record<AuthKind, string>> = { entra: "Entra ID", "aws-iam": "AWS IAM" };
 
@@ -731,7 +731,7 @@ function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; canCance
           autoFocus
           value={input}
           spellCheck={false}
-          placeholder="postgres://…  ·  Server=…;Database=…  ·  host:port/db"
+          placeholder="postgres://…  ·  Server=…;Database=…  ·  host:port/db  ·  ~/app.db"
           onChange={(e) => setInput(e.target.value)}
         />
       </label>

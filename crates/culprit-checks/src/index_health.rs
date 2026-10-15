@@ -173,6 +173,7 @@ pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
             format!("ALTER INDEX {} ON {} DISABLE;", quote(engine, &i.name), qualified(engine, &i.schema, &i.table))
         }
         Engine::Postgres => drop_index_sql(engine, &i.schema, &i.table, &i.name),
+        Engine::Sqlite => drop_index_sql(engine, &i.schema, &i.table, &i.name),
         // Invisible indexes arrived in MySQL 8.0; 5.7 can only drop (keep the definition).
         Engine::Mysql if !culprit_core::version_at_least(&server.version, [8, 0, 0]) => {
             drop_index_sql(engine, &i.schema, &i.table, &i.name)
@@ -277,7 +278,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
                 secondary.len(),
                 how_many(snapshot, writes_total * secondary.len() as f64, days, "index entry", "index entries")
             ),
-            Engine::Mysql => format!(
+            Engine::Mysql | Engine::Sqlite => format!(
                 "Every insert into {table_name} updates all {} secondary indexes, and every update touching their columns \
                  updates them too: up to {}.",
                 secondary.len(),

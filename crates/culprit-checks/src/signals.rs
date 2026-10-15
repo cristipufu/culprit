@@ -25,6 +25,7 @@ fn engine_name(snapshot: &Snapshot) -> &'static str {
         Engine::Mysql => "MySQL",
         Engine::Postgres => "PostgreSQL",
         Engine::Mssql => "SQL Server",
+        Engine::Sqlite => "SQLite",
     }
 }
 
@@ -1009,7 +1010,7 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             let cache_note = match snapshot.server.engine {
                 Engine::Postgres => " PostgreSQL's numbers include reads the operating system served from its cache, so reads that reached the disk were slower still.",
                 Engine::Mysql => " The timings include reads the operating system served from its cache unless InnoDB uses O_DIRECT.",
-                Engine::Mssql => "",
+                Engine::Mssql | Engine::Sqlite => "",
             };
             // The label starts with a database name: never capitalize it, lead with the operation instead.
             f.summary = format!(
@@ -1106,6 +1107,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         format!("The server accepts {} new connections a second: use a pool", format::count(rate))
     };
     let detail = match engine {
+        Engine::Sqlite => "SQLite has no connections to pool: each one opens the file.".to_string(),
         Engine::Postgres => {
             let length = p.signal("session-length").map(|s| s.value);
             format!(
@@ -1128,6 +1130,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         },
     };
     let scope = match engine {
+        Engine::Sqlite => "",
         Engine::Postgres => " to this database",
         Engine::Mssql => ", counting every database on the instance",
         Engine::Mysql => ", counting every schema and application on it (failed attempts left out)",
@@ -1148,6 +1151,11 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let cache_change = (engine == Engine::Mysql && thread_cache.is_none_or(|n| n < THREAD_CACHE))
         .then(|| setting_change(&snapshot.server, "thread_cache_size", &format!("{THREAD_CACHE:.0}")));
     f.fix = Some(match engine {
+        Engine::Sqlite => Fix {
+            summary: "Keep one connection open per worker instead of opening the file for each request.".into(),
+            sql: None,
+            cost: None,
+        },
         Engine::Postgres => Fix {
             summary: "Pool connections in the application (every mainstream driver has a pool), or put PgBouncer in front in transaction mode so thousands of clients share a few dozen server connections.".into(),
             sql: None,
@@ -2166,7 +2174,7 @@ fn large_value_type(engine: Engine, data_type: &str) -> bool {
         Engine::Postgres => {
             matches!(t.as_str(), "text" | "bytea" | "json" | "jsonb" | "xml" | "varchar" | "character varying")
         }
-        Engine::Mysql => false,
+        Engine::Mysql | Engine::Sqlite => false,
     }
 }
 

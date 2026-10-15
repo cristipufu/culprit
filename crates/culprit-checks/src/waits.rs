@@ -89,7 +89,7 @@ pub fn explain(snapshot: &Snapshot) -> Option<WaitsReport> {
             notes.push(format!("{} counts waits since it started, only for enabled performance_schema instruments. Lock time is attributed to statements; the rest is a server-wide total.", snapshot.server.name()));
         }
         Engine::Mssql if scope == WaitScope::SinceStartup => notes.push(waits_capture_note(snapshot)),
-        Engine::Mssql => {}
+        Engine::Mssql | Engine::Sqlite => {}
     }
     Some(WaitsReport { engine, scope, source, total_ms, categories, notes })
 }
@@ -130,6 +130,7 @@ fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
     let uptime = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours).map(span);
     let attributed = app_queries(snapshot).any(|q| !q.waits.is_empty());
     match engine {
+        Engine::Sqlite => (WaitScope::SinceStartup, "SQLite keeps no waits".into()),
         Engine::Mssql if attributed => (WaitScope::Window, format!("Query Store, last {window}")),
         Engine::Mssql => (
             WaitScope::SinceStartup,
@@ -275,6 +276,7 @@ fn pending_grants(snapshot: &Snapshot) -> Option<String> {
 
 fn no_attribution(engine: Engine, name: &str, key: &str) -> String {
     match engine {
+        Engine::Sqlite => "SQLite keeps no waits.".into(),
         Engine::Mssql => "Query Store didn't record this wait for individual queries in the window.".into(),
         Engine::Postgres => match key {
             "io" => "No statement recorded disk-read time.".into(),
@@ -328,6 +330,7 @@ pub(crate) fn snapshot_with(engine: Engine) -> Snapshot {
         Engine::Mssql => include_str!("../../../fixtures/mssql-demo.json"),
         Engine::Postgres => include_str!("../../../fixtures/postgres-demo.json"),
         Engine::Mysql => include_str!("../../../fixtures/mysql-demo.json"),
+        Engine::Sqlite => panic!("no SQLite snapshot fixture for waits"),
     };
     let mut snapshot: Snapshot = serde_json::from_str(text).expect("fixture is a snapshot");
     if let Some(w) = snapshot.workload.as_mut() {

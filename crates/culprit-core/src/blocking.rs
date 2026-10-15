@@ -375,6 +375,7 @@ fn advice(engine: Engine, kind: HeadKind, head: &str, wait_type: Option<&str>) -
                 Engine::Mssql => "SET XACT_ABORT ON in the application makes an error roll the transaction back instead of leaving it open.",
                 Engine::Postgres => "Set idle_in_transaction_session_timeout so the server ends sessions that sit in a transaction.",
                 Engine::Mysql => "Keep transactions short; waiters give up after innodb_lock_wait_timeout (50 s by default).",
+                Engine::Sqlite => "Keep write transactions short: SQLite allows one writer at a time, and the others wait busy_timeout, then fail with SQLITE_BUSY.",
             };
             format!(
                 "The application opened a transaction and stopped sending statements: usually a missing COMMIT, an error path \

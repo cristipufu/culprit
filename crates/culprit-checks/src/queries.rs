@@ -745,6 +745,7 @@ fn plan_warning_finding(
                 summary: match snapshot.server.engine {
                     Engine::Mssql => "Update statistics on the tables involved; if the estimate is still far off, add an index that delivers rows in the needed order so the sort disappears.".into(),
                     Engine::Postgres => "Raise work_mem for this workload (per role or per session), or add an index that delivers rows in the needed order so the sort disappears.".into(),
+                    Engine::Sqlite => "Give the sort an index that returns rows in the order asked for; otherwise PRAGMA temp_store = MEMORY keeps temporary b-trees in memory, and a larger cache_size helps them fit.".into(),
                     Engine::Mysql => "Raise tmp_table_size and max_heap_table_size for this workload so the temporary table stays in memory, or add an index that returns rows already ordered or grouped.".into(),
                 },
                 sql: None,
@@ -1060,6 +1061,11 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 Engine::Mssql => crate::sensitivity::mssql_fix(snapshot, q, None),
                 Engine::Postgres => crate::sensitivity::postgres_fix(),
                 Engine::Mysql => crate::sensitivity::mysql_fix(0.0, snapshot.server.name() == "MariaDB"),
+                Engine::Sqlite => Fix {
+                    summary: "Compare a slow and a fast value with EXPLAIN QUERY PLAN. If some values match far more rows, an index that narrows them, or ANALYZE, lets SQLite choose better.".into(),
+                    sql: Some("ANALYZE;".into()),
+                    cost: None,
+                },
             });
             if snapshot.server.engine == Engine::Postgres {
                 let since = q
@@ -1091,7 +1097,7 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
         Engine::Postgres => {}
         Engine::Mysql => return mysql_disk_temp_tables(snapshot),
-        Engine::Mssql => return Vec::new(),
+        Engine::Mssql | Engine::Sqlite => return Vec::new(),
     }
     let Some(workload) = snapshot.workload.as_ref() else { return Vec::new() };
     let work_mem_text = snapshot.setting("work_mem").map(|s| s.value.clone());

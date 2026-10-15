@@ -1,0 +1,574 @@
+{
+  "format": 1,
+  "id": "20261015T120330.609Z",
+  "connection": "sqlite-demo",
+  "environment": "development",
+  "taken_at": "2026-10-15T12:03:30.609Z",
+  "duration_ms": 134.97383299999998,
+  "server": {
+    "engine": "sqlite",
+    "product": "SQLite",
+    "version": "3.53.2",
+    "edition": null,
+    "cloud": null,
+    "platform": null,
+    "database": "demo.db",
+    "database_size_bytes": 69595136.0,
+    "started_at": null,
+    "read_only_session": true,
+    "capabilities": [
+      "showplan"
+    ],
+    "missing": [
+      {
+        "capability": "statistics",
+        "reason": "The file has no planner statistics (sqlite_stat1): row counts are unknown and the planner guesses.",
+        "fix": "ANALYZE;"
+      },
+      {
+        "capability": "index-usage",
+        "reason": "SQLite keeps no record of which indexes queries use.",
+        "fix": null
+      },
+      {
+        "capability": "wait-stats",
+        "reason": "SQLite has no server, so nothing records waits.",
+        "fix": null
+      },
+      {
+        "capability": "sessions",
+        "reason": "SQLite has no server, so no sessions to list.",
+        "fix": null
+      }
+    ]
+  },
+  "workload": null,
+  "tables": [
+    {
+      "schema": "main",
+      "name": "customers",
+      "rows": null,
+      "total_bytes": 421888.0,
+      "data_bytes": 241664.0,
+      "index_bytes": 180224.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": null,
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "name": "import_staging",
+      "rows": null,
+      "total_bytes": 4096.0,
+      "data_bytes": 4096.0,
+      "index_bytes": 0.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": null,
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "name": "order_items",
+      "rows": null,
+      "total_bytes": 2813952.0,
+      "data_bytes": 2813952.0,
+      "index_bytes": 0.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": null,
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "name": "orders",
+      "rows": null,
+      "total_bytes": 17059840.0,
+      "data_bytes": 9760768.0,
+      "index_bytes": 7299072.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": null,
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "name": "products",
+      "rows": null,
+      "total_bytes": 20480.0,
+      "data_bytes": 20480.0,
+      "index_bytes": 0.0,
+      "has_primary_key": true,
+      "is_heap": null,
+      "seq_scans": null,
+      "seq_rows_read": null,
+      "index_scans": null,
+      "inserts": null,
+      "updates": null,
+      "deletes": null,
+      "dead_rows": null,
+      "modifications_since_analyze": null,
+      "last_vacuum": null,
+      "last_analyze": null,
+      "forwarded_records": null,
+      "xid_age": null,
+      "forwarded_fetches": null,
+      "storage": null,
+      "in_row_bytes": null,
+      "lob_bytes": null,
+      "overflow_bytes": null,
+      "partition_of": null,
+      "counters_since": null
+    }
+  ],
+  "indexes": [
+    {
+      "schema": "main",
+      "table": "customers",
+      "name": "sqlite_autoindex_customers_1",
+      "kind": "BTREE",
+      "columns": [
+        "email"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": true,
+      "is_primary_key": false,
+      "is_clustered": false,
+      "is_disabled": false,
+      "size_bytes": 180224.0,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": null,
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "table": "order_items",
+      "name": "sqlite_autoindex_order_items_1",
+      "kind": "BTREE",
+      "columns": [
+        "order_id",
+        "product_id"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": true,
+      "is_primary_key": true,
+      "is_clustered": true,
+      "is_disabled": false,
+      "size_bytes": null,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": null,
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "ix_orders_status_again",
+      "kind": "BTREE",
+      "columns": [
+        "status"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": false,
+      "is_primary_key": false,
+      "is_clustered": false,
+      "is_disabled": false,
+      "size_bytes": 3649536.0,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": "CREATE INDEX ix_orders_status_again ON orders (status)",
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": null,
+      "counters_since": null
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "ix_orders_status",
+      "kind": "BTREE",
+      "columns": [
+        "status"
+      ],
+      "include": [],
+      "filter": null,
+      "is_unique": false,
+      "is_primary_key": false,
+      "is_clustered": false,
+      "is_disabled": false,
+      "size_bytes": 3649536.0,
+      "reads": null,
+      "writes": null,
+      "seeks": null,
+      "scans": null,
+      "lookups": null,
+      "last_read": null,
+      "definition": "CREATE INDEX ix_orders_status ON orders (status)",
+      "contention": null,
+      "created_at_latest": null,
+      "partition_of": null,
+      "opclasses": null,
+      "counters_since": null
+    }
+  ],
+  "columns": [
+    {
+      "schema": "main",
+      "table": "customers",
+      "name": "id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "main",
+      "table": "customers",
+      "name": "email",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "main",
+      "table": "customers",
+      "name": "region",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "main",
+      "table": "customers",
+      "name": "created_at",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "main",
+      "table": "import_staging",
+      "name": "id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "main",
+      "table": "import_staging",
+      "name": "payload",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "main",
+      "table": "order_items",
+      "name": "order_id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "main",
+      "table": "order_items",
+      "name": "product_id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "main",
+      "table": "order_items",
+      "name": "quantity",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "customer_id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "status",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "total",
+      "data_type": "REAL",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 4
+    },
+    {
+      "schema": "main",
+      "table": "orders",
+      "name": "created_at",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 5
+    },
+    {
+      "schema": "main",
+      "table": "products",
+      "name": "id",
+      "data_type": "INTEGER",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 1
+    },
+    {
+      "schema": "main",
+      "table": "products",
+      "name": "name",
+      "data_type": "TEXT",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 2
+    },
+    {
+      "schema": "main",
+      "table": "products",
+      "name": "price",
+      "data_type": "REAL",
+      "nullable": false,
+      "default": null,
+      "generated": false,
+      "ordinal": 3
+    }
+  ],
+  "foreign_keys": [
+    {
+      "name": "order_items_fk_0",
+      "schema": "main",
+      "table": "order_items",
+      "columns": [
+        "product_id"
+      ],
+      "ref_schema": "main",
+      "ref_table": "products",
+      "ref_columns": [
+        "id"
+      ]
+    },
+    {
+      "name": "order_items_fk_1",
+      "schema": "main",
+      "table": "order_items",
+      "columns": [
+        "order_id"
+      ],
+      "ref_schema": "main",
+      "ref_table": "orders",
+      "ref_columns": [
+        "id"
+      ]
+    },
+    {
+      "name": "orders_fk_0",
+      "schema": "main",
+      "table": "orders",
+      "columns": [
+        "customer_id"
+      ],
+      "ref_schema": "main",
+      "ref_table": "customers",
+      "ref_columns": [
+        "id"
+      ]
+    }
+  ],
+  "missing_indexes": [],
+  "statistics": [],
+  "waits": [],
+  "resources": [],
+  "settings": [
+    {
+      "name": "journal_mode",
+      "value": "delete",
+      "default_value": null,
+      "scope": "file"
+    },
+    {
+      "name": "auto_vacuum",
+      "value": "0",
+      "default_value": null,
+      "scope": "file"
+    },
+    {
+      "name": "page_size",
+      "value": "4096",
+      "default_value": null,
+      "scope": "file"
+    },
+    {
+      "name": "page_count",
+      "value": "16991",
+      "default_value": null,
+      "scope": "file"
+    },
+    {
+      "name": "freelist_count",
+      "value": "12029",
+      "default_value": null,
+      "scope": "file"
+    },
+    {
+      "name": "encoding",
+      "value": "UTF-8",
+      "default_value": null,
+      "scope": "file"
+    }
+  ],
+  "notes": [],
+  "pressure": null,
+  "options": null,
+  "query_families": [],
+  "plan_cache": null,
+  "tuning": null,
+  "deadlocks": null,
+  "constraints": [],
+  "histograms": null,
+  "escalations_before": null,
+  "sizes_before": null
+}

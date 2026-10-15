@@ -577,5 +577,39 @@
       }
     ],
     "taken_at": "2026-10-11T16:05:40Z"
+  },
+  "sqlite-demo": {
+    "candidates": [],
+    "cleanups": [
+      {
+        "caveats": [],
+        "finding_id": null,
+        "index": "ix_orders_status_again",
+        "keys": [
+          "status"
+        ],
+        "kind": "duplicate",
+        "other": "ix_orders_status",
+        "other_keys": [
+          "status"
+        ],
+        "reads": null,
+        "reason": "Same keys as ix_orders_status: the same index twice, both maintained on every write.",
+        "schema": "main",
+        "size_bytes": 3649536.0,
+        "sql": "DROP INDEX IF EXISTS \"main\".\"ix_orders_status_again\";",
+        "table": "orders",
+        "writes": null
+      }
+    ],
+    "connection": "sqlite-demo",
+    "counters": "since the server last restarted",
+    "engine": "sqlite",
+    "notes": [
+      "Index usage counters aren't readable, so unused and overlapping indexes can't be judged.",
+      "No plans were captured, so plan-based candidates are missing."
+    ],
+    "tables": [],
+    "taken_at": "2026-10-15T12:03:30.609Z"
   }
 }

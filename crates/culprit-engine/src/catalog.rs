@@ -54,6 +54,12 @@ pub(crate) fn columns_sql(engine: Engine) -> &'static str {
               WHERE c.TABLE_SCHEMA = DATABASE()
               ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION"
         }
+        Engine::Sqlite => {
+            "SELECT 'main', m.name, CASE m.type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END, p.name, p.type
+               FROM sqlite_schema m JOIN pragma_table_info(m.name) p
+              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+              ORDER BY m.name, p.cid"
+        }
     }
 }
 
@@ -61,6 +67,7 @@ pub(crate) fn databases_sql(engine: Engine) -> &'static str {
     match engine {
         Engine::Mssql => "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name",
         Engine::Postgres => "SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY datname",
+        Engine::Sqlite => "SELECT name FROM pragma_database_list ORDER BY seq",
         Engine::Mysql => {
             "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
               WHERE SCHEMA_NAME NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema') ORDER BY SCHEMA_NAME"

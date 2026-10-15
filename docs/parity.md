@@ -92,3 +92,20 @@ queries, doctor, and every MCP tool.
 | MariaDB without performance_schema | Wait timing | The dashboard reports the slow log's lock time against database time, not as "where time goes" |
 
 Not verified: MySQL 5.6 and earlier, MariaDB 10.4 and earlier, Percona Server, and MySQL 5.7 with performance_schema off.
+
+## SQLite
+
+SQLite is a file, not a server, so most rows above have nothing to read on it: no statement statistics, sessions,
+waits, deadlocks, replicas or server counters, and Culprit says so in the UI and CLI rather than showing zeros. What it
+reads, opening the file read-only (`docs/providers/sqlite.md`):
+
+| Feature | SQLite |
+|---|---|
+| Statement statistics | – SQLite keeps none |
+| Plans | ✓ `EXPLAIN QUERY PLAN` for any statement: scans, searches by index, temporary b-trees, automatic indexes (aliases resolved to tables). ◐ No rows, costs or timings |
+| Tables, columns, foreign keys | ✓ `sqlite_schema`, `pragma_table_xinfo`, `pragma_foreign_key_list` |
+| Indexes | ✓ `pragma_index_list` / `pragma_index_xinfo`, direction and partial filters. – No usage counters: "never read" is never claimed |
+| Row counts | ◐ from `sqlite_stat1` only (after `ANALYZE`); unknown without it, never counted |
+| Sizes | ✓ `dbstat` when the library has it |
+| Settings | ✓ the ones that live in the file (`journal_mode`, `auto_vacuum`, page and free-page counts) |
+

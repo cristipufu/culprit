@@ -26,6 +26,7 @@ mod queries;
 mod refine;
 mod sensitivity;
 mod signals;
+mod sqlite;
 mod summary;
 pub(crate) mod support;
 mod trends;

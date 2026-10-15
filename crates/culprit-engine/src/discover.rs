@@ -213,6 +213,7 @@ fn system_database(engine: Engine, name: &str) -> bool {
         Engine::Postgres => matches!(name.as_str(), "azure_maintenance" | "azure_sys" | "template0" | "template1"),
         Engine::Mysql => matches!(name.as_str(), "information_schema" | "mysql" | "performance_schema" | "sys"),
         Engine::Mssql => name == "master",
+        Engine::Sqlite => false,
     }
 }
 
@@ -221,7 +222,7 @@ fn flexible_server_url(id: &str, child: &str, engine: Engine) -> Option<String> 
     let provider = match engine {
         Engine::Postgres => "/providers/microsoft.dbforpostgresql/flexibleservers/",
         Engine::Mysql => "/providers/microsoft.dbformysql/flexibleservers/",
-        Engine::Mssql => return None,
+        Engine::Mssql | Engine::Sqlite => return None,
     };
     let version = if engine == Engine::Postgres { "2024-08-01" } else { "2023-12-30" };
     let plain = id.starts_with("/subscriptions/")
@@ -540,6 +541,7 @@ fn default_database(engine: Engine) -> &'static str {
         Engine::Postgres => "postgres",
         Engine::Mssql => "master",
         Engine::Mysql => "",
+        Engine::Sqlite => "main",
     }
 }
 

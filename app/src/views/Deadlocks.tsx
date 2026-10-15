@@ -47,6 +47,8 @@ function sourceLine(engine: Engine): string {
       return "Culprit reads InnoDB's latest deadlock report (SHOW ENGINE INNODB STATUS).";
     case "postgres":
       return "PostgreSQL counts deadlocks but keeps the details in the server log.";
+    case "sqlite":
+      return "SQLite has no deadlocks to record: a writer that can't get the lock waits busy_timeout, then gets SQLITE_BUSY in the application.";
   }
 }
 

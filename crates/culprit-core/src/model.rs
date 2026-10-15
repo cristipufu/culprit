@@ -16,6 +16,8 @@ pub enum Engine {
     Mssql,
     Postgres,
     Mysql,
+    /// A SQLite database file: no server, no statement statistics. Culprit reads its schema, settings and plans.
+    Sqlite,
 }
 
 impl Engine {
@@ -24,6 +26,7 @@ impl Engine {
             Engine::Mssql => "SQL Server",
             Engine::Postgres => "PostgreSQL",
             Engine::Mysql => "MySQL",
+            Engine::Sqlite => "SQLite",
         }
     }
 }

@@ -146,6 +146,7 @@ pub fn family(server: &ServerInfo) -> &'static str {
         Engine::Mssql => "SQL Server",
         Engine::Postgres => "PostgreSQL",
         Engine::Mysql => "MySQL",
+        Engine::Sqlite => "SQLite",
     }
 }
 
@@ -659,6 +660,11 @@ fn is_off(value: Option<&str>) -> bool {
 fn waits_missing(s: &Snapshot) -> Tile {
     let family = family(&s.server);
     let mut tile = match s.server.engine {
+        Engine::Sqlite => Tile::new(
+            TileKey::Waits,
+            TileStatus::Unavailable,
+            "SQLite keeps no record of waits: it has no server, and a writer that has to wait gets SQLITE_BUSY in the application.",
+        ),
         Engine::Postgres => {
             let mut t = Tile::new(
                 TileKey::Waits,
@@ -759,7 +765,14 @@ fn health(s: &Snapshot) -> Tile {
         return t;
     };
     let mut signals: Vec<&Signal> = p.signals.iter().collect();
-    signals.sort_by_key(|s| std::cmp::Reverse(s.status));
+    // Worst first, then the healthy ones, then the ones shown without a verdict: an ungraded counter must never push a
+    // healthy signal out of the squares the tile shows.
+    signals.sort_by_key(|s| match s.status {
+        SignalStatus::Bad => 0,
+        SignalStatus::Watch => 1,
+        SignalStatus::Good => 2,
+        SignalStatus::Info => 3,
+    });
     let graded = signals.iter().filter(|s| s.status != SignalStatus::Info).count();
     let bad = signals.iter().filter(|s| s.status == SignalStatus::Bad).count();
     let watch = signals.iter().filter(|s| s.status == SignalStatus::Watch).count();
@@ -1048,7 +1061,15 @@ fn indexes(report: &Report) -> Tile {
     } else {
         "are worth a look".to_string()
     };
+    // New indexes come from what queries need: without query history, none can be suggested, which says nothing about
+    // whether any is needed.
+    let history = report.snapshot.workload.is_some();
     let takeaway = match (adds, cleanups) {
+        (0, 0) if !history => "No query history to suggest new indexes from, and nothing to clean up.".to_string(),
+        (0, c) if !history => format!(
+            "No query history to suggest new indexes from; {} can go{free}.",
+            plural(c, "existing index", "existing indexes")
+        ),
         (0, 0) => "No index changes stand out.".to_string(),
         (0, c) => format!("No new indexes needed; {} can go{free}.", plural(c, "existing index", "existing indexes")),
         (a, 0) => format!("{} {help}.", new(a)),
@@ -1056,7 +1077,7 @@ fn indexes(report: &Report) -> Tile {
     };
     let status = if adds > 0 && share >= 0.1 {
         TileStatus::Watch
-    } else if adds + cleanups > 0 {
+    } else if adds + cleanups > 0 || !history {
         TileStatus::Info
     } else {
         TileStatus::Good
@@ -1513,6 +1534,7 @@ fn replication(report: &Report) -> Tile {
             }
             Engine::Mssql => "No availability group or geo-replica: nothing can fall behind.".to_string(),
             Engine::Mysql => format!("{family} isn't a replica here and reports none: nothing can fall behind."),
+            Engine::Sqlite => "A SQLite file has no replicas: nothing can fall behind.".to_string(),
         };
         return Tile::new(TileKey::Replication, TileStatus::Good, none);
     }
@@ -1641,18 +1663,22 @@ fn statistics(report: &Report) -> Tile {
     let mut tile = match &s.workload {
         None => {
             let missing = s.server.missing.iter().find(|m| WORKLOAD.contains(&m.capability));
+            // Red when a source of query history is missing and can be turned on; an engine that keeps none (SQLite)
+            // isn't failing at anything.
             let mut t = Tile::new(
                 TileKey::Statistics,
-                TileStatus::Bad,
+                if missing.is_some() { TileStatus::Bad } else { TileStatus::Unavailable },
                 match missing {
                     Some(m) => format!("No query history: {}", sentence(&m.reason)),
-                    None => "No query history in this scan.".into(),
+                    None => format!("{} keeps no query history.", family(&s.server)),
                 },
             );
-            t.detail = Some(
+            t.detail = Some(if missing.is_some() {
                 "Until they're on, Culprit checks tables, indexes and settings only: no query list, plans or trends."
-                    .into(),
-            );
+                    .into()
+            } else {
+                "Culprit checks its tables, indexes and settings, and plans any statement you give it.".into()
+            });
             t.fix_sql = missing.and_then(|m| m.fix.as_deref()).and_then(fix_statement);
             t.items = s
                 .server

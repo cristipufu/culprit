@@ -8,3 +8,4 @@ node_modules
 /app/src-tauri/gen
 /app/src-tauri/target
 _site/
+dev/sqlite/demo.db

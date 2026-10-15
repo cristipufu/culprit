@@ -487,6 +487,7 @@ impl Workspace {
                 options.insert("encrypt".into(), "true".into());
                 options.insert("trustServerCertificateCA".into(), aws::RDS_CA.into());
             }
+            Engine::Sqlite => {}
         }
         let stored = StoredConnection {
             engine: d.engine,
@@ -1269,7 +1270,8 @@ pub fn read_only_batch(engine: Engine, statement: &str) -> String {
         Engine::Mssql => {
             format!("SET XACT_ABORT ON; BEGIN TRANSACTION;\n{statement}\n;IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;")
         }
-        Engine::Postgres | Engine::Mysql => statement.to_string(),
+        // SQLite's file is opened read-only: nothing to wrap.
+        Engine::Postgres | Engine::Mysql | Engine::Sqlite => statement.to_string(),
     }
 }
 
@@ -1317,6 +1319,7 @@ impl Workspace {
                     Engine::Postgres => 5432,
                     Engine::Mysql => 3306,
                     Engine::Mssql => 1433,
+                    Engine::Sqlite => 0,
                 });
                 let region = spec
                     .option("region")

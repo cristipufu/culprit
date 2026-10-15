@@ -389,6 +389,7 @@ pub fn worker_pressure_info() -> CheckInfo {
 pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let key = server_key(snapshot);
     match snapshot.server.engine {
+        Engine::Sqlite => Vec::new(),
         Engine::Mssql => {
             let waiting = signal(snapshot, "threadpool-waiting").unwrap_or(0.0);
             let hours = counter_hours(snapshot);
@@ -626,6 +627,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
             "A transaction in session {} has been open for {open}, so InnoDB can't purge old row versions",
             t.session
         ),
+        (Engine::Sqlite, _) => format!("A transaction has been open for {open}"),
     };
     let program =
         t.program.as_deref().filter(|p| !p.is_empty()).map(|p| format!(" It comes from {p}.")).unwrap_or_default();
@@ -679,6 +681,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
                 other_database.map(|d| format!(" It runs in database {d}.")).unwrap_or_default()
             )
         }
+        (Engine::Sqlite, _) => format!("It holds a lock on the file.{program}"),
     };
     f.severity = if t.seconds >= 3.0 * 3600.0 || held_gb >= 10.0 || (slot && behind >= SLOT_FAR_BEHIND) {
         Severity::High

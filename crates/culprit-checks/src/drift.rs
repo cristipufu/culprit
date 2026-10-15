@@ -3,11 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use culprit_core::{
-    ColumnInfo, Drift, DriftItem, DriftKind, DriftPresence, DriftSide, Engine, IndexStat, Report, Snapshot, format,
-    server_label, strip_direction,
+    ColumnInfo, Drift, DriftItem, DriftKind, DriftPresence, DriftSide, IndexStat, Report, Snapshot, format,
+    server_label,
 };
 
-use crate::support::{qualified, quote, supports_online_index};
+use crate::support::supports_online_index;
 
 /// Values that are measurements rather than configuration; they always differ.
 pub const NOT_SETTINGS: &[&str] = &[
@@ -387,44 +387,17 @@ fn create_sql(target: &Snapshot, index: &IndexStat) -> Option<String> {
     if index.is_primary_key || index.is_clustered || index.columns.is_empty() {
         return None;
     }
-    let engine = target.server.engine;
-    let table = qualified(engine, &index.schema, &index.table);
-    let keys = index
-        .columns
-        .iter()
-        .map(|c| {
-            let name = strip_direction(c);
-            if name.len() == c.len() { quote(engine, name) } else { format!("{} DESC", quote(engine, name)) }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let include = index.include.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
-    let unique = if index.is_unique { "UNIQUE " } else { "" };
-    let filter = index.filter.as_deref().map(|f| format!("\n    WHERE {f}")).unwrap_or_default();
-    let name = quote(engine, &index.name);
-    Some(match engine {
-        Engine::Mssql => {
-            let mut sql = format!("CREATE {unique}NONCLUSTERED INDEX {name}\n    ON {table} ({keys})");
-            if !include.is_empty() {
-                sql.push_str(&format!("\n    INCLUDE ({include})"));
-            }
-            sql.push_str(&filter);
-            if supports_online_index(target) {
-                sql.push_str("\n    WITH (ONLINE = ON)");
-            }
-            sql + ";"
-        }
-        Engine::Postgres => {
-            let mut sql = format!("CREATE {unique}INDEX CONCURRENTLY {name}\n    ON {table} ({keys})");
-            if !include.is_empty() {
-                sql.push_str(&format!("\n    INCLUDE ({include})"));
-            }
-            sql + &filter + ";"
-        }
-        Engine::Mysql => {
-            format!("CREATE {unique}INDEX {name}\n    ON {table} ({keys})\n    ALGORITHM=INPLACE LOCK=NONE;")
-        }
-    })
+    let dialect = target.server.engine.dialect();
+    let online = if supports_online_index(target) { culprit_core::Online::Yes } else { culprit_core::Online::No };
+    Some(dialect.create_index(&culprit_core::NewIndex {
+        target: &dialect.qualified(&[&index.schema, &index.table]),
+        unique: index.is_unique,
+        name: &index.name,
+        keys: &index.columns,
+        include: &index.include,
+        filter: index.filter.as_deref(),
+        online,
+    }))
 }
 
 /// Column types compare without MySQL's integer display widths: 8.0.19+ dropped `int(11)` to `int`, MariaDB keeps it,
@@ -500,6 +473,7 @@ fn summarize(items: &[DriftItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use culprit_core::Engine;
 
     #[test]
     fn integer_display_widths_are_not_drift() {

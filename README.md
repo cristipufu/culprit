@@ -195,6 +195,7 @@ You decide what agents may do, per connection: nothing, read statistics and plan
 | **PostgreSQL** | PostgreSQL 15 and 18, including Amazon RDS | `pg_stat_statements`, statistics views, `EXPLAIN` (generic plans from version 12) |
 | **MySQL** | MySQL 8.4 | `performance_schema`, `sys`, `EXPLAIN FORMAT=JSON` |
 | **MariaDB** | MariaDB 10.11 and 11.8 | `performance_schema`, the slow query log, user statistics, `ANALYZE FORMAT=JSON`, `SHOW ANALYZE` |
+| **SQLite** (preview) | SQLite 3.53 files | The file itself, opened read-only: schema, `sqlite_stat1`, `dbstat`, pragmas, `EXPLAIN QUERY PLAN`. No changes to your app; SQLite keeps no query history |
 
 When a source is switched off (Query Store, `pg_stat_statements`, `performance_schema`), Culprit shows the one statement that turns it on and what you'll get once it's on.
 

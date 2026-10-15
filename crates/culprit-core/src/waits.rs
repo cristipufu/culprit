@@ -285,6 +285,7 @@ pub fn category_info(key: &str, engine: Engine) -> (&'static str, String) {
                 Engine::Postgres => "Commits waiting for the write-ahead log (WAL) to reach disk. Many tiny transactions, or slow log storage.".into(),
                 Engine::Mysql => "Commits waiting for InnoDB's redo log to reach disk. Many tiny transactions, or slow log storage.".into(),
                 Engine::Mssql => "Commits waiting for the transaction log to reach disk (WRITELOG), or a tier's log-rate limit. Many tiny transactions, or slow log storage.".into(),
+                Engine::Sqlite => "Commits waiting for the journal or write-ahead log file to reach disk. Many tiny transactions, or slow storage.".into(),
             },
         ),
         "network" => (

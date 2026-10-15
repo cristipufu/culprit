@@ -5,7 +5,7 @@ use culprit_core::{ConnectionSpec, Engine, Error, ErrorCode, Provider, Result};
 pub fn provider(spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
     let engine = spec.engine.ok_or_else(|| {
         Error::invalid("Can't tell which database engine this is")
-            .with_hint("Use a postgres:// or mssql:// URL, or pass --engine")
+            .with_hint("Use a postgres://, mssql://, mysql:// or sqlite:// URL, or pass --engine")
     })?;
     match engine {
         #[cfg(feature = "mssql")]
@@ -14,6 +14,8 @@ pub fn provider(spec: &ConnectionSpec) -> Result<Box<dyn Provider>> {
         Engine::Postgres => Ok(Box::new(culprit_postgres::PostgresProvider::new(spec)?)),
         #[cfg(feature = "mysql")]
         Engine::Mysql => Ok(Box::new(culprit_mysql::MysqlProvider::new(spec)?)),
+        #[cfg(feature = "sqlite")]
+        Engine::Sqlite => Ok(Box::new(culprit_sqlite::SqliteProvider::new(spec)?)),
         #[allow(unreachable_patterns)]
         other => Err(Error::new(ErrorCode::Unsupported, format!("This build of Culprit has no {other} support"))),
     }

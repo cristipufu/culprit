@@ -10,7 +10,7 @@ pub fn config_info() -> CheckInfo {
         id: "config".into(),
         title: "Configuration".into(),
         category: Category::Configuration,
-        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
+        engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
         requires: vec![],
         description:
             "Database and server settings that commonly hurt performance or hide the data needed to diagnose it.".into(),
@@ -22,6 +22,7 @@ pub fn config(snapshot: &Snapshot) -> Vec<Finding> {
         Engine::Mssql => [mssql(snapshot), crate::config_health::mssql(snapshot)].concat(),
         Engine::Postgres => [postgres(snapshot), crate::config_health::postgres(snapshot)].concat(),
         Engine::Mysql => [mysql(snapshot), crate::config_health::mysql(snapshot)].concat(),
+        Engine::Sqlite => crate::sqlite::settings(snapshot),
     }
 }
 

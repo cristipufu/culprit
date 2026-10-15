@@ -46,6 +46,10 @@ fn modes(engine: Engine) -> &'static [Mode] {
             Mode { backslash: Escapes, double_quote: Identifier },
             Mode { backslash: Literal, double_quote: Identifier },
         ],
+        // No backslash escapes. A double-quoted word is a name, or a string when no such name exists (SQLite's legacy rule).
+        Engine::Sqlite => {
+            &[Mode { backslash: Literal, double_quote: Identifier }, Mode { backslash: Literal, double_quote: String }]
+        }
         // NO_BACKSLASH_ESCAPES × ANSI_QUOTES.
         Engine::Mysql => &[
             Mode { backslash: Escapes, double_quote: String },
@@ -143,12 +147,12 @@ fn lex_into<'a>(
                 }
                 i = end;
             }
-            b'`' if engine == Engine::Mysql => {
+            b'`' if matches!(engine, Engine::Mysql | Engine::Sqlite) => {
                 let end = quoted_end(bytes, i, b'`', false)?;
                 tokens.push(Token::Quoted(&text[i + 1..end - 1], b'`'));
                 i = end;
             }
-            b'[' if engine == Engine::Mssql => {
+            b'[' if matches!(engine, Engine::Mssql | Engine::Sqlite) => {
                 let end = quoted_end(bytes, i, b']', false)?;
                 tokens.push(Token::Quoted(&text[i + 1..end - 1], b']'));
                 i = end;
@@ -578,6 +582,8 @@ fn read_starts(engine: Engine) -> &'static [&'static str] {
         Engine::Mssql => &["SELECT", "WITH"],
         Engine::Postgres => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN"],
         Engine::Mysql => &["SELECT", "WITH", "TABLE", "VALUES", "SHOW", "EXPLAIN", "DESCRIBE", "DESC"],
+        // PRAGMA can write (`PRAGMA journal_mode = WAL`), so it isn't a read.
+        Engine::Sqlite => &["SELECT", "WITH", "VALUES", "EXPLAIN"],
     }
 }
 
@@ -625,6 +631,8 @@ fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
             &["get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait"]
         }
         Engine::Mssql => &["openrowset", "opendatasource", "openquery"],
+        // Loading native code, and the file functions of the CLI and the fileio extension.
+        Engine::Sqlite => &["load_extension", "readfile", "writefile", "edit", "fts3_tokenizer"],
     }
 }
 
@@ -633,6 +641,7 @@ fn side_effect_functions(engine: Engine) -> &'static [&'static str] {
 fn side_effect_family(engine: Engine, name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     match engine {
+        Engine::Sqlite => false,
         Engine::Postgres => {
             (n.starts_with("pg_") && n.contains("reset"))
                 || n.contains("replication_slot")
@@ -867,6 +876,23 @@ pub fn mark_mssql_statements(text: &str, marker: &str) -> String {
 /// Tables a statement reads or writes, as written (`schema.table` or `table`), lower-cased and unquoted. Best effort, for
 /// tying changes (a dropped index, fresh statistics) to the queries they touch; never used to decide what is safe.
 pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (name, _) in table_refs(text, engine) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The aliases a statement gives its tables (`FROM orders AS o`: `o` → `orders`), lower-cased, for plans that name a
+/// table by its alias (SQLite's `SCAN o`). Best effort, like [`tables_in`].
+pub fn table_aliases(text: &str, engine: Engine) -> Vec<(String, String)> {
+    table_refs(text, engine).into_iter().filter_map(|(name, alias)| Some((alias?, name))).collect()
+}
+
+/// Each table a statement names after FROM, JOIN, INTO, UPDATE…, with the alias it gives it.
+fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     let Some(tokens) = modes(engine).iter().find_map(|m| lex(text, engine, *m).ok()) else {
         return Vec::new();
     };
@@ -895,7 +921,7 @@ pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
         let keep = parts.len().saturating_sub(2);
         Some((parts[keep..].join("."), i))
     };
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
         let into = keyword(i, &["into", "update", "table", "insert", "delete", "merge"]);
@@ -917,18 +943,18 @@ pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
                 i = next;
                 break;
             }
-            if !out.contains(&name) {
-                out.push(name);
-            }
             i = next;
             if keyword(i, &["as"]) {
                 i += 1;
             }
-            if let Some((alias, quoted)) = word(i)
-                && (quoted || !NOT_NAMES.iter().any(|k| alias.eq_ignore_ascii_case(k)))
+            let mut alias = None;
+            if let Some((a, quoted)) = word(i)
+                && (quoted || !NOT_NAMES.iter().any(|k| a.eq_ignore_ascii_case(k)))
             {
+                alias = Some(a.to_ascii_lowercase());
                 i += 1;
             }
+            out.push((name, alias));
             if tokens.get(i) == Some(&Token::Punct(',')) {
                 i += 1;
                 continue;

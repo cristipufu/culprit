@@ -6796,6 +6796,10 @@ table.rg {
   background: #336791;
 }
 
+.engine-sqlite {
+  background: #003b57;
+}
+
 .engine-mysql {
   background: #00758f;
 }

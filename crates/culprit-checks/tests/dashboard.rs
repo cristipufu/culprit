@@ -377,3 +377,41 @@ fn the_top_share_is_the_same_number_as_the_findings_summary() {
         }
     }
 }
+
+#[test]
+fn healthy_signals_are_shown_before_ungraded_ones() {
+    // As on an Azure SQL database: more ungraded counters than the tile has squares, and a few healthy signals.
+    let mut r = report("mssql-demo");
+    let p = r.snapshot.pressure.get_or_insert_with(Default::default);
+    p.signals.clear();
+    for n in 0..9 {
+        p.signals.push(culprit_core::waits::Signal::new(
+            &format!("counter-{n}"),
+            &format!("Counter {n}"),
+            1.0,
+            culprit_core::waits::SignalUnit::Count,
+            culprit_core::waits::SignalScope::SinceStartup,
+        ));
+    }
+    for n in 0..3 {
+        let mut s = culprit_core::waits::Signal::new(
+            &format!("healthy-{n}"),
+            &format!("Healthy {n}"),
+            1.0,
+            culprit_core::waits::SignalUnit::Count,
+            culprit_core::waits::SignalScope::SinceStartup,
+        );
+        s.status = culprit_core::waits::SignalStatus::Good;
+        p.signals.push(s);
+    }
+    let d = dashboard(&r);
+    let health = tile(&d, TileKey::Health);
+    let shown: Vec<&str> = health
+        .items
+        .iter()
+        .filter(|i| i.id.starts_with("healthy-") || i.id.starts_with("counter-"))
+        .map(|i| i.id.as_str())
+        .collect();
+    assert_eq!(&shown[..3], &["healthy-0", "healthy-1", "healthy-2"], "{shown:?}");
+    assert_eq!(health.status, TileStatus::Good);
+}

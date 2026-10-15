@@ -81,6 +81,7 @@ pub const RULES: &[(&str, &[Engine], &str)] = &[
     ("parallelism-blocked", &[Engine::Mssql], "An expensive plan that can't go parallel"),
     ("parallel-skew", &[Engine::Mssql, Engine::Postgres], "One thread or worker doing most of the work"),
     ("eager-spool", &[Engine::Mssql], "A temporary index built on every run"),
+    ("automatic-index", &[Engine::Sqlite], "SQLite builds a throwaway index on every run because none fits"),
     ("spill", ALL, "A sort or hash that ran out of memory and wrote to disk, or an exchange that spilled"),
     ("memory-grant", &[Engine::Mssql], "A memory grant far larger than what the query uses, or a wait for one"),
     ("misestimate", ALL, "Actual rows far from the estimate"),
@@ -127,6 +128,9 @@ pub fn coverage_note(plan: &Plan) -> Option<String> {
     let actual = has_actuals(plan);
     let mariadb = is_mariadb(plan);
     match (plan.engine, actual) {
+        (Engine::Sqlite, _) => Some(
+            "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.".into(),
+        ),
         (Engine::Mysql, false) if mariadb => Some(
             "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.".into(),
         ),
@@ -178,6 +182,7 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
         parallelism_blocked,
         parallel_skew,
         eager_spool,
+        automatic_index,
         spill,
         memory_grant,
         misestimate,
@@ -371,6 +376,8 @@ fn elapsed_ms(plan: &Plan) -> Option<f64> {
 /// whatever its shape.
 fn cheap_below(plan: &Plan) -> f64 {
     match plan.engine {
+        // SQLite's plans carry no cost: never "real work" by an estimate.
+        Engine::Sqlite => f64::INFINITY,
         // A 10K-row clustered index scan costs about 0.1.
         Engine::Mssql => 0.1,
         // seq_page_cost is 1: about 100 pages plus the per-row CPU of 10K rows.
@@ -655,6 +662,7 @@ fn index_sql(engine: Engine, table: &str, keys: &[String], include: &[String]) -
     let target = qualified(engine, table);
     Some(engine.dialect().create_index(&crate::dialect::NewIndex {
         target: &target,
+        unique: false,
         name: &name,
         keys,
         include,
@@ -1444,6 +1452,11 @@ fn non_sargable(cx: &Cx) -> Vec<Draft> {
                 Engine::Mssql => format!(
                     "Store {col} in the form you search for, or add a computed column with {func}({col}) and index it."
                 ),
+                Engine::Sqlite => format!(
+                    "Store {col} in the form you search for, or index the expression itself, e.g. `CREATE INDEX ... ON {} ({}({col}))`.",
+                    table_leaf(&table),
+                    lower
+                ),
             }
         };
         d.verify = format!("Explain again: {} is read with a seek or index condition on {col}.", table_leaf(&table));
@@ -1477,6 +1490,10 @@ fn leading_wildcard(cx: &Cx) -> Vec<Draft> {
             ),
             Engine::Mysql => {
                 "Use a FULLTEXT index with MATCH … AGAINST for word searches, or drop the leading % if a prefix search is enough."
+                    .to_string()
+            }
+            Engine::Sqlite => {
+                "Use an FTS5 virtual table with MATCH for word searches, or drop the leading % if a prefix search is enough."
                     .to_string()
             }
         };
@@ -1545,6 +1562,8 @@ fn not_in_work<'a>(cx: &Cx<'a>, n: &'a PlanNode) -> Option<Vec<&'a PlanNode>> {
     // The same plan shapes come from NOT EXISTS under an OR; when the statement is known, it must say NOT IN.
     let says_not_in = statement.is_empty() || statement.contains("not in");
     match cx.engine() {
+        // EXPLAIN QUERY PLAN shows no per-row work to weigh.
+        Engine::Sqlite => None,
         Engine::Mssql => {
             let spools: Vec<&PlanNode> = n
                 .children
@@ -1591,11 +1610,15 @@ fn not_in(cx: &Cx) -> Vec<Draft> {
             Engine::Postgres => {
                 "NOT IN (subquery) can't run as an anti-join, so PostgreSQL tests every row against the subquery".into()
             }
+            Engine::Sqlite => {
+                "NOT IN against a subquery whose column can be NULL returns no rows once it meets a NULL".into()
+            }
             Engine::Mysql => "NOT IN (subquery) makes MySQL run the subquery once per row".into(),
         };
         d.detail = match cx.engine() {
             Engine::Mssql => format!("Because the subquery's column allows NULL, NOT IN must prove no NULL exists before it can return anything, which adds the Row Count Spool under {}.", n.op),
             Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops PostgreSQL from using a Hash Anti Join, and it expected the subquery's rows too many to hash in work_mem, so it searches them again for each row.".into(),
+            Engine::Sqlite => "If the subquery ever returns NULL, NOT IN returns nothing at all.".into(),
             Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, and here MySQL could neither turn it into an antijoin nor materialize the subquery once, so it runs the subquery for each row.".into(),
         };
         d.fix = "Rewrite as NOT EXISTS, which means what you almost certainly intend and runs as an anti-join: `WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`. Declaring the column NOT NULL also helps.".into();
@@ -1604,6 +1627,7 @@ fn not_in(cx: &Cx) -> Vec<Draft> {
             Engine::Postgres => {
                 "Explain again: a Hash Anti Join (or Nested Loop Anti Join) instead of a SubPlan filter.".into()
             }
+            Engine::Sqlite => "Explain again: the subquery runs as a correlated NOT EXISTS.".into(),
             Engine::Mysql => "Explain again: an antijoin (Not exists) instead of a dependent subquery.".into(),
         };
         out.push(d);
@@ -2080,6 +2104,10 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                     format!("Refresh the statistics on {}.", table_leaf(t)),
                     Some(Engine::Mysql.dialect().refresh_statistics(&qualified(Engine::Mysql, t))),
                 ),
+                (Engine::Sqlite, Some(t)) => (
+                    format!("Refresh the statistics on {}.", table_leaf(t)),
+                    Some(Engine::Sqlite.dialect().refresh_statistics(&qualified(Engine::Sqlite, t))),
+                ),
                 (_, None) => ("Refresh statistics on the tables below this operator.".into(), None),
             };
             d.fix = fix;
@@ -2151,7 +2179,7 @@ fn slow_compile(cx: &Cx) -> Vec<Draft> {
             cx.prop("Planning Time").and_then(|v| v.parse::<f64>().ok()),
             cx.prop("Execution Time").and_then(|v| v.parse::<f64>().ok()),
         ),
-        Engine::Mysql => (None, None),
+        Engine::Mysql | Engine::Sqlite => (None, None),
     };
     let Some(planning) = planning else { return Vec::new() };
     let slower_than_running = running.is_some_and(|r| planning > r && planning >= 20.0);
@@ -2244,6 +2272,8 @@ fn spill(cx: &Cx) -> Vec<Draft> {
             below.iter().any(|b| b.misestimate().is_some_and(|m| m >= MISESTIMATE_FACTOR))
         };
         match cx.engine() {
+            // EXPLAIN QUERY PLAN reports no spills.
+            Engine::Sqlite => continue,
             Engine::Postgres => {
                 let disk_kb = prop_f64(n, "Sort Space Used")
                     .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"));
@@ -2477,7 +2507,7 @@ fn parallel_skew(cx: &Cx) -> Vec<Draft> {
                 v.push(leader);
                 v
             }
-            Engine::Mysql => continue,
+            Engine::Mysql | Engine::Sqlite => continue,
         };
         let total: f64 = rows.iter().sum();
         let max = rows.iter().cloned().fold(0.0, f64::max);
@@ -2547,6 +2577,43 @@ fn eager_spool(cx: &Cx) -> Vec<Draft> {
         d.fix = "Create that index permanently, so the work happens once instead of on every run.".into();
         d.fix_sql = index_sql(Engine::Mssql, &table, &keys, &include);
         d.verify = "Explain again: the Index Spool is gone and the lookup seeks the new index.".into();
+        out.push(d);
+    }
+    out
+}
+
+/// SQLite built a throwaway index for this statement (`AUTOMATIC COVERING INDEX ON t(x)`): by its own account no index
+/// fits, so it builds one on each run and drops it. Its plans carry no row counts, so how much that costs is unknown
+/// here: no floor, unlike SQL Server's eager spool.
+fn automatic_index(cx: &Cx) -> Vec<Draft> {
+    if cx.engine() != Engine::Sqlite {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for n in &cx.nodes {
+        let Some(on) = n.props.get("Automatic Index") else { continue };
+        let Some((named, columns)) = on.split_once('(') else { continue };
+        // The step's table, with any alias the plan used already resolved to it.
+        let table = n.object.clone().unwrap_or_else(|| named.trim().to_string());
+        let keys: Vec<String> = columns
+            .trim_end_matches(')')
+            .split(',')
+            .filter_map(|c| {
+                let name: String = c.trim().chars().take_while(|ch| ch.is_alphanumeric() || *ch == '_').collect();
+                (!name.is_empty()).then_some(name)
+            })
+            .collect();
+        let mut d = Draft::new("automatic-index", InsightArea::Index, 1.0, vec![n.id]);
+        d.title = format!("SQLite builds a temporary index on {} every time this runs", table_leaf(&table));
+        d.detail = format!(
+            "No index on {} fits this {}, so SQLite builds one{} for each run and throws it away.",
+            table_leaf(&table),
+            if cx.statement().contains("join") { "join" } else { "search" },
+            if keys.is_empty() { String::new() } else { format!(" on {}", format::list(&keys)) }
+        );
+        d.fix = "Create that index once, so the work happens one time instead of on every run.".into();
+        d.fix_sql = index_sql(Engine::Sqlite, &table, &keys, &[]);
+        d.verify = "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index.".into();
         out.push(d);
     }
     out
@@ -2755,7 +2822,7 @@ fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
                 let impact = if all > 0.0 { all / (cx.total - one + all) } else { 0.0 };
                 (runs, outer, impact.clamp(0.0, 1.0))
             }
-            Engine::Mssql => continue,
+            Engine::Mssql | Engine::Sqlite => continue,
         };
         if runs < MANY_RUNS {
             continue;
@@ -3510,6 +3577,23 @@ mod tests {
             scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, "[db].[dbo].[orders].[status]=(3)");
         let i = insights(&filtered).into_iter().next().unwrap();
         assert!(!i.detail.contains("no index starts with"), "{}", i.detail);
+    }
+
+    #[test]
+    fn sqlite_says_when_it_builds_an_index_itself() {
+        let mut auto = node(7, "Automatic Index", NodeKind::Other);
+        auto.object = Some("visits".into());
+        auto.props.insert("Automatic Index".into(), "visits(event_id)".into());
+        let p = plan(Engine::Sqlite, auto);
+        let found: Vec<PlanInsight> = insights(&p).into_iter().filter(|i| i.rule == "automatic-index").collect();
+        assert_eq!(found.len(), 1, "{:?}", rules(&p));
+        assert!(
+            found[0].fix_sql.as_deref().unwrap_or("").starts_with("CREATE INDEX IF NOT EXISTS \"ix_visits_event_id\""),
+            "{:?}",
+            found[0].fix_sql
+        );
+        // No rows, no cost: nothing says how much it costs, so it stays Low.
+        assert_eq!(found[0].severity, Severity::Low);
     }
 
     #[test]

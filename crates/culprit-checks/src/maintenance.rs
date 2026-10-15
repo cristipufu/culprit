@@ -32,6 +32,8 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
         Engine::Mssql => mssql_stale(snapshot),
         Engine::Postgres => pg_stale(snapshot),
         Engine::Mysql => Vec::new(),
+        // SQLite has no change counters to age statistics by; a file without them is `sqlite::statistics`'s finding.
+        Engine::Sqlite => Vec::new(),
     };
     stale.sort_by(|a, b| (b.modifications / b.rows.max(1.0)).total_cmp(&(a.modifications / a.rows.max(1.0))));
     stale
@@ -88,6 +90,11 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                         engine.dialect().refresh_statistics(&target)
                     )),
                     cost: Some("ANALYZE reads a sample of the table and does not block reads or writes.".into()),
+                },
+                Engine::Sqlite => Fix {
+                    summary: "Run ANALYZE, so the planner knows each table's size and how selective each index is.".into(),
+                    sql: Some(engine.dialect().refresh_statistics(&target)),
+                    cost: Some("ANALYZE reads the indexes and briefly takes the write lock to store what it found.".into()),
                 },
                 Engine::Mysql => Fix {
                     summary: "Recompute the table's statistics.".into(),

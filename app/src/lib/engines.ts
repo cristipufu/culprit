@@ -1,7 +1,7 @@
 import type { Engine } from "../gen/Engine";
 import type { Plan } from "../gen/Plan";
 
-const LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
+const LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite" };
 
 /** MariaDB is served by the MySQL engine; the server's product string (or a plan's flavor) tells them apart. */
 export function isMariadb(engine: Engine, product?: string | null): boolean {

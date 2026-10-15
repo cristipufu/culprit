@@ -45,7 +45,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "duplicate-index",
     "requires": [
@@ -59,7 +60,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "unindexed-fk",
     "requires": [
@@ -296,7 +298,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "config",
     "requires": [],

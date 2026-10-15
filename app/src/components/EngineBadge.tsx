@@ -6,6 +6,7 @@ const ENGINE: Record<Engine, { abbr: string; label: string }> = {
   mssql: { abbr: "MS", label: "SQL Server" },
   postgres: { abbr: "Pg", label: "PostgreSQL" },
   mysql: { abbr: "My", label: "MySQL" },
+  sqlite: { abbr: "Sq", label: "SQLite" },
 };
 
 /**

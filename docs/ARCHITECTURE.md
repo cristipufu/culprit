@@ -22,7 +22,7 @@ with a fixture.
 | Crate | What it owns |
 |---|---|
 | `culprit-core` | The model (`Snapshot`, `Plan`, `Finding`), the `Check` and `Provider` traits, plan insights, `Coverage`. No I/O. |
-| `culprit-mssql`, `culprit-postgres`, `culprit-mysql` | Providers: the sources for one engine, and explain, live sessions, deadlocks. |
+| `culprit-mssql`, `culprit-postgres`, `culprit-mysql`, `culprit-sqlite` | Providers: the sources for one engine, and explain, live sessions, deadlocks. SQLite reads a file, read-only: schema, statistics, settings and plans, no sessions or waits. |
 | `culprit-checks` | The analysis pipeline, every check, the refine rules, and the views built on a report. |
 | `culprit-engine` | Connections and secrets, the provider registry, scans, saved reports and the history between scans. |
 | `culprit-cli`, `culprit-mcp`, `app/` | Surfaces: the same report, worded for a terminal, a coding agent, a window. |
