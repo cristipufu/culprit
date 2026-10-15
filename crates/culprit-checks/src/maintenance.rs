@@ -78,19 +78,20 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             f.fix = Some(match engine {
                 Engine::Mssql => Fix {
                     summary: "Update the statistics now; if this table changes fast, schedule it or enable AUTO_UPDATE_STATISTICS_ASYNC.".into(),
-                    sql: Some(format!("UPDATE STATISTICS {target};")),
+                    sql: Some(engine.dialect().refresh_statistics(&target)),
                     cost: Some("Reads a sample of the table; run it outside peak hours on very large tables.".into()),
                 },
                 Engine::Postgres => Fix {
                     summary: "Analyze the table now. If autovacuum falls behind on it regularly, lower its analyze threshold for this table only.".into(),
                     sql: Some(format!(
-                        "ANALYZE {target};\nALTER TABLE {target} SET (autovacuum_analyze_scale_factor = 0.02);"
+                        "{}\nALTER TABLE {target} SET (autovacuum_analyze_scale_factor = 0.02);",
+                        engine.dialect().refresh_statistics(&target)
                     )),
                     cost: Some("ANALYZE reads a sample of the table and does not block reads or writes.".into()),
                 },
                 Engine::Mysql => Fix {
                     summary: "Recompute the table's statistics.".into(),
-                    sql: Some(format!("ANALYZE TABLE {target};")),
+                    sql: Some(engine.dialect().refresh_statistics(&target)),
                     cost: None,
                 },
             });

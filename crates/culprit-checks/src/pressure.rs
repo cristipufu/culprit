@@ -710,10 +710,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
             cost: Some("Rolling it back discards its changes.".into()),
         },
         CleanupHolder::Session => {
-            let end = match engine {
-                Engine::Mssql | Engine::Mysql => format!("KILL {};", t.session),
-                Engine::Postgres => format!("SELECT pg_terminate_backend({});", t.session),
-            };
+            let end = engine.dialect().end_session(&t.session);
             Fix {
                 summary: "Find out what the application does in that session and make it commit or roll back promptly; transactions should never wait on a person or a slow call. After checking it is safe, a DBA can end the session, which rolls its transaction back.".into(),
                 sql: Some(format!("-- Ends the session and rolls back its open transaction\n{end}")),

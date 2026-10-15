@@ -192,20 +192,13 @@ pub fn mentions_word(text: &str, word: &str) -> bool {
     false
 }
 
+/// The engine's quoting (`Engine::dialect`).
 pub fn quote(engine: Engine, ident: &str) -> String {
-    match engine {
-        Engine::Mssql => format!("[{}]", ident.replace(']', "]]")),
-        Engine::Postgres => {
-            let simple = ident.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-                && !ident.starts_with(|c: char| c.is_ascii_digit());
-            if simple { ident.to_string() } else { format!("\"{}\"", ident.replace('"', "\"\"")) }
-        }
-        Engine::Mysql => format!("`{}`", ident.replace('`', "``")),
-    }
+    engine.dialect().quote(ident)
 }
 
 pub fn qualified(engine: Engine, schema: &str, name: &str) -> String {
-    format!("{}.{}", quote(engine, schema), quote(engine, name))
+    engine.dialect().qualified(&[schema, name])
 }
 
 pub fn index_name(table: &str, columns: &[String]) -> String {
@@ -239,65 +232,39 @@ pub fn create_filtered_index_sql(
     include: &[String],
     filter: &str,
 ) -> String {
-    let sql = create_index_sql(snapshot, schema, table, keys, include);
-    let filter = format!("\n    WHERE {filter}");
-    match sql.find("\n    WITH (") {
-        Some(at) => format!("{}{filter}{}", &sql[..at], &sql[at..]),
-        None => format!("{}{filter};", sql.trim_end_matches(';')),
-    }
+    index_sql(snapshot, schema, table, keys, include, Some(filter))
 }
 
+/// A new index on `schema.table` in the engine's dialect, online where the server's edition can build it so.
 pub fn create_index_sql(snapshot: &Snapshot, schema: &str, table: &str, keys: &[String], include: &[String]) -> String {
+    index_sql(snapshot, schema, table, keys, include, None)
+}
+
+fn index_sql(
+    snapshot: &Snapshot,
+    schema: &str,
+    table: &str,
+    keys: &[String],
+    include: &[String],
+    filter: Option<&str>,
+) -> String {
     let engine = snapshot.server.engine;
+    let dialect = engine.dialect();
     let name = index_name(table, keys);
-    let cols = keys.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
-    let target = qualified(engine, schema, table);
-    match engine {
-        Engine::Mssql => {
-            let mut sql = format!("CREATE NONCLUSTERED INDEX {}\n    ON {target} ({cols})", quote(engine, &name));
-            if !include.is_empty() {
-                let inc = include.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
-                sql.push_str(&format!("\n    INCLUDE ({inc})"));
-            }
-            if supports_online_index(snapshot) {
-                sql.push_str("\n    WITH (ONLINE = ON)");
-            }
-            sql.push(';');
-            sql
-        }
-        Engine::Postgres => {
-            let mut sql = format!(
-                "CREATE INDEX CONCURRENTLY {}\n    ON {target} ({cols})",
-                quote(engine, &name.to_ascii_lowercase())
-            );
-            if !include.is_empty() {
-                let inc = include.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ");
-                sql.push_str(&format!("\n    INCLUDE ({inc})"));
-            }
-            sql.push(';');
-            sql
-        }
-        Engine::Mysql => {
-            // InnoDB has no INCLUDE: secondary indexes already carry the primary key, so extra columns would have to become keys.
-            format!(
-                "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM=INPLACE LOCK=NONE;",
-                quote(engine, &name.to_ascii_lowercase())
-            )
-        }
-    }
+    let name = if engine == Engine::Mssql { name } else { name.to_ascii_lowercase() };
+    let online = if supports_online_index(snapshot) { culprit_core::Online::Yes } else { culprit_core::Online::No };
+    dialect.create_index(&culprit_core::NewIndex {
+        target: &dialect.qualified(&[schema, table]),
+        name: &name,
+        keys,
+        include,
+        filter,
+        online,
+    })
 }
 
 pub fn drop_index_sql(engine: Engine, schema: &str, table: &str, index: &str) -> String {
-    match engine {
-        Engine::Mssql => format!("DROP INDEX {} ON {};", quote(engine, index), qualified(engine, schema, table)),
-        Engine::Postgres => format!("DROP INDEX CONCURRENTLY {};", qualified(engine, schema, index)),
-        // MariaDB's DROP INDEX takes no ALGORITHM/LOCK options; ALTER TABLE takes them (comma-separated) on both.
-        Engine::Mysql => format!(
-            "ALTER TABLE {} DROP INDEX {}, ALGORITHM=INPLACE, LOCK=NONE;",
-            qualified(engine, schema, table),
-            quote(engine, index)
-        ),
-    }
+    engine.dialect().drop_index(schema, table, index)
 }
 
 /// Days the cumulative counters (index usage, table stats) have been accumulating. One source for every window that

@@ -38,11 +38,11 @@ to the PDB (a snapshot describes one database).
 - **A provider crate**, `crates/culprit-oracle`, behind the `oracle` cargo feature in `culprit-engine/src/registry.rs`,
   implementing `culprit_core::Provider`. Each source keeps its account in a `Coverage`: a missing privilege
   (`SELECT_CATALOG_ROLE`) is a missing capability with its GRANT, never a failed scan.
-- **`Engine::Oracle`** in core. Today 106 places branch on the engine (`match engine`), mostly to build fix SQL and word
-  engine-specific advice. Before Oracle lands, that knowledge moves behind a per-engine **dialect** in core (quoting,
-  `CREATE INDEX` with or without `ONLINE`, refreshing statistics, changing a setting, plan operator names), the way
-  `Platform` absorbed the cloud names: checks ask the dialect instead of matching the engine, and a new engine is one
-  more implementation instead of 106 edits.
+- **`Engine::Oracle`** in core, with its `Dialect` (`crates/culprit-core/src/dialect.rs`): quoting, `CREATE INDEX …
+  ONLINE` where the edition has it, `DBMS_STATS.GATHER_TABLE_STATS`, `ALTER SYSTEM KILL SESSION 'sid,serial#'`. The
+  dialect already carries that spelling for the three engines, the way `Platform` carries the cloud names. What remains
+  of the 106 places that branch on the engine is engine-specific advice and thresholds, which each check states for
+  the engines it opts into.
 - **Checks opt in.** Each check's `engines` list gains Oracle only after its evidence rules hold for Oracle's numbers
   (for example, index usage being sampled). The first set: heavy queries, plan changes between scans, stale
   statistics, missing and unused indexes from plans and `DBA_INDEX_USAGE`, waits.

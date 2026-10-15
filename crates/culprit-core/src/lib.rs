@@ -8,6 +8,7 @@ pub mod connection;
 pub mod coverage;
 pub mod dashboard;
 pub mod deadlock;
+pub mod dialect;
 pub mod digest;
 pub mod drift;
 pub mod error;
@@ -40,6 +41,7 @@ pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, Ti
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
 };
+pub use dialect::{Dialect, NewIndex, Online};
 pub use digest::{
     Digest, DigestChanges, DigestCounts, DigestDay, DigestDeadlockPattern, DigestDeadlocks, DigestDetail,
     DigestFinding, DigestIndexAdvice, DigestIndexCreate, DigestIndexDrop, DigestMetric, DigestQuery, DigestTopQuery,

@@ -73,6 +73,13 @@ the engine ask it (`settings_control`, `preload_library`, `metrics`, `is_azure_s
 platform names. A new platform is a variant in `crates/culprit-core/src/platform.rs` with its answers there, and its
 detection in the provider.
 
+### Dialects: how each engine spells the SQL Culprit suggests
+
+Fix SQL is written for a person to copy, in the engine's own spelling: quoted names, an index built or dropped without
+blocking writes, statistics refreshed, a session ended. That spelling is `culprit_core::Dialect`, one implementation per
+engine (`Engine::dialect()`, in `crates/culprit-core/src/dialect.rs`); checks and insights ask it instead of matching the
+engine. What a check *says* about an engine (its advice, its thresholds) stays in the check.
+
 ## 2. The snapshot
 
 `culprit_core::Snapshot` is the normalized model: the workload (statements, their runs and time, plans, trends), tables,

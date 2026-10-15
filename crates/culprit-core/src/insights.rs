@@ -628,28 +628,23 @@ fn filter_columns(text: &str) -> Vec<String> {
     cols
 }
 
-/// A name quoted for a script, with its closing delimiter doubled so a name can never end the quoting early.
+/// A name quoted for a script (`Engine::dialect`).
 fn quote(engine: Engine, name: &str) -> String {
-    match engine {
-        Engine::Mssql => format!("[{}]", name.replace(']', "]]")),
-        Engine::Mysql => format!("`{}`", name.replace('`', "``")),
-        Engine::Postgres => {
-            let simple = name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-                && !name.starts_with(|c: char| c.is_ascii_digit());
-            if simple { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
-        }
-    }
+    engine.dialect().quote(name)
 }
 
+/// A dotted table name as the plan writes it, each part cleaned of the plan's quoting and quoted for a script.
 fn qualified(engine: Engine, table: &str) -> String {
-    table.split('.').map(|p| quote(engine, &clean_identifier(p))).collect::<Vec<_>>().join(".")
+    let parts: Vec<String> = table.split('.').map(clean_identifier).collect();
+    engine.dialect().qualified(&parts.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 fn table_leaf(table: &str) -> String {
     clean_identifier(table.rsplit('.').next().unwrap_or(table))
 }
 
-/// A `CREATE INDEX` to copy: online/concurrent where the engine has it. Culprit never runs it.
+/// A `CREATE INDEX` to copy, in the engine's dialect. A plan doesn't say the server's edition, so SQL Server's online
+/// build is suggested, not assumed. Culprit never runs it.
 fn index_sql(engine: Engine, table: &str, keys: &[String], include: &[String]) -> Option<String> {
     if keys.is_empty() {
         return None;
@@ -657,34 +652,15 @@ fn index_sql(engine: Engine, table: &str, keys: &[String], include: &[String]) -
     let name = format!("ix_{}_{}", table_leaf(table), keys.join("_")).to_ascii_lowercase();
     let name: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).take(60).collect();
-    let cols = keys.iter().map(|k| quote(engine, k)).collect::<Vec<_>>().join(", ");
-    let include: Vec<String> =
-        include.iter().filter(|c| !keys.iter().any(|k| k.eq_ignore_ascii_case(c))).map(|c| quote(engine, c)).collect();
     let target = qualified(engine, table);
-    Some(match engine {
-        Engine::Mssql => {
-            let mut sql = format!("CREATE NONCLUSTERED INDEX {}\n    ON {target} ({cols})", quote(engine, &name));
-            if !include.is_empty() {
-                sql.push_str(&format!("\n    INCLUDE ({})", include.join(", ")));
-            }
-            sql.push_str(
-                ";\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
-            );
-            sql
-        }
-        Engine::Postgres => {
-            let mut sql = format!("CREATE INDEX CONCURRENTLY {}\n    ON {target} ({cols})", quote(engine, &name));
-            if !include.is_empty() {
-                sql.push_str(&format!("\n    INCLUDE ({})", include.join(", ")));
-            }
-            sql.push(';');
-            sql
-        }
-        Engine::Mysql => format!(
-            "CREATE INDEX {}\n    ON {target} ({cols})\n    ALGORITHM = INPLACE LOCK = NONE;",
-            quote(engine, &name)
-        ),
-    })
+    Some(engine.dialect().create_index(&crate::dialect::NewIndex {
+        target: &target,
+        name: &name,
+        keys,
+        include,
+        filter: None,
+        online: crate::dialect::Online::Unknown,
+    }))
 }
 
 /// Output columns of an operator (`OutputList` on SQL Server), as plain names.
@@ -2088,7 +2064,7 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                     Some(if cols.len() >= 2 {
                         format!("ANALYZE {};\nCREATE STATISTICS {}_{}_stats (dependencies, mcv) ON {} FROM {};\nANALYZE {};", qualified(Engine::Postgres, t), table_leaf(t).to_ascii_lowercase(), cols.join("_").to_ascii_lowercase(), cols.iter().map(|c| quote(Engine::Postgres, c)).collect::<Vec<_>>().join(", "), qualified(Engine::Postgres, t), qualified(Engine::Postgres, t))
                     } else {
-                        format!("ANALYZE {};", qualified(Engine::Postgres, t))
+                        Engine::Postgres.dialect().refresh_statistics(&qualified(Engine::Postgres, t))
                     }),
                 ),
                 // MariaDB collects histograms with its engine-independent statistics; MySQL has them from 8.0.
@@ -2102,7 +2078,7 @@ fn misestimate(cx: &Cx) -> Vec<Draft> {
                 ),
                 (Engine::Mysql, Some(t)) => (
                     format!("Refresh the statistics on {}.", table_leaf(t)),
-                    Some(format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t))),
+                    Some(Engine::Mysql.dialect().refresh_statistics(&qualified(Engine::Mysql, t))),
                 ),
                 (_, None) => ("Refresh statistics on the tables below this operator.".into(), None),
             };
@@ -2853,7 +2829,8 @@ fn join_buffer(cx: &Cx) -> Vec<Draft> {
                 d.fix = format!(
                     "Check whether {keys} starts with {join_cols}: if not, an index that does lets MySQL look rows up directly; if it does, refresh {leaf}'s statistics so MySQL weighs it right."
                 );
-                d.fix_sql = n.object.as_ref().map(|t| format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t)));
+                d.fix_sql =
+                    n.object.as_ref().map(|t| Engine::Mysql.dialect().refresh_statistics(&qualified(Engine::Mysql, t)));
             }
             None => {
                 d.title = format!("Joins {leaf} without an index ({how} over a full read)");
@@ -2956,7 +2933,7 @@ fn index_ignored(cx: &Cx) -> Vec<Draft> {
             if keys.len() == 1 { "the index" } else { "those indexes" }
         );
         d.fix = "Refresh the table's statistics and compare the column with a value of its own type; if it still scans, compare with FORCE INDEX to see which is really faster.".into();
-        d.fix_sql = n.object.as_ref().map(|t| format!("ANALYZE TABLE {};", qualified(Engine::Mysql, t)));
+        d.fix_sql = n.object.as_ref().map(|t| Engine::Mysql.dialect().refresh_statistics(&qualified(Engine::Mysql, t)));
         d.verify = "Explain again: access_type is ref or range on the index.".into();
         out.push(d);
     }
