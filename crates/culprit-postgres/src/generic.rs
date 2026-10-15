@@ -40,12 +40,19 @@ pub async fn plan_json(client: &Client, statement: &str, version_num: u32, eleva
 async fn via_prepared(client: &Client, statement: &str) -> Result<String> {
     let run = |sql: String| async move { client.batch_execute(&tagged(&sql)).await.map_err(crate::connect::map_error) };
     run("SET LOCAL plan_cache_mode = force_generic_plan".into()).await?;
+    // One left from a DEALLOCATE that failed would stop every PREPARE after it.
+    if query_one(client, &format!("SELECT 1 AS left FROM pg_catalog.pg_prepared_statements WHERE name = '{NAME}'"))
+        .await?
+        .is_some()
+    {
+        run(format!("DEALLOCATE {NAME}")).await?;
+    }
     run(format!("SAVEPOINT {NAME}")).await?;
     run(format!("PREPARE {NAME} AS {statement}")).await?;
     let explained = async {
         let parameters = query_one(
             client,
-            &format!("SELECT coalesce(array_length(parameter_types, 1), 0) AS n FROM pg_prepared_statements WHERE name = '{NAME}'"),
+            &format!("SELECT coalesce(pg_catalog.array_length(parameter_types, 1), 0) AS n FROM pg_catalog.pg_prepared_statements WHERE name = '{NAME}'"),
         )
         .await?
         .and_then(|r| r.number("n"))

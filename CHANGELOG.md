@@ -2,6 +2,18 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.2.9
+
+### Safety
+
+- **On PostgreSQL, Culprit's own reads can't be redirected.** A scan's sessions now resolve names in the catalog only (`search_path = pg_catalog, pg_temp`), whatever search_path the database or a role sets, so a schema someone else controls can't stand in for a catalog view or function while Culprit reads statistics. Plans still use the database's own search_path, as the statement's author ran it.
+- **Plans fetched on demand follow the same rule as a scan.** Opening a query's plan from a report (in the app, with `culprit explain --query-id`, or through the agent tools) and showing a live session's plan now plan, for a login with more than `pg_monitor`, only the login's own copy of a statement; another role's is refused with the reason and how to get it.
+- **"More than pg_monitor" is read more carefully**: both the role a login acts as and the one it logged in as (a `role` setting can make them differ), owning the database, and EXECUTE on functions neither PUBLIC nor `pg_monitor` can run (such as `pg_read_file` granted on its own). An extension's functions count as trusted only when a superuser or the login owns the extension. Before PostgreSQL 14, with `pg_stat_statements.track = all`, such a login plans nothing: statements other roles' functions ran on its behalf are recorded as its own.
+
+### Fixes
+
+- **PostgreSQL 12–15 recover from an interrupted plan**: a prepared statement left behind by a failed plan no longer stops every plan after it.
+
 ## 0.2.8
 
 Every check, plan insight and collector was reviewed for findings the statistics don't support. Findings are fewer, quieter on quiet databases, and each says only what the scan measured.

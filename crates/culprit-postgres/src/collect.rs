@@ -33,7 +33,7 @@ pub struct Probe {
     /// The server is a standby replaying another's WAL (`pg_is_in_recovery()`): its usage counters count only the reads
     /// run on it.
     pub standby: bool,
-    /// The login can do more than read statistics (`crate::trust::ELEVATED`): it doesn't plan while another role's code
+    /// The login can do more than read statistics (`crate::trust::elevated_sql`): it doesn't plan while another role's code
     /// is in reach.
     pub elevated: bool,
 }
@@ -182,7 +182,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
                 pg_is_in_recovery() AS in_recovery,
                 {elevated} AS elevated",
         started = iso("pg_postmaster_start_time()"),
-        elevated = crate::trust::ELEVATED,
+        elevated = crate::trust::elevated_sql(),
         now = iso("now()"),
     );
     let row = query_one(client, &sql).await?.ok_or_else(|| culprit_core::Error::internal("Probe returned nothing"))?;
@@ -796,6 +796,22 @@ async fn attach_plans(
         let owners = crate::trust::foreign_code(client).await?;
         if !owners.is_empty() {
             return Err(crate::trust::withheld(&owners));
+        }
+        // Before 14 pg_stat_statements can't tell a statement the login ran from one run inside a function on its
+        // behalf (no toplevel): with track = all, another role's trigger code is recorded as this login's own.
+        if probe.version_num < 140_000 {
+            let track =
+                query_one(client, "SELECT pg_catalog.current_setting('pg_stat_statements.track', true) AS track")
+                    .await?
+                    .and_then(|r| r.text("track"))
+                    .unwrap_or_default();
+            if track.eq_ignore_ascii_case("all") {
+                return Err(culprit_core::Error::new(
+                    culprit_core::ErrorCode::PermissionDenied,
+                    "Not planned: before PostgreSQL 14, with pg_stat_statements.track = all, statements other roles' functions run on this login's behalf are recorded as its own, and this login can do more than read statistics.",
+                )
+                .with_hint("Set pg_stat_statements.track = top, or connect with a login that has only pg_monitor, and SELECT on the tables."));
+            }
         }
     }
     let mut order: Vec<usize> = (0..queries.len()).collect();

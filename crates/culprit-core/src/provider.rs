@@ -68,6 +68,14 @@ pub trait Provider: Send + Sync {
 
     async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan>;
 
+    /// The estimated plan of a statement someone else's session recorded (a query from a scan, a session's current
+    /// statement), never run. Unlike [`Provider::explain`], whoever asks didn't write its text, so an engine whose
+    /// planner runs the code a statement reaches may plan the login's own copy instead (`query_id`, its id in the
+    /// engine's statistics) or refuse. Everyone else plans it as `explain` would.
+    async fn explain_recorded(&self, sql: &str, _query_id: Option<&str>) -> Result<Plan> {
+        self.explain(sql, ExplainMode::Estimated).await
+    }
+
     async fn live(&self) -> Result<LiveState>;
 
     /// Run a statement that reads and return up to `limit` rows, inside a read-only transaction where the engine has one.

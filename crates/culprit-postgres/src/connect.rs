@@ -21,11 +21,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy)]
 pub struct SessionLimits {
     pub statement_timeout: &'static str,
+    /// Culprit's own statements only (a scan): names resolve in the catalog alone, whatever search_path the database
+    /// or role sets, so no schema someone else controls can stand in for a catalog view, function or operator. The
+    /// sessions that run what a person writes keep the database's search_path.
+    pub catalog_path: bool,
 }
 
-pub const INTERACTIVE: SessionLimits = SessionLimits { statement_timeout: "10s" };
-pub const COLLECTOR: SessionLimits = SessionLimits { statement_timeout: "20s" };
-pub const EXECUTION: SessionLimits = SessionLimits { statement_timeout: "30s" };
+pub const INTERACTIVE: SessionLimits = SessionLimits { statement_timeout: "10s", catalog_path: false };
+pub const COLLECTOR: SessionLimits = SessionLimits { statement_timeout: "20s", catalog_path: true };
+pub const EXECUTION: SessionLimits = SessionLimits { statement_timeout: "30s", catalog_path: false };
 
 #[derive(Clone)]
 pub struct Connector {
@@ -100,14 +104,16 @@ impl Connector {
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        let setup = [
+        let mut setup = vec![
             "SET default_transaction_read_only = on".to_string(),
             format!("SET statement_timeout = '{}'", limits.statement_timeout),
             "SET lock_timeout = '2s'".to_string(),
             "SET idle_in_transaction_session_timeout = '30s'".to_string(),
-        ]
-        .map(|statement| crate::rows::tagged(&statement))
-        .join("; ");
+        ];
+        if limits.catalog_path {
+            setup.push("SET search_path = pg_catalog, pg_temp".to_string());
+        }
+        let setup = setup.iter().map(|statement| crate::rows::tagged(statement)).collect::<Vec<_>>().join("; ");
         client.batch_execute(&setup).await.map_err(map_error)?;
         Ok(client)
     }

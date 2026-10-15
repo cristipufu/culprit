@@ -156,14 +156,45 @@ impl Provider for PostgresProvider {
         ))
     }
 
+    async fn explain_recorded(&self, sql: &str, query_id: Option<&str>) -> Result<Plan> {
+        // Someone else's text: an elevated login plans only its own copy of it (`trust`), anyone else plans it as is.
+        let client = self.connector.connect(INTERACTIVE).await?;
+        if !trust::elevated(&client).await? {
+            return self.explain(sql, ExplainMode::Estimated).await;
+        }
+        let own = match query_id {
+            Some(id) => trust::own_text(&client, id).await?,
+            None => None,
+        };
+        match own {
+            Some(text) => self.explain(&text, ExplainMode::Estimated).await,
+            None => Err(trust::not_its_own()),
+        }
+    }
+
     async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {
         let mut progress = progress::query_progress(&self.connector, session).await?;
         if with_plan
             && progress.running
             && let Some(statement) = progress.statement.clone()
         {
-            // EXPLAIN without ANALYZE: plans the statement's text again, never runs it.
-            match self.explain(&statement, ExplainMode::Estimated).await {
+            // EXPLAIN without ANALYZE: plans the statement's text again, never runs it. Another session's statement,
+            // with its real values, is another role's text unless that session is this login's: an elevated login
+            // plans only its own (`trust`).
+            let own_or_plain = async {
+                let client = self.connector.connect(INTERACTIVE).await?;
+                if !trust::elevated(&client).await? {
+                    return Ok(true);
+                }
+                let pid: i32 = session.trim().parse().map_err(|_| Error::invalid("A session is a process id"))?;
+                trust::session_is_own(&client, pid).await
+            };
+            let planned = match own_or_plain.await {
+                Ok(true) => self.explain(&statement, ExplainMode::Estimated).await,
+                Ok(false) => Err(trust::not_its_own()),
+                Err(e) => Err(e),
+            };
+            match planned {
                 Ok(mut plan) => {
                     plan.raw = None;
                     progress.plan = Some(plan);

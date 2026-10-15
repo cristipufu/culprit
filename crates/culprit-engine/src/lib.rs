@@ -870,7 +870,7 @@ impl Workspace {
         {
             return Ok(plan);
         }
-        match (provider.explain(&query.text, ExplainMode::Estimated).await, &query.plan) {
+        match (provider.explain_recorded(&query.text, Some(query_id)).await, &query.plan) {
             (Ok(plan), _) => Ok(plan),
             // Normalized text (`WHERE id = ?`) can't be planned again; the scan planned a real sample of it.
             (Err(e), Some(captured)) if e.code != ErrorCode::AuthFailed => Ok(captured.clone()),
