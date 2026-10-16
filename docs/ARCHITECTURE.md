@@ -200,6 +200,27 @@ evidence rules.
 - **At runtime, without forking**: `Workspace::open()?.with_check(Arc::new(MyCheck))`, or a `Pipeline` with extra
   checks, prepare steps and rules (`crates/culprit-checks/tests/plugin.rs`).
 
+## Why this shape
+
+Tools in this category take one of a few shapes. What decides between them here is what Culprit promises: it is run
+against production, every finding must be true (a false flag costs the reader's trust), it covers several engines, and
+anyone should be able to add a check.
+
+| Shape | What it buys | Why Culprit doesn't take it |
+|---|---|---|
+| Each check is a script run on the server (sp_Blitz, a folder of SQL per engine) | A check is one query; easy to start | Every check touches production and needs its own permissions; nothing can be analyzed offline or tested on a fixture; each engine repeats each check; and a rule such as "absence needs a week of counters" is restated in every script. |
+| Each check queries the database itself | No shared model to maintain | The same views are read many times, every check needs a connection, and a failing read fails the check instead of locking it with why. One read per source into a snapshot gives the checks a pure, testable input. |
+| One set of checks per engine | No normalized model | The same problem (a missing index, a spill) is written four times and drifts. A normalized snapshot lets a check be written once; what differs per engine lives in its `EngineSpec` and its provider. |
+| Rules as configuration (thresholds in YAML, a rule DSL) | Thresholds change without code | The rules that keep findings true (rates only over an hour of data, the engine's verdict over a plan's shape, shared counters not graded) are logic, not thresholds; a DSL that can say them becomes a programming language without a compiler or tests. |
+| Checks loaded at run time (dynamic libraries, WASM) | Extend an installed binary | Rust has no stable plugin ABI, and code loaded into a tool that reads production is a risk. An embedding application plugs in checks, sources and rules through the same traits at compile time (`Workspace::with_check`, `with_provider`, `Pipeline::with_*`); a WASM host could sit behind `Check` later without changing the shape. |
+| Checks that register themselves (link-time lists, macros) | No list to edit | Which checks run, and in what order, is hidden. Explicit per-area lists are one line each, and `tests/registry.rs` fails when a check is written but not listed, so the safety is the same and nothing is magic. |
+| A collector agent streaming metrics (exporter + time series) | Continuous history | It needs an agent on every server. The engines already keep the history that matters (Query Store, pg_stat_statements, performance_schema); Culprit reads it on demand and compares its own scans for the rest. |
+
+What the chosen shape costs: the snapshot model grows with each engine's own fields (they stay optional, `None` when
+an engine doesn't keep them), checks are compiled in rather than dropped in, and a new engine is real work (a provider
+crate and an `EngineSpec`). In exchange, every finding comes from one read of each source, passes the same evidence
+rules, and is reproducible offline from a saved scan.
+
 ## Testing
 
 - Every check and rule has tests on the demo snapshots (`fixtures/*-demo.json`, `fixtures/*.report.json`), including

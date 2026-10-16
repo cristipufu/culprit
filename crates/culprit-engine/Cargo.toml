@@ -37,3 +37,4 @@ ureq.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 culprit-checks.workspace = true
+rusqlite.workspace = true

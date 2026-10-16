@@ -141,6 +141,18 @@ pub struct NewConnection {
     pub auth: Option<AuthKind>,
 }
 
+/// What a chosen database file is as a connection's input: its path when the extension says SQLite (`.db`, `.sqlite`,
+/// `.sqlite3`, `.db3`), else `sqlite:<path>`, so Culprit reads it as SQLite whatever the file is named. The app's file
+/// picker hands this to the new-connection form.
+pub fn database_file_input(path: &std::path::Path) -> String {
+    let known = path.extension().is_some_and(|x| DATABASE_FILE_EXTENSIONS.iter().any(|k| x.eq_ignore_ascii_case(k)));
+    let text = path.to_string_lossy().into_owned();
+    if known { text } else { format!("sqlite:{text}") }
+}
+
+/// The extensions a SQLite database file usually has (the app's file picker filters on them).
+pub const DATABASE_FILE_EXTENSIONS: [&str; 4] = ["db", "sqlite", "sqlite3", "db3"];
+
 /// The non-secret result of parsing a pasted connection string, for live feedback while typing.
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
@@ -346,6 +358,16 @@ impl Workspace {
         stored.query_log = Some(found.to_string_lossy().into_owned());
         self.store.put(name, stored).ok()?;
         Some(found)
+    }
+
+    /// Where to look for a connection's query log: beside the log it reads, else beside its database file (the app's
+    /// file picker starts there). `None` for a connection with neither.
+    pub fn query_log_folder(info: &ConnectionInfo) -> Option<std::path::PathBuf> {
+        info.query_log
+            .as_deref()
+            .or(info.database.as_deref())
+            .map(culprit_core::expand_home)
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
     }
 
     pub fn add_connection(&self, new: NewConnection) -> Result<ConnectionInfo> {

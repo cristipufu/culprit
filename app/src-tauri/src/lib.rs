@@ -444,16 +444,13 @@ async fn choose_database_file(app: AppHandle) -> Result<Option<String>> {
     app.dialog()
         .file()
         .set_title("Choose a SQLite database file")
-        .add_filter("SQLite databases", &["db", "sqlite", "sqlite3", "db3"])
+        .add_filter("SQLite databases", &culprit_engine::DATABASE_FILE_EXTENSIONS)
         .pick_file(move |picked| {
             let _ = sender.send(picked);
         });
     let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(|e| Error::invalid(format!("That file can't be read from here: {e}")))?;
-    let known =
-        path.extension().is_some_and(|x| ["db", "sqlite", "sqlite3", "db3"].iter().any(|k| x.eq_ignore_ascii_case(k)));
-    let text = path.to_string_lossy().into_owned();
-    Ok(Some(if known { text } else { format!("sqlite:{text}") }))
+    Ok(Some(culprit_engine::database_file_input(&path)))
 }
 
 /// Choose the connection's query log in a native file dialog. Culprit opens the dialog itself, so the window never gets
@@ -462,14 +459,8 @@ async fn choose_database_file(app: AppHandle) -> Result<Option<String>> {
 #[tauri::command]
 async fn choose_query_log(app: AppHandle, ws: Ws<'_>, name: String) -> Result<Option<ConnectionInfo>> {
     use tauri_plugin_dialog::DialogExt;
-    let info = ws.connection(&name)?;
     // Start where the log is, or beside the database file.
-    let start = info
-        .query_log
-        .as_deref()
-        .or(info.database.as_deref())
-        .map(culprit_core::expand_home)
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    let start = culprit_engine::Workspace::query_log_folder(&ws.connection(&name)?);
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let mut dialog = app
         .dialog()
