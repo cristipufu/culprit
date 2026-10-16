@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Culprit SQL Studio: Find Slow Queries in SQL Server &amp; Postgres</title>
-  <meta name="description" content="Find slow queries in SQL Server, PostgreSQL, MySQL and MariaDB and get the fix in one sentence. Free, open-source desktop app, CLI and MCP server.">
+  <meta name="description" content="Find slow queries in SQL Server, PostgreSQL, MySQL, MariaDB and SQLite and get the fix in one sentence. Free, open-source desktop app, CLI and MCP server.">
   <link rel="canonical" href="https://culpritsql.com/">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#0f0e0c" media="(prefers-color-scheme: dark)">
@@ -14,7 +14,7 @@
   <meta property="og:locale" content="en_US">
   <meta property="og:url" content="https://culpritsql.com/">
   <meta property="og:title" content="Culprit SQL Studio: find what's slowing your database down">
-  <meta property="og:description" content="Slow queries, execution plans, indexes and deadlocks for SQL Server, PostgreSQL, MySQL and MariaDB, explained in one sentence. Desktop app, CLI and MCP server. Free and open source.">
+  <meta property="og:description" content="Slow queries, execution plans, indexes and deadlocks for SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, explained in one sentence. Desktop app, CLI and MCP server. Free and open source.">
   <meta property="og:image" content="https://culpritsql.com/og.jpg">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
   <meta property="og:image:alt" content="Culprit SQL Studio: find the slow query that's dragging your database down, next to its dashboard">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Culprit SQL Studio: find what's slowing your database down">
-  <meta name="twitter:description" content="Slow queries, execution plans, indexes and deadlocks for SQL Server, PostgreSQL, MySQL and MariaDB. Free desktop app, CLI and MCP server.">
+  <meta name="twitter:description" content="Slow queries, execution plans, indexes and deadlocks for SQL Server, PostgreSQL, MySQL, MariaDB and SQLite. Free desktop app, CLI and MCP server.">
   <meta name="twitter:image" content="https://culpritsql.com/og.jpg">
   <meta name="twitter:image:alt" content="Culprit SQL Studio: find the slow query that's dragging your database down, next to its dashboard">
   <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -34,11 +34,11 @@
   {"@context":"https://schema.org","@graph":[
    {"@type":"WebSite","@id":"https://culpritsql.com/#website","url":"https://culpritsql.com/","name":"Culprit SQL Studio","alternateName":["Culprit","culpritsql.com"],"inLanguage":"en"},
    {"@type":"SoftwareApplication","@id":"https://culpritsql.com/#app","name":"Culprit SQL Studio","alternateName":"Culprit",
-    "description":"Free, open-source database performance tool for SQL Server, PostgreSQL, MySQL and MariaDB: finds slow queries, explains execution plans, recommends indexes, untangles blocking and deadlocks, and serves an MCP server for coding agents.",
+    "description":"Free, open-source database performance tool for SQL Server, PostgreSQL, MySQL, MariaDB and SQLite: finds slow queries, explains execution plans, recommends indexes, untangles blocking and deadlocks, and serves an MCP server for coding agents.",
     "url":"https://culpritsql.com/","image":"https://culpritsql.com/og.jpg",
     "screenshot":["https://culpritsql.com/images/dashboard-light@2x.webp","https://culpritsql.com/images/finding-light@2x.webp","https://culpritsql.com/images/compare-light@2x.webp","https://culpritsql.com/images/blocking-light@2x.webp"],
     "applicationCategory":"DeveloperApplication","applicationSubCategory":"Database performance tuning",
-    "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"0.1.0","fileSize":"14MB",
+    "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"0.3.0","fileSize":"14MB",
     "downloadUrl":"https://github.com/cristipufu/culprit-sql-studio/releases/latest","releaseNotes":"https://github.com/cristipufu/culprit-sql-studio/releases",
     "softwareHelp":"https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/guide.md",
     "featureList":["Slow query detection ranked by share of database time","Execution plan insights and plan comparison","Missing, unused and duplicate index advice","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 25 tools for Claude Code, Cursor and Codex","CLI with JSON output"],
@@ -86,7 +86,7 @@
     <section class="hero" id="top">
       <div class="glow-layer" aria-hidden="true"><div class="glow"></div></div>
       <div class="wrap hero-grid">
-        <p class="eyebrow"><span class="dot"></span> SQL performance tuning for SQL Server · PostgreSQL · MySQL · MariaDB</p>
+        <p class="eyebrow"><span class="dot"></span> SQL performance tuning for SQL Server · PostgreSQL · MySQL · MariaDB · SQLite</p>
         <h1>Find the slow query that's <br>dragging your database down.</h1>
         <p class="lede">Culprit reads the statistics your database already keeps and tells you, in one sentence, what's slow, what it costs and how to fix it.</p>
         <div class="hero-cta">
@@ -288,12 +288,13 @@ args = ["mcp"]</code></pre>
     <section class="engines" id="engines" aria-labelledby="engines-title">
       <div class="wrap">
         <p class="section-kicker">Supported databases</p>
-        <h2 class="section-title" id="engines-title">SQL Server, PostgreSQL, MySQL and MariaDB. One tool.</h2>
+        <h2 class="section-title" id="engines-title">SQL Server, PostgreSQL, MySQL, MariaDB and SQLite. One tool.</h2>
         <div class="engine-grid">
           <article class="engine"><span class="badge ms" aria-hidden="true">MS</span><h3>SQL Server and Azure SQL</h3><p>Query Store, the plan cache, DMVs, wait statistics and the deadlock history in Extended Events.</p></article>
           <article class="engine"><span class="badge pg" aria-hidden="true">Pg</span><h3>PostgreSQL and Amazon RDS</h3><p>Versions 15 to 18: <code>pg_stat_statements</code>, the statistics views and <code>EXPLAIN</code>, generic plans included.</p></article>
           <article class="engine"><span class="badge my" aria-hidden="true">My</span><h3>MySQL</h3><p>Versions 5.7 to 8.4: <code>performance_schema</code>, <code>sys</code> and <code>EXPLAIN FORMAT=JSON</code>.</p></article>
           <article class="engine"><span class="badge ma" aria-hidden="true">Ma</span><h3>MariaDB</h3><p>Versions 10.5 to 11.8: <code>performance_schema</code>, the slow query log and <code>ANALYZE FORMAT=JSON</code>.</p></article>
+          <article class="engine"><span class="badge sq" aria-hidden="true">Sq</span><h3>SQLite <small>preview</small></h3><p>The file, opened read-only: schema, <code>sqlite_stat1</code>, <code>EXPLAIN QUERY PLAN</code>, and the query log your framework already writes.</p></article>
         </div>
       </div>
     </section>
@@ -344,11 +345,11 @@ args = ["mcp"]</code></pre>
         <h2 class="section-title" id="faq-title">Frequently asked questions</h2>
         <details>
           <summary>What permissions does Culprit need?</summary>
-          <p>Read access to the server's statistics. SQL Server needs <code>VIEW SERVER STATE</code> (<code>VIEW DATABASE STATE</code> on Azure SQL Database). PostgreSQL needs <code>pg_read_all_stats</code> or <code>pg_monitor</code>. MySQL and MariaDB need <code>PROCESS</code> and <code>SELECT</code> on <code>performance_schema</code>. When a check can't run with your login, Culprit names the exact grant that unlocks it.</p>
+          <p>Read access to the server's statistics. SQL Server needs <code>VIEW SERVER STATE</code> (<code>VIEW DATABASE STATE</code> on Azure SQL Database). PostgreSQL needs <code>pg_read_all_stats</code> or <code>pg_monitor</code>. MySQL and MariaDB need <code>PROCESS</code> and <code>SELECT</code> on <code>performance_schema</code>. SQLite needs read access to the file. When a check can't run with your login, Culprit names the exact grant that unlocks it.</p>
         </details>
         <details>
           <summary>Do I need to install anything on the database server?</summary>
-          <p>No. There's no agent or collector: Culprit connects like any client and reads the statistics the database already keeps (Query Store, <code>pg_stat_statements</code>, <code>performance_schema</code>). If one of them is switched off, it shows the one statement that turns it on.</p>
+          <p>No. There's no agent or collector: Culprit connects like any client and reads the statistics the database already keeps (Query Store, <code>pg_stat_statements</code>, <code>performance_schema</code>). If one of them is switched off, it shows the one statement that turns it on. A SQLite file is opened read-only, with nothing added to your application.</p>
         </details>
         <details>
           <summary>Will it change anything in my database?</summary>

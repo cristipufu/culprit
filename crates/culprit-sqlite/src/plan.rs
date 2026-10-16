@@ -36,9 +36,17 @@ pub fn explain(conn: &Connection, statement: &str) -> Result<Plan> {
 /// Whether text is `EXPLAIN QUERY PLAN` output as the sqlite3 shell prints it: the tree under a `QUERY PLAN` line
 /// (`|--SCAN orders`, `` `--USE TEMP B-TREE FOR ORDER BY ``), or the rows as `id|parent|notused|detail`.
 pub fn is_text_plan(text: &str) -> bool {
-    let mut lines = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .skip_while(|l| l.replace(' ', "") == "id|parent|notused|detail");
     let Some(first) = lines.next() else { return false };
-    first.trim() == "QUERY PLAN" || list_row(first).is_some()
+    if first == "QUERY PLAN" {
+        // psql heads a PostgreSQL plan with the same line and a border under it; the shell goes straight to its steps.
+        return lines.next().is_some_and(|l| l.starts_with("|--") || l.starts_with("`--"));
+    }
+    list_row(first).is_some()
 }
 
 /// A pasted plan: the shell's tree or its rows. The statement isn't in the text, so a table keeps the alias the

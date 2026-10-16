@@ -860,7 +860,7 @@ section {
 
 .engine-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 18px;
   margin-top: 36px;
 }
@@ -897,6 +897,16 @@ section {
 
 .badge.ma {
   background: #003545;
+}
+
+.badge.sq {
+  background: #0b6aa8;
+}
+
+.engine h3 small {
+  font-size: 0.7em;
+  font-weight: 500;
+  color: var(--text-3);
 }
 
 /* ───────── download ───────── */
@@ -1074,6 +1084,10 @@ section {
 @media (max-width: 1100px) {
   .terminal pre {
     font-size: 12.5px;
+  }
+
+  .engine-grid {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 

@@ -218,6 +218,10 @@ fn too_large(len: usize) -> Error {
 /// `(26 rows)` footer; the mysql client's table borders and `*** 1. row ***` / `EXPLAIN:` labels; quoted grid copies.
 fn clean(text: &str) -> String {
     let text = text.trim_start_matches('\u{feff}');
+    // The sqlite3 shell heads its tree with the `QUERY PLAN` line psql prints above a plan, dropped below: keep it.
+    if is_sqlite_text(text) {
+        return text.trim_end().to_string();
+    }
     let is_border = |t: &str| !t.is_empty() && t.chars().all(|c| matches!(c, '-' | '+'));
     let is_header = |t: &str| matches!(t.trim_matches('|').trim(), "QUERY PLAN" | "EXPLAIN");
     let is_footer = |t: &str| {

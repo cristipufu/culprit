@@ -287,7 +287,8 @@ struct DiscoverArgs {
 #[derive(Args)]
 struct AddArgs {
     name: String,
-    /// Connection string or host (postgres://…, mssql://…, Server=…;Database=…, jdbc:…, host=… dbname=…).
+    /// Connection string or host (postgres://…, mssql://…, Server=…;Database=…, jdbc:…, host=… dbname=…), or a SQLite
+    /// file's path.
     #[arg(long)]
     url: String,
     #[arg(long, value_enum, default_value = "development")]

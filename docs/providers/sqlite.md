@@ -58,10 +58,11 @@ Opted in after verifying them on the demo file (`dev/sqlite`):
   otherwise Low, saying why), duplicate and overlapping indexes.
 - **Statistics:** no `sqlite_stat1` (the planner guesses), or stats older than large changes when that can be told.
 - **Space:** a large freelist (`VACUUM`, or `auto_vacuum = INCREMENTAL` for files that shrink often).
-- **Journal:** `DELETE` journal mode on a file read and written at once (WAL lets readers proceed during writes): Low,
-  since only the application knows its concurrency.
-- **Plans:** full scans of large tables, `USE TEMP B-TREE FOR ORDER BY`, and `AUTOMATIC COVERING INDEX` (SQLite built
-  a throwaway index because none fits) from `EXPLAIN QUERY PLAN`. With a query log, an automatic index is weighed by
+- **Journal:** the journal mode is shown as a setting, never graded: whether readers and writers contend on the rollback
+  journal depends on how the application's processes share the file, which only the application knows.
+- **Plans:** `AUTOMATIC COVERING INDEX` (SQLite built a throwaway index because none fits) from `EXPLAIN QUERY PLAN`,
+  and the rules that read the statement (a function around a filtered column, a leading wildcard, `NOT IN`). The plan
+  carries no row counts or costs, so full scans and `USE TEMP B-TREE` sorts are drawn but never weighed. With a query log, an automatic index is weighed by
   its statement's share of database time (at most Medium: the plan doesn't say what share of the run it is), and when
   its keys are a foreign key's, the key's finding takes it as evidence: one cause, one finding.
 - **Index advisor:** the indexes SQLite builds for itself on every run are candidates of their own (`engine-built`),

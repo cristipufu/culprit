@@ -159,6 +159,22 @@ fn round_trips_culprit_json() {
     assert_eq!(ops(&back), ops(&plan));
 }
 
+// What the sqlite3 shell prints for EXPLAIN QUERY PLAN: its tree under the `QUERY PLAN` line psql also heads a plan
+// with, and the rows `.mode list` prints with or without their header. psql's own output still reads as PostgreSQL
+// (reads_postgres_text_explain_analyze).
+#[test]
+fn reads_the_sqlite_shells_plans() {
+    let tree = "QUERY PLAN\n|--SCAN o\n`--USE TEMP B-TREE FOR ORDER BY\n";
+    let list = "id|parent|notused|detail\n2|0|0|SCAN o\n9|0|0|USE TEMP B-TREE FOR ORDER BY\n";
+    let rows = list.split_once('\n').unwrap().1;
+    for text in [tree, list, rows] {
+        assert_eq!(detect(text), Some(PlanFormat::SqliteText), "{text}");
+        let plan = parse_plan(text).unwrap_or_else(|e| panic!("{text}: {}", e.message));
+        assert_eq!(plan.engine, Engine::Sqlite);
+        assert_eq!(plan.root.children.len(), 2, "{text}");
+    }
+}
+
 #[test]
 fn explains_what_it_cannot_read() {
     for (input, needle) in [

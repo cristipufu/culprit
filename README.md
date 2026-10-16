@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  A fast desktop app and CLI for SQL Server, PostgreSQL, MySQL and MariaDB, on macOS, Linux and Windows.<br>
+  A fast desktop app and CLI for SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, on macOS, Linux and Windows.<br>
   Plain-language answers for people. Safe, structured access for coding agents.
 </p>
 
@@ -18,6 +18,7 @@
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-336791?style=flat-square&logo=postgresql&logoColor=white">
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-00758F?style=flat-square&logo=mysql&logoColor=white">
   <img alt="MariaDB" src="https://img.shields.io/badge/MariaDB-003545?style=flat-square&logo=mariadb&logoColor=white">
+  <img alt="SQLite" src="https://img.shields.io/badge/SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white">
   <img alt="MCP server" src="https://img.shields.io/badge/MCP-ready-1b1a18?style=flat-square">
   <img alt="macOS, Linux and Windows" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-1b1a18?style=flat-square">
   <a href="https://github.com/cristipufu/culprit-sql-studio/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cristipufu/culprit-sql-studio/actions/workflows/ci.yml/badge.svg"></a>
@@ -86,9 +87,9 @@ A 14 MB app that opens in under a second and shows the last report instantly whi
 </td>
 <td valign="top">
 
-**🧭 One tool, four engines**
+**🧭 One tool, five engines**
 
-The same views, wording and workflow on SQL Server, PostgreSQL, MySQL and MariaDB. When an engine can't show something, Culprit says why in one sentence.
+The same views, wording and workflow on SQL Server, PostgreSQL, MySQL, MariaDB and SQLite. When an engine can't show something, Culprit says why in one sentence.
 
 </td>
 <td valign="top">
@@ -105,7 +106,7 @@ Add your own checks or database engines without forking. The app, the CLI and th
 
 ### Findings you can act on
 
-51 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
+52 checks look for what actually costs time: runaway loops in plans, plan regressions, missing and unused indexes, N+1 query loops, type mismatches that block indexes, parameter-sensitive plans, queries that fail or time out, spills to disk, hot rows, statements that lock a whole table, slow storage, connection storms, replication lag, stale statistics, risky settings and more. Each finding names the queries involved, shows their share of database time, and ends with a fix you copy (Culprit never applies it for you) and a way to verify it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/findings-dark.png">
@@ -114,7 +115,7 @@ Add your own checks or database engines without forking. The app, the CLI and th
 
 ### Plans that explain themselves
 
-Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 32 rules cover SQL Server, PostgreSQL and MySQL plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
+Every captured plan comes with insights in plain words ("repeats its read of order_items 1.5M times, once per row"), a diagram that shows where the cost goes, and the operator's details one click away. 33 rules cover SQL Server, PostgreSQL, MySQL and SQLite plans. Measure a run safely (writes are rolled back), and on SQL Server see the last actual plan without re-running the query or watch a long query's progress step by step.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/queries-dark.png">
@@ -219,9 +220,11 @@ Connect a database and get its dashboard:
 culprit conn add shop --env staging --url 'postgres://app@db.example.com:5432/shop'
 culprit dashboard shop       # the database at a glance
 culprit scan shop            # every finding, ranked
+
+culprit conn add app --url db/production.sqlite3   # a SQLite file, read-only; its framework's log is found beside it
 ```
 
-Or open the desktop app, paste a connection string, and the first report appears in seconds.
+Or open the desktop app, paste a connection string or pick a SQLite file, and the first report appears in seconds.
 
 **Just looking?** `cd app && bun install && bun run dev` opens the full interface in your browser with demo data: no database needed.
 
@@ -230,7 +233,7 @@ Or open the desktop app, paste a connection string, and the first report appears
 - **[Guide](docs/guide.md):** every check and command, the agent setup, measured speed, safety details and how to extend Culprit
 - **[Design](docs/DESIGN.md):** how the product behaves and why
 - **[Coding agents](docs/agents.md):** MCP tools, permissions, approvals and the audit log
-- **[Engine parity](docs/parity.md):** every feature on SQL Server, PostgreSQL, MySQL and MariaDB, and where each answer comes from
+- **[Engine parity](docs/parity.md):** every feature on SQL Server, PostgreSQL, MySQL, MariaDB and SQLite, and where each answer comes from
 
 Culprit is open source under the [MIT license](LICENSE).
 

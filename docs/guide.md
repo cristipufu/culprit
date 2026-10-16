@@ -2,7 +2,7 @@
 
 The reference for the Culprit desktop app and the `culprit` CLI: what it checks, every command, how coding agents use it, what it guarantees on production, and how to build it. For the overview, see the [README](../README.md).
 
-Culprit reads the statistics your database already keeps (Query Store, plan cache and DMVs on SQL Server; `pg_stat_statements` and the statistics views on Postgres; `performance_schema` on MySQL and MariaDB), ranks what it finds by share of database time, and gives every finding the evidence, a production-safe fix and a way to verify it. Scans never write and never run your queries; the editor runs what you ask, with production guarded. The desktop app (Tauri + React) and the CLI share one Rust core, so a coding agent sees exactly what you see.
+Culprit reads the statistics your database already keeps (Query Store, plan cache and DMVs on SQL Server; `pg_stat_statements` and the statistics views on Postgres; `performance_schema` on MySQL and MariaDB; the file itself on SQLite, with the query log its framework already writes), ranks what it finds by share of database time, and gives every finding the evidence, a production-safe fix and a way to verify it. Scans never write and never run your queries; the editor runs what you ask, with production guarded. The desktop app (Tauri + React) and the CLI share one Rust core, so a coding agent sees exactly what you see.
 
 ## Contents
 
@@ -50,6 +50,8 @@ culprit conn add shop-staging --env staging \
 
 culprit conn discover --match shop --match stg --save   # or find Azure SQL, PostgreSQL and MySQL databases your az login can see
 culprit conn import --dry-run                  # or bring in connections from Azure Data Studio, VS Code, DBeaver, DataGrip
+culprit conn add app --url db/production.sqlite3   # a SQLite file (preview), opened read-only
+culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file
 
 culprit scan shop-staging                      # findings, ranked
 culprit scan shop-staging --window 6h          # the same over the last 6 hours (90m, 2d, 1d12h; up to 90 days)
@@ -60,12 +62,12 @@ culprit cloud shop-staging                     # RDS / Azure metrics against the
 culprit show shop-staging '<finding id>'       # evidence, fix, verification, and a brief for your coding agent
 culprit top shop-staging --by cpu -n 10        # heaviest queries
 culprit explain shop-staging --sql 'SELECT …'  # estimated plan, never executes
-culprit plan show slow.sqlplan                 # read a plan from another tool: .sqlplan, EXPLAIN JSON or text, MySQL JSON or tree
+culprit plan show slow.sqlplan                 # read a plan from another tool: .sqlplan, EXPLAIN JSON or text, MySQL JSON or tree, SQLite EXPLAIN QUERY PLAN
 culprit plan diff shop-staging:42:7 shop-staging:42:9   # compare two Query Store plans of query 42 (or two files)
 culprit update --check                         # is there a newer release? `culprit update` installs it
 ```
 
-Or open the desktop app: saved connections are listed in the sidebar, grouped by environment. A connection opens on its **dashboard**: one sentence that says what needs a look first, then fourteen tiles (database time and its trend, findings, top queries, where time goes, sessions right now, health, deadlocks, indexes, plans, storage, connections, replication, failing queries, query statistics), each a plain takeaway, a small picture and a click into the view that explains it. Every engine gets every tile; one it can't fill says why. The ranked findings are one key away (`2`). Paste a connection string, use **Find Azure databases** / **Find AWS databases**, or **Import from other tools** (names, hosts and user names only; passwords are asked for once), and the first scan appears in seconds. Reopening a connection shows its last report instantly while a fresh scan runs. Rename a connection's alias with the pencil on its card or `culprit conn rename`.
+Or open the desktop app: saved connections are listed in the sidebar, grouped by environment. A connection opens on its **dashboard**: one sentence that says what needs a look first, then fourteen tiles (database time and its trend, findings, top queries, where time goes, sessions right now, health, deadlocks, indexes, plans, storage, connections, replication, failing queries, query statistics), each a plain takeaway, a small picture and a click into the view that explains it. Every engine gets every tile; one it can't fill says why. The ranked findings are one key away (`2`). Paste a connection string, pick a file with **SQLite file…** (then **Add query log** if its framework's log isn't found beside it), use **Find Azure databases** / **Find AWS databases**, or **Import from other tools** (names, hosts and user names only; passwords are asked for once), and the first scan appears in seconds. Reopening a connection shows its last report instantly while a fresh scan runs. Rename a connection's alias with the pencil on its card or `culprit conn rename`.
 
 Entra ID connections use your `az login`. Without the Azure CLI (or when it's signed out), Culprit signs in with a device code instead: the app shows the code, the CLI prints it when you're at a terminal. Access tokens stay in memory, the refresh token in the OS keychain; `culprit auth logout` forgets it. Scripts and agents never block on a sign-in: they get an error with a hint.
 
