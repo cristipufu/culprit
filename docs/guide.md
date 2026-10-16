@@ -51,7 +51,7 @@ culprit conn add shop-staging --env staging \
 culprit conn discover --match shop --match stg --save   # or find Azure SQL, PostgreSQL and MySQL databases your az login can see
 culprit conn import --dry-run                  # or bring in connections from Azure Data Studio, VS Code, DBeaver, DataGrip
 culprit conn add app --url db/production.sqlite3   # a SQLite file (preview), opened read-only
-culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file
+culprit conn set app --query-log log/production.log   # its framework's log, when it isn't found beside the file (docs/sqlite.md)
 
 culprit scan shop-staging                      # findings, ranked
 culprit scan shop-staging --window 6h          # the same over the last 6 hours (90m, 2d, 1d12h; up to 90 days)
