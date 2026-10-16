@@ -31,8 +31,8 @@ fn connections(ws: Ws) -> Result<Vec<ConnectionInfo>> {
 }
 
 #[tauri::command]
-fn parse_connection(input: String) -> Result<ParsedConnection> {
-    culprit_engine::parse_connection(&input)
+fn parse_connection(input: String, engine: Option<culprit_core::Engine>) -> Result<ParsedConnection> {
+    culprit_engine::parse_connection(&input, engine)
 }
 
 #[tauri::command]

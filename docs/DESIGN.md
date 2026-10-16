@@ -41,7 +41,7 @@ Connections (start)
 ### Connections
 
 - Recent connections as cards: environment colour (production red, staging amber, development blue, local green), engine, last scan summary ("14 opportunities · 2 h ago").
-- **One smart input**: paste anything — `postgres://`, `mssql://`, ADO (`Server=…;Database=…`), JDBC, or a bare host. The engine and fields are detected; extra fields appear only when needed.
+- **Engine first, then one input**: pick SQL Server, PostgreSQL, MySQL / MariaDB or SQLite (the last one picked is picked again). A server takes a pasted connection string — `postgres://`, `mssql://`, ADO (`Server=…;Database=…`), JDBC, or a bare host — and shows what it read; SQLite takes the file, chosen in the system's dialog. The pick settles only what the text leaves open (a bare host, an ADO.NET string); a text that names another engine switches the pick and says so, and a connection string pasted before anything is picked picks its own engine. Extra fields (user, password) appear only when the string lacks them. Enter connects, Escape cancels.
 - Auth: password, Microsoft Entra ID (Azure CLI token, no secret stored), Postgres `.pgpass`.
 - Environment tag is required and drives safety rules.
 - **Find Azure SQL databases**: lists databases the Azure CLI login can see (Resource Graph, metadata only), with suggested aliases and environments inferred from names (`prd` → production, `alp`/`stg` → staging). Saved with Entra ID, so nothing secret is stored. Production entries are unticked by default.

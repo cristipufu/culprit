@@ -11,6 +11,14 @@ impl EngineSpec for Mysql {
         "MySQL"
     }
 
+    fn connect(&self) -> Connect {
+        Connect::server(
+            "MySQL / MariaDB",
+            "mysql://app@db.example.com:3306/shop",
+            "A mysql://, mariadb:// or JDBC URL, a .NET connection string (Server=…;Uid=…), or host:port/database.",
+        )
+    }
+
     fn abilities(&self) -> EngineAbilities {
         SERVER
     }

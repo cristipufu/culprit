@@ -10,11 +10,20 @@ import engines from "../gen/engines.json";
  *  `gen/engines.json` by its tests, so views, the desktop and the browser demo all answer as the engine does. */
 const FACTS = engines as Record<Engine, EngineFacts>;
 
+/** Every engine, in the order the engine files list them (`Engine::ALL`). */
+export const ENGINES = Object.keys(FACTS) as Engine[];
+
 const LABEL = Object.fromEntries(Object.entries(FACTS).map(([e, f]) => [e, f.label])) as Record<Engine, string>;
 
 /** The engine's name in sentences: "SQL Server", "PostgreSQL", "MySQL", "SQLite". */
 export function engineLabel(engine: Engine): string {
   return LABEL[engine];
+}
+
+/** How a person connects to the engine: its name where they pick it, whether it's a file they choose, and what they
+ *  paste otherwise. */
+export function connectFacts(engine: Engine): EngineFacts["connect"] {
+  return FACTS[engine].connect;
 }
 
 /** MariaDB is served by the MySQL engine; the server's product string (or a plan's flavor) tells them apart. */

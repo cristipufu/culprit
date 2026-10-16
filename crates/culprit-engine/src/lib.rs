@@ -1500,8 +1500,9 @@ fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
     Ok(spec)
 }
 
-pub fn parse_connection(input: &str) -> Result<ParsedConnection> {
-    let spec = connstr::parse(input)?;
+/// What `input` connects to, read as `engine` wherever the text leaves the engine open (see `connstr::parse_as`).
+pub fn parse_connection(input: &str, engine: Option<Engine>) -> Result<ParsedConnection> {
+    let spec = connstr::parse_as(input, engine)?;
     Ok(ParsedConnection {
         engine: spec.engine,
         host: spec.host.clone(),
@@ -1516,6 +1517,11 @@ pub fn parse_connection(input: &str) -> Result<ParsedConnection> {
 }
 
 fn suggest_name(spec: &ConnectionSpec) -> String {
+    if spec.engine == Some(Engine::Sqlite) {
+        return store::safe_file_name(
+            &file_connection_name(spec.database.as_deref().unwrap_or_default()).to_ascii_lowercase(),
+        );
+    }
     let host = spec.host.split('.').next().unwrap_or(&spec.host);
     let base = match (&spec.database, host) {
         (Some(db), "localhost" | "127.0.0.1" | "::1") => format!("{db}-local"),
@@ -1527,9 +1533,55 @@ fn suggest_name(spec: &ConnectionSpec) -> String {
     store::safe_file_name(&base.to_ascii_lowercase())
 }
 
+/// A SQLite file's connection name: the file's own, after its project's when that alone says little
+/// (`shop/db/production.sqlite3` → `shop-production`, `chinook.db` → `chinook`).
+fn file_connection_name(path: &str) -> String {
+    const SAYS_LITTLE: [&str; 13] = [
+        "app",
+        "data",
+        "database",
+        "db",
+        "dev",
+        "development",
+        "local",
+        "main",
+        "prod",
+        "production",
+        "sqlite",
+        "staging",
+        "test",
+    ];
+    const DATA_FOLDERS: [&str; 7] = ["data", "database", "db", "instance", "prisma", "storage", "var"];
+    let path = std::path::Path::new(path);
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    if !SAYS_LITTLE.contains(&stem.to_ascii_lowercase().as_str()) {
+        return stem;
+    }
+    let project = path
+        .ancestors()
+        .skip(1)
+        .filter_map(|folder| folder.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .find(|name| name != "~" && !DATA_FOLDERS.contains(&name.to_ascii_lowercase().as_str()));
+    match project {
+        Some(project) => format!("{project}-{stem}"),
+        None => stem,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sqlite_file_is_named_after_itself_or_its_project() {
+        let name = |path: &str| parse_connection(path, Some(Engine::Sqlite)).unwrap().suggested_name;
+        assert_eq!(name("/Users/me/code/shop/db/production.sqlite3"), "shop-production");
+        assert_eq!(name("/Users/me/Downloads/Chinook.db"), "chinook");
+        assert_eq!(name("~/code/blog/instance/app.db"), "blog-app");
+        assert_eq!(name("~/app.db"), "app");
+        assert_eq!(name("app.db"), "app");
+    }
 
     fn info(engine: Engine, environment: Environment) -> ConnectionInfo {
         ConnectionInfo {

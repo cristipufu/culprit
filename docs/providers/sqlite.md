@@ -77,8 +77,8 @@ Opted in after verifying them on the demo file (`dev/sqlite`):
 - `Engine::Sqlite` with its `Dialect`: `"name"` quoting, `CREATE INDEX` (SQLite builds indexes under a write lock:
   advice says so), `DROP INDEX`, `ANALYZE`. Ending a session doesn't exist.
 - Connections are a file path (`sqlite:///path/to/app.db`, a path ending in `.db`, `.sqlite`, `.sqlite3` or `.db3`, or
-  any path with `--engine sqlite`), kept absolute; no secrets, no network. In the app, **SQLite file…** in the new
-  connection form picks it in the system's dialog, which Culprit opens itself: the window has no file system access.
+  any path with `--engine sqlite`), kept absolute; no secrets, no network. In the app, picking **SQLite** in the new
+  connection form offers **Choose…**, the system's dialog, which Culprit opens itself: the window has no file system access.
 - `crates/culprit-querylog` reads framework logs into a `Workload` (one module per format behind a `Format` trait; a
   new framework is one more module). `culprit-engine/src/query_log.rs` attaches it to a scan only when the database
   kept no workload of its own, and plans the heaviest shapes through the provider (placeholders planned as NULL).

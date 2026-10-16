@@ -10,6 +10,14 @@ impl EngineSpec for Postgres {
         "PostgreSQL"
     }
 
+    fn connect(&self) -> Connect {
+        Connect::server(
+            "PostgreSQL",
+            "postgres://app@db.example.com:5432/shop",
+            "A postgres:// or JDBC URL, libpq's key=value pairs, an Npgsql connection string, or host:port/database.",
+        )
+    }
+
     fn abilities(&self) -> EngineAbilities {
         SERVER
     }

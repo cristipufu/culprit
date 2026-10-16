@@ -17,37 +17,13 @@
       "terminate"
     ],
     "waiting_state": "suspended",
-    "refusals": {}
-  },
-  "mysql": {
-    "label": "MySQL",
-    "abilities": {
-      "sessions": true,
-      "wait_sample": true,
-      "deadlocks": true,
-      "measures_runs": true,
-      "plan_estimates": true,
-      "writes": true,
-      "periods": true,
-      "last_actual_plan": false,
-      "operator_progress": false,
-      "sign_in": true
+    "connect": {
+      "choice": "SQL Server",
+      "file": false,
+      "example": "Server=tcp:shop.database.windows.net;Database=shop;User ID=app",
+      "accepts": "An ADO.NET connection string, an mssql:// or JDBC URL, or host,port/database. Azure SQL without a user name signs in with your az login (Entra ID)."
     },
-    "session_actions": [
-      "cancel",
-      "terminate"
-    ],
-    "waiting_state": "active",
-    "refusals": {
-      "last_actual_plan": {
-        "message": "MySQL and MariaDB don't keep the actual plan of past runs",
-        "hint": "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction."
-      },
-      "operator_progress": {
-        "message": "MySQL reports a running statement's progress, not each step's",
-        "hint": "Its plan doesn't change while it runs: ask for the plan once."
-      }
-    }
+    "refusals": {}
   },
   "postgres": {
     "label": "PostgreSQL",
@@ -68,6 +44,12 @@
       "terminate"
     ],
     "waiting_state": "active",
+    "connect": {
+      "choice": "PostgreSQL",
+      "file": false,
+      "example": "postgres://app@db.example.com:5432/shop",
+      "accepts": "A postgres:// or JDBC URL, libpq's key=value pairs, an Npgsql connection string, or host:port/database."
+    },
     "refusals": {
       "last_actual_plan": {
         "message": "PostgreSQL doesn't keep the actual plan of past runs",
@@ -75,6 +57,42 @@
       },
       "operator_progress": {
         "message": "PostgreSQL reports a running statement's progress, not each step's",
+        "hint": "Its plan doesn't change while it runs: ask for the plan once."
+      }
+    }
+  },
+  "mysql": {
+    "label": "MySQL",
+    "abilities": {
+      "sessions": true,
+      "wait_sample": true,
+      "deadlocks": true,
+      "measures_runs": true,
+      "plan_estimates": true,
+      "writes": true,
+      "periods": true,
+      "last_actual_plan": false,
+      "operator_progress": false,
+      "sign_in": true
+    },
+    "session_actions": [
+      "cancel",
+      "terminate"
+    ],
+    "waiting_state": "active",
+    "connect": {
+      "choice": "MySQL / MariaDB",
+      "file": false,
+      "example": "mysql://app@db.example.com:3306/shop",
+      "accepts": "A mysql://, mariadb:// or JDBC URL, a .NET connection string (Server=…;Uid=…), or host:port/database."
+    },
+    "refusals": {
+      "last_actual_plan": {
+        "message": "MySQL and MariaDB don't keep the actual plan of past runs",
+        "hint": "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction."
+      },
+      "operator_progress": {
+        "message": "MySQL reports a running statement's progress, not each step's",
         "hint": "Its plan doesn't change while it runs: ask for the plan once."
       }
     }
@@ -95,6 +113,12 @@
     },
     "session_actions": [],
     "waiting_state": "active",
+    "connect": {
+      "choice": "SQLite",
+      "file": true,
+      "example": "~/code/shop/db/production.sqlite3",
+      "accepts": "The database file. Culprit opens it read-only and needs nothing from your app."
+    },
     "refusals": {
       "deadlocks": {
         "message": "SQLite records no deadlocks: one writer at a time holds the file",

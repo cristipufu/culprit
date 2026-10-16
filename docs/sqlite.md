@@ -8,7 +8,7 @@ culprit conn add app --url db/app.db
 culprit scan app
 ```
 
-In the desktop app, choose **SQLite file…** on a new connection.
+In the desktop app, pick **SQLite** on a new connection and choose the file.
 
 ## What it finds from the file alone
 

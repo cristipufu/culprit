@@ -1108,7 +1108,19 @@ mod tests {
             }
         }
         if let Ok(dir) = std::env::var("TS_RS_EXPORT_DIR") {
-            let text = serde_json::to_string_pretty(&table).expect("facts") + "\n";
+            // In the engines' own order (`Engine::ALL`), which the app keeps wherever it lists them.
+            struct InOrder;
+            impl serde::Serialize for InOrder {
+                fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                    use serde::ser::SerializeMap;
+                    let mut map = serializer.serialize_map(Some(Engine::ALL.len()))?;
+                    for e in Engine::ALL {
+                        map.serialize_entry(&wire_name(&e), &e.facts())?;
+                    }
+                    map.end()
+                }
+            }
+            let text = serde_json::to_string_pretty(&InOrder).expect("facts") + "\n";
             std::fs::write(std::path::Path::new(&dir).join("engines.json"), text).expect("app/src/gen/engines.json");
         }
     }

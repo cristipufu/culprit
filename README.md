@@ -224,7 +224,7 @@ culprit scan shop            # every finding, ranked
 culprit conn add app --url db/production.sqlite3   # a SQLite file, read-only; its framework's log is found beside it
 ```
 
-Or open the desktop app, paste a connection string or pick a SQLite file, and the first report appears in seconds.
+Or open the desktop app, pick the engine and paste its connection string (or choose the SQLite file), and the first report appears in seconds.
 
 **Just looking?** `cd app && bun install && bun run dev` opens the full interface in your browser with demo data: no database needed.
 

@@ -2000,6 +2000,10 @@ table.grid td.sqlcell {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 18%, transparent);
 }
 
+.smart-input .btn {
+  flex: none;
+}
+
 .smart-input input {
   flex: 1;
   border: 0;
@@ -12430,6 +12434,116 @@ button.as-callout:hover {
   border-radius: var(--r-xs);
   background: var(--surface);
   box-shadow: 0 0 0 1px var(--border);
+}
+
+/* ───────── new connection ───────── */
+
+.new-conn {
+  display: grid;
+  gap: var(--s-3);
+  margin-top: 18px;
+}
+
+/* The engine first: one choice, as wide as the form, so what follows is that engine's. */
+.engine-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.engine-choice {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  height: 44px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--raised);
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  white-space: nowrap;
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.engine-choice .engine-badge {
+  --badge-ring: var(--raised);
+}
+
+.engine-choice > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.engine-choice:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.engine-choice.on {
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--border-strong));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent);
+  color: var(--text);
+}
+
+.engine-choice:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.new-conn-field {
+  display: grid;
+  gap: 6px;
+}
+
+.new-conn-field > label {
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+
+.new-conn-help {
+  margin: 0;
+  color: var(--text-3);
+  font-size: var(--fs-meta);
+  line-height: 1.45;
+}
+
+.new-conn-help.error {
+  color: var(--high-text);
+}
+
+.new-conn-help b {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.new-conn-help .read {
+  margin-right: 5px;
+  vertical-align: -2px;
+  color: var(--good-text);
+}
+
+.new-conn-help .mono {
+  font-family: var(--mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.new-conn .form-grid {
+  margin-top: 0;
+}
+
+.new-conn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
 }
 
 /* ───────── first run ───────── */

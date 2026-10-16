@@ -55,6 +55,9 @@ pub trait EngineSpec: Send + Sync {
     /// statement history). `has_workload`: the scan has statement statistics.
     fn index_advice_sources(&self, server: &ServerInfo, has_workload: bool) -> Option<String>;
 
+    /// How a person connects to it, as the new-connection form asks.
+    fn connect(&self) -> Connect;
+
     /// What may be done to another session from Live, outside production.
     fn session_actions(&self) -> Vec<SessionAction> {
         Vec::new()
@@ -89,6 +92,26 @@ impl Refusal {
     }
 }
 
+/// How a person connects to an engine: the file they choose, or what they paste and how Culprit reads it.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct Connect {
+    /// The engine where a person picks it, with what else it serves: "MySQL / MariaDB".
+    pub choice: String,
+    /// The database is a file on this computer (SQLite), chosen rather than pasted.
+    pub file: bool,
+    /// What to paste, or the path to type, as an example.
+    pub example: String,
+    /// What Culprit reads, in a sentence.
+    pub accepts: String,
+}
+
+impl Connect {
+    fn server(choice: &str, example: &str, accepts: &str) -> Connect {
+        Connect { choice: choice.into(), file: false, example: example.into(), accepts: accepts.into() }
+    }
+}
+
 /// Everything the app needs to know about an engine without a connection: written to `app/src/gen/engines.json`.
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
@@ -97,6 +120,7 @@ pub struct EngineFacts {
     pub abilities: EngineAbilities,
     pub session_actions: Vec<SessionAction>,
     pub waiting_state: String,
+    pub connect: Connect,
     /// The reason for every ability it lacks, by ability.
     pub refusals: BTreeMap<String, Refusal>,
 }
@@ -146,6 +170,7 @@ impl Engine {
             abilities,
             session_actions: spec.session_actions(),
             waiting_state: spec.waiting_state().into(),
+            connect: spec.connect(),
             refusals: Ability::ALL
                 .into_iter()
                 .filter(|a| !abilities.has(*a))

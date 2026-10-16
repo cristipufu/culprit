@@ -51,7 +51,8 @@ export type ScreenArea = { x: number; y: number; width: number; height: number }
 export interface Api {
   readonly kind: "desktop" | "demo";
   connections(): Promise<ConnectionInfo[]>;
-  parseConnection(input: string): Promise<ParsedConnection>;
+  /** What `input` connects to, read as `engine` wherever the text leaves the engine open. */
+  parseConnection(input: string, engine: Engine | null): Promise<ParsedConnection>;
   testConnection(input: NewConnection): Promise<ServerInfo>;
   addConnection(input: NewConnection): Promise<ConnectionInfo>;
   removeConnection(name: string): Promise<void>;
@@ -158,7 +159,7 @@ async function desktopApi(): Promise<Api> {
   return {
     kind: "desktop",
     connections: () => invoke("connections"),
-    parseConnection: (input) => invoke("parse_connection", { input }),
+    parseConnection: (input, engine) => invoke("parse_connection", { input, engine }),
     testConnection: (input) => invoke("test_connection", { input }),
     addConnection: (input) => invoke("add_connection", { input }),
     removeConnection: (name) => invoke("remove_connection", { name }),

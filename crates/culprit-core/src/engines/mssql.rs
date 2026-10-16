@@ -11,6 +11,14 @@ impl EngineSpec for Mssql {
         "SQL Server"
     }
 
+    fn connect(&self) -> Connect {
+        Connect::server(
+            "SQL Server",
+            "Server=tcp:shop.database.windows.net;Database=shop;User ID=app",
+            "An ADO.NET connection string, an mssql:// or JDBC URL, or host,port/database. Azure SQL without a user name signs in with your az login (Entra ID).",
+        )
+    }
+
     fn abilities(&self) -> EngineAbilities {
         EngineAbilities { last_actual_plan: true, operator_progress: true, ..SERVER }
     }

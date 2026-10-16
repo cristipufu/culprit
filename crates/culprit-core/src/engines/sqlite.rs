@@ -11,6 +11,15 @@ impl EngineSpec for Sqlite {
         "SQLite"
     }
 
+    fn connect(&self) -> Connect {
+        Connect {
+            choice: "SQLite".into(),
+            file: true,
+            example: "~/code/shop/db/production.sqlite3".into(),
+            accepts: "The database file. Culprit opens it read-only and needs nothing from your app.".into(),
+        }
+    }
+
     fn abilities(&self) -> EngineAbilities {
         EngineAbilities {
             sessions: false,

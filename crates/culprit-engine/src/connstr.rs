@@ -3,39 +3,58 @@
 use culprit_core::{AuthKind, ConnectionSpec, Engine, Error, Result};
 
 pub fn parse(input: &str) -> Result<ConnectionSpec> {
+    read(input).map(|(spec, _)| spec)
+}
+
+/// What a person pasted after picking the engine: the text's own word wins (a URL's scheme, libpq's key=value pairs, a
+/// SQLite file's name), and the pick settles what the text leaves open: a bare host or an unknown port, an ADO.NET
+/// string (SqlClient, Npgsql and MySqlConnector all read one), a path whatever its name.
+pub fn parse_as(input: &str, picked: Option<Engine>) -> Result<ConnectionSpec> {
+    match (picked, read(input)) {
+        (None, text) => text.map(|(spec, _)| spec),
+        (Some(_), Ok((spec, true))) => Ok(spec),
+        (Some(Engine::Sqlite), _) => parse_sqlite(input),
+        (Some(engine), text) => text.map(|(spec, _)| ConnectionSpec { engine: Some(engine), ..spec }),
+    }
+}
+
+/// The spec, and whether the text named its engine rather than leaving it to a guess from the host or the port (or to
+/// SQL Server, for an ADO.NET string).
+fn read(input: &str) -> Result<(ConnectionSpec, bool)> {
     let input = input.trim();
     if input.is_empty() {
         return Err(Error::invalid("Paste a connection string or a host name"));
     }
     let lower = input.to_ascii_lowercase();
+    let named = |spec: Result<ConnectionSpec>| spec.map(|s| (s, true));
     if let Some(rest) = strip_any(&lower, input, &["jdbc:sqlite:", "sqlite://", "sqlite:"]) {
-        return sqlite(rest.strip_prefix("file:").unwrap_or(rest));
+        return named(sqlite(rest.strip_prefix("file:").unwrap_or(rest)));
     }
     if is_sqlite_path(&lower) {
-        return sqlite(input);
+        return named(sqlite(input));
     }
     if let Some(rest) = strip_any(&lower, input, &["jdbc:sqlserver://"]) {
-        return parse_jdbc_sqlserver(rest);
+        return named(parse_jdbc_sqlserver(rest));
     }
     if let Some(rest) = strip_any(&lower, input, &["jdbc:postgresql://"]) {
-        return parse_url(Engine::Postgres, rest);
+        return named(parse_url(Engine::Postgres, rest));
     }
     if let Some(rest) = strip_any(&lower, input, &["postgres://", "postgresql://"]) {
-        return parse_url(Engine::Postgres, rest);
+        return named(parse_url(Engine::Postgres, rest));
     }
     if let Some(rest) = strip_any(&lower, input, &["mssql://", "sqlserver://"]) {
-        return parse_url(Engine::Mssql, rest);
+        return named(parse_url(Engine::Mssql, rest));
     }
     if let Some(rest) = strip_any(&lower, input, &["mysql://", "mariadb://", "jdbc:mysql://", "jdbc:mariadb://"]) {
-        return parse_url(Engine::Mysql, rest);
+        return named(parse_url(Engine::Mysql, rest));
     }
     if input.contains(';') && input.contains('=') {
-        return parse_ado(input);
+        return parse_ado(input).map(|s| (s, false));
     }
     if input.contains('=') {
-        return parse_libpq(input);
+        return named(parse_libpq(input));
     }
-    parse_bare(input)
+    parse_bare(input).map(|s| (s, false))
 }
 
 /// A path as a SQLite file whatever its name (`db/production`), when the person said the engine is SQLite.
@@ -328,6 +347,30 @@ mod tests {
         assert_eq!(describe(&parse("sqlite:app.db").unwrap()), "app.db");
         // A host that happens to end in .db is still a host when it has a port or a scheme.
         assert_ne!(parse("postgres://reports.db:5432/x").unwrap().engine, Some(Engine::Sqlite));
+    }
+
+    #[test]
+    fn the_engine_picked_settles_only_what_the_text_leaves_open() {
+        // A bare host on a port no engine owns, and an ADO.NET string, which three engines' drivers read.
+        assert_eq!(parse_as("db.internal:6000/shop", Some(Engine::Postgres)).unwrap().engine, Some(Engine::Postgres));
+        let mysql =
+            parse_as("Server=db.internal;Port=3306;Database=shop;Uid=app;Pwd=secret", Some(Engine::Mysql)).unwrap();
+        assert_eq!(mysql.engine, Some(Engine::Mysql));
+        assert_eq!((mysql.user.as_deref(), mysql.database.as_deref()), (Some("app"), Some("shop")));
+        // A guess from the port gives way to the pick.
+        assert_eq!(parse_as("db.internal:1433/shop", Some(Engine::Postgres)).unwrap().engine, Some(Engine::Postgres));
+        // What names its engine keeps it, whatever was picked.
+        assert_eq!(parse_as("postgres://app@h:5432/db", Some(Engine::Mssql)).unwrap().engine, Some(Engine::Postgres));
+        assert_eq!(parse_as("host=h dbname=app", Some(Engine::Mysql)).unwrap().engine, Some(Engine::Postgres));
+        assert_eq!(parse_as("~/shop.db", Some(Engine::Mssql)).unwrap().engine, Some(Engine::Sqlite));
+        assert_eq!(parse_as("mysql://app@h/db", Some(Engine::Sqlite)).unwrap().engine, Some(Engine::Mysql));
+        // Picked SQLite, any path is the file.
+        for path in ["db/production", "/var/lib/app/data", "C:\\data\\app", "my data/app"] {
+            let s = parse_as(path, Some(Engine::Sqlite)).unwrap();
+            assert_eq!((s.engine, s.database.as_deref()), (Some(Engine::Sqlite), Some(path)));
+        }
+        // Nothing picked: as before.
+        assert_eq!(parse_as("db.internal:6000/shop", None).unwrap().engine, None);
     }
 
     #[test]
