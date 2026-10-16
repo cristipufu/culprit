@@ -216,6 +216,25 @@ anyone should be able to add a check.
 | Checks that register themselves (link-time lists, macros) | No list to edit | Which checks run, and in what order, is hidden. Explicit per-area lists are one line each, and `tests/registry.rs` fails when a check is written but not listed, so the safety is the same and nothing is magic. |
 | A collector agent streaming metrics (exporter + time series) | Continuous history | It needs an agent on every server. The engines already keep the history that matters (Query Store, pg_stat_statements, performance_schema); Culprit reads it on demand and compares its own scans for the rest. |
 
+Measured on this code in October 2026:
+
+- **Adding a check** (a real one, "large tables without a primary key", on a throwaway branch): one new file of 33
+  lines, and three lines in its area's `mod.rs` (`mod`, `pub use`, its `CHECKS` entry). It ran at once (`culprit
+  checks` listed 53); forgetting the `CHECKS` line made `tests/registry.rs` fail.
+- **Self-registering checks** would save the one `CHECKS` line, nothing more: Rust needs the `mod` declaration
+  whatever registers the check.
+- **Rules as configuration**: at most 9 of the 52 checks compare fields with thresholds and nothing else. The other 43
+  use the evidence rules: rates over a real window (24 checks), severity from an amount of time (18), statements that
+  are history (19), relations across objects (15), shares weighed by the source (18), reading plans (6).
+- **A script per check** would restate the evidence rules at each of the 183 places checks call them today, so one
+  correction (as the false-flag review made dozens of) becomes up to 183 edits instead of one.
+- **Reading sources**: the four providers had 39 places handling a failed read by hand, with differing wording and
+  rules; declared sources and `Coverage::read` made it one rule, and each demo scan reads the same capabilities and
+  notes as before.
+- **A fifth engine**: a provider crate, one `EngineSpec` file and one line in `Engine::spec`, then the 52 matches that
+  name every engine (21 in core, 19 in checks, 12 in the engine crate), which the compiler lists because they are
+  exhaustive; most of those in checks are a check's own wording for each engine, which stays with the check.
+
 What the chosen shape costs: the snapshot model grows with each engine's own fields (they stay optional, `None` when
 an engine doesn't keep them), checks are compiled in rather than dropped in, and a new engine is real work (a provider
 crate and an `EngineSpec`). In exchange, every finding comes from one read of each source, passes the same evidence
