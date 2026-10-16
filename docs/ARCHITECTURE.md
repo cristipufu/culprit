@@ -226,6 +226,13 @@ Measured on this code in October 2026:
 - **Rules as configuration**: at most 9 of the 52 checks compare fields with thresholds and nothing else. The other 43
   use the evidence rules: rates over a real window (24 checks), severity from an amount of time (18), statements that
   are history (19), relations across objects (15), shares weighed by the source (18), reading plans (6).
+- **Rules as configuration, built and run**: `xid-age`, `heap-table` and `unused-index` written as a 24-line TOML rule
+  file, evaluated over the same 18 snapshots (the six demos, and variants that make each check speak) as the Rust
+  checks. Their findings and severities agree on all 54 runs, but only once the format had an expression language
+  (269 lines) and 11 builtins (133 lines), five of which restate the evidence rules and relations in code; the wording
+  (titles, summaries, fixes, which vary with the evidence) isn't covered and would need a template language with
+  conditions. A misspelled field (`item.is_hep`) made the rule silently find nothing where the check finds 4; in Rust
+  it doesn't compile.
 - **A script per check** would restate the evidence rules at each of the 183 places checks call them today, so one
   correction (as the false-flag review made dozens of) becomes up to 183 edits instead of one.
 - **Reading sources**: the four providers had 39 places handling a failed read by hand, with differing wording and
