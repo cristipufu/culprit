@@ -2,6 +2,17 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.1
+
+A new connection starts with the engine: pick it, then paste its connection string, or choose the file for SQLite.
+
+### New connection
+
+- **The engine first.** Pick SQL Server, PostgreSQL, MySQL / MariaDB or SQLite. The box that follows is that engine's, with its own example and the formats it reads; SQLite gets a path and **Choose file…** instead of a connection string. The engine you last connected with is picked next time.
+- **Your pick settles what the text doesn't.** A bare `host:port/database` on any port, or a .NET connection string such as MySQL's `Server=…;Uid=…`, is read as the engine you picked instead of guessed from the port. A text that names its engine, like a `postgres://` URL or a `.db` path, switches the pick and says so. A connection string pasted before you pick anything picks its engine.
+- **What was read, before you connect.** The form shows the user, host, port and database it read, never the password, or that Azure SQL signs in with your az login. User and password fields appear only when the string has none. Enter connects and Escape cancels.
+- **SQLite files get a name you'd choose:** `shop/db/production.sqlite3` becomes `shop-production` and `Chinook.db` becomes `chinook`, instead of the whole path.
+
 ## 0.3.0
 
 SQLite joins SQL Server, PostgreSQL, MySQL and MariaDB, as a preview. And every check, plan insight and dashboard tile was reviewed again for findings the statistics don't support: 122 reviewed, 87 fixed, each with a test.

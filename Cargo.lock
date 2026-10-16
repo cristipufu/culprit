@@ -943,7 +943,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "block2",
  "culprit-core",
@@ -964,7 +964,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-checks"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "culprit-core",
  "serde_json",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
  "culprit-core",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1000,7 +1000,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-engine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-mcp"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-mssql"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1058,7 +1058,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-mysql"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "culprit-core",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-postgres"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "culprit-core",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-querylog"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "culprit-core",
  "serde_json",
@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "culprit-sqlite"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "culprit-core",
