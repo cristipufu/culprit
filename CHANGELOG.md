@@ -2,6 +2,46 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.0
+
+SQLite joins SQL Server, PostgreSQL, MySQL and MariaDB, as a preview. And every check, plan insight and dashboard tile was reviewed again for findings the statistics don't support: 122 reviewed, 87 fixed, each with a test.
+
+### SQLite (preview)
+
+- **Point Culprit at a `.db` file.** In the app, choose **SQLite file…** on a new connection. In the CLI, run `culprit conn add app --url db/production.sqlite3`; a path ending in `.db`, `.sqlite`, `.sqlite3` or `.db3` is enough. Nothing changes in your application: no extension, hook or driver.
+- **Safe beside a running app.** The file is opened read-only: no writes, and no lock beyond a read. Its one long read, the page sizes from `dbstat`, is bounded so the application's writers never wait on it: files up to 4 GB in WAL mode, 128 MB with a rollback journal. Row counts come from that read or from `sqlite_stat1`, never from `COUNT(*)`.
+- **Your framework's log is the query history.** SQLite records no statements, so Culprit reads the log your framework already writes: Rails, Django, Entity Framework Core, Phoenix/Ecto, or JSON lines. It finds the log beside the database or in its `log` folder, and never pairs a database with another environment's log. It then ranks statement shapes by the time the log measured. You can also pick the log: **Add query log** in the app, `culprit conn set <name> --query-log <file>`, or `--query-log <file>` for one scan. Only statement shapes, with literals removed, reach the report.
+- **What it finds:** unindexed foreign keys, duplicate indexes, missing planner statistics (`ANALYZE`), and a large freelist (`VACUUM`). It also finds the indexes SQLite builds for itself on every run because none fits, with the `CREATE INDEX` that builds them once; the index advisor ranks them by the time of the statements that need them. The journal mode is shown but not judged, since only your application knows its concurrency.
+- **Plans:** `EXPLAIN QUERY PLAN` is drawn as a plan. Insights point out the indexes SQLite builds on every run and, for statements from your log, filters no index can use (a function around the column, a leading wildcard, `NOT IN`). SQLite's plans carry no row counts or costs, so scans and sorts are shown, not weighed. Paste the sqlite3 shell's output into Plans or `culprit plan show`.
+- **What it can't show:** SQLite keeps no usage counters, sessions or waits, so those views say why they're empty instead of showing zeros.
+
+### Fixes
+
+- **Shares of time account for how long a plan was cached.** On SQL Server without Query Store, each cached plan counts from its own compile. A plan cached for a month no longer looks like 90% of database time next to one compiled an hour ago.
+- **Server-wide numbers aren't graded as your database's.** The compile ratio, memory waits since startup, connection churn, a busy MySQL server's row-lock waits and other databases' logical replication consumers are reported as the server's, not graded against the database you scanned.
+- **Severity needs an amount everywhere.** JIT, missing histograms, WAL volume and read lock waits need about a minute a day, as other time-based findings do. Deadlocks are graded by how often they happen, a failing query needs ten unfinished runs a day for High, and an unstable query needs at least three slow runs.
+- **Index advice only where an index can seek.** No advice comes from an `OR` across columns, `<>`, two columns compared, arithmetic, or a cast such as `created_at::date = $1`. None names an optimizer-internal column (`Opt_Bitmap1005`, `Expr1003`). Neither MySQL's fixed 10% guess nor PostgreSQL's default selectivity counts as an estimate. A hash join that matches a tenth or more of the rows it reads gets none either, and pruned partitions and columnstores are skipped.
+- **Session statements aren't your app's work.** `BEGIN`, `COMMIT`, `SET` and a pool's `SELECT 1` are no longer "the app is polling" or N+1 loops. A pool's `DISCARD ALL` is named as such, with the fix pointed at the pool.
+- **Regressions need a real baseline.** A plan regression needs a 20-run baseline and more CPU or reads per run, not just longer waits. A cold cache right after a restart is Low until a day has passed. Parameter sensitivity is graded on the slow calls' extra time, and SQL Server 2022's per-range plan variants aren't read as one plan reused.
+- **How long counters have counted is read carefully.** SQL Server index counters reset by AUTO_CLOSE, a restore or a failover are dated as such. PostgreSQL uses the earlier of its shared resets. MariaDB's user statistics count from when they started, so turning them on doesn't make every index "unused" at once. "Barely read" needs a week of counters, like "never read".
+- **Maintenance advice that fits the cause.** Dead rows a vacuum couldn't remove now blame what holds them back, not "vacuum it now". Stale statistics respect the table's own analyze trigger. Aurora, AlloyDB and Neon aren't told to raise `max_wal_size`, which their storage manages.
+- **Fixes that hold where they run.** MAXDOP on SQL Server 2014 and older uses the server option. Turning on the slow query log never raises `long_query_time`. `shared_buffers` advice needs a hit ratio under 95% and leaves the size to you. AlloyDB, Neon and Supabase get their own settings controls, and buffer pool advice no longer says "parameter group" on Azure or Google.
+- **Plan insights read the plan more carefully.** BitmapAnd, BitmapOr and BRIN bitmap scans aren't misestimates. A fixed ranking weight isn't shown as a share of the plan. Sorts are weighed by measured time, and a function in a seek key counts once per seek. `NOT IN` advice needs the statement to say `NOT IN`. A conversion "stops index use" only when SQL Server's seek warning says so.
+- **Dashboard tiles agree with the checks.** The deadlocks tile counts only this database's dated deadlocks. Database time is Watch only at a minute a day. Query Store 90% full under AUTO cleanup isn't a warning. Health drops grades from ratios minutes after a restart, lifetime totals and old peaks. Health squares show the worst first, then the healthy ones. Without query history, the indexes tile doesn't claim no new indexes are needed.
+- **Findings rank by severity, then impact.** A Low finding with a big share of a quiet database's time no longer tops Medium ones.
+
+### CLI
+
+- **`culprit sources`** lists what a scan reads on each engine, and which checks each source unlocks.
+- **`--query-log <file>`** on `conn add`, `conn set` and `scan`, for SQLite.
+
+### For developers
+
+- **Sources:** each provider declares what it reads in `src/sources.rs` and reads it through one rule: a failing source becomes a note and a locked capability, never a failed scan.
+- **Checks:** each check is a type in a file of its own, listed in its area's `CHECKS`. A test fails when a check is written but never listed.
+- **One file per engine and per platform:** `EngineSpec`, `Dialect` and `Platform` replace matching on names. A new query-log format is one module in `culprit-querylog`.
+- **`docs/ARCHITECTURE.md`** says why the code has this shape, measured against the alternatives.
+
 ## 0.2.9
 
 ### Safety
