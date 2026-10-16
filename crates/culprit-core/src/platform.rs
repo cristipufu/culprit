@@ -130,6 +130,12 @@ impl Platform {
         })
     }
 
+    /// Storage that applies the WAL itself (Aurora, AlloyDB, Neon): a checkpoint doesn't write the data out in one burst,
+    /// and max_wal_size is the service's, so forced checkpoints are no finding there.
+    pub fn applies_wal_in_storage(self) -> bool {
+        matches!(self, Platform::AmazonAurora | Platform::GoogleAlloyDb | Platform::Neon)
+    }
+
     /// The cloud whose own monitoring measures the server (CPU, credits, IOPS against limits), when Culprit reads it.
     pub fn metrics(self) -> Option<CloudProvider> {
         match self {

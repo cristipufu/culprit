@@ -583,7 +583,7 @@ mod tests {
         let buffered = &join.children[2];
         assert_eq!(buffered.detail.as_deref(), Some("join buffer (BNL)"));
         assert_eq!(buffered.predicate.as_deref(), Some("c.id = oi.order_id"));
-        assert_eq!(plan.hottest().id, buffered.id, "the buffered scan carries the cost");
+        assert_eq!(plan.hottest().unwrap().id, buffered.id, "the buffered scan carries the cost");
         let sub = &plan.root.children[1];
         assert_eq!(sub.op, "Dependent subquery");
         assert_eq!(sub.children[0].detail.as_deref(), Some("covering index"));

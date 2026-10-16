@@ -6,6 +6,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import type { Replica } from "../gen/Replica";
 import type { Report } from "../gen/Report";
 import type { TableStat } from "../gen/TableStat";
+import { serverName } from "../lib/engines";
 import { bytes, count, duration, percent, rowCount, when } from "../lib/format";
 import { waitKey } from "../lib/waits";
 import { SignalTile } from "./Health";
@@ -22,9 +23,7 @@ type Row = { key: string; label: string; value: string; note: string; status: St
 const RANK: Record<Status, number> = { bad: 0, watch: 1, good: 2, info: 3 };
 
 function engineName(report: Report): string {
-  const { engine, product } = report.snapshot.server;
-  if (engine === "mysql") return product.toLowerCase().includes("mariadb") ? "MariaDB" : "MySQL";
-  return engine === "postgres" ? "PostgreSQL" : "SQL Server";
+  return serverName(report.snapshot.server.engine, report.snapshot.server.product);
 }
 
 function verb(text: string): string {
@@ -420,10 +419,11 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
     );
   if (snapshot.histograms != null) {
     const columns = snapshot.histograms.filter((h) => h.table.toLowerCase() === table.name.toLowerCase());
+    // MariaDB keeps statistics for a column with or without a histogram; one without says so by having no kind.
     facts.push(
       <Fact
         key="histograms"
-        label="Histograms"
+        label={columns.some((h) => h.kind == null) ? "Column statistics" : "Histograms"}
         value={columns.length ? `${columns.length} column${columns.length === 1 ? "" : "s"}` : "none"}
         detail={columns.length ? columns.map((h) => h.column).join(", ") : "the optimizer guesses for unindexed filters"}
       />,

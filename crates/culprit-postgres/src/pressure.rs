@@ -5,12 +5,14 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use culprit_core::{
-    CleanupHolder, Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
+    CleanupHolder, Coverage, Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample,
+    WaitStat,
 };
 use tokio_postgres::Client;
 
 use crate::collect::Probe;
 use crate::rows::{query, query_one};
+use crate::sources;
 
 /// pg_stat_statements I/O time columns per version (milliseconds; zero unless track_io_timing is on).
 pub fn statements_io_column(version_num: u32) -> &'static str {
@@ -106,146 +108,141 @@ fn breakdown(
     out
 }
 
-pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Vec<String>) {
+/// The pressure counters, each source read through `Coverage::read` (`crate::sources`).
+pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
     let mut p = Pressure::default();
-    let mut notes = Vec::new();
+    let mut coverage = Coverage::default();
     // How long the counters have counted. PostgreSQL keeps statistics across a clean restart, so the server's start
     // time says nothing about it. A reset (of the database's counters or of one table's) stamps the database's
     // stats_reset. Until then it is empty: the counters run from when PostgreSQL last discarded its statistics (a
     // crash, a restore, the first start), which also stamps the shared counters' stats_reset (pg_stat_bgwriter,
-    // pg_stat_archiver) with that moment; a later reset of those only makes the age shorter than it is.
+    // pg_stat_archiver) with that moment. A later reset of one of those moves only its own stamp, so the earlier of the
+    // two is the closer one: still never older than the counters (no "unused" claim stretches past them), and a rate
+    // isn't inflated by a span cut short.
     let database = query_one(
         client,
         "SELECT blks_hit, blks_read, temp_bytes, xact_commit, xact_rollback, deadlocks,
                 extract(epoch FROM now() - coalesce(stats_reset,
-                    (SELECT greatest(b.stats_reset, a.stats_reset) FROM pg_stat_bgwriter b, pg_stat_archiver a))) / 3600 AS hours
+                    (SELECT least(b.stats_reset, a.stats_reset) FROM pg_stat_bgwriter b, pg_stat_archiver a))) / 3600 AS hours
            FROM pg_stat_database WHERE datname = current_database()",
     )
     .await;
-    match database {
-        Ok(Some(r)) => {
-            let hours = r.number("hours").filter(|h| *h > 0.0);
-            p.uptime_hours = hours;
-            let (hit, read) = (r.number("blks_hit").unwrap_or(0.0), r.number("blks_read").unwrap_or(0.0));
-            if hit + read > 0.0 {
-                p.signals.push(
-                    Signal::new(
-                        "cache-hit",
-                        "Reads served from memory",
-                        hit / (hit + read) * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded("above 99% is healthy for most workloads", 99.0, 95.0, false),
-                );
-            }
-            let temp = r.number("temp_bytes").unwrap_or(0.0);
-            match hours {
-                // Over an hour of known counting: a rate, graded.
-                Some(h) if h >= 1.0 => p.signals.push(
-                    Signal::new(
-                        "temp-bytes",
-                        "Temporary files written, per hour",
-                        temp / h,
-                        SignalUnit::Bytes,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded(
-                        "near zero an hour: queries that sort or hash in memory",
-                        100.0 * 1024.0 * 1024.0,
-                        1024.0 * 1024.0 * 1024.0,
-                        true,
-                    ),
-                ),
-                // Under an hour, or since an unknown time: the total, which no rate threshold applies to.
-                Some(_) => p.signals.push(Signal::new(
-                    "temp-bytes",
-                    "Temporary files written since reset",
-                    temp,
-                    SignalUnit::Bytes,
-                    SignalScope::SinceStartup,
-                )),
-                None => p.signals.push(Signal::new(
-                    "temp-bytes",
-                    "Temporary files written since statistics began",
-                    temp,
-                    SignalUnit::Bytes,
-                    SignalScope::SinceStartup,
-                )),
-            }
-            if let Some(h) = hours {
-                p.signals.push(Signal::new(
-                    "commits",
-                    "Commits",
-                    r.number("xact_commit").unwrap_or(0.0) / (h * 3600.0),
-                    SignalUnit::PerSecond,
-                    SignalScope::SinceStartup,
-                ));
-            }
-            let (commits, rollbacks) =
-                (r.number("xact_commit").unwrap_or(0.0), r.number("xact_rollback").unwrap_or(0.0));
-            if commits + rollbacks > 0.0 {
-                p.signals.push(
-                    Signal::new(
-                        "rollbacks",
-                        "Transactions rolled back",
-                        rollbacks / (commits + rollbacks) * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded("under 5% is healthy", 5.0, 20.0, true),
-                );
-            }
+    if let Some(Some(r)) = coverage.read(&sources::DATABASE_STATS, database) {
+        let hours = r.number("hours").filter(|h| *h > 0.0);
+        p.uptime_hours = hours;
+        let (hit, read) = (r.number("blks_hit").unwrap_or(0.0), r.number("blks_read").unwrap_or(0.0));
+        if hit + read > 0.0 {
             p.signals.push(
                 Signal::new(
-                    "deadlocks",
-                    "Deadlocks",
-                    r.number("deadlocks").unwrap_or(0.0),
-                    SignalUnit::Count,
+                    "cache-hit",
+                    // shared_buffers only: a read the operating system's cache serves counts as a miss here.
+                    "Reads served from shared_buffers",
+                    hit / (hit + read) * 100.0,
+                    SignalUnit::Percent,
                     SignalScope::SinceStartup,
                 )
-                .graded("0 is healthy", 1.0, 10.0, true),
+                .graded("above 99% is healthy for most workloads", 99.0, 95.0, false),
             );
         }
-        Ok(None) => {}
-        Err(e) => notes.push(format!("Database statistics: {}", e.message)),
+        let temp = r.number("temp_bytes").unwrap_or(0.0);
+        match hours {
+            // Over an hour of known counting: a rate, graded.
+            Some(h) if h >= 1.0 => p.signals.push(
+                Signal::new(
+                    "temp-bytes",
+                    "Temporary files written, per hour",
+                    temp / h,
+                    SignalUnit::Bytes,
+                    SignalScope::SinceStartup,
+                )
+                .graded(
+                    "near zero an hour: queries that sort or hash in memory",
+                    100.0 * 1024.0 * 1024.0,
+                    1024.0 * 1024.0 * 1024.0,
+                    true,
+                ),
+            ),
+            // Under an hour, or since an unknown time: the total, which no rate threshold applies to.
+            Some(_) => p.signals.push(Signal::new(
+                "temp-bytes",
+                "Temporary files written since reset",
+                temp,
+                SignalUnit::Bytes,
+                SignalScope::SinceStartup,
+            )),
+            None => p.signals.push(Signal::new(
+                "temp-bytes",
+                "Temporary files written since statistics began",
+                temp,
+                SignalUnit::Bytes,
+                SignalScope::SinceStartup,
+            )),
+        }
+        if let Some(h) = hours {
+            p.signals.push(Signal::new(
+                "commits",
+                "Commits",
+                r.number("xact_commit").unwrap_or(0.0) / (h * 3600.0),
+                SignalUnit::PerSecond,
+                SignalScope::SinceStartup,
+            ));
+        }
+        let (commits, rollbacks) = (r.number("xact_commit").unwrap_or(0.0), r.number("xact_rollback").unwrap_or(0.0));
+        if commits + rollbacks > 0.0 {
+            p.signals.push(
+                Signal::new(
+                    "rollbacks",
+                    "Transactions rolled back",
+                    rollbacks / (commits + rollbacks) * 100.0,
+                    SignalUnit::Percent,
+                    SignalScope::SinceStartup,
+                )
+                .graded("under 5% is healthy", 5.0, 20.0, true),
+            );
+        }
+        p.signals.push(
+            Signal::new(
+                "deadlocks",
+                "Deadlocks",
+                r.number("deadlocks").unwrap_or(0.0),
+                SignalUnit::Count,
+                SignalScope::SinceStartup,
+            )
+            .graded("0 is healthy", 1.0, 10.0, true),
+        );
     }
     let checkpoints_sql = if probe.version_num >= 170_000 {
         "SELECT num_timed AS timed, num_requested AS requested FROM pg_stat_checkpointer"
     } else {
         "SELECT checkpoints_timed AS timed, checkpoints_req AS requested FROM pg_stat_bgwriter"
     };
-    match query_one(client, checkpoints_sql).await {
-        Ok(Some(r)) => {
-            let (timed, requested) = (r.number("timed").unwrap_or(0.0), r.number("requested").unwrap_or(0.0));
-            if timed + requested > 0.0 {
-                p.signals.push(Signal::new(
-                    "checkpoints",
-                    "Checkpoints",
-                    timed + requested,
-                    SignalUnit::Count,
+    if let Some(Some(r)) = coverage.read(&sources::CHECKPOINTS, query_one(client, checkpoints_sql).await) {
+        let (timed, requested) = (r.number("timed").unwrap_or(0.0), r.number("requested").unwrap_or(0.0));
+        if timed + requested > 0.0 {
+            p.signals.push(Signal::new(
+                "checkpoints",
+                "Checkpoints",
+                timed + requested,
+                SignalUnit::Count,
+                SignalScope::SinceStartup,
+            ));
+            p.signals.push(
+                Signal::new(
+                    "checkpoints-requested",
+                    "Checkpoints forced early",
+                    requested / (timed + requested) * 100.0,
+                    SignalUnit::Percent,
                     SignalScope::SinceStartup,
-                ));
-                p.signals.push(
-                    Signal::new(
-                        "checkpoints-requested",
-                        "Checkpoints forced early",
-                        requested / (timed + requested) * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded(
-                        "under 10% is healthy; more usually means max_wal_size is too small (a manual CHECKPOINT, a \
+                )
+                .graded(
+                    "under 10% is healthy; more usually means max_wal_size is too small (a manual CHECKPOINT, a \
                          base backup or CREATE DATABASE also requests one)",
-                        10.0,
-                        30.0,
-                        true,
-                    ),
-                );
-            }
+                    10.0,
+                    30.0,
+                    true,
+                ),
+            );
         }
-        Ok(None) => {}
-        Err(e) => notes.push(format!("Checkpoints: {}", e.message)),
     }
     if let Ok(Some(r)) = query_one(
         client,
@@ -261,28 +258,24 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Vec<String>) 
                 .graded("under 80% of max_connections is healthy", 80.0, 90.0, true),
         );
     }
-    if probe.privileged {
-        match cleanup_holder(client).await {
-            Ok(Some(t)) => {
-                if t.holder != Some(CleanupHolder::ReplicationSlot) {
-                    p.signals.push(
-                        Signal::new(
-                            "oldest-transaction",
-                            "Oldest transaction holding cleanup",
-                            t.seconds,
-                            SignalUnit::Seconds,
-                            SignalScope::Now,
-                        )
-                        .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
-                    );
-                }
-                p.oldest_transaction = Some(t);
-            }
-            Ok(None) => {}
-            Err(e) => notes.push(format!("Open transactions: {}", e.message)),
+    if probe.privileged
+        && let Some(Some(t)) = coverage.read(&sources::OPEN_TRANSACTIONS, cleanup_holder(client).await)
+    {
+        if t.holder != Some(CleanupHolder::ReplicationSlot) {
+            p.signals.push(
+                Signal::new(
+                    "oldest-transaction",
+                    "Oldest transaction holding cleanup",
+                    t.seconds,
+                    SignalUnit::Seconds,
+                    SignalScope::Now,
+                )
+                .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
+            );
         }
+        p.oldest_transaction = Some(t);
     }
-    (p, notes)
+    (p, coverage)
 }
 
 /// Sessions of this database (and physical walsenders, which carry a standby's feedback for every database) whose

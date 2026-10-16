@@ -132,10 +132,15 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
     let px = |x: f64| PAD + x * (W + GAP_X);
     let py = |d: usize| PAD + 18.0 + d as f64 * (H + GAP_Y);
     let by_id: HashMap<u32, &Placed> = placed.iter().map(|p| (p.node.id, p)).collect();
-    let hottest = plan.hottest();
+    let hottest = plan.hottest().map(|n| n.id);
     let mut hot_path = Vec::new();
-    path_to(&plan.root, hottest.id, &mut hot_path);
-    let hot: HashSet<u32> = if share(plan, hottest) >= 0.05 { hot_path.into_iter().collect() } else { HashSet::new() };
+    let hot: HashSet<u32> = match plan.hottest() {
+        Some(hottest) if share(plan, hottest) >= 0.05 => {
+            path_to(&plan.root, hottest.id, &mut hot_path);
+            hot_path.into_iter().collect()
+        }
+        _ => HashSet::new(),
+    };
     let max_rows = placed.iter().map(|p| rows_out(p.node)).fold(1.0, f64::max);
     let stroke = |rows: f64| 1.5 + 5.0 * ((rows + 1.0).log10() / (max_rows + 1.0).log10()).clamp(0.0, 1.0);
 
@@ -229,7 +234,7 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
             Some(Mark::Only) => "only here · ",
             _ => "",
         };
-        let flame = if n.id == hottest.id && s >= 0.05 { "▲ " } else { "" };
+        let flame = if Some(n.id) == hottest && s >= 0.05 { "▲ " } else { "" };
         let _ = write!(
             svg,
             r#"<text class="pct" x="{:.1}" y="{:.1}" text-anchor="end">{}{flame}{}</text>"#,

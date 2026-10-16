@@ -123,6 +123,12 @@ export interface Api {
   deleteSavedQuery(name: string): Promise<void>;
   savedQueryRan(name: string): Promise<void>;
   setAgentAccess(name: string, access: AgentAccess): Promise<ConnectionInfo>;
+  /** The log scans read the statements from when the database keeps none (SQLite); null stops. */
+  setQueryLog(name: string, path: string | null): Promise<ConnectionInfo>;
+  /** Pick that log in the system's file dialog (desktop only); null when the person cancelled. */
+  chooseQueryLog(name: string): Promise<ConnectionInfo | null>;
+  /** Pick a SQLite file in the system's file dialog (desktop only): its path, for the new-connection input. */
+  chooseDatabaseFile(): Promise<string | null>;
   pendingApprovals(): Promise<ApprovalRequest[]>;
   decideApproval(id: string, hash: string, approved: boolean): Promise<void>;
   /** A newer published release, or null. Asked by the app itself at most once a day, or when the person checks. */
@@ -210,6 +216,9 @@ async function desktopApi(): Promise<Api> {
     deleteSavedQuery: (name) => invoke("delete_saved_query", { name }),
     savedQueryRan: (name) => invoke("saved_query_ran", { name }),
     setAgentAccess: (name, access) => invoke("set_agent_access", { name, access }),
+    setQueryLog: (name, path) => invoke("set_query_log", { name, path }),
+    chooseQueryLog: (name) => invoke("choose_query_log", { name }),
+    chooseDatabaseFile: () => invoke("choose_database_file"),
     pendingApprovals: () => invoke("pending_approvals"),
     decideApproval: (id, hash, approved) => invoke("decide_approval", { id, hash, approved }),
     checkUpdate: () => invoke("check_update"),

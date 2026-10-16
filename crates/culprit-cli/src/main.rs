@@ -161,6 +161,8 @@ enum Command {
     Saved(SavedCommand),
     /// List every check with the engines and capabilities it needs.
     Checks,
+    /// List what a scan reads on each engine: its sources, and the capabilities each delivers to the checks.
+    Sources,
     /// Databases, tables, views and columns as the editor's completion sees them (read live, read-only).
     Catalog { connection: String },
     /// What differs between two databases (latest scans): tables, columns, indexes, settings and version, with SQL to align
@@ -307,6 +309,10 @@ struct AddArgs {
     /// Save without testing the connection first.
     #[arg(long)]
     no_test: bool,
+    /// For a database that keeps no statement history (SQLite): the log the application's framework writes, read on
+    /// every scan. Rails, Django, Entity Framework Core, Phoenix/Ecto, or JSON lines.
+    #[arg(long, value_name = "FILE")]
+    query_log: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]
@@ -331,6 +337,11 @@ struct ScanArgs {
     /// Print the whole report, including the snapshot.
     #[arg(long)]
     full: bool,
+    /// For a database that keeps no statement history (SQLite): a log the application's framework already writes, read
+    /// for the statements and their times, instead of the connection's saved one (`culprit conn set --query-log`).
+    /// Rails, Django, Entity Framework Core, Phoenix/Ecto, or JSON lines.
+    #[arg(long, value_name = "FILE")]
+    query_log: Option<std::path::PathBuf>,
 }
 
 #[derive(Args)]
@@ -454,6 +465,7 @@ enum EngineArg {
     Postgres,
     Mssql,
     Mysql,
+    Sqlite,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -581,7 +593,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
             let options = SnapshotOptions { top_queries: args.top, plans: args.plans, ..SnapshotOptions::default() }
                 .with_window_minutes(window);
             out.progress(&format!("Scanning {}…", args.connection));
-            let report = ws.scan(&args.connection, &options).await?;
+            let report = ws.scan_with_log(&args.connection, &options, args.query_log.as_deref()).await?;
             out.scan(&report, args.full, &ws.paths().reports_dir(&args.connection));
             Ok(fail_code(&report, args.fail_on))
         }
@@ -698,6 +710,10 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         }
         Command::Checks => {
             out.checks(&ws.checks());
+            Ok(0)
+        }
+        Command::Sources => {
+            out.sources(&culprit_core::Engine::ALL.map(|e| (e, culprit_engine::registry::sources(e))));
             Ok(0)
         }
         Command::Drift { a, b } => {
@@ -896,6 +912,7 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                     EngineArg::Postgres => Engine::Postgres,
                     EngineArg::Mssql => Engine::Mssql,
                     EngineArg::Mysql => Engine::Mysql,
+                    EngineArg::Sqlite => Engine::Sqlite,
                 }),
                 database: args.database,
                 user: args.user,
@@ -914,7 +931,10 @@ async fn conn(ws: &Workspace, command: ConnCommand, out: &Out) -> culprit_core::
                 out.progress(&format!("Testing {}…", args.name));
                 Some(ws.provider_for(&new).await?.probe().await?)
             };
-            let info = ws.add_connection(new)?;
+            let mut info = ws.add_connection(new)?;
+            if let Some(log) = args.query_log.as_deref() {
+                info = ws.set_query_log(&info.name, Some(log))?;
+            }
             out.connection_added(&info, server.as_ref());
             Ok(0)
         }

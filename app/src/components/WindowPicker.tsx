@@ -13,8 +13,10 @@ const LABEL: Record<WindowMinutes, string> = {
 };
 const SHORT: Record<WindowMinutes, string> = { 60: "1h", 360: "6h", 1440: "24h", 10080: "7d", 43200: "30d" };
 
-/** Workload window for history-keeping sources (Query Store). `coveredHours` is what the source actually had. */
-export function WindowPicker({ coveredHours }: { coveredHours: number | null }) {
+/** Workload window for history-keeping sources (Query Store, the slow query log). `coveredHours` is what the source
+ *  actually had; `source` names it. */
+export function WindowPicker({ coveredHours, source }: { coveredHours: number | null; source: string | null }) {
+  const from = source ?? "Query Store";
   const minutes = useStore((s) => s.windowMinutes);
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLDivElement>(null);
@@ -51,8 +53,8 @@ export function WindowPicker({ coveredHours }: { coveredHours: number | null }) 
         <ChevronDown size={13} className="muted" />
       </button>
       {short && (
-        <span className="picker-note" title={`Query Store has kept history for ${held}; a longer window shows the same data until it has more.`}>
-          Query Store keeps {held}
+        <span className="picker-note" title={`${from} has kept history for ${held}; a longer window shows the same data until it has more.`}>
+          {from} keeps {held}
         </span>
       )}
       {open && (
@@ -66,7 +68,7 @@ export function WindowPicker({ coveredHours }: { coveredHours: number | null }) 
               <span className="menu-key">{d === minutes ? <Check size={13} /> : SHORT[d]}</span>
             </button>
           ))}
-          <div className="menu-hint">From Query Store history. Short windows show what is slow now; long ones catch weekly and monthly jobs. Press W to cycle.</div>
+          <div className="menu-hint">From {from} history. Short windows show what is slow now; long ones catch weekly and monthly jobs. Press W to cycle.</div>
         </div>
       )}
     </div>

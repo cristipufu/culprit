@@ -201,7 +201,16 @@ pub struct Replica {
     /// caps what slots keep (PostgreSQL 13+ `safe_wal_size`).
     #[serde(default)]
     pub safe_wal_bytes: Option<f64>,
+    /// The database a logical walsender or slot decodes (PostgreSQL); `None` for a physical one, which carries every
+    /// database. Another database's consumer is that database's lag, though its slot keeps WAL for the whole server.
+    #[serde(default)]
+    pub database: Option<String>,
 }
+
+/// WAL a PostgreSQL standby has received and not replayed that makes the time since its last replayed commit its lag:
+/// a WAL segment. Below it replay is current, and that time is how long the primary went without a commit (one long
+/// CREATE INDEX, COPY or VACUUM), not how far behind the standby is.
+pub const STANDBY_BEHIND_BYTES: f64 = 16.0 * 1024.0 * 1024.0;
 
 impl Replica {
     /// A replica, slot or this server by name, with nothing measured yet.
@@ -220,6 +229,7 @@ impl Replica {
             inactive_seconds: None,
             wal_status: None,
             safe_wal_bytes: None,
+            database: None,
         }
     }
 
@@ -288,11 +298,21 @@ pub struct SizeBaseline {
     pub tables: BTreeMap<String, f64>,
 }
 
+/// A table's own rows in bytes, large values included, measured the one way growth compares: the in-row part plus the
+/// large values kept apart, where the scan split them, else its data size. (PostgreSQL's size from the catalog when the
+/// exact sizes time out once counted the main fork alone, so a data size against a split one was all TOAST "growth".)
+pub fn rows_bytes(t: &crate::TableStat) -> Option<f64> {
+    match (t.in_row_bytes, t.lob_bytes) {
+        (Some(in_row), Some(lob)) => Some(in_row + lob + t.overflow_bytes.unwrap_or(0.0)),
+        _ => t.data_bytes,
+    }
+}
+
 impl SizeBaseline {
     /// The sizes `previous`, an earlier scan of the same database, read. `None` when it read none.
     pub fn from_scan(previous: &Snapshot) -> Option<SizeBaseline> {
         let tables: BTreeMap<String, f64> =
-            previous.tables.iter().filter_map(|t| Some((t.qualified().to_ascii_lowercase(), t.data_bytes?))).collect();
+            previous.tables.iter().filter_map(|t| Some((t.qualified().to_ascii_lowercase(), rows_bytes(t)?))).collect();
         (!tables.is_empty()).then(|| SizeBaseline { taken_at: previous.taken_at.clone(), tables })
     }
 
@@ -337,10 +357,12 @@ impl EscalationBaseline {
     }
 
     /// Escalations on `table` (`schema.table`) since the earlier scan, out of `now` counted since the server started.
-    /// A count lower than then was started again (the table's indexes were reloaded into memory), so all of it is new.
-    pub fn since(&self, table: &str, now: f64) -> f64 {
+    /// `None` for a count lower than then without a restart: the table's indexes were reloaded into memory, or one of
+    /// them (or a partition) was rebuilt or dropped and took its own count with it. The rest may all be old, so it
+    /// can't say how many are new.
+    pub fn since(&self, table: &str, now: f64) -> Option<f64> {
         let then = self.tables.get(table).copied().unwrap_or(0.0);
-        if now >= then { now - then } else { now }
+        (now >= then).then_some(now - then)
     }
 }
 

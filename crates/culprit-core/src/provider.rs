@@ -85,7 +85,7 @@ pub trait Provider: Send + Sync {
     /// Run a statement that changes data (or that Culprit can't prove only reads) in a read-write session and commit it.
     /// Callers have already asked for confirmation where the environment requires it.
     async fn execute(&self, _sql: &str, _limit: usize) -> Result<ResultSet> {
-        Err(Error::new(ErrorCode::Unsupported, "This engine can't run statements that change data"))
+        Err(self.engine().refused(crate::model::Ability::Writes))
     }
 
     /// The statements the server itself would run for `sql`, by type (`SELECT`, `COMMIT TRANSACTION`, `CREATE TABLE`…),
@@ -104,13 +104,13 @@ pub trait Provider: Send + Sync {
 
     /// Recent deadlocks from wherever the engine keeps them, newest first, already classified.
     async fn deadlocks(&self, _since_hours: f64) -> Result<crate::deadlock::DeadlockReport> {
-        Err(Error::new(ErrorCode::Unsupported, "This engine doesn't expose deadlocks"))
+        Err(self.engine().refused(crate::model::Ability::Deadlocks))
     }
 
     /// What the server waits on right now: two readings `seconds` apart (or sessions sampled every second). Reads
     /// statistics views only; safe on production.
     async fn wait_sample(&self, _seconds: u32) -> Result<crate::waits::WaitSample> {
-        Err(Error::new(ErrorCode::Unsupported, "This engine can't sample waits"))
+        Err(self.engine().refused(crate::model::Ability::WaitSample))
     }
 
     /// Every query's runs and time in two periods, from a source that keeps history by interval (Query Store).
@@ -131,7 +131,7 @@ pub trait Provider: Send + Sync {
     /// The actual plan of a query's most recent run as the engine kept it, without running the query (SQL Server 2019+
     /// with LAST_QUERY_PLAN_STATS). Ids are the workload's query and plan ids.
     async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
-        Err(Error::new(ErrorCode::Unsupported, format!("{} doesn't keep the actual plan of past runs", self.engine())))
+        Err(self.engine().refused(crate::model::Ability::LastActualPlan))
     }
 
     /// How far along another session's running statement is. `with_plan` asks for the plan as well; engines whose
@@ -144,9 +144,10 @@ pub trait Provider: Send + Sync {
         ))
     }
 
-    /// What `interrupt_session` supports on this engine.
+    /// What `interrupt_session` supports on this engine: the engine's own (`EngineSpec::session_actions`) unless this
+    /// provider can do less.
     fn session_actions(&self) -> Vec<SessionAction> {
-        Vec::new()
+        self.engine().spec().session_actions()
     }
 
     /// Cancel another session's statement or end the session. `session` is an id from `live()`. Implementations refuse

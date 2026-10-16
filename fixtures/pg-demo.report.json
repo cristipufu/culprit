@@ -8,7 +8,7 @@
       "fix": {
         "cost": "work_mem is per sort or hash, per connection: size it with your connection count in mind.",
         "sql": "-- For the role the application connects as (takes effect on its next connections):\nALTER ROLE <app_role> SET work_mem = '64MB';\n\n-- Or only for this statement, inside its transaction:\nSET LOCAL work_mem = '64MB';",
-        "summary": "Give this statement more sort memory (64MB instead of 4MB), for the role the application connects as or only around this statement, rather than server-wide; or add an index that returns rows already in the order the sort needs, or sort fewer rows."
+        "summary": "Give this statement more sort memory (64MB instead of 4MB, if the application's role doesn't already set more), for the role the application connects as or only around this statement, rather than server-wide; or add an index that returns rows already in the order the sort needs, or sort fewer rows."
       },
       "id": "temp-spill:9065391607317686058",
       "impact": {
@@ -45,7 +45,7 @@
         "kind": "query",
         "name": "9065391607317686058"
       },
-      "summary": "A sort or hash in this statement needs more memory than work_mem (4MB) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory.",
+      "summary": "A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory.",
       "title": "A read from orders writes about 19.9 MB of temp files per run",
       "verify": []
     },
@@ -165,59 +165,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [
-        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
-      ],
-      "check": "chatty-query",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
-      },
-      "id": "chatty-query:3432126458605143571",
-      "impact": {
-        "db_time_share": 0.0008000892165181061,
-        "label": "68% of executions",
-        "score": 30.072744781156956,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Share of executions",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.6811039986698811
-        },
-        {
-          "label": "Average duration",
-          "text": null,
-          "unit": "ms",
-          "value": 0.015752548394971234
-        }
-      ],
-      "queries": [
-        {
-          "id": "3432126458605143571",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "3432126458605143571"
-      },
-      "summary": "This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (<1% of database time), but each call costs a network round trip and a connection.",
-      "title": "A read from customers runs 8.2K times in 5 hours, one row at a time",
-      "verify": [
-        "After the change, this statement's executions per day should drop by orders of magnitude."
-      ]
-    },
-    {
       "category": "maintenance",
       "caveats": [
         "PostgreSQL's statistics also estimate about 123 MB of wide (74%) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum."
@@ -226,7 +173,7 @@
       "confidence": "high",
       "fix": {
         "cost": "VACUUM doesn't block reads or writes; it does add I/O while it runs.",
-        "sql": "VACUUM (ANALYZE) archive.wide;\nALTER TABLE archive.wide SET (autovacuum_vacuum_scale_factor = 0.02, autovacuum_enabled = true);",
+        "sql": "VACUUM (ANALYZE) archive.wide;\nALTER TABLE archive.wide SET (autovacuum_vacuum_scale_factor = 0.02);",
         "summary": "Vacuum it now, and make autovacuum visit this table sooner. If dead rows come back quickly, look for long-running transactions in Live: they stop vacuum from cleaning up."
       },
       "id": "dead-rows:archive.wide",
@@ -383,63 +330,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [],
-      "check": "jit-overhead",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": "-- JIT only for plans the planner thinks are 10× more expensive than today's threshold\nALTER SYSTEM SET jit_above_cost = 1000000;\nSELECT pg_reload_conf();\n-- Or for the application's role only:\n-- ALTER ROLE app_user SET jit = off;",
-        "summary": "Raise the cost threshold so JIT only starts for plans ten times as expensive as now (100K today): Set jit_above_cost to 1000000 and reload the configuration (settings marked as needing a restart take effect after one). Or turn JIT off for the application's role. Fixing the row estimate that inflates the cost also helps."
-      },
-      "id": "jit-overhead:6425265648074738764",
-      "impact": {
-        "db_time_share": 0.02364142753518516,
-        "label": "98% JIT",
-        "score": 22.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "JIT share",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.9773769146834362
-        },
-        {
-          "label": "JIT per run",
-          "text": null,
-          "unit": "ms",
-          "value": 31.06060338333334
-        },
-        {
-          "label": "Run time",
-          "text": null,
-          "unit": "ms",
-          "value": 31.779554966666655
-        }
-      ],
-      "queries": [
-        {
-          "id": "6425265648074738764",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "6425265648074738764"
-      },
-      "summary": "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 4 h 53 min ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.",
-      "title": "JIT compilation takes longer than running a read from products",
-      "verify": [
-        "Re-scan: JIT time per run should drop to zero or near it, and the average run time with it."
-      ]
-    },
-    {
       "category": "configuration",
       "caveats": [],
       "check": "replica-lag",
@@ -476,6 +366,59 @@
       "title": "The inactive replication slot analytics_slot keeps 1.1 GB of WAL",
       "verify": [
         "Re-scan: the slot should be gone, or active again."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:3432126458605143571",
+      "impact": {
+        "db_time_share": 0.0008000892165181061,
+        "label": "68% of executions",
+        "score": 30.072744781156956,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.6811039986698811
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.015752548394971234
+        }
+      ],
+      "queries": [
+        {
+          "id": "3432126458605143571",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "3432126458605143571"
+      },
+      "summary": "This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (<1% of database time), but each call costs a network round trip and a connection.",
+      "title": "A read from customers runs 8.2K times in 5 hours, one row at a time",
+      "verify": [
+        "After the change, this statement's executions per day should drop by orders of magnitude."
       ]
     },
     {
@@ -606,6 +549,63 @@
       "verify": [
         "Explain one of the queries again: the scan of order_items should become an index seek/scan on the new index.",
         "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "jit-overhead",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "-- JIT only for plans the planner thinks are 10× more expensive than today's threshold\nALTER SYSTEM SET jit_above_cost = 1000000;\nSELECT pg_reload_conf();\n-- Or for the application's role only:\n-- ALTER ROLE app_user SET jit = off;",
+        "summary": "Raise the cost threshold so JIT only starts for plans ten times as expensive as now (100K today): Set jit_above_cost to 1000000 and reload the configuration (settings marked as needing a restart take effect after one). Or turn JIT off for the application's role. Fixing the row estimate that inflates the cost also helps."
+      },
+      "id": "jit-overhead:6425265648074738764",
+      "impact": {
+        "db_time_share": 0.02364142753518516,
+        "label": "98% JIT",
+        "score": 15.375769097897237,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "JIT share",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.9773769146834362
+        },
+        {
+          "label": "JIT per run",
+          "text": null,
+          "unit": "ms",
+          "value": 31.06060338333334
+        },
+        {
+          "label": "Run time",
+          "text": null,
+          "unit": "ms",
+          "value": 31.779554966666655
+        }
+      ],
+      "queries": [
+        {
+          "id": "6425265648074738764",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "6425265648074738764"
+      },
+      "summary": "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 4 h 53 min ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.",
+      "title": "JIT compilation takes longer than running a read from products",
+      "verify": [
+        "Re-scan: JIT time per run should drop to zero or near it, and the average run time with it."
       ]
     },
     {
@@ -1637,6 +1637,7 @@
       },
       "replicas": [
         {
+          "database": null,
           "delay_seconds": null,
           "error": null,
           "inactive_seconds": null,
@@ -1685,7 +1686,7 @@
           "key": "rollbacks",
           "label": "Transactions rolled back",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 0.25252525252525254
         },
@@ -1694,7 +1695,7 @@
           "key": "deadlocks",
           "label": "Deadlocks",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "count",
           "value": 1.0
         },
@@ -1784,6 +1785,7 @@
       "edition": null,
       "engine": "postgres",
       "missing": [],
+      "platform": null,
       "product": "PostgreSQL 18.6",
       "read_only_session": true,
       "started_at": "2026-10-11T04:55:30Z",
@@ -2175,6 +2177,9 @@
       }
     ],
     "workload": {
+      "hourly_time_ms": null,
+      "kind": null,
+      "log": null,
       "min_logged_ms": null,
       "queries": [
         {
@@ -2722,6 +2727,7 @@
                     "Async Capable": "false",
                     "Disabled": "false",
                     "Index Cond": "(products.id = $1)",
+                    "Index Kind": "btree",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "18",
@@ -3320,6 +3326,7 @@
                         "Async Capable": "false",
                         "Disabled": "false",
                         "Index Cond": "(events.customer_id = $1)",
+                        "Index Kind": "btree",
                         "Parallel Aware": "false",
                         "Parent Relationship": "Outer",
                         "Plan Width": "6",
@@ -3486,6 +3493,7 @@
                 "Async Capable": "false",
                 "Disabled": "false",
                 "Index Cond": "(customers.id = $1)",
+                "Index Kind": "btree",
                 "Parallel Aware": "false",
                 "Plan Width": "37",
                 "Scan Direction": "Forward",
@@ -3654,6 +3662,7 @@
                     "Async Capable": "false",
                     "Disabled": "false",
                     "Index Cond": "(products.id = $1)",
+                    "Index Kind": "btree",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "13",
@@ -4410,6 +4419,7 @@
                                                             "Async Capable": "false",
                                                             "Disabled": "false",
                                                             "Index Cond": "(o1.id = $1)",
+                                                            "Index Kind": "btree",
                                                             "Parallel Aware": "false",
                                                             "Parent Relationship": "Outer",
                                                             "Plan Width": "8",
@@ -4443,6 +4453,7 @@
                                                             "Async Capable": "false",
                                                             "Disabled": "false",
                                                             "Index Cond": "(o2.id = $1)",
+                                                            "Index Kind": "btree",
                                                             "Parallel Aware": "false",
                                                             "Parent Relationship": "Inner",
                                                             "Plan Width": "8",
@@ -4504,6 +4515,7 @@
                                                         "Async Capable": "false",
                                                         "Disabled": "false",
                                                         "Index Cond": "(o3.id = $1)",
+                                                        "Index Kind": "btree",
                                                         "Parallel Aware": "false",
                                                         "Parent Relationship": "Inner",
                                                         "Plan Width": "8",
@@ -4565,6 +4577,7 @@
                                                     "Async Capable": "false",
                                                     "Disabled": "false",
                                                     "Index Cond": "(o4.id = $1)",
+                                                    "Index Kind": "btree",
                                                     "Parallel Aware": "false",
                                                     "Parent Relationship": "Inner",
                                                     "Plan Width": "8",
@@ -4626,6 +4639,7 @@
                                                 "Async Capable": "false",
                                                 "Disabled": "false",
                                                 "Index Cond": "(o5.id = $1)",
+                                                "Index Kind": "btree",
                                                 "Parallel Aware": "false",
                                                 "Parent Relationship": "Inner",
                                                 "Plan Width": "8",
@@ -4687,6 +4701,7 @@
                                             "Async Capable": "false",
                                             "Disabled": "false",
                                             "Index Cond": "(o6.id = $1)",
+                                            "Index Kind": "btree",
                                             "Parallel Aware": "false",
                                             "Parent Relationship": "Inner",
                                             "Plan Width": "8",
@@ -4748,6 +4763,7 @@
                                         "Async Capable": "false",
                                         "Disabled": "false",
                                         "Index Cond": "(o7.id = $1)",
+                                        "Index Kind": "btree",
                                         "Parallel Aware": "false",
                                         "Parent Relationship": "Inner",
                                         "Plan Width": "8",
@@ -4809,6 +4825,7 @@
                                     "Async Capable": "false",
                                     "Disabled": "false",
                                     "Index Cond": "(o8.id = $1)",
+                                    "Index Kind": "btree",
                                     "Parallel Aware": "false",
                                     "Parent Relationship": "Inner",
                                     "Plan Width": "8",
@@ -4870,6 +4887,7 @@
                                 "Async Capable": "false",
                                 "Disabled": "false",
                                 "Index Cond": "(o9.id = $1)",
+                                "Index Kind": "btree",
                                 "Parallel Aware": "false",
                                 "Parent Relationship": "Inner",
                                 "Plan Width": "8",
@@ -4931,6 +4949,7 @@
                             "Async Capable": "false",
                             "Disabled": "false",
                             "Index Cond": "(o10.id = $1)",
+                            "Index Kind": "btree",
                             "Parallel Aware": "false",
                             "Parent Relationship": "Inner",
                             "Plan Width": "8",
@@ -4992,6 +5011,7 @@
                         "Async Capable": "false",
                         "Disabled": "false",
                         "Index Cond": "(o11.id = $1)",
+                        "Index Kind": "btree",
                         "Parallel Aware": "false",
                         "Parent Relationship": "Inner",
                         "Plan Width": "8",
@@ -5053,6 +5073,7 @@
                     "Async Capable": "false",
                     "Disabled": "false",
                     "Index Cond": "(o12.id = $1)",
+                    "Index Kind": "btree",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Inner",
                     "Plan Width": "15",
@@ -5321,15 +5342,16 @@
     ],
     "by_severity": [
       {
-        "count": 8,
+        "count": 7,
         "severity": "medium"
       },
       {
-        "count": 9,
+        "count": 10,
         "severity": "low"
       }
     ],
     "headline": "17 opportunities. The top ones touch 67% of database time over the 5 hours since statistics were reset.",
+    "no_workload": null,
     "opportunities": 17,
     "top_share": 0.6738719635890433
   }

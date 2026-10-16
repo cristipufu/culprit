@@ -5,12 +5,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
 
 use culprit_core::{
-    CleanupHolder, Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
+    CleanupHolder, Coverage, Engine, OpenTransaction, Pressure, Result, Signal, SignalScope, SignalUnit, WaitSample,
+    WaitStat,
 };
 use mysql_async::{Conn, Value};
 
 use crate::connect::TAG;
 use crate::rows::{query, query_one, query_with};
+use crate::sources;
 
 const PICOS_PER_MS: f64 = 1e9;
 
@@ -171,145 +173,143 @@ async fn running_statements(conn: &mut Conn) -> Option<f64> {
     rows.first().and_then(|r| r.number("n"))
 }
 
-pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
+/// The pressure counters, each source read through `Coverage::read` (`crate::sources`).
+pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
     let running = running_statements(conn).await;
     let mut p = Pressure::default();
-    let mut notes = Vec::new();
-    match status(conn).await {
-        Ok(s) => {
-            let get = |k: &str| s.get(k).copied();
-            let uptime_s = get("Uptime").filter(|u| *u > 0.0);
-            p.uptime_hours = uptime_s.map(|u| u / 3600.0);
-            if let (Some(reads), Some(requests)) =
-                (get("Innodb_buffer_pool_reads"), get("Innodb_buffer_pool_read_requests").filter(|r| *r > 0.0))
-            {
-                p.signals.push(
-                    Signal::new(
-                        "buffer-pool-hit",
-                        "Reads served from memory",
-                        (1.0 - reads / requests) * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded("above 99% is healthy for most workloads", 99.0, 95.0, false),
-                );
-                // How much reading from disk that miss rate is: a 98% hit rate can be 1 read a second or 10,000.
-                if let Some(u) = uptime_s {
-                    p.signals.push(Signal::new(
-                        "buffer-pool-reads",
-                        "Pages read from disk",
-                        reads / u,
-                        SignalUnit::PerSecond,
-                        SignalScope::SinceStartup,
-                    ));
-                }
-            }
-            if let (Some(disk), Some(all)) =
-                (get("Created_tmp_disk_tables"), get("Created_tmp_tables").filter(|t| *t > 0.0))
-            {
-                p.signals.push(
-                    Signal::new(
-                        "tmp-disk-tables",
-                        "Temporary tables on disk",
-                        disk / all * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded("under 10% of temporary tables is healthy", 10.0, 25.0, true),
-                );
-            }
-            if let (Some(q), Some(u)) = (get("Questions"), uptime_s) {
+    let mut coverage = Coverage::default();
+    if let Some(s) = coverage.read(&sources::GLOBAL_STATUS, status(conn).await) {
+        let get = |k: &str| s.get(k).copied();
+        let uptime_s = get("Uptime").filter(|u| *u > 0.0);
+        p.uptime_hours = uptime_s.map(|u| u / 3600.0);
+        if let (Some(reads), Some(requests)) =
+            (get("Innodb_buffer_pool_reads"), get("Innodb_buffer_pool_read_requests").filter(|r| *r > 0.0))
+        {
+            p.signals.push(
+                Signal::new(
+                    "buffer-pool-hit",
+                    "Reads served from memory",
+                    (1.0 - reads / requests) * 100.0,
+                    SignalUnit::Percent,
+                    SignalScope::SinceStartup,
+                )
+                .graded("above 99% is healthy for most workloads", 99.0, 95.0, false),
+            );
+            // How much reading from disk that miss rate is: a 98% hit rate can be 1 read a second or 10,000.
+            if let Some(u) = uptime_s {
                 p.signals.push(Signal::new(
-                    "questions",
-                    "Statements",
-                    q / u,
+                    "buffer-pool-reads",
+                    "Pages read from disk",
+                    reads / u,
                     SignalUnit::PerSecond,
                     SignalScope::SinceStartup,
                 ));
             }
-            // The process list without Culprit's sessions; the counter (minus this session) if it can't be read.
-            if let Some(running) = running.or_else(|| get("Threads_running").map(|r| (r - 1.0).max(0.0))) {
-                p.signals.push(Signal::new(
-                    "threads-running",
-                    "Statements running now",
-                    running,
-                    SignalUnit::Count,
-                    SignalScope::Now,
-                ));
-            }
-            if let (Some(waits), Some(u)) = (get("Innodb_row_lock_waits"), uptime_s) {
-                // Under an hour of uptime, a rate per hour would be an extrapolation: report the plain count.
-                let hours = u / 3600.0;
-                let (label, value, unit) = if hours >= 1.0 {
-                    ("Row-lock waits", waits / hours, SignalUnit::PerHour)
-                } else {
-                    ("Row-lock waits since start", waits, SignalUnit::Count)
-                };
-                p.signals.push(Signal::new("row-lock-waits", label, value, unit, SignalScope::SinceStartup));
-            }
-            // The whole server's time waiting for row locks since it started (every database's).
-            if let Some(total) = get("Innodb_row_lock_time") {
-                p.signals.push(Signal::new(
-                    "row-lock-time",
-                    "Time waiting for row locks since start (whole server)",
-                    total,
+        }
+        if let (Some(disk), Some(all)) =
+            (get("Created_tmp_disk_tables"), get("Created_tmp_tables").filter(|t| *t > 0.0))
+        {
+            p.signals.push(
+                Signal::new(
+                    "tmp-disk-tables",
+                    "Temporary tables on disk",
+                    disk / all * 100.0,
+                    SignalUnit::Percent,
+                    SignalScope::SinceStartup,
+                )
+                .graded("under 10% of temporary tables is healthy", 10.0, 25.0, true),
+            );
+        }
+        if let (Some(q), Some(u)) = (get("Questions"), uptime_s) {
+            p.signals.push(Signal::new(
+                "questions",
+                "Statements",
+                q / u,
+                SignalUnit::PerSecond,
+                SignalScope::SinceStartup,
+            ));
+        }
+        // The process list without Culprit's sessions; the counter (minus this session) if it can't be read.
+        if let Some(running) = running.or_else(|| get("Threads_running").map(|r| (r - 1.0).max(0.0))) {
+            p.signals.push(Signal::new(
+                "threads-running",
+                "Statements running now",
+                running,
+                SignalUnit::Count,
+                SignalScope::Now,
+            ));
+        }
+        if let (Some(waits), Some(u)) = (get("Innodb_row_lock_waits"), uptime_s) {
+            // Under an hour of uptime, a rate per hour would be an extrapolation: report the plain count.
+            let hours = u / 3600.0;
+            let (label, value, unit) = if hours >= 1.0 {
+                ("Row-lock waits", waits / hours, SignalUnit::PerHour)
+            } else {
+                ("Row-lock waits since start", waits, SignalUnit::Count)
+            };
+            p.signals.push(Signal::new("row-lock-waits", label, value, unit, SignalScope::SinceStartup));
+        }
+        // The whole server's time waiting for row locks since it started (every database's).
+        if let Some(total) = get("Innodb_row_lock_time") {
+            p.signals.push(Signal::new(
+                "row-lock-time",
+                "Time waiting for row locks since start (whole server)",
+                total,
+                SignalUnit::Milliseconds,
+                SignalScope::SinceStartup,
+            ));
+        }
+        if let Some(avg) = get("Innodb_row_lock_time_avg") {
+            p.signals.push(
+                Signal::new(
+                    "row-lock-avg",
+                    "Average row-lock wait",
+                    avg,
                     SignalUnit::Milliseconds,
                     SignalScope::SinceStartup,
-                ));
-            }
-            if let Some(avg) = get("Innodb_row_lock_time_avg") {
+                )
+                .graded("under 50 ms is healthy", 50.0, 500.0, true),
+            );
+        }
+        if let Ok(Some(r)) = query_one(conn, "SELECT @@max_connections AS max").await
+            && let Some(max) = r.number("max").filter(|m| *m > 0.0)
+        {
+            // The application's connections: Culprit's own (this scan opens several) don't count.
+            let own = own_sessions(conn).await;
+            if let Some(used) = get("Threads_connected").map(|u| (u - own).max(0.0)) {
                 p.signals.push(
                     Signal::new(
-                        "row-lock-avg",
-                        "Average row-lock wait",
-                        avg,
-                        SignalUnit::Milliseconds,
-                        SignalScope::SinceStartup,
+                        "connections",
+                        "Connections in use",
+                        used / max * 100.0,
+                        SignalUnit::Percent,
+                        SignalScope::Now,
                     )
-                    .graded("under 50 ms is healthy", 50.0, 500.0, true),
+                    .graded("under 80% of max_connections is healthy", 80.0, 90.0, true),
                 );
             }
-            if let Ok(Some(r)) = query_one(conn, "SELECT @@max_connections AS max").await
-                && let Some(max) = r.number("max").filter(|m| *m > 0.0)
-            {
-                // The application's connections: Culprit's own (this scan opens several) don't count.
-                let own = own_sessions(conn).await;
-                if let Some(used) = get("Threads_connected").map(|u| (u - own).max(0.0)) {
-                    p.signals.push(
-                        Signal::new(
-                            "connections",
-                            "Connections in use",
-                            used / max * 100.0,
-                            SignalUnit::Percent,
-                            SignalScope::Now,
-                        )
-                        .graded("under 80% of max_connections is healthy", 80.0, 90.0, true),
-                    );
-                }
-                if let Some(peak) = get("Max_used_connections") {
-                    p.signals.push(
-                        Signal::new(
-                            "max-used-connections",
-                            "Busiest moment",
-                            peak / max * 100.0,
-                            SignalUnit::Percent,
-                            SignalScope::SinceStartup,
-                        )
-                        .graded("under 90% of max_connections is healthy", 90.0, 100.0, true),
-                    );
-                    if let Some(ago) = peak_connections_ago(conn).await {
-                        p.signals.push(Signal::new(
-                            "max-used-connections-ago",
-                            "Since the busiest moment",
-                            ago,
-                            SignalUnit::Seconds,
-                            SignalScope::Now,
-                        ));
-                    }
+            if let Some(peak) = get("Max_used_connections") {
+                p.signals.push(
+                    Signal::new(
+                        "max-used-connections",
+                        "Busiest moment",
+                        peak / max * 100.0,
+                        SignalUnit::Percent,
+                        SignalScope::SinceStartup,
+                    )
+                    .graded("under 90% of max_connections is healthy", 90.0, 100.0, true),
+                );
+                if let Some(ago) = peak_connections_ago(conn).await {
+                    p.signals.push(Signal::new(
+                        "max-used-connections-ago",
+                        "Since the busiest moment",
+                        ago,
+                        SignalUnit::Seconds,
+                        SignalScope::Now,
+                    ));
                 }
             }
         }
-        Err(e) => notes.push(format!("Global status: {}", e.message)),
     }
     let history = query_one(
         conn,
@@ -343,38 +343,35 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Vec<String>) {
         Ok(found) => Ok(found),
         Err(_) => query_one(conn, &oldest_sql(false)).await,
     };
-    match oldest {
-        Ok(Some(r)) => {
-            let seconds = r.number("seconds").unwrap_or(0.0);
-            p.oldest_transaction = Some(OpenTransaction {
-                session: r.string("session"),
+    if let Some(Some(r)) = coverage.read(&sources::OPEN_TRANSACTIONS, oldest) {
+        let seconds = r.number("seconds").unwrap_or(0.0);
+        p.oldest_transaction = Some(OpenTransaction {
+            session: r.string("session"),
+            seconds,
+            program: r.text("program").filter(|s| !s.is_empty()),
+            state: Some(if r.text("command").as_deref() == Some("Sleep") {
+                "idle in transaction".into()
+            } else {
+                "running".into()
+            }),
+            holder: Some(CleanupHolder::Session),
+            wrote: r.number("modified").map(|m| m > 0.0),
+            database: r.text("db").filter(|d| !d.is_empty()),
+            ..OpenTransaction::default()
+        });
+        p.signals.push(
+            Signal::new(
+                "oldest-transaction",
+                "Oldest transaction holding purge",
                 seconds,
-                program: r.text("program").filter(|s| !s.is_empty()),
-                state: Some(if r.text("command").as_deref() == Some("Sleep") {
-                    "idle in transaction".into()
-                } else {
-                    "running".into()
-                }),
-                holder: Some(CleanupHolder::Session),
-                wrote: r.number("modified").map(|m| m > 0.0),
-                database: r.text("db").filter(|d| !d.is_empty()),
-                ..OpenTransaction::default()
-            });
-            p.signals.push(
-                Signal::new(
-                    "oldest-transaction",
-                    "Oldest transaction holding purge",
-                    seconds,
-                    SignalUnit::Seconds,
-                    SignalScope::Now,
-                )
-                .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
-            );
-        }
-        Ok(None) => {}
-        Err(e) => notes.push(format!("Open transactions: {}", e.message)),
+                SignalUnit::Seconds,
+                SignalScope::Now,
+            )
+            .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
+        );
     }
-    (p, notes)
+
+    (p, coverage)
 }
 
 /// What each busy session is doing, from the process list: the state text and whether InnoDB has it waiting for a lock.

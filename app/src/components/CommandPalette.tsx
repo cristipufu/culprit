@@ -1,5 +1,6 @@
 import { Activity, Bookmark, Camera, CircleArrowUp, CircleDot, Database, Gauge, GitCompareArrows, ListOrdered, Moon, Plus, RefreshCw, RotateCw, Skull, SquareTerminal, Sun, Table2, TextSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { can } from "../lib/engines";
 import { useFocusTrap } from "../lib/focus";
 import { rowCount } from "../lib/format";
 import { openLive } from "../views/Live";
@@ -108,10 +109,12 @@ export function CommandPalette() {
       icon: icon(<CircleArrowUp size={13} />),
       run: () => (setAutoCheck(!autoCheck), close()),
     });
-    VIEWS.filter((v) => active || v.view === "plans" || v.view === "connections").forEach((v) =>
+    const engine = connections.find((c) => c.name === active)?.engine;
+    const sessions = !engine || can(engine, "sessions");
+    VIEWS.filter((v) => (active || v.view === "plans" || v.view === "connections") && (v.view !== "live" || sessions)).forEach((v) =>
       list.push({ id: `view:${v.view}`, section: "Go to", title: v.title, icon: icon(v.icon), run: () => setState({ view: v.view, palette: false }) }),
     );
-    if (active) {
+    if (active && engine && can(engine, "deadlocks")) {
       list.push({ id: "view:deadlocks", section: "Go to", title: "Deadlocks", hint: "Live", icon: icon(<Skull size={13} />), run: () => (close(), openLive("deadlocks")) });
     }
     saved?.forEach((q) => {

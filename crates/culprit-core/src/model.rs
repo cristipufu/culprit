@@ -20,13 +20,93 @@ pub enum Engine {
     Sqlite,
 }
 
+/// A unit enum's name as it serializes (`query-store`, `engine-built`): serde's own, so a label table can't drift from it.
+pub fn wire_name<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default()
+}
+
 impl Engine {
-    pub fn label(self) -> &'static str {
-        match self {
-            Engine::Mssql => "SQL Server",
-            Engine::Postgres => "PostgreSQL",
-            Engine::Mysql => "MySQL",
-            Engine::Sqlite => "SQLite",
+    /// Every engine, for tables kept per engine (see [`Engine::abilities`]).
+    pub const ALL: [Engine; 4] = [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite];
+
+    /// A server Culprit talks to: sessions, waits, deadlocks and server counters exist. A file the application opens
+    /// itself (SQLite) has none of these.
+    pub fn has_server(self) -> bool {
+        self.abilities().sessions
+    }
+}
+
+/// What an engine can answer (see [`Engine::abilities`]).
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[ts(export)]
+pub struct EngineAbilities {
+    /// Sessions, blocking and the Live view.
+    pub sessions: bool,
+    /// Sampling what the server waits on right now.
+    pub wait_sample: bool,
+    /// Deadlocks it records (graphs or a counter).
+    pub deadlocks: bool,
+    /// Running a statement once and reporting what each step actually did (rows, timings).
+    pub measures_runs: bool,
+    /// Row and cost estimates in its plans.
+    pub plan_estimates: bool,
+    /// Statements that change data, from the editor.
+    pub writes: bool,
+    /// Two periods of statement history to compare (What changed).
+    pub periods: bool,
+    /// The actual plan of a statement's most recent run, kept by the engine (SQL Server 2019+).
+    pub last_actual_plan: bool,
+    /// Live per-step counters of a running statement, sent every time (SQL Server); elsewhere the plan only when asked.
+    pub operator_progress: bool,
+    /// A sign-in: a password, a token. A file opened from disk takes none.
+    pub sign_in: bool,
+}
+
+/// One of an engine's [`EngineAbilities`], to ask about it or for the reason it lacks it ([`crate::EngineSpec::refusal`]).
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum Ability {
+    Sessions,
+    WaitSample,
+    Deadlocks,
+    MeasuresRuns,
+    PlanEstimates,
+    Writes,
+    Periods,
+    LastActualPlan,
+    OperatorProgress,
+    SignIn,
+}
+
+impl Ability {
+    pub const ALL: [Ability; 10] = [
+        Ability::Sessions,
+        Ability::WaitSample,
+        Ability::Deadlocks,
+        Ability::MeasuresRuns,
+        Ability::PlanEstimates,
+        Ability::Writes,
+        Ability::Periods,
+        Ability::LastActualPlan,
+        Ability::OperatorProgress,
+        Ability::SignIn,
+    ];
+}
+
+impl EngineAbilities {
+    pub fn has(&self, ability: Ability) -> bool {
+        match ability {
+            Ability::Sessions => self.sessions,
+            Ability::WaitSample => self.wait_sample,
+            Ability::Deadlocks => self.deadlocks,
+            Ability::MeasuresRuns => self.measures_runs,
+            Ability::PlanEstimates => self.plan_estimates,
+            Ability::Writes => self.writes,
+            Ability::Periods => self.periods,
+            Ability::LastActualPlan => self.last_actual_plan,
+            Ability::OperatorProgress => self.operator_progress,
+            Ability::SignIn => self.sign_in,
         }
     }
 }
@@ -73,6 +153,8 @@ pub enum Capability {
     Sessions,
     Showplan,
     SlowLog,
+    /// The statements and their times from a log the application's framework writes, for an engine that keeps none.
+    QueryLog,
 }
 
 impl Capability {
@@ -80,8 +162,27 @@ impl Capability {
     pub fn label_for(self, engine: Engine) -> &'static str {
         match (self, engine) {
             (Capability::Showplan, Engine::Postgres | Engine::Mysql) => "Estimated plans (EXPLAIN)",
+            (Capability::Showplan, Engine::Sqlite) => "Estimated plans (EXPLAIN QUERY PLAN)",
             _ => self.label(),
         }
+    }
+
+    /// Its stable id, as it serializes (`query-store`).
+    pub fn id(self) -> String {
+        wire_name(&self)
+    }
+
+    /// A source of statement statistics: without it a scan has no workload, and its reason says why.
+    pub fn is_workload_source(self) -> bool {
+        matches!(
+            self,
+            Capability::QueryStore
+                | Capability::PlanCache
+                | Capability::PgStatStatements
+                | Capability::PerformanceSchema
+                | Capability::SlowLog
+                | Capability::QueryLog
+        )
     }
 
     pub fn label(self) -> &'static str {
@@ -101,6 +202,7 @@ impl Capability {
             Capability::Sessions => "Sessions and blocking",
             Capability::Showplan => "Estimated plans (SHOWPLAN)",
             Capability::SlowLog => "Slow query log table",
+            Capability::QueryLog => "Application query log",
         }
     }
 }
@@ -173,22 +275,55 @@ impl ServerInfo {
 
     /// The server's name in sentences: the engine's, except MariaDB, which the MySQL provider also serves.
     pub fn name(&self) -> &'static str {
-        if self.engine == Engine::Mysql && self.product.starts_with("MariaDB") {
-            "MariaDB"
-        } else {
-            self.engine.label()
-        }
+        if self.is_mariadb() { "MariaDB" } else { self.engine.label() }
     }
+
+    /// MariaDB, which Culprit reads through the MySQL provider: where the two differ (histograms, userstat, ignored
+    /// indexes), the rules ask this.
+    pub fn is_mariadb(&self) -> bool {
+        self.engine == Engine::Mysql && self.product.starts_with("MariaDB")
+    }
+}
+
+/// What a workload was read from. The rules that depend on it ask this, never the name in `Workload::source`: a slow
+/// query log keeps only the runs it logged, performance_schema's histograms count from the server's start, the plan
+/// cache forgets what it evicts. A provider sets it; [`Workload::kind`] reads it.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum WorkloadKind {
+    /// SQL Server's Query Store: runtime statistics by interval, so a scan picks its window.
+    QueryStore,
+    /// SQL Server's plan cache: totals since each plan was cached.
+    PlanCache,
+    /// PostgreSQL's pg_stat_statements: totals since its last reset.
+    StatementStats,
+    /// MySQL and MariaDB's performance_schema statement digests: totals since the server started or they were reset.
+    PerformanceSchema,
+    /// MySQL and MariaDB's slow query log table: the runs it logged, one by one.
+    SlowLog,
+    /// An application's own log of its statements (a Rails or Django log), for an engine that keeps none.
+    QueryLog,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct Workload {
+    /// Where the statements were read from, by name, for sentences ("Query Store covers …").
     pub source: String,
-    /// The source keeps history by time, so a scan can choose its window (Query Store). Cumulative sources
+    /// The same, typed: see [`Workload::kind`]. `None` in scans saved before it existed.
+    #[serde(default)]
+    pub kind: Option<WorkloadKind>,
+    /// The source keeps history by time, so a scan can choose its window (Query Store), or records a period of its own
+    /// (an application's log): its numbers are of that period, never running totals to subtract. Cumulative sources
     /// (pg_stat_statements, the plan cache) cover "since the last reset" and ignore the requested window.
     #[serde(default)]
     pub windowed: bool,
+    /// The application's log the statements were read from, by format ("Rails"), for an engine that keeps no statement
+    /// history (SQLite). Its period is what the log's own timestamps span, which may have ended long before the scan;
+    /// a log without timestamps covers a period nobody can say. `None` when the database's statistics are the source.
+    #[serde(default)]
+    pub log: Option<String>,
     pub window_start: Option<String>,
     pub window_end: Option<String>,
     pub window_hours: f64,
@@ -207,6 +342,11 @@ pub struct Workload {
     /// nothing was left out or the source can't say.
     #[serde(default)]
     pub untracked_time_ms: Option<f64>,
+    /// For a source whose entries count from different moments (the plan cache counts each plan from its compile): the
+    /// sum of every entry's time an hour of its own life, in ms. Shares are then weighed by it ([`Workload::share_of`])
+    /// so a plan cached for a month doesn't outweigh one compiled an hour ago by its age alone. `None` elsewhere.
+    #[serde(default)]
+    pub hourly_time_ms: Option<f64>,
     /// Only runs slower than this were recorded (the slow query log's `long_query_time`), so totals, shares and run
     /// counts are of logged slow runs, not of everything the database ran. `None` when every run is counted.
     #[serde(default)]
@@ -234,6 +374,48 @@ pub const PER_DAY_MIN_HOURS: f64 = 20.0;
 pub const RATE_MIN_HOURS: f64 = 1.0;
 
 impl Workload {
+    /// What the workload was read from. Scans saved before providers said so are told by the source's name: the one
+    /// place that reads it.
+    pub fn kind(&self) -> Option<WorkloadKind> {
+        self.kind.or_else(|| match self.source.as_str() {
+            "Query Store" => Some(WorkloadKind::QueryStore),
+            "Plan cache" => Some(WorkloadKind::PlanCache),
+            "pg_stat_statements" => Some(WorkloadKind::StatementStats),
+            "performance_schema" => Some(WorkloadKind::PerformanceSchema),
+            "slow query log" => Some(WorkloadKind::SlowLog),
+            _ if self.log.is_some() => Some(WorkloadKind::QueryLog),
+            _ => None,
+        })
+    }
+
+    /// Hours an entry of this workload has counted: from its first run (a cached plan's compile) to the window's end,
+    /// at least a minute. `None` without both times.
+    pub fn entry_hours(&self, first_seen: Option<&str>) -> Option<f64> {
+        let first = crate::format::epoch_seconds(first_seen?)?;
+        let end = crate::format::epoch_seconds(self.window_end.as_deref()?)?;
+        Some(((end - first) / 3600.0).max(1.0 / 60.0))
+    }
+
+    /// How much of its raw share a statement's time may claim: 1, except in a source whose entries count from different
+    /// moments ([`Workload::hourly_time_ms`]), where it is at most its share of the time an hour. A plan cached for a
+    /// month then claims what it costs an hour, not a month's total next to an hour's; one compiled recently keeps its
+    /// raw share, which can only understate it.
+    pub fn share_weight(&self, q: &QueryStat) -> f64 {
+        let (Some(hourly), Some(hours)) = (self.hourly_time_ms, self.entry_hours(q.first_seen.as_deref())) else {
+            return 1.0;
+        };
+        if hourly <= 0.0 || self.total_time_ms <= 0.0 {
+            return 1.0;
+        }
+        (self.total_time_ms / (hours * hourly)).min(1.0)
+    }
+
+    /// The share of the workload's time `time_ms` of statement `q` is ([`Workload::share`], weighed by
+    /// [`Workload::share_weight`]): what every check grades a statement's share on.
+    pub fn share_of(&self, time_ms: f64, q: &QueryStat) -> f64 {
+        self.share(time_ms) * self.share_weight(q)
+    }
+
     pub fn per_day(&self, value: f64) -> f64 {
         if self.window_hours <= 0.0 {
             return value;
@@ -251,8 +433,16 @@ impl Workload {
         (self.window_hours >= RATE_MIN_HOURS).then(|| self.per_day(value))
     }
 
-    /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
+    /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters,
+    /// "the 50 minutes the Rails log covers" for an application's log.
     pub fn window_phrase(&self) -> String {
+        if let Some(log) = &self.log {
+            return if self.window_unknown() {
+                format!("the period the {log} log covers")
+            } else {
+                format!("the {} the {log} log covers", span_words(self.window_hours))
+            };
+        }
         if self.windowed {
             format!("the last {}", span_words(self.window_hours))
         } else if self.window_unknown() {
@@ -277,9 +467,10 @@ impl Workload {
     }
 
     /// The source's running totals started at a time nobody can say (pg_stat_statements before PostgreSQL 14 keeps no
-    /// reset time, and its statistics outlive restarts): `window_hours` is 0 and no rate can be derived from it.
+    /// reset time, and its statistics outlive restarts), or its log has no timestamps: `window_hours` is 0 and no rate
+    /// can be derived from it.
     pub fn window_unknown(&self) -> bool {
-        !self.windowed && self.window_start.is_none() && self.window_hours <= 0.0
+        (!self.windowed || self.log.is_some()) && self.window_start.is_none() && self.window_hours <= 0.0
     }
 
     pub fn share(&self, time_ms: f64) -> f64 {
@@ -484,6 +675,12 @@ pub struct PlanVariant {
     /// SQL Server 2022 parameter-sensitive plans: the variant query this plan belongs to.
     #[serde(default)]
     pub variant_query: Option<String>,
+    /// CPU time and logical reads across its runs, where the source keeps them per plan (Query Store): whether a
+    /// slower plan does more work, or only waited longer while it ran.
+    #[serde(default)]
+    pub cpu_time_ms: Option<f64>,
+    #[serde(default)]
+    pub logical_reads: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
@@ -768,17 +965,11 @@ impl Snapshot {
         if self.workload.is_some() {
             return None;
         }
-        const WORKLOAD: [Capability; 4] = [
-            Capability::QueryStore,
-            Capability::PgStatStatements,
-            Capability::PerformanceSchema,
-            Capability::PlanCache,
-        ];
         Some(
             self.server
                 .missing
                 .iter()
-                .find(|m| WORKLOAD.contains(&m.capability))
+                .find(|m| m.capability.is_workload_source())
                 .map(|m| m.reason.clone())
                 .unwrap_or_else(|| "This scan has no query history.".into()),
         )
@@ -900,10 +1091,33 @@ mod tests {
         assert_eq!(s.p99_ms, Some(43.4));
     }
 
+    /// The app reads each engine's facts (abilities, session actions, the reasons it refuses) from the engine files
+    /// themselves: written next to the generated types (`cargo test -p culprit-core`), so the browser demo and every
+    /// view answer as the engine does and can't drift from it.
+    #[test]
+    fn engine_facts_are_exported_for_the_app() {
+        let table: std::collections::BTreeMap<String, crate::engines::EngineFacts> =
+            Engine::ALL.iter().map(|e| (wire_name(e), e.facts())).collect();
+        assert_eq!(table.len(), Engine::ALL.len());
+        // Every ability an engine lacks has its own reason.
+        for e in Engine::ALL {
+            for a in Ability::ALL {
+                if !e.abilities().has(a) {
+                    assert!(!e.spec().refusal(a).message.is_empty(), "{e} {a:?}");
+                }
+            }
+        }
+        if let Ok(dir) = std::env::var("TS_RS_EXPORT_DIR") {
+            let text = serde_json::to_string_pretty(&table).expect("facts") + "\n";
+            std::fs::write(std::path::Path::new(&dir).join("engines.json"), text).expect("app/src/gen/engines.json");
+        }
+    }
+
     #[test]
     fn how_often_never_extrapolates_a_short_window() {
         let w = |hours: f64, windowed: bool| Workload {
             source: "Query Store".into(),
+            kind: Some(WorkloadKind::QueryStore),
             windowed,
             window_start: None,
             window_end: None,
@@ -915,7 +1129,9 @@ mod tests {
             queries: vec![],
             timeline: None,
             untracked_time_ms: None,
+            hourly_time_ms: None,
             min_logged_ms: None,
+            log: None,
         };
         // 4 runs in 10 hours is not "~9.6 runs a day".
         assert_eq!(w(10.0, true).how_often(4.0), "4 runs over the last 10 hours");
@@ -929,6 +1145,14 @@ mod tests {
         assert_eq!(unknown.rate_per_day(3.0), None);
         unknown.window_start = Some("2026-10-01T00:00:00Z".into());
         assert!(!unknown.window_unknown());
+        // An application's log covers its own period, which needn't end at the scan; one without timestamps, a period
+        // nobody can say.
+        let mut log = w(0.8, true);
+        log.log = Some("Rails".into());
+        assert_eq!(log.how_often(3.0), "3 runs over the 48 minutes the Rails log covers");
+        log.window_hours = 0.0;
+        assert!(log.window_unknown());
+        assert_eq!(log.how_often(3.0), "3 runs over the period the Rails log covers");
     }
 
     use super::*;

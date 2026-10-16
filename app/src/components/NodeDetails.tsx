@@ -44,7 +44,20 @@ function ratio(n: PlanNode) {
 }
 
 /** One operator, explained: what it does, its rows and cost, what's wrong with it, then every raw property on demand. */
-export function NodeDetails({ node, share, subtreeShare, insights = [] }: { node: PlanNode; share: number; subtreeShare?: number; insights?: PlanInsight[] }) {
+export function NodeDetails({
+  node,
+  share,
+  subtreeShare,
+  insights = [],
+  estimates = true,
+}: {
+  node: PlanNode;
+  share: number;
+  subtreeShare?: number;
+  insights?: PlanInsight[];
+  /** The plan weighs its steps (costs or measured time); SQLite's has the access path only. */
+  estimates?: boolean;
+}) {
   const [filter, setFilter] = useState("");
   const props = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -77,10 +90,12 @@ export function NodeDetails({ node, share, subtreeShare, insights = [] }: { node
             </div>
           )}
         </div>
-        <span className="nd-share" title="Share of the plan's work done by this operator itself">
-          {percent(share)}
-          <span className="muted"> of the work</span>
-        </span>
+        {estimates && (
+          <span className="nd-share" title="Share of the plan's work done by this operator itself">
+            {percent(share)}
+            <span className="muted"> of the work</span>
+          </span>
+        )}
       </div>
 
       {insights.length > 0 && (
@@ -112,6 +127,7 @@ export function NodeDetails({ node, share, subtreeShare, insights = [] }: { node
             )}
           </section>
         )}
+        {estimates && (
         <section className="nd-card">
           <h4>Rows</h4>
           <dl>
@@ -151,6 +167,8 @@ export function NodeDetails({ node, share, subtreeShare, insights = [] }: { node
             )}
           </dl>
         </section>
+        )}
+        {estimates && (
         <section className="nd-card">
           <h4>Cost</h4>
           <dl>
@@ -190,6 +208,7 @@ export function NodeDetails({ node, share, subtreeShare, insights = [] }: { node
             </div>
           )}
         </section>
+        )}
         {node.warnings.length > 0 && (
           <section className="nd-card nd-warn">
             <h4>

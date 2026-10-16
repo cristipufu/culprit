@@ -66,6 +66,21 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
                 after: Some(now.impact.label.clone()),
                 note: still_present_note(&was, &now, after),
             },
+            // A finding about statements can't be confirmed gone by a scan that read no statements (the history was
+            // switched off, or the earlier scan read a query log this one didn't).
+            (Some(was), None) if !was.queries.is_empty() && before.snapshot.workload.is_some() && after.snapshot.workload.is_none() => {
+                VerifiedFinding {
+                    id: id.clone(),
+                    title: was.title.clone(),
+                    status: VerifyStatus::Unknown,
+                    before: Some(was.impact.label.clone()),
+                    after: None,
+                    note: Some(format!(
+                        "The new scan has no query history ({}), so this can't be confirmed.",
+                        after.summary.no_workload.as_deref().unwrap_or("no statement statistics").trim_end_matches('.')
+                    )),
+                }
+            }
             (Some(was), None) => match locked(after, &was) {
                 Some(missing) => VerifiedFinding {
                     id: id.clone(),
@@ -142,7 +157,12 @@ fn still_present_note(was: &Finding, now: &Finding, after: &Report) -> Option<St
         && let Some(w) = after.snapshot.workload.as_ref()
     {
         let span = format::duration(w.window_hours * 3_600_000.0);
-        return Some(if w.windowed {
+        return Some(if let Some(log) = &w.log {
+            format!(
+                "It is measured from the {log} log Culprit read, which still includes runs from before the change. \
+                 Scan again with a log written since."
+            )
+        } else if w.windowed {
             format!(
                 "It is measured over the last {span} of workload, which still includes runs from before the change. \
                  Check again once that window has moved past it, or scan with a shorter window."

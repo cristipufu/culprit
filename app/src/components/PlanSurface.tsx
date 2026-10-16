@@ -1,6 +1,7 @@
 import { GitBranch, ListTree, Network, TableProperties } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Plan } from "../gen/Plan";
+import { can } from "../lib/engines";
 import { allNodes, cost, costBasis, insightsByNode } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { PlanDiagram } from "./PlanDiagram";
@@ -77,14 +78,15 @@ function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: n
       <div className="plan-head">
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
-          {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {cost(plan.total_cost || plan.root.subtree_cost)}
+          {nodes.length} operator{nodes.length === 1 ? "" : "s"}
+          {can(plan.engine, "plan_estimates") && ` · cost ${cost(plan.total_cost || plan.root.subtree_cost)}`}
         </span>
         <span className="spacer" />
         <GitBranch size={12} className="muted" />
         <span className="muted">click a row to see the operator</span>
       </div>
       <PlanOperations plan={plan} selectedId={current?.id ?? null} onSelect={onSelect} />
-      {current && <NodeDetails node={current} share={current.self_cost / total} subtreeShare={current.subtree_cost / total} insights={flagged.get(current.id)} />}
+      {current && <NodeDetails estimates={can(plan.engine, "plan_estimates")} node={current} share={current.self_cost / total} subtreeShare={current.subtree_cost / total} insights={flagged.get(current.id)} />}
     </div>
   );
 }

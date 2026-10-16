@@ -79,7 +79,7 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
           <span />
           <span />
         </div>
-        <div className="muted">{state.status === "measuring" ? "Running it once and measuring every step…" : "Reading the last run from the plan cache…"}</div>
+        <div className="muted">{state.status === "measuring" ? "Running it once and measuring every step…" : "Reading the last run…"}</div>
       </div>
     );
   }
@@ -88,7 +88,7 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
       <>
         {state.measured && (
           <div className="actual-origin">
-            <Activity size={12} /> Measured just now: Culprit ran the statement once {engine === "mssql" ? "inside a transaction that was rolled back" : "inside a read-only transaction"}.
+            <Activity size={12} /> Measured just now: Culprit ran the statement once {engine === "mysql" ? "inside a read-only transaction" : "inside a transaction that was rolled back"}.
           </div>
         )}
         <PlanSurface key={`actual-${query.id}-${planId}`} plan={state.plan} look={look} />

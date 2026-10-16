@@ -174,6 +174,12 @@ pub struct GrantStat {
     pub avg_granted_kb: f64,
     pub avg_used_kb: f64,
     pub max_granted_kb: f64,
+    /// The most recent run's grant and use: memory grant feedback (SQL Server 2019+) shrinks a repeated grant, and the
+    /// averages over the plan's life still carry the early oversized ones. `None` when the engine doesn't say.
+    #[serde(default)]
+    pub last_granted_kb: Option<f64>,
+    #[serde(default)]
+    pub last_used_kb: Option<f64>,
 }
 
 /// What holds cleanup back: an open transaction in a session, or (PostgreSQL) a replication slot or a prepared

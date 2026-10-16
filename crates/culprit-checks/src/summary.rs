@@ -29,6 +29,10 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     let window = support::summary_window(snapshot);
     let headline = match (n, top_share, &window) {
         (0, _, Some(window)) => format!("Nothing stands out over {window}."),
+        // No statements were examined: say what was.
+        (0, _, None) if snapshot.workload.is_none() => {
+            "Nothing stands out in the tables, indexes and settings; this scan has no query history.".to_string()
+        }
         (0, _, None) => "Nothing stands out.".to_string(),
         (n, Some(share), Some(window)) if share >= 0.05 => format!(
             "{} {}. The top ones touch {} of database time over {window}.",
@@ -44,7 +48,14 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         1 => format!("{headline} 1 more stopped running, likely changed by a deploy."),
         k => format!("{headline} {k} more stopped running, likely changed by a deploy."),
     };
-    Summary { opportunities: n as u32, by_category, by_severity, top_share, headline }
+    Summary {
+        opportunities: n as u32,
+        by_category,
+        by_severity,
+        top_share,
+        headline,
+        no_workload: snapshot.no_workload_reason(),
+    }
 }
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {

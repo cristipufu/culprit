@@ -9,3 +9,4 @@ node_modules
 /app/src-tauri/target
 _site/
 dev/sqlite/demo.db
+dev/sqlite/development.log

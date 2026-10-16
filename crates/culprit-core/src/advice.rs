@@ -150,6 +150,9 @@ pub enum CandidateSource {
     PlanScan,
     /// A foreign key whose child columns no index leads with.
     ForeignKey,
+    /// The engine builds this index for itself on every run of a statement because none fits, and drops it after
+    /// (SQLite's automatic index): its own verdict on what's missing.
+    EngineBuilt,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]

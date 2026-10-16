@@ -14,13 +14,13 @@
       },
       "id": "scan-heavy:shop.orders",
       "impact": {
-        "db_time_share": 0.9255406753671113,
+        "db_time_share": 0.9255406753671112,
         "label": "93% of DB time",
-        "score": 96.2050245760122,
+        "score": 96.20502457601219,
         "time_ms_per_day": null
       },
       "inactive": false,
-      "last_seen": null,
+      "last_seen": "2026-10-11T16:05:36Z",
       "metrics": [
         {
           "label": "Full reads",
@@ -58,7 +58,7 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 2 of the captured statements read it; explain them to see which filter has no index.",
+      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 2 of the captured statements read it in full by their plans; explain them to see which filter has no index.",
       "title": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
       "verify": [
         "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
@@ -1557,7 +1557,7 @@
           "key": "row-lock-avg",
           "label": "Average row-lock wait",
           "scope": "since-startup",
-          "status": "bad",
+          "status": "info",
           "unit": "milliseconds",
           "value": 7601.0
         },
@@ -1575,7 +1575,7 @@
           "key": "max-used-connections",
           "label": "Busiest moment",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 3.9735099337748343
         },
@@ -1636,6 +1636,7 @@
       "edition": "mariadb.org binary distribution",
       "engine": "mysql",
       "missing": [],
+      "platform": null,
       "product": "MariaDB 11.8.9",
       "read_only_session": true,
       "started_at": "2026-10-11T14:56:16Z",
@@ -1930,6 +1931,9 @@
       }
     ],
     "workload": {
+      "hourly_time_ms": null,
+      "kind": null,
+      "log": null,
       "min_logged_ms": null,
       "queries": [
         {
@@ -2142,6 +2146,7 @@
                   "op": "Index range scan",
                   "predicate": "orders.status = 'shipped' and orders.created_at >= '2026-09-23'",
                   "props": {
+                    "Index Kind": "btree",
                     "cost": "2.15041973",
                     "filtered": "100",
                     "key_length": "71",
@@ -2470,6 +2475,7 @@
                       "op": "Index lookup",
                       "predicate": "orders.customer_id <=> 11272",
                       "props": {
+                        "Index Kind": "btree",
                         "cost": "0.00708384",
                         "filtered": "100",
                         "key_length": "4",
@@ -2620,6 +2626,7 @@
                       "op": "Index lookup",
                       "predicate": null,
                       "props": {
+                        "Index Kind": "btree",
                         "cost": "0.00345856",
                         "filtered": "100",
                         "key_length": "4",
@@ -2653,6 +2660,7 @@
                       "op": "Unique index lookup",
                       "predicate": null,
                       "props": {
+                        "Index Kind": "btree",
                         "cost": "0.00171364",
                         "filtered": "100",
                         "key_length": "4",
@@ -2809,6 +2817,7 @@
       }
     ],
     "headline": "9 opportunities. The top ones touch 93% of database time over the 1 minute since statistics were reset.",
+    "no_workload": null,
     "opportunities": 9,
     "top_share": 0.9255406753671113
   }

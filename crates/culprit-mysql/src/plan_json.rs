@@ -574,7 +574,7 @@ mod tests {
         assert_eq!(scan.rows_read, Some(497_280.0));
         assert_eq!(scan.est_rows, 4972.0);
         assert!(scan.warnings.contains(&PlanWarning::ResidualPredicate));
-        assert_eq!(plan.hottest().id, scan.id);
+        assert_eq!(plan.hottest().unwrap().id, scan.id);
     }
 
     #[test]

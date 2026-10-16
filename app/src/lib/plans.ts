@@ -147,7 +147,9 @@ export function looksLikePlan(text: string): boolean {
     /"Plan"\s*:\s*\{/.test(t) ||
     /"query_block"\s*:/.test(t) ||
     /\(cost=[\d.]+\.\.[\d.]+ rows=/.test(t) ||
-    /^(EXPLAIN: )?-> .+\(cost=/m.test(t)
+    /^(EXPLAIN: )?-> .+\(cost=/m.test(t) ||
+    // SQLite's EXPLAIN QUERY PLAN as the sqlite3 shell prints it.
+    /^QUERY PLAN\s*\n[|`]--/.test(t)
   );
 }
 

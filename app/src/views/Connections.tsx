@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Check, ChevronDown, Cloud, Database, Import, KeyRound, LockKeyhole, Pencil, Plus, Search, ShieldCheck } from "lucide-react";
+import { ArrowRight, Bot, Check, ChevronDown, Cloud, Database, FileText, FolderOpen, Import, KeyRound, LockKeyhole, Pencil, Plus, Search, ShieldCheck } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Logo } from "../components/Logo";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
@@ -6,21 +6,19 @@ import type { AgentAccess } from "../gen/AgentAccess";
 import type { AuthKind } from "../gen/AuthKind";
 import type { Cloud as CloudKind } from "../gen/Cloud";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
-import type { Engine } from "../gen/Engine";
 import type { Environment } from "../gen/Environment";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { ImportSource } from "../gen/ImportSource";
 import type { ParsedConnection } from "../gen/ParsedConnection";
-import { api, errorMessage, type ApiError } from "../lib/api";
+import { api, errorMessage, isDesktop, type ApiError } from "../lib/api";
 import { ENVIRONMENT_LABEL, groupByEnvironment } from "../lib/environments";
 import { ago } from "../lib/format";
 import { loadConnections, openConnection, useStore } from "../lib/store";
 import { EngineBadge } from "../components/EngineBadge";
-import { serverName } from "../lib/engines";
+import { engineLabel, serverName } from "../lib/engines";
 
 const ENVIRONMENTS: Environment[] = ["production", "staging", "development", "local"];
 
-const ENGINE_LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite" };
 
 const AUTH_LABEL: Partial<Record<AuthKind, string>> = { entra: "Entra ID", "aws-iam": "AWS IAM" };
 
@@ -46,6 +44,30 @@ export function Connections() {
           </div>
         </div>
         {firstRun && <FirstRun chosen={active} onChoose={(next) => setPanel(next === active ? "none" : next)} />}
+        {/* Adding comes first: with many connections, the actions and the form they open stay in view, above the list. */}
+        {!firstRun && (
+        <div className="conn-actions">
+          <button className={`btn ${active === "new" || connections.length === 0 ? "primary" : ""}`} onClick={() => setPanel(active === "new" ? "none" : "new")}>
+            <Plus size={14} /> New connection
+          </button>
+          <button className={`btn ${active === "azure" ? "primary" : ""}`} onClick={() => setPanel(active === "azure" ? "none" : "azure")} title="Find Azure SQL, PostgreSQL and MySQL servers your az login can see">
+            <Cloud size={14} /> From Azure
+          </button>
+          <button className={`btn ${active === "aws" ? "primary" : ""}`} onClick={() => setPanel(active === "aws" ? "none" : "aws")} title="Find RDS and Aurora databases your aws login can see">
+            <Cloud size={14} /> From AWS
+          </button>
+          <button className={`btn ${active === "import" ? "primary" : ""}`} onClick={() => setPanel(active === "import" ? "none" : "import")} title="Import connections saved in Azure Data Studio, VS Code, DBeaver or DataGrip">
+            <Import size={14} /> Import
+          </button>
+        </div>
+        )}
+        {active !== "none" && (
+          <div className="conn-panel">
+            {active === "new" && <NewConnectionForm onDone={() => setPanel("none")} canCancel />}
+            {(active === "azure" || active === "aws") && <DiscoverPanel key={active} cloud={active} onDone={() => setPanel("none")} />}
+            {active === "import" && <ImportPanel onDone={() => setPanel("none")} />}
+          </div>
+        )}
         {connections.length > 6 && (
           <label className="search conn-filter">
             <Search size={13} />
@@ -63,25 +85,6 @@ export function Connections() {
             ))}
           </section>
         ))}
-        {!firstRun && (
-        <div className="conn-actions">
-          <button className={`btn ${active === "new" || connections.length === 0 ? "primary" : ""}`} onClick={() => setPanel(active === "new" ? "none" : "new")}>
-            <Plus size={14} /> New connection
-          </button>
-          <button className={`btn ${active === "azure" ? "primary" : ""}`} onClick={() => setPanel(active === "azure" ? "none" : "azure")} title="Find Azure SQL, PostgreSQL and MySQL servers your az login can see">
-            <Cloud size={14} /> From Azure
-          </button>
-          <button className={`btn ${active === "aws" ? "primary" : ""}`} onClick={() => setPanel(active === "aws" ? "none" : "aws")} title="Find RDS and Aurora databases your aws login can see">
-            <Cloud size={14} /> From AWS
-          </button>
-          <button className={`btn ${active === "import" ? "primary" : ""}`} onClick={() => setPanel(active === "import" ? "none" : "import")} title="Import connections saved in Azure Data Studio, VS Code, DBeaver or DataGrip">
-            <Import size={14} /> Import
-          </button>
-        </div>
-        )}
-        {active === "new" && <NewConnectionForm onDone={() => setPanel("none")} canCancel />}
-        {(active === "azure" || active === "aws") && <DiscoverPanel key={active} cloud={active} onDone={() => setPanel("none")} />}
-        {active === "import" && <ImportPanel onDone={() => setPanel("none")} />}
       </div>
     </div>
   );
@@ -90,7 +93,7 @@ export function Connections() {
 type Panel = "none" | "new" | "import" | CloudKind;
 
 const FIRST_RUN: { panel: Exclude<Panel, "none">; icon: ReactNode; title: string; text: string }[] = [
-  { panel: "new", icon: <Database size={18} />, title: "Paste a connection string", text: "SQL Server, PostgreSQL, MySQL or MariaDB: a URL, an ADO.NET string or host:port/database." },
+  { panel: "new", icon: <Database size={18} />, title: "Paste a connection string", text: "SQL Server, PostgreSQL, MySQL or MariaDB: a URL, an ADO.NET string or host:port/database. SQLite: the file's path." },
   { panel: "azure", icon: <Cloud size={18} />, title: "Find in Azure", text: "Lists the SQL, PostgreSQL and MySQL servers your az login can reach." },
   { panel: "aws", icon: <Cloud size={18} />, title: "Find in AWS", text: "Lists the RDS and Aurora databases your aws login can see." },
   { panel: "import", icon: <Import size={18} />, title: "Import from another tool", text: "Azure Data Studio, VS Code, DBeaver or DataGrip connections, without retyping." },
@@ -205,6 +208,7 @@ function ConnectionCard({ connection: c }: { connection: ConnectionInfo }) {
       )}
       <span className="conn-tools">
         {c.auth === "password" && !c.has_secret && <SetPassword name={c.name} />}
+        {(c.engine === "sqlite" || c.query_log) && <QueryLogSetting connection={c} />}
         <AgentAccessMenu connection={c} />
       </span>
     </div>
@@ -305,6 +309,108 @@ function AgentAccessMenu({ connection: c }: { connection: ConnectionInfo }) {
         </span>
       )}
       {error && <span className="muted"> {error}</span>}
+    </span>
+  );
+}
+
+/** The log the application's framework writes (Rails, Django, EF Core, Phoenix), which scans read the statements from
+ *  when the database keeps none (SQLite). Nothing changes in the application: Culprit reads the file it already writes. */
+function QueryLogSetting({ connection: c }: { connection: ConnectionInfo }) {
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState(c.query_log ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const file = c.query_log?.split(/[\\/]/).pop();
+  const save = async (value: string | null) => {
+    try {
+      await (await api()).setQueryLog(c.name, value);
+      setOpen(false);
+      setError(null);
+      await loadConnections();
+    } catch (e) {
+      setError(errorMessage(e).message);
+    }
+  };
+  // The desktop app picks the file in the system's own dialog; the browser demo can only take a typed path.
+  const choose = async () => {
+    try {
+      const chosen = await (await api()).chooseQueryLog(c.name);
+      setError(null);
+      if (chosen) {
+        setOpen(false);
+        await loadConnections();
+      }
+    } catch (e) {
+      setError(errorMessage(e).message);
+    }
+  };
+  if (isDesktop() && !open && !c.query_log) {
+    return (
+      <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+        <button className="btn ghost" style={{ height: 22 }} title="Read the statements and their times from the log your framework writes (Rails, Django, EF Core, Phoenix)" onClick={choose}>
+          <FileText size={12} /> Add query log
+        </button>
+        {error && <span className="muted">{error}</span>}
+      </span>
+    );
+  }
+  if (isDesktop() && open) {
+    return (
+      <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+        <span className="muted mono" title={c.query_log ?? ""}>
+          {file}
+        </span>
+        <button className="btn" onClick={choose}>
+          Choose another…
+        </button>
+        <button className="btn ghost" onClick={() => save(null)}>
+          Remove
+        </button>
+        <button className="btn ghost" onClick={() => setOpen(false)}>
+          Done
+        </button>
+        {error && <span className="muted">{error}</span>}
+      </span>
+    );
+  }
+  if (!open) {
+    return (
+      <button
+        className="btn ghost"
+        style={{ marginLeft: 8, height: 22 }}
+        title={c.query_log ? `Scans read the statements from ${c.query_log}` : "Read the statements and their times from the log your framework writes (Rails, Django, EF Core, Phoenix)"}
+        onClick={(e) => {
+          e.stopPropagation();
+          setPath(c.query_log ?? "");
+          setOpen(true);
+        }}
+      >
+        <FileText size={12} /> {file ? `Query log: ${file}` : "Add query log"}
+      </button>
+    );
+  }
+  return (
+    <span style={{ display: "inline-flex", gap: 6, marginLeft: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+      <input
+        className="alias-input"
+        autoFocus
+        value={path}
+        placeholder="/path/to/log/production.log"
+        onChange={(e) => setPath(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter" && path.trim()) save(path.trim());
+          if (e.key === "Escape") setOpen(false);
+        }}
+      />
+      <button className="btn" disabled={!path.trim()} onClick={() => save(path.trim())}>
+        Save
+      </button>
+      {c.query_log && (
+        <button className="btn ghost" onClick={() => save(null)}>
+          Remove
+        </button>
+      )}
+      {error && <span className="muted">{error}</span>}
     </span>
   );
 }
@@ -498,8 +604,8 @@ function DiscoverPanel({ cloud, onDone }: { cloud: CloudKind; onDone: () => void
                 )}
                 <span className="where muted" title={d.host}>
                   {d.cloud === "aws"
-                    ? `${d.server} · ${ENGINE_LABEL[d.engine]} · ${d.location} · ${d.auth === "aws-iam" ? "IAM" : "password"}`
-                    : `${d.server}${d.database ? ` / ${d.database}` : ""} · ${ENGINE_LABEL[d.engine]} · ${d.location}${d.auth === "password" ? " · password" : ""}`}
+                    ? `${d.server} · ${engineLabel(d.engine)} · ${d.location} · ${d.auth === "aws-iam" ? "IAM" : "password"}`
+                    : `${d.server}${d.database ? ` / ${d.database}` : ""} · ${engineLabel(d.engine)} · ${d.location}${d.auth === "password" ? " · password" : ""}`}
                 </span>
                 <span className="muted">{d.saved_as ? "saved" : d.environment}</span>
               </label>
@@ -628,7 +734,7 @@ function ImportPanel({ onDone }: { onDone: () => void }) {
                     <input className="alias-input" value={aliases[key] ?? c.alias} onChange={(e) => setAliases((a) => ({ ...a, [key]: e.target.value }))} />
                   )}
                   <span className="where muted" title={`${c.origin} in ${SOURCE_LABEL[c.source]} · ${c.file}`}>
-                    {ENGINE_LABEL[c.engine]} · {target(c)}
+                    {engineLabel(c.engine)} · {target(c)}
                     {c.auth === "entra" ? " · Entra ID" : c.user ? ` · ${c.user}` : ""}
                   </span>
                   <span className="muted">{c.saved_as ? "saved" : c.environment}</span>
@@ -734,13 +840,32 @@ function NewConnectionForm({ onDone, canCancel }: { onDone: () => void; canCance
           placeholder="postgres://…  ·  Server=…;Database=…  ·  host:port/db  ·  ~/app.db"
           onChange={(e) => setInput(e.target.value)}
         />
+        {/* A SQLite file is a path: pick it in the system's own dialog rather than type it (desktop app). */}
+        {isDesktop() && (
+          <button
+            type="button"
+            className="btn small"
+            title="Choose a SQLite database file"
+            onClick={async (e) => {
+              e.preventDefault();
+              try {
+                const chosen = await (await api()).chooseDatabaseFile();
+                if (chosen) setInput(chosen);
+              } catch (err) {
+                setParseError(errorMessage(err).message);
+              }
+            }}
+          >
+            <FolderOpen size={12} /> SQLite file…
+          </button>
+        )}
       </label>
       {parseError && <div className="muted" style={{ marginTop: 6 }}>{parseError}</div>}
       {parsed && (
         <div className="form-grid">
           <label>Detected</label>
           <div>
-            <b>{parsed.engine ? ENGINE_LABEL[parsed.engine] : "Unknown engine"}</b>
+            <b>{parsed.engine ? engineLabel(parsed.engine) : "Unknown engine"}</b>
             <span className="muted"> · {parsed.display}{parsed.auth === "entra" ? " · Microsoft Entra ID (Azure CLI)" : ""}</span>
           </div>
           <label>Name</label>

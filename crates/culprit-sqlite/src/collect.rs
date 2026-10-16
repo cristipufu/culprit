@@ -1,15 +1,16 @@
 //! What a SQLite file says about itself: the library's version, the settings that live in the file, the schema
 //! (tables, columns, indexes, foreign keys), the planner's statistics (`sqlite_stat1`) and, when the library has the
-//! `dbstat` table, each table's and index's size. Every read is a SELECT or a read-only pragma; rows are never counted
-//! (that reads the whole file): without statistics they are unknown.
+//! `dbstat` table and the file is small enough to read whole without holding up the application's writes
+//! ([`whole_file_read`]), each table's and index's size and each table's rows. Every read is a SELECT or a read-only
+//! pragma.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use culprit_core::{
-    Capability, CollectorNote, ColumnInfo, Coverage, Engine, Environment, ForeignKey, IndexStat, MissingCapability,
-    Result, ResultSet, SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, TableStat,
+    Capability, ColumnInfo, Coverage, Engine, Environment, ForeignKey, IndexStat, MissingCapability, Result, ResultSet,
+    SNAPSHOT_FORMAT, ServerInfo, Setting, Snapshot, TableStat,
 };
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
@@ -19,19 +20,69 @@ use crate::map_error;
 /// The settings that live in the file (or describe it), recorded for the checks and the settings view.
 const FILE_PRAGMAS: &[&str] = &["journal_mode", "auto_vacuum", "page_size", "page_count", "freelist_count", "encoding"];
 
-/// What a SQLite snapshot can hold, and what SQLite doesn't keep (`have`, `missing`).
-pub fn capabilities(conn: &Connection) -> (Vec<Capability>, Vec<MissingCapability>) {
+/// The largest file read whole for sizes and row counts. `dbstat` visits every page inside one read transaction: in
+/// WAL mode the application's writers carry on beside it, but with a rollback journal it holds the lock a writer needs
+/// to commit, so writes wait for it (and fail with SQLITE_BUSY past their busy_timeout).
+const WHOLE_READ_MAX_BYTES_WAL: f64 = 4.0 * 1024.0 * 1024.0 * 1024.0;
+const WHOLE_READ_MAX_BYTES_ROLLBACK: f64 = 128.0 * 1024.0 * 1024.0;
+/// However large the file, the read stops after this long and sizes stay unknown.
+const WHOLE_READ_BUDGET_WAL: Duration = Duration::from_secs(3);
+const WHOLE_READ_BUDGET_ROLLBACK: Duration = Duration::from_millis(500);
+
+/// Whether the file may be read whole (`dbstat`) for sizes and row counts, and for how long at most; why not otherwise.
+pub fn whole_file_read(conn: &Connection) -> std::result::Result<Duration, String> {
+    if conn.prepare("SELECT 1 FROM dbstat LIMIT 0").is_err() {
+        return Err("this SQLite library has no dbstat table to measure them".into());
+    }
+    let bytes = number(conn, "page_count").unwrap_or(0.0) * number(conn, "page_size").unwrap_or(0.0);
+    let wal = pragma(conn, "journal_mode").is_some_and(|m| m.eq_ignore_ascii_case("wal"));
+    let (limit, budget) = if wal {
+        (WHOLE_READ_MAX_BYTES_WAL, WHOLE_READ_BUDGET_WAL)
+    } else {
+        (WHOLE_READ_MAX_BYTES_ROLLBACK, WHOLE_READ_BUDGET_ROLLBACK)
+    };
+    if bytes > limit {
+        return Err(if wal {
+            format!("the file is {}: Culprit doesn't read that much of it to count", culprit_core::format::bytes(bytes))
+        } else {
+            format!(
+                "the file is {} with a rollback journal, where reading it whole would make the application's writes wait",
+                culprit_core::format::bytes(bytes)
+            )
+        });
+    }
+    Ok(budget)
+}
+
+/// What a SQLite snapshot can hold, and what SQLite doesn't keep (`have`, `missing`). `rows`: why row counts are
+/// unknown, if they are.
+pub fn capabilities(
+    conn: &Connection,
+    rows: std::result::Result<(), String>,
+) -> (Vec<Capability>, Vec<MissingCapability>) {
     let mut coverage = Coverage::with(vec![Capability::Showplan], Vec::new());
-    if has_stat1(conn) {
+    let stat1 = has_stat1(conn);
+    if stat1 {
         coverage.delivered(Capability::Statistics);
-        coverage.delivered(Capability::TableStats);
     } else {
         coverage.lacking(
             Capability::Statistics,
-            "The file has no planner statistics (sqlite_stat1): row counts are unknown and the planner guesses.",
+            "The file has no planner statistics (sqlite_stat1): the planner guesses how many rows each step reads.",
             Some("ANALYZE;".into()),
         );
     }
+    match rows {
+        Ok(()) => coverage.delivered(Capability::TableStats),
+        Err(_) if stat1 => coverage.delivered(Capability::TableStats),
+        Err(why) => coverage.lacking(Capability::TableStats, format!("Row counts are unknown: {why}."), None),
+    }
+    coverage.lacking(
+        Capability::QueryLog,
+        "SQLite keeps no history of the statements it ran. Culprit can read them from the log Rails, Django, Entity \
+         Framework Core or Phoenix already writes: add it to the connection (`culprit conn set <name> --query-log <file>`, \
+         or Add query log in the app).",
+        None,
+    );
     coverage.lacking(Capability::IndexUsage, "SQLite keeps no record of which indexes queries use.", None);
     coverage.lacking(Capability::WaitStats, "SQLite has no server, so nothing records waits.", None);
     coverage.lacking(Capability::Sessions, "SQLite has no server, so no sessions to list.", None);
@@ -99,23 +150,27 @@ pub fn snapshot(
     let taken_at = conn
         .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| r.get::<_, String>(0))
         .map_err(|e| map_error(&e))?;
-    let (have, missing) = capabilities(conn);
-    let mut notes = Vec::new();
-    let mut note =
-        |collector: &str, message: String| notes.push(CollectorNote { collector: collector.into(), message });
+    // What the file's sources could read (`crate::sources`): a source that can't be read is a note.
+    let mut coverage = Coverage::default();
 
     let schema = read_schema(conn).map_err(|e| map_error(&e))?;
-    let rows = table_rows(conn);
-    let sizes = match object_sizes(conn) {
-        Ok(sizes) => sizes,
-        Err(_) => {
-            note(
-                "sizes",
-                "This SQLite library has no dbstat table, so each table's and index's size is unknown.".into(),
-            );
-            HashMap::new()
+    let without_rowid: HashSet<&str> =
+        schema.tables.iter().filter(|t| t.without_rowid).map(|t| t.name.as_str()).collect();
+    // Counted rows where the file was read whole; the planner's statistics otherwise.
+    let (sizes, counted, whole) = match whole_file_read(conn).and_then(|budget| {
+        object_sizes(conn, &without_rowid, budget)
+            .map_err(|e| format!("reading every page stopped ({})", map_error(&e).message.to_lowercase()))
+    }) {
+        Ok((sizes, counted)) => (sizes, counted, Ok(())),
+        Err(why) => {
+            let error = culprit_core::Error::internal(format!("Table and index sizes are unknown: {why}."));
+            coverage.source_failed(&crate::sources::SIZES, &error);
+            (HashMap::new(), HashMap::new(), Err(why))
         }
     };
+    let mut rows = table_rows(conn);
+    rows.extend(counted);
+    let (have, missing) = capabilities(conn, whole);
 
     let mut tables = Vec::new();
     let mut indexes = Vec::new();
@@ -181,7 +236,7 @@ pub fn snapshot(
         waits: Vec::new(),
         resources: Vec::new(),
         settings,
-        notes,
+        notes: coverage.finish().2,
         pressure: None,
         options: None,
         query_families: Vec::new(),
@@ -248,11 +303,37 @@ fn table_rows(conn: &Connection) -> HashMap<String, f64> {
     out
 }
 
-/// Bytes per table and index, from `dbstat` (when the library has it).
-fn object_sizes(conn: &Connection) -> rusqlite::Result<HashMap<String, f64>> {
-    let mut stmt = conn.prepare("SELECT name, sum(pgsize) FROM dbstat GROUP BY name")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?;
-    rows.collect()
+/// Bytes per table and index, and each table's rows, from one pass over `dbstat` stopped after `budget`. A rowid
+/// table's rows are the cells of its leaf pages (interior cells point to pages); a WITHOUT ROWID table is a b-tree of
+/// entries, every one a row, interior pages included.
+#[allow(clippy::type_complexity)]
+fn object_sizes(
+    conn: &Connection,
+    without_rowid: &HashSet<&str>,
+    budget: Duration,
+) -> rusqlite::Result<(HashMap<String, f64>, HashMap<String, f64>)> {
+    let started = Instant::now();
+    conn.progress_handler(1_000, Some(move || started.elapsed() > budget))?;
+    let read = (|| {
+        let mut stmt = conn.prepare(
+            "SELECT name, sum(pgsize),
+                    sum(CASE WHEN pagetype = 'leaf' THEN ncell ELSE 0 END),
+                    sum(CASE WHEN pagetype <> 'overflow' THEN ncell ELSE 0 END)
+               FROM dbstat GROUP BY name",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+    })();
+    conn.progress_handler(0, None::<fn() -> bool>)?;
+    let mut sizes = HashMap::new();
+    let mut counted = HashMap::new();
+    for (name, bytes, leaf_cells, cells) in read? {
+        counted.insert(name.clone(), if without_rowid.contains(name.as_str()) { cells } else { leaf_cells });
+        sizes.insert(name, bytes);
+    }
+    Ok((sizes, counted))
 }
 
 fn table(t: &SchemaTable, rows: Option<f64>, data: Option<f64>, index_bytes: f64, has_pk: bool) -> TableStat {
@@ -330,16 +411,36 @@ fn read_indexes(
         .collect::<rusqlite::Result<_>>()?;
     let mut out = Vec::new();
     for (name, unique, origin, partial) in indexes {
-        let mut info = conn.prepare(
-            "SELECT coalesce(name, '(expression)'), \"desc\" FROM pragma_index_xinfo(?1) WHERE key = 1 ORDER BY seqno",
-        )?;
-        let columns: Vec<String> = info
+        let sql = index_sql.get(&name).cloned().filter(|s| !s.is_empty());
+        // An expression key is named by its expression, from the index's CREATE statement: `lower(email)` and
+        // `substr(email, 1, 3)` are different indexes. One whose text can't be read is named after its index, so it
+        // never matches another's. A key compared by a collation other than BINARY says so (NOCASE serves different
+        // queries than the column's own order).
+        let terms = sql.as_deref().map(index_terms).unwrap_or_default();
+        let mut info = conn
+            .prepare("SELECT seqno, name, \"desc\", coll FROM pragma_index_xinfo(?1) WHERE key = 1 ORDER BY seqno")?;
+        let keys: Vec<(String, String)> = info
             .query_map([&name], |r| {
-                let column: String = r.get(0)?;
-                Ok(if r.get::<_, i64>(1)? != 0 { format!("{column} DESC") } else { column })
+                let seqno: i64 = r.get(0)?;
+                let column = match r.get::<_, Option<String>>(1)? {
+                    Some(c) => c,
+                    None => match terms.get(seqno as usize) {
+                        Some(term) => format!("({term})"),
+                        None => format!("(expression {} of {name})", seqno + 1),
+                    },
+                };
+                let column = if r.get::<_, i64>(2)? != 0 { format!("{column} DESC") } else { column };
+                let coll: String = r.get::<_, Option<String>>(3)?.unwrap_or_default();
+                let coll = if coll.is_empty() || coll.eq_ignore_ascii_case("BINARY") {
+                    String::new()
+                } else {
+                    format!("COLLATE {coll}")
+                };
+                Ok((column, coll))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let sql = index_sql.get(&name).cloned().filter(|s| !s.is_empty());
+        let opclasses = keys.iter().any(|(_, c)| !c.is_empty()).then(|| keys.iter().map(|(_, c)| c.clone()).collect());
+        let columns: Vec<String> = keys.into_iter().map(|(c, _)| c).collect();
         let filter = if partial { sql.as_deref().and_then(partial_filter) } else { None };
         let primary = origin == "pk";
         out.push(IndexStat {
@@ -367,11 +468,54 @@ fn read_indexes(
             contention: None,
             created_at_latest: None,
             partition_of: None,
-            opclasses: None,
+            opclasses,
             counters_since: None,
         });
     }
     Ok(out)
+}
+
+/// The key terms of a CREATE INDEX statement, as written: `CREATE INDEX i ON t (lower(email), status DESC)` →
+/// `lower(email)`, `status`. Each without its ASC, DESC or COLLATE, which the catalog reports apart.
+fn index_terms(sql: &str) -> Vec<String> {
+    let upper = sql.to_ascii_uppercase();
+    let Some(on) = upper.find(" ON ") else { return Vec::new() };
+    let Some(open) = sql[on..].find('(').map(|i| on + i) else { return Vec::new() };
+    let (mut depth, mut start, mut quote, mut out) = (0i32, open + 1, None::<char>, Vec::new());
+    for (i, c) in sql[open..].char_indices().map(|(i, c)| (open + i, c)) {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`' | '[') => quote = Some(if c == '[' { ']' } else { c }),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(sql[start..i].to_string());
+                    break;
+                }
+            }
+            (None, ',') if depth == 1 => {
+                out.push(sql[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.into_iter()
+        .map(|t| {
+            let mut t = t.trim().to_string();
+            loop {
+                let u = t.to_ascii_uppercase();
+                let cut = [" ASC", " DESC"].iter().find(|w| u.ends_with(*w)).map(|w| t.len() - w.len());
+                let cut = cut.or_else(|| u.rfind(" COLLATE ").filter(|at| !u[*at + 9..].trim().contains(' ')));
+                match cut {
+                    Some(at) => t = t[..at].trim_end().to_string(),
+                    None => break t,
+                }
+            }
+        })
+        .collect()
 }
 
 /// The WHERE of a partial index's CREATE statement.
@@ -463,5 +607,33 @@ mod tests {
             Some("deleted_at IS NULL")
         );
         assert_eq!(partial_filter("CREATE INDEX ix ON t (a)"), None);
+    }
+
+    // The false flags: two expression indexes were both "(expression)", and a NOCASE index the same as the plain one,
+    // so each pair read as duplicates to drop.
+    #[test]
+    fn expression_keys_and_collations_tell_indexes_apart() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE u (id INTEGER PRIMARY KEY, email TEXT, status TEXT);
+             CREATE INDEX a ON u (lower(email));
+             CREATE INDEX b ON u (substr(email, 1, 3) DESC);
+             CREATE INDEX c ON u (status COLLATE NOCASE);
+             CREATE INDEX d ON u (status);",
+        )
+        .unwrap();
+        let sql: HashMap<String, String> = conn
+            .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index'")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let indexes = read_indexes(&conn, "u", false, &sql, &HashMap::new()).unwrap();
+        let of = |n: &str| indexes.iter().find(|i| i.name == n).unwrap();
+        assert_eq!(of("a").columns, vec!["(lower(email))"]);
+        assert_eq!(of("b").columns, vec!["(substr(email, 1, 3)) DESC"]);
+        assert_eq!(of("c").opclasses, Some(vec!["COLLATE NOCASE".to_string()]));
+        assert_eq!((of("d").columns.clone(), of("d").opclasses.clone()), (vec!["status".to_string()], None));
     }
 }

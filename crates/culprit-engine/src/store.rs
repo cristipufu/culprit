@@ -33,6 +33,13 @@ pub struct StoredConnection {
     /// What coding agents may do with this connection (`culprit mcp`); `stats` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<crate::agent::AgentAccess>,
+    /// A log the application's framework writes (Rails, Django, Entity Framework Core, Phoenix), which scans read the
+    /// statements from when the database keeps no history of them (SQLite). An absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_log: Option<String>,
+    /// The person removed the query log: scans don't look for one again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_query_log: bool,
 }
 
 impl StoredConnection {

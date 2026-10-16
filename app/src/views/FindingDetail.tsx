@@ -15,6 +15,7 @@ import { useHotkeys } from "../lib/hotkeys";
 import { honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
+import { can } from "../lib/engines";
 
 const CONFIDENCE_LABEL = { high: "High confidence", medium: "Medium confidence", low: "Low confidence" } as const;
 const SEVERITY_LABEL = { high: "High impact", medium: "Medium impact", low: "Low impact" } as const;
@@ -97,7 +98,12 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
             ))}
             {firstWithPlan?.query.plan && (
               <>
-                <HotNode plan={firstWithPlan.query.plan.root} focus={firstWithPlan.ref.plan_node} total={firstWithPlan.query.plan.total_cost} />
+                <HotNode
+                  plan={firstWithPlan.query.plan.root}
+                  focus={firstWithPlan.ref.plan_node}
+                  total={firstWithPlan.query.plan.total_cost}
+                  weighed={can(firstWithPlan.query.plan.engine, "plan_estimates") || firstWithPlan.query.plan.kind === "actual"}
+                />
                 <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => setShowPlan((v) => !v)}>
                   {showPlan ? "Hide plan" : "Show full plan"}
                 </button>
@@ -284,8 +290,28 @@ function hottest(node: PlanNode): PlanNode {
   return node.children.map(hottest).reduce((a, b) => (b.self_cost > a.self_cost ? b : a), node);
 }
 
-function HotNode({ plan, focus, total }: { plan: PlanNode; focus: number | null; total: number }) {
-  const node = (focus != null ? find(plan, focus) : null) ?? hottest(plan);
+/** The step to look at: the one the finding names, or the costliest. A plan without costs or row estimates (SQLite's)
+ *  names only the step the finding points at, with what it searches by, and claims no share or estimate. */
+function HotNode({ plan, focus, total, weighed }: { plan: PlanNode; focus: number | null; total: number; weighed: boolean }) {
+  const named = focus != null ? find(plan, focus) : null;
+  if (!weighed) {
+    if (!named) return null;
+    const by = named.seek_predicate ?? named.predicate;
+    return (
+      <div className="hotnode">
+        <Flame size={16} color="var(--heat-4)" style={{ marginTop: 1, flexShrink: 0 }} />
+        <div className="selectable">
+          <div>
+            <span className="op">{named.op}</span>
+            {named.object && <span className="mono"> {named.object}</span>}
+            {named.index && <span className="muted"> · {named.index}</span>}
+          </div>
+          {by && <div className="muted" style={{ marginTop: 2 }}>by {shortPredicate(by)}</div>}
+        </div>
+      </div>
+    );
+  }
+  const node = named ?? hottest(plan);
   const share = total > 0 ? node.self_cost / total : 0;
   const read = node.rows_read ?? node.table_rows;
   return (

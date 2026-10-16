@@ -1,11 +1,51 @@
+import type { Ability as EngineAbility } from "../gen/Ability";
 import type { Engine } from "../gen/Engine";
+import type { EngineFacts } from "../gen/EngineFacts";
 import type { Plan } from "../gen/Plan";
+import type { SessionAction } from "../gen/SessionAction";
+import engines from "../gen/engines.json";
 
-const LABEL: Record<Engine, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL", sqlite: "SQLite" };
+/** Everything the app knows about each engine without a connection: its label, what it can answer, its session
+ *  actions and why it refuses what it can't do. Written from the engine files in culprit-core (`engines/*.rs`) to
+ *  `gen/engines.json` by its tests, so views, the desktop and the browser demo all answer as the engine does. */
+const FACTS = engines as Record<Engine, EngineFacts>;
+
+const LABEL = Object.fromEntries(Object.entries(FACTS).map(([e, f]) => [e, f.label])) as Record<Engine, string>;
+
+/** The engine's name in sentences: "SQL Server", "PostgreSQL", "MySQL", "SQLite". */
+export function engineLabel(engine: Engine): string {
+  return LABEL[engine];
+}
 
 /** MariaDB is served by the MySQL engine; the server's product string (or a plan's flavor) tells them apart. */
 export function isMariadb(engine: Engine, product?: string | null): boolean {
   return engine === "mysql" && !!product?.startsWith("MariaDB");
+}
+
+export type Ability = EngineAbility;
+
+export function can(engine: Engine, ability: Ability): boolean {
+  return FACTS[engine].abilities[ability];
+}
+
+/** The error the engine gives for something it can't do, as the desktop returns it. */
+export function refusal(engine: Engine, ability: Ability): { code: "unsupported"; message: string; hint: string | null } {
+  const r = FACTS[engine].refusals[ability];
+  return { code: "unsupported", message: r?.message ?? `${LABEL[engine]} can't do this`, hint: r?.hint ?? null };
+}
+
+/** What Live may do to another session on this engine, outside production. */
+export function sessionActions(engine: Engine): SessionAction[] {
+  return FACTS[engine].session_actions;
+}
+
+/** The engine's word for a statement that is waiting ("suspended" on SQL Server). */
+export function waitingState(engine: Engine): string {
+  return FACTS[engine].waiting_state;
+}
+
+export function measuresRuns(engine: Engine): boolean {
+  return can(engine, "measures_runs");
 }
 
 /** The server's name in sentences: "SQL Server", "PostgreSQL", "MySQL" or "MariaDB". */

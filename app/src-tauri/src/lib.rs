@@ -429,6 +429,64 @@ fn set_agent_access(ws: Ws, name: String, access: AgentAccess) -> Result<Connect
     ws.set_agent_access(&name, access)
 }
 
+#[tauri::command]
+fn set_query_log(ws: Ws, name: String, path: Option<String>) -> Result<ConnectionInfo> {
+    ws.set_query_log(&name, path.as_deref().map(std::path::Path::new))
+}
+
+/// Choose a SQLite database file in a native dialog, for the new-connection form. Culprit opens the dialog itself, so the
+/// window gets back only the path the person picked, as a connection string Culprit reads as SQLite whatever the file is
+/// named. `None` when the dialog was cancelled.
+#[tauri::command]
+async fn choose_database_file(app: AppHandle) -> Result<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a SQLite database file")
+        .add_filter("SQLite databases", &["db", "sqlite", "sqlite3", "db3"])
+        .pick_file(move |picked| {
+            let _ = sender.send(picked);
+        });
+    let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| Error::invalid(format!("That file can't be read from here: {e}")))?;
+    let known =
+        path.extension().is_some_and(|x| ["db", "sqlite", "sqlite3", "db3"].iter().any(|k| x.eq_ignore_ascii_case(k)));
+    let text = path.to_string_lossy().into_owned();
+    Ok(Some(if known { text } else { format!("sqlite:{text}") }))
+}
+
+/// Choose the connection's query log in a native file dialog. Culprit opens the dialog itself, so the window never gets
+/// file system access: only the file the person picked reaches the workspace, which checks it holds statements before
+/// saving it. `None` when the dialog was cancelled.
+#[tauri::command]
+async fn choose_query_log(app: AppHandle, ws: Ws<'_>, name: String) -> Result<Option<ConnectionInfo>> {
+    use tauri_plugin_dialog::DialogExt;
+    let info = ws.connection(&name)?;
+    // Start where the log is, or beside the database file.
+    let start = info
+        .query_log
+        .as_deref()
+        .or(info.database.as_deref())
+        .map(culprit_core::expand_home)
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose the log your framework writes")
+        .add_filter("Logs", &["log", "jsonl", "txt"]);
+    if let Some(dir) = start {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.pick_file(move |picked| {
+        let _ = sender.send(picked);
+    });
+    let Some(picked) = receiver.await.ok().flatten() else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| Error::invalid(format!("That file can't be read from here: {e}")))?;
+    ws.set_query_log(&name, Some(&path)).map(Some)
+}
+
 /// Approval requests already announced to the person, so the dock/taskbar only asks for attention once per request.
 #[derive(Default)]
 struct Announced(Mutex<HashSet<String>>);
@@ -541,6 +599,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let workspace = Workspace::open()?;
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(Announced::default())
         .manage(SignIn::default())
         .manage(PendingUpdate::default())
@@ -625,6 +684,9 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             delete_saved_query,
             saved_query_ran,
             set_agent_access,
+            set_query_log,
+            choose_query_log,
+            choose_database_file,
             pending_approvals,
             decide_approval,
             interrupt_session,

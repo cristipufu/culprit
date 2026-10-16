@@ -38,7 +38,7 @@ to the PDB (a snapshot describes one database).
 - **A provider crate**, `crates/culprit-oracle`, behind the `oracle` cargo feature in `culprit-engine/src/registry.rs`,
   implementing `culprit_core::Provider`. Each source keeps its account in a `Coverage`: a missing privilege
   (`SELECT_CATALOG_ROLE`) is a missing capability with its GRANT, never a failed scan.
-- **`Engine::Oracle`** in core, with its `Dialect` (`crates/culprit-core/src/dialect.rs`): quoting, `CREATE INDEX …
+- **`Engine::Oracle`** in core, with its file in `crates/culprit-core/src/engines/` (`oracle.rs`: its `EngineSpec` and `Dialect`): quoting, `CREATE INDEX …
   ONLINE` where the edition has it, `DBMS_STATS.GATHER_TABLE_STATS`, `ALTER SYSTEM KILL SESSION 'sid,serial#'`. The
   dialect already carries that spelling for the three engines, the way `Platform` carries the cloud names. What remains
   of the 106 places that branch on the engine is engine-specific advice and thresholds, which each check states for

@@ -11,9 +11,11 @@ pub mod deadlock;
 pub mod dialect;
 pub mod digest;
 pub mod drift;
+pub mod engines;
 pub mod error;
 pub mod events;
 pub mod finding;
+pub mod fingerprint;
 pub mod format;
 pub mod insights;
 pub mod model;
@@ -35,8 +37,8 @@ pub use blocking::{BlockNode, Blocking, BlockingChain, HeadKind, LockWait};
 pub use changes::{ChangeStatus, Changes, Period, PeriodStats, PlanSwitch, QueryChange};
 pub use check::Check;
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
-pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, is_local_host};
-pub use coverage::Coverage;
+pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, expand_home, is_local_host};
+pub use coverage::{Coverage, Source};
 pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
@@ -47,6 +49,7 @@ pub use digest::{
     DigestFinding, DigestIndexAdvice, DigestIndexCreate, DigestIndexDrop, DigestMetric, DigestQuery, DigestTopQuery,
 };
 pub use drift::{Drift, DriftItem, DriftKind, DriftPresence, DriftSide, server_label};
+pub use engines::{EngineSpec, SettingChange};
 pub use error::{Error, ErrorCode, Result};
 pub use events::{ChangeEvent, EventAction, EventKind, EventLink, EventSource};
 pub use finding::*;

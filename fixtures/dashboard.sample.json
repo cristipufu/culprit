@@ -1,16 +1,16 @@
 {
   "mariadb-demo": {
     "attention": [
-      "health",
       "statistics",
-      "deadlocks"
+      "deadlocks",
+      "health"
     ],
     "connection": "mariadb-demo",
     "coverage": "performance_schema, the 1 minute since statistics were reset",
     "database": "shop",
     "engine": "mysql",
     "environment": "development",
-    "headline": "Average row-lock wait: 7.6 s; under 50 ms is healthy.",
+    "headline": "performance_schema covers only the 1 minute since statistics were reset, so the numbers are thin until it has seen more.",
     "product": "MariaDB 11.8.9",
     "report_id": "20261011T160540.394Z",
     "taken_at": "2026-10-11T16:05:40Z",
@@ -259,20 +259,9 @@
         "title": "Right now"
       },
       {
-        "detail": "1 more signal also needs a look.",
+        "detail": "Counters since startup cover 69 minutes.",
         "fix_sql": null,
         "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "row-lock-avg",
-            "kind": "signal",
-            "label": "Average row-lock wait",
-            "query_id": null,
-            "share": null,
-            "status": "bad",
-            "value": "7.6 s"
-          },
           {
             "at": null,
             "finding_id": null,
@@ -309,17 +298,6 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "max-used-connections",
-            "kind": "signal",
-            "label": "Busiest moment",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "4%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "history-length",
             "kind": "signal",
             "label": "Undo history",
@@ -349,6 +327,28 @@
             "share": null,
             "status": "info",
             "value": "58.2/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "threads-running",
+            "kind": "signal",
+            "label": "Statements running now",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "row-lock-waits",
+            "kind": "signal",
+            "label": "Row-lock waits",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "17.3/h"
           }
         ],
         "key": "health",
@@ -356,8 +356,8 @@
           {
             "key": "bad",
             "label": "Bad",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "watch",
@@ -368,13 +368,13 @@
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "5",
-            "value": 5.0
+            "text": "4",
+            "value": 4.0
           }
         ],
         "next": "culprit waits mariadb-demo",
-        "status": "bad",
-        "takeaway": "Average row-lock wait: 7.6 s; under 50 ms is healthy.",
+        "status": "watch",
+        "takeaway": "Temporary tables on disk: 17%; under 10% of temporary tables is healthy.",
         "title": "Health"
       },
       {
@@ -648,8 +648,7 @@
     "attention": [
       "statistics",
       "findings",
-      "deadlocks",
-      "waits"
+      "deadlocks"
     ],
     "connection": "mssql-demo-staging",
     "coverage": null,
@@ -662,7 +661,7 @@
     "taken_at": "2026-10-11T12:15:12Z",
     "tiles": [
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": "Query statistics shows how to get them.",
         "fix_sql": null,
         "items": [],
         "key": "db-time",
@@ -737,7 +736,7 @@
         "title": "Findings"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": "Query statistics shows how to get them.",
         "fix_sql": null,
         "items": [],
         "key": "top-queries",
@@ -817,7 +816,7 @@
           }
         ],
         "next": "culprit waits mssql-demo-staging",
-        "status": "watch",
+        "status": "info",
         "takeaway": "Most time goes to in-memory contention (77%), then parallel queries (17%).",
         "title": "Where time goes"
       },
@@ -955,7 +954,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": "Query statistics shows how to get them.",
         "fix_sql": null,
         "items": [],
         "key": "plans",
@@ -999,7 +998,7 @@
         "title": "Replication"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": "Query statistics shows how to get them.",
         "fix_sql": null,
         "items": [],
         "key": "failures",
@@ -1123,14 +1122,14 @@
           },
           {
             "at": null,
-            "finding_id": "plan-insights:nested-loops:query-263",
-            "id": "plan-insights:nested-loops:query-263",
+            "finding_id": "failing-query:246",
+            "id": "failing-query:246",
             "kind": "finding",
-            "label": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
+            "label": "A read from orders fails 25% of the time",
             "query_id": null,
-            "share": 0.2673650901995407,
-            "status": "watch",
-            "value": "27% of DB time"
+            "share": 2.7041685060225765e-05,
+            "status": "bad",
+            "value": "25% of runs fail"
           }
         ],
         "key": "findings",
@@ -1501,7 +1500,7 @@
             "kind": "index-add",
             "label": "order_items (order_id)",
             "query_id": "9",
-            "share": 0.060338932147242445,
+            "share": 0.06033893214724244,
             "status": null,
             "value": "6%"
           },
@@ -1889,6 +1888,17 @@
         "items": [
           {
             "at": null,
+            "finding_id": "failing-query:4515abd524a46f37",
+            "id": "failing-query:4515abd524a46f37",
+            "kind": "finding",
+            "label": "An update of orders fails 28% of the time (1205 lock wait timeout)",
+            "query_id": null,
+            "share": 0.0418843969784605,
+            "status": "bad",
+            "value": "28% of runs fail"
+          },
+          {
+            "at": null,
             "finding_id": "lock-time:4167fe7f2c20deb7",
             "id": "lock-time:4167fe7f2c20deb7",
             "kind": "finding",
@@ -1908,17 +1918,6 @@
             "share": 0.4009056543313076,
             "status": "info",
             "value": "2 min waiting on locks"
-          },
-          {
-            "at": null,
-            "finding_id": "failing-query:4515abd524a46f37",
-            "id": "failing-query:4515abd524a46f37",
-            "kind": "finding",
-            "label": "An update of orders fails 28% of the time (1205 lock wait timeout)",
-            "query_id": null,
-            "share": 0.0418843969784605,
-            "status": "bad",
-            "value": "28% of runs fail"
           }
         ],
         "key": "findings",
@@ -2097,7 +2096,7 @@
         "title": "Right now"
       },
       {
-        "detail": "2 more signals also need a look.",
+        "detail": "1 more signal also needs a look.",
         "fix_sql": null,
         "items": [
           {
@@ -2110,17 +2109,6 @@
             "share": null,
             "status": "bad",
             "value": "68%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "row-lock-avg",
-            "kind": "signal",
-            "label": "Average row-lock wait",
-            "query_id": null,
-            "share": null,
-            "status": "bad",
-            "value": "14.5 s"
           },
           {
             "at": null,
@@ -2139,17 +2127,6 @@
             "id": "connections",
             "kind": "signal",
             "label": "Connections in use",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "5%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "max-used-connections",
-            "kind": "signal",
-            "label": "Busiest moment",
             "query_id": null,
             "share": null,
             "status": "good",
@@ -2187,6 +2164,28 @@
             "share": null,
             "status": "good",
             "value": "0.1/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "questions",
+            "kind": "signal",
+            "label": "Statements",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "8.7/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "threads-running",
+            "kind": "signal",
+            "label": "Statements running now",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "5"
           }
         ],
         "key": "health",
@@ -2194,8 +2193,8 @@
           {
             "key": "bad",
             "label": "Bad",
-            "text": "2",
-            "value": 2.0
+            "text": "1",
+            "value": 1.0
           },
           {
             "key": "watch",
@@ -2206,8 +2205,8 @@
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "5",
-            "value": 5.0
+            "text": "4",
+            "value": 4.0
           }
         ],
         "next": "culprit waits mysql-demo",
@@ -2251,17 +2250,6 @@
         "items": [
           {
             "at": null,
-            "finding_id": "filtered-scan:shop.orders(promo_code)",
-            "id": "shop.orders(promo_code)",
-            "kind": "index-add",
-            "label": "orders (promo_code)",
-            "query_id": "19bd4ff468839ea3",
-            "share": 0.014800847333966714,
-            "status": null,
-            "value": "1%"
-          },
-          {
-            "at": null,
             "finding_id": "duplicate-index:shop.orders.ix_orders_status",
             "id": "shop.orders.ix_orders_status",
             "kind": "index-cleanup",
@@ -2288,8 +2276,8 @@
           {
             "key": "add",
             "label": "To add",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "cleanup",
@@ -2306,13 +2294,13 @@
           {
             "key": "tables",
             "label": "Tables to look at",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit indexes mysql-demo",
         "status": "info",
-        "takeaway": "One new index would help queries that take 1% of database time; 2 indexes can go (10.9 MB).",
+        "takeaway": "No new indexes needed; 2 existing indexes can go (10.9 MB).",
         "title": "Indexes"
       },
       {
@@ -2644,14 +2632,14 @@
           {
             "key": "medium",
             "label": "Medium",
-            "text": "8",
-            "value": 8.0
+            "text": "7",
+            "value": 7.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "9",
-            "value": 9.0
+            "text": "10",
+            "value": 10.0
           }
         ],
         "next": "culprit findings pg-demo",
@@ -2798,7 +2786,7 @@
         "title": "Right now"
       },
       {
-        "detail": "4 more signals also need a look.",
+        "detail": "3 more signals also need a look.",
         "fix_sql": null,
         "items": [
           {
@@ -2826,17 +2814,6 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "deadlocks",
-            "kind": "signal",
-            "label": "Deadlocks",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "checkpoints-requested",
             "kind": "signal",
             "label": "Checkpoints forced early",
@@ -2859,17 +2836,6 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "rollbacks",
-            "kind": "signal",
-            "label": "Transactions rolled back",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "connections",
             "kind": "signal",
             "label": "Connections in use",
@@ -2888,6 +2854,28 @@
             "share": null,
             "status": "good",
             "value": "4.2 s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "new-connections",
+            "kind": "signal",
+            "label": "New connections",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "0.0/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "commits",
+            "kind": "signal",
+            "label": "Commits",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0.7/s"
           }
         ],
         "key": "health",
@@ -2901,14 +2889,14 @@
           {
             "key": "watch",
             "label": "Watch",
-            "text": "4",
-            "value": 4.0
+            "text": "3",
+            "value": 3.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "4",
-            "value": 4.0
+            "text": "3",
+            "value": 3.0
           }
         ],
         "next": "culprit waits pg-demo",
@@ -3217,26 +3205,48 @@
     ]
   },
   "sqlite-demo": {
-    "attention": [],
+    "attention": [
+      "findings",
+      "indexes"
+    ],
     "connection": "sqlite-demo",
-    "coverage": null,
+    "coverage": "Rails log, the 90 minutes the Rails log covers",
     "database": "demo.db",
     "engine": "sqlite",
     "environment": "development",
-    "headline": "Nothing needs a look in what this scan can see; 10 tiles have no data here.",
+    "headline": "6 opportunities; the top 3 touch 99% of database time.",
     "product": "SQLite",
-    "report_id": "20261015T120330.609Z",
-    "taken_at": "2026-10-15T12:03:30.609Z",
+    "report_id": "20261015T225627.091Z",
+    "taken_at": "2026-10-15T22:56:27Z",
     "tiles": [
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": null,
         "fix_sql": null,
         "items": [],
         "key": "db-time",
-        "metrics": [],
-        "next": "culprit changes sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "No query history, so database time isn't measured.",
+        "metrics": [
+          {
+            "key": "total",
+            "label": "Database time",
+            "text": "44.4 s",
+            "value": 44400.90000000001
+          },
+          {
+            "key": "runs",
+            "label": "Runs",
+            "text": "3.5K",
+            "value": 3546.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "90 minutes",
+            "value": 1.4991666666666668
+          }
+        ],
+        "next": null,
+        "status": "info",
+        "takeaway": "44.4 s of database time over the 90 minutes the Rails log covers.",
         "title": "Database time"
       },
       {
@@ -3245,25 +3255,36 @@
         "items": [
           {
             "at": null,
-            "finding_id": "config:sqlite-statistics",
-            "id": "config:sqlite-statistics",
+            "finding_id": "unindexed-fk:main.orders(customer_id)",
+            "id": "unindexed-fk:main.orders(customer_id)",
             "kind": "finding",
-            "label": "SQLite has no statistics to choose between this file's indexes",
+            "label": "orders has no index on customer_id, its foreign key to customers",
             "query_id": null,
-            "share": null,
-            "status": "info",
-            "value": "No statistics"
+            "share": 0.687787860155988,
+            "status": "watch",
+            "value": "69% of DB time"
           },
           {
             "at": null,
-            "finding_id": "config:sqlite-free-pages",
-            "id": "config:sqlite-free-pages",
+            "finding_id": "heavy-query:3c81e035bd6f73fa",
+            "id": "heavy-query:3c81e035bd6f73fa",
             "kind": "finding",
-            "label": "47.0 MB of the file is free pages (71% of it)",
+            "label": "A read from orders takes 30% of database time",
+            "query_id": null,
+            "share": 0.3009848899459243,
+            "status": "watch",
+            "value": "30% of DB time"
+          },
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:main.order_items(product_id)",
+            "id": "unindexed-fk:main.order_items(product_id)",
+            "kind": "finding",
+            "label": "order_items has no index on product_id, its foreign key to products",
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "47.0 MB free"
+            "value": "200K rows unindexed"
           }
         ],
         "key": "findings",
@@ -3277,83 +3298,180 @@
           {
             "key": "medium",
             "label": "Medium",
-            "text": "0",
-            "value": 0.0
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "2",
-            "value": 2.0
+            "text": "4",
+            "value": 4.0
           }
         ],
         "next": "culprit findings sqlite-demo",
-        "status": "info",
-        "takeaway": "2 opportunities, none of them high.",
+        "status": "watch",
+        "takeaway": "6 opportunities; the top 3 touch 99% of database time.",
         "title": "Findings"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
-        "fix_sql": null,
-        "items": [],
-        "key": "top-queries",
-        "metrics": [],
-        "next": "culprit top sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "No query history, so there is no query list.",
-        "title": "Top queries"
-      },
-      {
-        "detail": "Sample what it waits on right now instead.",
-        "fix_sql": null,
-        "items": [],
-        "key": "waits",
-        "metrics": [],
-        "next": "culprit waits sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "SQLite keeps no record of waits: it has no server, and a writer that has to wait gets SQLITE_BUSY in the application.",
-        "title": "Where time goes"
-      },
-      {
-        "detail": "The app reads them every few seconds; `culprit live` reads them once.",
-        "fix_sql": null,
-        "items": [],
-        "key": "now",
-        "metrics": [],
-        "next": "culprit live sqlite-demo",
-        "status": "info",
-        "takeaway": "Sessions weren't read for this dashboard.",
-        "title": "Right now"
-      },
-      {
-        "detail": "Scan again to read compiles, memory, cache and connection counters.",
-        "fix_sql": null,
-        "items": [],
-        "key": "health",
-        "metrics": [],
-        "next": "culprit waits sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "This scan recorded no health counters.",
-        "title": "Health"
-      },
-      {
-        "detail": "Scan again to read the last day of deadlocks.",
-        "fix_sql": null,
-        "items": [],
-        "key": "deadlocks",
-        "metrics": [],
-        "next": "culprit deadlocks sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "This scan didn't read deadlocks.",
-        "title": "Deadlocks"
-      },
-      {
-        "detail": "Index usage counters aren't readable, so unused and overlapping indexes can't be judged.",
+        "detail": "7 queries tracked over the 90 minutes the Rails log covers.",
         "fix_sql": null,
         "items": [
           {
             "at": null,
             "finding_id": null,
+            "id": "c1b0de997fac4faa",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "c1b0de997fac4faa",
+            "share": 0.5001159886398701,
+            "status": null,
+            "value": "50%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "3c81e035bd6f73fa",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "3c81e035bd6f73fa",
+            "share": 0.3009848899459243,
+            "status": null,
+            "value": "30%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "500217f7b40055be",
+            "kind": "query",
+            "label": "a read from customers",
+            "query_id": "500217f7b40055be",
+            "share": 0.18767187151611794,
+            "status": null,
+            "value": "19%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "4971a2de8aecdcc6",
+            "kind": "query",
+            "label": "a read from customers",
+            "query_id": "4971a2de8aecdcc6",
+            "share": 0.00755390093444048,
+            "status": null,
+            "value": "<1%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "84456a5661cab4aa",
+            "kind": "query",
+            "label": "an insert into orders",
+            "query_id": "84456a5661cab4aa",
+            "share": 0.00046395455947965015,
+            "status": null,
+            "value": "<1%"
+          }
+        ],
+        "key": "top-queries",
+        "metrics": [
+          {
+            "key": "top-share",
+            "label": "Top query",
+            "text": "50%",
+            "value": 0.5001159886398701
+          },
+          {
+            "key": "top5-share",
+            "label": "Top five",
+            "text": "100%",
+            "value": 0.9967906055958325
+          },
+          {
+            "key": "queries",
+            "label": "Queries",
+            "text": "7",
+            "value": 7.0
+          }
+        ],
+        "next": "culprit top sqlite-demo",
+        "status": "info",
+        "takeaway": "One query is 50% of database time: a read from orders.",
+        "title": "Top queries"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "waits",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "SQLite keeps no record of waits: it has no server, and a writer that has to wait gets SQLITE_BUSY in the application.",
+        "title": "Where time goes"
+      },
+      {
+        "detail": "A writer that has to wait for the lock gets SQLITE_BUSY in the application: its logs say when.",
+        "fix_sql": null,
+        "items": [],
+        "key": "now",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "SQLite has no server, so there are no sessions to show.",
+        "title": "Right now"
+      },
+      {
+        "detail": "SQLite has no server, so there are no compiles, memory, cache or connection counters to read.",
+        "fix_sql": null,
+        "items": [],
+        "key": "health",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "SQLite has no server counters.",
+        "title": "Health"
+      },
+      {
+        "detail": "SQLite records no deadlocks: one writer at a time holds the file.",
+        "fix_sql": null,
+        "items": [],
+        "key": "deadlocks",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "SQLite has no deadlocks to read.",
+        "title": "Deadlocks"
+      },
+      {
+        "detail": "SQLite doesn't record missing-index requests. Candidates come from the indexes it builds for itself on every run of the logged statements, and foreign keys.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:main.orders(customer_id)",
+            "id": "main.orders(customer_id)",
+            "kind": "index-add",
+            "label": "orders (customer_id)",
+            "query_id": "500217f7b40055be",
+            "share": 0.687787860155988,
+            "status": null,
+            "value": "69%"
+          },
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:main.order_items(product_id)",
+            "id": "main.order_items(product_id)",
+            "kind": "index-add",
+            "label": "order_items (product_id)",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": null
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:main.orders.ix_orders_status_again",
             "id": "main.orders.ix_orders_status_again",
             "kind": "index-cleanup",
             "label": "ix_orders_status_again on orders",
@@ -3368,8 +3486,8 @@
           {
             "key": "add",
             "label": "To add",
-            "text": "0",
-            "value": 0.0
+            "text": "2",
+            "value": 2.0
           },
           {
             "key": "cleanup",
@@ -3391,19 +3509,44 @@
           }
         ],
         "next": "culprit indexes sqlite-demo",
-        "status": "info",
-        "takeaway": "No query history to suggest new indexes from; 1 existing index can go (3.5 MB).",
+        "status": "watch",
+        "takeaway": "2 new indexes would help queries that take 69% of database time; 1 index can go (3.5 MB).",
         "title": "Indexes"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "automatic-index",
+            "kind": "rule",
+            "label": "Automatic index",
+            "query_id": "500217f7b40055be",
+            "share": 0.18767187151611794,
+            "status": "info",
+            "value": "1 plan"
+          }
+        ],
         "key": "plans",
-        "metrics": [],
-        "next": null,
-        "status": "unavailable",
-        "takeaway": "No query history, so there are no plans to read.",
+        "metrics": [
+          {
+            "key": "captured",
+            "label": "Captured",
+            "text": "5",
+            "value": 5.0
+          },
+          {
+            "key": "flagged",
+            "label": "With problems",
+            "text": "1",
+            "value": 1.0
+          }
+        ],
+        "next": "culprit explain sqlite-demo --query-id 500217f7b40055be",
+        "status": "info",
+        "takeaway": "One of the 5 captured plans has something to fix: automatic index (19% of database time).",
         "title": "Plans"
       },
       {
@@ -3412,7 +3555,7 @@
         "items": [],
         "key": "storage",
         "metrics": [],
-        "next": "culprit waits sqlite-demo",
+        "next": null,
         "status": "unavailable",
         "takeaway": "This scan has no storage timings.",
         "title": "Storage"
@@ -3423,9 +3566,9 @@
         "items": [],
         "key": "connections",
         "metrics": [],
-        "next": "culprit waits sqlite-demo",
+        "next": null,
         "status": "unavailable",
-        "takeaway": "This scan has no connection counters.",
+        "takeaway": "SQLite has no server, so no connections to count.",
         "title": "Connections"
       },
       {
@@ -3434,38 +3577,56 @@
         "items": [],
         "key": "replication",
         "metrics": [],
-        "next": "culprit waits sqlite-demo",
+        "next": null,
         "status": "good",
         "takeaway": "A SQLite file has no replicas: nothing can fall behind.",
         "title": "Replication"
       },
       {
-        "detail": "Query statistics shows what it takes to turn them on.",
+        "detail": null,
         "fix_sql": null,
         "items": [],
         "key": "failures",
         "metrics": [],
         "next": "culprit findings sqlite-demo",
         "status": "unavailable",
-        "takeaway": "No query history, so failed runs aren't counted.",
+        "takeaway": "The Rails log records how long statements took, not whether they failed.",
         "title": "Failing queries"
       },
       {
-        "detail": "Culprit checks its tables, indexes and settings, and plans any statement you give it.",
+        "detail": null,
         "fix_sql": null,
         "items": [],
         "key": "statistics",
         "metrics": [
           {
+            "key": "queries",
+            "label": "Queries",
+            "text": "7",
+            "value": 7.0
+          },
+          {
+            "key": "plans",
+            "label": "With plans",
+            "text": "5",
+            "value": 5.0
+          },
+          {
+            "key": "window-hours",
+            "label": "Covers",
+            "text": "90 minutes",
+            "value": 1.4991666666666668
+          },
+          {
             "key": "locked",
             "label": "Locked checks",
-            "text": "2",
-            "value": 2.0
+            "text": "0",
+            "value": 0.0
           }
         ],
-        "next": "culprit doctor sqlite-demo",
-        "status": "unavailable",
-        "takeaway": "SQLite keeps no query history.",
+        "next": null,
+        "status": "good",
+        "takeaway": "Over the 90 minutes the Rails log covers: 7 queries, 5 with plans.",
         "title": "Query statistics"
       }
     ]

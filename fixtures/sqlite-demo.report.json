@@ -1,6 +1,199 @@
 {
   "findings": [
     {
+      "category": "indexes",
+      "caveats": [
+        "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
+      ],
+      "check": "unindexed-fk",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"main\".\"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "summary": "Index the foreign key column on main.orders."
+      },
+      "id": "unindexed-fk:main.orders(customer_id)",
+      "impact": {
+        "db_time_share": 0.687787860155988,
+        "label": "69% of DB time",
+        "score": 82.9329765627635,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 200000.0
+        },
+        {
+          "label": "Foreign key",
+          "text": "orders_fk_0",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "c1b0de997fac4faa",
+          "note": null,
+          "plan_node": null
+        },
+        {
+          "id": "500217f7b40055be",
+          "note": null,
+          "plan_node": 22
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "table",
+        "name": "main.orders"
+      },
+      "summary": "Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 69% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
+      "title": "orders has no index on customer_id, its foreign key to customers",
+      "verify": [
+        "Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "heavy-query",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Find this statement in the application (copy the brief for your coding agent) and check whether it reads more rows or columns than it needs."
+      },
+      "id": "heavy-query:3c81e035bd6f73fa",
+      "impact": {
+        "db_time_share": 0.3009848899459243,
+        "label": "30% of DB time",
+        "score": 54.86208982037818,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-15T10:29:51Z",
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.3009848899459243
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 23.949820788530452
+        }
+      ],
+      "queries": [
+        {
+          "id": "3c81e035bd6f73fa",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "3c81e035bd6f73fa"
+      },
+      "summary": "It ran 558 times in 90 minutes at 24 ms on average: 30% of all database time in the 90 minutes the Rails log covers.",
+      "title": "A read from orders takes 30% of database time",
+      "verify": [
+        "After the change ships, re-scan and compare this query's share of database time and reads per run."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
+      ],
+      "check": "unindexed-fk",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "CREATE INDEX IF NOT EXISTS \"ix_order_items_product_id\"\n    ON \"main\".\"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "summary": "Index the foreign key column on main.order_items."
+      },
+      "id": "unindexed-fk:main.order_items(product_id)",
+      "impact": {
+        "db_time_share": null,
+        "label": "200K rows unindexed",
+        "score": 10.602059991327963,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 200000.0
+        },
+        {
+          "label": "Foreign key",
+          "text": "order_items_fk_0",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "main.order_items"
+      },
+      "summary": "Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.",
+      "title": "order_items has no index on product_id, its foreign key to products",
+      "verify": [
+        "Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "duplicate-index",
+      "confidence": "high",
+      "fix": {
+        "cost": "Frees 3.5 MB.",
+        "sql": "DROP INDEX IF EXISTS \"main\".\"ix_orders_status_again\";",
+        "summary": "Drop ix_orders_status_again and keep ix_orders_status."
+      },
+      "id": "duplicate-index:main.orders.ix_orders_status_again",
+      "impact": {
+        "db_time_share": null,
+        "label": "3.5 MB redundant",
+        "score": 8.003398895263672,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Size",
+          "text": null,
+          "unit": "bytes",
+          "value": 3649536.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "index",
+        "name": "main.orders.ix_orders_status_again"
+      },
+      "summary": "ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.",
+      "title": "ix_orders_status_again duplicates ix_orders_status on orders",
+      "verify": []
+    },
+    {
       "category": "maintenance",
       "caveats": [],
       "check": "config",
@@ -33,7 +226,7 @@
         "kind": "database",
         "name": "demo.db"
       },
-      "summary": "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan. Culprit can't tell each table's size either.",
+      "summary": "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.",
       "title": "SQLite has no statistics to choose between this file's indexes",
       "verify": [
         "Scan again: the file has statistics, and each table's row count appears."
@@ -85,48 +278,7 @@
       ]
     }
   ],
-  "locked": [
-    {
-      "check": {
-        "category": "indexes",
-        "description": "Indexes with the same keys as another index, or whose keys are a leading part of a wider one.",
-        "engines": [
-          "mssql",
-          "postgres",
-          "mysql",
-          "sqlite"
-        ],
-        "id": "duplicate-index",
-        "requires": [
-          "table-stats"
-        ],
-        "title": "Duplicate and redundant indexes"
-      },
-      "missing": [
-        "table-stats"
-      ]
-    },
-    {
-      "check": {
-        "category": "indexes",
-        "description": "Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.",
-        "engines": [
-          "mssql",
-          "postgres",
-          "mysql",
-          "sqlite"
-        ],
-        "id": "unindexed-fk",
-        "requires": [
-          "table-stats"
-        ],
-        "title": "Foreign keys without an index"
-      },
-      "missing": [
-        "table-stats"
-      ]
-    }
-  ],
+  "locked": [],
   "snapshot": {
     "columns": [
       {
@@ -303,7 +455,7 @@
     "connection": "sqlite-demo",
     "constraints": [],
     "deadlocks": null,
-    "duration_ms": 134.97383299999998,
+    "duration_ms": 180.5645,
     "environment": "development",
     "escalations_before": null,
     "foreign_keys": [
@@ -349,7 +501,7 @@
     ],
     "format": 1,
     "histograms": null,
-    "id": "20261015T120330.609Z",
+    "id": "20261015T225627.091Z",
     "indexes": [
       {
         "columns": [
@@ -466,15 +618,27 @@
       }
     ],
     "missing_indexes": [],
-    "notes": [],
-    "options": null,
+    "notes": [
+      {
+        "collector": "query log",
+        "message": "Read 3.5K statements from development.log (Rails): 7 shapes, the 5 heaviest kept, 5 planned."
+      }
+    ],
+    "options": {
+      "plans": 25,
+      "top_queries": 60,
+      "window_days": 7
+    },
     "plan_cache": null,
     "pressure": null,
     "query_families": [],
     "resources": [],
     "server": {
       "capabilities": [
-        "showplan"
+        "table-stats",
+        "showplan",
+        "query-log",
+        "query-plans"
       ],
       "cloud": null,
       "database": "demo.db",
@@ -485,7 +649,7 @@
         {
           "capability": "statistics",
           "fix": "ANALYZE;",
-          "reason": "The file has no planner statistics (sqlite_stat1): row counts are unknown and the planner guesses."
+          "reason": "The file has no planner statistics (sqlite_stat1): the planner guesses how many rows each step reads."
         },
         {
           "capability": "index-usage",
@@ -570,7 +734,7 @@
         "name": "customers",
         "overflow_bytes": null,
         "partition_of": null,
-        "rows": null,
+        "rows": 5000.0,
         "schema": "main",
         "seq_rows_read": null,
         "seq_scans": null,
@@ -599,7 +763,7 @@
         "name": "import_staging",
         "overflow_bytes": null,
         "partition_of": null,
-        "rows": null,
+        "rows": 0.0,
         "schema": "main",
         "seq_rows_read": null,
         "seq_scans": null,
@@ -628,7 +792,7 @@
         "name": "order_items",
         "overflow_bytes": null,
         "partition_of": null,
-        "rows": null,
+        "rows": 200000.0,
         "schema": "main",
         "seq_rows_read": null,
         "seq_scans": null,
@@ -657,7 +821,7 @@
         "name": "orders",
         "overflow_bytes": null,
         "partition_of": null,
-        "rows": null,
+        "rows": 200000.0,
         "schema": "main",
         "seq_rows_read": null,
         "seq_scans": null,
@@ -686,7 +850,7 @@
         "name": "products",
         "overflow_bytes": null,
         "partition_of": null,
-        "rows": null,
+        "rows": 500.0,
         "schema": "main",
         "seq_rows_read": null,
         "seq_scans": null,
@@ -696,13 +860,565 @@
         "xid_age": null
       }
     ],
-    "taken_at": "2026-10-15T12:03:30.609Z",
+    "taken_at": "2026-10-15T22:56:27Z",
     "tuning": null,
     "waits": [],
-    "workload": null
+    "workload": {
+      "hourly_time_ms": null,
+      "kind": "query-log",
+      "log": "Rails",
+      "min_logged_ms": null,
+      "queries": [
+        {
+          "costs": null,
+          "cpu_time_ms": null,
+          "executions": 1116.0,
+          "first_seen": "2026-10-15T09:00:03Z",
+          "id": "c1b0de997fac4faa",
+          "last_seen": "2026-10-15T10:29:57Z",
+          "logical_reads": null,
+          "max_time_ms": 25.0,
+          "mean_time_ms": 19.897491039426537,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "sqlite",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
+            },
+            "raw": "SCAN orders\nUSE TEMP B-TREE FOR ORDER BY",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SCAN orders",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 6,
+                  "index": null,
+                  "kind": "scan",
+                  "object": "orders",
+                  "op": "Scan",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                },
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "USE TEMP B-TREE FOR ORDER BY",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 24,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Temp B-Tree",
+                  "predicate": null,
+                  "props": {
+                    "Temp B-Tree": "FOR ORDER BY"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 0.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "QUERY PLAN",
+              "predicate": null,
+              "props": {},
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"customer_id\" = ? ORDER BY \"orders\".\"created_at\" DESC LIMIT ?",
+            "total_cost": 0.0,
+            "warnings": []
+          },
+          "plan_id": null,
+          "plans": [],
+          "query_hash": null,
+          "rows": null,
+          "rows_affected": null,
+          "spread": null,
+          "stddev_time_ms": 2.8860983347054323,
+          "temp_writes": null,
+          "text": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"customer_id\" = ? ORDER BY \"orders\".\"created_at\" DESC LIMIT ?",
+          "total_time_ms": 22205.600000000013,
+          "trend": null,
+          "waits": []
+        },
+        {
+          "costs": null,
+          "cpu_time_ms": null,
+          "executions": 558.0,
+          "first_seen": "2026-10-15T09:00:09Z",
+          "id": "3c81e035bd6f73fa",
+          "last_seen": "2026-10-15T10:29:51Z",
+          "logical_reads": null,
+          "max_time_ms": 30.0,
+          "mean_time_ms": 23.949820788530452,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "sqlite",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
+            },
+            "raw": "SEARCH orders USING INDEX ix_orders_status_again (status=?)\nUSE TEMP B-TREE FOR ORDER BY",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SEARCH orders USING INDEX ix_orders_status_again (status=?)",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 7,
+                  "index": "ix_orders_status_again",
+                  "kind": "seek",
+                  "object": "orders",
+                  "op": "Search",
+                  "predicate": null,
+                  "props": {
+                    "Index Kind": "btree"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": "status=?",
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                },
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "USE TEMP B-TREE FOR ORDER BY",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 30,
+                  "index": null,
+                  "kind": "sort",
+                  "object": null,
+                  "op": "Temp B-Tree",
+                  "predicate": null,
+                  "props": {
+                    "Temp B-Tree": "FOR ORDER BY"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 0.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "QUERY PLAN",
+              "predicate": null,
+              "props": {},
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"customer_id\" = ? AND \"orders\".\"status\" = ? ORDER BY \"orders\".\"total\" DESC LIMIT ?",
+            "total_cost": 0.0,
+            "warnings": []
+          },
+          "plan_id": null,
+          "plans": [],
+          "query_hash": null,
+          "rows": null,
+          "rows_affected": null,
+          "spread": null,
+          "stddev_time_ms": 3.419639404913988,
+          "temp_writes": null,
+          "text": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"customer_id\" = ? AND \"orders\".\"status\" = ? ORDER BY \"orders\".\"total\" DESC LIMIT ?",
+          "total_time_ms": 13363.999999999993,
+          "trend": null,
+          "waits": []
+        },
+        {
+          "costs": null,
+          "cpu_time_ms": null,
+          "executions": 90.0,
+          "first_seen": "2026-10-15T09:00:15Z",
+          "id": "500217f7b40055be",
+          "last_seen": "2026-10-15T10:29:15Z",
+          "logical_reads": null,
+          "max_time_ms": 119.5,
+          "mean_time_ms": 92.5866666666667,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "sqlite",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
+            },
+            "raw": "SCAN customers\nBLOOM FILTER ON orders (customer_id=?)\nSEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SCAN customers",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 7,
+                  "index": null,
+                  "kind": "scan",
+                  "object": "customers",
+                  "op": "Scan",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                },
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "BLOOM FILTER ON orders (customer_id=?)",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 13,
+                  "index": null,
+                  "kind": "other",
+                  "object": "orders",
+                  "op": "Bloom Filter",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": null,
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                },
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 22,
+                  "index": "automatic index",
+                  "kind": "seek",
+                  "object": "orders",
+                  "op": "Search",
+                  "predicate": null,
+                  "props": {
+                    "Automatic Index": "orders(customer_id)",
+                    "Join": "left"
+                  },
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": "customer_id=?",
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 0.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "QUERY PLAN",
+              "predicate": null,
+              "props": {},
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT \"customers\".\"email\", COUNT(\"orders\".\"id\") AS \"orders_count\" FROM \"customers\" LEFT OUTER JOIN \"orders\" ON \"orders\".\"customer_id\" = \"customers\".\"id\" WHERE \"customers\".\"region\" = ? GROUP BY \"customers\".\"id\"",
+            "total_cost": 0.0,
+            "warnings": []
+          },
+          "plan_id": null,
+          "plans": [],
+          "query_hash": null,
+          "rows": null,
+          "rows_affected": null,
+          "spread": null,
+          "stddev_time_ms": 16.534913902943906,
+          "temp_writes": null,
+          "text": "SELECT \"customers\".\"email\", COUNT(\"orders\".\"id\") AS \"orders_count\" FROM \"customers\" LEFT OUTER JOIN \"orders\" ON \"orders\".\"customer_id\" = \"customers\".\"id\" WHERE \"customers\".\"region\" = ? GROUP BY \"customers\".\"id\"",
+          "total_time_ms": 8332.800000000003,
+          "trend": null,
+          "waits": []
+        },
+        {
+          "costs": null,
+          "cpu_time_ms": null,
+          "executions": 1674.0,
+          "first_seen": "2026-10-15T09:00:03Z",
+          "id": "4971a2de8aecdcc6",
+          "last_seen": "2026-10-15T10:29:57Z",
+          "logical_reads": null,
+          "max_time_ms": 0.3,
+          "mean_time_ms": 0.2003584229390671,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "sqlite",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
+            },
+            "raw": "SEARCH customers USING INTEGER PRIMARY KEY (rowid=?)",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SEARCH customers USING INTEGER PRIMARY KEY (rowid=?)",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 5,
+                  "index": "integer primary key",
+                  "kind": "seek",
+                  "object": "customers",
+                  "op": "Search",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": "rowid=?",
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 0.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "QUERY PLAN",
+              "predicate": null,
+              "props": {},
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "SELECT \"customers\".* FROM \"customers\" WHERE \"customers\".\"id\" = ? LIMIT ?",
+            "total_cost": 0.0,
+            "warnings": []
+          },
+          "plan_id": null,
+          "plans": [],
+          "query_hash": null,
+          "rows": null,
+          "rows_affected": null,
+          "spread": null,
+          "stddev_time_ms": 0.07032857237380571,
+          "temp_writes": null,
+          "text": "SELECT \"customers\".* FROM \"customers\" WHERE \"customers\".\"id\" = ? LIMIT ?",
+          "total_time_ms": 335.3999999999984,
+          "trend": null,
+          "waits": []
+        },
+        {
+          "costs": null,
+          "cpu_time_ms": null,
+          "executions": 36.0,
+          "first_seen": "2026-10-15T09:00:00Z",
+          "id": "84456a5661cab4aa",
+          "last_seen": "2026-10-15T10:27:30Z",
+          "logical_reads": null,
+          "max_time_ms": 0.9,
+          "mean_time_ms": 0.5722222222222223,
+          "object_name": null,
+          "parameters": null,
+          "physical_reads": null,
+          "plan": {
+            "engine": "sqlite",
+            "index_hints": [],
+            "kind": "estimated",
+            "props": {
+              "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
+            },
+            "raw": "SEARCH order_items USING PRIMARY KEY (order_id=?)",
+            "root": {
+              "act_executions": null,
+              "act_rows": null,
+              "act_time_ms": null,
+              "children": [
+                {
+                  "act_executions": null,
+                  "act_rows": null,
+                  "act_time_ms": null,
+                  "children": [],
+                  "detail": "SEARCH order_items USING PRIMARY KEY (order_id=?)",
+                  "est_executions": 1.0,
+                  "est_rows": 0.0,
+                  "id": 33,
+                  "index": "primary key",
+                  "kind": "seek",
+                  "object": "order_items",
+                  "op": "Search",
+                  "predicate": null,
+                  "props": {},
+                  "rows_read": null,
+                  "runtime": null,
+                  "seek_predicate": "order_id=?",
+                  "self_cost": 0.0,
+                  "subtree_cost": 0.0,
+                  "table_rows": null,
+                  "warnings": []
+                }
+              ],
+              "detail": null,
+              "est_executions": 1.0,
+              "est_rows": 0.0,
+              "id": 0,
+              "index": null,
+              "kind": "other",
+              "object": null,
+              "op": "QUERY PLAN",
+              "predicate": null,
+              "props": {},
+              "rows_read": null,
+              "runtime": null,
+              "seek_predicate": null,
+              "self_cost": 0.0,
+              "subtree_cost": 0.0,
+              "table_rows": null,
+              "warnings": []
+            },
+            "statement": "INSERT INTO \"orders\" (\"customer_id\", \"status\", \"total\", \"created_at\") VALUES (?, ?, ?, ?) RETURNING \"id\"",
+            "total_cost": 0.0,
+            "warnings": []
+          },
+          "plan_id": null,
+          "plans": [],
+          "query_hash": null,
+          "rows": null,
+          "rows_affected": null,
+          "spread": null,
+          "stddev_time_ms": 0.1865045592399391,
+          "temp_writes": null,
+          "text": "INSERT INTO \"orders\" (\"customer_id\", \"status\", \"total\", \"created_at\") VALUES (?, ?, ?, ?) RETURNING \"id\"",
+          "total_time_ms": 20.6,
+          "trend": null,
+          "waits": []
+        }
+      ],
+      "query_count": 7.0,
+      "source": "Rails log",
+      "timeline": null,
+      "total_cpu_ms": null,
+      "total_executions": 3546.0,
+      "total_time_ms": 44400.90000000001,
+      "untracked_time_ms": null,
+      "window_end": "2026-10-15T10:29:57Z",
+      "window_hours": 1.4991666666666668,
+      "window_start": "2026-10-15T09:00:00Z",
+      "windowed": true
+    }
   },
   "summary": {
     "by_category": [
+      {
+        "category": "indexes",
+        "count": 3
+      },
+      {
+        "category": "queries",
+        "count": 1
+      },
       {
         "category": "maintenance",
         "count": 2
@@ -711,11 +1427,16 @@
     "by_severity": [
       {
         "count": 2,
+        "severity": "medium"
+      },
+      {
+        "count": 4,
         "severity": "low"
       }
     ],
-    "headline": "2 opportunities.",
-    "opportunities": 2,
-    "top_share": null
+    "headline": "6 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.",
+    "no_workload": null,
+    "opportunities": 6,
+    "top_share": 0.9887727501019123
   }
 }

@@ -1,0 +1,141 @@
+{
+  "mssql": {
+    "label": "SQL Server",
+    "abilities": {
+      "sessions": true,
+      "wait_sample": true,
+      "deadlocks": true,
+      "measures_runs": true,
+      "plan_estimates": true,
+      "writes": true,
+      "periods": true,
+      "last_actual_plan": true,
+      "operator_progress": true,
+      "sign_in": true
+    },
+    "session_actions": [
+      "terminate"
+    ],
+    "waiting_state": "suspended",
+    "refusals": {}
+  },
+  "mysql": {
+    "label": "MySQL",
+    "abilities": {
+      "sessions": true,
+      "wait_sample": true,
+      "deadlocks": true,
+      "measures_runs": true,
+      "plan_estimates": true,
+      "writes": true,
+      "periods": true,
+      "last_actual_plan": false,
+      "operator_progress": false,
+      "sign_in": true
+    },
+    "session_actions": [
+      "cancel",
+      "terminate"
+    ],
+    "waiting_state": "active",
+    "refusals": {
+      "last_actual_plan": {
+        "message": "MySQL and MariaDB don't keep the actual plan of past runs",
+        "hint": "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction."
+      },
+      "operator_progress": {
+        "message": "MySQL reports a running statement's progress, not each step's",
+        "hint": "Its plan doesn't change while it runs: ask for the plan once."
+      }
+    }
+  },
+  "postgres": {
+    "label": "PostgreSQL",
+    "abilities": {
+      "sessions": true,
+      "wait_sample": true,
+      "deadlocks": true,
+      "measures_runs": true,
+      "plan_estimates": true,
+      "writes": true,
+      "periods": true,
+      "last_actual_plan": false,
+      "operator_progress": false,
+      "sign_in": true
+    },
+    "session_actions": [
+      "cancel",
+      "terminate"
+    ],
+    "waiting_state": "active",
+    "refusals": {
+      "last_actual_plan": {
+        "message": "PostgreSQL doesn't keep the actual plan of past runs",
+        "hint": "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the editor with real values and use Analyze: it runs inside a transaction that is rolled back."
+      },
+      "operator_progress": {
+        "message": "PostgreSQL reports a running statement's progress, not each step's",
+        "hint": "Its plan doesn't change while it runs: ask for the plan once."
+      }
+    }
+  },
+  "sqlite": {
+    "label": "SQLite",
+    "abilities": {
+      "sessions": false,
+      "wait_sample": false,
+      "deadlocks": false,
+      "measures_runs": false,
+      "plan_estimates": false,
+      "writes": false,
+      "periods": false,
+      "last_actual_plan": false,
+      "operator_progress": false,
+      "sign_in": false
+    },
+    "session_actions": [],
+    "waiting_state": "active",
+    "refusals": {
+      "deadlocks": {
+        "message": "SQLite records no deadlocks: one writer at a time holds the file",
+        "hint": "A transaction that can't get the write lock waits busy_timeout, then gets SQLITE_BUSY in the application: its logs say when."
+      },
+      "last_actual_plan": {
+        "message": "SQLite's plans have no actual rows or timings: EXPLAIN QUERY PLAN shows the access path only",
+        "hint": "Use the estimated plan; time the statement in the application to see how long it takes."
+      },
+      "measures_runs": {
+        "message": "SQLite's plans have no actual rows or timings: EXPLAIN QUERY PLAN shows the access path only",
+        "hint": "Use the estimated plan; time the statement in the application to see how long it takes."
+      },
+      "operator_progress": {
+        "message": "SQLite has no server, so no sessions to show",
+        "hint": "A writer that has to wait gets SQLITE_BUSY in the application: its logs say when."
+      },
+      "periods": {
+        "message": "SQLite keeps no statement history to compare two periods of",
+        "hint": "Add the log your framework writes to the connection, scan before and after the change, and compare the two reports' queries."
+      },
+      "plan_estimates": {
+        "message": "SQLite's plans have no actual rows or timings: EXPLAIN QUERY PLAN shows the access path only",
+        "hint": "Use the estimated plan; time the statement in the application to see how long it takes."
+      },
+      "sessions": {
+        "message": "SQLite has no server, so no sessions to show",
+        "hint": "A writer that has to wait gets SQLITE_BUSY in the application: its logs say when."
+      },
+      "sign_in": {
+        "message": "A SQLite file takes no sign-in: Culprit opens it read-only from disk",
+        "hint": null
+      },
+      "wait_sample": {
+        "message": "SQLite has no server, so nothing records what it waits on",
+        "hint": "Time spent waiting for the write lock shows up in the application as SQLITE_BUSY or slow commits."
+      },
+      "writes": {
+        "message": "Culprit opens SQLite files read-only, so it never changes one",
+        "hint": "Run it with the sqlite3 shell or from the application, then scan again to see the effect."
+      }
+    }
+  }
+}

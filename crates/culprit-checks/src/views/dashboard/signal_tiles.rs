@@ -1,0 +1,476 @@
+//! The dashboard's storage, connections, replication and failing-queries tiles: one sentence each from the server's signals.
+
+use super::*;
+
+/// The worst finding of one check, for a tile that leads with it.
+/// Findings arrive ranked by impact; among equally severe ones the first is the most important. (`max_by_key` keeps
+/// the last of equal maximums, hence the reversal.)
+pub(super) fn worst_finding<'a>(report: &'a Report, check: &str) -> Option<&'a Finding> {
+    report.findings.iter().filter(|f| f.check == check && !f.inactive).rev().max_by_key(|f| f.severity)
+}
+
+/// A collector's note, when it explains why a tile has nothing to show.
+pub(super) fn collector_note(s: &Snapshot, names: &[&str]) -> Option<String> {
+    s.notes.iter().find(|n| names.contains(&n.collector.as_str())).map(|n| n.message.clone())
+}
+
+pub(super) fn file_name(s: &Snapshot, f: &FileIo) -> String {
+    match (s.server.engine, f.kind, f.database.as_deref()) {
+        (Engine::Mssql, FileKind::Log, Some(db)) => format!("{db} log"),
+        (Engine::Mssql, _, Some(db)) if db.eq_ignore_ascii_case("tempdb") => "tempdb".into(),
+        (Engine::Postgres, FileKind::Log, _) => "WAL".into(),
+        (Engine::Postgres, FileKind::Temp, _) => "temporary files".into(),
+        (Engine::Postgres, _, _) => "tables and indexes".into(),
+        _ => f.name.clone(),
+    }
+}
+
+/// A latency people can read: cache-fast storage in microseconds ("3 µs", as the Health panel says), not "0.00 ms".
+/// Storage latency in one unit family: microseconds below a millisecond ("40 µs", "630 µs"), so SQL Server's 0.04 ms
+/// and MySQL's 8 µs read alike.
+pub(super) fn latency(ms: f64) -> String {
+    if ms < 1.0 { format!("{} µs", (ms * 1000.0).round().max(1.0)) } else { format::duration(ms) }
+}
+
+/// The latency a file is waited on for (reads of data, writes of the log) and how many operations it averages.
+pub(super) fn waited_latency(f: &FileIo) -> Option<(f64, f64, &'static str)> {
+    if f.kind == FileKind::Log {
+        f.avg_write_ms().map(|avg| (avg, f.writes, "write"))
+    } else {
+        f.avg_read_ms().map(|avg| (avg, f.reads, "read"))
+    }
+}
+
+/// Average read latency of data and temporary files, and write latency of the log: what queries and commits wait on.
+pub(super) fn storage(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let merged = s.pressure.as_ref().map(|p| merge_logs(&p.files)).unwrap_or_default();
+    let files: Vec<&FileIo> =
+        merged.iter().filter(|f| f.kind != FileKind::Other && waited_latency(f).is_some()).collect();
+    if files.is_empty() {
+        // An engine fact only when the scan proves it; otherwise just what this scan lacks (an older scan, a login
+        // that can't read the views).
+        let why = match s.server.engine {
+            Engine::Postgres if is_off(setting(s, "track_io_timing")) => {
+                "PostgreSQL times reads and writes only with track_io_timing on.".to_string()
+            }
+            Engine::Mysql if !s.server.has(Capability::PerformanceSchema) => {
+                format!("{family} times no file I/O while performance_schema is off.")
+            }
+            _ => "This scan has no storage timings.".to_string(),
+        };
+        let mut t = Tile::new(TileKey::Storage, TileStatus::Unavailable, why);
+        t.detail = collector_note(s, &["storage", "files", "signals"]);
+        return t;
+    }
+    // Enough operations for an average to mean something: the floor the slow-storage check uses.
+    let worst = |log: bool| {
+        files
+            .iter()
+            .filter(|f| (f.kind == FileKind::Log) == log)
+            .filter_map(|f| waited_latency(f).filter(|(_, ops, _)| *ops >= 1_000.0).map(|(avg, _, _)| avg))
+            .max_by(f64::total_cmp)
+    };
+    let (read, log) = (worst(false), worst(true));
+    let (status, takeaway) = match worst_finding(report, "slow-storage") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => {
+            let mut parts = Vec::new();
+            if let Some(avg) = read {
+                parts.push(format!("reads average {}", latency(avg)));
+            }
+            if let Some(avg) = log {
+                parts.push(format!("log writes {}", latency(avg)));
+            }
+            if parts.is_empty() {
+                (TileStatus::Info, "Too little I/O since startup to judge storage speed.".to_string())
+            } else {
+                (TileStatus::Good, format!("Storage answers quickly: {}.", parts.join(", ")))
+            }
+        }
+    };
+    let mut t = Tile::new(TileKey::Storage, status, takeaway);
+    if let Some(avg) = read {
+        t.metrics.push(TileMetric::new("read-ms", "Avg read", Some(avg), latency(avg)));
+    }
+    if let Some(avg) = log {
+        t.metrics.push(TileMetric::new("log-write-ms", "Avg log write", Some(avg), latency(avg)));
+    }
+    // The slowest files, each by what it's waited on for.
+    let mut rows: Vec<(f64, TileItem)> = files
+        .iter()
+        .filter_map(|f| {
+            let (avg, ops, what) = waited_latency(f)?;
+            (ops >= 1_000.0).then(|| {
+                let id = format!("{}:{}", f.database.as_deref().unwrap_or(""), f.name);
+                let mut item = TileItem::new(ItemKind::Signal, id, file_name(s, f));
+                item.value = Some(format!("{} per {what}", latency(avg)));
+                let limit = if f.kind == FileKind::Log { 10.0 } else { 20.0 };
+                item.status = Some(if avg >= limit * 2.5 {
+                    TileStatus::Bad
+                } else if avg >= limit {
+                    TileStatus::Watch
+                } else {
+                    TileStatus::Good
+                });
+                (avg, item)
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    t.items = rows.into_iter().map(|(_, i)| i).take(4).collect();
+    // The counters' own window, worded like every other one (a statistics reset on PostgreSQL, else the restart).
+    t.detail = Some(format!("Averages {}.", since_phrase(s)));
+    t
+}
+
+/// A pressure signal as a tile row: its label, value and grade.
+pub(super) fn signal_item(sig: &Signal) -> TileItem {
+    let mut item = TileItem::new(ItemKind::Signal, sig.key.clone(), sig.label.clone());
+    item.value = Some(signal_value(sig));
+    item.status = Some(signal_status(sig.status));
+    item
+}
+
+/// New connections per second and connections in use: an application that connects for every request pays for it
+/// on every request.
+pub(super) fn connections(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let p = s.pressure.as_ref();
+    let rate = p.and_then(|p| p.signal("new-connections"));
+    let used = p.and_then(|p| p.signal("connections"));
+    if rate.is_none() && used.is_none() {
+        let why = match s.server.engine {
+            Engine::Postgres if !culprit_core::version_at_least(&s.server.version, [14, 0, 0]) => {
+                "PostgreSQL counts sessions from version 14; this server doesn't.".to_string()
+            }
+            engine if !engine.has_server() => format!("{engine} has no server, so no connections to count."),
+            _ => "This scan has no connection counters.".to_string(),
+        };
+        let mut t = Tile::new(TileKey::Connections, TileStatus::Unavailable, why);
+        t.detail = collector_note(s, &["connections", "logins", "sessions"]);
+        return t;
+    }
+    let (status, takeaway) = match worst_finding(report, "connection-churn") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => match rate {
+            Some(r) if r.value >= 1.0 => (
+                TileStatus::Good,
+                format!("{} new connections a second, within what a pool keeps up with.", format::count(r.value)),
+            ),
+            Some(r) => (
+                TileStatus::Good,
+                format!("Connections are reused: {} new a minute.", format::count((r.value * 60.0).round())),
+            ),
+            None => {
+                (TileStatus::Info, "This scan has no count of new connections; the ones in use are below.".to_string())
+            }
+        },
+    };
+    let mut t = Tile::new(TileKey::Connections, status, takeaway);
+    // Under one a second, a per-minute count reads better than "0.0".
+    if let Some(r) = rate {
+        t.metrics.push(if r.value >= 1.0 {
+            TileMetric::new("per-second", "New per second", Some(r.value), format::count(r.value))
+        } else {
+            let per_minute = (r.value * 60.0).round();
+            TileMetric::new("per-minute", "New per minute", Some(per_minute), format::count(per_minute))
+        });
+    }
+    if let Some(u) = used {
+        let item = signal_item(u);
+        // Running out of connections is worse than opening too many.
+        if let Some(st @ (TileStatus::Bad | TileStatus::Watch)) = item.status {
+            t.status = t.status.max(st);
+        }
+        t.items.push(item);
+    }
+    for key in ["session-length", "pooled-reuse", "thread-cache-misses", "sessions-abandoned"] {
+        if let Some(sig) = p.and_then(|p| p.signal(key)) {
+            t.items.push(signal_item(sig));
+        }
+    }
+    t.items.truncate(4);
+    t
+}
+
+pub(super) fn lag_text(r: &Replica) -> String {
+    r.lag_seconds
+        .map(|sec| format!("{} behind", format::duration(sec * 1000.0)))
+        .or_else(|| r.lag_bytes.map(|b| format!("{} of log", format::bytes(b))))
+        .or_else(|| r.state.clone())
+        .unwrap_or_else(|| "in sync".into())
+}
+
+/// How far replicas and replication slots are behind, worst first.
+pub(super) fn replication(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let replicas = s.pressure.as_ref().map(|p| p.replicas.as_slice()).unwrap_or_default();
+    if replicas.is_empty() {
+        if let Some(note) = collector_note(s, &["replication"]) {
+            let mut t = Tile::new(
+                TileKey::Replication,
+                TileStatus::Unavailable,
+                format!("Couldn't read {family}'s replication state."),
+            );
+            t.detail = Some(note);
+            return t;
+        }
+        let none = match s.server.engine {
+            Engine::Postgres => {
+                "No replicas or replication slots: nothing can fall behind or hold WAL back.".to_string()
+            }
+            Engine::Mssql => "No availability group or geo-replica: nothing can fall behind.".to_string(),
+            Engine::Mysql => format!("{family} isn't a replica here and reports none: nothing can fall behind."),
+            Engine::Sqlite => "A SQLite file has no replicas: nothing can fall behind.".to_string(),
+        };
+        return Tile::new(TileKey::Replication, TileStatus::Good, none);
+    }
+    let (status, takeaway) = match worst_finding(report, "replica-lag") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None => (
+            TileStatus::Good,
+            format!(
+                "{} {} keeping up.",
+                capitalized(&plural(replicas.len(), "copy", "copies")),
+                if replicas.len() == 1 { "is" } else { "are" }
+            ),
+        ),
+    };
+    let mut t = Tile::new(TileKey::Replication, status, takeaway);
+    let mut rows: Vec<&Replica> = replicas.iter().collect();
+    rows.sort_by(|a, b| {
+        b.lag_seconds
+            .unwrap_or(0.0)
+            .total_cmp(&a.lag_seconds.unwrap_or(0.0))
+            .then(b.lag_bytes.unwrap_or(0.0).total_cmp(&a.lag_bytes.unwrap_or(0.0)))
+    });
+    t.items = rows
+        .into_iter()
+        .take(4)
+        .map(|r| {
+            let role = match r.role {
+                ReplicaRole::Replica => "replica",
+                ReplicaRole::ThisServer => "this server",
+                ReplicaRole::Slot => "slot",
+            };
+            let mut item = TileItem::new(ItemKind::Signal, r.name.clone(), format!("{} ({role})", r.name));
+            item.value = Some(lag_text(r));
+            item.status = Some(if r.error.is_some() || r.lag_seconds.is_some_and(|s| s >= 300.0) {
+                TileStatus::Bad
+            } else if r.lag_seconds.is_some_and(|s| s >= 30.0) || r.state.as_deref() == Some("inactive") {
+                TileStatus::Watch
+            } else {
+                TileStatus::Good
+            });
+            item
+        })
+        .collect();
+    t
+}
+
+/// Statements whose runs fail or are cancelled (timeouts), from the counts the engine keeps per statement.
+pub(super) fn failures(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let family = family(&s.server);
+    let Some(w) = &s.workload else { return no_workload(TileKey::Failures, "failed runs aren't counted") };
+    let counted: Vec<(&QueryStat, f64)> =
+        app_queries(s).filter_map(|q| q.costs.as_ref()?.unfinished().map(|u| (q, u))).collect();
+    if counted.is_empty() {
+        let why = match s.server.engine {
+            Engine::Postgres => {
+                "PostgreSQL doesn't count failed runs per statement; its log does (log_min_error_statement)."
+                    .to_string()
+            }
+            _ if w.kind() == Some(culprit_core::WorkloadKind::SlowLog) => format!(
+                "The slow query log keeps runs that finished; {family} counts errors per statement only in performance_schema."
+            ),
+            _ if w.log.is_some() => format!(
+                "The {} log records how long statements took, not whether they failed.",
+                w.log.as_deref().unwrap_or_default()
+            ),
+            _ => format!("{family} reported no failed or cancelled runs per statement in this scan."),
+        };
+        return Tile::new(TileKey::Failures, TileStatus::Unavailable, why);
+    }
+    let mut failing: Vec<(&QueryStat, f64, f64)> = counted
+        .into_iter()
+        .filter(|(_, u)| *u > 0.0)
+        .map(|(q, u)| (q, u, if q.executions > 0.0 { (u / q.executions).min(1.0) } else { 1.0 }))
+        .collect();
+    failing.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let total: f64 = failing.iter().map(|f| f.1).sum();
+    let window = window_phrase(w);
+    let (status, takeaway) = match worst_finding(report, "failing-query") {
+        Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
+        None if failing.is_empty() => (TileStatus::Good, format!("No statement failed or timed out over {window}.")),
+        None => (
+            TileStatus::Info,
+            format!(
+                "{} didn't finish over {window}, too few to matter.",
+                capitalized(&plural(total.round() as usize, "run", "runs"))
+            ),
+        ),
+    };
+    let mut t = Tile::new(TileKey::Failures, status, takeaway);
+    t.metrics.push(TileMetric::new("statements", "Statements", Some(failing.len() as f64), failing.len().to_string()));
+    t.metrics.push(TileMetric::new("runs", "Unfinished runs", Some(total), format::count(total)));
+    t.items = failing
+        .iter()
+        .take(4)
+        .map(|(q, unfinished, rate)| {
+            let mut item = TileItem::new(ItemKind::Query, q.id.clone(), query_handle(q));
+            item.query_id = Some(q.id.clone());
+            // Fewer than five unfinished runs is too few to grade (a grey dot), so the value says how few.
+            item.value = Some(if *unfinished < 5.0 {
+                format!("{} of {} runs", format::count(*unfinished), format::count(q.executions.max(*unfinished)))
+            } else if *rate >= 0.999 {
+                "every run".into()
+            } else {
+                format!("{} of runs", format::percent(*rate))
+            });
+            item.share = Some(*rate);
+            let id = format!("failing-query:{}", q.id);
+            item.finding_id = report.findings.iter().find(|f| f.id == id).map(|f| f.id.clone());
+            item.status = Some(if *unfinished < 5.0 {
+                TileStatus::Info
+            } else if *rate >= 0.1 {
+                TileStatus::Bad
+            } else if *rate >= 0.01 {
+                TileStatus::Watch
+            } else {
+                TileStatus::Info
+            });
+            item
+        })
+        .collect();
+    t
+}
+
+pub(super) fn statistics(report: &Report) -> Tile {
+    let s = &report.snapshot;
+    let locked = report.locked.len();
+    let stats_findings: Vec<&Finding> =
+        report.findings.iter().filter(|f| STATISTICS_FINDINGS.contains(&f.id.as_str())).collect();
+    let mut tile = match &s.workload {
+        None => {
+            let missing = s.server.missing.iter().find(|m| m.capability.is_workload_source());
+            // Red when a source of query history is missing and can be turned on; an engine that keeps none (SQLite,
+            // whose statements can come from the application's log) isn't failing at anything.
+            let turn_on = missing.filter(|m| m.capability != Capability::QueryLog);
+            let mut t = Tile::new(
+                TileKey::Statistics,
+                if turn_on.is_some() { TileStatus::Bad } else { TileStatus::Unavailable },
+                match missing {
+                    Some(m) => format!("No query history: {}", sentence(&m.reason)),
+                    None => format!("{} keeps no query history.", family(&s.server)),
+                },
+            );
+            t.detail = Some(if turn_on.is_some() {
+                "Until they're on, Culprit checks tables, indexes and settings only: no query list, plans or trends."
+                    .into()
+            } else {
+                "Culprit checks its tables, indexes and settings, and plans any statement you give it.".into()
+            });
+            t.fix_sql = turn_on.and_then(|m| m.fix.as_deref()).and_then(fix_statement);
+            t.items = s
+                .server
+                .missing
+                .iter()
+                .filter(|m| m.capability.is_workload_source() && m.capability != Capability::QueryLog)
+                .map(|m| {
+                    let mut item = TileItem::new(ItemKind::Capability, m.capability.id(), m.capability.label());
+                    item.value = Some("off".into());
+                    item.status = Some(TileStatus::Bad);
+                    item
+                })
+                .collect();
+            t
+        }
+        Some(w) => {
+            let planned = app_queries(s).filter(|q| q.plan.is_some()).count();
+            let window = window_phrase(w);
+            let mut status = TileStatus::Good;
+            let mut takeaway = if w.log.is_some() {
+                // The phrase already names the log: "the 48 minutes the Rails log covers".
+                format!("Over {window}: {}, {planned} with plans.", plural(w.query_count as usize, "query", "queries"))
+            } else {
+                format!(
+                    "{} covers {window}: {}, {planned} with plans.",
+                    w.source,
+                    plural(w.query_count as usize, "query", "queries")
+                )
+            };
+            if let (Some(used), Some(max)) = (
+                setting(s, "query_store_options.current_storage_size_mb").and_then(|v| v.parse::<f64>().ok()),
+                setting(s, "query_store_options.max_storage_size_mb").and_then(|v| v.parse::<f64>().ok()),
+            ) && max > 0.0
+                && used / max >= 0.9
+                // With size-based cleanup on AUTO it trims its oldest data at 90% and never fills: that's how it runs.
+                && !setting(s, "query_store_options.size_based_cleanup_mode_desc")
+                    .is_some_and(|v| v.eq_ignore_ascii_case("AUTO"))
+            {
+                status = TileStatus::Watch;
+                takeaway =
+                    format!("Query Store is {} full; it stops recording when it fills.", format::percent(used / max));
+            }
+            // A log without timestamps covers a period nobody can say: not "thin", unknown.
+            let short = if w.log.is_some() { !w.window_unknown() } else { !w.windowed };
+            if short && w.window_hours < 1.0 {
+                status = status.max(TileStatus::Watch);
+                takeaway = if w.log.is_some() {
+                    format!("Only {window}, so the numbers are thin: a longer log tells more.")
+                } else {
+                    format!("{} covers only {window}, so the numbers are thin until it has seen more.", w.source)
+                };
+            }
+            if let Some(worst) = stats_findings.iter().rev().max_by_key(|f| f.severity) {
+                status =
+                    status.max(if worst.severity >= Severity::Medium { TileStatus::Watch } else { TileStatus::Info });
+                if status >= TileStatus::Watch && worst.severity >= Severity::Medium {
+                    takeaway = format!("{}.", worst.title.trim_end_matches('.'));
+                }
+            }
+            let mut t = Tile::new(TileKey::Statistics, status, takeaway);
+            // The slow query log only has statements over long_query_time: say so where its numbers are summarized.
+            if w.kind() == Some(culprit_core::WorkloadKind::SlowLog) {
+                t.detail = s.notes.iter().find(|n| n.collector == "workload").map(|n| n.message.clone());
+            }
+            t.metrics = vec![
+                TileMetric::new("queries", "Queries", Some(w.query_count), format::count(w.query_count)),
+                TileMetric::new("plans", "With plans", Some(planned as f64), planned.to_string()),
+                TileMetric::new("window-hours", "Covers", Some(w.window_hours), span(w.window_hours)),
+            ];
+            t.items = stats_findings
+                .iter()
+                .map(|f| {
+                    let mut item = TileItem::new(ItemKind::Finding, f.id.clone(), f.title.clone());
+                    item.status = Some(severity_status(f.severity));
+                    item.finding_id = Some(f.id.clone());
+                    item
+                })
+                .collect();
+            t.fix_sql = stats_findings.first().and_then(|f| f.fix.as_ref()).and_then(|f| f.sql.clone());
+            t
+        }
+    };
+    tile.metrics.push(TileMetric::new("locked", "Locked checks", Some(locked as f64), locked.to_string()));
+    if locked > 0 && tile.detail.is_none() {
+        let needs: Vec<String> = {
+            let mut caps: Vec<&str> = report.locked.iter().flat_map(|l| l.missing.iter().map(|c| c.label())).collect();
+            caps.sort_unstable();
+            caps.dedup();
+            caps.into_iter().map(str::to_string).collect()
+        };
+        tile.detail = Some(format!(
+            "{} locked: {} need{} {}.",
+            capitalized(&plural(locked, "check is", "checks are")),
+            format::list(&report.locked.iter().map(|l| l.check.title.clone()).take(3).collect::<Vec<_>>()),
+            if locked == 1 { "s" } else { "" },
+            format::list(&needs)
+        ));
+    }
+    tile
+}

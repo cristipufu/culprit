@@ -4,6 +4,7 @@ import type { Plan } from "../gen/Plan";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
 import { planShares } from "../lib/actual";
+import { can } from "../lib/engines";
 import { count, duration, percent } from "../lib/format";
 import { insightsByNode, rows as rowsText } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
@@ -98,6 +99,8 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
     setExpanded((prev) => new Set([...prev, ...path]));
   }, [selectedId, plan.root]);
   const hasActuals = nodes.some((n) => n.act_rows != null);
+  // SQLite's plans have no row or cost estimates: no shares or estimated rows to show.
+  const weighed = can(plan.engine, "plan_estimates") || hasActuals;
 
   const toggle = (id: number) =>
     setExpanded((prev) => {
@@ -119,7 +122,8 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
       <div className="plan-head">
         <span className="tag">{plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan"}</span>
         <span>
-          {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {(plan.total_cost || plan.root.subtree_cost).toFixed((plan.total_cost || plan.root.subtree_cost) < 10 ? 3 : 1)}
+          {nodes.length} operator{nodes.length === 1 ? "" : "s"}
+          {weighed && ` · cost ${(plan.total_cost || plan.root.subtree_cost).toFixed((plan.total_cost || plan.root.subtree_cost) < 10 ? 3 : 1)}`}
         </span>
         <span className="spacer" />
         {plan.warnings.length > 0 && (
@@ -132,8 +136,8 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
       {plan.kind === "actual" && <ActualSummary plan={plan} onPick={setSelected} />}
       <div className="plan-cols">
         <span>Operator</span>
-        <span>{hasActuals ? "Rows est → actual" : "Est. rows"}</span>
-        <span>{shares.basis === "time" ? "Own time" : "Self cost"}</span>
+        <span>{hasActuals ? "Rows est → actual" : weighed ? "Est. rows" : ""}</span>
+        <span>{shares.basis === "time" ? "Own time" : weighed ? "Self cost" : ""}</span>
       </div>
       <div style={compact ? { maxHeight: 340, overflowY: "auto" } : undefined}>
         {rows.map(({ node, depth }) => {
@@ -198,21 +202,25 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
                     {mis != null && Math.abs(mis) >= 10 && <span className="mis">×{count(Math.abs(mis))}{mis < 0 ? " over" : " under"}</span>}
                   </>
                 ) : (
-                  rowsText(node.est_rows * Math.max(1, node.est_executions))
+                  weighed && rowsText(node.est_rows * Math.max(1, node.est_executions))
                 )}
               </span>
               <span className="cost">
-                <span className="num">{percent(share)}</span>
-                <span className="heat">
-                  <span style={{ width: `${Math.max(2, Math.min(100, share * 100))}%`, background: heatVar(share) }} />
-                </span>
+                {weighed && (
+                  <>
+                    <span className="num">{percent(share)}</span>
+                    <span className="heat">
+                      <span style={{ width: `${Math.max(2, Math.min(100, share * 100))}%`, background: heatVar(share) }} />
+                    </span>
+                  </>
+                )}
               </span>
             </button>
           );
         })}
       </div>
       {selectedNode && (
-        <NodeDetails node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? 0} insights={flagged.get(selectedNode.id)} />
+        <NodeDetails estimates={weighed} node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? 0} insights={flagged.get(selectedNode.id)} />
       )}
     </div>
   );

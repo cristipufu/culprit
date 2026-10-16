@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(seek.index.as_deref(), Some("customers_pkey"));
         assert_eq!(seek.seek_predicate.as_deref(), Some("(c.id = $1)"));
         assert!((plan.root.self_cost - 45.5).abs() < 1e-9);
-        assert_eq!(plan.hottest().id, 1);
+        assert_eq!(plan.hottest().unwrap().id, 1);
         assert!(plan.root.act_rows.is_none());
     }
 

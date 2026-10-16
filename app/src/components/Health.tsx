@@ -78,7 +78,11 @@ export function HealthTab({
     return (
       <div className="waits-empty">
         <h3>No health signals in this scan</h3>
-        <p>Re-scan with a login that can read the server's statistics views to see compiles, memory grants, cache hits and connections.</p>
+        <p>
+          {engine === "sqlite"
+            ? "SQLite has no server, so there are no compiles, memory grants, cache hits or connections to read: the file's own settings are under Schema."
+            : "Re-scan with a login that can read the server's statistics views to see compiles, memory grants, cache hits and connections."}
+        </p>
       </div>
     );
   }

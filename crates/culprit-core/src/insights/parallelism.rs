@@ -1,0 +1,245 @@
+//! Plan insights about parallel plans: skewed threads, and parallelism a statement didn't need or couldn't get.
+
+use super::*;
+
+/// What a spilling operator wrote to disk, when the plan says: tempdb pages (SQL Server), the sort's or hash
+/// aggregate's own disk use, or the temporary blocks the operator itself wrote (PostgreSQL with BUFFERS).
+pub(super) fn spilled_bytes(n: &PlanNode) -> Option<f64> {
+    let own_temp_pages = n.runtime.as_ref().and_then(|r| r.spill_pages).filter(|p| *p > 0.0);
+    let disk_kb = prop_f64(n, "Sort Space Used")
+        .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"))
+        .or_else(|| prop_f64(n, "Disk Usage").filter(|kb| *kb > 0.0));
+    disk_kb
+        .map(|kb| kb * 1024.0)
+        .or_else(|| prop_f64(n, "TempdbWritesPages").map(|p| p * 8192.0))
+        .or_else(|| own_temp_pages.map(|p| p * 8192.0))
+}
+
+pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
+    let mut out = Vec::new();
+    for n in cx.nodes.iter().filter(|n| is_true(n.props.get(EXCHANGE_SPILL))) {
+        let mut d = Draft::new("spill", InsightArea::Parallelism, cx.share(n), vec![n.id]);
+        d.title = match spilled_bytes(n) {
+            Some(b) => format!(
+                "The {} exchange wrote {} to tempdb to keep its threads from waiting on each other",
+                n.op,
+                format::bytes(b)
+            ),
+            None => format!("The {} exchange wrote to tempdb to keep its threads from waiting on each other", n.op),
+        };
+        d.detail = "SQL Server spills an exchange's buffers to tempdb when its parallel threads would otherwise wait on each other for good, usually at an exchange that keeps rows in order (merging streams) fed unevenly. It isn't a memory grant problem.".into();
+        d.fix = "Remove the need for order at that exchange (an ORDER BY or merge join above it that an index or a hash join could serve), and check whether one value holds most of the rows; comparing a run with OPTION (MAXDOP 1) shows what parallelism costs here.".into();
+        d.verify = "Run with an actual plan: no ExchangeSpillDetails on the Parallelism operator.".into();
+        out.push(d);
+    }
+    for n in cx.nodes.iter().filter(|n| n.warnings.contains(&PlanWarning::Spill)) {
+        let mut d = Draft::new("spill", InsightArea::Memory, cx.share(n), vec![n.id]);
+        // The plan's costs were estimated before the spill happened; its size is the evidence of what it cost.
+        match spilled_bytes(n) {
+            Some(bytes) if bytes < SPILL_MATERIAL_BYTES => d.cap = Severity::Low,
+            Some(_) => d.floor = Severity::Medium,
+            None => {}
+        }
+        let underestimated = {
+            let mut below = Vec::new();
+            n.walk(&mut below);
+            below.iter().any(|b| b.misestimate().is_some_and(|m| m >= MISESTIMATE_FACTOR))
+        };
+        match cx.engine() {
+            // EXPLAIN QUERY PLAN reports no spills.
+            Engine::Sqlite => continue,
+            Engine::Postgres => {
+                let disk_kb = prop_f64(n, "Sort Space Used")
+                    .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"));
+                let batches = prop_f64(n, "Hash Batches").filter(|b| *b > 1.0);
+                let agg_batches = prop_f64(n, "HashAgg Batches").filter(|b| *b > 1.0);
+                d.title = match (disk_kb, batches, agg_batches, spilled_bytes(n)) {
+                    (Some(kb), _, _, _) => format!(
+                        "The sort writes {} to disk because it didn't fit in work_mem",
+                        format::bytes(kb * 1024.0)
+                    ),
+                    (None, Some(b), _, _) => format!(
+                        "The hash split its input into {} batches on disk because it didn't fit in work_mem",
+                        format::count(b)
+                    ),
+                    (None, None, _, Some(bytes)) => format!(
+                        "{} writes {} of temporary files because it didn't fit in work_mem",
+                        n.op,
+                        format::bytes(bytes)
+                    ),
+                    (None, None, Some(b), None) => format!(
+                        "{} split its groups into {} batches on disk because they didn't fit in work_mem",
+                        n.op,
+                        format::count(b)
+                    ),
+                    (None, None, None, None) => {
+                        format!("{} wrote temporary files because it didn't fit in work_mem", n.op)
+                    }
+                };
+                d.detail = format!(
+                    "Disk is many times slower than memory for sorting and hashing.{}",
+                    if underestimated {
+                        " The rows feeding it were badly underestimated, so it was planned with too little memory."
+                    } else {
+                        ""
+                    }
+                );
+                d.fix = "Give this workload more memory for sorts and hashes, per role or per session rather than server-wide, or add an index that returns rows already ordered so the sort disappears.".into();
+                d.fix_sql = Some("-- Try it in your session first:\nSET work_mem = '64MB';\n-- Then for the application's role:\nALTER ROLE app_user SET work_mem = '64MB';".into());
+                d.verify =
+                    "Explain analyze again: Sort Method is quicksort/top-N (in memory) and Hash Batches is 1.".into();
+            }
+            // MariaDB's ANALYZE counts a sort's merge passes: it didn't fit in sort_buffer_size.
+            Engine::Mysql => {
+                let passes = prop_f64(n, "r_sort_passes").unwrap_or(1.0);
+                d.title = format!(
+                    "The sort needed {} through temporary files because it didn't fit in sort_buffer_size",
+                    plural(passes, "merge pass", "merge passes")
+                );
+                d.detail = format!(
+                    "Each merge pass writes the sorted runs to a temporary file and reads them back.{}",
+                    if underestimated { " The rows feeding it were badly underestimated." } else { "" }
+                );
+                d.fix = "Raise sort_buffer_size for the session that runs it rather than server-wide (it's allocated per sort), or add an index that returns rows already in order so the sort disappears.".into();
+                d.fix_sql =
+                    Some("-- Try it in your session first:\nSET SESSION sort_buffer_size = 8 * 1024 * 1024;".into());
+                d.verify = "Run ANALYZE again: r_sort_passes is 0.".into();
+            }
+            Engine::Mssql => {
+                d.title = match prop_f64(n, "TempdbWritesPages") {
+                    Some(pages) => {
+                        format!("{} ran out of memory and wrote {} to tempdb", n.op, format::bytes(pages * 8192.0))
+                    }
+                    None => format!("{} ran out of memory and wrote to tempdb", n.op),
+                };
+                d.detail = format!(
+                    "The memory granted to {} was too small for the rows it got, so part of the work went to disk in tempdb.{}",
+                    n.op,
+                    if underestimated {
+                        " The rows feeding it were badly underestimated; the grant was sized for the estimate."
+                    } else {
+                        ""
+                    }
+                );
+                d.fix = "Fix the row estimate first (update statistics on the tables feeding it); an index that returns rows in the needed order removes the sort altogether. SQL Server 2019+ also grows the grant on later runs (memory grant feedback, compatibility level 150).".into();
+                d.verify = "Run with an actual plan: no spill warning on that operator.".into();
+            }
+        }
+        out.push(d);
+    }
+    out
+}
+
+pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
+    // The plan doesn't carry the server's cost threshold for parallelism: below its default (5) no setting would make
+    // the plan parallel, and only above the 50 it's commonly raised to does running serially say much.
+    const DEFAULT_THRESHOLD: f64 = 5.0;
+    const COMMON_THRESHOLD: f64 = 50.0;
+    let Some(reason) = cx.prop("NonParallelPlanReason") else { return Vec::new() };
+    let cost = cx.plan.total_cost;
+    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < DEFAULT_THRESHOLD {
+        return Vec::new();
+    }
+    let plain = match reason {
+        "MaxDOPSetToOne" => "MAXDOP is 1 (a query hint, or the database or server setting)",
+        "EstimatedDOPIsOne" => "only one CPU is available to it",
+        "NoParallelPlansInDesktopOrExpressEdition" => "this SQL Server edition doesn't run parallel plans",
+        "CouldNotGenerateValidParallelPlan" => "SQL Server couldn't build a valid parallel plan for it",
+        "NonParallelizableIntrinsicFunction" => "the query calls a built-in function that can't run in parallel",
+        "TableVariableTransactionsDoNotSupportParallelNestedTransaction" => "it writes to a table variable",
+        "NoParallelForMemoryOptimizedTables" => "it touches memory-optimized tables",
+        "UpdatingWritebackVariable" => "it assigns to a variable",
+        "CLRUserDefinedFunctionRequiresDataAccess" => "it calls a CLR function that reads data",
+        _ => "",
+    };
+    let mut d = Draft::new("parallelism-blocked", InsightArea::Parallelism, 0.1, vec![cx.plan.root.id]);
+    d.fixed_weight = true;
+    d.subtree = true;
+    d.cap = if cost >= COMMON_THRESHOLD { Severity::Medium } else { Severity::Low };
+    // SQL Server's own reason on a plan expensive enough to go parallel is Medium; a cheap one's is Low.
+    d.floor = d.cap;
+    d.title = if plain.is_empty() {
+        format!("This plan runs on one CPU: SQL Server reports {reason}")
+    } else {
+        format!("This plan runs on one CPU because {plain}")
+    };
+    d.detail = format!(
+        "Its estimated cost is {cost:.0}. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50){}; the whole run happens on a single core instead.",
+        if cost >= COMMON_THRESHOLD {
+            ", which this plan passes either way"
+        } else {
+            ", so whether it would split depends on that setting"
+        }
+    );
+    d.fix = match reason {
+        "MaxDOPSetToOne" => "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server.".into(),
+        _ => "Remove what prevents parallelism if the query allows it; otherwise make the single-threaded run cheaper (indexes, fewer rows).".into(),
+    };
+    d.verify = "Explain again: no NonParallelPlanReason, and Parallelism operators appear.".into();
+    vec![d]
+}
+
+pub(super) fn parallel_skew(cx: &Cx) -> Vec<Draft> {
+    let mut out = Vec::new();
+    for n in &cx.nodes {
+        let rows: Vec<f64> = match cx.engine() {
+            Engine::Mssql => {
+                let (Some(threads), Some(max), Some(total)) =
+                    (prop_f64(n, "ThreadCount"), prop_f64(n, "ThreadRowsMax"), n.act_rows)
+                else {
+                    continue;
+                };
+                if threads < 2.0 {
+                    continue;
+                }
+                let others = (total - max).max(0.0) / (threads - 1.0);
+                let mut v = vec![max];
+                v.extend(std::iter::repeat_n(others, threads as usize - 1));
+                v
+            }
+            Engine::Postgres => {
+                let Some(workers) =
+                    n.props.get("Workers").and_then(|w| serde_json::from_str::<serde_json::Value>(w).ok())
+                else {
+                    continue;
+                };
+                let Some(list) = workers.as_array() else { continue };
+                let loops_rows: Vec<f64> = list
+                    .iter()
+                    .filter_map(|w| {
+                        let rows = w.get("Actual Rows")?.as_f64()?;
+                        let loops = w.get("Actual Loops").and_then(|l| l.as_f64()).unwrap_or(1.0).max(1.0);
+                        Some(rows * loops)
+                    })
+                    .collect();
+                if loops_rows.is_empty() {
+                    continue;
+                }
+                let leader = (n.act_rows.unwrap_or(0.0) - loops_rows.iter().sum::<f64>()).max(0.0);
+                let mut v = loops_rows;
+                v.push(leader);
+                v
+            }
+            Engine::Mysql | Engine::Sqlite => continue,
+        };
+        let total: f64 = rows.iter().sum();
+        let max = rows.iter().cloned().fold(0.0, f64::max);
+        let avg = total / rows.len() as f64;
+        if total < 10_000.0 || avg <= 0.0 || max < 3.0 * avg {
+            continue;
+        }
+        // Skew costs time only in proportion to the work involved, and a TOP makes uneven threads normal.
+        let has_top = cx.nodes.iter().any(|x| x.op == "Top" || x.op == "Limit");
+        let mut d = Draft::new("parallel-skew", InsightArea::Parallelism, cx.share(n) * 0.3, vec![n.id]);
+        d.cap = if has_top || total < 100_000.0 { Severity::Low } else { Severity::Medium };
+        let who = if cx.engine() == Engine::Postgres { "process" } else { "thread" };
+        d.title =
+            format!("One {who} of {} handled {} of the rows in {}", rows.len(), format::percent(max / total), n.op);
+        d.detail = format!("Parallel work is only as fast as its busiest {who}; the others finished early and waited.");
+        d.fix = "Uneven work usually means one key value holds most of the rows (check the distribution of the join or filter column) or a parallel scan over a small range; update statistics and consider filtering that value separately.".into();
+        d.verify = format!("Run with actual rows: each {who} handles a similar share.");
+        out.push(d);
+    }
+    out.sort_by(|a, b| b.impact.total_cmp(&a.impact));
+    out.into_iter().take(1).collect()
+}

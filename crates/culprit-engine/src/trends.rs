@@ -72,7 +72,8 @@ pub fn plan_mark(plan: &Plan) -> (String, String) {
         })
         .collect::<Vec<_>>()
         .join(">");
-    let hot = plan.hottest();
+    // Without costs (SQLite), the plan's first step names it.
+    let hot = plan.hottest().or(plan.root.children.first()).unwrap_or(&plan.root);
     let words = match hot.object.as_deref() {
         Some(o) => format!("{} on {}", hot.op, short_object(o)),
         None => hot.op.clone(),
@@ -432,6 +433,7 @@ mod tests {
     fn workload(reset: &str, queries: Vec<QueryStat>) -> Workload {
         Workload {
             source: "pg_stat_statements".into(),
+            kind: Some(culprit_core::WorkloadKind::StatementStats),
             windowed: false,
             window_start: (!reset.is_empty()).then(|| reset.into()),
             window_end: None,
@@ -443,7 +445,9 @@ mod tests {
             queries,
             timeline: None,
             untracked_time_ms: None,
+            hourly_time_ms: None,
             min_logged_ms: None,
+            log: None,
         }
     }
 

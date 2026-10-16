@@ -2,6 +2,7 @@ import { GitCompareArrows, Search, SquareArrowOutUpRight, SquarePen } from "luci
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LookToggle, PlanSurface, rememberLook, rememberedLook, type PlanLook } from "../components/PlanSurface";
 import { LastActualRun, PlanSourceToggle, type PlanSource } from "../components/ActualRun";
+import { measuresRuns } from "../lib/engines";
 import { QueryTrend, Sparkline } from "../components/Trends";
 import { RuntimeSpread } from "../components/RuntimeSpread";
 import { QueryCostsPanel } from "../components/BeyondTime";
@@ -14,7 +15,7 @@ import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
 import { querySummary } from "../lib/query-summary";
-import { honest } from "../lib/rates";
+import { honest, workloadKind } from "../lib/rates";
 import { setState, toast, useStore } from "../lib/store";
 import { compareSince } from "./Overview";
 
@@ -94,7 +95,7 @@ export function Queries({ report }: { report: Report }) {
     return (
       <div className="empty">
         <h3>No query history</h3>
-        <p>{report.snapshot.server.missing.find((m) => ["query-store", "plan-cache", "pg-stat-statements", "performance-schema"].includes(m.capability))?.reason ?? "This login can't read query statistics."}</p>
+        <p>{report.summary.no_workload ?? "This scan has no query history."}</p>
       </div>
     );
   }
@@ -262,7 +263,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
               </button>
             )}
             {w.timeline && query.trend && <QueryTrend query={query} timeline={w.timeline} onSince={compareSince} />}
-            <RuntimeSpread query={query} engine={report.snapshot.server.engine} windowed={w.windowed} product={report.snapshot.server.product} source={w.source} />
+            <RuntimeSpread query={query} engine={report.snapshot.server.engine} windowed={w.windowed} product={report.snapshot.server.product} kind={workloadKind(w)} />
             <QueryCostsPanel report={report} query={query} />
             {related.length > 0 && (
               <section>
@@ -418,7 +419,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
             Plans <span className="muted">{variants.length}</span>
           </>
         ) : (
-          <span className="muted plan-source">{query.plan?.kind === "actual" ? "Actual plan" : report.snapshot.workload?.source ?? "Plan"}</span>
+          <span className="muted plan-source">{query.plan?.kind === "actual" ? "Actual plan" : report.snapshot.server.engine === "mssql" ? (report.snapshot.workload?.source ?? "Plan") : "Estimated plan"}</span>
         )}
         <span className="actions">
           {variants.length > 1 && (
@@ -431,7 +432,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
               <SquareArrowOutUpRight size={13} /> Open in Plans
             </button>
           )}
-          <PlanSourceToggle value={source} onChange={setSource} />
+          {measuresRuns(report.snapshot.server.engine) && <PlanSourceToggle value={source} onChange={setSource} />}
           <LookToggle look={look} onChange={chooseLook} />
         </span>
       </h3>

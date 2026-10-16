@@ -69,6 +69,26 @@ fn a_plan_that_replaced_a_faster_one_is_a_plan_regression() {
     assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("@plan_id = 8;"));
 }
 
+// The false flags: five quick runs in nine minutes as the "fast plan", and a slower plan that does the same work per
+// run (its runs waited on blocking or load while it ran). Neither is a plan that made the query slower.
+#[test]
+fn a_regression_needs_a_real_baseline_and_more_work_per_run() {
+    let s = with_plans(vec![
+        plan("8", 5.0, 3.0, "2026-10-11T10:35:00Z", "2026-10-11T10:44:00Z"),
+        plan("47", 100.0, 60.0, "2026-10-11T10:46:00Z", "2026-10-11T12:13:00Z"),
+    ]);
+    assert!(find(&analyze(s).findings, "plan-regression:8").is_none());
+    let with_work = |cpu: f64, reads: f64| {
+        let mut fast = plan("8", 200.0, 9.0, "2026-10-11T07:44:00Z", "2026-10-11T10:44:00Z");
+        (fast.cpu_time_ms, fast.logical_reads) = (Some(200.0 * 4.0), Some(200.0 * 1_000.0));
+        let mut slow = plan("47", 100.0, 60.0, "2026-10-11T10:46:00Z", "2026-10-11T12:13:00Z");
+        (slow.cpu_time_ms, slow.logical_reads) = (Some(100.0 * cpu), Some(100.0 * reads));
+        with_plans(vec![fast, slow])
+    };
+    assert!(find(&analyze(with_work(4.0, 1_000.0)).findings, "plan-regression:8").is_none());
+    assert!(find(&analyze(with_work(4.0, 40_000.0)).findings, "plan-regression:8").is_some());
+}
+
 #[test]
 fn a_fast_plan_that_came_later_is_not_a_regression() {
     // The slow plan ran from the start; a fast one appeared later and the slow one kept running after it.

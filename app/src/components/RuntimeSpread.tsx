@@ -1,5 +1,6 @@
 import type { Engine } from "../gen/Engine";
 import type { QueryStat } from "../gen/QueryStat";
+import type { WorkloadKind } from "../gen/WorkloadKind";
 import { count, duration, percent } from "../lib/format";
 import { planColor } from "./Trends";
 import { serverName } from "../lib/engines";
@@ -92,15 +93,17 @@ function logTicks(lo: number, hi: number): number[] {
   return decades.length >= 3 ? decades : all.length > 6 ? all.filter((_, i) => i % 2 === 0) : all;
 }
 
-function coverage(engine: Engine, hasHistogram: boolean, product?: string, source?: string): string {
-  if (source === "slow query log")
+function coverage(engine: Engine, hasHistogram: boolean, product?: string, kind?: WorkloadKind | null): string {
+  if (kind === "slow-log")
     return hasHistogram
       ? "The slow query log keeps every logged run, so the bars show how many runs took how long (only runs slower than long_query_time)."
       : "The slow query log keeps every logged run slower than long_query_time; the lane shows fastest, average and slowest.";
   const name = serverName(engine, product);
   switch (engine) {
     case "mssql":
-      return "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.";
+      return kind === "plan-cache"
+        ? "The plan cache keeps the fastest and slowest run of each cached plan since it was cached, not their spread: Query Store would add it."
+        : "Query Store keeps the fastest and slowest run and the spread of every plan, and each plan's compiled parameter values.";
     case "postgres":
       return "PostgreSQL keeps one fastest, average, slowest and spread per statement: enough to see a long tail, not which values caused it.";
     case "mysql":
@@ -139,13 +142,13 @@ export function RuntimeSpread({
   engine,
   windowed,
   product,
-  source,
+  kind,
 }: {
   query: QueryStat;
   engine: Engine;
   windowed: boolean;
   product?: string;
-  source?: string;
+  kind?: WorkloadKind | null;
 }) {
   const ls = lanes(query);
   const values = ls
@@ -244,7 +247,7 @@ export function RuntimeSpread({
           <span className="muted rs-legend">fastest · {hasHistogram ? "median" : "average"} · slowest</span>
         </div>
       </div>
-      <p className="rs-note">{coverage(engine, hasHistogram, product, source)}</p>
+      <p className="rs-note">{coverage(engine, hasHistogram, product, kind)}</p>
     </section>
   );
 }

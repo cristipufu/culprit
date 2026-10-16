@@ -4,6 +4,7 @@ import { ago } from "../lib/format";
 import { EngineBadge } from "./EngineBadge";
 import { groupByEnvironment } from "../lib/environments";
 import { currentReport, openConnection, scan, setState, useStore, type View } from "../lib/store";
+import { can } from "../lib/engines";
 import { useTheme } from "../lib/theme";
 import { keys } from "../lib/keys";
 import { installUpdate, restartToUpdate, useUpdate } from "../lib/updates";
@@ -122,7 +123,7 @@ export function Sidebar() {
       </button>
       {(
         <nav className="nav">
-          {NAV.filter((n) => active || n.view === "plans").map((n) => (
+          {NAV.filter((n) => (active || n.view === "plans") && (n.view !== "live" || !connection || can(connection.engine, "sessions"))).map((n) => (
             <button key={n.view} className={`nav-item ${view === n.view ? "active" : ""}`} onClick={() => setState({ view: n.view })}>
               {n.icon}
               {n.label}

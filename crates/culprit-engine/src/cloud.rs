@@ -1039,6 +1039,7 @@ mod tests {
             display: String::new(),
             last_report: None,
             agent_access: Default::default(),
+            query_log: None,
         }
     }
 

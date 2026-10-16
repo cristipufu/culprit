@@ -1,0 +1,15 @@
+Started GET "/products?category=3&sort=new" for 66.249.66.1 at 2026-10-15 12:00:01 +0000
+Processing by ProductsController#index as HTML
+  Parameters: {"category"=>"3", "sort"=>"new"}
+  [1m[36mProduct Load (12.4ms)[0m  [1m[34mSELECT "products".* FROM "products" WHERE "products"."category_id" = ? ORDER BY "products"."created_at" DESC LIMIT ?[0m  [["category_id", 3], ["LIMIT", 20]]
+  ↳ app/controllers/products_controller.rb:7:in `index'
+  CACHE Product Load (0.0ms)  SELECT "products".* FROM "products" WHERE "products"."category_id" = ? ORDER BY "products"."created_at" DESC LIMIT ?  [["category_id", 3], ["LIMIT", 20]]
+  Category Load (0.3ms)  SELECT "categories".* FROM "categories" WHERE "categories"."id" = ? LIMIT ?  [["id", 3], ["LIMIT", 1]]
+Completed 200 OK in 31ms (Views: 15.2ms | ActiveRecord: 12.7ms | Allocations: 9001)
+Started GET "/products?category=7&color=red&sort=price" for 66.249.66.2 at 2026-10-15 12:00:02 +0000
+  Product Load (14.1ms)  SELECT "products".* FROM "products" WHERE "products"."category_id" = ? AND "products"."color" = ? ORDER BY "products"."price" ASC LIMIT ?  [["category_id", 7], ["color", "red"], ["LIMIT", 20]]
+  TRANSACTION (0.1ms)  begin transaction
+  Visit Create (0.4ms)  INSERT INTO "visits" ("path", "created_at") VALUES (?, ?) RETURNING "id"  [["path", "/products"], ["created_at", "2026-10-15 12:00:02.100000"]]
+  TRANSACTION (0.2ms)  commit transaction
+Started GET "/products?category=9&sort=new" for 66.249.66.3 at 2026-10-15 12:00:03 +0000
+  Product Load (11.9ms)  SELECT "products".* FROM "products" WHERE "products"."category_id" = ? ORDER BY "products"."created_at" DESC LIMIT ?  [["category_id", 9], ["LIMIT", 20]]

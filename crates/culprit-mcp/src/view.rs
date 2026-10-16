@@ -40,6 +40,7 @@ fn window(w: &Workload) -> Value {
         "source": w.source,
         "hours": round(w.window_hours, 1),
         "cumulative_since_stats_reset": !w.windowed,
+        "application_log": w.log,
         "start": w.window_start,
         "end": w.window_end,
     })
@@ -59,10 +60,26 @@ fn scan_header(report: &Report) -> Value {
     })
 }
 
-/// The tool that shows more of what a dashboard tile is about.
-pub fn next_tool(key: culprit_core::TileKey) -> &'static str {
+/// The tool that shows more of what a dashboard tile is about; none for what an engine without a server (SQLite) can't
+/// answer: sessions, waits, deadlocks, periods to compare.
+pub fn next_tool(key: culprit_core::TileKey, engine: culprit_core::Engine) -> Option<&'static str> {
     use culprit_core::TileKey;
-    match key {
+    if !engine.has_server()
+        && matches!(
+            key,
+            TileKey::DbTime
+                | TileKey::Waits
+                | TileKey::Health
+                | TileKey::Now
+                | TileKey::Deadlocks
+                | TileKey::Storage
+                | TileKey::Connections
+                | TileKey::Replication
+        )
+    {
+        return None;
+    }
+    Some(match key {
         TileKey::DbTime => "what_changed",
         TileKey::Findings => "findings",
         TileKey::TopQueries => "top_queries",
@@ -74,7 +91,7 @@ pub fn next_tool(key: culprit_core::TileKey) -> &'static str {
         TileKey::Statistics => "scan",
         TileKey::Storage | TileKey::Connections | TileKey::Replication => "waits",
         TileKey::Failures => "findings",
-    }
+    })
 }
 
 pub fn findings(report: &Report, category: Option<Category>, min: Severity, limit: usize) -> Value {
@@ -143,7 +160,8 @@ fn query_row(w: &Workload, q: &QueryStat) -> Value {
 
 pub fn top_queries(report: &Report, by: TopBy, limit: usize) -> Value {
     let Some(w) = report.snapshot.workload.as_ref() else {
-        return json!({ "scan": scan_header(report), "queries": [], "note": "This login can't read query statistics." });
+        let note = report.summary.no_workload.clone().unwrap_or_else(|| "This scan has no query history.".into());
+        return json!({ "scan": scan_header(report), "queries": [], "note": note });
     };
     let key = |q: &QueryStat| match by {
         TopBy::Time => q.total_time_ms,
@@ -210,8 +228,8 @@ fn plan_summary(plan: &Plan) -> Value {
     let hot = plan.hottest();
     json!({
         "kind": plan.kind,
-        "hottest": node_label(hot),
-        "hottest_cost_pct": share(plan, hot).map(pct),
+        "hottest": hot.map(node_label),
+        "hottest_cost_pct": hot.and_then(|hot| share(plan, hot)).map(pct),
         "warnings": warnings(plan),
     })
 }
@@ -255,7 +273,9 @@ pub fn plan_tree(plan: &Plan) -> String {
     fn visit(plan: &Plan, node: &PlanNode, depth: usize, out: &mut String) {
         let cost = share(plan, node).map(|s| format!("{:>4}", format::percent(s))).unwrap_or_else(|| "   -".into());
         let mut line = format!("{cost}  {}{}", "  ".repeat(depth), node_label(node));
-        line.push_str(&format!("  rows est {}", format::count(node.est_rows_total())));
+        if plan.weighed() {
+            line.push_str(&format!("  rows est {}", format::count(node.est_rows_total())));
+        }
         if let Some(actual) = node.act_rows {
             line.push_str(&format!(" actual {}", format::count(actual)));
         }
@@ -298,7 +318,8 @@ pub fn plan_insights(plan: &Plan) -> Value {
         "insights": found.items.iter().map(|i| json!({
             "rule": i.rule,
             "severity": i.severity,
-            "impact": round(i.impact, 3),
+            // The share of the plan's work; null where the rule ranks by its own weight or the plan has no costs.
+            "impact": (!i.fixed_weight && plan.weighed()).then(|| round(i.impact, 3)),
             "operators": i.nodes,
             "title": i.title,
             "detail": i.detail,

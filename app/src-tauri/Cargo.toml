@@ -19,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.12.3", features = [] }
 tauri-plugin-updater = "=2.13.1"
+# Native file dialogs, opened by Culprit's own commands only: the window gets no dialog or file system permission.
+tauri-plugin-dialog = "=2.8.0"
 tokio.workspace = true
 
 # Screenshots: WKWebView takes the picture, AppKit puts it on the clipboard (all already in Tauri's tree).

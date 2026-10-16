@@ -96,6 +96,8 @@ async fn attach_variants(client: &mut MsClient, window_minutes: u32, queries: &m
             stddev_time_ms: None,
             compiled: None,
             variant_query: Some(r.string("variant_id")),
+            cpu_time_ms: None,
+            logical_reads: None,
         });
     }
 }

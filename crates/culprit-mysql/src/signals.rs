@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use culprit_core::{
-    CollectorNote, ColumnHistogram, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole, Setting, Signal,
+    ColumnHistogram, Coverage, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole, Setting, Signal,
     SignalScope, SignalUnit, Snapshot,
 };
 use mysql_async::{Conn, Value};
@@ -14,56 +14,49 @@ use mysql_async::{Conn, Value};
 use crate::collect::Probe;
 use crate::connect::{Connector, Scope};
 use crate::rows::{Rec, query, query_with};
+use crate::sources;
 
 const PICOS_PER_MS: f64 = 1_000_000_000.0;
 
-/// Collect every signal into `snapshot` on a connection of its own.
+/// Collect every signal into `snapshot` on a connection of its own, each source read through `Coverage::read`
+/// (`crate::sources`): these add detail and lock nothing, so a failure is a note.
 pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapshot) {
-    let mut conn = match connector.connect(Scope::Server).await {
-        Ok(conn) => conn,
-        Err(e) => {
-            snapshot.notes.push(CollectorNote { collector: "signals".into(), message: e.message });
-            return;
-        }
+    let mut coverage = Coverage::default();
+    let Some(mut conn) = coverage.read(&sources::SIGNALS, connector.connect(Scope::Server).await) else {
+        snapshot.notes.extend(coverage.finish().2);
+        return;
     };
     let mariadb = probe.version.to_ascii_lowercase().contains("mariadb");
-    let mut notes: Vec<(&str, String)> = Vec::new();
     if probe.performance_schema
         && let Some(workload) = snapshot.workload.as_mut()
-        && let Err(e) = attach_errors(&mut conn, &probe.database, &mut workload.queries).await
     {
-        notes.push(("query errors", e.message));
+        coverage.read(&sources::QUERY_ERRORS, attach_errors(&mut conn, &probe.database, &mut workload.queries).await);
     }
-    match histograms(&mut conn, &probe.database, &probe.version, mariadb).await {
-        Ok(found) => snapshot.histograms = found,
-        Err(e) => notes.push(("histograms", e.message)),
+    let found = histograms(&mut conn, &probe.database, &probe.version, mariadb).await;
+    if let Some(found) = coverage.read(&sources::HISTOGRAMS, found) {
+        snapshot.histograms = found;
     }
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
-    if probe.performance_schema {
-        match files(&mut conn).await {
-            Ok(files) => pressure.files = files,
-            Err(e) => notes.push(("file latency", e.message)),
-        }
+    if probe.performance_schema
+        && let Some(files) = coverage.read(&sources::FILE_LATENCY, files(&mut conn).await)
+    {
+        pressure.files = files;
     }
-    match connections(&mut conn).await {
-        Ok(signals) => pressure.signals.extend(signals),
-        Err(e) => notes.push(("connections", e.message)),
-    }
+    pressure.signals.extend(coverage.read(&sources::CONNECTIONS, connections(&mut conn).await).unwrap_or_default());
     // What replication and connection advice depend on: whether this server takes writes, and its thread cache.
-    let variables = match server_variables(&mut conn).await {
-        Ok(v) => v,
-        Err(e) => {
-            notes.push(("server variables", e.message));
-            HashMap::new()
-        }
-    };
+    let variables =
+        coverage.read(&sources::SERVER_VARIABLES, server_variables(&mut conn).await).unwrap_or_else(HashMap::new);
     let writable = variables.get("read_only").map(|v| !is_on(v));
-    match replica_status(&mut conn, writable).await {
-        Ok(replicas) => pressure.replicas = replicas,
-        Err(e) => notes.push((
-            "replication",
-            format!("{} Reading replica status needs the REPLICATION CLIENT privilege; it only matters if this server is a replica.", e.message),
-        )),
+    // Replica status needs REPLICATION CLIENT, which only matters on a replica: the note says so.
+    let replicas = replica_status(&mut conn, writable).await.map_err(|mut e| {
+        e.message = format!(
+            "{} Reading replica status needs the REPLICATION CLIENT privilege; it only matters if this server is a replica.",
+            e.message
+        );
+        e
+    });
+    if let Some(replicas) = coverage.read(&sources::REPLICATION, replicas) {
+        pressure.replicas = replicas;
     }
     let _ = conn.disconnect().await;
     if let Some(value) = variables.get("thread_cache_size")
@@ -76,9 +69,7 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
             scope: "server".into(),
         });
     }
-    snapshot
-        .notes
-        .extend(notes.into_iter().map(|(collector, message)| CollectorNote { collector: collector.into(), message }));
+    snapshot.notes.extend(coverage.finish().2);
 }
 
 // ── per statement ──────────────────────────────────────────────────────────────────────────────────
@@ -383,7 +374,9 @@ fn replica(r: ChannelRow, writable: Option<bool>) -> Option<Replica> {
 }
 
 /// Column histograms in this database: MySQL 8's COLUMN_STATISTICS, MariaDB's mysql.column_stats. `None` on MySQL 5.7,
-/// which has none.
+/// which has none. On MariaDB every column with statistics counts, histogram or not (`kind` None): its minimum, maximum
+/// and average frequency already keep the optimizer from assuming a condition keeps every row (before 10.4,
+/// histogram_size = 0 collects them without a histogram).
 async fn histograms(
     conn: &mut Conn,
     database: &str,
@@ -395,7 +388,7 @@ async fn histograms(
         let rows = query_with(
             conn,
             "SELECT db_name AS schema_name, table_name, column_name, hist_type AS kind
-               FROM mysql.column_stats WHERE db_name = ? AND hist_type IS NOT NULL",
+               FROM mysql.column_stats WHERE db_name = ?",
             params,
         )
         .await?;

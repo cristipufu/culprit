@@ -2,7 +2,7 @@
 //! every check and engine, what no single check can see on its own: two checks describing one cause, or a finding that
 //! rests on statements whose cost is behind them. A new rule is a function here and a line in [`rules`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use culprit_core::{Engine, Finding, QueryStat, Severity, Snapshot, SubjectKind, format};
@@ -20,6 +20,7 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("a rewrite, not an index, fixes a scan behind a function or wildcard", rewrite_replaces_index),
         rule("a spill explains the big sort", spill_explains_sort),
         rule("an index to add covers the foreign key", index_covers_foreign_key),
+        rule("an index the engine builds for itself is the foreign key's", engine_built_index_is_the_foreign_keys),
         rule("an index to add replaces a histogram", index_replaces_histogram),
         rule("a regression carries its plan change", regression_carries_plan_change),
         rule("one plan story per query", one_plan_story),
@@ -86,9 +87,20 @@ fn suggested_index_keys(findings: &[Finding]) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// An index suggested for a table's queries that leads with a foreign key's columns serves the key too.
-fn index_covers_foreign_key(_: &Snapshot, findings: &mut Vec<Finding>) {
-    let index_keys = suggested_index_keys(findings);
+/// An index suggested for a table's queries that leads with a foreign key's columns serves the key too: one that will
+/// be created, unfiltered. A filtered index (`WHERE is_deleted = 0`) can't serve a delete on the parent, and one whose
+/// statements are all history is advice nobody will follow: the key keeps its own finding.
+fn index_covers_foreign_key(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let history = |f: &Finding| {
+        let workload = snapshot.workload.as_ref();
+        let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload?.query(&r.id)).collect();
+        !queries.is_empty() && queries.iter().all(|q| query_is_history(snapshot, q))
+    };
+    let filtered = |f: &Finding| {
+        f.fix.as_ref().and_then(|x| x.sql.as_deref()).is_some_and(|s| s.to_ascii_uppercase().contains(" WHERE "))
+    };
+    let index_keys =
+        suggested_index_keys(&findings.iter().filter(|f| !filtered(f) && !history(f)).cloned().collect::<Vec<_>>());
     findings.retain(|f| {
         if f.check != "unindexed-fk" {
             return true;
@@ -146,21 +158,31 @@ fn regression_carries_plan_change(_: &Snapshot, findings: &mut Vec<Finding>) {
 }
 
 /// "This query takes a lot of time" is the fallback for a heavy query nothing else explains; when another finding
-/// names why (a missing index, a spill, a type mismatch…), that finding is the one to act on.
+/// names why (a missing index, a spill, lock waits, a type mismatch…), that finding is the one to act on. What a plan
+/// shows explains the time only when it weighs as much: a plan warning or insight graded lower (a join condition
+/// that is there after all, statistics the plan merely lacks) leaves the heavy query standing. The list of forced plans
+/// ("nothing to do while they help") explains nothing.
 fn explained_heavy_query(_: &Snapshot, findings: &mut Vec<Finding>) {
-    let explained: BTreeSet<String> = findings
-        .iter()
+    let mut explained: BTreeMap<String, Severity> = BTreeMap::new();
+    for f in findings.iter().filter(|f| {
         // An over-sized grant slows others, not the query itself; waiting on the application explains a query only
         // when it is most of its time (`network_wait_explains_heavy_query`).
-        .filter(|f| {
-            !matches!(
-                f.check.as_str(),
-                "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats" | "memory-grant" | "network-wait"
-            )
-        })
-        .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
-        .collect();
-    findings.retain(|f| f.check != "heavy-query" || !f.queries.iter().any(|q| explained.contains(&q.id)));
+        !matches!(
+            f.check.as_str(),
+            "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats" | "memory-grant" | "network-wait"
+        ) && !f.id.starts_with("tuning-advice:forced-plans")
+    }) {
+        // A cause another check names explains it at any grade; a plan's remark only at the heavy query's.
+        let weight =
+            if matches!(f.check.as_str(), "plan-warnings" | "plan-insights") { f.severity } else { Severity::High };
+        for q in &f.queries {
+            let s = explained.entry(q.id.clone()).or_insert(weight);
+            *s = (*s).max(weight);
+        }
+    }
+    findings.retain(|f| {
+        f.check != "heavy-query" || !f.queries.iter().any(|q| explained.get(&q.id).is_some_and(|s| *s >= f.severity))
+    });
 }
 
 /// SQL Server writes names with the database in front; prose drops it (see `without_database`).
@@ -234,6 +256,81 @@ fn merge_scans_into_missing_indexes(findings: &mut Vec<Finding>) {
     });
 }
 
+/// SQLite builds an index for itself on every run (`plan-insights:automatic-index:*`) on a foreign key's columns: the
+/// foreign key's finding, which carries every statement through the key, keeps the cause and takes the evidence. The
+/// statements are weighed one by one: one whose plan builds an index on other columns of the table keeps the insight.
+fn engine_built_index_is_the_foreign_keys(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(w) = snapshot.workload.as_ref() else { return };
+    // (insight, foreign key finding, the insight's statements whose built index is the key's)
+    let mut folded: Vec<(usize, usize, Vec<String>)> = Vec::new();
+    for (at, f) in findings.iter().enumerate() {
+        if !f.id.starts_with("plan-insights:automatic-index:") {
+            continue;
+        }
+        // The index each referenced plan builds: its table and keys, read the one way the insight reads them.
+        let built: Vec<(String, String, Vec<String>)> = f
+            .queries
+            .iter()
+            .filter_map(|r| {
+                let plan = w.query(&r.id)?.plan.as_ref()?;
+                let b = culprit_core::insights::engine_built_indexes(plan)
+                    .into_iter()
+                    .find(|b| Some(b.node) == r.plan_node)?;
+                Some((r.id.clone(), table_leaf(&b.table), b.keys.iter().map(|k| k.to_ascii_lowercase()).collect()))
+            })
+            .collect();
+        let serves = |g: &Finding, table: &str, keys: &[String]| {
+            let fk_cols = keys_of(&g.id);
+            !fk_cols.is_empty() && table == table_leaf(&g.subject.name) && keys.starts_with(&fk_cols)
+        };
+        let Some(fk) = findings
+            .iter()
+            .position(|g| g.check == "unindexed-fk" && built.iter().any(|(_, table, keys)| serves(g, table, keys)))
+        else {
+            continue;
+        };
+        let matching: Vec<String> = built
+            .iter()
+            .filter(|(_, table, keys)| serves(&findings[fk], table, keys))
+            .map(|(q, _, _)| q.clone())
+            .collect();
+        folded.push((at, fk, matching));
+    }
+    let mut gone: BTreeSet<usize> = BTreeSet::new();
+    for (at, fk, matching) in folded.iter().rev() {
+        let (moved, kept): (Vec<_>, Vec<_>) =
+            findings[*at].queries.clone().into_iter().partition(|r| matching.contains(&r.id));
+        let target = &mut findings[*fk];
+        target.summary.push_str(&format!(
+            " {} already builds this index for itself on every run of {}, and drops it after.",
+            snapshot.server.engine,
+            if moved.len() == 1 {
+                "one of these statements".to_string()
+            } else {
+                format!("{} of these statements", moved.len())
+            }
+        ));
+        for r in moved {
+            match target.queries.iter_mut().find(|x| x.id == r.id) {
+                // Point at the step that builds it.
+                Some(existing) => existing.plan_node = existing.plan_node.or(r.plan_node),
+                None => target.queries.push(r),
+            }
+        }
+        if kept.is_empty() {
+            gone.insert(*at);
+        } else {
+            findings[*at].queries = kept;
+        }
+    }
+    let mut i = 0;
+    findings.retain(|_| {
+        let keep = !gone.contains(&i);
+        i += 1;
+        keep
+    });
+}
+
 fn keys_of(id: &str) -> Vec<String> {
     let Some(start) = id.rfind('(') else {
         return Vec::new();
@@ -253,8 +350,11 @@ fn keys_of(id: &str) -> Vec<String> {
 pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
     const QUIET_INTERVALS: f64 = 20.0;
     const MIN_QUIET_SECONDS: f64 = 3600.0;
-    // One run has no rhythm to stop: that's `ran_once`, not a deploy.
-    if ran_once(q) {
+    // A day and a bit: long enough that a nightly job would have come back.
+    const DAILY_SECONDS: f64 = 26.0 * 3600.0;
+    // One run has no rhythm to stop: that's `ran_once`, not a deploy. The slow query log keeps only slow runs: one
+    // not logged since may still run, faster than long_query_time.
+    if ran_once(q) || crate::queries::slow_log_only(snapshot) {
         return None;
     }
     let workload = snapshot.workload.as_ref()?;
@@ -266,6 +366,20 @@ pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, 
     let interval = (last - first).max(1.0) / q.executions.max(1.0);
     let silence = end - last;
     if silence < (interval * QUIET_INTERVALS).max(MIN_QUIET_SECONDS) {
+        return None;
+    }
+    // Runs that came in one burst inside the window (a nightly job, a batch: they began after it started and covered
+    // a small part of it) have no rhythm the window shows: quiet since is how such a job looks, until a day has passed
+    // without it coming back. A query running from the window's start (within a bucket of it) ran before it too.
+    let bucket = workload
+        .timeline
+        .as_ref()
+        .and_then(|t| {
+            Some(support::parse_epoch_seconds(t.starts.get(1)?)? - support::parse_epoch_seconds(t.starts.first()?)?)
+        })
+        .unwrap_or(900.0);
+    let began_inside = first - window_start > bucket.max(900.0);
+    if began_inside && (last - first) < workload.window_hours * 3600.0 * 0.5 && silence < DAILY_SECONDS {
         return None;
     }
     // A query that runs in bursts (an eval run, a batch) is quiet between them: being silent no longer than a gap it
@@ -306,7 +420,14 @@ fn longest_return(q: &QueryStat, workload: &culprit_core::Workload) -> Option<f6
 /// A finding is about queries when its subject is one (lock time, tuning advice, parameter sensitivity…) or its check
 /// reads plans: what it says rests on how those statements ran.
 fn about_queries(f: &Finding) -> bool {
-    const QUERY_DRIVEN: [&str; 9] = [
+    // A family's statements are literal copies of one: each runs once and is gone by construction, the family runs on.
+    if f.check == "query-family" {
+        return false;
+    }
+    const QUERY_DRIVEN: [&str; 11] = [
+        // An index request or a table's scans stand on the statements that asked for them or read it.
+        "missing-index",
+        "scan-heavy",
         "plan-warnings",
         "plan-insights",
         "filtered-scan",
@@ -332,14 +453,21 @@ fn ran_once_only(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         }
         f.severity = Severity::Low;
         f.impact.score *= 0.25;
-        f.caveats.insert(
-            0,
+        // The slow query log keeps only runs over long_query_time: once in it is one slow run, not one run.
+        let caveat = if crate::queries::slow_log_only(snapshot) {
+            format!(
+                "{} logged once in {}: the slow query log keeps only runs over long_query_time, so it may run more often, faster. One slow run shows what it cost once, not a pattern; it needs work if it keeps showing up.",
+                if queries.len() == 1 { "This statement was" } else { "Each of these statements was" },
+                workload.window_phrase()
+            )
+        } else {
             format!(
                 "{} once in {}. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.",
                 if queries.len() == 1 { "This statement ran" } else { "Each of these statements ran" },
                 workload.window_phrase()
-            ),
-        );
+            )
+        };
+        f.caveats.insert(0, caveat);
         f.verify.insert(0, "Re-scan later: if it hasn't run again, there is nothing to do.".into());
     }
 }
@@ -468,7 +596,7 @@ fn recommendation_caveat(recommendation: &Finding, sensitive: &Finding) -> Strin
         .find(|m| m.label == "Estimated CPU saved per run")
         .map(|m| format!(" (estimated {} less CPU per run)", format::percent(m.value)))
         .unwrap_or_default();
-    match text(sensitive, crate::sensitivity::PLAN_MOST_CALLS_USE) {
+    match text(sensitive, crate::queries::PLAN_MOST_CALLS_USE) {
         Some(fast) if fast == plan => format!(
             "SQL Server's automatic tuning also recommends forcing plan {plan}{gain}: the plan most calls run fast with, the fix's first step."
         ),

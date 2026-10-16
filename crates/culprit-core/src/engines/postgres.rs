@@ -1,0 +1,115 @@
+//! PostgreSQL, including the managed services (RDS, Aurora, Azure, Cloud SQL).
+
+use super::*;
+use crate::dialect::{NewIndex, included, keys, unique};
+
+pub(super) struct Postgres;
+
+impl EngineSpec for Postgres {
+    fn label(&self) -> &'static str {
+        "PostgreSQL"
+    }
+
+    fn abilities(&self) -> EngineAbilities {
+        SERVER
+    }
+
+    fn session_actions(&self) -> Vec<SessionAction> {
+        vec![SessionAction::Cancel, SessionAction::Terminate]
+    }
+
+    fn refusal(&self, ability: Ability) -> Refusal {
+        match ability {
+            Ability::LastActualPlan => Refusal::new(
+                "PostgreSQL doesn't keep the actual plan of past runs",
+                Some(
+                    "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the \
+                     editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
+                ),
+            ),
+            Ability::OperatorProgress => Refusal::new(
+                "PostgreSQL reports a running statement's progress, not each step's",
+                Some("Its plan doesn't change while it runs: ask for the plan once."),
+            ),
+            _ => Refusal::new(&format!("PostgreSQL can't do this ({})", wire_name(&ability).replace('_', " ")), None),
+        }
+    }
+
+    fn dialect(&self) -> &'static dyn Dialect {
+        &Postgres
+    }
+
+    fn change_setting(&self, _server: &ServerInfo, name: &str, value: &str) -> SettingChange {
+        SettingChange {
+            how: format!(
+                "Set {name} to {value} and reload the configuration (settings marked as needing a restart take effect after one)."
+            ),
+            sql: Some(format!("ALTER SYSTEM SET {name} = {};\nSELECT pg_reload_conf();", literal(value))),
+        }
+    }
+
+    fn refresh_statistics(&self, target: &str) -> Fix {
+        Fix {
+            summary: "Analyze the table now. If autovacuum falls behind on it regularly, lower its analyze threshold for this table only.".into(),
+            sql: Some(format!(
+                "{}\nALTER TABLE {target} SET (autovacuum_analyze_scale_factor = 0.02);",
+                self.dialect().refresh_statistics(target)
+            )),
+            cost: Some("ANALYZE reads a sample of the table and does not block reads or writes.".into()),
+        }
+    }
+
+    fn wait_not_per_statement(&self, _server: &ServerInfo, category: &str) -> String {
+        match category {
+            "io" => "No statement recorded disk-read time.".into(),
+            _ => "PostgreSQL doesn't time this per statement. Right now samples what sessions wait on.".into(),
+        }
+    }
+
+    fn index_advice_sources(&self, _server: &ServerInfo, _has_workload: bool) -> Option<String> {
+        Some(
+            "PostgreSQL doesn't record missing-index requests. Candidates come from captured plans that read whole \
+             tables, foreign keys, and the table scan counters."
+                .into(),
+        )
+    }
+}
+
+impl Dialect for Postgres {
+    fn quote(&self, ident: &str) -> String {
+        let simple = ident.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && !ident.starts_with(|c: char| c.is_ascii_digit());
+        if simple { ident.to_string() } else { format!("\"{}\"", ident.replace('"', "\"\"")) }
+    }
+
+    fn create_index(&self, index: &NewIndex) -> String {
+        let mut sql = format!(
+            "CREATE {}INDEX CONCURRENTLY {}\n    ON {} ({})",
+            unique(index),
+            self.quote(index.name),
+            index.target,
+            keys(self, index)
+        );
+        let include = included(self, index);
+        if !include.is_empty() {
+            sql.push_str(&format!("\n    INCLUDE ({})", include.join(", ")));
+        }
+        if let Some(filter) = index.filter {
+            sql.push_str(&format!("\n    WHERE {filter}"));
+        }
+        sql.push(';');
+        sql
+    }
+
+    fn drop_index(&self, schema: &str, _table: &str, index: &str) -> String {
+        format!("DROP INDEX CONCURRENTLY {};", self.qualified(&[schema, index]))
+    }
+
+    fn refresh_statistics(&self, target: &str) -> String {
+        format!("ANALYZE {target};")
+    }
+
+    fn end_session(&self, session: &str) -> String {
+        format!("SELECT pg_terminate_backend({session});")
+    }
+}

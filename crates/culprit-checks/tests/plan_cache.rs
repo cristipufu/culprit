@@ -38,3 +38,49 @@ fn the_ad_hoc_setting_is_changed_where_the_server_keeps_it() {
     assert_eq!(sql, None);
     assert!(summary.contains("DB parameter group"), "{summary}");
 }
+
+// The false flag: the plan cache counts each plan from its own compile. A plan cached 30 days ago (900 s in all) next
+// to one compiled an hour ago (100 s) read as 90% of database time, so heavy-query named the old one. By the time each
+// spends an hour, the recent one is the heavy one, and the old one is about 1%.
+#[test]
+fn a_plan_cached_for_a_month_claims_what_it_costs_an_hour() {
+    let mut s = snapshot(None);
+    s.plan_cache = None;
+    let w = s.workload.as_mut().unwrap();
+    w.queries.truncate(2);
+    w.source = "Plan cache".into();
+    w.kind = Some(culprit_core::WorkloadKind::PlanCache);
+    w.windowed = false;
+    w.timeline = None;
+    w.window_end = Some("2026-10-11T12:00:00Z".into());
+    w.window_start = Some("2026-09-11T12:00:00Z".into());
+    w.window_hours = 720.0;
+    let (old, recent) = (w.queries[0].id.clone(), w.queries[1].id.clone());
+    for (q, (ms, first)) in
+        w.queries.iter_mut().zip([(900_000.0, "2026-09-11T12:00:00Z"), (100_000.0, "2026-10-11T11:00:00Z")])
+    {
+        q.total_time_ms = ms;
+        q.executions = 1_000.0;
+        q.mean_time_ms = ms / 1_000.0;
+        q.first_seen = Some(first.into());
+        q.trend = None;
+        q.plans.clear();
+    }
+    w.total_time_ms = 1_000_000.0;
+    // What the collector records: each plan's time an hour of its own life, summed.
+    w.hourly_time_ms = Some(900_000.0 / 720.0 + 100_000.0 / 1.0);
+    let report = analyze(s);
+    let share = |id: &str| {
+        report
+            .findings
+            .iter()
+            .filter(|f| f.queries.iter().any(|q| q.id == id))
+            .filter_map(|f| f.impact.db_time_share)
+            .fold(0.0, f64::max)
+    };
+    // The old plan claims what it costs an hour, about 1%: no heavy-query, and nothing above it.
+    assert!(share(&old) < 0.02, "old plan graded at {}", share(&old));
+    assert!(!report.findings.iter().any(|f| f.id == format!("heavy-query:{old}")));
+    // The recent one keeps its raw share (10%), which can only understate it.
+    assert!((share(&recent) - 0.1).abs() < 1e-9, "recent plan graded at {}", share(&recent));
+}

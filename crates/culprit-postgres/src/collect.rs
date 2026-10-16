@@ -10,6 +10,7 @@ use tokio_postgres::Client;
 use crate::connect::{COLLECTOR, Connector, sql_state};
 use crate::plan_json;
 use crate::rows::{TAG, iso, query, query_one};
+use crate::sources;
 
 const PG_STAT_STATEMENTS_FIX: &str = "Add pg_stat_statements to shared_preload_libraries, restart, then run CREATE EXTENSION pg_stat_statements; in this database.";
 
@@ -317,12 +318,7 @@ pub async fn snapshot(
         }
         Ok(None) => None,
         Err(e) => {
-            coverage.note("workload", e.message.clone());
-            coverage.lost(
-                Capability::PgStatStatements,
-                format!("Reading pg_stat_statements failed: {}", e.message),
-                e.hint,
-            );
+            coverage.source_failed(&sources::STATEMENTS, &e);
             None
         }
     };
@@ -336,65 +332,33 @@ pub async fn snapshot(
         );
     }
 
-    let (mut tables_out, mut indexes_out, mut fks_out, mut columns_out) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    match schema {
-        Ok((tables, indexes, fks, cols)) => {
-            match cols {
-                Ok(c) => columns_out = c,
-                Err(e) => coverage.note("columns", e.message),
+    // Each source through `Coverage::read`: one that fails is a note and its capabilities locked (`sources`).
+    let (tables_out, indexes_out, fks_out, columns_out) = match schema {
+        Ok((tables, indexes, fks, cols)) => (
+            coverage.read(&sources::TABLES, tables).unwrap_or_default(),
+            coverage.read(&sources::INDEXES, indexes).unwrap_or_default(),
+            coverage.read(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
+            coverage.read(&sources::COLUMNS, cols).unwrap_or_default(),
+        ),
+        // The connection they share failed: every one of them did.
+        Err(e) => {
+            for source in [&sources::TABLES, &sources::INDEXES, &sources::FOREIGN_KEYS, &sources::COLUMNS] {
+                coverage.source_failed(source, &e);
             }
-            match tables {
-                Ok(t) => tables_out = t,
-                Err(e) => {
-                    coverage.note("tables", e.message.clone());
-                    coverage.lost(
-                        Capability::TableStats,
-                        format!("Reading table statistics failed: {}", e.message),
-                        e.hint,
-                    );
-                    coverage.lost(Capability::Statistics, "Table statistics are unavailable.", None);
-                }
-            }
-            match indexes {
-                Ok(i) => indexes_out = i,
-                Err(e) => {
-                    coverage.note("indexes", e.message.clone());
-                    coverage.lost(
-                        Capability::IndexUsage,
-                        format!("Reading index statistics failed: {}", e.message),
-                        e.hint,
-                    );
-                }
-            }
-            match fks {
-                Ok(f) => fks_out = f,
-                Err(e) => coverage.note("foreign_keys", e.message),
-            }
+            Default::default()
+        }
+    };
+
+    let (mut settings_out, pressure_out) = match misc {
+        Ok((settings, (pressure, read))) => {
+            coverage.merge(read);
+            (coverage.read(&sources::SETTINGS, settings).unwrap_or_default(), Some(pressure))
         }
         Err(e) => {
-            coverage.note("schema", e.message.clone());
-            coverage.lost(Capability::TableStats, e.message.clone(), e.hint.clone());
-            coverage.lost(Capability::IndexUsage, e.message.clone(), e.hint.clone());
-            coverage.lost(Capability::Statistics, e.message, e.hint);
+            coverage.source_failed(&sources::SETTINGS, &e);
+            (Vec::new(), None)
         }
-    }
-
-    let mut settings_out = Vec::new();
-    let mut pressure_out = None;
-    match misc {
-        Ok((settings, (pressure, pressure_notes))) => {
-            match settings {
-                Ok(s) => settings_out = s,
-                Err(e) => coverage.note("settings", e.message),
-            }
-            for message in pressure_notes {
-                coverage.note("pressure", message);
-            }
-            pressure_out = Some(pressure);
-        }
-        Err(e) => coverage.note("settings", e.message),
-    }
+    };
     settings_out.extend(statement_status);
     // A standby's usage counters are its own reads, next to the primary's statement history: say what it is, and the
     // engine sets its usage counters aside.
@@ -610,6 +574,7 @@ async fn collect_with_base(
     Ok(Some(CollectedWorkload {
         workload: Workload {
             source: "pg_stat_statements".into(),
+            kind: Some(culprit_core::WorkloadKind::StatementStats),
             windowed: false,
             window_start,
             window_end,
@@ -621,7 +586,9 @@ async fn collect_with_base(
             queries,
             timeline: None,
             untracked_time_ms: None,
+            hourly_time_ms: None,
             min_logged_ms: None,
+            log: None,
         },
         plan_note,
         plans_withheld,
@@ -952,7 +919,7 @@ async fn tables(client: &Client, version_num: u32) -> Result<Vec<TableStat>> {
                  pg_relation_size(s.relid) AS in_row_bytes,
                  CASE WHEN c.reltoastrelid = 0 THEN 0 ELSE pg_total_relation_size(c.reltoastrelid) END AS lob_bytes";
     let estimated = "(c.relpages::bigint + coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = s.relid), 0)) * current_setting('block_size')::bigint AS total_bytes,
-                     c.relpages::bigint * current_setting('block_size')::bigint AS data_bytes,
+                     (c.relpages::bigint + coalesce((SELECT t.relpages FROM pg_class t WHERE t.oid = c.reltoastrelid), 0)) * current_setting('block_size')::bigint AS data_bytes,
                      coalesce((SELECT sum(i.relpages) FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = s.relid), 0) * current_setting('block_size')::bigint AS index_bytes,
                      c.relpages::bigint * current_setting('block_size')::bigint AS in_row_bytes,
                      coalesce((SELECT t.relpages FROM pg_class t WHERE t.oid = c.reltoastrelid), 0)::bigint * current_setting('block_size')::bigint AS lob_bytes";

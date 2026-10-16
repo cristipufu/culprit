@@ -1,183 +1,12 @@
-//! Statement fingerprints: the statement with its literal values taken out, so runs of the same statement with
-//! different values group together, and a statement from the slow query log can be matched to a performance_schema
-//! digest (`SELECT ID , NAME FROM `products` WHERE ID = ?`) to plan it.
+//! Statement fingerprints for the slow query log: `culprit_core::fingerprint` with MySQL's rules (double quotes are
+//! strings, `#` starts a comment), and matching a logged statement to a performance_schema digest
+//! (`SELECT ID , NAME FROM `products` WHERE ID = ?`) to plan it.
 
-/// A statement's fingerprint (canonical tokens, for grouping and matching) and its display text (the statement as
-/// written, with every literal replaced by `?`).
-pub struct Fingerprint {
-    pub key: String,
-    pub display: String,
-}
+use culprit_core::Engine;
+pub use culprit_core::fingerprint::{Fingerprint, id};
 
 pub fn fingerprint(sql: &str) -> Fingerprint {
-    let mut tokens: Vec<String> = Vec::new();
-    let mut display = String::with_capacity(sql.len());
-    let chars: Vec<char> = sql.chars().collect();
-    let mut i = 0;
-    let space = |display: &mut String| {
-        if !display.is_empty() && !display.ends_with(' ') {
-            display.push(' ');
-        }
-    };
-    while i < chars.len() {
-        let c = chars[i];
-        let next = chars.get(i + 1).copied();
-        // Comments, including MySQL's executable `/*! … */` ones: the digest drops them too.
-        if c == '#' || (c == '-' && next == Some('-') && chars.get(i + 2).is_none_or(|c| c.is_whitespace())) {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if c == '/' && next == Some('*') {
-            i += 2;
-            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                i += 1;
-            }
-            i += 2;
-            continue;
-        }
-        if c.is_whitespace() {
-            space(&mut display);
-            i += 1;
-            continue;
-        }
-        // Strings (and hex/bit literals written x'..', b'..', N'..').
-        let prefixed = matches!(c, 'x' | 'X' | 'b' | 'B' | 'n' | 'N') && next == Some('\'') && !word_before(&chars, i);
-        if c == '\'' || c == '"' || prefixed {
-            let quote = if prefixed { '\'' } else { c };
-            i += if prefixed { 2 } else { 1 };
-            while i < chars.len() {
-                if chars[i] == '\\' {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == quote {
-                    if chars.get(i + 1) == Some(&quote) {
-                        i += 2;
-                        continue;
-                    }
-                    break;
-                }
-                i += 1;
-            }
-            i += 1;
-            tokens.push("?".into());
-            display.push('?');
-            continue;
-        }
-        if c == '`' {
-            let start = i + 1;
-            i += 1;
-            while i < chars.len() && chars[i] != '`' {
-                i += 1;
-            }
-            let name: String = chars[start..i.min(chars.len())].iter().collect();
-            i += 1;
-            tokens.push(name.to_lowercase());
-            display.push('`');
-            display.push_str(&name);
-            display.push('`');
-            continue;
-        }
-        if c.is_ascii_digit() || (c == '.' && next.is_some_and(|n| n.is_ascii_digit())) {
-            // 12, 1.5, 1e3, 0x1F
-            i += 1;
-            while i < chars.len()
-                && (chars[i].is_ascii_alphanumeric()
-                    || chars[i] == '.'
-                    || ((chars[i] == '-' || chars[i] == '+') && matches!(chars[i - 1], 'e' | 'E')))
-            {
-                i += 1;
-            }
-            tokens.push("?".into());
-            display.push('?');
-            continue;
-        }
-        if c.is_alphanumeric() || c == '_' || c == '$' || c == '@' {
-            let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '$' | '@')) {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let lower = word.to_lowercase();
-            let canonical = match lower.as_str() {
-                "true" | "false" => "?".to_string(),
-                "character" => "char".to_string(),
-                // The digest names interval units by their internal names (SQL_TSI_DAY).
-                w if w.starts_with("sql_tsi_") => w.trim_start_matches("sql_tsi_").to_string(),
-                _ => lower,
-            };
-            if canonical == "?" {
-                display.push('?');
-            } else {
-                display.push_str(&word);
-            }
-            tokens.push(canonical);
-            continue;
-        }
-        // Operators: two-character ones stay together, `<>` is `!=`, and `...` is the digest's list marker.
-        let pair: String = [Some(c), next].iter().flatten().collect();
-        if c == '.' && next == Some('.') && chars.get(i + 2) == Some(&'.') {
-            tokens.push("...".into());
-            display.push_str("...");
-            i += 3;
-            continue;
-        }
-        if matches!(pair.as_str(), "<=" | ">=" | "<>" | "!=" | ":=" | "||" | "&&" | "<<" | ">>") {
-            tokens.push(if pair == "<>" { "!=".into() } else { pair.clone() });
-            display.push_str(&pair);
-            i += 2;
-            continue;
-        }
-        if c == ';' {
-            i += 1;
-            continue;
-        }
-        tokens.push(c.to_string());
-        display.push(c);
-        i += 1;
-    }
-    Fingerprint { key: collapse(tokens).join(" "), display: display.trim().to_string() }
-}
-
-fn word_before(chars: &[char], i: usize) -> bool {
-    i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')
-}
-
-/// Lists of values become `...` whatever their length (`IN (1, 2, 3)`, `IN (...)`, `?, ...`), and the digest's
-/// `(unknown)` placeholder is a value.
-fn collapse(tokens: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(tokens.len());
-    let mut i = 0;
-    while i < tokens.len() {
-        if tokens[i] == "("
-            && tokens.get(i + 1).is_some_and(|t| t == "unknown")
-            && tokens.get(i + 2).is_some_and(|t| t == ")")
-        {
-            out.push("?".into());
-            i += 3;
-            continue;
-        }
-        if tokens[i] == "?" || tokens[i] == "..." {
-            let mut j = i + 1;
-            let mut values = 1;
-            while j + 1 < tokens.len() && tokens[j] == "," && (tokens[j + 1] == "?" || tokens[j + 1] == "...") {
-                values += 1;
-                j += 2;
-            }
-            if values > 1 || tokens[i] == "..." {
-                out.push("...".into());
-            } else {
-                out.push("?".into());
-            }
-            i = j;
-            continue;
-        }
-        out.push(tokens[i].clone());
-        i += 1;
-    }
-    out
+    culprit_core::fingerprint::fingerprint(sql, Engine::Mysql)
 }
 
 /// Whether a statement from the log has the shape of a digest. The digest may be cut at max_digest_length.
@@ -190,19 +19,71 @@ pub fn matches_digest(statement_key: &str, digest_text: &str) -> bool {
     statement_key == digest
 }
 
-/// A short stable id for a fingerprint (FNV-1a, 64 bits, hex).
-pub fn id(key: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in key.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
+/// Digest text as the server normalized it (`SUM ( `total` )`, `LIMIT ?`), as runnable as it can be made: each function
+/// name next to its parenthesis again, since MariaDB without IGNORE_SPACE reads `COUNT (` as a name, not a call.
+/// Placeholders stay; [`has_placeholders`] says whether any are left.
+pub fn runnable(digest: &str) -> String {
+    let mut out = String::with_capacity(digest.len());
+    let mut quote: Option<char> = None;
+    let mut chars = digest.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            out.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(c, '\'' | '"' | '`') {
+            quote = Some(c);
+            out.push(c);
+            continue;
+        }
+        if c.is_whitespace() {
+            let mut rest = chars.clone();
+            while rest.peek().is_some_and(|n| n.is_whitespace()) {
+                rest.next();
+            }
+            let after_name = out.chars().last().is_some_and(|p| p.is_alphanumeric() || p == '_' || p == '`');
+            if after_name && rest.peek() == Some(&'(') {
+                chars = rest;
+                continue;
+            }
+        }
+        out.push(c);
     }
-    format!("{hash:016x}")
+    out
+}
+
+/// Whether text keeps a `?` where a value was, outside quotes.
+pub fn has_placeholders(text: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if matches!(c, '\'' | '"' | '`') => quote = Some(c),
+            None if c == '?' => return true,
+            None => {}
+        }
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn digest_text_runs_again_where_it_can() {
+        let digest = "SELECT `customer_id` , SUM ( `total` ) AS `spent` , COUNT ( * ) FROM `orders` WHERE `id` IN ( ... ) LIMIT ?";
+        let text = runnable(digest);
+        assert!(text.contains("SUM( `total` )") && text.contains("COUNT( * )") && text.contains("IN( ... )"), "{text}");
+        assert!(has_placeholders(&text));
+        assert!(!has_placeholders("SELECT 'why?' FROM `t?`"));
+        // Inside quotes nothing moves.
+        assert_eq!(runnable("SELECT 'a (b)' , f ( 1 )"), "SELECT 'a (b)' , f( 1 )");
+    }
 
     #[test]
     fn literals_go_and_shapes_match_digests() {

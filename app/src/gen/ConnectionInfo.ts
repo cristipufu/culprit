@@ -13,4 +13,8 @@ has_secret: boolean, display: string, last_report: ReportSummary | null,
 /**
  * What coding agents may do with this connection through `culprit mcp`.
  */
-agent_access: AgentAccess, };
+agent_access: AgentAccess, 
+/**
+ * The application's query log scans read the statements from when the database keeps none (SQLite).
+ */
+query_log: string | null, };

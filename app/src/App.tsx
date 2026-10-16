@@ -4,7 +4,7 @@ import { ScreenshotButton } from "./components/ScreenshotButton";
 import { SignInDialog } from "./components/SignInDialog";
 import { Sidebar } from "./components/Sidebar";
 import { WindowPicker } from "./components/WindowPicker";
-import { when } from "./lib/format";
+import { when, windowLabel } from "./lib/format";
 import { useHotkeys } from "./lib/hotkeys";
 import { installPlanPaste } from "./lib/plans";
 import { getState, lastConnection, loadConnections, openConnection, scan, setState, useStore, type View } from "./lib/store";
@@ -16,7 +16,7 @@ import { Schema } from "./views/Schema";
 import { PasswordNeeded } from "./components/PasswordNeeded";
 import { DashboardSkeleton } from "./components/DashboardSkeleton";
 import { startUpdateChecks } from "./lib/updates";
-import type { Capability } from "./gen/Capability";
+import { windowUnknown } from "./lib/rates";
 
 const Editor = lazy(() => import("./views/Editor"));
 // Where a connection opens; its skeleton (and stylesheet) are in the main bundle so the grid never jumps.
@@ -37,7 +37,7 @@ const TITLES: Record<View, string> = {
 };
 
 /** The sources a scan's query history comes from; when one is missing, its reason says why there is no workload. */
-const WORKLOAD_SOURCES: Capability[] = ["query-store", "plan-cache", "pg-stat-statements", "performance-schema", "slow-log"];
+
 
 const VIEW_KEYS: View[] = ["dashboard", "overview", "queries", "live", "schema", "editor", "plans"];
 
@@ -115,8 +115,9 @@ function TopBar() {
   const engine = useStore((s) => s.connections.find((c) => c.name === s.active)?.engine);
   const w = report?.report.snapshot.workload;
   // Before the report loads, SQL Server keeps the picker's place; a scan without query history has nothing to window.
-  const windowed = w ? w.windowed : engine === "mssql" && !report;
-  const noHistory = report && !w ? report.report.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability)) : undefined;
+  // An application's log covers its own period: there's no window to choose.
+  const windowed = w ? w.windowed && w.log == null : engine === "mssql" && !report;
+  const noHistory = report && !w ? report.report.summary.no_workload : undefined;
   const showsWorkload = view === "dashboard" || view === "overview" || view === "queries" || view === "schema";
   if (view === "plans") {
     return (
@@ -131,13 +132,18 @@ function TopBar() {
   return (
     <header className="topbar" data-tauri-drag-region>
       <h1>{TITLES[view]}</h1>
-      {showsWorkload && windowed && <WindowPicker coveredHours={w?.window_hours ?? null} />}
+      {showsWorkload && windowed && <WindowPicker coveredHours={w?.window_hours ?? null} source={w?.source ?? null} />}
+      {showsWorkload && w?.log != null && (
+        <span className="context" title={`Statements read from the application's ${w.log} log${w.window_start ? `, ${when(w.window_start).full} to ${w.window_end ? when(w.window_end).full : "its end"}` : ""}. It covers its own period, not the last hours before the scan.`}>
+          {w.source} · {windowUnknown(w) ? "no timestamps" : windowLabel(w.window_hours).replace(/^last /, "")}
+        </span>
+      )}
       {showsWorkload && report && !w && (
-        <span className="context" title={noHistory?.reason ?? "This scan found no statement statistics."}>
+        <span className="context" title={noHistory ?? "This scan found no statement statistics."}>
           No query history in this scan
         </span>
       )}
-      {showsWorkload && !windowed && w && (
+      {showsWorkload && !windowed && w && w.log == null && (
         <span className="context" title={`Cumulative statistics since they were last reset${w.window_start ? ` (${when(w.window_start).full})` : ""}; this source keeps no time windows.`}>
           {w.source} · since {w.window_start ? when(w.window_start).short : "the last reset"}
         </span>

@@ -31,7 +31,7 @@ import { count, duration, percent } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { SAMPLES, setSide, swapSides, trySample, usePlans, type LoadedPlan } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
-import { planEngineName } from "../lib/engines";
+import { can, planEngineName } from "../lib/engines";
 
 const KIND: Record<Plan["kind"], string> = { estimated: "estimated", generic: "generic", actual: "actual" };
 const LOOK_KEY = "culprit.plan.look";
@@ -98,7 +98,7 @@ function nodesOf(plan: Plan): PlanNode[] {
 function verdict(diff: PlanDiff): { tone: "worse" | "better" | "same"; text: string } {
   const timed = diff.time_a_ms != null && diff.time_b_ms != null && diff.time_a_ms > 0 && diff.time_b_ms > 0;
   const r = timed ? diff.time_b_ms! / diff.time_a_ms! : diff.cost_ratio;
-  if (r == null) return { tone: "same", text: "different engines" };
+  if (r == null) return { tone: "same", text: diff.comparable ? "no costs to compare" : "different engines" };
   const x = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1).replace(/\.0$/, "")}K×` : v >= 10 ? `${Math.round(v)}×` : `${v.toFixed(1)}×`);
   if (r >= 1.25) return { tone: "worse", text: `${x(r)} ${timed ? "slower" : "costlier"}` };
   if (r <= 0.8) return { tone: "better", text: `${x(1 / r)} ${timed ? "faster" : "cheaper"}` };
@@ -549,20 +549,22 @@ function rowsFor(node: PlanNode | null, plan: Plan): Record<string, string | nul
   if (!node) return {};
   const total = costBasis(plan);
   const est = node.est_rows * Math.max(1, node.est_executions);
+  // SQLite's plans have no estimates or costs: nothing to show rather than zeros.
+  const weighed = can(plan.engine, "plan_estimates") || plan.kind === "actual";
   return {
     Operator: node.op,
     Table: node.object,
     Index: node.index,
     "Seek on": node.seek_predicate ? norm(node.seek_predicate) : null,
     Filter: node.predicate ? norm(node.predicate) : null,
-    "Estimated rows": count(est),
-    "Estimated executions": count(node.est_executions),
+    "Estimated rows": weighed ? count(est) : null,
+    "Estimated executions": weighed ? count(node.est_executions) : null,
     "Actual rows": node.act_rows != null ? count(node.act_rows) : null,
     "Rows read": node.rows_read != null ? count(node.rows_read) : null,
     "Rows in table": node.table_rows != null ? count(node.table_rows) : null,
     "Actual time": node.act_time_ms != null ? duration(node.act_time_ms) : null,
-    "Share of the plan's cost": percent(node.self_cost / total),
-    "Subtree cost": cost(node.subtree_cost),
+    "Share of the plan's cost": weighed ? percent(node.self_cost / total) : null,
+    "Subtree cost": weighed ? cost(node.subtree_cost) : null,
     Warnings: node.warnings.length ? node.warnings.map((w) => w.replace(/-/g, " ")).join(", ") : null,
   };
 }

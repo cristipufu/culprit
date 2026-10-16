@@ -10,7 +10,6 @@ import type { IndexAdvice } from "../gen/IndexAdvice";
 import type { ImportCandidate } from "../gen/ImportCandidate";
 import type { LiveState } from "../gen/LiveState";
 import type { Mark } from "../gen/Mark";
-import type { Session } from "../gen/Session";
 import type { Plan } from "../gen/Plan";
 import type { PlanVariant } from "../gen/PlanVariant";
 import type { QueryStat } from "../gen/QueryStat";
@@ -29,13 +28,13 @@ import type { Api, UpdateProgress } from "./api";
 import { demoCloud } from "./demo-cloud";
 import { demoRows } from "./demo-rows";
 import { signalsSample, withSignals } from "./demo-signals";
+import { can, refusal, sessionActions, waitingState } from "./engines";
 
 /** The capabilities query history comes from (mirrors `Snapshot::no_workload_reason`). */
 /** A scan's window in minutes, also for scans from before windows could be hours. */
 const windowMinutesOf = (options: { window_days: number; window_minutes?: number } | null | undefined): number | null =>
   options ? options.window_minutes ?? options.window_days * 1440 : null;
 
-const WORKLOAD_SOURCES = ["query-store", "pg-stat-statements", "performance-schema", "plan-cache"];
 
 const reports: Record<string, () => Promise<Report>> = import.meta.env.DEV
   ? import.meta.glob<Report>("../../../fixtures/*.report.json", { import: "default" })
@@ -163,16 +162,6 @@ const importSample: () => Promise<ImportCandidate[]> = import.meta.env.DEV
   ? () => import("../../../fixtures/import.sample.json").then((m) => m.default as ImportCandidate[])
   : async () => [];
 
-/** A small blocking chain so Live has something to show (and end) in the browser demo. */
-function demoSessions(engine: string): Session[] {
-  const base = { user: "app", host: "web-1", database: "shop", command: null, cpu_ms: null, reads: null, transaction_ms: null };
-  return [
-    { ...base, id: "57", application: "orders-api", state: "idle in transaction", wait: null, wait_ms: null, blocked_by: null, elapsed_ms: 48_200, transaction_ms: 48_900, sql: "UPDATE shop.orders SET status = 'paid' WHERE id = 81723" },
-    { ...base, id: "61", application: "orders-api", state: "active", command: engine === "mssql" ? "UPDATE" : null, wait: engine === "postgres" ? "Lock: transactionid" : "LCK_M_U", wait_ms: 31_400, blocked_by: "57", elapsed_ms: 31_400, sql: "UPDATE shop.orders SET shipped_at = now() WHERE id = 81723" },
-    { ...base, id: "64", application: "reports", state: "active", wait: null, wait_ms: null, blocked_by: null, elapsed_ms: 12_900, cpu_ms: 11_800, reads: 1_840_000, sql: "SELECT customer_id, sum(total) FROM shop.orders GROUP BY customer_id ORDER BY 2 DESC" },
-  ];
-}
-
 function nameOf(path: string): string {
   return path.split("/").pop()!.replace(".report.json", "");
 }
@@ -264,14 +253,16 @@ export async function demoApi(): Promise<Api> {
       name: r.snapshot.connection,
       engine: r.snapshot.server.engine,
       environment: r.snapshot.environment,
-      host: r.snapshot.server.engine === "mssql" ? "localhost,1433" : r.snapshot.server.engine === "mysql" ? "localhost:3306" : "localhost:5432",
+      host: { mssql: "localhost,1433", postgres: "localhost:5432", mysql: "localhost:3306", sqlite: "" }[r.snapshot.server.engine],
       port: null,
       database: r.snapshot.server.database,
       user: null,
-      auth: "password",
-      has_secret: true,
+      auth: can(r.snapshot.server.engine, "sign_in") ? "password" : "none",
+      has_secret: can(r.snapshot.server.engine, "sign_in"),
       display: r.snapshot.server.database,
       agent_access: "stats",
+      // A report whose statements came from a log: the desktop would have it saved on the connection.
+      query_log: r.snapshot.workload?.log != null ? "log/development.log" : null,
       last_report: {
         id: r.snapshot.id,
         taken_at: r.snapshot.taken_at,
@@ -280,9 +271,7 @@ export async function demoApi(): Promise<Api> {
         window_days: r.snapshot.options && r.snapshot.options.window_minutes == null ? r.snapshot.options.window_days : null,
         window_minutes: windowMinutesOf(r.snapshot.options),
         product: r.snapshot.server.product,
-        no_workload: r.snapshot.workload
-          ? null
-          : (r.snapshot.server.missing.find((m) => WORKLOAD_SOURCES.includes(m.capability))?.reason ?? "This scan has no query history."),
+        no_workload: r.snapshot.workload ? null : (r.summary.no_workload ?? "This scan has no query history."),
       },
     }));
   const demoUpdate = import.meta.env.DEV && typeof location !== "undefined" && location.search.includes("demo-update");
@@ -363,6 +352,7 @@ export async function demoApi(): Promise<Api> {
         display: `${c.user ? `${c.user}@` : ""}${c.host}${c.port ? `:${c.port}` : ""}${c.database ? `/${c.database}` : ""}`,
         last_report: null,
         agent_access: "stats",
+        query_log: null,
       }));
       connections = [...connections, ...added];
       return added;
@@ -403,6 +393,7 @@ export async function demoApi(): Promise<Api> {
           has_secret: false,
           display: `${d.user ? `${d.user}@` : ""}${d.host}:${port}${d.database ? `/${d.database}` : ""}`,
           agent_access: "stats",
+        query_log: null,
           last_report: null,
         };
       });
@@ -413,6 +404,8 @@ export async function demoApi(): Promise<Api> {
     waits: async (name) => (await waitsSample())?.reports[reportName(name)] ?? null,
     // The demo replays a sample captured from the demo database, at a tenth of the real time.
     waitSample: async (name, seconds) => {
+      const engine = connections.find((c) => c.name === name)?.engine;
+      if (engine && !can(engine, "wait_sample")) return Promise.reject(refusal(engine, "wait_sample"));
       const sample = (await waitsSample())?.samples[reportName(name)];
       await new Promise((r) => setTimeout(r, seconds * 100));
       return sample ? { ...sample, taken_at: new Date().toISOString() } : unsupported();
@@ -434,17 +427,9 @@ export async function demoApi(): Promise<Api> {
     brief: async (_, id) => `# ${id}\n\nThe agent brief is generated by the desktop app and the CLI (\`culprit show\`).`,
     explain: unsupported,
     lastActualPlan: async (name, queryId) => {
+      // Answered as the engine does: its own refusal where it keeps no actual plans (from the engine facts).
       const engine = connections.find((c) => c.name === name)?.engine;
-      if (engine === "postgres") {
-        return Promise.reject({
-          code: "unsupported",
-          message: "PostgreSQL doesn't keep the actual plan of past runs",
-          hint: "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
-        });
-      }
-      if (engine === "mysql") {
-        return Promise.reject({ code: "unsupported", message: "MySQL doesn't keep the actual plan of past runs", hint: "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction." });
-      }
+      if (engine && !can(engine, "last_actual_plan")) return Promise.reject(refusal(engine, "last_actual_plan"));
       const plan = (await actualSample())?.last_actual[reportName(name)]?.[queryId];
       return (
         plan ??
@@ -453,12 +438,15 @@ export async function demoApi(): Promise<Api> {
     },
     queryProgress: async (name, session, withPlan) => {
       const engine = connections.find((c) => c.name === name)?.engine ?? "mssql";
+      if (!can(engine, "sessions")) return Promise.reject(refusal(engine, "sessions"));
       const frames = (await actualSample())?.progress[engine] ?? [];
       const now = new Date().toISOString();
-      const live = demoSessions(engine).find((s) => s.id === session);
-      if (session === "64" && frames.length) {
+      const live = (await liveSample())?.[engine]?.sessions.find((s) => s.id === session);
+      // The captured progress frames replay for the session running a statement without waiting on another.
+      if (live?.state !== "idle" && !live?.blocked_by && frames.length) {
         const frame = frames[Math.floor(Date.now() / 1500) % frames.length]!;
-        return { ...frame, taken_at: now, plan: withPlan || engine === "mssql" ? frame.plan : null };
+        // Live per-step counters come every time on an engine that sends them; elsewhere the plan only when asked.
+        return { ...frame, session, taken_at: now, plan: withPlan || can(engine, "operator_progress") ? frame.plan : null };
       }
       const idle: QueryProgress = {
         session, engine, taken_at: now, running: false, state: live?.state ?? null, wait: null, wait_ms: null, elapsed_ms: null, cpu_ms: null,
@@ -466,7 +454,7 @@ export async function demoApi(): Promise<Api> {
         hot_node: null, phase: null, phase_percent: null, note: null,
       };
       if (live?.state === "active") {
-        return { ...idle, running: true, state: engine === "mssql" ? "suspended" : "active", wait: live.wait, wait_ms: live.wait_ms, elapsed_ms: live.elapsed_ms, note: live.blocked_by ? `It is waiting for session ${live.blocked_by} to release a lock, so no step has started yet.` : null };
+        return { ...idle, running: true, state: waitingState(engine), wait: live.wait, wait_ms: live.wait_ms, elapsed_ms: live.elapsed_ms, note: live.blocked_by ? `It is waiting for session ${live.blocked_by} to release a lock, so no step has started yet.` : null };
       }
       return idle;
     },
@@ -544,6 +532,8 @@ export async function demoApi(): Promise<Api> {
     screenshot: () => desktopOnly("Screenshots of the window are taken by the desktop app."),
     live: async (name) => {
       const c = connections.find((x) => x.name === name);
+      // Answered as the engine does (its facts): one without sessions refuses with its own reason.
+      if (c && !can(c.engine, "sessions")) return Promise.reject(refusal(c.engine, "sessions"));
       const production = c?.environment === "production";
       const ended = endedSessions.get(name) ?? new Set<string>();
       const captured = (await liveSample())?.[c?.engine ?? "postgres"];
@@ -551,12 +541,12 @@ export async function demoApi(): Promise<Api> {
       const chains = (captured?.blocking?.chains ?? []).filter((chain) => !ended.has(chain.head));
       const state: LiveState = {
         taken_at: new Date().toISOString(),
-        sessions: (captured?.sessions ?? demoSessions(c?.engine ?? "postgres"))
+        sessions: (captured?.sessions ?? [])
           .filter((s) => !ended.has(s.id))
           .map((s) => (s.blocked_by && (ended.has(s.blocked_by) || (captured && !chains.length)) ? { ...s, blocked_by: null, wait: null, wait_ms: null } : s)),
         waits: [],
         blocking: chains.length ? { chains, waiting: chains.reduce((n, ch) => n + ch.waiters, 0) } : null,
-        session_actions: production ? [] : c?.engine === "mssql" ? ["terminate"] : ["cancel", "terminate"],
+        session_actions: production || !c ? [] : sessionActions(c.engine),
         session_actions_note: production ? "Production connection: Culprit doesn't cancel or end sessions here." : null,
       };
       return state;
@@ -631,6 +621,7 @@ export async function demoApi(): Promise<Api> {
     },
     deadlocks: async (name, sinceHours) => {
       const c = connections.find((x) => x.name === name);
+      if (c && !can(c.engine, "deadlocks")) return Promise.reject(refusal(c.engine, "deadlocks"));
       const sample = (await deadlockSample())?.[c?.engine ?? "postgres"];
       return sample ? { ...sample, since_hours: sinceHours } : { deadlocks: [], source: "demo", since_hours: sinceHours, counted: null, counted_since: null, note: null };
     },
@@ -671,6 +662,15 @@ export async function demoApi(): Promise<Api> {
       connections = connections.map((c) => (c.name === name ? updated : c));
       return updated;
     },
+    setQueryLog: async (name, path) => {
+      const current = connections.find((c) => c.name === name);
+      if (!current) return Promise.reject({ code: "not_found", message: `No connection named '${name}'`, hint: null });
+      const updated = { ...current, query_log: path };
+      connections = connections.map((c) => (c.name === name ? updated : c));
+      return updated;
+    },
+    chooseQueryLog: () => unsupported(),
+    chooseDatabaseFile: () => unsupported(),
     // `?demo-approval` shows a sample request so the approval dialog can be designed without an agent.
     pendingApprovals: async () => (demoApproval ? [demoApproval] : []),
     decideApproval: async () => {

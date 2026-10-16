@@ -178,7 +178,7 @@ fn steps(plan: &Plan) -> String {
         n.children.iter().for_each(|c| walk(c, depth + 1, out));
     }
     walk(&plan.root, 0, &mut rows);
-    let hot = plan.hottest().id;
+    let hot = plan.hottest().map(|n| n.id);
     let actual = plan.kind == PlanKind::Actual;
     let mut out = format!(
         r#"<table class="steps"><thead><tr><th>Step</th><th>Table · index</th><th class="r">Cost</th><th class="r">{}</th><th>Notes</th></tr></thead><tbody>"#,
@@ -190,7 +190,7 @@ fn steps(plan: &Plan) -> String {
         let _ = write!(
             out,
             r#"<tr{}><td class="op" style="padding-left:{}px">{}</td><td class="obj">{}</td><td class="r"><span class="pctbar"><i class="{}" style="width:{:.0}%"></i></span>{}</td><td class="r">{}</td><td class="warnings">{}</td></tr>"#,
-            if n.id == hot && s >= 0.05 { r#" class="hotrow""# } else { "" },
+            if Some(n.id) == hot && s >= 0.05 { r#" class="hotrow""# } else { "" },
             12 + depth * 16,
             escape(&n.op),
             escape(&where_(n)),
@@ -233,13 +233,14 @@ fn notes_html(notes: &[ExportNote], plan: &Plan) -> String {
 }
 
 fn plan_figures(plan: &Plan) -> String {
-    let hot = plan.hottest();
     let mut out = String::from(r#"<div class="figures">"#);
-    let _ = write!(
-        out,
-        r#"<div class="fig"><div class="v">{}</div><div class="l">estimated cost</div></div>"#,
-        cost(plan.total_cost)
-    );
+    if plan.weighed() {
+        let _ = write!(
+            out,
+            r#"<div class="fig"><div class="v">{}</div><div class="l">estimated cost</div></div>"#,
+            cost(plan.total_cost)
+        );
+    }
     let _ = write!(
         out,
         r#"<div class="fig"><div class="v">{}</div><div class="l">operators</div></div>"#,
@@ -252,12 +253,14 @@ fn plan_figures(plan: &Plan) -> String {
             format::duration(t)
         );
     }
-    let _ = write!(
-        out,
-        r#"<div class="fig"><div class="v">{}</div><div class="l">{}</div></div>"#,
-        format::percent(share(plan, hot)),
-        escape(&format!("in {}", node_label(hot)))
-    );
+    if let Some(hot) = plan.hottest() {
+        let _ = write!(
+            out,
+            r#"<div class="fig"><div class="v">{}</div><div class="l">{}</div></div>"#,
+            format::percent(share(plan, hot)),
+            escape(&format!("in {}", node_label(hot)))
+        );
+    }
     out.push_str("</div>");
     out
 }
@@ -523,7 +526,7 @@ fn finding_body(
         );
         if let Some(plan) = &q.plan {
             let plan = prepared(plan, options);
-            let focus = r.plan_node.or(Some(plan.hottest().id));
+            let focus = r.plan_node.or(plan.hottest().map(|n| n.id));
             let _ = write!(
                 out,
                 r#"<div class="wrap" style="margin-top:12px">{}</div>"#,

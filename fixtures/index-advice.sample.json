@@ -2,7 +2,7 @@
   "mssql-demo": {
     "candidates": [
       {
-        "db_time_share": 0.060338932147242445,
+        "db_time_share": 0.06033893214724244,
         "estimated_improvement": 0.9947,
         "finding_id": "missing-index:shop.order_items(order_id)",
         "include": [],
@@ -321,40 +321,7 @@
     "taken_at": "2026-10-11T11:54:21Z"
   },
   "mysql-demo": {
-    "candidates": [
-      {
-        "db_time_share": 0.014800847333966714,
-        "estimated_improvement": null,
-        "finding_id": "filtered-scan:shop.orders(promo_code)",
-        "include": [],
-        "keys": [
-          "promo_code"
-        ],
-        "lookups": null,
-        "queries": [
-          {
-            "id": "19bd4ff468839ea3",
-            "runs_per_day": null,
-            "share": 0.014800847333966714,
-            "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
-          }
-        ],
-        "reason": "One query reads every row of shop.orders (499K rows) and keeps only those matching (shop.o.promo_code = 'SPRING0'); no index starts with promo_code.",
-        "requests": [],
-        "schema": "shop",
-        "source": "plan-scan",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
-        "table": "orders",
-        "table_rows": 498573.0,
-        "verify": [
-          "Explain one of the queries again: the scan of orders becomes a seek on the new index.",
-          "Re-scan after the workload has run: the queries' share of database time drops."
-        ],
-        "widens": null,
-        "write_cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
-        "writes_per_day": null
-      }
-    ],
+    "candidates": [],
     "cleanups": [
       {
         "caveats": [
@@ -407,7 +374,48 @@
       "MySQL doesn't record missing-index requests. Candidates come from captured plans, foreign keys, and rows read without an index (performance_schema).",
       "Index usage counters have counted for 1 h 20 min; an index has to go unread for a week before it's listed to clean up."
     ],
-    "tables": [],
+    "tables": [
+      {
+        "finding_id": "scan-heavy:shop.orders",
+        "forwarded_per_day": null,
+        "full_scans_per_day": null,
+        "indexes": 4.0,
+        "kind": "scan-heavy",
+        "queries": [
+          {
+            "id": "04cd7be9c366fadc",
+            "runs_per_day": null,
+            "share": 0.11989445082158064,
+            "text": "SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?"
+          },
+          {
+            "id": "19bd4ff468839ea3",
+            "runs_per_day": null,
+            "share": 0.014800847333966714,
+            "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
+          },
+          {
+            "id": "4515abd524a46f37",
+            "runs_per_day": null,
+            "share": 0.0418843969784605,
+            "text": "UPDATE `orders` SET STATUS = STATUS WHERE `id` = ?"
+          },
+          {
+            "id": "fc709554a9248878",
+            "runs_per_day": null,
+            "share": 0.4009056543313076,
+            "text": "UPDATE `orders` SET `id` = `id` WHERE `id` = ?"
+          }
+        ],
+        "reason": "Read in full 81 times in the hour since the server last restarted (40.5M rows without an index). Explain the statements below to see which filter has no index.",
+        "rows": 498573.0,
+        "rows_scanned_per_day": null,
+        "schema": "shop",
+        "sql": null,
+        "table": "orders",
+        "writes_per_day": null
+      }
+    ],
     "taken_at": "2026-10-11T12:09:00Z"
   },
   "mssql-demo-staging": {
@@ -579,11 +587,74 @@
     "taken_at": "2026-10-11T16:05:40Z"
   },
   "sqlite-demo": {
-    "candidates": [],
+    "candidates": [
+      {
+        "db_time_share": 0.687787860155988,
+        "estimated_improvement": null,
+        "finding_id": "unindexed-fk:main.orders(customer_id)",
+        "include": [],
+        "keys": [
+          "customer_id"
+        ],
+        "lookups": null,
+        "queries": [
+          {
+            "id": "500217f7b40055be",
+            "runs_per_day": null,
+            "share": 0.18767187151611794,
+            "text": "SELECT \"customers\".\"email\", COUNT(\"orders\".\"id\") AS \"orders_count\" FROM \"customers\" LEFT OUTER JOIN \"orders\" ON \"orders\".\"customer_id\" = \"customers\".\"id\" WHERE \"customers\".\"region\" = ? GROUP BY \"customers\".\"id\""
+          },
+          {
+            "id": "c1b0de997fac4faa",
+            "runs_per_day": null,
+            "share": 0.5001159886398701,
+            "text": "SELECT \"orders\".* FROM \"orders\" WHERE \"orders\".\"customer_id\" = ? ORDER BY \"orders\".\"created_at\" DESC LIMIT ?"
+          }
+        ],
+        "reason": "SQLite builds an index on customer_id of main.orders for itself every time one query runs, because none fits, and drops it after. Created once, it saves that work on every run. It takes 19% of database time. It is also the foreign key to customers, which 1 more query filter or join on: together they take 69% of database time.",
+        "requests": [],
+        "schema": "main",
+        "source": "engine-built",
+        "sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"main\".\"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "table": "orders",
+        "table_rows": 200000.0,
+        "verify": [
+          "Explain one of the queries again: no automatic index on orders, and a search using the new one.",
+          "Re-scan after the workload has run: the queries' share of database time drops."
+        ],
+        "widens": null,
+        "write_cost": null,
+        "writes_per_day": null
+      },
+      {
+        "db_time_share": null,
+        "estimated_improvement": null,
+        "finding_id": "unindexed-fk:main.order_items(product_id)",
+        "include": [],
+        "keys": [
+          "product_id"
+        ],
+        "lookups": null,
+        "queries": [],
+        "reason": "product_id is the foreign key to products. Without an index, deleting or re-keying a row in products reads all 200K rows of main.order_items looking for matches, and joins from products can't seek.",
+        "requests": [],
+        "schema": "main",
+        "source": "foreign-key",
+        "sql": "CREATE INDEX IF NOT EXISTS \"ix_order_items_product_id\"\n    ON \"main\".\"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "table": "order_items",
+        "table_rows": 200000.0,
+        "verify": [
+          "Deletes from products no longer scan order_items."
+        ],
+        "widens": null,
+        "write_cost": null,
+        "writes_per_day": null
+      }
+    ],
     "cleanups": [
       {
         "caveats": [],
-        "finding_id": null,
+        "finding_id": "duplicate-index:main.orders.ix_orders_status_again",
         "index": "ix_orders_status_again",
         "keys": [
           "status"
@@ -606,10 +677,10 @@
     "counters": "since the server last restarted",
     "engine": "sqlite",
     "notes": [
-      "Index usage counters aren't readable, so unused and overlapping indexes can't be judged.",
-      "No plans were captured, so plan-based candidates are missing."
+      "SQLite doesn't record missing-index requests. Candidates come from the indexes it builds for itself on every run of the logged statements, and foreign keys.",
+      "Index usage counters aren't readable, so unused and overlapping indexes can't be judged."
     ],
     "tables": [],
-    "taken_at": "2026-10-15T12:03:30.609Z"
+    "taken_at": "2026-10-15T22:56:27Z"
   }
 }

@@ -1,0 +1,3 @@
+{"sql": "SELECT id, total FROM orders WHERE customer_id = 42", "ms": 8.5, "at": "2026-10-15T12:00:00Z"}
+{"sql": "SELECT id, total FROM orders WHERE customer_id = 77", "ms": 9.1, "at": "2026-10-15T12:00:01Z"}
+{"sql": "UPDATE carts SET touched_at = ? WHERE id = ?", "ms": 0.4}

@@ -14,6 +14,7 @@ pub mod import;
 pub mod marks;
 pub mod plans;
 mod private_fs;
+mod query_log;
 pub mod registry;
 pub mod reports;
 pub mod saved;
@@ -61,6 +62,8 @@ pub struct ConnectionInfo {
     pub last_report: Option<ReportSummary>,
     /// What coding agents may do with this connection through `culprit mcp`.
     pub agent_access: AgentAccess,
+    /// The application's query log scans read the statements from when the database keeps none (SQLite).
+    pub query_log: Option<String>,
 }
 
 /// A period on a connection's timeline. Everything is optional: by default the last 7 days.
@@ -303,15 +306,55 @@ impl Workspace {
             display: connstr::describe(&stored.spec()),
             last_report: reports::latest_summary(&self.paths.reports_dir(name), None),
             agent_access: stored.agent.unwrap_or_default(),
+            query_log: stored.query_log.clone(),
         }
+    }
+
+    /// Read the statements from this log on every scan of `name` (`None` stops). The file must exist; it is kept as an
+    /// absolute path, so a scan from any directory finds it.
+    /// It must hold statements in a format Culprit reads, so a wrong file (or one the framework writes without SQL) is
+    /// said now rather than at the next scan. `None` stops reading one, and stops looking for one too.
+    pub fn set_query_log(&self, name: &str, path: Option<&std::path::Path>) -> Result<ConnectionInfo> {
+        let mut stored = self.store.get(name)?;
+        stored.query_log = match path {
+            None => None,
+            Some(path) => {
+                let absolute = std::fs::canonicalize(path).map_err(|e| {
+                    Error::new(ErrorCode::NotFound, format!("Can't read {}: {e}", path.display()))
+                        .with_hint("Give the path of the log file the application writes, e.g. log/production.log.")
+                })?;
+                if !absolute.is_file() {
+                    return Err(Error::invalid(format!("{} isn't a file", absolute.display())));
+                }
+                query_log::recognize(&absolute)?;
+                Some(absolute.to_string_lossy().into_owned())
+            }
+        };
+        stored.no_query_log = path.is_none();
+        self.store.put(name, stored)?;
+        self.connection(name)
+    }
+
+    /// The log a file database's application writes beside it, found and saved on the connection when it has none and
+    /// the person didn't remove one ([`query_log::discover`]).
+    fn discover_query_log(&self, name: &str) -> Option<std::path::PathBuf> {
+        let mut stored = self.store.get(name).ok()?;
+        if stored.engine.has_server() || stored.query_log.is_some() || stored.no_query_log {
+            return None;
+        }
+        let found = query_log::discover(&culprit_core::expand_home(stored.database.as_deref()?))?;
+        stored.query_log = Some(found.to_string_lossy().into_owned());
+        self.store.put(name, stored).ok()?;
+        Some(found)
     }
 
     pub fn add_connection(&self, new: NewConnection) -> Result<ConnectionInfo> {
         store::validate_name(&new.name)?;
         let spec = merge(&new)?;
         let engine = spec.engine.ok_or_else(|| {
-            Error::invalid("Can't tell which database engine this is")
-                .with_hint("Choose PostgreSQL or SQL Server explicitly")
+            Error::invalid("Can't tell which database engine this is").with_hint(
+                "Choose the engine explicitly: PostgreSQL, SQL Server, MySQL or SQLite (--engine in the CLI)",
+            )
         })?;
         let password_env = new.password_env.clone().filter(|v| !v.is_empty());
         let password = spec.password.as_deref().filter(|p| !p.is_empty() && password_env.is_none());
@@ -331,8 +374,11 @@ impl Workspace {
             password_saved,
             options: spec.options,
             agent: None,
+            query_log: None,
+            no_query_log: false,
         };
         self.store.put(&new.name, stored)?;
+        self.discover_query_log(&new.name);
         self.connection(&new.name)
     }
 
@@ -461,6 +507,8 @@ impl Workspace {
             password_saved: (auth == AuthKind::Password).then_some(false),
             options,
             agent: None,
+            query_log: None,
+            no_query_log: false,
         };
         self.store.put(&d.alias, stored)?;
         self.connection(&d.alias)
@@ -501,6 +549,8 @@ impl Workspace {
             password_saved: (auth == AuthKind::Password).then_some(false),
             options,
             agent: None,
+            query_log: None,
+            no_query_log: false,
         };
         self.store.put(&d.alias, stored)?;
         self.connection(&d.alias)
@@ -587,10 +637,31 @@ impl Workspace {
     }
 
     pub async fn scan(&self, name: &str, options: &SnapshotOptions) -> Result<Report> {
+        self.scan_with_log(name, options, None).await
+    }
+
+    /// [`Workspace::scan`], reading the statements and their times from `query_log` (a log the application's framework
+    /// already writes) instead of the connection's saved one, when the database keeps no history of its own (SQLite).
+    pub async fn scan_with_log(
+        &self,
+        name: &str,
+        options: &SnapshotOptions,
+        query_log: Option<&std::path::Path>,
+    ) -> Result<Report> {
+        let saved = self.store.get(name)?.query_log.map(std::path::PathBuf::from);
+        let found = if query_log.is_none() && saved.is_none() { self.discover_query_log(name) } else { None };
+        let query_log = query_log.or(saved.as_deref()).or(found.as_deref());
         let started = Instant::now();
         let taken_at = chrono::Utc::now();
         let provider = self.provider(name).await?;
         let mut snapshot = self.forget_rejected(name, provider.snapshot(name, options).await)?;
+        // What was asked for, recorded once for every provider: the saved report is found by its window.
+        if snapshot.options.is_none() {
+            snapshot.options = Some(options.clone());
+        }
+        if let Some(path) = query_log {
+            query_log::attach(provider.as_ref(), &mut snapshot, path, options, found.is_some()).await?;
+        }
         snapshot.id = taken_at.format("%Y%m%dT%H%M%S%.3fZ").to_string();
         snapshot.taken_at = taken_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         snapshot.connection = name.to_string();
@@ -760,7 +831,8 @@ impl Workspace {
                 .with_hint(format!("Run `culprit scan {name}` first"))
         })?;
         let mut dashboard = culprit_checks::dashboard(&report);
-        if live {
+        // An engine without sessions (SQLite) has none to read; its tile says so already.
+        if live && report.snapshot.server.engine.abilities().sessions {
             match self.live(name).await {
                 Ok(state) => culprit_checks::dashboard::with_now(&mut dashboard, &state),
                 Err(e) => culprit_checks::dashboard::without_now(&mut dashboard, &e.message),
@@ -935,6 +1007,20 @@ impl Workspace {
         let options = changes::options(request);
         let now = chrono::Utc::now().timestamp() as f64;
         let workload = latest.as_ref().and_then(|r| r.snapshot.workload.as_ref());
+        // A log Culprit read is one period, and nothing counts between scans of it.
+        if let Some(log) = workload.and_then(|w| w.log.as_deref()) {
+            return Err(Error::new(
+                ErrorCode::Unsupported,
+                format!("{} keeps no statement history to compare two periods of", info.engine.label()),
+            )
+            .with_hint(format!(
+                "The {log} log Culprit read is one period: scan again with a log written after the change, and compare the two reports' queries."
+            )));
+        }
+        // A database with no statement history of its own (SQLite) has no two periods to compare.
+        if !info.engine.abilities().periods {
+            return Err(info.engine.refused(culprit_core::Ability::Periods));
+        }
         let windowed = workload.map(|w| w.windowed).unwrap_or(info.engine == Engine::Mssql);
         if windowed {
             let since = workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch);
@@ -1100,6 +1186,11 @@ impl Workspace {
         }
         if check.reads_only {
             return self.run_read(name, sql, limit).await;
+        }
+        // An engine Culprit only reads (a SQLite file, opened read-only) never changes: say so before asking anyone to
+        // confirm.
+        if !info.engine.abilities().writes {
+            return self.forget_rejected(name, self.provider(name).await?.execute(sql, limit).await);
         }
         if info.environment.is_production() && !confirmed {
             let what = if check.verb.is_empty() { "statement".to_string() } else { check.verb.clone() };
@@ -1354,7 +1445,10 @@ impl Workspace {
 }
 
 fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
-    let mut spec = connstr::parse(&new.input)?;
+    let mut spec = match new.engine {
+        Some(Engine::Sqlite) => connstr::parse_sqlite(&new.input)?,
+        _ => connstr::parse(&new.input)?,
+    };
     if let Some(var) = new.password_env.as_deref().filter(|v| !v.is_empty()) {
         spec.password = std::env::var(var).ok().or(spec.password);
     }
@@ -1372,6 +1466,13 @@ fn merge(new: &NewConnection) -> Result<ConnectionSpec> {
     }
     if let Some(auth) = new.auth {
         spec.auth = auth;
+    }
+    // A file path is kept absolute, so the app and `culprit mcp`, which run from elsewhere, open the same file.
+    if spec.engine == Some(Engine::Sqlite)
+        && let Some(path) = spec.database.as_deref().filter(|p| !p.starts_with("~/"))
+        && let Ok(absolute) = std::path::absolute(path)
+    {
+        spec.database = Some(absolute.to_string_lossy().into_owned());
     }
     spec.environment = new.environment;
     Ok(spec)
@@ -1422,6 +1523,7 @@ mod tests {
             display: String::new(),
             last_report: None,
             agent_access: Default::default(),
+            query_log: None,
         }
     }
 

@@ -139,7 +139,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "heavy-query",
     "requires": [],
@@ -177,7 +178,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "plan-insights",
     "requires": [
@@ -215,7 +217,8 @@
     "engines": [
       "mssql",
       "postgres",
-      "mysql"
+      "mysql",
+      "sqlite"
     ],
     "id": "unstable-query",
     "requires": [],

@@ -53,13 +53,53 @@ pub fn date_new_indexes(dir: &Path, snapshot: &mut Snapshot, current: &[ChangeEv
     let mut known = events(dir, now - trends::HISTORY_DAYS * 86_400.0, now);
     known.extend(current.iter().cloned());
     let first_scan = reports::report_ids(dir).first().and_then(|id| reports::id_epoch(id)).filter(|t| *t < now);
+    // MariaDB's userstat counts from when it was turned on (or FLUSH INDEX_STATISTICS), which nothing dates: as far as
+    // anyone knows, from the first of the scans that saw it counting.
+    let userstat = usage_from_userstat(snapshot).then(|| userstat_since(dir, now).unwrap_or(snapshot.taken_at.clone()));
+    let later = |a: Option<String>, b: Option<&String>| match (a, b) {
+        (Some(a), Some(b)) => Some(if epoch(&a).unwrap_or(0.0) >= epoch(b).unwrap_or(0.0) { a } else { b.clone() }),
+        (a, b) => a.or_else(|| b.cloned()),
+    };
     for i in &mut snapshot.indexes {
-        i.counters_since = latest_usage_reset(&i.qualified_table(), &known);
-        i.created_at_latest = latest_creation(i, &known, first_scan);
+        // What the collector dated (a database restored after the server started), what the scans saw, and userstat's
+        // start: the latest of them. A creation is no earlier than the counters watching it.
+        let collected = i.counters_since.take();
+        let counted =
+            later(later(latest_usage_reset(&i.qualified_table(), &known), collected.as_ref()), userstat.as_ref());
+        i.created_at_latest = later(latest_creation(i, &known, first_scan), counted.as_ref());
+        i.counters_since = counted;
     }
     for t in &mut snapshot.tables {
         t.counters_since = latest_usage_reset(&t.qualified(), &known);
     }
+}
+
+/// MariaDB counting index reads with userstat (performance_schema off).
+fn usage_from_userstat(s: &Snapshot) -> bool {
+    s.server.is_mariadb() && s.server.has(Capability::IndexUsage) && !s.server.has(Capability::PerformanceSchema)
+}
+
+/// Earlier scans read back to date userstat's counters.
+const USERSTAT_SCANS: usize = 10;
+
+/// When the newest unbroken run of scans counting with userstat began: the counters have counted since at least then.
+/// `None` when no earlier scan did. A scan that counted otherwise, or not at all, ends the run: userstat was turned
+/// off, and its counters started over when it was turned back on.
+fn userstat_since(dir: &Path, now: f64) -> Option<String> {
+    let mut since = None;
+    for id in reports::report_ids(dir)
+        .iter()
+        .rev()
+        .filter(|id| reports::id_epoch(id).is_some_and(|t| t < now))
+        .take(USERSTAT_SCANS)
+    {
+        let Ok(r) = reports::load(&dir.join(format!("{id}.json"))) else { continue };
+        if !usage_from_userstat(&r.snapshot) {
+            break;
+        }
+        since = Some(r.snapshot.taken_at);
+    }
+    since
 }
 
 /// Subject of the events that say usage counters started over.
@@ -810,6 +850,34 @@ mod tests {
             let expected = (i.name == added).then_some("2026-10-11T08:00:00Z");
             assert_eq!(i.created_at_latest.as_deref(), expected, "{}", i.name);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The false flag: someone follows Culprit's own advice (SET GLOBAL userstat = ON) and scans again; the server has
+    // been up for months, so every index userstat hasn't seen read was "unused" at once. Its counters count from the
+    // first scan that saw them, here this one: no index is old enough to call unused yet.
+    #[test]
+    fn userstat_counters_count_from_the_scans_that_saw_them() {
+        let dir = std::env::temp_dir().join(format!("culprit-history-userstat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = demo();
+        s.server.engine = Engine::Mysql;
+        s.server.product = "MariaDB 10.11".into();
+        s.server.capabilities.retain(|c| *c != Capability::PerformanceSchema);
+        s.server.capabilities.push(Capability::IndexUsage);
+        s.taken_at = "2026-10-11T08:00:00Z".into();
+        date_new_indexes(&dir, &mut s, &[]);
+        assert!(s.indexes.iter().all(|i| i.created_at_latest.as_deref() == Some("2026-10-11T08:00:00Z")));
+        // A week of scans that all counted with userstat: since the first of them.
+        let mut first = s.clone();
+        first.id = "20261003T080000.000Z".into();
+        first.taken_at = "2026-10-03T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(first)).unwrap();
+        // The next scan's own collect, dated afresh.
+        s.indexes.iter_mut().for_each(|i| (i.counters_since, i.created_at_latest) = (None, None));
+        date_new_indexes(&dir, &mut s, &[]);
+        assert!(s.indexes.iter().all(|i| i.created_at_latest.as_deref() == Some("2026-10-03T08:00:00Z")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

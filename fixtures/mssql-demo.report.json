@@ -134,195 +134,6 @@
     },
     {
       "category": "queries",
-      "caveats": [
-        "Based on the estimated plan; actual row counts can tell a different story."
-      ],
-      "check": "plan-insights",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose."
-      },
-      "id": "plan-insights:nested-loops:query-263",
-      "impact": {
-        "db_time_share": 0.2673650901995407,
-        "label": "27% of DB time",
-        "score": 51.707358296430186,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T15:55:55Z",
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.2673650901995407
-        },
-        {
-          "label": "Share of the plan's work",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.999
-        },
-        {
-          "label": "Average duration",
-          "text": null,
-          "unit": "ms",
-          "value": 15015.279166666667
-        }
-      ],
-      "queries": [
-        {
-          "id": "263",
-          "note": "A nested loop rereading its inner side thousands of times",
-          "plan_node": 1
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "263"
-      },
-      "summary": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.",
-      "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
-      "verify": [
-        "Explain again without the hint: a hash or merge join instead of the loop.",
-        "Re-scan: this finding is gone."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [
-        "Based on the estimated plan; actual row counts can tell a different story."
-      ],
-      "check": "plan-insights",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server."
-      },
-      "id": "plan-insights:parallelism-blocked:query-263",
-      "impact": {
-        "db_time_share": 0.2673650901995407,
-        "label": "27% of DB time",
-        "score": 51.707358296430186,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T15:55:55Z",
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.2673650901995407
-        },
-        {
-          "label": "Share of the plan's work",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.1
-        },
-        {
-          "label": "Average duration",
-          "text": null,
-          "unit": "ms",
-          "value": 15015.279166666667
-        }
-      ],
-      "queries": [
-        {
-          "id": "263",
-          "note": "An expensive plan that can't go parallel",
-          "plan_node": 0
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "263"
-      },
-      "summary": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead. Seen in a read from order_items.",
-      "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
-      "verify": [
-        "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
-        "Re-scan: this finding is gone."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "regression",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": "EXEC sp_query_store_force_plan @query_id = 8, @plan_id = 8;",
-        "summary": "Force plan 8 to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed."
-      },
-      "id": "regression:8",
-      "impact": {
-        "db_time_share": 0.014778470818232064,
-        "label": "3.4× slower",
-        "score": 46.52198220388902,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T12:13:40Z",
-      "metrics": [
-        {
-          "label": "Before",
-          "text": null,
-          "unit": "ms",
-          "value": 9.52014492753623
-        },
-        {
-          "label": "Since then",
-          "text": null,
-          "unit": "ms",
-          "value": 32.35602150537635
-        },
-        {
-          "label": "Extra time",
-          "text": null,
-          "unit": "ms",
-          "value": 2123.736521739131
-        },
-        {
-          "label": "Started",
-          "text": "Oct 11, 10:45 UTC",
-          "unit": "text",
-          "value": 0.0
-        },
-        {
-          "label": "Plan change",
-          "text": "8 → 47",
-          "unit": "text",
-          "value": 0.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "8",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "8"
-      },
-      "summary": "Until Oct 11, 10:45 UTC it averaged 10 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 10 ms.",
-      "title": "A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed",
-      "verify": [
-        "Re-scan after the fix: this query's trend in Queries should drop back to about 10 ms per run."
-      ]
-    },
-    {
-      "category": "queries",
       "caveats": [],
       "check": "failing-query",
       "confidence": "high",
@@ -473,6 +284,120 @@
     {
       "category": "queries",
       "caveats": [
+        "Based on the estimated plan; actual row counts can tell a different story."
+      ],
+      "check": "plan-insights",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose."
+      },
+      "id": "plan-insights:nested-loops:query-263",
+      "impact": {
+        "db_time_share": 0.2673650901995407,
+        "label": "27% of DB time",
+        "score": 51.707358296430186,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T15:55:55Z",
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.2673650901995407
+        },
+        {
+          "label": "Share of the plan's work",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.999
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 15015.279166666667
+        }
+      ],
+      "queries": [
+        {
+          "id": "263",
+          "note": "A nested loop rereading its inner side thousands of times",
+          "plan_node": 1
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "263"
+      },
+      "summary": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.",
+      "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
+      "verify": [
+        "Explain again without the hint: a hash or merge join instead of the loop.",
+        "Re-scan: this finding is gone."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
+        "Based on the estimated plan; actual row counts can tell a different story."
+      ],
+      "check": "plan-insights",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server."
+      },
+      "id": "plan-insights:parallelism-blocked:query-263",
+      "impact": {
+        "db_time_share": 0.2673650901995407,
+        "label": "27% of DB time",
+        "score": 51.707358296430186,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T15:55:55Z",
+      "metrics": [
+        {
+          "label": "Share of DB time",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.2673650901995407
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 15015.279166666667
+        }
+      ],
+      "queries": [
+        {
+          "id": "263",
+          "note": "An expensive plan that can't go parallel",
+          "plan_node": 0
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "query",
+        "name": "263"
+      },
+      "summary": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead. Seen in a read from order_items.",
+      "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
+      "verify": [
+        "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
+        "Re-scan: this finding is gone."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
         "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
       ],
       "check": "chatty-query",
@@ -574,7 +499,7 @@
         "kind": "table",
         "name": "customers.email"
       },
-      "summary": "The database has to convert customers.email on every row before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). A converted column can't be searched with an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.",
+      "summary": "The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.",
       "title": "A type mismatch on customers.email stops a read from customers from using an index",
       "verify": [
         "Re-scan after the change; the warning should be gone from this query's plan."
@@ -594,19 +519,19 @@
       },
       "id": "missing-index:shop.order_items(order_id)",
       "impact": {
-        "db_time_share": 0.060338932147242445,
+        "db_time_share": 0.06033893214724244,
         "label": "6% of DB time",
-        "score": 24.498803196658827,
+        "score": 24.498803196658823,
         "time_ms_per_day": null
       },
       "inactive": false,
-      "last_seen": null,
+      "last_seen": "2026-10-11T15:55:21Z",
       "metrics": [
         {
           "label": "Share of DB time",
           "text": null,
           "unit": "ratio",
-          "value": 0.060338932147242445
+          "value": 0.06033893214724244
         },
         {
           "label": "Lookups that wanted it",
@@ -649,6 +574,114 @@
       "verify": [
         "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
         "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
+      ]
+    },
+    {
+      "category": "configuration",
+      "caveats": [
+        "Readers then see the last committed version instead of waiting. Code that relies on blocking reads for correctness (rare) must use locking hints."
+      ],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": "Row versions live in tempdb (or the database with ADR), which adds some write overhead.",
+        "sql": "ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
+        "summary": "Turn on row versioning for read committed. It needs a moment with no other connections, so schedule it."
+      },
+      "id": "config:read-committed-snapshot",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 17.6,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Reads waiting on locks",
+          "text": null,
+          "unit": "ms",
+          "value": 71692.0
+        }
+      ],
+      "queries": [],
+      "severity": "medium",
+      "subject": {
+        "kind": "setting",
+        "name": "read-committed-snapshot"
+      },
+      "summary": "With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
+      "title": "Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)",
+      "verify": []
+    },
+    {
+      "category": "queries",
+      "caveats": [],
+      "check": "regression",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "EXEC sp_query_store_force_plan @query_id = 8, @plan_id = 8;",
+        "summary": "Force plan 8 to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed."
+      },
+      "id": "regression:8",
+      "impact": {
+        "db_time_share": 0.014778470818232064,
+        "label": "3.4× slower",
+        "score": 46.52198220388902,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T12:13:40Z",
+      "metrics": [
+        {
+          "label": "Before",
+          "text": null,
+          "unit": "ms",
+          "value": 9.52014492753623
+        },
+        {
+          "label": "Since then",
+          "text": null,
+          "unit": "ms",
+          "value": 32.35602150537635
+        },
+        {
+          "label": "Extra time",
+          "text": null,
+          "unit": "ms",
+          "value": 2123.736521739131
+        },
+        {
+          "label": "Started",
+          "text": "Oct 11, 10:45 UTC",
+          "unit": "text",
+          "value": 0.0
+        },
+        {
+          "label": "Plan change",
+          "text": "8 → 47",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "8",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "8"
+      },
+      "summary": "Until Oct 11, 10:45 UTC it averaged 10 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 10 ms.",
+      "title": "A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed",
+      "verify": [
+        "Re-scan after the fix: this query's trend in Queries should drop back to about 10 ms per run."
       ]
     },
     {
@@ -717,45 +750,6 @@
       ]
     },
     {
-      "category": "configuration",
-      "caveats": [
-        "Readers then see the last committed version instead of waiting. Code that relies on blocking reads for correctness (rare) must use locking hints."
-      ],
-      "check": "config",
-      "confidence": "medium",
-      "fix": {
-        "cost": "Row versions live in tempdb (or the database with ADR), which adds some write overhead.",
-        "sql": "ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
-        "summary": "Turn on row versioning for read committed. It needs a moment with no other connections, so schedule it."
-      },
-      "id": "config:read-committed-snapshot",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 17.6,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Reads waiting on locks",
-          "text": null,
-          "unit": "ms",
-          "value": 71692.0
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "setting",
-        "name": "read-committed-snapshot"
-      },
-      "summary": "With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
-      "title": "Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)",
-      "verify": []
-    },
-    {
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -820,7 +814,7 @@
         "time_ms_per_day": null
       },
       "inactive": false,
-      "last_seen": null,
+      "last_seen": "2026-10-11T12:13:40Z",
       "metrics": [
         {
           "label": "Share of DB time",
@@ -1294,8 +1288,8 @@
         "kind": "setting",
         "name": "LAST_QUERY_PLAN_STATS"
       },
-      "summary": "With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Today only estimated plans are available, so a bad estimate can only be guessed at.",
-      "title": "SQL Server isn't keeping the actual plan of each query's last run",
+      "summary": "With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Without it only estimated plans are available, so a bad estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)",
+      "title": "LAST_QUERY_PLAN_STATS is off for this database",
       "verify": [
         "Let the workload run, re-scan, then open a query in Queries and pick \"Last actual run\": the diagram shows actual rows and time per operator."
       ]
@@ -2696,6 +2690,8 @@
           "avg_granted_kb": 14904.0,
           "avg_used_kb": 596.551724137931,
           "executions": 58.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 14904.0,
           "query_hash": "0x538D93CAC1A21CF3"
         },
@@ -2703,6 +2699,8 @@
           "avg_granted_kb": 97448.0,
           "avg_used_kb": 16800.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 97448.0,
           "query_hash": "0xB93AFEAC88B87A44"
         },
@@ -2710,6 +2708,8 @@
           "avg_granted_kb": 10274.0,
           "avg_used_kb": 1260.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 11688.0,
           "query_hash": "0x7DD3A80BED46C41C"
         },
@@ -2717,6 +2717,8 @@
           "avg_granted_kb": 10266.666666666666,
           "avg_used_kb": 1197.3333333333333,
           "executions": 3.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 13336.0,
           "query_hash": "0xCA2A071DE2E5CB4E"
         },
@@ -2724,6 +2726,8 @@
           "avg_granted_kb": 38872.0,
           "avg_used_kb": 13560.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 38872.0,
           "query_hash": "0x26B5AF33C3FE80E4"
         },
@@ -2731,6 +2735,8 @@
           "avg_granted_kb": 5464.0,
           "avg_used_kb": 1096.0,
           "executions": 5.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 5464.0,
           "query_hash": "0xB7580776ABAF5C89"
         },
@@ -2738,6 +2744,8 @@
           "avg_granted_kb": 2672.0,
           "avg_used_kb": 329.77777777777777,
           "executions": 9.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 2672.0,
           "query_hash": "0x2E70EF6C50F8B425"
         },
@@ -2745,6 +2753,8 @@
           "avg_granted_kb": 3760.0,
           "avg_used_kb": 392.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3760.0,
           "query_hash": "0x79A740AB01010E76"
         },
@@ -2752,6 +2762,8 @@
           "avg_granted_kb": 6296.0,
           "avg_used_kb": 960.0,
           "executions": 2.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 6408.0,
           "query_hash": "0xA82DBA5F031BB8DE"
         },
@@ -2759,6 +2771,8 @@
           "avg_granted_kb": 8704.0,
           "avg_used_kb": 1408.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 8704.0,
           "query_hash": "0xC6BEBE5FF49E8119"
         },
@@ -2766,6 +2780,8 @@
           "avg_granted_kb": 3312.0,
           "avg_used_kb": 912.0,
           "executions": 3.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3312.0,
           "query_hash": "0x111E3E5969A5D833"
         },
@@ -2773,6 +2789,8 @@
           "avg_granted_kb": 3232.0,
           "avg_used_kb": 960.0,
           "executions": 3.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3232.0,
           "query_hash": "0x499E6D8549462667"
         },
@@ -2780,6 +2798,8 @@
           "avg_granted_kb": 2112.0,
           "avg_used_kb": 442.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 2112.0,
           "query_hash": "0x851AB8B7F8AA5975"
         },
@@ -2787,6 +2807,8 @@
           "avg_granted_kb": 6528.0,
           "avg_used_kb": 32.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 6528.0,
           "query_hash": "0x2A6AABAD09433795"
         },
@@ -2794,6 +2816,8 @@
           "avg_granted_kb": 6240.0,
           "avg_used_kb": 1264.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 6240.0,
           "query_hash": "0x9ED977B68BF6BDF8"
         },
@@ -2801,6 +2825,8 @@
           "avg_granted_kb": 7528.0,
           "avg_used_kb": 2592.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 7528.0,
           "query_hash": "0x3DF2B9A646FEB7F0"
         },
@@ -2808,6 +2834,8 @@
           "avg_granted_kb": 3392.0,
           "avg_used_kb": 960.0,
           "executions": 2.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3432.0,
           "query_hash": "0x1E1D244420C4CF14"
         },
@@ -2815,6 +2843,8 @@
           "avg_granted_kb": 6328.0,
           "avg_used_kb": 1584.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 6328.0,
           "query_hash": "0x618F4B31843C5BC7"
         },
@@ -2822,6 +2852,8 @@
           "avg_granted_kb": 5624.0,
           "avg_used_kb": 960.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 5624.0,
           "query_hash": "0x447B66D0CE677154"
         },
@@ -2829,6 +2861,8 @@
           "avg_granted_kb": 3104.0,
           "avg_used_kb": 784.0,
           "executions": 2.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3104.0,
           "query_hash": "0xCC3150A6157C7C1A"
         },
@@ -2836,6 +2870,8 @@
           "avg_granted_kb": 1088.0,
           "avg_used_kb": 16.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 1088.0,
           "query_hash": "0x243C1C62E0CA19B4"
         },
@@ -2843,6 +2879,8 @@
           "avg_granted_kb": 6456.0,
           "avg_used_kb": 2240.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 6456.0,
           "query_hash": "0x8908531C5A846D44"
         },
@@ -2850,6 +2888,8 @@
           "avg_granted_kb": 1024.0,
           "avg_used_kb": 0.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 1024.0,
           "query_hash": "0x484FA8388BE0B441"
         },
@@ -2857,6 +2897,8 @@
           "avg_granted_kb": 1024.0,
           "avg_used_kb": 16.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 1024.0,
           "query_hash": "0x5E54E6762DCA7E03"
         },
@@ -2864,6 +2906,8 @@
           "avg_granted_kb": 1024.0,
           "avg_used_kb": 16.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 1024.0,
           "query_hash": "0xD4C09FC424B514A4"
         },
@@ -2871,6 +2915,8 @@
           "avg_granted_kb": 1024.0,
           "avg_used_kb": 16.0,
           "executions": 4.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 1024.0,
           "query_hash": "0xF5C3CFD762D1282A"
         },
@@ -2878,6 +2924,8 @@
           "avg_granted_kb": 5712.0,
           "avg_used_kb": 1928.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 5712.0,
           "query_hash": "0xD02C0FE32C192DC3"
         },
@@ -2885,6 +2933,8 @@
           "avg_granted_kb": 3240.0,
           "avg_used_kb": 672.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3240.0,
           "query_hash": "0x52EE73CE6AAD32B5"
         },
@@ -2892,6 +2942,8 @@
           "avg_granted_kb": 3408.0,
           "avg_used_kb": 960.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3408.0,
           "query_hash": "0xA7A4F409DDE32082"
         },
@@ -2899,6 +2951,8 @@
           "avg_granted_kb": 3208.0,
           "avg_used_kb": 888.0,
           "executions": 1.0,
+          "last_granted_kb": null,
+          "last_used_kb": null,
           "max_granted_kb": 3208.0,
           "query_hash": "0x320D04EAEE594F1A"
         }
@@ -3011,6 +3065,7 @@
       "edition": "Developer Edition (64-bit)",
       "engine": "mssql",
       "missing": [],
+      "platform": null,
       "product": "SQL Server 2022",
       "read_only_session": false,
       "started_at": "2026-10-11T11:06:33Z",
@@ -3888,6 +3943,9 @@
       }
     ],
     "workload": {
+      "hourly_time_ms": null,
+      "kind": null,
+      "log": null,
       "min_logged_ms": null,
       "queries": [
         {
@@ -3971,6 +4029,7 @@
                     "ForceScan": "0",
                     "ForceSeek": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "nonclustered",
                     "LogicalOp": "Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -4016,6 +4075,7 @@
                     "ForceScan": "0",
                     "ForceSeek": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "clustered",
                     "LogicalOp": "Clustered Index Seek",
                     "NoExpandHint": "0",
                     "Ordered": "1",
@@ -4076,11 +4136,13 @@
           "plans": [
             {
               "compiled": "@P1 = N'user141017@example.com'",
+              "cpu_time_ms": null,
               "executions": 1200.0,
               "first_seen": "2026-10-11T07:44:33Z",
               "id": "7",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:36Z",
+              "logical_reads": null,
               "max_time_ms": 33.537,
               "mean_time_ms": 18.470993333333332,
               "min_time_ms": 17.495,
@@ -4246,6 +4308,7 @@
                     "EstimatedTotalSubtreeCost": "6.02553",
                     "ForceScan": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "clustered",
                     "LogicalOp": "Clustered Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -4305,11 +4368,13 @@
           "plans": [
             {
               "compiled": "@P1 = (408418)",
+              "cpu_time_ms": null,
               "executions": 600.0,
               "first_seen": "2026-10-11T07:44:47Z",
               "id": "9",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:44Z",
+              "logical_reads": null,
               "max_time_ms": 132.967,
               "mean_time_ms": 11.237656666666666,
               "min_time_ms": 6.029,
@@ -4484,6 +4549,7 @@
                     "ForceScan": "0",
                     "ForceSeek": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "nonclustered",
                     "LogicalOp": "Index Seek",
                     "NoExpandHint": "0",
                     "Ordered": "1",
@@ -4528,6 +4594,7 @@
                     "ForceScan": "0",
                     "ForceSeek": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "clustered",
                     "LogicalOp": "Clustered Index Seek",
                     "NoExpandHint": "0",
                     "Ordered": "1",
@@ -4586,11 +4653,13 @@
           "plans": [
             {
               "compiled": "@P1 = (5)",
+              "cpu_time_ms": null,
               "executions": 4010.0,
               "first_seen": "2026-10-11T07:44:50Z",
               "id": "10",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:47Z",
+              "logical_reads": null,
               "max_time_ms": 376.75,
               "mean_time_ms": 1.4473511221945137,
               "min_time_ms": 0.507,
@@ -4764,6 +4833,7 @@
                     "EstimatedTotalSubtreeCost": "5.72918",
                     "ForceScan": "0",
                     "ForcedIndex": "0",
+                    "Index Kind": "clustered",
                     "LogicalOp": "Clustered Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -4823,11 +4893,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 93.0,
               "first_seen": "2026-10-11T10:46:12Z",
               "id": "47",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:40Z",
+              "logical_reads": null,
               "max_time_ms": null,
               "mean_time_ms": 32.35602150537635,
               "min_time_ms": null,
@@ -4837,11 +4909,13 @@
             },
             {
               "compiled": "@P2 = (1), @P1 = (0)",
+              "cpu_time_ms": null,
               "executions": 207.0,
               "first_seen": "2026-10-11T07:44:45Z",
               "id": "8",
               "is_forced": false,
               "last_seen": "2026-10-11T10:44:51Z",
+              "logical_reads": null,
               "max_time_ms": 29.618,
               "mean_time_ms": 9.520144927536233,
               "min_time_ms": 8.738,
@@ -5011,6 +5085,7 @@
                 "ForceScan": "0",
                 "ForceSeek": "0",
                 "ForcedIndex": "0",
+                "Index Kind": "clustered",
                 "LogicalOp": "Clustered Index Seek",
                 "NoExpandHint": "0",
                 "Ordered": "1",
@@ -5037,11 +5112,13 @@
           "plans": [
             {
               "compiled": "@P1 = (12148)",
+              "cpu_time_ms": null,
               "executions": 60000.0,
               "first_seen": "2026-10-11T07:44:28Z",
               "id": "6",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:25Z",
+              "logical_reads": null,
               "max_time_ms": 0.277,
               "mean_time_ms": 0.01370395,
               "min_time_ms": 0.006,
@@ -5197,6 +5274,7 @@
                         "ForceScan": "0",
                         "ForceSeek": "0",
                         "ForcedIndex": "0",
+                        "Index Kind": "nonclustered",
                         "LogicalOp": "Index Seek",
                         "NoExpandHint": "0",
                         "Ordered": "1",
@@ -5241,6 +5319,7 @@
                         "ForceScan": "0",
                         "ForceSeek": "0",
                         "ForcedIndex": "0",
+                        "Index Kind": "clustered",
                         "LogicalOp": "Clustered Index Seek",
                         "NoExpandHint": "0",
                         "Ordered": "1",
@@ -5331,11 +5410,13 @@
           "plans": [
             {
               "compiled": "@P1 = (115003)",
+              "cpu_time_ms": null,
               "executions": 4000.0,
               "first_seen": "2026-10-11T07:44:27Z",
               "id": "5",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:20Z",
+              "logical_reads": null,
               "max_time_ms": 1.534,
               "mean_time_ms": 0.05814425,
               "min_time_ms": 0.024,
@@ -5498,11 +5579,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 2.0,
               "first_seen": "2026-10-11T11:54:28Z",
               "id": "44",
               "is_forced": false,
               "last_seen": "2026-10-11T12:13:25Z",
+              "logical_reads": null,
               "max_time_ms": 0.223,
               "mean_time_ms": 0.1685,
               "min_time_ms": 0.114,
@@ -5590,11 +5673,13 @@
           "plans": [
             {
               "compiled": "@c = NULL, @t = (1)",
+              "cpu_time_ms": null,
               "executions": 251.0,
               "first_seen": "2026-10-11T14:01:42Z",
               "id": "198",
               "is_forced": false,
               "last_seen": "2026-10-11T14:01:45Z",
+              "logical_reads": null,
               "max_time_ms": 39.105,
               "mean_time_ms": 10.27628685258964,
               "min_time_ms": 8.254,
@@ -5604,11 +5689,13 @@
             },
             {
               "compiled": "@c = NULL, @t = (2)",
+              "cpu_time_ms": null,
               "executions": 520.0,
               "first_seen": "2026-10-11T13:56:51Z",
               "id": "163",
               "is_forced": false,
               "last_seen": "2026-10-11T14:01:45Z",
+              "logical_reads": null,
               "max_time_ms": 0.406,
               "mean_time_ms": 0.022509615384615385,
               "min_time_ms": 0.012,
@@ -5743,6 +5830,7 @@
                                 "ForceScan": "0",
                                 "ForceSeek": "0",
                                 "ForcedIndex": "0",
+                                "Index Kind": "clustered",
                                 "LogicalOp": "Clustered Index Seek",
                                 "NoExpandHint": "0",
                                 "Ordered": "1",
@@ -5876,6 +5964,7 @@
                 "EstimateRows": "1",
                 "EstimatedExecutionMode": "Row",
                 "EstimatedTotalSubtreeCost": "0.0332863",
+                "Index Kind": "clustered",
                 "LogicalOp": "Update",
                 "Parallel": "0",
                 "PhysicalOp": "Clustered Index Update"
@@ -5896,11 +5985,13 @@
           "plans": [
             {
               "compiled": "@1 = (1)",
+              "cpu_time_ms": null,
               "executions": 4.0,
               "first_seen": "2026-10-11T13:56:49Z",
               "id": "154",
               "is_forced": false,
               "last_seen": "2026-10-11T14:19:10Z",
+              "logical_reads": null,
               "max_time_ms": 43351.597,
               "mean_time_ms": 28743.0075,
               "min_time_ms": 0.473,
@@ -6009,6 +6100,7 @@
                 "ForceScan": "0",
                 "ForceSeek": "0",
                 "ForcedIndex": "0",
+                "Index Kind": "clustered",
                 "LogicalOp": "Clustered Index Seek",
                 "NoExpandHint": "0",
                 "Ordered": "1",
@@ -6035,11 +6127,13 @@
           "plans": [
             {
               "compiled": "@1 = (1)",
+              "cpu_time_ms": null,
               "executions": 3.0,
               "first_seen": "2026-10-11T13:56:51Z",
               "id": "159",
               "is_forced": false,
               "last_seen": "2026-10-11T14:19:10Z",
+              "logical_reads": null,
               "max_time_ms": 43348.858,
               "mean_time_ms": 23899.592333333338,
               "min_time_ms": 0.239,
@@ -6144,6 +6238,7 @@
                 "EstimateRows": "1",
                 "EstimatedExecutionMode": "Row",
                 "EstimatedTotalSubtreeCost": "0.0132842",
+                "Index Kind": "clustered",
                 "LogicalOp": "Update",
                 "Parallel": "0",
                 "PhysicalOp": "Clustered Index Update"
@@ -6164,11 +6259,13 @@
           "plans": [
             {
               "compiled": "@1 = (1), @2 = (2)",
+              "cpu_time_ms": null,
               "executions": 4.0,
               "first_seen": "2026-10-11T13:58:56Z",
               "id": "178",
               "is_forced": false,
               "last_seen": "2026-10-11T14:18:40Z",
+              "logical_reads": null,
               "max_time_ms": 2403.944,
               "mean_time_ms": 601.31325,
               "min_time_ms": 0.193,
@@ -6234,11 +6331,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 200.0,
               "first_seen": "2026-10-11T15:54:49Z",
               "id": "278",
               "is_forced": false,
               "last_seen": "2026-10-11T15:54:55Z",
+              "logical_reads": null,
               "max_time_ms": 5.549,
               "mean_time_ms": 0.04556,
               "min_time_ms": 0.003,
@@ -6400,6 +6499,7 @@
                                                 "ForceScan": "0",
                                                 "ForceSeek": "0",
                                                 "ForcedIndex": "0",
+                                                "Index Kind": "clustered",
                                                 "LogicalOp": "Clustered Index Seek",
                                                 "NoExpandHint": "0",
                                                 "Ordered": "1",
@@ -6486,6 +6586,7 @@
                                                     "EstimatedTotalSubtreeCost": "6.02553",
                                                     "ForceScan": "0",
                                                     "ForcedIndex": "0",
+                                                    "Index Kind": "clustered",
                                                     "LogicalOp": "Clustered Index Scan",
                                                     "NoExpandHint": "0",
                                                     "Ordered": "0",
@@ -6564,6 +6665,7 @@
                                                 "ForceScan": "0",
                                                 "ForceSeek": "0",
                                                 "ForcedIndex": "0",
+                                                "Index Kind": "clustered",
                                                 "LogicalOp": "Clustered Index Seek",
                                                 "NoExpandHint": "0",
                                                 "Ordered": "1",
@@ -6671,6 +6773,7 @@
                                         "ForceScan": "0",
                                         "ForceSeek": "0",
                                         "ForcedIndex": "0",
+                                        "Index Kind": "nonclustered",
                                         "LogicalOp": "Index Seek",
                                         "NoExpandHint": "0",
                                         "Ordered": "1",
@@ -6748,6 +6851,7 @@
                                     "ForceScan": "0",
                                     "ForceSeek": "0",
                                     "ForcedIndex": "0",
+                                    "Index Kind": "clustered",
                                     "LogicalOp": "Clustered Index Scan",
                                     "NoExpandHint": "0",
                                     "Ordered": "0",
@@ -6826,6 +6930,7 @@
                                 "ForceScan": "0",
                                 "ForceSeek": "0",
                                 "ForcedIndex": "0",
+                                "Index Kind": "clustered",
                                 "LogicalOp": "Clustered Index Seek",
                                 "NoExpandHint": "0",
                                 "Ordered": "1",
@@ -6977,11 +7082,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 300.0,
               "first_seen": "2026-10-11T15:55:00Z",
               "id": "281",
               "is_forced": false,
               "last_seen": "2026-10-11T15:55:21Z",
+              "logical_reads": null,
               "max_time_ms": 148.672,
               "mean_time_ms": 45.29762666666666,
               "min_time_ms": 18.257,
@@ -7204,11 +7311,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 1.0,
               "first_seen": "2026-10-11T15:55:31Z",
               "id": "290",
               "is_forced": false,
               "last_seen": "2026-10-11T15:55:31Z",
+              "logical_reads": null,
               "max_time_ms": 528.407,
               "mean_time_ms": 528.407,
               "min_time_ms": 528.407,
@@ -7338,6 +7447,7 @@
                             "ForceScan": "0",
                             "ForceSeek": "0",
                             "ForcedIndex": "0",
+                            "Index Kind": "nonclustered",
                             "LogicalOp": "Index Scan",
                             "NoExpandHint": "0",
                             "Ordered": "0",
@@ -7429,6 +7539,7 @@
                                     "ForceScan": "0",
                                     "ForceSeek": "0",
                                     "ForcedIndex": "0",
+                                    "Index Kind": "nonclustered",
                                     "LogicalOp": "Index Scan",
                                     "NoExpandHint": "0",
                                     "Ordered": "0",
@@ -7614,11 +7725,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 6.0,
               "first_seen": "2026-10-11T15:55:55Z",
               "id": "298",
               "is_forced": false,
               "last_seen": "2026-10-11T15:55:55Z",
+              "logical_reads": null,
               "max_time_ms": 15018.617,
               "mean_time_ms": 15015.279166666667,
               "min_time_ms": 15008.227,
@@ -7690,11 +7803,13 @@
           "plans": [
             {
               "compiled": null,
+              "cpu_time_ms": null,
               "executions": 25.0,
               "first_seen": "2026-10-11T15:55:40Z",
               "id": "299",
               "is_forced": false,
               "last_seen": "2026-10-11T15:55:40Z",
+              "logical_reads": null,
               "max_time_ms": 59.436,
               "mean_time_ms": 13.16272,
               "min_time_ms": 4.837,
@@ -7843,7 +7958,8 @@
       }
     ],
     "headline": "25 opportunities. The top ones touch 83% of database time over the last 5 hours.",
+    "no_workload": null,
     "opportunities": 25,
-    "top_share": 0.8284861686618267
+    "top_share": 0.828513210346887
   }
 }

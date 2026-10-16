@@ -16,6 +16,7 @@ culprit-mssql = { path = "crates/culprit-mssql" }
 culprit-postgres = { path = "crates/culprit-postgres" }
 culprit-mysql = { path = "crates/culprit-mysql" }
 culprit-sqlite = { path = "crates/culprit-sqlite" }
+culprit-querylog = { path = "crates/culprit-querylog" }
 culprit-engine = { path = "crates/culprit-engine" }
 culprit-mcp = { path = "crates/culprit-mcp" }
 anyhow = "1.0.104"
@@ -35,7 +36,7 @@ serde_json = "1.0.152"
 thiserror = "2.0.21"
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "process", "sync"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks"] }
 tokio-postgres = "0.7.18"
 tokio-postgres-rustls = "0.14.0"
 tokio-util = { version = "0.7.20", features = ["compat"] }

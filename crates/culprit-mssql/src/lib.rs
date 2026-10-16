@@ -14,6 +14,7 @@ mod probe;
 mod recorded;
 mod schema;
 mod signals;
+pub mod sources;
 mod spread;
 mod statement;
 mod timeline;
@@ -32,7 +33,7 @@ use culprit_core::{
 };
 
 pub use ado::parse_ado;
-use conn::{MsClient, Pool, SessionKind, connect, is_permission_error, map_error};
+use conn::{MsClient, Pool, SessionKind, connect};
 use probe::Probe;
 
 pub struct MssqlProvider {
@@ -52,23 +53,6 @@ impl MssqlProvider {
 
 /// What a part of the scan's sources could read: the shared account every provider keeps (`culprit_core::Coverage`).
 type Outcome = Coverage;
-
-/// Reading `source` failed: a note with SQL Server's error, and `capability` locked with why. A permission error says
-/// the login lacks it, with the GRANT that gives it as the fix.
-fn source_failed(
-    outcome: &mut Outcome,
-    source: &str,
-    capability: Capability,
-    err: &tiberius::error::Error,
-    probe: &Probe,
-) {
-    let denied = is_permission_error(err);
-    let mut error = map_error(err.clone());
-    if denied {
-        error.code = culprit_core::ErrorCode::PermissionDenied;
-    }
-    outcome.failed(source, capability, &error, denied.then(|| probe.grant_hint()));
-}
 
 #[derive(Default)]
 struct WorkloadPart {
@@ -125,23 +109,26 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     }
 
     if probe.query_store_readable() {
-        match workload::from_query_store(client, options).await {
-            Ok(result) => {
-                part.outcome.delivered(Capability::QueryStore);
-                if result.plans_parsed > 0 {
-                    part.outcome.delivered(Capability::QueryPlans);
-                }
-                if result.plan_errors > 0 {
-                    part.outcome.note("plans", format!("{} Query Store plans could not be parsed", result.plan_errors));
-                }
-                if !result.waits.is_empty() {
-                    part.outcome.delivered(Capability::WaitStats);
-                }
-                part.waits = result.waits;
-                part.workload = Some(result.workload);
-                return part;
+        let grant = || probe.grant_hint();
+        if let Some(result) = sources::read(
+            &mut part.outcome,
+            &sources::QUERY_STORE,
+            workload::from_query_store(client, options).await,
+            grant,
+        ) {
+            part.outcome.delivered(Capability::QueryStore);
+            if result.plans_parsed > 0 {
+                part.outcome.delivered(Capability::QueryPlans);
             }
-            Err(err) => source_failed(&mut part.outcome, "query_store", Capability::QueryStore, &err, probe),
+            if result.plan_errors > 0 {
+                part.outcome.note("plans", format!("{} Query Store plans could not be parsed", result.plan_errors));
+            }
+            if !result.waits.is_empty() {
+                part.outcome.delivered(Capability::WaitStats);
+            }
+            part.waits = result.waits;
+            part.workload = Some(result.workload);
+            return part;
         }
     }
 
@@ -153,58 +140,70 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
         );
         return part;
     }
-    match workload::from_plan_cache(client, options).await {
-        Ok(result) => {
-            part.outcome.delivered(Capability::PlanCache);
-            if result.plans_parsed > 0 {
-                part.outcome.delivered(Capability::QueryPlans);
-            }
-            part.workload = Some(result.workload);
+    let plan_cache = workload::from_plan_cache(client, options).await;
+    if let Some(result) = sources::read(&mut part.outcome, &sources::PLAN_CACHE, plan_cache, || probe.grant_hint()) {
+        part.outcome.delivered(Capability::PlanCache);
+        if result.plans_parsed > 0 {
+            part.outcome.delivered(Capability::QueryPlans);
         }
-        Err(err) => source_failed(&mut part.outcome, "plan_cache", Capability::PlanCache, &err, probe),
+        part.workload = Some(result.workload);
     }
     part
+}
+
+/// The latest this database's index usage counters may have started, when later than the server's start (the age every
+/// counter has otherwise): a database restored or created since then starts its counters with it (sys.databases'
+/// create_date), and one with AUTO_CLOSE on starts them again each time it opens, so as far as anyone knows, now.
+async fn usage_counted_since(client: &mut MsClient, probe: &Probe) -> Option<String> {
+    let r = conn::query_one(
+        client,
+        "SELECT is_auto_close_on AS auto_close, CONVERT(varchar(19), DATEADD(minute, DATEDIFF(minute, GETDATE(), GETUTCDATE()), create_date), 126) + 'Z' AS created FROM sys.databases WHERE database_id = DB_ID()",
+    )
+    .await
+    .ok()?;
+    if r.bool("auto_close") {
+        return Some(chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
+    let created = r.str("created")?;
+    let epoch = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok().map(|d| d.timestamp());
+    match probe.started_at.as_deref().and_then(epoch) {
+        Some(started) if epoch(&created).is_some_and(|c| c <= started) => None,
+        _ => Some(created),
+    }
 }
 
 async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
     let mut part = SchemaPart::default();
     let dmv = probe.can_read_dmvs();
-    match schema::tables(client, dmv).await {
-        Ok(tables) => {
-            part.tables = tables;
-            part.outcome.delivered(Capability::TableStats);
+    let grant = || probe.grant_hint();
+    let out = &mut part.outcome;
+    if let Some(tables) = sources::read(out, &sources::TABLES, schema::tables(client, dmv).await, grant) {
+        part.tables = tables;
+        out.delivered(Capability::TableStats);
+    }
+    if let Some((indexes, with_usage)) =
+        sources::read(out, &sources::INDEXES, schema::indexes(client, dmv).await, grant)
+    {
+        part.indexes = indexes;
+        if with_usage {
+            // Index usage is counted per database, from when it came online: no older than the server's start.
+            let since = usage_counted_since(client, probe).await;
+            part.indexes.iter_mut().for_each(|i| i.counters_since = since.clone());
+            out.delivered(Capability::IndexUsage);
+        } else {
+            out.lacking(
+                Capability::IndexUsage,
+                "Index usage counters are not readable with this login, so unused-index checks are off.",
+                Some(probe.grant_hint()),
+            );
         }
-        Err(err) => source_failed(&mut part.outcome, "tables", Capability::TableStats, &err, probe),
     }
-    match schema::indexes(client, dmv).await {
-        Ok((indexes, with_usage)) => {
-            part.indexes = indexes;
-            if with_usage {
-                part.outcome.delivered(Capability::IndexUsage);
-            } else {
-                part.outcome.lacking(
-                    Capability::IndexUsage,
-                    "Index usage counters are not readable with this login, so unused-index checks are off.",
-                    Some(probe.grant_hint()),
-                );
-            }
-        }
-        Err(err) => source_failed(&mut part.outcome, "indexes", Capability::IndexUsage, &err, probe),
-    }
-    match schema::columns(client).await {
-        Ok(columns) => part.columns = columns,
-        Err(err) => source_failed(&mut part.outcome, "columns", Capability::TableStats, &err, probe),
-    }
-    match schema::foreign_keys(client).await {
-        Ok(fks) => part.foreign_keys = fks,
-        Err(err) => source_failed(&mut part.outcome, "foreign_keys", Capability::TableStats, &err, probe),
-    }
-    match schema::statistics(client).await {
-        Ok(stats) => {
-            part.statistics = stats;
-            part.outcome.delivered(Capability::Statistics);
-        }
-        Err(err) => source_failed(&mut part.outcome, "statistics", Capability::Statistics, &err, probe),
+    part.columns = sources::read(out, &sources::COLUMNS, schema::columns(client).await, grant).unwrap_or_default();
+    part.foreign_keys =
+        sources::read(out, &sources::FOREIGN_KEYS, schema::foreign_keys(client).await, grant).unwrap_or_default();
+    if let Some(stats) = sources::read(out, &sources::STATISTICS, schema::statistics(client).await, grant) {
+        part.statistics = stats;
+        out.delivered(Capability::Statistics);
     }
     part
 }
@@ -212,25 +211,20 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
 async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOptions) -> MiscPart {
     let mut part = MiscPart::default();
     let dmv = probe.can_read_dmvs();
+    let grant = || probe.grant_hint();
     if dmv {
-        match schema::missing_indexes(client).await {
-            Ok(missing) => {
-                part.missing_indexes = missing;
-                part.outcome.delivered(Capability::MissingIndexes);
-            }
-            Err(err) => source_failed(&mut part.outcome, "missing_indexes", Capability::MissingIndexes, &err, probe),
+        let missing = schema::missing_indexes(client).await;
+        if let Some(missing) = sources::read(&mut part.outcome, &sources::MISSING_INDEXES, missing, grant) {
+            part.missing_indexes = missing;
+            part.outcome.delivered(Capability::MissingIndexes);
         }
-        match schema::waits(client, probe.is_azure_sql_database()).await {
-            Ok(waits) => {
-                part.waits = waits;
-                part.outcome.delivered(Capability::WaitStats);
-            }
-            Err(err) => source_failed(&mut part.outcome, "waits", Capability::WaitStats, &err, probe),
+        let waits = schema::waits(client, probe.is_azure_sql_database()).await;
+        if let Some(waits) = sources::read(&mut part.outcome, &sources::WAITS, waits, grant) {
+            part.waits = waits;
+            part.outcome.delivered(Capability::WaitStats);
         }
-        let (pressure, notes) = pressure::collect(client, probe).await;
-        for message in notes {
-            part.outcome.note("pressure", message);
-        }
+        let (pressure, read) = pressure::collect(client, probe).await;
+        part.outcome.merge(read);
         part.pressure = Some(pressure);
     } else {
         for capability in [Capability::MissingIndexes, Capability::WaitStats] {
@@ -242,46 +236,29 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
         }
     }
     if probe.is_azure_sql_database() {
-        match schema::resources(client).await {
-            Ok(resources) => {
-                part.resources = resources;
-                part.outcome.delivered(Capability::ResourceUsage);
-            }
-            Err(err) => source_failed(&mut part.outcome, "resources", Capability::ResourceUsage, &err, probe),
+        let resources = schema::resources(client).await;
+        if let Some(resources) = sources::read(&mut part.outcome, &sources::RESOURCES, resources, grant) {
+            part.resources = resources;
+            part.outcome.delivered(Capability::ResourceUsage);
         }
     }
     if dmv {
-        // The index advisor and tuning checks: each is optional, a failure is only a note.
-        match advice::forwarded_fetches(client).await {
-            Ok(forwarded) => part.forwarded = forwarded,
-            Err(err) => part.notes_only("forwarded_fetches", &err),
-        }
+        // The index advisor and tuning checks: each adds detail, and a failure is a note.
+        let out = &mut part.outcome;
+        part.forwarded =
+            sources::read(out, &sources::FORWARDED_FETCHES, advice::forwarded_fetches(client).await, grant)
+                .unwrap_or_default();
         let query_store = probe.query_store_readable();
-        match advice::query_families(client, options.window_in_minutes(), query_store).await {
-            Ok(families) => part.query_families = families,
-            Err(err) => part.notes_only("query_families", &err),
-        }
-        match advice::plan_cache(client).await {
-            Ok(cache) => part.plan_cache = cache,
-            Err(err) => part.notes_only("plan_cache", &err),
-        }
-        match advice::tuning(client, query_store).await {
-            Ok(tuning) => part.tuning = Some(tuning),
-            Err(err) => part.notes_only("tuning", &err),
-        }
+        let families = advice::query_families(client, options.window_in_minutes(), query_store).await;
+        part.query_families = sources::read(out, &sources::QUERY_FAMILIES, families, grant).unwrap_or_default();
+        part.plan_cache =
+            sources::read(out, &sources::PLAN_CACHE_USE, advice::plan_cache(client).await, grant).flatten();
+        part.tuning = sources::read(out, &sources::TUNING, advice::tuning(client, query_store).await, grant);
     }
     let query_store_options = probe.query_store.as_ref().map(|qs| &qs.options);
-    match schema::settings(client, probe.is_azure_sql_database(), query_store_options).await {
-        Ok(settings) => part.settings = settings,
-        Err(err) => part.notes_only("settings", &err),
-    }
+    let settings = schema::settings(client, probe.is_azure_sql_database(), query_store_options).await;
+    part.settings = sources::read(&mut part.outcome, &sources::SETTINGS, settings, grant).unwrap_or_default();
     part
-}
-
-impl MiscPart {
-    fn notes_only(&mut self, collector: &str, err: &tiberius::error::Error) {
-        self.outcome.note(collector, map_error(err.clone()).message);
-    }
 }
 
 impl MssqlProvider {
@@ -450,10 +427,6 @@ impl Provider for MssqlProvider {
         }
         let azure = probe.is_azure_sql_database();
         self.pool.with(move |c| Box::pin(pressure::sample(c, azure, seconds))).await
-    }
-
-    fn session_actions(&self) -> Vec<SessionAction> {
-        vec![SessionAction::Terminate]
     }
 
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {

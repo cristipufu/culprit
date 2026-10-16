@@ -11,6 +11,7 @@ mod recorded;
 mod rows;
 mod sessions;
 mod signals;
+pub mod sources;
 mod tables;
 mod trust;
 
@@ -18,8 +19,8 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    ConnectionSpec, Engine, Environment, Error, ErrorCode, ExplainMode, LiveState, Plan, PlanKind, Provider, Result,
-    ResultSet, ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
+    ConnectionSpec, Engine, Environment, Error, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet,
+    ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use serde_json::Value;
 use tokio_postgres::types::Type;
@@ -121,10 +122,6 @@ impl Provider for PostgresProvider {
         }
     }
 
-    fn session_actions(&self) -> Vec<SessionAction> {
-        vec![SessionAction::Cancel, SessionAction::Terminate]
-    }
-
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
         sessions::interrupt(&self.connector, session, action).await
     }
@@ -147,13 +144,6 @@ impl Provider for PostgresProvider {
     async fn wait_sample(&self, seconds: u32) -> Result<culprit_core::WaitSample> {
         let client = self.connector.connect(INTERACTIVE).await?;
         crate::pressure::sample(&client, seconds).await
-    }
-
-    async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
-        Err(Error::new(ErrorCode::Unsupported, "PostgreSQL doesn't keep the actual plan of past runs").with_hint(
-            "auto_explain can write them to the server log, which Culprit can't read over SQL. Open the query in the \
-             editor with real values and use Analyze: it runs inside a transaction that is rolled back.",
-        ))
     }
 
     async fn explain_recorded(&self, sql: &str, query_id: Option<&str>) -> Result<Plan> {

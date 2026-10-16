@@ -274,6 +274,7 @@ pub fn workload(
         lock_ms: runs.iter().map(|r| r.lock_ms).sum(),
         workload: Workload {
             source: SOURCE.into(),
+            kind: Some(culprit_core::WorkloadKind::SlowLog),
             windowed: true,
             window_start: Some(window_start_text),
             window_end: Some(now.to_string()),
@@ -285,7 +286,9 @@ pub fn workload(
             queries,
             timeline: timeline.map(|(t, _)| t),
             untracked_time_ms: None,
+            hourly_time_ms: None,
             min_logged_ms: threshold_s.filter(|s| *s > 0.0).map(|s| s * 1000.0),
+            log: None,
         },
         samples,
         threshold_note,

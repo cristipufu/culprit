@@ -42,7 +42,7 @@
       "summary": "Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.",
       "title": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
       "verify": [
-        "Re-scan: log writes should stay under 95% for most of the hour (the Health strip on Overview shows it)."
+        "Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it)."
       ]
     },
     {
@@ -406,7 +406,8 @@
         "engines": [
           "mssql",
           "postgres",
-          "mysql"
+          "mysql",
+          "sqlite"
         ],
         "id": "plan-insights",
         "requires": [
@@ -3488,6 +3489,7 @@
           "reason": "Query Store is OFF on this database."
         }
       ],
+      "platform": null,
       "product": "SQL Server 2022",
       "read_only_session": false,
       "started_at": "2026-10-11T12:13:03Z",
@@ -4334,6 +4336,7 @@
       }
     ],
     "headline": "8 opportunities.",
+    "no_workload": "Query Store is OFF on this database.",
     "opportunities": 8,
     "top_share": null
   }

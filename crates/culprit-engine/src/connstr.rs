@@ -8,8 +8,8 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
         return Err(Error::invalid("Paste a connection string or a host name"));
     }
     let lower = input.to_ascii_lowercase();
-    if let Some(rest) = strip_any(&lower, input, &["sqlite://", "sqlite:"]) {
-        return sqlite(rest);
+    if let Some(rest) = strip_any(&lower, input, &["jdbc:sqlite:", "sqlite://", "sqlite:"]) {
+        return sqlite(rest.strip_prefix("file:").unwrap_or(rest));
     }
     if is_sqlite_path(&lower) {
         return sqlite(input);
@@ -36,6 +36,14 @@ pub fn parse(input: &str) -> Result<ConnectionSpec> {
         return parse_libpq(input);
     }
     parse_bare(input)
+}
+
+/// A path as a SQLite file whatever its name (`db/production`), when the person said the engine is SQLite.
+pub fn parse_sqlite(input: &str) -> Result<ConnectionSpec> {
+    let input = input.trim();
+    let lower = input.to_ascii_lowercase();
+    let path = strip_any(&lower, input, &["jdbc:sqlite:", "sqlite://", "sqlite:"]).unwrap_or(input);
+    sqlite(path.strip_prefix("file:").unwrap_or(path))
 }
 
 /// A SQLite file: `sqlite:///abs/app.db`, `sqlite:app.db`, or a path ending in `.db`, `.sqlite` or `.sqlite3`. No host,
@@ -312,6 +320,10 @@ mod tests {
         let s = parse("sqlite:///Users/me/app.db").unwrap();
         assert_eq!((s.engine, s.database.as_deref()), (Some(Engine::Sqlite), Some("/Users/me/app.db")));
         assert_eq!(parse("./data/app.sqlite3").unwrap().engine, Some(Engine::Sqlite));
+        // DBeaver and DataGrip write the JDBC form.
+        assert_eq!(parse("jdbc:sqlite:/data/app.db").unwrap().database.as_deref(), Some("/data/app.db"));
+        // Any name, when the person says it's SQLite.
+        assert_eq!(parse_sqlite("db/production").unwrap().database.as_deref(), Some("db/production"));
         assert_eq!(parse("~/shop.db").unwrap().database.as_deref(), Some("~/shop.db"));
         assert_eq!(describe(&parse("sqlite:app.db").unwrap()), "app.db");
         // A host that happens to end in .db is still a host when it has a port or a scheme.

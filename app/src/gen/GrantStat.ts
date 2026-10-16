@@ -3,4 +3,9 @@
 /**
  * Memory a query reserves to sort and hash, against what it uses (SQL Server plan cache).
  */
-export type GrantStat = { query_hash: string, executions: number, avg_granted_kb: number, avg_used_kb: number, max_granted_kb: number, };
+export type GrantStat = { query_hash: string, executions: number, avg_granted_kb: number, avg_used_kb: number, max_granted_kb: number, 
+/**
+ * The most recent run's grant and use: memory grant feedback (SQL Server 2019+) shrinks a repeated grant, and the
+ * averages over the plan's life still carry the early oversized ones. `None` when the engine doesn't say.
+ */
+last_granted_kb: number | null, last_used_kb: number | null, };

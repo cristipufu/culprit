@@ -4,6 +4,7 @@ import type { Report } from "../gen/Report";
 import type { Signal } from "../gen/Signal";
 import { percent } from "../lib/format";
 import { foldWaits, signalValue, waitColor } from "../lib/waits";
+import { can, serverName } from "../lib/engines";
 
 /** Which part of the waits panel to open. */
 export type WaitsTab = "waits" | "now" | "health";
@@ -38,6 +39,15 @@ function activate(e: KeyboardEvent, run: () => void) {
  */
 export function WaitsVital({ report, onOpen }: { report: Report; onOpen: OpenWaits }) {
   const waits = foldWaits(report.snapshot.waits);
+  if (waits.length === 0 && !can(report.snapshot.server.engine, "wait_sample")) {
+    return (
+      <div className="vital waits-vital" title={`${serverName(report.snapshot.server.engine)} has no server, so nothing records what it waits on`}>
+        <div className="label">Where time goes</div>
+        <div className="value muted">Not recorded</div>
+        <div className="hint">No server to ask</div>
+      </div>
+    );
+  }
   if (waits.length === 0) {
     return (
       <div className="vital waits-vital" role="button" tabIndex={0} onClick={() => onOpen("now")} onKeyDown={(e) => activate(e, () => onOpen("now"))} title="Sample what the server waits on right now">

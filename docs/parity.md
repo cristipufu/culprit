@@ -101,11 +101,11 @@ reads, opening the file read-only (`docs/providers/sqlite.md`):
 
 | Feature | SQLite |
 |---|---|
-| Statement statistics | – SQLite keeps none |
+| Statement statistics | ◐ SQLite keeps none; from the log the application's framework already writes when the connection has one (Rails, Django, Entity Framework Core, Phoenix/Ecto, JSON lines): runs, total, mean, max and spread per statement shape, over the period the log covers. No rows, reads or CPU |
 | Plans | ✓ `EXPLAIN QUERY PLAN` for any statement: scans, searches by index, temporary b-trees, automatic indexes (aliases resolved to tables). ◐ No rows, costs or timings |
 | Tables, columns, foreign keys | ✓ `sqlite_schema`, `pragma_table_xinfo`, `pragma_foreign_key_list` |
 | Indexes | ✓ `pragma_index_list` / `pragma_index_xinfo`, direction and partial filters. – No usage counters: "never read" is never claimed |
-| Row counts | ◐ from `sqlite_stat1` only (after `ANALYZE`); unknown without it, never counted |
-| Sizes | ✓ `dbstat` when the library has it |
+| Row counts | ✓ counted in the `dbstat` pass that measures sizes, ◐ from `sqlite_stat1` when the file is too large to read whole; unknown without either, never `COUNT(*)` |
+| Sizes | ✓ `dbstat` when the library has it and the file is small enough to read whole without holding up writers (4 GB in WAL mode, 128 MB with a rollback journal) |
 | Settings | ✓ the ones that live in the file (`journal_mode`, `auto_vacuum`, page and free-page counts) |
 

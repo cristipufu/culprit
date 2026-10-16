@@ -13,6 +13,7 @@ import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
 import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
 import { setState, toast } from "../lib/store";
+import { serverName } from "../lib/engines";
 
 type Tab = "columns" | "indexes" | "relations" | "data" | "ddl";
 
@@ -134,7 +135,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
   const stats = snapshot.statistics.filter((s) => s.schema === table.schema && s.table === table.name && s.last_updated);
   const stalest = stats.reduce<string | null>((oldest, s) => (oldest == null || (s.last_updated ?? "") < oldest ? s.last_updated : oldest), null);
   const analyzed = snapshot.server.engine === "mssql" ? stalest : table.last_analyze;
-  const knowsStats = snapshot.server.engine === "postgres" || stats.length > 0;
+  const knowsStats = snapshot.server.engine === "postgres" || stats.length > 0 || table.last_analyze != null;
   const writes = [table.inserts, table.updates, table.deletes].every((v) => v == null)
     ? null
     : (table.inserts ?? 0) + (table.updates ?? 0) + (table.deletes ?? 0);
@@ -571,7 +572,10 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
         </table>
       </div>
       <p className="td-foot">
-        “Used by” comes from the plans of the {planned} heaviest queries; reads and writes count all activity {sinceText}.
+        “Used by” comes from the plans of the {planned} heaviest queries;{" "}
+        {report.snapshot.server.capabilities.includes("index-usage")
+          ? `reads and writes count all activity ${sinceText}.`
+          : `${serverName(report.snapshot.server.engine, report.snapshot.server.product)} keeps no read or write counters for indexes.`}
       </p>
     </>
   );

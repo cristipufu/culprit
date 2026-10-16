@@ -40,6 +40,14 @@ pub struct ConnectionSpec {
     pub token: Option<String>,
 }
 
+/// A file path as a person writes it, with `~/` meaning their home folder (a SQLite connection's file).
+pub fn expand_home(path: &str) -> std::path::PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
 /// Hosts that may receive a Microsoft Entra ID access token for this engine. The token is valid for every Azure database the
 /// person can reach, so it must never be sent to a host outside Azure's database domains.
 pub fn entra_host_allowed(engine: Engine, host: &str) -> bool {

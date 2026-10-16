@@ -196,7 +196,12 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
           ) : (
             <>
               <CircleCheck size={22} className="dl-ok" />
-              <h3>No deadlocks in the last {RANGES.find((r) => r.hours === hours)?.label}</h3>
+              {/* A counter (PostgreSQL) covers the time since statistics were reset, not the range. */}
+              <h3>
+                {counted != null
+                  ? `No deadlocks since statistics were reset${load.status === "ready" && load.report.counted_since ? ` (${when(load.report.counted_since).short})` : ""}`
+                  : `No deadlocks in the last ${RANGES.find((r) => r.hours === hours)?.label}`}
+              </h3>
               <p className="muted">{load.status === "ready" && load.report.note ? load.report.note : sourceLine(engine)}</p>
             </>
           )}

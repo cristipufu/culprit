@@ -3,15 +3,16 @@
 //! missing capabilities with the reason, never zeros. See `docs/providers/sqlite.md`.
 
 mod collect;
-mod plan;
+pub mod plan;
+pub mod sources;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use culprit_core::{
-    ConnectionSpec, Engine, Error, ErrorCode, ExplainMode, LiveState, Plan, Provider, Result, ResultSet, ServerInfo,
-    Snapshot, SnapshotOptions,
+    Ability, ConnectionSpec, Engine, Error, ErrorCode, ExplainMode, LiveState, Plan, Provider, Result, ResultSet,
+    ServerInfo, Snapshot, SnapshotOptions,
 };
 use rusqlite::{Connection, OpenFlags};
 
@@ -30,7 +31,7 @@ impl SqliteProvider {
             .map(str::trim)
             .filter(|p| !p.is_empty())
             .ok_or_else(|| Error::invalid("A SQLite connection needs the database file's path"))?;
-        Ok(SqliteProvider { path: expand_home(path), spec: spec.clone() })
+        Ok(SqliteProvider { path: culprit_core::expand_home(path), spec: spec.clone() })
     }
 
     /// The file, opened read-only: Culprit never writes to it, and `query_only` refuses a write even through a
@@ -51,13 +52,6 @@ fn open(path: &PathBuf) -> Result<Connection> {
     conn.busy_timeout(Duration::from_secs(2)).map_err(|e| map_error(&e))?;
     conn.execute_batch("PRAGMA query_only = 1;").map_err(|e| map_error(&e))?;
     Ok(conn)
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
-        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-        _ => PathBuf::from(path),
-    }
 }
 
 pub(crate) fn map_error(e: &rusqlite::Error) -> Error {
@@ -96,7 +90,7 @@ impl Provider for SqliteProvider {
         let path = self.path.clone();
         blocking(move || {
             let conn = open(&path)?;
-            let (have, missing) = collect::capabilities(&conn);
+            let (have, missing) = collect::capabilities(&conn, collect::whole_file_read(&conn).map(|_| ()));
             Ok(collect::server_info(&conn, &path, have, missing))
         })
         .await
@@ -115,11 +109,7 @@ impl Provider for SqliteProvider {
 
     async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
         if mode == ExplainMode::Analyze {
-            return Err(Error::new(
-                ErrorCode::Unsupported,
-                "SQLite's plans have no actual rows or timings: EXPLAIN QUERY PLAN shows the access path only",
-            )
-            .with_hint("Use the estimated plan; time the statement in the application to see how long it takes."));
+            return Err(Engine::Sqlite.refused(Ability::MeasuresRuns));
         }
         let statement = culprit_core::sql::single_statement(sql, Engine::Sqlite)?.to_string();
         let conn = self.open()?;
@@ -127,8 +117,7 @@ impl Provider for SqliteProvider {
     }
 
     async fn live(&self) -> Result<LiveState> {
-        Err(Error::new(ErrorCode::Unsupported, "SQLite has no server, so no sessions to show")
-            .with_hint("A writer that has to wait gets SQLITE_BUSY in the application: its logs say when."))
+        Err(Engine::Sqlite.refused(Ability::Sessions))
     }
 
     async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {

@@ -107,6 +107,14 @@ pub const MISESTIMATE_MIN_ROWS: f64 = 100.0;
 /// counts that as one execution, so [`PlanNode::runs`] takes the extra threads off the measured executions.
 pub const PARALLEL_THREADS: &str = "ParallelThreads";
 
+/// Node prop: the kind of index an operator reads (`btree`, `brin`, `hash`…), from the catalog
+/// ([`crate::insights::mark_snapshot_index_kinds`]): a plan names the index, not what kind it is.
+pub const INDEX_KIND: &str = "Index Kind";
+
+/// Set on an operator whose scalar functions (`UserDefinedFunctions`) are all in its seek keys: they run once per
+/// seek, not once per row.
+pub const UDF_IN_SEEK_ONLY: &str = "UserDefinedFunctionsInSeekOnly";
+
 impl PlanNode {
     pub fn walk<'a>(&'a self, out: &mut Vec<&'a PlanNode>) {
         out.push(self);
@@ -169,11 +177,24 @@ impl PlanNode {
         })
     }
 
+    /// Whether the operator reads a BRIN index, by the catalog's mark ([`INDEX_KIND`]).
+    pub fn reads_brin(&self) -> bool {
+        self.props.get(INDEX_KIND).is_some_and(|k| k.eq_ignore_ascii_case("brin"))
+    }
+
     /// How far off the estimate was for the executions that happened, as a factor ≥ 1, signed: positive means more
     /// rows than estimated. None without actual rows, or when the operator never ran (nothing to compare).
+    ///
+    /// PostgreSQL's BitmapAnd and BitmapOr combine bitmaps and count no rows: they always report 0 actual, which is no
+    /// measurement.
+    ///
+    /// A bitmap scan of a BRIN index reports page ranges' worth of rows, not rows: no measurement either.
     pub fn misestimate(&self) -> Option<f64> {
         let actual = self.act_rows?;
-        if self.act_executions.is_some_and(|runs| runs <= 0.0) {
+        if self.act_executions.is_some_and(|runs| runs <= 0.0)
+            || matches!(self.op.as_str(), "BitmapAnd" | "BitmapOr")
+            || (self.op == "Bitmap Index Scan" && self.reads_brin())
+        {
             return None;
         }
         let estimated = self.est_rows_for_runs().max(1.0);
@@ -283,8 +304,18 @@ impl Plan {
     }
 
     /// The node with the highest self cost: where the plan spends most of its effort.
-    pub fn hottest(&self) -> &PlanNode {
-        self.nodes().into_iter().max_by(|a, b| a.self_cost.total_cmp(&b.self_cost)).unwrap_or(&self.root)
+    /// The step with the largest share of the plan's cost; `None` when no step carries a cost (SQLite's plans have
+    /// the access path only), so nothing is called the most expensive by accident.
+    pub fn hottest(&self) -> Option<&PlanNode> {
+        if !self.weighed() {
+            return None;
+        }
+        self.nodes().into_iter().max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
+    }
+
+    /// Whether the plan weighs its steps with costs: what "share of the cost" and estimated rows mean on it.
+    pub fn weighed(&self) -> bool {
+        self.total_cost > 0.0 || self.nodes().iter().any(|n| n.self_cost > 0.0 || n.subtree_cost > 0.0)
     }
 
     /// Fill `self_cost` from subtree costs, for engines that only report cumulative cost.

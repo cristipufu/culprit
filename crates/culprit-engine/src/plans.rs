@@ -1,6 +1,7 @@
 //! Plans from outside a connection: pasted text or files saved by other tools. Reads SQL Server showplan XML
 //! (.sqlplan), Postgres EXPLAIN as JSON or text, MySQL EXPLAIN FORMAT=JSON (versions 1 and 2) and MySQL's tree output
-//! (EXPLAIN ANALYZE, FORMAT=TREE), plus Culprit's own plan JSON. psql and mysql client decorations are stripped first.
+//! (EXPLAIN ANALYZE, FORMAT=TREE), SQLite's EXPLAIN QUERY PLAN as the sqlite3 shell prints it, plus Culprit's own plan
+//! JSON. psql and mysql client decorations are stripped first.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -22,6 +23,7 @@ pub enum PlanFormat {
     PostgresText,
     MysqlJson,
     MysqlTree,
+    SqliteText,
     Culprit,
 }
 
@@ -33,6 +35,7 @@ impl PlanFormat {
             PlanFormat::PostgresText => "PostgreSQL EXPLAIN",
             PlanFormat::MysqlJson => "MySQL EXPLAIN FORMAT=JSON",
             PlanFormat::MysqlTree => "MySQL EXPLAIN ANALYZE / FORMAT=TREE",
+            PlanFormat::SqliteText => "SQLite EXPLAIN QUERY PLAN",
             PlanFormat::Culprit => "Culprit plan JSON",
         }
     }
@@ -102,6 +105,7 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
         PlanFormat::PostgresText => postgres_text(block),
         PlanFormat::MysqlJson => mysql_json(text),
         PlanFormat::MysqlTree => mysql_tree(text),
+        PlanFormat::SqliteText => sqlite_text(text),
         PlanFormat::Culprit => culprit_json(text),
     }
     .map_err(unreadable)?;
@@ -121,6 +125,9 @@ fn detect_clean(text: &str) -> Option<PlanFormat> {
         return json_format(unwrap_json(value)?.0.as_ref()?);
     }
     let first = text.lines().next()?.trim();
+    if is_sqlite_text(text) {
+        return Some(PlanFormat::SqliteText);
+    }
     if first.starts_with("-> ") {
         return Some(PlanFormat::MysqlTree);
     }
@@ -186,8 +193,8 @@ fn json_format(value: &Value) -> Option<PlanFormat> {
 }
 
 fn unrecognized(text: &str) -> Error {
-    let hint = "Paste or open a SQL Server plan (.sqlplan), PostgreSQL EXPLAIN output (text or FORMAT JSON), or MySQL \
-                EXPLAIN FORMAT=JSON / EXPLAIN ANALYZE output.";
+    let hint = "Paste or open a SQL Server plan (.sqlplan), PostgreSQL EXPLAIN output (text or FORMAT JSON), MySQL \
+                EXPLAIN FORMAT=JSON / EXPLAIN ANALYZE output, or SQLite EXPLAIN QUERY PLAN output.";
     let first = text.lines().next().unwrap_or("").trim();
     let message = if text.contains("<explain xmlns=\"http://www.postgresql.org") || first.starts_with("- Plan:") {
         "PostgreSQL plans in XML or YAML aren't supported; use EXPLAIN (FORMAT JSON) or the default text format"
@@ -371,6 +378,26 @@ fn mysql_json(text: &str) -> Result<Plan> {
     {
         let _ = (value, statement);
         Err(Error::invalid("This build of Culprit has no MySQL support"))
+    }
+}
+
+fn is_sqlite_text(text: &str) -> bool {
+    #[cfg(feature = "sqlite")]
+    return culprit_sqlite::plan::is_text_plan(text);
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = text;
+        false
+    }
+}
+
+fn sqlite_text(text: &str) -> Result<Plan> {
+    #[cfg(feature = "sqlite")]
+    return culprit_sqlite::plan::parse_text(text);
+    #[cfg(not(feature = "sqlite"))]
+    {
+        let _ = text;
+        Err(Error::invalid("This build of Culprit has no SQLite support"))
     }
 }
 

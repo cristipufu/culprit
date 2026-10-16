@@ -873,6 +873,59 @@ pub fn mark_mssql_statements(text: &str, marker: &str) -> String {
     out
 }
 
+/// Statements a driver, a pool or a framework sends around the application's own: transaction control (`BEGIN`,
+/// `COMMIT`, `SAVEPOINT x`, `END`), session settings (`SET`, `USE`, `RESET`, `DISCARD ALL`), `SHOW`, `PRAGMA`, and the
+/// keep-alive `SELECT 1` a pool checks a connection with. They count in the totals (a slow COMMIT is time the database
+/// spent), but they aren't queries to tune or to batch: a loop in the application doesn't send them.
+pub fn is_session_statement(text: &str) -> bool {
+    let mut rest = text.trim_start();
+    // Leading comments: `/* ping */ SELECT 1`, a driver's `-- keep-alive`.
+    loop {
+        if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, r)| r).trim_start();
+        } else if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, r)| r).trim_start();
+        } else {
+            break;
+        }
+    }
+    let lower = rest.trim_end().trim_end_matches(';').trim_end().to_ascii_lowercase();
+    // One statement only: `SET NOCOUNT ON; SELECT …` is the SELECT's batch.
+    if lower.contains(';') {
+        return false;
+    }
+    let first = lower.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+    if matches!(
+        first,
+        "begin"
+            | "start"
+            | "commit"
+            | "rollback"
+            | "savepoint"
+            | "release"
+            | "end"
+            | "set"
+            | "use"
+            | "reset"
+            | "discard"
+            | "show"
+            | "pragma"
+    ) {
+        // `START` begins a transaction; `SET` also starts `SET TRANSACTION` and session settings alike.
+        return first != "start" || lower.starts_with("start transaction");
+    }
+    // A keep-alive: SELECT of one constant or parameter, nothing read.
+    lower.strip_prefix("select").is_some_and(|value| {
+        let value = value.trim();
+        !value.is_empty()
+            && (value.chars().all(|c| c.is_ascii_digit())
+                || value == "?"
+                || (value.starts_with('$') && value[1..].chars().all(|c| c.is_ascii_digit()))
+                || value == "@@version"
+                || value == "version()")
+    })
+}
+
 /// Tables a statement reads or writes, as written (`schema.table` or `table`), lower-cased and unquoted. Best effort, for
 /// tying changes (a dropped index, fresh statistics) to the queries they touch; never used to decide what is safe.
 pub fn tables_in(text: &str, engine: Engine) -> Vec<String> {
@@ -967,6 +1020,36 @@ fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn session_statements_are_the_drivers_not_the_applications() {
+        for text in [
+            "BEGIN",
+            "COMMIT;",
+            "START TRANSACTION",
+            "SAVEPOINT active_record_1",
+            "SET autocommit = ?",
+            "SET NAMES utf8mb4",
+            "SHOW WARNINGS",
+            "DISCARD ALL",
+            "/* ping */ SELECT 1",
+            "SELECT ?",
+            "select $1",
+            "PRAGMA foreign_keys = ?",
+        ] {
+            assert!(is_session_statement(text), "{text}");
+        }
+        for text in [
+            "SELECT 1 FROM orders WHERE id = ?",
+            "SELECT id FROM users",
+            "SET NOCOUNT ON; SELECT * FROM t",
+            "STARTUP",
+            "UPDATE t SET a = 1",
+            "SELECT count(*)",
+        ] {
+            assert!(!is_session_statement(text), "{text}");
+        }
+    }
 
     #[test]
     fn a_cte_update_and_its_set_clause_are_one_statement() {

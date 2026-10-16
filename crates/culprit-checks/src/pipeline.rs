@@ -6,7 +6,7 @@
 //! 2. **Detect**: every check that applies to the engine and can run with what the login sees looks at the snapshot
 //!    for one kind of problem ([`crate::all`]). A check that needs a capability the scan lacks is listed as locked,
 //!    with the reason, instead of running on missing data.
-//! 3. **Refine**: rules over every check's findings ([`crate::refine`]). Two findings about one cause become one, and a
+//! 3. **Refine**: rules over every check's findings (`refine.rs`). Two findings about one cause become one, and a
 //!    finding that rests on statements whose cost is behind them (they stopped running, or ran once) says so and ranks
 //!    low. A rule here applies to every check on every engine: a false flag several checks could raise is fixed once.
 //! 4. **Rank and summarize**: active findings first, by impact, then the headline.
@@ -68,6 +68,8 @@ fn preparation() -> Vec<Arc<dyn Prepare>> {
     vec![
         step("plans captured before a column changed type", culprit_core::insights::mark_snapshot),
         step("MySQL's possible keys named with their columns", culprit_core::insights::mark_snapshot_keys),
+        step("plan operators marked with their index's kind", culprit_core::insights::mark_snapshot_index_kinds),
+        step("health counters graded only on the evidence", crate::pressure::grade_on_evidence),
     ]
 }
 
@@ -144,9 +146,11 @@ impl Pipeline {
     }
 }
 
-/// Active findings first, then by impact, then by severity.
+/// Active findings first, then by severity, then by impact. Severity already weighs a finding's share of database time
+/// with the time behind it: a Low finding with a large share of a quiet database's few milliseconds (or a warning the
+/// plan says is harmless) never tops a Medium one.
 fn rank(findings: &mut [Finding]) {
     findings.sort_by(|a, b| {
-        a.inactive.cmp(&b.inactive).then(b.impact.score.total_cmp(&a.impact.score)).then(b.severity.cmp(&a.severity))
+        a.inactive.cmp(&b.inactive).then(b.severity.cmp(&a.severity)).then(b.impact.score.total_cmp(&a.impact.score))
     });
 }

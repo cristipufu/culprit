@@ -210,6 +210,10 @@ fn churn(engine: &str, rate: f64, setup: impl FnOnce(&mut Snapshot)) -> Report {
 fn server_wide_connection_counts_say_the_server_and_a_pools_are_not_graded() {
     let r = churn("mssql-demo", 40.0, |_| {});
     assert_eq!(of(&r, "connection-churn")[0].title, "The server accepts 40 new connections a second: use a pool");
+    // The instance's count is shared: however high, it isn't graded on this database.
+    let r = churn("mssql-demo", 400.0, |_| {});
+    assert_eq!(of(&r, "connection-churn")[0].severity, Severity::Low);
+    assert!(of(&r, "connection-churn")[0].caveats.iter().any(|c| c.contains("whole server")));
     // Azure SQL Database: the counter is the server process's, shared by the elastic pool.
     let r = churn("mssql-demo", 400.0, |s| s.server.cloud = Some("Azure SQL Database".into()));
     assert!(of(&r, "connection-churn").is_empty());
@@ -481,6 +485,15 @@ fn selects_into_a_table_or_variable_and_exports_are_not_big_results() {
             .is_empty()
     );
     assert!(of(&big_read("SELECT @total = SUM(amount) FROM dbo.orders", 100.0, 24.0), "big-result").is_empty());
+    // A write behind a WITH list counts the rows it changed, not rows sent to the client.
+    for write in [
+        "WITH b AS (SELECT id FROM jobs WHERE done ORDER BY id LIMIT 10000) DELETE FROM jobs USING b WHERE jobs.id = b.id",
+        "WITH cte AS (SELECT TOP (5000) * FROM dbo.queue ORDER BY id) DELETE FROM cte",
+        "WITH s(id) AS (SELECT id FROM src) UPDATE dst SET seen = true FROM s WHERE dst.id = s.id",
+    ] {
+        let r = big_read(write, 100.0, 24.0);
+        assert!(of(&r, "big-result").is_empty(), "{write}");
+    }
     assert_eq!(
         of(&big_read("SELECT id, amount FROM dbo.orders WHERE status = @P1", 100.0, 24.0), "big-result").len(),
         1

@@ -4,7 +4,8 @@ import type { Category } from "../gen/Category";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { Finding } from "../gen/Finding";
 import type { Report } from "../gen/Report";
-import { ago, bytes, count, duration, percent, windowLabel } from "../lib/format";
+import { ago, bytes, count, duration, percent } from "../lib/format";
+import { windowPhrase, windowUnknown } from "../lib/rates";
 import { useHotkeys } from "../lib/hotkeys";
 import { changeRequest, setState, useStore } from "../lib/store";
 import { planFlags, trendNote, WorkloadTrend } from "../components/Trends";
@@ -16,6 +17,7 @@ import { CheckedFine } from "../components/CheckedFine";
 import { WorkloadUnlock } from "../components/WorkloadUnlock";
 import { HealthLine, WaitsVital, type WaitsTab } from "../components/Waits";
 import { FindingDetail } from "./FindingDetail";
+import { can } from "../lib/engines";
 
 const CATEGORY_LABEL: Record<Category, string> = {
   indexes: "Indexes",
@@ -89,7 +91,7 @@ export function Overview({ report }: { report: Report }) {
     ArrowUp: () => move(-1),
     "/": () => searchRef.current?.focus(),
     // `c` copies the selected finding's fix; `v` reads "recent vs baseline".
-    v: () => setState({ changes: changeRequest() }),
+    ...(can(report.snapshot.server.engine, "periods") ? { v: () => setState({ changes: changeRequest() }) } : {}),
   }, !waits && !changes);
 
   useEffect(() => {
@@ -203,7 +205,13 @@ function Header({
   if (changes?.since) flags.push({ at: Date.parse(changes.since), label: "Since", tone: "anchor" });
   // Under 20 hours of history a "per day" figure would be an extrapolation: show what was measured, and over how long.
   const short = w != null && w.window_hours < 20;
-  const span = w ? (w.windowed ? `last ${compactSpan(w.window_hours)}` : `${compactSpan(w.window_hours)} since reset`) : "";
+  const span = !w
+    ? ""
+    : w.log != null
+      ? `${w.log} log${windowUnknown(w) ? "" : ` · ${compactSpan(w.window_hours)}`}`
+      : w.windowed
+        ? `last ${compactSpan(w.window_hours)}`
+        : `${compactSpan(w.window_hours)} since reset`;
   return (
     <div className="ov-head">
       <h2>
@@ -241,7 +249,7 @@ function Header({
           events={events}
           actions={<MarkButton connection={snapshot.connection} />}
         />
-      ) : w && trendNote(w) ? (
+      ) : w && trendNote(w) && can(snapshot.server.engine, "periods") ? (
         <p className="trend-note">
           {trendNote(w)}{" "}
           <button className="link-button" onClick={compare} title="Compare two periods (V)">
@@ -267,7 +275,7 @@ function perDay(value: number, hours: number): number {
 function headlineTail(report: Report): string {
   const w = report.snapshot.workload;
   const share = report.summary.top_share;
-  const span = w ? (w.windowed ? `the ${windowLabel(w.window_hours)}` : `the ${windowLabel(w.window_hours).replace("last ", "")} since statistics were reset`) : "";
+  const span = w ? windowPhrase(w) : "";
   if (report.summary.opportunities === 0) return w ? `Nothing stands out over ${span}.` : "Nothing stands out.";
   if (w && share != null && share >= 0.05) return `The top ones touch ${percent(share)} of database time over ${span}.`;
   if (w) return `Based on ${w.source}, ${span}.`;

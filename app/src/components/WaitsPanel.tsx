@@ -11,7 +11,8 @@ import { WAIT_LABEL, foldWaits, startSample, useSample, waitColor } from "../lib
 import { CloudLimits } from "./CloudLimits";
 import { HealthTab, SignalTile } from "./Health";
 import type { WaitsTab } from "./Waits";
-import { serverName } from "../lib/engines";
+import type { Engine } from "../gen/Engine";
+import { can, isMariadb, serverName } from "../lib/engines";
 
 type Loaded = { status: "loading" } | { status: "ready"; report: WaitsReport | null } | { status: "error"; error: ApiError };
 
@@ -20,8 +21,6 @@ const TABS: { key: WaitsTab; label: string }[] = [
   { key: "now", label: "Right now" },
   { key: "health", label: "Health" },
 ];
-
-const ENGINE: Record<string, string> = { mssql: "SQL Server", postgres: "PostgreSQL", mysql: "MySQL" };
 
 /** Where database time goes, explained: categories with their queries, a live sample, and the health signals. */
 export default function WaitsPanel({
@@ -37,11 +36,14 @@ export default function WaitsPanel({
 }) {
   const connection = report.snapshot.connection;
   const windowMinutes = useStore((s) => s.windowMinutes);
-  const [tab, setTab] = useState<WaitsTab>(initialTab);
+  // Sampling right now needs a server to ask (not SQLite).
+  const sampling = can(report.snapshot.server.engine, "wait_sample");
+  const tabs = TABS.filter((t) => t.key !== "now" || sampling);
+  const [tab, setTab] = useState<WaitsTab>(initialTab === "now" && !sampling ? "waits" : initialTab);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [selected, setSelected] = useState<string | undefined>(initialCategory);
   const sheet = useRef<HTMLDivElement>(null);
-  const engine = report.snapshot.server.engine === "mysql" ? serverName("mysql", report.snapshot.server.product) : (ENGINE[report.snapshot.server.engine] ?? report.snapshot.server.engine);
+  const engine = serverName(report.snapshot.server.engine, report.snapshot.server.product);
 
   useEffect(() => {
     let live = true;
@@ -66,12 +68,13 @@ export default function WaitsPanel({
     e.stopPropagation();
     if (e.key === "Escape") return onClose();
     if (e.target instanceof HTMLInputElement) return;
-    const index = TABS.findIndex((t) => t.key === tab);
+    const index = tabs.findIndex((t) => t.key === tab);
     if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       e.preventDefault();
-      setTab(TABS[(index + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length]!.key);
+      setTab(tabs[(index + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length]!.key);
     }
-    if (["1", "2", "3"].includes(e.key)) setTab(TABS[Number(e.key) - 1]!.key);
+    const n = Number(e.key);
+    if (n >= 1 && n <= tabs.length) setTab(tabs[n - 1]!.key);
     if (tab === "waits" && categories.length && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "j" || e.key === "k")) {
       e.preventDefault();
       const at = Math.max(0, categories.findIndex((c) => c.key === current?.key));
@@ -97,7 +100,7 @@ export default function WaitsPanel({
           </button>
         </header>
         <nav className="waits-tabs" role="tablist">
-          {TABS.map((t, i) => (
+          {tabs.map((t, i) => (
             <button key={t.key} role="tab" aria-selected={tab === t.key} className={tab === t.key ? "on" : ""} onClick={() => setTab(t.key)}>
               {t.label}
               <span className="kbd">{i + 1}</span>
@@ -114,7 +117,7 @@ export default function WaitsPanel({
                 {loaded.error.hint && <p>{loaded.error.hint}</p>}
               </div>
             ) : !loaded.report || !current ? (
-              <NoHistory engine={report.snapshot.server.engine} onSample={() => setTab("now")} />
+              <NoHistory engine={report.snapshot.server.engine} product={report.snapshot.server.product} onSample={sampling ? () => setTab("now") : undefined} />
             ) : (
               <WaitsView report={loaded.report} current={current} onSelect={setSelected} onClose={onClose} onSample={() => setTab("now")} />
             ))}
@@ -153,18 +156,24 @@ function WaitsSkeleton() {
   );
 }
 
-function NoHistory({ engine, onSample }: { engine: string; onSample: () => void }) {
+/** Why a scan has no waits, in the engine's own terms. */
+const NO_WAIT_HISTORY: Record<Engine, string> = {
+  mssql: "The login may not be allowed to read wait statistics, or Query Store isn't capturing waits. A live sample still works.",
+  postgres: "PostgreSQL keeps no wait history. Turn on track_io_timing to time disk reads per statement, and sample what sessions wait on right now.",
+  mysql: "performance_schema isn't timing the waits (its wait instruments and consumers are off), or the login can't read them. A live sample still works.",
+  sqlite: "SQLite has no server, so nothing records what it waits on. Waiting for the write lock shows up in the application, as SQLITE_BUSY or slow commits.",
+};
+
+function NoHistory({ engine, product, onSample }: { engine: Engine; product: string; onSample?: () => void }) {
   return (
     <div className="waits-empty">
       <h3>This scan has no record of what queries waited on</h3>
-      <p>
-        {engine === "postgres"
-          ? "PostgreSQL keeps no wait history. Turn on track_io_timing to time disk reads per statement, and sample what sessions wait on right now."
-          : "The login may not be allowed to read wait statistics, or Query Store isn't capturing waits. A live sample still works."}
-      </p>
-      <button className="btn primary" onClick={onSample}>
-        <Radio size={13} /> Sample right now
-      </button>
+      <p>{isMariadb(engine, product) ? NO_WAIT_HISTORY.mysql.replace("performance_schema", "MariaDB's performance_schema") : NO_WAIT_HISTORY[engine]}</p>
+      {onSample && (
+        <button className="btn primary" onClick={onSample}>
+          <Radio size={13} /> Sample right now
+        </button>
+      )}
     </div>
   );
 }

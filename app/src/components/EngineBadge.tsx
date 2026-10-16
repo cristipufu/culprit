@@ -1,13 +1,9 @@
 import type { Engine } from "../gen/Engine";
 import type { Environment } from "../gen/Environment";
-import { isMariadb } from "../lib/engines";
+import { engineLabel, isMariadb } from "../lib/engines";
 
-const ENGINE: Record<Engine, { abbr: string; label: string }> = {
-  mssql: { abbr: "MS", label: "SQL Server" },
-  postgres: { abbr: "Pg", label: "PostgreSQL" },
-  mysql: { abbr: "My", label: "MySQL" },
-  sqlite: { abbr: "Sq", label: "SQLite" },
-};
+/** Each engine's initials on its badge (its name comes from the engine facts). */
+const ABBR: Record<Engine, string> = { mssql: "MS", postgres: "Pg", mysql: "My", sqlite: "Sq" };
 
 /**
  * The database engine at a glance: a small badge in the engine's color with its initials, and the environment as a
@@ -26,7 +22,7 @@ export function EngineBadge({
   size?: "sm" | "md";
 }) {
   const mariadb = isMariadb(engine, product);
-  const { abbr, label } = mariadb ? { abbr: "Ma", label: "MariaDB" } : ENGINE[engine];
+  const { abbr, label } = mariadb ? { abbr: "Ma", label: "MariaDB" } : { abbr: ABBR[engine], label: engineLabel(engine) };
   const title = environment ? `${label} · ${environment}` : label;
   return (
     <span className={`engine-badge engine-${mariadb ? "mariadb" : engine} size-${size}`} title={title} role="img" aria-label={title}>

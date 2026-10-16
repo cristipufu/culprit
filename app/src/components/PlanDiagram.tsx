@@ -5,6 +5,7 @@ import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
 import { planShares } from "../lib/actual";
 import { duration, percent } from "../lib/format";
+import { can, serverName } from "../lib/engines";
 import { allNodes, costBasis as basis, cost, insightsByNode, isWrapper, rowError, rows, rowsOut } from "../lib/plan-format";
 import { ActualSummary } from "./ActualSummary";
 import { NodeDetails } from "./NodeDetails";
@@ -77,15 +78,16 @@ function drawn(n: PlanNode, total: number, keep: Set<number>): { node: PlanNode;
 }
 
 /** Tidy top-down layout: leaves take consecutive slots, parents center over their children. Cheap subtrees fold into one
- * pill; wrappers that only pass rows on become edge labels. */
-function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<number>) {
+ * pill (only where the plan weighs its steps: without estimates nothing is cheap); wrappers that only pass rows on become
+ * edge labels. */
+function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<number>, weighed: boolean) {
   const boxes: Box[] = [];
   const folds: Fold[] = [];
   const parentOf = new Map<number, number>();
   let slot = 0;
   const place = (n: PlanNode, via: string[], depth: number): number => {
     const kids = n.children.map((c) => drawn(c, total, keep));
-    const visible = kids.filter((k) => expanded.has(k.node.id) || keep.has(k.node.id) || k.node.subtree_cost / total >= CHEAP_SHARE);
+    const visible = kids.filter((k) => !weighed || expanded.has(k.node.id) || keep.has(k.node.id) || k.node.subtree_cost / total >= CHEAP_SHARE);
     const hidden = kids.filter((k) => !visible.includes(k));
     const xs = visible.map((k) => {
       parentOf.set(k.node.id, n.id);
@@ -127,6 +129,13 @@ const py = (y: number) => PAD + 24 + y * (CARD_H + GAP_Y);
 export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) => void }) {
   // Actual plans with per-operator timing show where the time went; everything else, the optimizer's cost estimate.
   const shares = useMemo(() => planShares(plan), [plan]);
+  if (shares.basis !== "time" && !can(plan.engine, "plan_estimates")) {
+    return (
+      <div className="cost-strip">
+        <div className="eyebrow">{serverName(plan.engine)}'s plan has the access path only: no row or cost estimates to weigh its steps by.</div>
+      </div>
+    );
+  }
   const own = (n: PlanNode) => shares.own.get(n.id) ?? 0;
   const top = allNodes(plan.root)
     .filter((n) => own(n) > 0)
@@ -192,6 +201,7 @@ export function PlanDiagram(props: {
   const shares = useMemo(() => planShares(plan), [plan]);
   const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
   const planCost = plan.total_cost || plan.root.subtree_cost;
+  const estimates = can(plan.engine, "plan_estimates") || shares.basis === "time";
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
   const hottest = useMemo(() => nodes.reduce((a, b) => (shareOf(b) > shareOf(a) ? b : a), plan.root), [nodes, plan.root, shares]);
@@ -214,7 +224,7 @@ export function PlanDiagram(props: {
   const [fitted, setFitted] = useState(initialZoom != null || props.zoom != null);
   const scroller = useRef<HTMLDivElement>(null);
   const hot = useMemo(() => pathTo(plan.root, target), [plan.root, target]);
-  const { boxes, folds, parentOf, rootVia, width, height } = useMemo(() => layout(plan.root, total, expanded, keep), [plan.root, total, expanded, keep]);
+  const { boxes, folds, parentOf, rootVia, width, height } = useMemo(() => layout(plan.root, total, expanded, keep, estimates), [plan.root, total, expanded, keep, estimates]);
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
   const maxRows = Math.max(1, ...nodes.map(rowsOut));
   const stroke = (r: number) => 1.5 + 4.5 * (Math.log10(r + 1) / Math.log10(maxRows + 1));
@@ -280,7 +290,8 @@ export function PlanDiagram(props: {
           {badge && <span className="side-badge">{badge}</span>}
           <span className="tag">{kindLabel ?? (plan.kind === "actual" ? "Actual plan" : plan.kind === "generic" ? "Generic plan" : "Estimated plan")}</span>
           <span>
-            {nodes.length} operator{nodes.length === 1 ? "" : "s"} · cost {cost(planCost)}
+            {nodes.length} operator{nodes.length === 1 ? "" : "s"}
+            {estimates && ` · cost ${cost(planCost)}`}
           </span>
           <span className="spacer" />
           {plan.warnings.length > 0 && (
@@ -351,6 +362,7 @@ export function PlanDiagram(props: {
               {boxes.map((b) => (
                 <PlanCard
                   key={b.node.id}
+                  estimates={estimates}
                   node={b.node}
                   share={shareOf(b.node)}
                   ownMs={shares.ms.get(b.node.id)}
@@ -385,7 +397,7 @@ export function PlanDiagram(props: {
         </div>
       </div>
       {selectedNode && props.showProps !== false && (
-        <NodeDetails node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? selectedNode.subtree_cost / total} insights={flagged.get(selectedNode.id)} />
+        <NodeDetails estimates={estimates} node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? selectedNode.subtree_cost / total} insights={flagged.get(selectedNode.id)} />
       )}
     </div>
   );
@@ -424,9 +436,11 @@ function PlanCard(props: {
   tint?: number;
   /** The operator's own time in a measured run (its inputs' time taken out). */
   ownMs?: number;
+  /** The plan weighs its steps (costs or measured time): show each one's share and its rows. */
+  estimates: boolean;
   onSelect: () => void;
 }) {
-  const { node, share, x, y, hot, hottest, selected, mark, insights, tint, ownMs, onSelect } = props;
+  const { node, share, x, y, hot, hottest, selected, mark, insights, tint, ownMs, estimates, onSelect } = props;
   const err = rowError(node);
   const table = node.object?.split(".").pop();
   const worst = insights?.[0];
@@ -454,10 +468,12 @@ function PlanCard(props: {
         <span className={`pc-op ${compactOp(node.op).length > 13 ? "long" : ""}`} title={node.op}>
           {compactOp(node.op)}
         </span>
-        <span className="pc-share">
-          {hottest && <Flame size={11} color="var(--heat-4)" />}
-          {percent(share)}
-        </span>
+        {estimates && (
+          <span className="pc-share">
+            {hottest && <Flame size={11} color="var(--heat-4)" />}
+            {percent(share)}
+          </span>
+        )}
       </span>
       <span className="pc-obj mono">{table ? `${table}${node.index ? ` · ${node.index}` : ""}` : node.detail ?? " "}</span>
       <span className="pc-rows">
@@ -466,8 +482,14 @@ function PlanCard(props: {
             {rows(node.est_rows * Math.max(1, node.est_executions))} → <b>{rows(node.act_rows)}</b>
             {err && err.factor >= 10 && <span className="mis">×{rows(err.factor)}</span>}
           </>
-        ) : (
+        ) : estimates ? (
           <>{rows(node.est_rows * Math.max(1, node.est_executions))} est.</>
+        ) : (
+          node.seek_predicate && (
+            <span className="muted mono pc-seek" title={node.seek_predicate}>
+              {node.seek_predicate}
+            </span>
+          )
         )}
         {(ownMs ?? node.act_time_ms) != null && <span className="muted"> · {duration(ownMs ?? node.act_time_ms!)}</span>}
         {node.warnings.length > 0 && !worst && <TriangleAlert size={11} color="var(--medium-text)" style={{ marginLeft: 3 }} />}

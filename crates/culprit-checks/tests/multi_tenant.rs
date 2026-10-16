@@ -54,6 +54,34 @@ fn advice_about_a_query_that_stopped_running_is_marked_inactive() {
     assert!(f.caveats[0].contains("not run since"), "{:?}", f.caveats);
 }
 
+// The false flag: a job that ran 3,000 times between 08:00 and 08:20 and not since was "changed or fixed by a deploy".
+// It began inside the window and covered a sliver of it: a nightly job looks exactly like that until a day passes.
+#[test]
+fn a_burst_inside_the_window_is_not_a_query_that_stopped() {
+    let mut s = snapshot();
+    let w = s.workload.as_mut().unwrap();
+    let id = w.queries[0].id.clone();
+    w.queries[0].first_seen = Some("2026-10-11T08:00:00Z".into());
+    w.queries[0].last_seen = Some("2026-10-11T08:20:00Z".into());
+    w.queries[0].executions = 3_000.0;
+    w.queries[0].trend = None;
+    s.tuning = Some(TuningAdvice {
+        recommendations: vec![TuningRecommendation {
+            name: "PR_1".into(),
+            kind: "FORCE_LAST_GOOD_PLAN".into(),
+            query_id: Some(id.clone()),
+            regressed_plan_id: Some("2".into()),
+            recommended_plan_id: Some("1".into()),
+            estimated_gain: Some(0.9),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let report = analyze(s);
+    let f = finding(&report.findings, &format!("tuning-advice:force:{id}")).expect("tuning advice");
+    assert!(!f.inactive, "{:?}", f.caveats);
+}
+
 #[test]
 fn a_filtered_index_does_not_serve_a_foreign_key() {
     let s = snapshot();

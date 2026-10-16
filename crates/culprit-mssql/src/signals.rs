@@ -5,55 +5,50 @@
 use std::collections::HashMap;
 
 use culprit_core::{
-    CollectorNote, ConstraintIssue, ConstraintKind, FileIo, FileKind, IndexContention, Pressure, Replica, ReplicaRole,
+    ConstraintIssue, ConstraintKind, Coverage, FileIo, FileKind, IndexContention, Pressure, Replica, ReplicaRole,
     Signal, SignalScope, SignalUnit, Snapshot, SnapshotOptions,
 };
 
-use crate::conn::{MsClient, map_error, query};
+use crate::conn::{MsClient, query};
 use crate::probe::Probe;
+use crate::sources;
 use crate::value::Rec;
 use crate::workload::id_list;
 
-/// Collect every signal into `snapshot`. Notes say what couldn't be read and why.
+/// Collect every signal into `snapshot`, each source read through `sources::read`: these add detail and lock nothing,
+/// so a failure is a note.
 pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &SnapshotOptions, snapshot: &mut Snapshot) {
-    let mut notes: Vec<(&str, String)> = Vec::new();
-    let from_query_store = snapshot.workload.as_ref().is_some_and(|w| w.source == "Query Store");
+    let mut coverage = Coverage::default();
+    let grant = || probe.grant_hint();
+    let from_query_store =
+        snapshot.workload.as_ref().is_some_and(|w| w.kind() == Some(culprit_core::WorkloadKind::QueryStore));
     if from_query_store && let Some(workload) = snapshot.workload.as_mut() {
-        if let Err(e) = attach_costs(client, options.window_in_minutes(), &mut workload.queries).await {
-            notes.push(("query costs", map_error(e).message));
-        }
+        let costs = attach_costs(client, options.window_in_minutes(), &mut workload.queries).await;
+        sources::read(&mut coverage, &sources::QUERY_COSTS, costs, grant);
         culprit_core::signals::fill_row_bytes(&mut workload.queries);
     }
-    match contention(client, probe.major).await {
-        Ok(by_index) => {
-            for index in &mut snapshot.indexes {
-                let key = (index.schema.to_lowercase(), index.table.to_lowercase(), index.name.to_lowercase());
-                if let Some(c) = by_index.get(&key) {
-                    index.contention = Some(c.clone());
-                }
+    if let Some(by_index) = sources::read(&mut coverage, &sources::INDEX_CONTENTION, contention(client).await, grant) {
+        for index in &mut snapshot.indexes {
+            let key = (index.schema.to_lowercase(), index.table.to_lowercase(), index.name.to_lowercase());
+            if let Some(c) = by_index.get(&key) {
+                index.contention = Some(c.clone());
             }
         }
-        Err(e) => notes.push(("index contention", map_error(e).message)),
     }
-    match constraints(client).await {
-        Ok(list) => snapshot.constraints = list,
-        Err(e) => notes.push(("constraints", map_error(e).message)),
+    if let Some(list) = sources::read(&mut coverage, &sources::CONSTRAINTS, constraints(client).await, grant) {
+        snapshot.constraints = list;
     }
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
     if probe.can_read_dmvs() {
-        match files(client, probe.is_azure_sql_database()).await {
-            Ok(files) => pressure.files = files,
-            Err(e) => notes.push(("file latency", map_error(e).message)),
+        let azure = probe.is_azure_sql_database();
+        if let Some(files) = sources::read(&mut coverage, &sources::FILE_LATENCY, files(client, azure).await, grant) {
+            pressure.files = files;
         }
-        match logins(client, probe.is_azure_sql_database()).await {
-            Ok(signals) => pressure.signals.extend(signals),
-            Err(e) => notes.push(("logins", map_error(e).message)),
-        }
+        let logins = sources::read(&mut coverage, &sources::LOGINS, logins(client, azure).await, grant);
+        pressure.signals.extend(logins.unwrap_or_default());
     }
     pressure.replicas = replicas(client).await;
-    snapshot
-        .notes
-        .extend(notes.into_iter().map(|(collector, message)| CollectorNote { collector: collector.into(), message }));
+    snapshot.notes.extend(coverage.finish().2);
 }
 
 // ── per query ──────────────────────────────────────────────────────────────────────────────────────
@@ -228,12 +223,12 @@ HAVING SUM(s.row_lock_wait_count + s.page_lock_wait_count + s.page_latch_wait_co
 }
 
 /// Row and page lock waits, page latch waits and escalations (and attempts) per index since its metadata was loaded.
-async fn contention(client: &mut MsClient, major: u32) -> tiberius::Result<HashMap<IndexKey, IndexContention>> {
-    // OPTIMIZE_FOR_SEQUENTIAL_KEY is a SQL Server 2019 (15) option.
-    let rows = match query(client, &contention_sql(major >= 15)).await {
+async fn contention(client: &mut MsClient) -> tiberius::Result<HashMap<IndexKey, IndexContention>> {
+    // OPTIMIZE_FOR_SEQUENTIAL_KEY is a SQL Server 2019 option, which Azure SQL has too while it reports version 12: read
+    // it wherever the column exists, and without it where it doesn't.
+    let rows = match query(client, &contention_sql(true)).await {
         Ok(rows) => rows,
-        Err(_) if major >= 15 => query(client, &contention_sql(false)).await?,
-        Err(e) => return Err(e),
+        Err(_) => query(client, &contention_sql(false)).await?,
     };
     Ok(rows
         .iter()

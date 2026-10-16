@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
+import { can } from "../lib/engines";
 import { duration, percent } from "../lib/format";
 import { allNodes, costBasis, estRows, insightsByNode, rowError, rows } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
@@ -100,9 +101,12 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
   const hasRead = all.some((r) => r.node.rows_read != null);
   const hasRuns = all.some((r) => (r.node.act_executions ?? r.node.est_executions) > 1);
   const hasIssues = all.some((r) => r.issues > 0);
+  // A plan with no estimates (SQLite's) has no shares or estimated rows to show.
+  const weighed = can(plan.engine, "plan_estimates") || actual;
   const columns = COLUMNS.filter(
     (c) =>
       (!c.actual || actual) &&
+      (weighed || (c.key !== "cost" && c.key !== "subtree" && c.key !== "est")) &&
       (c.key !== "time" || timed) &&
       (c.key !== "read" || hasRead) &&
       (c.key !== "runs" || hasRuns) &&

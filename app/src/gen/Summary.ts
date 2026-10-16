@@ -6,4 +6,9 @@ export type Summary = { opportunities: number, by_category: Array<CategoryCount>
 /**
  * Share of database time touched by the three highest-ranked query findings.
  */
-top_share: number | null, headline: string, };
+top_share: number | null, headline: string, 
+/**
+ * Why the scan has no statement statistics ("Query Store is OFF on this database."), `None` when it has them: one
+ * sentence every surface shows instead of deciding for itself which capability explains it.
+ */
+no_workload: string | null, };

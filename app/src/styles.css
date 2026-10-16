@@ -6311,6 +6311,11 @@ table.rg {
   background: var(--medium);
 }
 
+/* The engine's own verdict, like the optimizer's requests. */
+.ia-source.engine-built::before {
+  background: var(--focus);
+}
+
 .ia-impact {
   flex: none;
   display: flex;
@@ -10138,6 +10143,15 @@ button.health-pill:hover {
   flex: none;
   height: 16px;
   line-height: 16px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* A step's search condition, where a plan has no row estimates to show (SQLite): cut to the card, whole in the tooltip. */
+.plan-card .pc-seek {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .plan-head {
@@ -12154,11 +12168,17 @@ button.as-callout:hover {
   margin-bottom: var(--s-4);
 }
 
+/* The form an action opens, between the actions and the list. */
+.conn-panel {
+  margin-bottom: var(--s-5, 20px);
+}
+
+/* Above the list: room between the actions (or the form they open) and the first group. */
 .conn-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--s-2);
-  margin-top: var(--s-2);
+  margin: var(--s-2) 0 var(--s-5, 20px);
 }
 
 .conn-card {

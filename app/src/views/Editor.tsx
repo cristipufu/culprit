@@ -1,5 +1,5 @@
 import type { CompletionSource } from "@codemirror/autocomplete";
-import { MariaSQL, MSSQL, MySQL, PostgreSQL, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
+import { MariaSQL, MSSQL, MySQL, PostgreSQL, SQLite, keywordCompletionSource, schemaCompletionSource } from "@codemirror/lang-sql";
 import { HighlightStyle, LanguageSupport, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
@@ -21,7 +21,7 @@ import { api, errorMessage, type ApiError } from "../lib/api";
 import { catalogFromReport, completionConfig } from "../lib/completion";
 import { duration } from "../lib/format";
 import { currentReport, getState, loadSaved, setState, toast, useStore } from "../lib/store";
-import { isMariadb } from "../lib/engines";
+import { can, isMariadb, measuresRuns } from "../lib/engines";
 import { keys } from "../lib/keys";
 
 type Output =
@@ -137,7 +137,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   const languageExtension = useCallback((): Extension => {
     const mariadb = isMariadb(connection.engine, connection.last_report?.product);
-    const dialect = connection.engine === "mssql" ? MSSQL : mariadb ? MariaSQL : connection.engine === "mysql" ? MySQL : PostgreSQL;
+    const dialect = { mssql: MSSQL, postgres: PostgreSQL, mysql: mariadb ? MariaSQL : MySQL, sqlite: SQLite }[connection.engine];
     const keywords = keywordCompletionSource(dialect, true);
     // After `alias.` only that table's columns make sense; keywords there are noise.
     const keywordsOutsideMembers: CompletionSource = (context) => (/[\w"`\]]\.\w*$/.test(context.state.sliceDoc(Math.max(0, context.pos - 120), context.pos)) ? null : keywords(context));
@@ -217,7 +217,7 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
 
   const explain = async (mode: ExplainMode) => {
     const sql = target();
-    if (!sql || sql === PLACEHOLDER.trim()) return;
+    if (!sql || sql === PLACEHOLDER.trim() || (mode === "analyze" && !measuresRuns(connection.engine))) return;
     const tab = tabsRef.current.active;
     setOutput(tab, { kind: "busy", label: mode === "analyze" ? "Running and measuring…" : "Planning…" });
     try {
@@ -467,9 +467,11 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
             <button className="btn" onClick={() => explain("estimated")} title="Show the plan without running the statement">
               <ScanSearch size={14} /> Explain <span className="kbd">{keys("⌘E")}</span>
             </button>
-            <button className="btn" onClick={() => explain("analyze")} title="Run the statement and measure each step">
-              <Zap size={13} /> Analyze <span className="kbd">{keys("⌘⇧E")}</span>
-            </button>
+            {measuresRuns(connection.engine) && (
+              <button className="btn" onClick={() => explain("analyze")} title="Run the statement and measure each step">
+                <Zap size={13} /> Analyze <span className="kbd">{keys("⌘⇧E")}</span>
+              </button>
+            )}
             {naming === null ? (
               <button className="btn" onClick={() => save()} title={activeTab.saved ? `Update “${activeTab.saved}”` : "Save as a named query"}>
                 <Save size={13} /> {activeTab.saved ? "Save" : "Save as…"} <span className="kbd">{keys("⌘S")}</span>
@@ -489,7 +491,11 @@ export default function Editor({ connection }: { connection: ConnectionInfo }) {
               </form>
             )}
             <span className="spacer" />
-            {production ? (
+            {!can(connection.engine, "writes") ? (
+              <span className="env-note" title="Culprit opens the file read-only: statements that read run; anything that would change it is refused">
+                Read-only file
+              </span>
+            ) : production ? (
               <span className="env-chip env-production" title="Reads run as they are; anything that changes data asks first, and statements that touch every row need the connection's name typed">
                 Production · changes ask first
               </span>

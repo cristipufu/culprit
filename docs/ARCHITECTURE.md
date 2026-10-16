@@ -23,6 +23,7 @@ with a fixture.
 |---|---|
 | `culprit-core` | The model (`Snapshot`, `Plan`, `Finding`), the `Check` and `Provider` traits, plan insights, `Coverage`. No I/O. |
 | `culprit-mssql`, `culprit-postgres`, `culprit-mysql`, `culprit-sqlite` | Providers: the sources for one engine, and explain, live sessions, deadlocks. SQLite reads a file, read-only: schema, statistics, settings and plans, no sessions or waits. |
+| `culprit-querylog` | Logs an application's framework already writes (Rails, Django, EF Core, Phoenix/Ecto, JSON lines), read into a `Workload` for an engine that keeps no statement history: one module per format behind a `Format` trait, statements grouped by `culprit_core::fingerprint`. The log's own timestamps are its period (`Workload.log`), never "the last N hours". |
 | `culprit-checks` | The analysis pipeline, every check, the refine rules, and the views built on a report. |
 | `culprit-engine` | Connections and secrets, the provider registry, scans, saved reports and the history between scans. |
 | `culprit-cli`, `culprit-mcp`, `app/` | Surfaces: the same report, worded for a terminal, a coding agent, a window. |
@@ -33,6 +34,13 @@ A provider (`culprit_core::Provider`, one per engine, chosen in `culprit-engine/
 from its engine's sources: Query Store and the plan cache on SQL Server, `pg_stat_statements` on PostgreSQL,
 `performance_schema` digests or the slow log on MySQL and MariaDB, and on every engine the catalog, index and table
 usage views, waits, settings and pressure counters.
+
+Each provider declares its sources in one list, `<provider>/src/sources.rs`: a `culprit_core::Source` per view or log
+it reads, with its name (what its notes carry), what it reads, and the capabilities it delivers to the checks.
+`culprit sources` prints every engine's list. A scan reads each one through `Coverage::read`, the one implementation of
+"a failing source never fails the scan": a note with the error, and the capabilities it delivers lost with the source's
+own reason (a permission error says the login lacks it, with the grant as the fix). A source that delivers no
+capability adds detail some checks use; without it they say less, never something wrong.
 
 Each source either delivers a `Capability` or doesn't. A provider keeps that account in a `culprit_core::Coverage`,
 starting from what its probe found: `delivered`, `lacking` (with the reason and the fix), `lost` (the probe expected it,
@@ -63,6 +71,15 @@ Rules every source follows:
   (`search_path = pg_catalog, pg_temp`); a plan uses the database's own search_path.
 - **The plan that runs now.** A plan describes the database when it was captured. Query Store keeps a plan's first XML,
   so a plan older than its table is marked in the prepare stage.
+- **Say what kind of source it is.** A provider sets `Workload::kind` (`WorkloadKind`: Query Store, the plan cache,
+  pg_stat_statements, performance_schema, the slow log, an application's log) beside the source's name for sentences.
+  The rules that depend on it (a slow log keeps only slow runs, performance_schema's histograms count from the start)
+  ask `Workload::kind()`, never the name; scans saved before it existed are read back in that one place. The same for a
+  product that rides on another's provider: `ServerInfo::is_mariadb()`, never a name compared.
+- **Date the counters.** Usage counters count from the latest moment they may have started: the server's start, a
+  statistics reset, a database restored since (SQL Server's `create_date`), one that reopens with AUTO_CLOSE, MariaDB's
+  userstat turned on. The collector dates what it can see (`IndexStat::counters_since`) and the scans add what they saw
+  (`culprit-engine/src/history.rs::date_new_indexes`); absence waits a week from then.
 
 ### Platforms: where a database runs
 
@@ -73,12 +90,25 @@ the engine ask it (`settings_control`, `preload_library`, `metrics`, `is_azure_s
 platform names. A new platform is a variant in `crates/culprit-core/src/platform.rs` with its answers there, and its
 detection in the provider.
 
-### Dialects: how each engine spells the SQL Culprit suggests
+### Engines: one file each for what Culprit knows about an engine
 
-Fix SQL is written for a person to copy, in the engine's own spelling: quoted names, an index built or dropped without
-blocking writes, statistics refreshed, a session ended. That spelling is `culprit_core::Dialect`, one implementation per
-engine (`Engine::dialect()`, in `crates/culprit-core/src/dialect.rs`); checks and insights ask it instead of matching the
-engine. What a check *says* about an engine (its advice, its thresholds) stays in the check.
+Everything Culprit knows about an engine apart from its provider lives in one file, `crates/culprit-core/src/engines/
+<engine>.rs`, behind the `EngineSpec` trait (`Engine::spec()`):
+
+- its name (`label`) and what it can answer (`abilities`: sessions, wait samples, deadlocks, measured runs, plan
+  estimates, writes, periods to compare, last actual plans, live per-step progress, a sign-in);
+- how it spells the SQL Culprit suggests (`Dialect`: quoted names, an index built or dropped without blocking writes,
+  statistics refreshed, a session ended);
+- how it says what every check needs to say about it: applying a setting, refreshing a table's statistics, why a wait
+  isn't put on statements, where the index advisor's candidates come from;
+- what Live may do to a session, and why it refuses what it can't do (`refusal`: the message and the hint every surface
+  returns, providers included).
+
+Checks, insights and providers ask the spec instead of matching the engine. What a single check says about one engine
+(how to fix a spill on PostgreSQL, its thresholds) stays in the check. The same facts reach the app as
+`app/src/gen/engines.json` (written by `cargo test -p culprit-core`), so views offer only what an engine can answer and
+the browser demo answers as the engine does without a copy of its own. A new engine is one file here, one arm in
+`Engine::spec`, and its provider crate.
 
 ## 2. The snapshot
 
@@ -92,14 +122,16 @@ culprit-engine` regenerates `app/src/gen`.
 
 `culprit-checks/src/pipeline.rs` runs four stages, in order, each a list you can read top to bottom:
 
-1. **Prepare**: make the snapshot say what the database says now, before anything reads it. Today: plans captured
-   before a column changed type (`culprit_core::insights::mark_snapshot`).
+1. **Prepare**: make the snapshot say what the database says now, before anything reads it
+   (`pipeline.rs::preparation()`): plans captured before a column changed type, MySQL's possible keys named with their
+   columns, plan operators marked with their index's kind from the catalog (a BRIN bitmap counts pages, not rows), and
+   the health counters' grades held to the evidence rules (`pressure::grade_on_evidence`).
 2. **Detect**: every check that applies to the engine and can run with what the login sees (`culprit_checks::all()`).
    A check that needs a missing capability is reported as locked, with the reason, instead of running on missing data.
 3. **Refine**: rules over all the findings (`culprit-checks/src/refine.rs`): two findings about one cause become one,
    and a finding that rests on statements whose cost is behind them (they stopped running, or ran once) says so and
    ranks low. A rule here applies to every check on every engine.
-4. **Rank and summarize**: active findings first, by impact; then the headline (`summary.rs`).
+4. **Rank and summarize**: active findings first, by severity, then by impact; then the headline (`summary.rs`).
 
 `culprit_checks::analyze(snapshot)` runs the built-in pipeline. `Pipeline::builtin().with_check(..).with_refine(..)
 .with_prepare(..)` adds an embedder's own; they run, rank and summarize exactly like the built-in ones, and a plug-in
@@ -108,7 +140,13 @@ check can't take over a built-in id.
 ### Checks
 
 A check looks for one kind of problem: `<name>_info()` (id, title, category, the engines it applies to, the
-capabilities it needs) and `<name>(&Snapshot) -> Vec<Finding>`, registered in `culprit-checks/src/lib.rs::all()`. A
+capabilities it needs) and `<name>(&Snapshot) -> Vec<Finding>`. `check!(NameCheck: name_info, name)` makes it a type
+implementing `culprit_core::Check`, the same trait a plugged-in check implements, and the area lists it in its `CHECKS`
+(`all()` runs every area's, in the order of `checks::AREAS`; `tests/registry.rs` fails when a check is written but not
+listed). Every
+check has its own file, in a directory per area under `culprit-checks/src/checks/` (`queries/`, `indexes/`,
+`signals/`, `pressure/`, `maintenance/`, `tuning/`…; `checks/mod.rs` maps them); what a few checks of one area share
+sits in that area's `mod.rs`, and what every check shares (the evidence rules) in `support.rs`. A
 finding has a stable id (`<check>:<subject>`), a title and a plain-language summary, evidence (metrics, the queries
 behind it), a fix that is safe to run, a way to verify it, a severity, a confidence and an impact used for ranking.
 
@@ -129,26 +167,34 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | An index is advice only for a filter that keeps a small share of the rows read; past that, the scan is the right plan and the advice is to read less. | `INDEX_KEEPS_AT_MOST`, `PlanNode::kept_share` |
 | A setting is changed where the server runs: SQL on a server you manage, the platform's control on a managed one, and never to a lower value than it has. | `support::setting_change` |
 | Severity needs an amount, not only a share: a large share of a quiet database's time is still a small number (Medium needs a minute a day of database time, High ten). Time spent since a recent change is rated over its own hours; a window of unknown length is never High. Counts are rated by what they cost (a chatty statement's round trips at about a millisecond each). | `support::severity_for_time`, `severity_for_workload_share`, `severity_for_recent_time` |
+| A number counted for the whole server (instance waits and compiles, server-wide connections, InnoDB's lock time, another database's consumers) is said as the server's and isn't graded on this database, unless this database's own statements show it. | per check; `pressure::grade_on_evidence` for the health squares |
+| An optimizer's default guess isn't an estimate (MySQL's fixed `filtered`, PostgreSQL's default selectivity), and what the runs measured outweighs what the plan estimated. | `insights::mysql_guessed_filtered`, `plan::GUESSED_SELECTIVITY`, `PlanNode::kept_share`, `filtered_scan::measured_keeps_few` |
+| Index keys come only from conditions an index can seek on: a plain column compared with a value. An OR across columns, `<>`, two columns compared, arithmetic or a cast on the column, a hash join's bitmap probe give none. | `insights::seekable_columns`, `support::predicate_columns` |
+| Statements a driver or a pool sends (BEGIN, COMMIT, SET, DISCARD ALL, `SELECT 1`) aren't the application's: no N+1, no "find it in the code". | `sql::is_session_statement` |
+| A plan insight states a share of the plan's work only where it measured one; a rule's own weight is not shown as a share and raises nothing. | `PlanInsight::fixed_weight` |
+| A statement's share is graded as the source allows: where entries count from different moments (the plan cache counts each plan from its compile), a statement claims at most its share of the time an hour, so a plan cached for a month doesn't outweigh one compiled an hour ago by its age. | `Workload::share_of`, `share_weight`, `hourly_time_ms`; `support::query_impact` |
 | One cause, one finding. | refine rules |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 
 ### Views built on a report
 
-The dashboard (`dashboard.rs`), the digest for scheduled jobs (`digest.rs`), the index advisor (`advisor.rs`), the
-agent brief (`brief.rs`) and drift between two databases (`drift.rs`) read a report and add no findings of their own;
-they follow the same evidence rules.
+`culprit-checks/src/views/`: the dashboard (`dashboard/`, one file per tile), the digest for scheduled jobs
+(`digest.rs`), the index advisor (`advisor.rs`), the agent brief (`brief.rs`), drift between two databases
+(`drift.rs`) and the waits explained (`waits.rs`) read a report and add no findings of their own; they follow the same
+evidence rules.
 
 ## Extending Culprit
 
-- **A check**: write `<name>_info()` and `<name>(&Snapshot)` in the module for what it looks at, register it in
-  `all()`, give each finding a stable id, follow the evidence rules, and test it on a fixture (`fixtures/*-demo.json`)
+- **A check**: write `<name>_info()` and `<name>(&Snapshot)` in a file of its own in the area's directory under
+  `checks/` (declared in the area's `mod.rs`), declare its type with `check!`, add it to the area's `CHECKS` list, give each finding a stable id, follow the evidence rules, and test it on a fixture (`fixtures/*-demo.json`)
   for the case it should flag and the cases it must not.
 - **A refine rule**: a function `fn(&Snapshot, &mut Vec<Finding>)` in `refine.rs`, named for the duplicate or false flag
   it removes, listed in `rules()`.
 - **A prepare step**: a function `fn(&mut Snapshot)` listed in `pipeline.rs::preparation()`. It corrects only what the
   data contradicts (a plan older than its table), never to hide a problem.
-- **A source**: read it in the provider, record it in the provider's `Coverage`, fill the snapshot's fields (`None` for
-  what the engine doesn't keep), and follow the source rules above.
+- **A source**: declare it in the provider's `src/sources.rs` (and its `ALL` list), read it through `Coverage::read`
+  (SQL Server: `sources::read`, for its driver's errors), fill the snapshot's fields (`None` for what the engine
+  doesn't keep), and follow the source rules above.
 - **A provider**: implement `culprit_core::Provider` in a crate, add it to `culprit-engine/src/registry.rs` behind a
   cargo feature; an embedding application can also supply one at runtime with `Workspace::with_provider`.
 - **At runtime, without forking**: `Workspace::open()?.with_check(Arc::new(MyCheck))`, or a `Pipeline` with extra

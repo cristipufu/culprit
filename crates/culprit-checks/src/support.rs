@@ -53,11 +53,17 @@ pub const HIGH_MS_A_DAY: f64 = 600_000.0;
 /// the time a day over at least an hour of window; under an hour, the window's own total, which a day holds at least.
 /// A window of unknown length (statistics never reset where the engine doesn't date them) says no amount a day: such
 /// time is never High.
+/// Where the source left time unattributed (MySQL's catch-all digest row once its table is full), shares are of the time
+/// it could attribute: the grade takes the share of everything there may be, the lower bound.
 pub fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
     let by_amount = match snapshot.workload.as_ref() {
         Some(w) if w.window_unknown() => Severity::Medium,
         Some(w) => severity_for_amount(w.rate_per_day(time_ms).unwrap_or(time_ms)),
         None => Severity::Low,
+    };
+    let share = match snapshot.workload.as_ref().and_then(|w| Some((w, w.untracked_time_ms?))) {
+        Some((w, untracked)) if w.total_time_ms + untracked > 0.0 => share.min(time_ms / (w.total_time_ms + untracked)),
+        _ => share,
     };
     severity_for_share(share).min(by_amount)
 }
@@ -106,7 +112,10 @@ pub fn query_impact(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<Query
         return None;
     }
     let total_ms: f64 = queries.iter().map(|q| q.total_time_ms).sum();
-    Some(QueryImpact { share: workload.share(total_ms), per_day_ms: workload.per_day_measured(total_ms) })
+    // Each statement's share weighed as the source allows (`Workload::share_of`: a plan cached for a month against
+    // one compiled an hour ago).
+    let share: f64 = queries.iter().map(|q| workload.share_of(q.total_time_ms, q)).sum();
+    Some(QueryImpact { share: share.min(1.0), per_day_ms: workload.per_day_measured(total_ms) })
 }
 
 pub fn apply_query_impact(f: &mut Finding, impact: &QueryImpact) {
@@ -166,9 +175,20 @@ pub fn is_monitoring_text(text: &str) -> bool {
         "(mysql.",
         " sys.",
         "(sys.",
+        // SQLite's catalog, and the bookkeeping tables frameworks read on every boot or migration.
+        "sqlite_master",
+        "sqlite_schema",
+        "sqlite_temp_master",
+        "pragma_",
+        "sqlite_version(",
+        "__efmigrationshistory",
+        "schema_migrations",
+        "ar_internal_metadata",
+        "django_migrations",
     ]
     .iter()
     .any(|marker| t.contains(marker))
+        || t.trim_start().starts_with("pragma ")
 }
 
 /// The application's queries in the snapshot, without monitoring and catalog statements.
@@ -357,9 +377,61 @@ pub fn query_handle(q: &QueryStat) -> String {
     statement_handle(&q.text)
 }
 
+/// The statement a `WITH` list leads to: `WITH b AS (SELECT …) DELETE FROM jobs …` is a delete, not a read. The text
+/// from the first verb outside the common table expressions' parentheses and strings; any other text as it is.
+pub fn main_statement(text: &str) -> &str {
+    let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+    if !text.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("with")) {
+        return text;
+    }
+    let bytes = text.as_bytes();
+    let (mut depth, mut quote, mut i) = (0i32, None::<u8>, 4);
+    while i < bytes.len() {
+        let c = bytes[i];
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None => match c {
+                b'\'' | b'"' => quote = Some(c),
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ if depth == 0
+                    && c.is_ascii_alphabetic()
+                    && !bytes[i - 1].is_ascii_alphanumeric()
+                    && bytes[i - 1] != b'_' =>
+                {
+                    let word: String =
+                        text[i..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    if matches!(
+                        word.to_ascii_lowercase().as_str(),
+                        "select" | "insert" | "update" | "delete" | "merge" | "values"
+                    ) {
+                        return &text[i..];
+                    }
+                    i += word.len();
+                    continue;
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    text
+}
+
 /// `query_handle` for bare statement text.
 pub fn statement_handle(text: &str) -> String {
     let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+    // A driver's or a pool's statement (BEGIN, COMMIT, DISCARD ALL, SELECT 1) is named as it is: it is short, and
+    // "a query" would hide what sends it.
+    if culprit_core::sql::is_session_statement(text) && text.len() <= 40 {
+        return text.trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    // A write behind a WITH list is named as the write.
+    let main = main_statement(text);
+    if main.len() != text.len() && !main.get(..6).is_some_and(|w| w.eq_ignore_ascii_case("select")) {
+        return statement_handle(main);
+    }
     let lower = text.to_ascii_lowercase();
     let verb = ["select", "insert", "update", "delete", "merge", "with"]
         .into_iter()
@@ -464,6 +536,8 @@ pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
     };
     match &snapshot.workload {
         Some(w) if w.window_hours >= 20.0 => format!("about {} a day", times(w.per_day(executions))),
+        // A window nobody can date (a log without timestamps, counters with no reset time) isn't "1 minute".
+        Some(w) if w.window_unknown() => format!("{} over {}", times(executions), w.window_phrase()),
         Some(w) => format!("{} in {}", times(executions), culprit_core::span_words(w.window_hours)),
         None => times(executions),
     }
@@ -866,22 +940,65 @@ fn starts_with_wildcard(pattern: &str) -> bool {
     p.strip_prefix('\'').is_some_and(|rest| rest.starts_with(['%', '_']))
 }
 
+/// A predicate without PostgreSQL's casts. A cast of a column to another type (`(created_at)::date`) hides it from its index like a function would: it stays
+/// as ` ::cast` so the side is no bare column and gives no key. Casts of values, and to text (how PostgreSQL prints a
+/// varchar column compared with a string), are harmless and go.
 fn strip_casts(text: &str) -> String {
     const MULTIWORD: [&str; 4] = [" with time zone", " without time zone", " varying", " precision"];
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(pos) = rest.find("::") {
         out.push_str(&rest[..pos]);
-        rest = rest[pos + 2..].trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        let after = &rest[pos + 2..];
+        let ty: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        rest = &after[ty.len()..];
         while let Some(suffix) = MULTIWORD.iter().find(|m| rest.to_ascii_lowercase().starts_with(*m)) {
             rest = &rest[suffix.len()..];
         }
         if let Some(stripped) = rest.strip_prefix("[]") {
             rest = stripped;
         }
+        let harmless = matches!(
+            ty.to_ascii_lowercase().as_str(),
+            "text" | "varchar" | "character" | "bpchar" | "name" | "unknown"
+        );
+        if !harmless && cast_operand_is_column(&out) {
+            out.push_str(" ::cast");
+        }
     }
     out.push_str(rest);
     out
+}
+
+/// Whether what `before` ends with, the operand of a cast that follows it, is a column: `(created_at)` or
+/// `o.created_at`, not `'2026-01-01'`, `$1`, `now()` or a number.
+fn cast_operand_is_column(before: &str) -> bool {
+    let trimmed = before.trim_end();
+    let operand = if let Some(inner) = trimmed.strip_suffix(')') {
+        let mut depth = 1;
+        let open = inner.char_indices().rev().find(|(_, c)| {
+            match c {
+                ')' => depth += 1,
+                '(' => depth -= 1,
+                _ => {}
+            }
+            depth == 0
+        });
+        match open {
+            // `now()`: a function call's parentheses, not a parenthesized column.
+            Some((at, _)) if inner[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') => return false,
+            Some((at, _)) => inner[at + 1..].trim(),
+            None => return false,
+        }
+    } else {
+        let start = trimmed
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !(c.is_alphanumeric() || matches!(c, '_' | '.' | '$')))
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        &trimmed[start..]
+    };
+    !is_value(operand) && column_name(operand).is_some()
 }
 
 fn drop_alias(side: &str) -> &str {
@@ -928,6 +1045,10 @@ mod predicate_tests {
     #[test]
     fn statements_without_a_table_are_named() {
         assert_eq!(statement_handle("DO SLEEP(?)"), "a call to SLEEP");
+        assert_eq!(statement_handle("DISCARD ALL"), "DISCARD ALL");
+        // A write behind a WITH list is the write, wherever its CTEs read.
+        assert_eq!(statement_handle("WITH b AS (SELECT id FROM jobs) DELETE FROM jobs USING b"), "a delete from jobs");
+        assert_eq!(statement_handle("WITH b AS (SELECT 'delete' FROM x) UPDATE t SET a = 1"), "an update of t");
         assert_eq!(statement_handle("SELECT sleep(?)"), "a call to sleep");
         assert_eq!(statement_handle("SELECT pg_sleep($1)"), "a call to pg_sleep");
         assert_eq!(statement_handle("DO `SLEEP` (?)"), "a call to SLEEP");
@@ -936,7 +1057,8 @@ mod predicate_tests {
         assert_eq!(statement_handle("CALL shop.refresh(?)"), "a call to shop.refresh");
         assert_eq!(statement_handle("CALL refresh_totals(?)"), "a call to refresh_totals");
         assert_eq!(statement_handle("SELECT id FROM orders WHERE id = ?"), "a read from orders");
-        assert_eq!(statement_handle("SELECT 1"), "a query");
+        // A pool's ping is named as it is.
+        assert_eq!(statement_handle("SELECT 1"), "SELECT 1");
         assert_eq!(
             statement_handle("SELECT count(*) FROM (VALUES ($1),($2)) v(x) JOIN orders o ON o.id = v.x"),
             "a read from orders"
@@ -990,6 +1112,12 @@ mod predicate_tests {
         // Parentheses decide: `a OR (b AND c)` requires nothing of every row.
         let p = predicate_columns("((a = 1) OR ((b = 2) AND (c = 3)))");
         assert_eq!(p, PredicateColumns::default());
+        // The false flag: a cast of the column to date hides it from an index on it, like date(created_at) would.
+        let p = predicate_columns("((created_at)::date = $1)");
+        assert!(p.equality.is_empty() && p.range.is_empty(), "{p:?}");
+        let p =
+            predicate_columns("((amount)::integer > 10) AND (created_at > '2026-01-01'::date) AND (id = $1::bigint)");
+        assert_eq!((p.equality, p.range), (vec!["id".to_string()], vec!["created_at".to_string()]));
         let p = predicate_columns("((status)::text <> 'closed'::text)");
         assert_eq!(p, PredicateColumns::default());
         let p = predicate_columns("((email)::text ~~ 'abc%'::text)");
@@ -1016,54 +1144,17 @@ mod predicate_tests {
     }
 }
 
-/// How to change a server setting where this server runs. On a server you manage it is SQL (`ALTER SYSTEM` and a
-/// reload on PostgreSQL, `SET PERSIST`/`SET GLOBAL` on MySQL and MariaDB); a managed service refuses those, so there it
-/// is the platform's own control (a DB parameter group, server parameters, database flags) and no SQL. Every check
-/// that suggests a setting words it with this, so advice is always something the reader can run.
-pub struct SettingChange {
-    /// One sentence: where and how to set it.
-    pub how: String,
-    /// The statements, on servers where they work.
-    pub sql: Option<String>,
-}
+pub use culprit_core::SettingChange;
 
+/// How to change a server setting where this server runs. On a server you manage it is SQL, as the engine spells it
+/// (`EngineSpec::change_setting`: `ALTER SYSTEM` and a reload on PostgreSQL, `SET PERSIST`/`SET GLOBAL` on MySQL and
+/// MariaDB…); a managed service refuses those, so there it is the platform's own control (a DB parameter group, server
+/// parameters, database flags) and no SQL. Every check that suggests a setting words it with this, so advice is always
+/// something the reader can run.
 pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str) -> SettingChange {
     // A managed service changes server settings in its own control, not with SQL (`Platform::settings_control`).
     if let Some(control) = server.platform().and_then(|p| p.settings_control()) {
         return SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
     }
-    let quoted =
-        |v: &str| if v.chars().all(|c| c.is_ascii_digit() || c == '.') { v.to_string() } else { format!("'{v}'") };
-    match server.engine {
-        // A pragma that lives in the file (journal_mode = WAL) is set once; one that lives in the connection
-        // (synchronous, cache_size) has to be set by the application each time it opens the file.
-        Engine::Sqlite => SettingChange {
-            how: format!(
-                "Set {name} to {value} with PRAGMA. If it is a per-connection pragma, the application has to set it each time it opens the file."
-            ),
-            sql: Some(format!("PRAGMA {name} = {value};")),
-        },
-        Engine::Postgres => SettingChange {
-            how: format!(
-                "Set {name} to {value} and reload the configuration (settings marked as needing a restart take effect after one)."
-            ),
-            sql: Some(format!("ALTER SYSTEM SET {name} = {};\nSELECT pg_reload_conf();", quoted(value))),
-        },
-        Engine::Mysql if server.name() == "MySQL" && culprit_core::version_at_least(&server.version, [8, 0, 0]) => {
-            SettingChange {
-                how: format!("Set {name} to {value}; SET PERSIST keeps it across restarts."),
-                sql: Some(format!("SET PERSIST {name} = {};", quoted(value))),
-            }
-        }
-        Engine::Mysql => SettingChange {
-            how: format!(
-                "Set {name} to {value} now, and in the server's option file (my.cnf) so it survives a restart."
-            ),
-            sql: Some(format!("SET GLOBAL {name} = {};", quoted(value))),
-        },
-        Engine::Mssql => SettingChange {
-            how: format!("Set {name} to {value}."),
-            sql: Some(format!("EXEC sp_configure '{name}', {};\nRECONFIGURE;", quoted(value))),
-        },
-    }
+    server.engine.spec().change_setting(server, name, value)
 }

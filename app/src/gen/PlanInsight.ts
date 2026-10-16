@@ -12,6 +12,12 @@ rule: string, area: InsightArea, severity: Severity,
  */
 impact: number, 
 /**
+ * `impact` is a weight the rule gives for ranking, not a measured share of the plan's work: the optimizer
+ * stopped searching, a setting, a memory grant, a plan without a run time. It isn't shown as a share and doesn't
+ * raise the severity; the rule's floor and cap set it.
+ */
+fixed_weight: boolean, 
+/**
  * Operators this is about; the first one is the one to show.
  */
 nodes: Array<number>, 

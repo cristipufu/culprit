@@ -1,0 +1,60 @@
+//! Every source Culprit reads on PostgreSQL, in one list. A scan reads each through `Coverage::read`: a source that
+//! fails becomes a note, and the capabilities it delivers are locked with why. A source without capabilities adds
+//! detail some checks use (a table's HOT updates, a replica's lag); without it those checks say less, never something
+//! wrong.
+
+use culprit_core::{Capability, Source};
+
+/// Statement statistics: runs, time, rows and buffers per normalized statement.
+pub const STATEMENTS: Source =
+    Source { name: "workload", reads: "pg_stat_statements", delivers: &[Capability::PgStatStatements] };
+/// pg_stat_user_tables and the catalog's sizes: rows, scans, writes, dead rows, analyze and vacuum times.
+pub const TABLES: Source =
+    Source { name: "tables", reads: "table statistics", delivers: &[Capability::TableStats, Capability::Statistics] };
+/// pg_index with pg_stat_user_indexes: keys, kinds, sizes and reads per index.
+pub const INDEXES: Source = Source { name: "indexes", reads: "index statistics", delivers: &[Capability::IndexUsage] };
+pub const COLUMNS: Source = Source { name: "columns", reads: "columns", delivers: &[] };
+pub const FOREIGN_KEYS: Source = Source { name: "foreign_keys", reads: "foreign keys", delivers: &[] };
+/// pg_settings: the settings checks read, and what changed them.
+pub const SETTINGS: Source = Source { name: "settings", reads: "settings", delivers: &[] };
+/// pg_stat_database: cache hits, temp files, commits and rollbacks, deadlocks, and how long they have counted.
+pub const DATABASE_STATS: Source = Source { name: "database statistics", reads: "pg_stat_database", delivers: &[] };
+/// pg_stat_checkpointer (17+) or pg_stat_bgwriter: checkpoints timed and requested.
+pub const CHECKPOINTS: Source = Source { name: "checkpoints", reads: "checkpoint counters", delivers: &[] };
+/// pg_stat_activity: the oldest transaction holding cleanup back.
+pub const OPEN_TRANSACTIONS: Source = Source { name: "open transactions", reads: "open transactions", delivers: &[] };
+/// Planning, JIT and WAL per statement (pg_stat_statements' newer columns).
+pub const QUERY_COSTS: Source = Source { name: "query costs", reads: "statement costs", delivers: &[] };
+/// HOT and new-page updates, fillfactor and the bloat estimate per table.
+pub const TABLE_STORAGE: Source = Source { name: "table storage", reads: "table storage", delivers: &[] };
+/// CHECK constraints added NOT VALID.
+pub const CONSTRAINTS: Source = Source { name: "constraints", reads: "constraints", delivers: &[] };
+/// The settings advice depends on (wal_compression, constraint_exclusion, max_slot_wal_keep_size).
+pub const ADVICE_SETTINGS: Source =
+    Source { name: "advice settings", reads: "the settings advice depends on", delivers: &[] };
+/// pg_stat_io, pg_stat_database and pg_stat_wal: read and write latency.
+pub const FILE_LATENCY: Source = Source { name: "file latency", reads: "file latency", delivers: &[] };
+/// Sessions opened and abandoned (14+).
+pub const SESSIONS: Source = Source { name: "sessions", reads: "session statistics", delivers: &[] };
+/// Replicas, this server's own lag as a standby, and replication slots (10+).
+pub const REPLICATION: Source = Source { name: "replication", reads: "replication", delivers: &[] };
+
+/// Every source above, for listings (`culprit sources`).
+pub const ALL: &[Source] = &[
+    STATEMENTS,
+    TABLES,
+    INDEXES,
+    COLUMNS,
+    FOREIGN_KEYS,
+    SETTINGS,
+    DATABASE_STATS,
+    CHECKPOINTS,
+    OPEN_TRANSACTIONS,
+    QUERY_COSTS,
+    TABLE_STORAGE,
+    CONSTRAINTS,
+    ADVICE_SETTINGS,
+    FILE_LATENCY,
+    SESSIONS,
+    REPLICATION,
+];

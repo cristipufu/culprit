@@ -169,6 +169,7 @@ function Welcome({ busy, error, onOpen, onPaste }: { busy: boolean; error: ApiEr
           <Format engine="PostgreSQL" what="EXPLAIN or EXPLAIN ANALYZE, as text or FORMAT JSON" />
           <Format engine="MySQL" what="EXPLAIN FORMAT=JSON, EXPLAIN ANALYZE or FORMAT=TREE" />
           <Format engine="MariaDB" what="EXPLAIN FORMAT=JSON or ANALYZE FORMAT=JSON" />
+          <Format engine="SQLite" what="EXPLAIN QUERY PLAN, as the sqlite3 shell prints it" />
         </div>
         {/* The sample plans ship with the browser demo only; the desktop app doesn't offer buttons that can't load. */}
         {import.meta.env.DEV && (

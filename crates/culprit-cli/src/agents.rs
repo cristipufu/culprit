@@ -45,7 +45,9 @@ pub struct InitArgs {
 }
 
 #[derive(Args)]
-#[command(group = clap::ArgGroup::new("change").required(true).multiple(true).args(["agent", "env"]))]
+#[command(
+    group = clap::ArgGroup::new("change").required(true).multiple(true).args(["agent", "env", "query_log", "no_query_log"])
+)]
 pub struct SetArgs {
     pub name: String,
     /// What coding agents may do through `culprit mcp`: off (hidden), stats (findings, statistics, schema, estimated
@@ -55,6 +57,13 @@ pub struct SetArgs {
     /// The connection's environment. Production refuses session kills and asks before anything that changes data.
     #[arg(long, value_enum)]
     pub env: Option<EnvironmentArg>,
+    /// For a database that keeps no statement history (SQLite): the log the application's framework writes, read on
+    /// every scan. Rails, Django, Entity Framework Core, Phoenix/Ecto, or JSON lines.
+    #[arg(long, value_name = "FILE", conflicts_with = "no_query_log")]
+    pub query_log: Option<std::path::PathBuf>,
+    /// Stop reading the saved query log.
+    #[arg(long)]
+    pub no_query_log: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -107,6 +116,13 @@ pub fn set(ws: &Workspace, args: SetArgs, out: &Out) -> Result<u8> {
     if let Some(env) = args.env {
         let info = ws.set_environment(&args.name, env.into())?;
         out.done(&format!("{} is now marked {}", info.name, format!("{:?}", info.environment).to_lowercase()));
+    }
+    if args.query_log.is_some() || args.no_query_log {
+        let info = ws.set_query_log(&args.name, args.query_log.as_deref())?;
+        out.done(&match &info.query_log {
+            Some(path) => format!("Scans of {} read the statements from {path}", info.name),
+            None => format!("Scans of {} no longer read a query log", info.name),
+        });
     }
     let Some(agent) = args.agent else { return Ok(0) };
     let info = ws.set_agent_access(&args.name, agent.into())?;

@@ -709,6 +709,8 @@ pub(crate) fn to_stored(c: &ImportCandidate) -> Result<store::StoredConnection> 
         password_saved: (auth == AuthKind::Password).then_some(false),
         options,
         agent: None,
+        query_log: None,
+        no_query_log: false,
     })
 }
 

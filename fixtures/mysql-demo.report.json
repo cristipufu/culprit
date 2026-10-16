@@ -3,6 +3,71 @@
     {
       "category": "queries",
       "caveats": [
+        "MySQL counts errors per statement since it started, so old failures stay in the total until it restarts."
+      ],
+      "check": "failing-query",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "SELECT MYSQL_ERRNO, RETURNED_SQLSTATE, MESSAGE_TEXT\n  FROM performance_schema.events_statements_history\n WHERE DIGEST = '4515abd524a46f378b048f32e532cb1befdfd6c88178caeab12746b1f6c2b9c6' AND MYSQL_ERRNO <> 0;",
+        "summary": "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout: find the holder in Live while it happens and keep transactions short. The recent errors and their messages are in performance_schema."
+      },
+      "id": "failing-query:4515abd524a46f37",
+      "impact": {
+        "db_time_share": 0.0418843969784605,
+        "label": "28% of runs fail",
+        "score": 45.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:00:50Z",
+      "metrics": [
+        {
+          "label": "Runs",
+          "text": null,
+          "unit": "count",
+          "value": 43.0
+        },
+        {
+          "label": "Didn't finish",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.27906976744186046
+        },
+        {
+          "label": "Errors",
+          "text": null,
+          "unit": "count",
+          "value": 12.0
+        },
+        {
+          "label": "Recent error",
+          "text": "1205 lock wait timeout",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "4515abd524a46f37",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "high",
+      "subject": {
+        "kind": "query",
+        "name": "4515abd524a46f37"
+      },
+      "summary": "12 of its 43 runs since its statistics began 2 min ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
+      "title": "An update of orders fails 28% of the time (1205 lock wait timeout)",
+      "verify": [
+        "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
+      ]
+    },
+    {
+      "category": "queries",
+      "caveats": [
         "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
       ],
       "check": "lock-time",
@@ -119,68 +184,77 @@
       ]
     },
     {
-      "category": "queries",
+      "category": "indexes",
       "caveats": [
-        "MySQL counts errors per statement since it started, so old failures stay in the total until it restarts."
+        "Counters accumulate since statistics were last reset; one nightly report can make up much of them."
       ],
-      "check": "failing-query",
-      "confidence": "high",
+      "check": "scan-heavy",
+      "confidence": "medium",
       "fix": {
-        "cost": null,
-        "sql": "SELECT MYSQL_ERRNO, RETURNED_SQLSTATE, MESSAGE_TEXT\n  FROM performance_schema.events_statements_history\n WHERE DIGEST = '4515abd524a46f378b048f32e532cb1befdfd6c88178caeab12746b1f6c2b9c6' AND MYSQL_ERRNO <> 0;",
-        "summary": "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout: find the holder in Live while it happens and keep transactions short. The recent errors and their messages are in performance_schema."
+        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
+        "sql": null,
+        "summary": "Explain the statements below and index the columns in their WHERE clause; small lookup tables are fine to scan."
       },
-      "id": "failing-query:4515abd524a46f37",
+      "id": "scan-heavy:shop.orders",
       "impact": {
-        "db_time_share": 0.0418843969784605,
-        "label": "28% of runs fail",
-        "score": 45.0,
+        "db_time_share": 0.13469529815554734,
+        "label": "13% of DB time",
+        "score": 36.70085804930824,
         "time_ms_per_day": null
       },
       "inactive": false,
       "last_seen": "2026-10-11T16:00:50Z",
       "metrics": [
         {
-          "label": "Runs",
+          "label": "Full reads",
           "text": null,
           "unit": "count",
-          "value": 43.0
+          "value": 81.0
         },
         {
-          "label": "Didn't finish",
+          "label": "Rows read without an index",
           "text": null,
-          "unit": "ratio",
-          "value": 0.27906976744186046
+          "unit": "rows",
+          "value": 40500000.0
         },
         {
-          "label": "Errors",
+          "label": "Rows in table",
           "text": null,
-          "unit": "count",
-          "value": 12.0
-        },
-        {
-          "label": "Recent error",
-          "text": "1205 lock wait timeout",
-          "unit": "text",
-          "value": 0.0
+          "unit": "rows",
+          "value": 498573.0
         }
       ],
       "queries": [
         {
+          "id": "04cd7be9c366fadc",
+          "note": null,
+          "plan_node": null
+        },
+        {
+          "id": "19bd4ff468839ea3",
+          "note": null,
+          "plan_node": null
+        },
+        {
           "id": "4515abd524a46f37",
+          "note": null,
+          "plan_node": null
+        },
+        {
+          "id": "fc709554a9248878",
           "note": null,
           "plan_node": null
         }
       ],
-      "severity": "high",
+      "severity": "low",
       "subject": {
-        "kind": "query",
-        "name": "4515abd524a46f37"
+        "kind": "table",
+        "name": "shop.orders"
       },
-      "summary": "12 of its 43 runs since its statistics began 2 min ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
-      "title": "An update of orders fails 28% of the time (1205 lock wait timeout)",
+      "summary": "shop.orders has 499K rows, and queries have read all of it 81 times in the hour since the server last restarted: 40.5M rows read without an index. 2 of the captured statements read it in full by their plans, and 2 more without a captured plan may; explain them to see which filter has no index.",
+      "title": "orders is read in full 81 times in the hour since the server last restarted (40.5M rows)",
       "verify": [
-        "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
+        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
       ]
     },
     {
@@ -287,9 +361,7 @@
     },
     {
       "category": "maintenance",
-      "caveats": [
-        "An index is also suggested for promo_code; once it exists the optimizer estimates from the index instead."
-      ],
+      "caveats": [],
       "check": "missing-histogram",
       "confidence": "high",
       "fix": {
@@ -341,64 +413,6 @@
       "title": "MySQL guesses how many orders rows match promo_code and created_at: no histogram",
       "verify": [
         "Re-scan: the columns should have histograms, and EXPLAIN ANALYZE should show estimated rows close to actual for that filter."
-      ]
-    },
-    {
-      "category": "indexes",
-      "caveats": [],
-      "check": "filtered-scan",
-      "confidence": "high",
-      "fix": {
-        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
-        "sql": "CREATE INDEX `ix_orders_promo_code`\n    ON `shop`.`orders` (`promo_code`)\n    ALGORITHM=INPLACE LOCK=NONE;",
-        "summary": "Create an index on promo_code so these queries seek instead of scanning."
-      },
-      "id": "filtered-scan:shop.orders(promo_code)",
-      "impact": {
-        "db_time_share": 0.014800847333966714,
-        "label": "1% of DB time",
-        "score": 12.165873307727116,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T12:07:17Z",
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.014800847333966714
-        },
-        {
-          "label": "Rows scanned per run",
-          "text": null,
-          "unit": "rows",
-          "value": 498573.0
-        },
-        {
-          "label": "Queries",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "19bd4ff468839ea3",
-          "note": null,
-          "plan_node": 2
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "One query plans to read every row of shop.orders (499K rows) and keep only those matching `(shop.o.promo_code = 'SPRING0')`. No index starts with promo_code, so the database has no faster way in. Together they account for 1% of database time.",
-      "title": "orders is read in full to find rows by promo_code",
-      "verify": [
-        "Explain one of the queries again: the scan of orders should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
       ]
     },
     {
@@ -1765,7 +1779,7 @@
           "key": "row-lock-avg",
           "label": "Average row-lock wait",
           "scope": "since-startup",
-          "status": "bad",
+          "status": "info",
           "unit": "milliseconds",
           "value": 14523.0
         },
@@ -1783,7 +1797,7 @@
           "key": "max-used-connections",
           "label": "Busiest moment",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 4.635761589403973
         },
@@ -1853,6 +1867,7 @@
       "edition": "MySQL Community Server - GPL",
       "engine": "mysql",
       "missing": [],
+      "platform": null,
       "product": "MySQL 8.4.11",
       "read_only_session": true,
       "started_at": "2026-10-11T10:49:13Z",
@@ -2075,6 +2090,9 @@
       }
     ],
     "workload": {
+      "hourly_time_ms": null,
+      "kind": null,
+      "log": null,
       "min_logged_ms": null,
       "queries": [
         {
@@ -2582,6 +2600,7 @@
                   "op": "Index range scan",
                   "predicate": "((shop.orders.status = 'shipped') and (shop.orders.created_at >= TIMESTAMP'2026-09-05 00:00:00'))",
                   "props": {
+                    "Index Kind": "btree",
                     "data_read_per_join": "6M",
                     "eval_cost": "2912.60",
                     "filtered": "100.00",
@@ -2830,6 +2849,7 @@
                   "op": "Constant row",
                   "predicate": null,
                   "props": {
+                    "Index Kind": "btree",
                     "data_read_per_join": "592",
                     "eval_cost": "0.10",
                     "filtered": "100.00",
@@ -3103,6 +3123,7 @@
                       "op": "Index lookup",
                       "predicate": null,
                       "props": {
+                        "Index Kind": "btree",
                         "data_read_per_join": "672",
                         "eval_cost": "0.30",
                         "filtered": "100.00",
@@ -3337,6 +3358,7 @@
                       "op": "Index lookup",
                       "predicate": null,
                       "props": {
+                        "Index Kind": "btree",
                         "data_read_per_join": "48",
                         "eval_cost": "0.20",
                         "filtered": "100.00",
@@ -3374,6 +3396,7 @@
                       "op": "Unique index lookup",
                       "predicate": null,
                       "props": {
+                        "Index Kind": "btree",
                         "data_read_per_join": "1K",
                         "eval_cost": "0.20",
                         "filtered": "100.00",
@@ -3611,6 +3634,7 @@
                   "op": "Constant row",
                   "predicate": null,
                   "props": {
+                    "Index Kind": "btree",
                     "data_read_per_join": "224",
                     "eval_cost": "0.10",
                     "filtered": "100.00",
@@ -3893,6 +3917,7 @@
                   "op": "Index range scan",
                   "predicate": "(shop.order_items.id <= 20000)",
                   "props": {
+                    "Index Kind": "btree",
                     "data_read_per_join": "915K",
                     "eval_cost": "3906.60",
                     "filtered": "100.00",
@@ -4167,6 +4192,7 @@
       }
     ],
     "headline": "13 opportunities. The top ones touch 84% of database time over the 2 minutes since statistics were reset.",
+    "no_workload": null,
     "opportunities": 13,
     "top_share": 0.843696180954505
   }

@@ -12,7 +12,7 @@ use mysql_async::{Conn, Value};
 use crate::connect::{Connector, Flavor, Scope, TAG};
 use crate::fingerprint::{fingerprint, matches_digest};
 use crate::rows::{Rec, explain_one, query, query_one, query_with, tagged};
-use crate::{plan_json, slowlog, vars};
+use crate::{plan_json, slowlog, sources, vars};
 
 const PS_GRANT: &str = "GRANT SELECT ON performance_schema.* TO";
 
@@ -343,86 +343,60 @@ pub async fn snapshot(
             Some(collected.workload)
         }
         Ok(None) => None,
+        // The digests' grant is the fix whatever the error said.
         Err(e) => {
-            coverage.note("workload", e.message.clone());
-            coverage.lost(
-                Capability::PerformanceSchema,
-                format!("Reading statement digests failed: {}", e.message),
-                Some(format!("{PS_GRANT} {};", probe.grant_target())),
-            );
-            coverage.lost(Capability::QueryPlans, "Plans come from the statement digests.", None);
+            coverage.source_failed(&sources::STATEMENTS, &e.with_hint(format!("{PS_GRANT} {};", probe.grant_target())));
             None
         }
     };
 
-    let (mut tables_out, mut columns_out, mut indexes_out, mut fks_out) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    match schema {
+    // Each source through `Coverage::read`: one that fails is a note and its capabilities locked (`sources`).
+    let (tables_out, columns_out, indexes_out, fks_out) = match schema {
         Ok((tables, columns, indexes, fks)) => {
-            match tables {
-                Ok(t) => tables_out = t,
-                Err(e) => {
-                    coverage.note("tables", e.message.clone());
-                    coverage.lost(Capability::TableStats, format!("Reading tables failed: {}", e.message), e.hint);
+            let indexes = coverage.read(&sources::INDEXES, indexes).map(|(i, usage_note)| {
+                // Read, but without usage counters: the indexes stand, the counters are locked with why.
+                if let Some(message) = usage_note {
+                    coverage.note("index_usage", message.clone());
+                    coverage.lost(
+                        Capability::IndexUsage,
+                        message,
+                        Some(format!("{PS_GRANT} {};", probe.grant_target())),
+                    );
                 }
+                i
+            });
+            (
+                coverage.read(&sources::TABLES, tables).unwrap_or_default(),
+                coverage.read(&sources::COLUMNS, columns).unwrap_or_default(),
+                indexes.unwrap_or_default(),
+                coverage.read(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
+            )
+        }
+        // The connection they share failed: every one of them did.
+        Err(e) => {
+            for source in [&sources::TABLES, &sources::COLUMNS, &sources::INDEXES, &sources::FOREIGN_KEYS] {
+                coverage.source_failed(source, &e);
             }
-            match columns {
-                Ok(c) => columns_out = c,
-                Err(e) => coverage.note("columns", e.message),
+            Default::default()
+        }
+    };
+
+    let (settings_out, mut waits_out, pressure_out) = match misc {
+        Ok((settings, waits, (pressure, read))) => {
+            coverage.merge(read);
+            let waits = coverage.read(&sources::WAITS, waits).unwrap_or_default();
+            if !waits.is_empty() {
+                coverage.delivered(Capability::WaitStats);
             }
-            match indexes {
-                Ok((i, usage_note)) => {
-                    indexes_out = i;
-                    if let Some(message) = usage_note {
-                        coverage.note("index_usage", message.clone());
-                        coverage.lost(
-                            Capability::IndexUsage,
-                            message,
-                            Some(format!("{PS_GRANT} {};", probe.grant_target())),
-                        );
-                    }
-                }
-                Err(e) => {
-                    coverage.note("indexes", e.message.clone());
-                    coverage.lost(Capability::IndexUsage, format!("Reading indexes failed: {}", e.message), e.hint);
-                }
-            }
-            match fks {
-                Ok(f) => fks_out = f,
-                Err(e) => coverage.note("foreign_keys", e.message),
-            }
+            (coverage.read(&sources::SETTINGS, settings).unwrap_or_default(), waits, Some(pressure))
         }
         Err(e) => {
-            coverage.note("schema", e.message.clone());
-            coverage.lost(Capability::TableStats, e.message.clone(), e.hint.clone());
-            coverage.lost(Capability::IndexUsage, e.message, e.hint);
+            coverage.source_failed(&sources::SETTINGS, &e);
+            (Vec::new(), Vec::new(), None)
         }
-    }
-
-    let (mut settings_out, mut waits_out, mut pressure_out) = (Vec::new(), Vec::new(), None);
-    match misc {
-        Ok((settings, waits, (pressure, pressure_notes))) => {
-            for message in pressure_notes {
-                coverage.note("pressure", message);
-            }
-            pressure_out = Some(pressure);
-            match settings {
-                Ok(s) => settings_out = s,
-                Err(e) => coverage.note("settings", e.message),
-            }
-            match waits {
-                Ok(w) if !w.is_empty() => {
-                    waits_out = w;
-                    coverage.delivered(Capability::WaitStats);
-                }
-                Ok(_) => {}
-                Err(e) => coverage.note("waits", e.message),
-            }
-            if waits_out.is_empty() {
-                waits_out = std::mem::take(&mut source_waits);
-            }
-        }
-        Err(e) => coverage.note("settings", e.message),
+    };
+    if waits_out.is_empty() {
+        waits_out = std::mem::take(&mut source_waits);
     }
 
     let (have, missing, notes) = coverage.finish();
@@ -613,6 +587,7 @@ async fn collect_workload(
         waits: Vec::new(),
         workload: Workload {
             source: "performance_schema".into(),
+            kind: Some(culprit_core::WorkloadKind::PerformanceSchema),
             windowed: false,
             window_start,
             window_end: Some(probe.now.clone()),
@@ -624,7 +599,9 @@ async fn collect_workload(
             queries,
             timeline: None,
             untracked_time_ms,
+            hourly_time_ms: None,
             min_logged_ms: None,
+            log: None,
         },
         notes,
         no_plans,

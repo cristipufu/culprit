@@ -202,20 +202,32 @@ fn parse_relop(relop: Node) -> PlanNode {
         }
     }
 
-    // Scalar functions this operator calls (not those of operators below it): each one runs once per row.
-    let functions: Vec<String> = relop
+    // Scalar functions this operator calls (not those of operators below it): each one runs once per row, except in a
+    // seek's keys, which are worked out once per seek.
+    let calls: Vec<(String, bool)> = relop
         .descendants()
         .filter(|n| n.has_tag_name_local("UserDefinedFunction"))
         .filter(|n| n.ancestors().skip(1).find(|a| a.has_tag_name_local("RelOp")) == Some(relop))
-        .filter_map(|n| n.attribute("FunctionName"))
-        .map(|name| {
+        .filter_map(|n| {
+            let in_seek = n
+                .ancestors()
+                .skip(1)
+                .take_while(|a| *a != relop)
+                .any(|a| a.has_tag_name_local("SeekPredicates") || a.has_tag_name_local("SeekPredicateNew"));
+            Some((n.attribute("FunctionName")?, in_seek))
+        })
+        .map(|(name, in_seek)| {
             // [db].[schema].[function] → schema.function
             let parts: Vec<String> = name.split("].[").map(unbracket).collect();
-            parts[parts.len().saturating_sub(2)..].join(".")
+            (parts[parts.len().saturating_sub(2)..].join("."), in_seek)
         })
         .collect();
-    if !functions.is_empty() {
+    if !calls.is_empty() {
+        let functions: Vec<&str> = calls.iter().map(|(f, _)| f.as_str()).collect();
         props.insert("UserDefinedFunctions".into(), truncate(functions.join(", ")));
+        if calls.iter().all(|(_, in_seek)| *in_seek) {
+            props.insert(culprit_core::plan::UDF_IN_SEEK_ONLY.into(), "true".into());
+        }
     }
     if let Some(w) = child(relop, "Warnings") {
         // Pages a spill wrote to tempdb (8 KB each), summed over sort, hash and exchange spills.
@@ -751,7 +763,7 @@ mod tests {
         assert_eq!(scan.rows_read, Some(1_800_000.0));
         assert!(scan.predicate.as_deref().unwrap().contains("CONVERT_IMPLICIT"));
         assert!(scan.warnings.contains(&PlanWarning::ResidualPredicate));
-        assert_eq!(plan.hottest().id, 1);
+        assert_eq!(plan.hottest().unwrap().id, 1);
 
         let lookup = &root.children[1];
         assert_eq!(lookup.op, "Key Lookup");

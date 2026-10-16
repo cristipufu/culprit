@@ -382,8 +382,8 @@ pub async fn describe_switches(changes: &mut Changes, provider: &dyn culprit_cor
         ) else {
             continue;
         };
-        switch.from_label = Some(a.hottest().op.clone());
-        switch.to_label = Some(b.hottest().op.clone());
+        switch.from_label = a.hottest().map(|n| n.op.clone());
+        switch.to_label = b.hottest().map(|n| n.op.clone());
         switch.what = what_differs(&a, &b);
         change.headline =
             culprit_core::changes::headline(change, changes.engine, changes.source, changes.min_executions);

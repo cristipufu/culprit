@@ -5,12 +5,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use culprit_core::{
-    CleanupHolder, Engine, GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalUnit, WaitSample, WaitStat,
+    CleanupHolder, Coverage, Engine, GrantStat, OpenTransaction, Pressure, Signal, SignalScope, SignalUnit, WaitSample,
+    WaitStat,
 };
 
 use crate::conn::{MsClient, query};
 use crate::probe::Probe;
 use crate::schema::{BENIGN_WAITS, wait_type_category};
+use crate::sources;
 
 const COUNTERS_SQL: &str = r#"
 SELECT RTRIM(counter_name) AS counter, cntr_value AS value
@@ -50,7 +52,9 @@ SELECT TOP (30) CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
   SUM(qs.execution_count) AS executions,
   SUM(qs.total_grant_kb) * 1.0 / NULLIF(SUM(qs.execution_count), 0) AS avg_granted_kb,
   SUM(qs.total_used_grant_kb) * 1.0 / NULLIF(SUM(qs.execution_count), 0) AS avg_used_kb,
-  MAX(qs.max_grant_kb) AS max_granted_kb
+  MAX(qs.max_grant_kb) AS max_granted_kb,
+  SUM(qs.last_grant_kb) * 1.0 / COUNT(*) AS last_granted_kb,
+  SUM(qs.last_used_grant_kb) * 1.0 / COUNT(*) AS last_used_kb
 FROM sys.dm_exec_query_stats qs
 CROSS APPLY sys.dm_exec_plan_attributes(qs.plan_handle) pa
 WHERE pa.attribute = 'dbid' AND CAST(pa.value AS int) = DB_ID() AND qs.total_grant_kb > 0
@@ -216,109 +220,102 @@ fn resource_signals(data_io: f64, data_io_peak: f64, memory: f64) -> Vec<Signal>
     ]
 }
 
-/// Signals, grants and the oldest open transaction. Each read is independent; failures are returned as notes.
-pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, Vec<String>) {
+/// Signals, grants and the oldest open transaction. Each read is independent, through `sources::read`: a failure is a
+/// note in the coverage returned.
+pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, Coverage) {
     let azure = probe.is_azure_sql_database();
     let uptime = uptime_hours(probe);
     let mut p = Pressure { uptime_hours: uptime, ..Pressure::default() };
-    let mut notes = Vec::new();
+    let mut coverage = Coverage::default();
 
-    match counters(client).await {
-        Ok(c) => p.signals.extend(counter_signals(&c, uptime, azure)),
-        Err(e) => notes.push(format!("Performance counters: {e}")),
+    if let Some(c) =
+        sources::read(&mut coverage, &sources::PERFORMANCE_COUNTERS, counters(client).await, || probe.grant_hint())
+    {
+        p.signals.extend(counter_signals(&c, uptime, azure));
     }
-    if azure {
-        match query(client, RESOURCE_STATS_SQL).await {
-            Ok(rows) => {
-                if let Some(r) = rows.first().filter(|r| r.f64_or_zero("samples") > 0.0) {
-                    p.signals.extend(resource_signals(
-                        r.f64_or_zero("data_io"),
-                        r.f64_or_zero("data_io_peak"),
-                        r.f64_or_zero("memory"),
-                    ));
-                }
-            }
-            Err(e) => notes.push(format!("Resource use: {e}")),
-        }
+    if azure
+        && let Some(rows) =
+            sources::read(&mut coverage, &sources::RESOURCE_USE, query(client, RESOURCE_STATS_SQL).await, || {
+                probe.grant_hint()
+            })
+        && let Some(r) = rows.first().filter(|r| r.f64_or_zero("samples") > 0.0)
+    {
+        p.signals.extend(resource_signals(
+            r.f64_or_zero("data_io"),
+            r.f64_or_zero("data_io_peak"),
+            r.f64_or_zero("memory"),
+        ));
     }
-    match query(client, PENDING_GRANTS_SQL).await {
-        Ok(rows) => {
-            let pending = rows.first().map(|r| r.f64_or_zero("pending")).unwrap_or(0.0);
+    if let Some(rows) =
+        sources::read(&mut coverage, &sources::PENDING_GRANTS, query(client, PENDING_GRANTS_SQL).await, || {
+            probe.grant_hint()
+        })
+    {
+        let pending = rows.first().map(|r| r.f64_or_zero("pending")).unwrap_or(0.0);
+        p.signals.push(
+            Signal::new("memory-grants-pending", "Waiting for memory", pending, SignalUnit::Count, SignalScope::Now)
+                .graded("0 is healthy", 1.0, 5.0, true),
+        );
+    }
+    if let Some(totals) =
+        sources::read(&mut coverage, &sources::WAIT_TOTALS, wait_totals(client, azure, None).await, || {
+            probe.grant_hint()
+        })
+    {
+        let (wait, signal) = totals.values().fold((0.0, 0.0), |(w, s), (tw, ts, _)| (w + tw, s + ts));
+        if wait > 0.0 {
             p.signals.push(
                 Signal::new(
-                    "memory-grants-pending",
-                    "Waiting for memory",
-                    pending,
-                    SignalUnit::Count,
-                    SignalScope::Now,
+                    "signal-wait",
+                    "Waiting for CPU",
+                    signal / wait * 100.0,
+                    SignalUnit::Percent,
+                    SignalScope::SinceStartup,
                 )
-                .graded("0 is healthy", 1.0, 5.0, true),
+                .graded(
+                    "under 20% of waiting is healthy; more means queries queue for a processor",
+                    20.0,
+                    35.0,
+                    true,
+                ),
             );
         }
-        Err(e) => notes.push(format!("Memory grants: {e}")),
-    }
-    match wait_totals(client, azure, None).await {
-        Ok(totals) => {
-            let (wait, signal) = totals.values().fold((0.0, 0.0), |(w, s), (tw, ts, _)| (w + tw, s + ts));
-            if wait > 0.0 {
-                p.signals.push(
-                    Signal::new(
-                        "signal-wait",
-                        "Waiting for CPU",
-                        signal / wait * 100.0,
-                        SignalUnit::Percent,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded(
-                        "under 20% of waiting is healthy; more means queries queue for a processor",
-                        20.0,
-                        35.0,
-                        true,
-                    ),
-                );
-            }
-            let threadpool = totals.get("THREADPOOL").map(|t| t.0).unwrap_or(0.0);
-            // Totals since the start: one bad hour days ago and a steady trickle average to the same rate, so checks
-            // say how much and since when instead of an hourly rate.
-            p.signals.push(Signal::new(
-                "threadpool-wait-ms",
-                if azure {
-                    "Waiting for workers since start"
-                } else {
-                    "Waiting for workers since start (whole instance)"
-                },
-                threadpool,
-                SignalUnit::Milliseconds,
-                SignalScope::SinceStartup,
-            ));
-            // Memory grants alone; the Memory category also holds allocation waits (CMEMTHREAD) and compile memory.
-            let grants = totals.get("RESOURCE_SEMAPHORE").map(|t| t.0).unwrap_or(0.0);
-            p.signals.push(Signal::new(
-                "grant-wait-ms",
-                if azure {
-                    "Waiting for memory grants since start"
-                } else {
-                    "Waiting for memory grants since start (whole instance)"
-                },
-                grants,
-                SignalUnit::Milliseconds,
-                SignalScope::SinceStartup,
-            ));
-            if let Some(hours) = uptime {
-                p.signals.push(
-                    Signal::new(
-                        "threadpool-waits",
-                        if hours >= 1.0 { "Waiting for workers, per hour" } else { "Waiting for workers since start" },
-                        // Under an hour of uptime, report the total rather than extrapolate an hourly rate.
-                        threadpool / hours.max(1.0),
-                        SignalUnit::Milliseconds,
-                        SignalScope::SinceStartup,
-                    )
-                    .graded("under a second an hour is healthy", 1_000.0, 60_000.0, true),
-                );
-            }
+        let threadpool = totals.get("THREADPOOL").map(|t| t.0).unwrap_or(0.0);
+        // Totals since the start: one bad hour days ago and a steady trickle average to the same rate, so checks
+        // say how much and since when instead of an hourly rate.
+        p.signals.push(Signal::new(
+            "threadpool-wait-ms",
+            if azure { "Waiting for workers since start" } else { "Waiting for workers since start (whole instance)" },
+            threadpool,
+            SignalUnit::Milliseconds,
+            SignalScope::SinceStartup,
+        ));
+        // Memory grants alone; the Memory category also holds allocation waits (CMEMTHREAD) and compile memory.
+        let grants = totals.get("RESOURCE_SEMAPHORE").map(|t| t.0).unwrap_or(0.0);
+        p.signals.push(Signal::new(
+            "grant-wait-ms",
+            if azure {
+                "Waiting for memory grants since start"
+            } else {
+                "Waiting for memory grants since start (whole instance)"
+            },
+            grants,
+            SignalUnit::Milliseconds,
+            SignalScope::SinceStartup,
+        ));
+        if let Some(hours) = uptime {
+            p.signals.push(
+                Signal::new(
+                    "threadpool-waits",
+                    if hours >= 1.0 { "Waiting for workers, per hour" } else { "Waiting for workers since start" },
+                    // Under an hour of uptime, report the total rather than extrapolate an hourly rate.
+                    threadpool / hours.max(1.0),
+                    SignalUnit::Milliseconds,
+                    SignalScope::SinceStartup,
+                )
+                .graded("under a second an hour is healthy", 1_000.0, 60_000.0, true),
+            );
         }
-        Err(e) => notes.push(format!("Wait totals: {e}")),
     }
     if let Ok(rows) = query(client, THREADPOOL_NOW_SQL).await {
         let waiting = rows.first().map(|r| r.f64_or_zero("waiting")).unwrap_or(0.0);
@@ -333,20 +330,21 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         p.cpus = r.f64("cpu_count").filter(|n| *n > 0.0);
         p.numa_nodes = r.f64("numa_nodes").filter(|n| *n > 0.0);
     }
-    match query(client, GRANTS_SQL).await {
-        Ok(rows) => {
-            p.grants = rows
-                .iter()
-                .map(|r| GrantStat {
-                    query_hash: r.string("query_hash"),
-                    executions: r.f64_or_zero("executions"),
-                    avg_granted_kb: r.f64_or_zero("avg_granted_kb"),
-                    avg_used_kb: r.f64_or_zero("avg_used_kb"),
-                    max_granted_kb: r.f64_or_zero("max_granted_kb"),
-                })
-                .collect();
-        }
-        Err(e) => notes.push(format!("Memory grants per query: {e}")),
+    if let Some(rows) =
+        sources::read(&mut coverage, &sources::GRANTS, query(client, GRANTS_SQL).await, || probe.grant_hint())
+    {
+        p.grants = rows
+            .iter()
+            .map(|r| GrantStat {
+                query_hash: r.string("query_hash"),
+                executions: r.f64_or_zero("executions"),
+                avg_granted_kb: r.f64_or_zero("avg_granted_kb"),
+                avg_used_kb: r.f64_or_zero("avg_used_kb"),
+                max_granted_kb: r.f64_or_zero("max_granted_kb"),
+                last_granted_kb: r.f64("last_granted_kb"),
+                last_used_kb: r.f64("last_used_kb"),
+            })
+            .collect();
     }
     let version_store = match query(client, VERSION_STORE_SQL).await {
         Ok(rows) => rows.first().and_then(|r| r.f64("kb")).map(|kb| kb * 1024.0),
@@ -362,40 +360,41 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
             ),
         );
     }
-    match query(client, OLDEST_TRANSACTION_SQL).await {
-        Ok(rows) => {
-            p.oldest_transaction = rows.first().map(|r| OpenTransaction {
-                session: r.string("session_id"),
-                seconds: r.f64_or_zero("seconds"),
-                program: r.str("program_name").filter(|s| !s.trim().is_empty()),
-                state: Some(match (r.str("status").as_deref(), r.f64_or_zero("is_snapshot") > 0.0) {
-                    (Some("sleeping"), _) => "idle in transaction".into(),
-                    (_, true) => "snapshot".into(),
-                    _ => "running".into(),
-                }),
-                held_bytes: version_store.filter(|_| r.f64_or_zero("is_snapshot") > 0.0),
-                held_versions: None,
-                holder: Some(CleanupHolder::Session),
-                xid_age: None,
-                wrote: Some(r.f64_or_zero("wrote") > 0.0),
-                database: None,
-            });
-            if let Some(t) = &p.oldest_transaction {
-                p.signals.push(
-                    Signal::new(
-                        "oldest-transaction",
-                        "Oldest open transaction",
-                        t.seconds,
-                        SignalUnit::Seconds,
-                        SignalScope::Now,
-                    )
-                    .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
-                );
-            }
+    if let Some(rows) =
+        sources::read(&mut coverage, &sources::OPEN_TRANSACTIONS, query(client, OLDEST_TRANSACTION_SQL).await, || {
+            probe.grant_hint()
+        })
+    {
+        p.oldest_transaction = rows.first().map(|r| OpenTransaction {
+            session: r.string("session_id"),
+            seconds: r.f64_or_zero("seconds"),
+            program: r.str("program_name").filter(|s| !s.trim().is_empty()),
+            state: Some(match (r.str("status").as_deref(), r.f64_or_zero("is_snapshot") > 0.0) {
+                (Some("sleeping"), _) => "idle in transaction".into(),
+                (_, true) => "snapshot".into(),
+                _ => "running".into(),
+            }),
+            held_bytes: version_store.filter(|_| r.f64_or_zero("is_snapshot") > 0.0),
+            held_versions: None,
+            holder: Some(CleanupHolder::Session),
+            xid_age: None,
+            wrote: Some(r.f64_or_zero("wrote") > 0.0),
+            database: None,
+        });
+        if let Some(t) = &p.oldest_transaction {
+            p.signals.push(
+                Signal::new(
+                    "oldest-transaction",
+                    "Oldest open transaction",
+                    t.seconds,
+                    SignalUnit::Seconds,
+                    SignalScope::Now,
+                )
+                .graded("seconds or minutes, not hours", 600.0, 1800.0, true),
+            );
         }
-        Err(e) => notes.push(format!("Open transactions: {e}")),
     }
-    (p, notes)
+    (p, coverage)
 }
 
 /// Two readings of wait totals and counters `seconds` apart; the difference is what happened in between.

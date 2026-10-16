@@ -16,14 +16,15 @@ mod rows;
 mod sessions;
 mod signals;
 mod slowlog;
+pub mod sources;
 mod vars;
 
 use std::time::Instant;
 
 use async_trait::async_trait;
 use culprit_core::{
-    ConnectionSpec, Engine, Error, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet, ServerInfo,
-    Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
+    ConnectionSpec, Engine, Error, ErrorCode, ExplainMode, LiveState, Plan, PlanKind, Provider, Result, ResultSet,
+    ServerInfo, Session, SessionAction, Snapshot, SnapshotOptions, WaitStat,
 };
 use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
@@ -175,16 +176,28 @@ impl Provider for MysqlProvider {
         collect::snapshot(&self.connector, &self.spec, connection, options).await
     }
 
+    /// A statement the scan recorded is digest text (`COUNT ( * )`, `LIMIT ?`): planned as far as it runs, and when its
+    /// placeholders stop it, said so instead of the server's syntax error.
+    async fn explain_recorded(&self, sql: &str, _query_id: Option<&str>) -> Result<Plan> {
+        let text = fingerprint::runnable(sql);
+        self.explain(&text, ExplainMode::Estimated).await.map_err(|e| {
+            if !fingerprint::has_placeholders(&text) || !matches!(e.code, ErrorCode::QueryFailed | ErrorCode::InvalidInput) {
+                return e;
+            }
+            let name = if self.connector.flavor() == Flavor::Mariadb { "MariaDB" } else { "MySQL" };
+            Error::invalid(format!(
+                "{name} recorded this statement without its values (each ? stands for one), so it can't be planned as recorded"
+            ))
+            .with_hint("Open it in the editor, put a real value in place of each ?, and explain it there.")
+        })
+    }
+
     async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
         let mut plan = self.explain_statement(sql, mode).await.map_err(parameter_error)?;
         if self.connector.flavor() == Flavor::Mariadb {
             plan.props.insert("flavor".into(), "MariaDB".into());
         }
         Ok(plan)
-    }
-
-    fn session_actions(&self) -> Vec<SessionAction> {
-        vec![SessionAction::Cancel, SessionAction::Terminate]
     }
 
     async fn interrupt_session(&self, session: &str, action: SessionAction) -> Result<()> {
@@ -244,16 +257,6 @@ impl Provider for MysqlProvider {
         let runs = runs?;
         let logged_since = runs.iter().map(|r| r.at).reduce(f64::min);
         Ok(Some(slowlog::periods(&runs, baseline, recent, logged_since)))
-    }
-
-    async fn last_actual_plan(&self, _query_id: &str, _plan_id: Option<&str>) -> Result<Plan> {
-        Err(Error::new(
-            culprit_core::ErrorCode::Unsupported,
-            "MySQL and MariaDB don't keep the actual plan of past runs",
-        )
-        .with_hint(
-            "Measure it instead: Analyze runs the statement's recorded text once inside a read-only transaction.",
-        ))
     }
 
     async fn query_progress(&self, session: &str, with_plan: bool) -> Result<culprit_core::QueryProgress> {

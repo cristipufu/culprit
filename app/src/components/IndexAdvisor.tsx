@@ -28,6 +28,7 @@ const SOURCE: Record<IndexCandidate["source"], string> = {
   optimizer: "Asked for by the optimizer",
   "plan-scan": "Seen in a query plan",
   "foreign-key": "Foreign key",
+  "engine-built": "Built on every run",
 };
 
 const CLEANUP: Record<CleanupKind, { label: string; tone: string; verb: string }> = {
@@ -181,7 +182,7 @@ export default function IndexAdvisor({ report, onOpenTable }: { report: Report; 
           <h3>Nothing to add or clean up</h3>
           <p>
             Culprit checked {count(indexCount)} indexes on {count(report.snapshot.tables.length)} tables: {a.engine === "mssql" ? "the optimizer's missing-index requests, " : ""}plans
-            that read whole tables, foreign keys, duplicates, overlaps and indexes nothing reads.
+            that read whole tables, foreign keys, duplicates, overlaps{report.snapshot.server.capabilities.includes("index-usage") ? " and indexes nothing reads" : ""}.
           </p>
         </div>
       ) : (

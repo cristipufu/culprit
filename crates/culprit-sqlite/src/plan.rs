@@ -12,14 +12,74 @@ use crate::map_error;
 pub const AUTOMATIC_INDEX: &str = "Automatic Index";
 pub const TEMP_BTREE: &str = "Temp B-Tree";
 
+/// The plan of a statement, never run. A statement with placeholders (`?`, as logs and fingerprints write it) is planned
+/// with NULL in each: EXPLAIN QUERY PLAN still runs nothing, and the plan says it had no values.
 pub fn explain(conn: &Connection, statement: &str) -> Result<Plan> {
     let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {statement}")).map_err(|e| map_error(&e))?;
+    let parameters = stmt.parameter_count();
+    let nulls = std::iter::repeat_n(rusqlite::types::Null, parameters);
     let rows: Vec<(i64, i64, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(3)?)))
+        .query_map(rusqlite::params_from_iter(nulls), |r| Ok((r.get(0)?, r.get(1)?, r.get(3)?)))
         .map_err(|e| map_error(&e))?
         .collect::<rusqlite::Result<_>>()
         .map_err(|e| map_error(&e))?;
-    Ok(plan_from_rows(statement, &rows))
+    let mut plan = plan_from_rows(statement, &rows);
+    if parameters > 0 {
+        plan.props.insert(
+            "Generic Plan".into(),
+            "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.".into(),
+        );
+    }
+    Ok(plan)
+}
+
+/// Whether text is `EXPLAIN QUERY PLAN` output as the sqlite3 shell prints it: the tree under a `QUERY PLAN` line
+/// (`|--SCAN orders`, `` `--USE TEMP B-TREE FOR ORDER BY ``), or the rows as `id|parent|notused|detail`.
+pub fn is_text_plan(text: &str) -> bool {
+    let mut lines = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
+    let Some(first) = lines.next() else { return false };
+    first.trim() == "QUERY PLAN" || list_row(first).is_some()
+}
+
+/// A pasted plan: the shell's tree or its rows. The statement isn't in the text, so a table keeps the alias the
+/// statement gave it.
+pub fn parse_text(text: &str) -> Result<Plan> {
+    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    let rows: Vec<(i64, i64, String)> = if lines.first().is_some_and(|l| l.trim() == "QUERY PLAN") {
+        // Each level indents three columns ("|  " or "   ") before its "|--" or "`--".
+        let mut parents: Vec<i64> = vec![0];
+        let mut rows = Vec::new();
+        for (n, line) in lines[1..].iter().enumerate() {
+            let Some(at) = line.find("|--").into_iter().chain(line.find("`--")).min() else {
+                return Err(culprit_core::Error::invalid(format!("Line {} isn't a plan step: {line}", n + 2)));
+            };
+            let depth = at / 3;
+            let id = n as i64 + 1;
+            parents.truncate(depth + 1);
+            let parent = *parents.last().unwrap_or(&0);
+            rows.push((id, parent, line[at + 3..].trim().to_string()));
+            parents.push(id);
+        }
+        rows
+    } else {
+        lines.iter().filter_map(|l| list_row(l)).collect()
+    };
+    if rows.is_empty() {
+        return Err(culprit_core::Error::invalid("The plan has no steps"));
+    }
+    let mut plan = plan_from_rows("", &rows);
+    plan.statement = None;
+    Ok(plan)
+}
+
+/// `2|0|0|SCAN orders`: a row of `EXPLAIN QUERY PLAN` in the shell's list mode.
+fn list_row(line: &str) -> Option<(i64, i64, String)> {
+    let mut parts = line.splitn(4, '|');
+    let id = parts.next()?.trim().parse().ok()?;
+    let parent = parts.next()?.trim().parse().ok()?;
+    parts.next()?.trim().parse::<i64>().ok()?;
+    let detail = parts.next()?.trim();
+    (!detail.is_empty()).then(|| (id, parent, detail.to_string()))
 }
 
 /// The plan for `EXPLAIN QUERY PLAN` rows (`id`, `parent`, `detail`), under a root that stands for the statement.
@@ -143,6 +203,36 @@ fn strip_word<'a>(text: &'a str, upper: &str, word: &str) -> Option<&'a str> {
     Some(rest)
 }
 
+/// `(customer_id=?) LEFT-JOIN` → what's inside the parentheses (`customer_id=?`) and what follows them (`LEFT-JOIN`,
+/// a flag SQLite adds to the step of an outer join).
+fn parenthesized(text: &str) -> (Option<String>, &str) {
+    let Some(open) = text.find('(') else { return (None, text.trim()) };
+    let mut depth = 0;
+    for (at, ch) in text[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let close = open + at;
+                    return (Some(text[open + 1..close].trim().to_string()), text[close + 1..].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    (Some(text[open + 1..].trim().to_string()), "")
+}
+
+/// `LEFT-JOIN` after a search: the step is the inner side of an outer join.
+fn join_flag(n: &mut PlanNode, after: &str) {
+    if let Some(kind) =
+        after.split_whitespace().find_map(|w| w.to_ascii_uppercase().strip_suffix("-JOIN").map(str::to_string))
+    {
+        n.props.insert("Join".into(), kind.to_ascii_lowercase());
+    }
+}
+
 /// `orders USING INDEX ix (customer_id=?)` → the table, the index and what it searches by.
 fn access(n: &mut PlanNode, rest: &str) {
     let upper = rest.to_ascii_uppercase();
@@ -156,7 +246,8 @@ fn access(n: &mut PlanNode, rest: &str) {
     let upper = using.to_ascii_uppercase();
     // `USING AUTOMATIC COVERING INDEX (product_id=?)`: SQLite built this index for the statement because none fits.
     if upper.starts_with("AUTOMATIC") {
-        let by = using.find('(').map(|at| using[at..].trim().trim_start_matches('(').trim_end_matches(')').to_string());
+        let (by, after) = parenthesized(using);
+        join_flag(n, after);
         let columns: Vec<String> = by
             .as_deref()
             .unwrap_or("")
@@ -177,15 +268,14 @@ fn access(n: &mut PlanNode, rest: &str) {
     for prefix in ["COVERING INDEX ", "INDEX ", "INTEGER PRIMARY KEY", "PRIMARY KEY"] {
         if upper.starts_with(prefix) {
             let tail = using[prefix.len()..].trim();
-            let (name, by) = match tail.find('(') {
-                Some(at) => (tail[..at].trim(), Some(tail[at..].trim())),
-                None => (tail, None),
-            };
+            let name = tail.find('(').map_or(tail, |at| tail[..at].trim());
+            let (by, after) = parenthesized(tail);
+            join_flag(n, after);
             n.index = Some(if name.is_empty() { prefix.trim().to_ascii_lowercase() } else { name.to_string() });
             if upper.starts_with("COVERING") {
                 n.props.insert("Covering".into(), "true".into());
             }
-            n.seek_predicate = by.map(|b| b.trim_start_matches('(').trim_end_matches(')').to_string());
+            n.seek_predicate = by;
             return;
         }
     }
@@ -226,6 +316,44 @@ mod tests {
         assert_eq!(kids[2].index.as_deref(), Some("ix_items_order"));
         assert_eq!(kids[2].seek_predicate.as_deref(), Some("order_id=?"));
         assert_eq!(kids[3].kind, NodeKind::Sort);
+    }
+
+    #[test]
+    fn an_outer_join_flag_isnt_part_of_the_search() {
+        let plan = plan_from_rows(
+            "SELECT …",
+            &rows(&[
+                (3, 0, "SCAN customers"),
+                (7, 0, "SEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN"),
+                (9, 0, "SEARCH items USING INDEX ix_items (order_id=? AND product_id>?) LEFT-JOIN"),
+            ]),
+        );
+        let kids = &plan.root.children;
+        assert_eq!(kids[1].seek_predicate.as_deref(), Some("customer_id=?"));
+        assert_eq!(kids[1].props.get("Join").map(String::as_str), Some("left"));
+        assert_eq!(kids[1].props.get(AUTOMATIC_INDEX).map(String::as_str), Some("orders(customer_id)"));
+        assert_eq!(kids[2].seek_predicate.as_deref(), Some("order_id=? AND product_id>?"));
+        assert_eq!(kids[2].index.as_deref(), Some("ix_items"));
+    }
+
+    #[test]
+    fn the_shell_tree_and_list_rows_read_back() {
+        let tree = "QUERY PLAN\n|--SCAN c\n`--CORRELATED SCALAR SUBQUERY 1\n   |--SEARCH o USING INDEX ix_orders_customer (customer_id=?)\n   `--USE TEMP B-TREE FOR ORDER BY\n";
+        assert!(is_text_plan(tree));
+        let plan = parse_text(tree).unwrap();
+        let kids = &plan.root.children;
+        assert_eq!(kids.len(), 2);
+        assert_eq!((kids[0].kind, kids[0].object.as_deref()), (NodeKind::Scan, Some("c")));
+        let sub = &kids[1].children;
+        assert_eq!(sub.len(), 2, "{:?}", kids[1]);
+        assert_eq!(sub[0].index.as_deref(), Some("ix_orders_customer"));
+        assert_eq!(sub[1].kind, NodeKind::Sort);
+        assert_eq!(plan.statement, None);
+        let list = "2|0|0|SCAN orders\n14|0|0|USE TEMP B-TREE FOR ORDER BY";
+        assert!(is_text_plan(list));
+        assert_eq!(parse_text(list).unwrap().root.children.len(), 2);
+        // SQL Server's SHOWPLAN_TEXT isn't SQLite's.
+        assert!(!is_text_plan("  |--Clustered Index Scan(OBJECT:([db].[dbo].[t].[pk]))"));
     }
 
     #[test]

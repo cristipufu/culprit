@@ -1,4 +1,4 @@
-import { ChevronRight, Copy, GitCompareArrows, Radio, RefreshCw, SquarePen } from "lucide-react";
+import { ChevronRight, Copy, FileText, GitCompareArrows, Radio, RefreshCw, SquarePen } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Dashboard as DashboardModel } from "../gen/Dashboard";
@@ -15,6 +15,7 @@ import { MarkButton } from "../components/MarkButton";
 import { planFlags, Sparkline, trendNote, WorkloadTrend } from "../components/Trends";
 import type { WaitsTab } from "../components/Waits";
 import { api, errorMessage, type ApiError } from "../lib/api";
+import { can, serverName } from "../lib/engines";
 import { useEvents } from "../lib/events";
 import { attention, nowTile, nowUnavailable, STATUS_LABEL } from "../lib/dashboard";
 import { ago, duration, percent, when } from "../lib/format";
@@ -60,7 +61,7 @@ export default function Dashboard({ report, connection }: { report: Report; conn
   const scanning = useStore((s) => s.report.status === "ready" && s.report.scanning);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [waits, setWaits] = useState<{ tab: WaitsTab; category?: string } | null>(null);
-  const live = useLiveNow(connection.name);
+  const live = useLiveNow(connection.name, can(connection.engine, "sessions"));
   const gridRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -85,7 +86,8 @@ export default function Dashboard({ report, connection }: { report: Report; conn
     if (document.activeElement && document.activeElement !== document.body) return;
     gridRef.current?.querySelector<HTMLElement>("[data-tile]")?.focus();
   };
-  useHotkeys({ v: () => setState({ view: "overview", changes: changeRequest() }), j: enter, ArrowDown: enter }, !waits);
+  const periods = can(connection.engine, "periods");
+  useHotkeys({ ...(periods ? { v: () => setState({ view: "overview", changes: changeRequest() }) } : {}), j: enter, ArrowDown: enter }, !waits);
 
   if (loaded.status === "error") {
     return (
@@ -161,8 +163,8 @@ export default function Dashboard({ report, connection }: { report: Report; conn
         <DbTimeTile tile={tile("db-time")} report={report} />
         <FindingsTile tile={tile("findings")} report={report} />
         <TopQueriesTile tile={tile("top-queries")} report={report} />
-        <WaitsTile tile={tile("waits")} onOpen={openWaits} />
-        <NowTile tile={tile("now")} live={live} />
+        <WaitsTile tile={tile("waits")} onOpen={openWaits} sample={can(connection.engine, "wait_sample")} />
+        <NowTile tile={tile("now")} live={live} sessions={can(connection.engine, "sessions")} />
         <HealthTile tile={tile("health")} onOpen={() => openWaits("health")} />
         <DeadlocksTile tile={tile("deadlocks")} report={report} />
         <IndexesTile tile={tile("indexes")} />
@@ -319,11 +321,13 @@ function DbTimeTile({ tile, report }: { tile: Tile; report: Report }) {
     [log],
   );
   if (!w || tile.status === "unavailable") return <Frame tile={tile} />;
+  // SQLite keeps no history: a query log is one period, with nothing to compare it to.
+  const periods = can(report.snapshot.server.engine, "periods");
   const flags = planFlags(w, compareSince);
   const hasTrend = !!w.timeline && w.timeline.starts.length >= 2;
   const stats = tile.metrics.filter((m) => m.key !== "window-hours");
   return (
-    <Frame tile={tile} action="What changed" onOpen={compare} foot={tile.items.length > 0 || !hasTrend ? null : undefined}>
+    <Frame tile={tile} action={periods ? "What changed" : undefined} onOpen={periods ? compare : undefined} foot={tile.items.length > 0 || !hasTrend ? null : undefined}>
       <div className="dash-stats">
         {stats.map((m) => (
           <div key={m.key} className="dash-stat">
@@ -352,10 +356,15 @@ function DbTimeTile({ tile, report }: { tile: Tile; report: Report }) {
       ) : (
         // Where the chart will be: why there's none yet, in the chart's place, so every engine's tile has the same shape.
         <div className="dash-chart-empty">
-          <p>{tile.detail ?? trendNote(w) ?? "Not enough history for a trend yet."}</p>
-          <button className="btn small" onClick={compare} title="Compare two periods (V)">
-            <GitCompareArrows size={12} /> What changed?
-          </button>
+          <p>
+            {tile.detail ??
+              (periods ? (trendNote(w) ?? "Not enough history for a trend yet.") : `${serverName(report.snapshot.server.engine)} keeps no history to chart: the log Culprit read is one period.`)}
+          </p>
+          {periods && (
+            <button className="btn small" onClick={compare} title="Compare two periods (V)">
+              <GitCompareArrows size={12} /> What changed?
+            </button>
+          )}
         </div>
       )}
       {tile.items.length > 0 && (
@@ -484,7 +493,10 @@ function TopQueriesTile({ tile, report }: { tile: Tile; report: Report }) {
 
 // ───────── waits ─────────
 
-function WaitsTile({ tile, onOpen }: { tile: Tile; onOpen: (tab: WaitsTab, category?: string) => void }) {
+function WaitsTile({ tile, onOpen, sample }: { tile: Tile; onOpen: (tab: WaitsTab, category?: string) => void; sample: boolean }) {
+  if (tile.status === "unavailable" && !sample) {
+    return <Frame tile={tile}>{tile.fix_sql && <Fix sql={tile.fix_sql} />}</Frame>;
+  }
   if (tile.status === "unavailable") {
     return (
       <Frame tile={tile} action="Sample now" onOpen={() => onOpen("now")}>
@@ -532,7 +544,8 @@ function WaitsTile({ tile, onOpen }: { tile: Tile; onOpen: (tab: WaitsTab, categ
 type LiveNow = { state: LiveState | null; error: ApiError | null; hidden: boolean; history: Sample[]; age: number | null };
 
 /** Sessions every few seconds while the dashboard is on screen; nothing while the window is hidden. */
-function useLiveNow(connection: string): LiveNow {
+/** Sessions right now, read every few seconds while the window is visible; never for an engine without sessions. */
+function useLiveNow(connection: string, enabled: boolean): LiveNow {
   const [state, setLive] = useState<LiveState | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
@@ -555,7 +568,7 @@ function useLiveNow(connection: string): LiveNow {
   hasRead.current = state !== null || error !== null;
   useEffect(() => {
     // The first read always happens, so the tile has something to say; after that, nothing while hidden.
-    if (hidden && hasRead.current) return;
+    if (!enabled || (hidden && hasRead.current)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
@@ -568,7 +581,9 @@ function useLiveNow(connection: string): LiveNow {
         const blocked = next.sessions.filter((s) => s.blocked_by).length;
         setHistory((h) => [...h.slice(-(HISTORY - 1)), { at: Date.now(), active, blocked }]);
       } catch (e) {
-        if (!cancelled) setError(errorMessage(e));
+        const error = errorMessage(e);
+        if (!cancelled) setError(error);
+        if (error.code === "unsupported") return;
       }
       if (!cancelled && !document.hidden) timer = setTimeout(tick, REFRESH_MS);
     };
@@ -577,13 +592,15 @@ function useLiveNow(connection: string): LiveNow {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [connection, hidden]);
+  }, [connection, hidden, enabled]);
 
   const age = state ? Math.max(0, Math.round((now - Date.parse(state.taken_at)) / 1000)) : null;
   return { state, error, hidden, history, age };
 }
 
-function NowTile({ tile, live }: { tile: Tile; live: LiveNow }) {
+function NowTile({ tile, live, sessions }: { tile: Tile; live: LiveNow; sessions: boolean }) {
+  // An engine without sessions (SQLite): the scan's own word on it, with no live read to wait for.
+  if (!sessions) return <Frame tile={tile} />;
   const freshness = live.hidden
     ? "Paused while hidden"
     : live.error && !live.state
@@ -862,6 +879,19 @@ function PlansTile({ tile }: { tile: Tile }) {
 // ───────── query statistics ─────────
 
 function StatisticsTile({ tile, report }: { tile: Tile; report: Report }) {
+  // Statements from a log the application writes (SQLite): the step is a setting on the connection, not SQL.
+  if (!report.snapshot.workload && report.snapshot.server.missing.some((m) => m.capability === "query-log")) {
+    return (
+      <Frame tile={tile} className="unlocking">
+        <div className="dash-actions">
+          <span className="muted">Culprit reads the log file only; nothing changes in the application.</span>
+          <button className="btn small" onClick={() => setState({ view: "connections" })}>
+            <FileText size={12} /> Add query log
+          </button>
+        </div>
+      </Frame>
+    );
+  }
   if (!report.snapshot.workload) {
     const sql = tile.fix_sql;
     return (

@@ -387,6 +387,7 @@ GROUP BY ws.wait_category_desc
 
     let workload = Workload {
         source: "Query Store".into(),
+        kind: Some(culprit_core::WorkloadKind::QueryStore),
         windowed: true,
         window_start: window.str("window_start"),
         window_end,
@@ -398,7 +399,9 @@ GROUP BY ws.wait_category_desc
         queries,
         timeline,
         untracked_time_ms: None,
+        hourly_time_ms: None,
         min_logged_ms: None,
+        log: None,
     };
     Ok(WorkloadResult { workload, waits, plans_parsed, plan_errors })
 }
@@ -427,6 +430,8 @@ fn to_query_stat(
             stddev_time_ms: p.stddev_ms(),
             compiled: None,
             variant_query: None,
+            cpu_time_ms: Some(p.cpu_ms),
+            logical_reads: Some(p.reads),
         })
         .collect();
     variants.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
@@ -677,11 +682,23 @@ pub(crate) async fn from_plan_cache(
         })
         .collect();
 
+    // Each plan counts from its own compile: the time an hour of every entry's life, to weigh shares by (`share_of`).
+    let window_end = rows.iter().filter_map(|r| r.str("last_seen")).max();
+    let end = window_end.as_deref().and_then(culprit_core::format::epoch_seconds);
+    let hourly_time_ms: f64 = rows
+        .iter()
+        .filter_map(|r| {
+            let first = r.str("first_seen").as_deref().and_then(culprit_core::format::epoch_seconds)?;
+            let hours = ((end? - first) / 3600.0).max(1.0 / 60.0);
+            Some(r.f64_or_zero("total_ms") / hours)
+        })
+        .sum();
     let workload = Workload {
         source: "Plan cache".into(),
+        kind: Some(culprit_core::WorkloadKind::PlanCache),
         windowed: false,
         window_start: rows.iter().filter_map(|r| r.str("first_seen")).min(),
-        window_end: rows.iter().filter_map(|r| r.str("last_seen")).max(),
+        window_end,
         window_hours,
         total_time_ms,
         total_cpu_ms: Some(total_cpu_ms),
@@ -690,7 +707,9 @@ pub(crate) async fn from_plan_cache(
         queries,
         timeline: None,
         untracked_time_ms: None,
+        hourly_time_ms: (hourly_time_ms > 0.0).then_some(hourly_time_ms),
         min_logged_ms: None,
+        log: None,
     };
     Ok(WorkloadResult { workload, waits: Vec::new(), plans_parsed, plan_errors })
 }

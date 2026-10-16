@@ -516,8 +516,9 @@ impl CulpritMcp {
                 self.allowed(&a.connection)?;
                 let window = window_minutes(a.window.as_deref(), a.window_days)?;
                 let mut dashboard = self.ws.dashboard(&a.connection, window, a.live.unwrap_or(true)).await?;
+                let engine = dashboard.engine;
                 for tile in &mut dashboard.tiles {
-                    tile.next = Some(view::next_tool(tile.key).to_string());
+                    tile.next = view::next_tool(tile.key, engine).map(str::to_string);
                 }
                 serde_json::to_value(&dashboard).map_err(|e| Error::internal(e.to_string()))
             }

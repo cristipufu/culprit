@@ -163,6 +163,18 @@ impl Out {
         }
         let engine = server.map(|s| s.name()).unwrap_or(engine_name(info));
         println!("Saved {} ({engine}, {}).", self.paint(BOLD, &info.name), info.display);
+        match (&info.query_log, info.engine.has_server()) {
+            (Some(log), _) => println!(
+                "Statements: read from {log} on every scan (change it with `culprit conn set {} --query-log <file>`, or --no-query-log).",
+                info.name
+            ),
+            (None, false) => println!(
+                "No query log found beside the database. SQLite keeps no history of its statements: to read them from the \
+                 log your framework writes, `culprit conn set {} --query-log <file>`.",
+                info.name
+            ),
+            (None, true) => {}
+        }
         println!("Next: culprit scan {}", info.name);
     }
 
@@ -334,13 +346,7 @@ impl Out {
         if let Some(w) = &s.workload {
             // Under 20 hours of history a per-day figure would be an extrapolation: say what was measured, and over what.
             let time = if w.window_hours < 20.0 {
-                let span = format::duration(w.window_hours * 3_600_000.0);
-                let since = if w.windowed {
-                    format!("the last {span}")
-                } else {
-                    format!("the {span} since statistics were reset")
-                };
-                format!("{} of database time over {since}", format::duration(w.total_time_ms))
+                format!("{} of database time over {}", format::duration(w.total_time_ms), w.window_phrase())
             } else {
                 format!("{} of database time per day", format::duration(w.per_day(w.total_time_ms)))
             };
@@ -444,10 +450,11 @@ impl Out {
 
     pub fn top(&self, report: &Report, by: TopBy, limit: usize) {
         let Some(w) = &report.snapshot.workload else {
+            let why = report.summary.no_workload.clone().unwrap_or_else(|| "This scan has no query history.".into());
             if self.format == Format::Json {
-                return self.json(&json!({ "queries": [] , "note": "No workload data in this report" }));
+                return self.json(&json!({ "queries": [], "note": why }));
             }
-            println!("No workload data in this report. See `culprit doctor {}`.", report.snapshot.connection);
+            println!("{why}");
             return;
         };
         let mut queries: Vec<&QueryStat> = w.queries.iter().collect();
@@ -467,9 +474,7 @@ impl Out {
         let short_window = w.window_hours < 20.0;
         let span = format::duration(w.window_hours * 3_600_000.0);
         let header = if short_window {
-            let over =
-                if w.windowed { format!("the last {span}") } else { format!("{span} since statistics were reset") };
-            format!("{} · {over} · share of DB time · runs · avg", w.source)
+            format!("{} · {} · share of DB time · runs · avg", w.source, w.window_phrase())
         } else {
             format!("{} · {span} · share of DB time · runs/day · avg", w.source)
         };
@@ -539,16 +544,20 @@ impl Out {
                     )
                 );
             }
+            _ if !plan.weighed() => println!(
+                "{}",
+                self.paint(DIM, &format!("{:?} plan · the access path only: no row or cost estimates", plan.kind))
+            ),
             _ => println!("{}", self.paint(DIM, &format!("{:?} plan · total cost {:.2}", plan.kind, plan.total_cost))),
         }
         let total_time = own.as_ref().map(|t| t.values().sum::<f64>()).filter(|t| *t > 0.0);
         let flagged: Vec<u32> = found.items.iter().filter_map(|i| i.nodes.first().copied()).collect();
         self.plan_node(plan, &plan.root, 0, own.as_ref().zip(total_time), &flagged);
-        self.plan_insights(&found);
+        self.plan_insights(&found, plan.weighed());
     }
 
     /// Insights under the tree: what's wrong, how to fix it, how to check, most important first.
-    fn plan_insights(&self, found: &culprit_core::insights::PlanInsights) {
+    fn plan_insights(&self, found: &culprit_core::insights::PlanInsights, weighed: bool) {
         println!();
         if found.items.is_empty() {
             println!("{}", self.paint(BOLD, "No problems found in this plan."));
@@ -567,8 +576,13 @@ impl Out {
                 self.paint(
                     DIM,
                     &format!(
-                        "· {} of the work · {} · operator {}",
-                        format::percent(i.impact),
+                        "· {}{} · operator {}",
+                        // A rule's own weight isn't a share of the work, and a plan without costs has none.
+                        if i.fixed_weight || !weighed {
+                            String::new()
+                        } else {
+                            format!("{} of the work · ", format::percent(i.impact))
+                        },
                         i.rule,
                         i.nodes.first().copied().unwrap_or(0)
                     )
@@ -602,9 +616,12 @@ impl Out {
             None if plan.total_cost > 0.0 => node.self_cost / plan.total_cost,
             None => 0.0,
         };
+        // A plan without costs or times (SQLite) has no shares or estimates to print.
+        let weighed = time.is_some() || plan.weighed();
         let rows = match node.act_rows {
-            Some(a) => format!("{} → {}", format::count(node.est_rows_total()), format::count(a)),
-            None => format::count(node.est_rows_total()),
+            Some(a) => format!("rows {} → {}", format::count(node.est_rows_total()), format::count(a)),
+            None if weighed => format!("rows {}", format::count(node.est_rows_total())),
+            None => String::new(),
         };
         let label = format!(
             "{}{}{}{}",
@@ -613,8 +630,8 @@ impl Out {
             node.object.as_deref().map(|o| format!(" {o}")).unwrap_or_default(),
             node.index.as_deref().map(|i| format!(" ({i})")).unwrap_or_default()
         );
-        let pct_text = format!("{:>4}", format::percent(pct));
-        let pct_text = if pct >= 0.3 { self.paint(RED, &pct_text) } else { pct_text };
+        let pct_text = if weighed { format!("{:>4}", format::percent(pct)) } else { "   ·".to_string() };
+        let pct_text = if weighed && pct >= 0.3 { self.paint(RED, &pct_text) } else { pct_text };
         let warnings: Vec<&str> = node.warnings.iter().map(|w| w.label()).collect();
         let timing =
             own_ms.filter(|ms| *ms >= 0.5).map(|ms| format!(" · {}", format::duration(ms))).unwrap_or_default();
@@ -622,7 +639,7 @@ impl Out {
             "{pct_text}  {}{}  {}{}",
             "  ".repeat(depth),
             label,
-            self.paint(DIM, &format!("rows {rows}{timing}")),
+            self.paint(DIM, &format!("{rows}{timing}")),
             if warnings.is_empty() {
                 String::new()
             } else {
@@ -1061,6 +1078,32 @@ impl Out {
         }
     }
 
+    pub fn sources(&self, engines: &[(Engine, &[culprit_core::Source])]) {
+        if self.format == Format::Json {
+            let by_engine: serde_json::Map<String, Value> =
+                engines.iter().map(|(e, s)| (format!("{e:?}").to_ascii_lowercase(), json!(s))).collect();
+            return self.json(&Value::Object(by_engine));
+        }
+        for (engine, sources) in engines.iter().filter(|(_, s)| !s.is_empty()) {
+            println!("{}", self.paint(BOLD, engine.label()));
+            for s in *sources {
+                let delivers: Vec<&str> = s.delivers.iter().map(|c| c.label_for(*engine)).collect();
+                println!(
+                    "  {:<26}{}",
+                    s.name,
+                    self.paint(
+                        DIM,
+                        &if delivers.is_empty() {
+                            format!("{} · adds detail", s.reads)
+                        } else {
+                            format!("{} · {}", s.reads, delivers.join(", "))
+                        }
+                    )
+                );
+            }
+        }
+    }
+
     pub fn checks(&self, checks: &[CheckInfo]) {
         if self.format == Format::Json {
             return self.json(&json!(checks));
@@ -1077,16 +1120,16 @@ impl Out {
 
 fn query_json(report: &Report, q: &QueryStat) -> Value {
     let w = report.snapshot.workload.as_ref();
-    let hot = q.plan.as_ref().map(|p| {
-        let n = p.hottest();
-        json!({
+    let hot = q.plan.as_ref().and_then(|p| {
+        let n = p.hottest()?;
+        Some(json!({
             "op": n.op,
             "object": n.object,
             "index": n.index,
             "predicate": n.predicate,
             "cost_share": if p.total_cost > 0.0 { n.self_cost / p.total_cost } else { 0.0 },
             "warnings": n.warnings,
-        })
+        }))
     });
     json!({
         "id": q.id,

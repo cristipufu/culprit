@@ -7,69 +7,57 @@
 use std::collections::HashMap;
 
 use culprit_core::{
-    CollectorNote, ConstraintIssue, ConstraintKind, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole,
-    Setting, Signal, SignalScope, SignalUnit, Snapshot, TableStorage,
+    ConstraintIssue, ConstraintKind, Coverage, FileIo, FileKind, Pressure, QueryStat, Replica, ReplicaRole, Setting,
+    Signal, SignalScope, SignalUnit, Snapshot, TableStorage,
 };
 use tokio_postgres::Client;
 
 use crate::collect::{Probe, StatementsAccess};
 use crate::rows::{Row, query, query_one};
+use crate::sources;
 
-/// Collect every signal into `snapshot`.
+/// Collect every signal into `snapshot`, each source read through `Coverage::read` (`crate::sources`): these add
+/// detail and lock nothing, so a failure is a note.
 pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
-    let mut notes: Vec<(&str, String)> = Vec::new();
+    let mut coverage = Coverage::default();
     if let StatementsAccess::Usable { relation, .. } = &probe.statements
         && let Some(workload) = snapshot.workload.as_mut()
     {
-        if let Err(e) = attach_costs(client, relation, probe.version_num, &mut workload.queries).await {
-            notes.push(("query costs", e.message));
-        }
+        coverage.read(
+            &sources::QUERY_COSTS,
+            attach_costs(client, relation, probe.version_num, &mut workload.queries).await,
+        );
         culprit_core::signals::fill_row_bytes(&mut workload.queries);
     }
-    match storage(client, probe.version_num).await {
-        Ok(by_table) => {
-            for t in &mut snapshot.tables {
-                if let Some(s) = by_table.get(&(t.schema.clone(), t.name.clone())) {
-                    t.storage = Some(s.clone());
-                }
+    if let Some(by_table) = coverage.read(&sources::TABLE_STORAGE, storage(client, probe.version_num).await) {
+        for t in &mut snapshot.tables {
+            if let Some(s) = by_table.get(&(t.schema.clone(), t.name.clone())) {
+                t.storage = Some(s.clone());
             }
         }
-        Err(e) => notes.push(("table storage", e.message)),
     }
-    match constraints(client, probe.version_num).await {
-        Ok(list) => snapshot.constraints = list,
-        Err(e) => notes.push(("constraints", e.message)),
+    if let Some(list) = coverage.read(&sources::CONSTRAINTS, constraints(client, probe.version_num).await) {
+        snapshot.constraints = list;
     }
-    match advice_settings(client).await {
-        Ok(found) => {
-            for setting in found {
-                if snapshot.setting(&setting.name).is_none() {
-                    snapshot.settings.push(setting);
-                }
-            }
+    for setting in coverage.read(&sources::ADVICE_SETTINGS, advice_settings(client).await).unwrap_or_default() {
+        if snapshot.setting(&setting.name).is_none() {
+            snapshot.settings.push(setting);
         }
-        Err(e) => notes.push(("settings", e.message)),
     }
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
-    match files(client, probe.version_num).await {
-        Ok(files) => pressure.files = files,
-        Err(e) => notes.push(("file latency", e.message)),
+    if let Some(files) = coverage.read(&sources::FILE_LATENCY, files(client, probe.version_num).await) {
+        pressure.files = files;
     }
     if probe.version_num >= 140_000 {
-        match sessions(client).await {
-            Ok(signals) => pressure.signals.extend(signals),
-            Err(e) => notes.push(("sessions", e.message)),
-        }
+        pressure.signals.extend(coverage.read(&sources::SESSIONS, sessions(client).await).unwrap_or_default());
     }
-    if probe.version_num >= 100_000 {
-        match replicas(client, probe.version_num, probe.platform).await {
-            Ok(replicas) => pressure.replicas = replicas,
-            Err(e) => notes.push(("replication", e.message)),
-        }
+    if probe.version_num >= 100_000
+        && let Some(replicas) =
+            coverage.read(&sources::REPLICATION, replicas(client, probe.version_num, probe.platform).await)
+    {
+        pressure.replicas = replicas;
     }
-    snapshot
-        .notes
-        .extend(notes.into_iter().map(|(collector, message)| CollectorNote { collector: collector.into(), message }));
+    snapshot.notes.extend(coverage.finish().2);
 }
 
 // ── per statement ──────────────────────────────────────────────────────────────────────────────────
@@ -197,39 +185,110 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
         .collect();
     // The estimate is a bonus: without it the update footprint still stands.
     if let Ok(rows) = query(client, BLOAT_SQL).await {
-        for r in rows {
-            if let Some(entry) = out.get_mut(&(r.string("schema_name"), r.string("table_name"))) {
-                entry.bloat_bytes = r.number("bloat_bytes").map(|b| b.max(0.0));
+        for (key, bloat) in bloat_estimates(&rows) {
+            if let Some(entry) = out.get_mut(&key) {
+                entry.bloat_bytes = Some(bloat);
             }
         }
     }
     Ok(out)
 }
 
-/// Heap bytes beyond what the live rows need at the table's fillfactor, from row counts and per-column average widths
-/// in pg_stats: the widely used statistics estimate, accurate to tens of percent. Tables with columns that have no
-/// statistics are skipped, and so are tables under 10 MB.
+/// Each column of the tables over 10 MB, in order, with what the table's bloat estimate needs: the table's pages, rows
+/// and fillfactor, and the column's type length, alignment, average width and null fraction from pg_stats.
 const BLOAT_SQL: &str = "
-WITH t AS (
-  SELECT c.oid, n.nspname AS schema_name, c.relname AS table_name, c.relpages, c.reltuples,
-         current_setting('block_size')::float8 AS bs,
-         coalesce((SELECT substring(o FROM 'fillfactor=([0-9]+)')::float8 FROM unnest(c.reloptions) AS o
-                    WHERE o LIKE 'fillfactor=%'), 100) AS fillfactor,
-         23 + CASE WHEN max(coalesce(s.null_frac, 0)) > 0 THEN (7 + count(a.attname)) / 8 ELSE 0 END AS header,
-         sum((1 - coalesce(s.null_frac, 0)) * coalesce(s.avg_width, 0)) AS data_width,
-         count(a.attname) = count(s.attname) AS complete
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-    LEFT JOIN pg_stats s ON s.schemaname = n.nspname AND s.tablename = c.relname AND s.attname = a.attname AND NOT s.inherited
-   WHERE c.relkind IN ('r', 'm') AND c.relpages >= 1280 AND c.reltuples > 0
-     AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
-   GROUP BY c.oid, n.nspname, c.relname, c.relpages, c.reltuples, c.reloptions
-)
-SELECT schema_name, table_name,
-       (relpages - ceil(reltuples / greatest(1, floor((bs - 24) * fillfactor / 100 / (4 + ceil((header + data_width) / 8) * 8))))) * bs
-         AS bloat_bytes
-  FROM t WHERE complete";
+SELECT n.nspname AS schema_name, c.relname AS table_name, c.relpages::float8 AS relpages,
+       c.reltuples::float8 AS reltuples, current_setting('block_size')::float8 AS bs,
+       coalesce((SELECT substring(o FROM 'fillfactor=([0-9]+)')::float8 FROM unnest(c.reloptions) AS o
+                  WHERE o LIKE 'fillfactor=%'), 100) AS fillfactor,
+       ty.typlen::float8 AS typlen, ty.typalign::text AS typalign,
+       s.avg_width::float8 AS avg_width, s.null_frac::float8 AS null_frac
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+  JOIN pg_type ty ON ty.oid = a.atttypid
+  LEFT JOIN pg_stats s ON s.schemaname = n.nspname AND s.tablename = c.relname AND s.attname = a.attname AND NOT s.inherited
+ WHERE c.relkind IN ('r', 'm') AND c.relpages >= 1280 AND c.reltuples > 0
+   AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%'
+ ORDER BY n.nspname, c.relname, a.attnum";
+
+/// One column as the bloat estimate lays it out.
+#[derive(Debug, Clone, Copy)]
+struct ColumnLayout {
+    /// pg_type.typlen: bytes for a fixed-width type, -1 for a varlena, -2 for a C string.
+    typlen: f64,
+    /// pg_type.typalign in bytes (c 1, s 2, i 4, d 8).
+    align: f64,
+    avg_width: f64,
+    null_frac: f64,
+}
+
+/// Heap bytes beyond what the live rows need at the table's fillfactor: the widely used statistics estimate, with each
+/// row laid out as PostgreSQL lays it out. Every column starts at its type's alignment, so a boolean followed by a
+/// timestamptz takes 16 bytes, not 9 (adding only the widths read badly ordered tables as a third empty). Short
+/// varlena values (under 127 bytes) have a one-byte header and aren't aligned. A column that is null in a share of
+/// rows takes that share of its room. `None` without statistics for every column.
+fn bloat_bytes(
+    relpages: f64,
+    reltuples: f64,
+    block: f64,
+    fillfactor: f64,
+    columns: &[Option<ColumnLayout>],
+) -> Option<f64> {
+    let columns: Vec<ColumnLayout> = columns.iter().copied().collect::<Option<_>>()?;
+    let align = |offset: f64, to: f64| (offset / to).ceil() * to;
+    let nulls = columns.iter().any(|c| c.null_frac > 0.0);
+    let header = 23.0 + if nulls { (columns.len() as f64 / 8.0).ceil() } else { 0.0 };
+    let mut offset = align(header, 8.0);
+    for c in &columns {
+        let present = 1.0 - c.null_frac.clamp(0.0, 1.0);
+        let aligned = if c.typlen > 0.0 || c.avg_width >= 127.0 { align(offset, c.align) } else { offset };
+        offset += present * (aligned - offset + c.avg_width);
+    }
+    let row = align(offset, 8.0);
+    let per_page = ((block - 24.0) * fillfactor / 100.0 / (4.0 + row)).floor().max(1.0);
+    Some(((relpages - (reltuples / per_page).ceil()) * block).max(0.0))
+}
+
+/// One table's rows from [`BLOAT_SQL`]: (schema, table), its pages, rows, block size and fillfactor, its columns.
+type BloatTable = ((String, String), [f64; 4], Vec<Option<ColumnLayout>>);
+
+/// The bloat estimate of every table [`BLOAT_SQL`] returned, by (schema, table).
+fn bloat_estimates(rows: &[Row]) -> HashMap<(String, String), f64> {
+    let mut tables: Vec<BloatTable> = Vec::new();
+    for r in rows {
+        let key = (r.string("schema_name"), r.string("table_name"));
+        if tables.last().is_none_or(|t| t.0 != key) {
+            let number = |c: &str| r.number(c).unwrap_or(0.0);
+            tables.push((
+                key,
+                [number("relpages"), number("reltuples"), number("bs"), number("fillfactor")],
+                Vec::new(),
+            ));
+        }
+        let align = match r.text("typalign").as_deref() {
+            Some("d") => 8.0,
+            Some("i") => 4.0,
+            Some("s") => 2.0,
+            _ => 1.0,
+        };
+        let column = r.number("avg_width").map(|avg_width| ColumnLayout {
+            typlen: r.number("typlen").unwrap_or(-1.0),
+            align,
+            avg_width,
+            null_frac: r.number("null_frac").unwrap_or(0.0),
+        });
+        if let Some(t) = tables.last_mut() {
+            t.2.push(column);
+        }
+    }
+    tables
+        .into_iter()
+        .filter_map(|(key, [pages, rows, block, fill], columns)| {
+            Some((key, bloat_bytes(pages, rows, block, fill, &columns)?))
+        })
+        .collect()
+}
 
 /// CHECK constraints added NOT VALID, and whether their table is a legacy inheritance child: the one place the
 /// planner reads CHECK constraints by default (constraint exclusion), and only validated ones.
@@ -471,7 +530,9 @@ fn standby_replica(s: Standby) -> Replica {
         (None, None) => "not streaming".to_string(),
     };
     let lag_seconds = match s.behind {
-        Some(b) if b > 0.0 => s.since_replay.map(|t| (t - delay.unwrap_or(0.0)).max(0.0)),
+        Some(b) if b >= culprit_core::signals::STANDBY_BEHIND_BYTES => {
+            s.since_replay.map(|t| (t - delay.unwrap_or(0.0)).max(0.0))
+        }
         Some(_) => Some(0.0),
         None => None,
     };
@@ -527,7 +588,7 @@ async fn replicas(
         client,
         "SELECT coalesce(nullif(r.application_name, ''), r.client_addr::text, r.pid::text) AS name, r.state, r.sync_state,
                 extract(epoch FROM r.replay_lag) AS lag_s, pg_wal_lsn_diff(pg_current_wal_lsn(), r.replay_lsn) AS behind,
-                coalesce(s.slot_type = 'logical', false) AS logical
+                coalesce(s.slot_type = 'logical', false) AS logical, s.database::text AS database
            FROM pg_stat_replication r LEFT JOIN pg_replication_slots s ON s.active_pid = r.pid",
     )
     .await?
@@ -538,6 +599,7 @@ async fn replicas(
             lag_seconds: r.number("lag_s"),
             lag_bytes: r.number("behind"),
             logical: Some(r.flag("logical")),
+            database: r.text("database"),
             ..Replica::new(r.string("name"), ReplicaRole::Replica)
         });
     }
@@ -551,6 +613,7 @@ async fn replicas(
             inactive_seconds: r.number("inactive_s"),
             wal_status: r.text("wal_status"),
             safe_wal_bytes: r.number("safe_wal_size"),
+            database: r.text("database"),
             ..Replica::new(r.string("slot_name"), ReplicaRole::Slot)
         });
     }
@@ -560,8 +623,13 @@ async fn replicas(
 /// Replication slots and the WAL each keeps; from 13 whether that WAL is still guaranteed and what max_slot_wal_keep_size
 /// leaves before the slot is given up, from 17 since when it has had no consumer.
 fn slots_sql(version_num: u32) -> String {
-    let mut columns =
-        vec!["slot_name", "slot_type", "active", "pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS kept"];
+    let mut columns = vec![
+        "slot_name",
+        "slot_type",
+        "active",
+        "pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) AS kept",
+        "database::text AS database",
+    ];
     if version_num >= 130_000 {
         columns.extend(["wal_status", "safe_wal_size::float8 AS safe_wal_size"]);
     }
@@ -574,6 +642,27 @@ fn slots_sql(version_num: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn column(typlen: f64, align: f64, avg_width: f64) -> Option<ColumnLayout> {
+        Some(ColumnLayout { typlen, align, avg_width, null_frac: 0.0 })
+    }
+
+    // The false flag: ten (boolean, timestamptz) pairs take 184 bytes a row with their padding, and adding only the
+    // widths (113) made a table with no empty space a third empty. Laid out column by column there is none.
+    #[test]
+    fn bloat_counts_the_padding_before_aligned_columns() {
+        let pairs: Vec<Option<ColumnLayout>> =
+            (0..10).flat_map(|_| [column(1.0, 1.0, 1.0), column(8.0, 8.0, 8.0)]).collect();
+        // 8 KB pages hold 43 rows of 184 + 4 bytes: a million rows fill 23,256 pages.
+        assert_eq!(bloat_bytes(23_256.0, 1_000_000.0, 8_192.0, 100.0, &pairs), Some(0.0));
+        // A third more pages than the rows need is a third empty.
+        let bloat = bloat_bytes(31_008.0, 1_000_000.0, 8_192.0, 100.0, &pairs).unwrap();
+        assert!((bloat / (31_008.0 * 8_192.0) - 0.25).abs() < 0.01, "{bloat}");
+        // Short text isn't aligned; a column without statistics leaves the table out.
+        let text = [column(4.0, 4.0, 4.0), column(-1.0, 4.0, 11.0), column(-1.0, 4.0, 11.0)];
+        assert!(bloat_bytes(1_280.0, 100_000.0, 8_192.0, 100.0, &text).is_some());
+        assert_eq!(bloat_bytes(1_280.0, 100_000.0, 8_192.0, 100.0, &[column(4.0, 4.0, 4.0), None]), None);
+    }
 
     #[test]
     fn cost_columns_follow_the_version() {
@@ -602,6 +691,10 @@ mod tests {
         assert_eq!((idle.lag_seconds, idle.state.as_deref()), (Some(0.0), Some("streaming")));
         let behind = standby_replica(standby(Some(64.0 * 1024.0 * 1024.0), 95.0));
         assert_eq!(behind.lag_seconds, Some(95.0));
+        // The false flag: the primary ran one long CREATE INDEX for an hour without a commit, and the standby, current
+        // with its replay, was a few kilobytes behind when the scan ran. That hour is the primary's, not lag.
+        let current = standby_replica(standby(Some(8_192.0), 3_600.0));
+        assert_eq!(current.lag_seconds, Some(0.0));
     }
 
     // recovery_min_apply_delay holds replay back on purpose: only what is beyond it is lag.

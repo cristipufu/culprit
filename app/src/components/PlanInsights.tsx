@@ -11,6 +11,7 @@ import { bySeverity } from "../lib/plan-format";
 import { Prose } from "./Prose";
 import { Sql } from "./Sql";
 import { copyAndTell } from "../lib/clipboard";
+import { can } from "../lib/engines";
 
 const AREA: Record<InsightArea, { icon: LucideIcon; label: string }> = {
   index: { icon: KeyRound, label: "Index" },
@@ -22,12 +23,15 @@ const AREA: Record<InsightArea, { icon: LucideIcon; label: string }> = {
 };
 
 const SEVERITY_LABEL: Record<Severity, string> = { high: "High", medium: "Medium", low: "Low" };
+
+/** Whether the plan weighs its steps (costs, or measured times): SQLite's has the access path only, so no share. */
+const weighs = (plan: Plan) => can(plan.engine, "plan_estimates") || plan.kind === "actual";
 const SHOWN = 4;
 
 /** One insight as Markdown, the way it reads in the panel: for a pull request, an issue or a coding agent. */
-const insightMarkdown = (i: PlanInsight) =>
+const insightMarkdown = (i: PlanInsight, weighed: boolean) =>
   [
-    `**${SEVERITY_LABEL[i.severity]} · ${AREA[i.area].label}:** ${i.title} (${percent(i.impact)} of the plan's work)`,
+    `**${SEVERITY_LABEL[i.severity]} · ${AREA[i.area].label}:** ${i.title}${weighed && !i.fixed_weight ? ` (${percent(i.impact)} of the plan's work)` : ""}`,
     "",
     i.detail,
     "",
@@ -42,7 +46,7 @@ const insightsMarkdown = (plan: Plan, items: PlanInsight[]) =>
   [
     "## Plan insights",
     ...(plan.statement ? ["For this statement:", ["```sql", plan.statement.trim(), "```"].join("\n")] : []),
-    ...items.map((i, n) => `### ${n + 1}. ${insightMarkdown(i)}`),
+    ...items.map((i, n) => `### ${n + 1}. ${insightMarkdown(i, weighs(plan))}`),
   ].join("\n\n");
 
 /**
@@ -149,12 +153,14 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
                   <Icon size={13} />
                 </span>
                 <span className="ins-title">{i.title}</span>
-                <span className="ins-impact" title="Share of this plan's work at the operators involved">
-                  <span className="ins-bar">
-                    <span style={{ width: `${Math.max(4, Math.min(100, i.impact * 100))}%` }} />
+                {weighs(plan) && !i.fixed_weight && (
+                  <span className="ins-impact" title="Share of this plan's work at the operators involved">
+                    <span className="ins-bar">
+                      <span style={{ width: `${Math.max(4, Math.min(100, i.impact * 100))}%` }} />
+                    </span>
+                    {percent(i.impact)}
                   </span>
-                  {percent(i.impact)}
-                </span>
+                )}
                 <ChevronDown size={14} className="ins-chev" />
               </button>
               {expanded && (
@@ -186,7 +192,7 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
                         <Crosshair size={12} /> Show the operator
                       </button>
                     )}
-                    <button className="btn ghost small" onClick={() => copyAndTell(insightMarkdown(i), "Copied the insight")} title="Copy this insight as Markdown">
+                    <button className="btn ghost small" onClick={() => copyAndTell(insightMarkdown(i, weighs(plan)), "Copied the insight")} title="Copy this insight as Markdown">
                       <Copy size={12} /> Copy insight
                     </button>
                   </div>

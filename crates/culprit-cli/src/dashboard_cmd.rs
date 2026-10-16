@@ -41,8 +41,9 @@ pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
         }
     };
     let connection = dashboard.connection.clone();
+    let engine = dashboard.engine;
     for tile in &mut dashboard.tiles {
-        tile.next = next(tile, &connection);
+        tile.next = next(tile, &connection, engine);
     }
     match out.format() {
         Format::Json => out.value(&json!(dashboard)),
@@ -52,9 +53,25 @@ pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
     Ok(0)
 }
 
-/// The command that shows more of what a tile is about.
-fn next(tile: &Tile, connection: &str) -> Option<String> {
+/// The command that shows more of what a tile is about; none where the engine has nothing more to say (SQLite has no
+/// server to ask about sessions, waits or deadlocks, and no history to compare periods of).
+fn next(tile: &Tile, connection: &str, engine: culprit_core::Engine) -> Option<String> {
     let c = shell_word(connection);
+    if !engine.has_server() {
+        return match tile.key {
+            TileKey::Findings | TileKey::Failures => Some(format!("culprit findings {c}")),
+            TileKey::TopQueries => Some(format!("culprit top {c}")),
+            TileKey::Indexes => Some(format!("culprit indexes {c}")),
+            TileKey::Plans => {
+                let id = tile.items.first().and_then(|i| i.query_id.as_deref())?;
+                Some(format!("culprit explain {c} --query-id {}", shell_word(id)))
+            }
+            TileKey::Statistics if tile.status == TileStatus::Unavailable => {
+                Some(format!("culprit conn set {c} --query-log <file>"))
+            }
+            _ => None,
+        };
+    }
     Some(match tile.key {
         TileKey::DbTime => format!("culprit changes {c}"),
         TileKey::Findings => format!("culprit findings {c}"),

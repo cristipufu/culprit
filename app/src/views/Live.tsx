@@ -5,6 +5,7 @@ import type { LiveState } from "../gen/LiveState";
 import type { Session } from "../gen/Session";
 import type { SessionAction } from "../gen/SessionAction";
 import { api, errorMessage, type ApiError } from "../lib/api";
+import { can, serverName } from "../lib/engines";
 import { count, duration, oneLine } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { currentReport, setState, toast, useStore } from "../lib/store";
@@ -38,7 +39,23 @@ export function openLive(tab: Tab): void {
 // Per-operator progress of a running statement; loaded when a session is opened.
 const QueryProgressPanel = lazy(() => import("../components/QueryProgress").then((m) => ({ default: m.QueryProgressPanel })));
 
+/** Live for engines with sessions; for one without a server (SQLite) a calm word on where lock waits show instead. */
 export function Live({ connection }: { connection: string }) {
+  const engine = useStore((s) => s.connections.find((c) => c.name === connection)?.engine);
+  if (engine && !can(engine, "sessions")) {
+    return (
+      <div className="empty" style={{ padding: 40 }}>
+        <h3>No sessions to show</h3>
+        <p className="muted">
+          {serverName(engine)} has no server: the application opens the file itself, so there are no sessions, blocking or deadlocks for Culprit to read. A writer that can't get the lock waits its busy_timeout, then fails with SQLITE_BUSY in the application: its logs say when.
+        </p>
+      </div>
+    );
+  }
+  return <LiveSessions connection={connection} />;
+}
+
+function LiveSessions({ connection }: { connection: string }) {
   const [state, setLive] = useState<LiveState | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [paused, setPaused] = useState(false);
@@ -97,7 +114,10 @@ export function Live({ connection }: { connection: string }) {
         setLive(next);
         setError(null);
       } catch (e) {
-        if (!cancelled) setError(errorMessage(e));
+        const error = errorMessage(e);
+        if (!cancelled) setError(error);
+        // An engine that can't answer won't answer on the next tick either.
+        if (error.code === "unsupported") return;
       }
       if (!cancelled && !stoppedRef.current) timer = setTimeout(tick, REFRESH_MS);
     };

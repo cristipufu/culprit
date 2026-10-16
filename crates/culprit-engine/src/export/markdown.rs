@@ -87,7 +87,7 @@ fn plan_body(out: &mut String, plan: &Plan, notes: &[ExportNote]) {
     if !costs.is_empty() {
         let _ = writeln!(out, "**Where the cost goes:** {}\n", costs.join(" · "));
     }
-    let hot = plan.hottest().id;
+    let hot = plan.hottest().map(|n| n.id);
     let _ = writeln!(
         out,
         "| Step | Table · index | Cost | Rows{} | Notes |",
@@ -100,7 +100,7 @@ fn plan_body(out: &mut String, plan: &Plan, notes: &[ExportNote]) {
         let indent: String = std::iter::repeat_n(NBSP, depth * 3).collect();
         let arrow = if *depth > 0 { "↳ " } else { "" };
         let mut notes_cell: Vec<String> = node.warnings.iter().map(|w| w.label().to_string()).collect();
-        if node.id == hot && share(plan, node) >= 0.05 {
+        if Some(node.id) == hot && share(plan, node) >= 0.05 {
             notes_cell.insert(0, "most expensive".into());
         }
         let _ = writeln!(
@@ -296,22 +296,27 @@ pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::Diges
                 .filter_map(|r| w.query(&r.id).map(|q| (r, q)))
                 .take(2)
                 .map(|(r, q)| {
-                    let plan = q.plan.as_ref().map(|plan| {
+                    let plan = q.plan.as_ref().and_then(|plan| {
                         let plan = culprit_core::redact::redact_plan(plan);
                         let node = r
                             .plan_node
                             .and_then(|id| plan.nodes().into_iter().find(|n| n.id == id))
-                            .unwrap_or_else(|| plan.hottest());
-                        let mut line = format!(
-                            "{}: {} of the plan's cost, {}",
-                            label(node),
-                            format::percent(share(&plan, node)),
-                            rows_phrase(node)
-                        );
+                            .or_else(|| plan.hottest())?;
+                        // A plan without costs (SQLite) names the step, and no share or estimate it doesn't have.
+                        let mut line = if plan.weighed() {
+                            format!(
+                                "{}: {} of the plan's cost, {}",
+                                label(node),
+                                format::percent(share(&plan, node)),
+                                rows_phrase(node)
+                            )
+                        } else {
+                            label(node)
+                        };
                         if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
                             let _ = write!(line, ", on `{}`", format::predicate(p));
                         }
-                        line
+                        Some(line)
                     });
                     culprit_core::DigestQuery {
                         stats: format!(
@@ -403,21 +408,24 @@ fn finding_section(
         fence(out, "sql", &sql_text(&q.text, engine, options));
         if let Some(plan) = &q.plan {
             let plan = prepared(plan, options);
-            let node = r
-                .plan_node
-                .and_then(|id| plan.nodes().into_iter().find(|n| n.id == id))
-                .unwrap_or_else(|| plan.hottest());
-            let mut line = format!(
-                "Plan: the step to look at is **{}** ({} of the plan's cost, {}",
-                label(node),
-                format::percent(share(&plan, node)),
-                rows_phrase(node)
-            );
-            if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
-                let _ = write!(line, ", on {}", code(&format::predicate(p)));
+            let node =
+                r.plan_node.and_then(|id| plan.nodes().into_iter().find(|n| n.id == id)).or_else(|| plan.hottest());
+            if let Some(node) = node {
+                let mut details = Vec::new();
+                if plan.weighed() {
+                    details.push(format!("{} of the plan's cost", format::percent(share(&plan, node))));
+                    details.push(rows_phrase(node));
+                }
+                if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
+                    details.push(format!("on {}", code(&format::predicate(p))));
+                }
+                let mut line = format!("Plan: the step to look at is **{}**", label(node));
+                if !details.is_empty() {
+                    let _ = write!(line, " ({})", details.join(", "));
+                }
+                line.push('.');
+                let _ = writeln!(out, "{line}\n");
             }
-            line.push_str(").");
-            let _ = writeln!(out, "{line}\n");
         }
     }
     if let Some(fix) = &finding.fix {

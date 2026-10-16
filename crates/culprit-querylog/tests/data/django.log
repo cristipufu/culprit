@@ -1,0 +1,4 @@
+(0.012) SELECT "shop_product"."id", "shop_product"."name" FROM "shop_product" WHERE "shop_product"."category_id" = 3 ORDER BY "shop_product"."created_at" DESC LIMIT 20; args=(3,); alias=default
+(0.014) SELECT "shop_product"."id", "shop_product"."name" FROM "shop_product" WHERE "shop_product"."category_id" = 9 ORDER BY "shop_product"."created_at" DESC LIMIT 20; args=(9,); alias=default
+2026-10-15 12:00:05,120 DEBUG (0.001) SELECT "shop_category"."id" FROM "shop_category" WHERE "shop_category"."slug" = 'shoes' LIMIT 21; args=('shoes',); alias=default
+(0.000) BEGIN; args=None; alias=default

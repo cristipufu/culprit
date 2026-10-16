@@ -1,4 +1,5 @@
-import { Copy, KeyRound, RefreshCw, SquarePen } from "lucide-react";
+import { Copy, FileText, KeyRound, RefreshCw, SquarePen } from "lucide-react";
+import type { Capability } from "../gen/Capability";
 import type { MissingCapability } from "../gen/MissingCapability";
 import type { Report } from "../gen/Report";
 
@@ -6,14 +7,13 @@ import { scan, setState } from "../lib/store";
 import { keys } from "../lib/keys";
 import { copyAndTell } from "../lib/clipboard";
 
-/** The capabilities that hold query statistics, per engine. Without one, findings come from tables and indexes only. */
-const WORKLOAD = ["pg-stat-statements", "query-store", "plan-cache", "performance-schema"];
-
-const SOURCE: Record<string, string> = {
+/** What each source of query statistics is called, for "Culprit reads … only". */
+const SOURCE: Partial<Record<Capability, string>> = {
   "pg-stat-statements": "pg_stat_statements",
   "query-store": "Query Store",
   "plan-cache": "the plan cache",
   "performance-schema": "performance_schema statement digests or the slow query log table",
+  "slow-log": "the slow query log table",
 };
 
 /** The first SQL statement in a fix sentence ("Run CREATE EXTENSION pg_stat_statements; in this database…"). */
@@ -37,9 +37,29 @@ function fixText(fix: string, sql: string | null): string {
  * and offers the exact statement: copy it, or open it in the editor (which asks before it changes a production database).
  */
 export function WorkloadUnlock({ report }: { report: Report }) {
-  if (report.snapshot.workload) return null;
-  const missing: MissingCapability | undefined = report.snapshot.server.missing.find((m) => WORKLOAD.includes(m.capability));
+  if (report.snapshot.workload || !report.summary.no_workload) return null;
+  const missing: MissingCapability | undefined = report.snapshot.server.missing.find((m) => m.reason === report.summary.no_workload);
   if (!missing) return null;
+  // A source the application already writes (SQLite's query log): point at the connection's setting, not at SQL.
+  if (missing.capability === "query-log") {
+    return (
+      <div className="unlock">
+        <div className="unlock-head">
+          <KeyRound size={15} />
+          <b>Read the statements from your framework's log</b>
+        </div>
+        <p>
+          {missing.reason} Until then Culprit can only check tables, indexes and settings: no query list, no plans of what runs.
+        </p>
+        <div className="unlock-foot">
+          <span className="muted">Culprit reads the file only; nothing changes in the application.</span>
+          <button className="btn small" onClick={() => setState({ view: "connections" })}>
+            <FileText size={12} /> Add query log
+          </button>
+        </div>
+      </div>
+    );
+  }
   const sql = fixSql(missing.fix);
   const rest = missing.fix ? fixText(missing.fix, sql) : null;
   return (

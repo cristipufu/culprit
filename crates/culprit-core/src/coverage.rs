@@ -4,8 +4,23 @@
 //! account with a [`Coverage`], so "what this login can see" means the same thing on every engine and checks that need
 //! a missing capability are listed as locked instead of running on missing data.
 
+use serde::Serialize;
+
 use crate::error::{Error, ErrorCode};
 use crate::model::{Capability, CollectorNote, MissingCapability};
+
+/// One source a provider reads from its engine: a statistics view, the catalog, a log. Each provider declares its
+/// sources in one list (`<provider>/src/sources.rs`), so what a scan reads on an engine is a table anyone can read, and
+/// reading one goes through [`Coverage::read`], so what a failing source means is said once for every engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Source {
+    /// Its name in the scan's notes: "tables", "query_store".
+    pub name: &'static str,
+    /// What it reads, in a sentence: "Reading {reads} failed".
+    pub reads: &'static str,
+    /// What the checks get from it: the capabilities a failure locks. Empty for a source that only adds detail.
+    pub delivers: &'static [Capability],
+}
 
 /// The capabilities a scan's sources delivered, the ones they couldn't (with why and how to fix it), and notes.
 #[derive(Default, Debug, Clone)]
@@ -71,6 +86,32 @@ impl Coverage {
         self.lacking(capability, reason, fix);
     }
 
+    /// What reading `source` gave: its value, or `None` with the failure recorded. A failing source never fails the scan:
+    /// a note with the error, and each capability it delivers lost with the source's own reason (a permission error
+    /// says the login lacks the permission, and the error's hint, the statement that grants it, is the fix).
+    pub fn read<T>(&mut self, source: &Source, result: Result<T, Error>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.source_failed(source, &error);
+                None
+            }
+        }
+    }
+
+    /// Record that reading `source` failed with `error` (see [`Coverage::read`]), for a source read in parts.
+    pub fn source_failed(&mut self, source: &Source, error: &Error) {
+        self.note(source.name, error.message.clone());
+        let reason = if error.code == ErrorCode::PermissionDenied {
+            format!("This login lacks the permission to read {}.", source.reads)
+        } else {
+            format!("Reading {} failed: {}", source.reads, error.message)
+        };
+        for capability in source.delivers {
+            self.lost(*capability, reason.clone(), error.hint.clone());
+        }
+    }
+
     /// Take in what another part of the scan found (sources read on another connection, concurrently).
     pub fn merge(&mut self, other: Coverage) {
         for capability in other.have {
@@ -98,6 +139,35 @@ impl Coverage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const INDEXES: Source = Source {
+        name: "indexes",
+        reads: "index statistics",
+        delivers: &[Capability::IndexUsage, Capability::TableStats],
+    };
+
+    // One rule for every engine: a source that fails is a note and its capabilities locked with why, even ones the
+    // probe expected, and the scan goes on.
+    #[test]
+    fn a_failed_source_is_a_note_and_its_capabilities_locked() {
+        let mut c = Coverage::with(vec![Capability::IndexUsage], Vec::new());
+        let read: Option<Vec<u8>> = c.read(&INDEXES, Err(Error::internal("statement timeout")));
+        assert!(read.is_none());
+        assert_eq!(c.read(&INDEXES, Ok(3)), Some(3));
+        let (have, missing, notes) = c.finish();
+        assert!(have.is_empty());
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0].reason, "Reading index statistics failed: statement timeout");
+        assert_eq!(notes.len(), 1);
+        // Denied: the login lacks the permission, and the grant is the fix.
+        let denied = Error::new(ErrorCode::PermissionDenied, "permission denied for pg_stat_user_indexes")
+            .with_hint("GRANT pg_read_all_stats TO app;");
+        let mut c = Coverage::default();
+        c.source_failed(&INDEXES, &denied);
+        let (_, missing, _) = c.finish();
+        assert_eq!(missing[0].reason, "This login lacks the permission to read index statistics.");
+        assert_eq!(missing[0].fix.as_deref(), Some("GRANT pg_read_all_stats TO app;"));
+    }
 
     #[test]
     fn a_capability_the_probe_expected_can_be_lost() {

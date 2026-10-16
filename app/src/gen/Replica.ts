@@ -57,4 +57,9 @@ wal_status: string | null,
  * WAL that can still be written before the slot is given up under max_slot_wal_keep_size; `None` when nothing
  * caps what slots keep (PostgreSQL 13+ `safe_wal_size`).
  */
-safe_wal_bytes: number | null, };
+safe_wal_bytes: number | null, 
+/**
+ * The database a logical walsender or slot decodes (PostgreSQL); `None` for a physical one, which carries every
+ * database. Another database's consumer is that database's lag, though its slot keeps WAL for the whole server.
+ */
+database: string | null, };
