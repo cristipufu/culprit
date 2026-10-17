@@ -18,7 +18,7 @@ fn fixtures() -> PathBuf {
 }
 
 /// Every demo fixture, by name: its file name without `.json`.
-fn demo_files() -> Vec<(String, PathBuf)> {
+pub(crate) fn demo_files() -> Vec<(String, PathBuf)> {
     let dir = fixtures();
     let mut files: Vec<(String, PathBuf)> = std::fs::read_dir(&dir)
         .expect("fixtures/")

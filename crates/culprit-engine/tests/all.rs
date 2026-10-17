@@ -6,6 +6,7 @@ mod escalations;
 mod file_pickers;
 mod golden;
 mod insights;
+mod invariants;
 mod plans;
 mod plugin;
 mod share;
