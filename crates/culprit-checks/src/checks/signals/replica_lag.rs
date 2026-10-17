@@ -264,7 +264,8 @@ pub(super) fn slot_finding(snapshot: &Snapshot, r: &Replica) -> Option<Finding> 
     let cap = (!capped && can_cap).then(|| setting_change(&snapshot.server, "max_slot_wal_keep_size", "50GB"));
     let mut sql = if logical {
         format!(
-            "-- Only once its consumer is gone for good: dropping it makes the consumer copy everything again\n-- SELECT pg_drop_replication_slot('{quoted}');"
+            "-- Only once its consumer is gone for good: dropping it makes the consumer copy everything again\n-- SELECT pg_drop_replication_slot('{}');",
+            crate::support::comment_text(&quoted)
         )
     } else {
         format!("SELECT pg_drop_replication_slot('{quoted}');")

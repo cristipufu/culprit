@@ -1559,9 +1559,10 @@ impl LookupsForNothing<'_> {
                         // The brief reads a comment that offers a change in the application as one (`FixSql`).
                         sql = sql.map(|refresh| {
                             format!(
-                                "{refresh}\n\n-- If a re-scan still shows about {} pages a run, change the statement in the application:\n--    read {} {hint}",
+                                "{refresh}\n\n-- If a re-scan still shows about {} pages a run, change the statement in the application:\n--    read {} {}",
                                 format::count(self.reads),
-                                qualified(engine, &self.schema, &self.table)
+                                crate::support::comment_text(&qualified(engine, &self.schema, &self.table)),
+                                crate::support::comment_text(&hint)
                             )
                         });
                         format!(

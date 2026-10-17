@@ -397,6 +397,13 @@ pub fn mentions_word(text: &str, word: &str) -> bool {
 }
 
 /// The engine's quoting (`Engine::dialect`).
+/// Text for a `--` comment line of fix SQL. A database's names can hold line breaks (a quoted identifier may), and one
+/// would end the comment and turn the rest of the name into SQL that whoever runs the fix executes: every control
+/// character and line or paragraph separator becomes a space. Every name or value a comment line carries goes through it.
+pub fn comment_text(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).collect()
+}
+
 pub fn quote(engine: Engine, ident: &str) -> String {
     engine.dialect().quote(ident)
 }
@@ -1026,6 +1033,20 @@ pub fn lower_set(items: &[String]) -> Vec<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A name a database allows (a quoted identifier with a line break in it) can't end a comment of fix SQL and run the
+    /// rest of itself as a statement.
+    #[test]
+    fn a_name_in_a_comment_stays_in_the_comment() {
+        for engine in [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite] {
+            let hostile = "orders\nDROP TABLE users;\r\n--";
+            let line = format!("-- read {}", comment_text(&qualified(engine, "app", hostile)));
+            assert_eq!(line.lines().count(), 1, "{engine:?}: {line:?}");
+            assert!(line.starts_with("-- read "), "{line}");
+        }
+        assert_eq!(comment_text("a\u{2028}b\u{85}c\u{2029}d\te"), "a b c d e");
+        assert_eq!(comment_text("plain [app].[orders]"), "plain [app].[orders]");
+    }
 
     /// Names and statements come from the database in any script: every text helper slices only at character
     /// boundaries, so none of them can panic on a scan.
