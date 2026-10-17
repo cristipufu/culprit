@@ -46,4 +46,4 @@ esac
 echo "resetting statement statistics and running the workload…"
 mysql_in_container -e "TRUNCATE performance_schema.events_statements_summary_by_digest; TRUNCATE performance_schema.table_io_waits_summary_by_index_usage; TRUNCATE performance_schema.table_io_waits_summary_by_table;"
 CULPRIT_MYSQL_URL="mysql://root:${MYSQL_DEMO_PASSWORD}@127.0.0.1:${PORT}/shop" \
-  cargo run -q -p culprit-mysql --example workload
+  cargo run -q -p culprit-mysql --example mysql_workload

@@ -1,7 +1,7 @@
 //! Application-shaped load for the `shop` demo database (dev/mysql). Statements are sent with literal values, the way
 //! most MySQL drivers interpolate parameters client-side, so performance_schema keeps plannable samples.
 //!
-//! CULPRIT_MYSQL_URL='mysql://root:…@127.0.0.1:33306/shop' cargo run -p culprit-mysql --example workload
+//! CULPRIT_MYSQL_URL='mysql://root:…@127.0.0.1:33306/shop' cargo run -p culprit-mysql --example mysql_workload
 
 use std::time::Instant;
 

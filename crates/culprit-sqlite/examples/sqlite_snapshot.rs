@@ -1,6 +1,6 @@
 //! Print a snapshot of a SQLite file as JSON, opened read-only.
 //!
-//! cargo run -p culprit-sqlite --example snapshot -- path/to/app.db
+//! cargo run -p culprit-sqlite --example sqlite_snapshot -- path/to/app.db
 //!
 //! Other provider calls, for poking at a file by hand: `-- <path> probe`, `-- <path> explain <sql>`, `-- <path> run <sql>`.
 

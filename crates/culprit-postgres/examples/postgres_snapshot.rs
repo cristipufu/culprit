@@ -1,6 +1,6 @@
 //! Print a snapshot of the database at `CULPRIT_PG_URL` as JSON.
 //!
-//! CULPRIT_PG_URL='postgres://user:pass@localhost:5432/db?sslmode=disable' cargo run -p culprit-postgres --example snapshot
+//! CULPRIT_PG_URL='postgres://user:pass@localhost:5432/db?sslmode=disable' cargo run -p culprit-postgres --example postgres_snapshot
 //!
 //! Other provider calls, for poking at a server by hand: `-- probe`, `-- live`, `-- explain <sql>`, `-- analyze <sql>`, `-- run <sql>`.
 

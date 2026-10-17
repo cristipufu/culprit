@@ -7,7 +7,7 @@
 --   * ix_orders_status is a left prefix of ix_orders_status_created              -> redundant index
 --   * ix_orders_channel is never read                                            -> unused index
 --   * support_tickets.priority is heavily skewed and served by a key lookup plan -> parameter-sensitive query
--- The N+1 product lookup lives in the workload (crates/culprit-mssql/examples/workload.rs).
+-- The N+1 product lookup lives in the workload (crates/culprit-mssql/examples/mssql_workload.rs).
 SET NOCOUNT ON;
 GO
 IF DB_ID('culprit_demo') IS NOT NULL

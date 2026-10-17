@@ -4,7 +4,7 @@
 //! parameter-sensitive query whose cached plan suits only rare values.
 //!
 //! CULPRIT_MSSQL_ADO='Server=127.0.0.1,14333;Database=culprit_demo;User ID=sa;Password=…;Encrypt=false;TrustServerCertificate=true' \
-//!   cargo run --release -p culprit-mssql --example workload
+//!   cargo run --release -p culprit-mssql --example mssql_workload
 
 use std::time::Instant;
 

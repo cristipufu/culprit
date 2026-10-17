@@ -1,6 +1,6 @@
 //! Print a snapshot of a MySQL database as JSON.
 //!
-//! CULPRIT_MYSQL_URL='mysql://root:…@127.0.0.1:33306/shop' cargo run -p culprit-mysql --example snapshot
+//! CULPRIT_MYSQL_URL='mysql://root:…@127.0.0.1:33306/shop' cargo run -p culprit-mysql --example mysql_snapshot
 
 use culprit_core::{AuthKind, ConnectionSpec, Engine, Environment, Provider, SnapshotOptions};
 use culprit_mysql::MysqlProvider;

@@ -16,8 +16,8 @@ culprit conn add sqlite-demo --url dev/sqlite/demo.db --query-log dev/sqlite/dev
 culprit scan sqlite-demo
 
 # Or poke at the file directly: a snapshot, or the plan of one statement
-cargo run -p culprit-sqlite --example snapshot -- dev/sqlite/demo.db
-cargo run -p culprit-sqlite --example snapshot -- dev/sqlite/demo.db explain \
+cargo run -p culprit-sqlite --example sqlite_snapshot -- dev/sqlite/demo.db
+cargo run -p culprit-sqlite --example sqlite_snapshot -- dev/sqlite/demo.db explain \
   "SELECT id, total FROM orders WHERE customer_id = 42 ORDER BY created_at DESC"
 ```
 

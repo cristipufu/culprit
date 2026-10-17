@@ -14,7 +14,7 @@ docker exec culprit-pg-demo /demo/workload.sh
 
 # 3. Snapshot it
 CULPRIT_PG_URL='postgres://postgres:culprit@localhost:55432/demo?sslmode=disable' \
-  cargo run -p culprit-postgres --example snapshot > fixtures/postgres-demo.json
+  cargo run -p culprit-postgres --example postgres_snapshot > fixtures/postgres-demo.json
 ```
 
 `culprit_app` (password `culprit`) is a login without `pg_monitor`, to see how Culprit degrades. Remove everything with `docker rm -f culprit-pg-demo`.

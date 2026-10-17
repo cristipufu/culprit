@@ -41,4 +41,4 @@ fi
 
 echo "running workload…"
 CULPRIT_MSSQL_ADO="Server=127.0.0.1,$PORT;Database=culprit_demo;User ID=sa;Password=$MSSQL_SA_PASSWORD;Encrypt=false;TrustServerCertificate=true" \
-  cargo run -q --release -p culprit-mssql --example workload
+  cargo run -q --release -p culprit-mssql --example mssql_workload

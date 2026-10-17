@@ -1,7 +1,7 @@
 //! Prints a snapshot of the database named by `CULPRIT_MSSQL_ADO` (an ADO.NET connection string) as JSON.
 //!
 //! CULPRIT_MSSQL_ADO='Server=127.0.0.1,14333;Database=culprit_demo;User ID=sa;Password=…;Encrypt=false;TrustServerCertificate=true' \
-//!   cargo run -p culprit-mssql --example snapshot -- [connection-name] [environment] > snapshot.json
+//!   cargo run -p culprit-mssql --example mssql_snapshot -- [connection-name] [environment] > snapshot.json
 
 use culprit_core::{Environment, Provider, SnapshotOptions};
 use culprit_mssql::{MssqlProvider, parse_ado};
