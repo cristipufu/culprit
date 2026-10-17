@@ -1,0 +1,375 @@
+reading: MySQL 8.4.11 · database shop · scanned 2026-10-11T12:09:00Z
+headline: 7 opportunities. The top ones touch 89% of database time over the 2 minutes since statistics were reset.
+top share: 89%
+findings: 7
+
+=== finding temp-spill:04cd7be9c366fadc
+low severity · high confidence · queries
+title: A read from orders builds an on-disk temporary table about once per run
+summary: The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+impact: 77% of DB time · 76.8% of database time
+metrics:
+  - On-disk temporary tables per run: 1
+  - Average duration: 1.7 s
+fix: Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+  sql:
+      SET PERSIST tmp_table_size = 67108864;
+      SET PERSIST max_heap_table_size = 67108864;
+  cost: The limit is per temporary table per connection; size it with your connection count in mind.
+verify:
+  1. Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
+queries:
+  - 04cd7be9c366fadc: 77% of database time · plan step 2
+brief:
+    # A read from orders builds an on-disk temporary table about once per run
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `temp-spill:04cd7be9c366fadc`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+
+    ## Evidence
+
+    - On-disk temporary tables per run: 1
+    - Average duration: 1.7 s
+
+    ## Queries involved
+
+    Query `04cd7be9c366fadc` — 77% of DB time, 20 runs over the 2 minutes since statistics were reset, 1.7 s average:
+
+    ```sql
+    SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
+    ```
+
+    Plan: the step this finding is about is `Group`. `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
+
+    ## Suggested fix
+
+    Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+
+    ```sql
+    SET PERSIST tmp_table_size = 67108864;
+    SET PERSIST max_heap_table_size = 67108864;
+    ```
+
+    Cost: The limit is per temporary table per connection; size it with your connection count in mind.
+
+    ## How to verify
+
+    - Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding chatty-query:9b30e6ad79d940fe
+low severity · medium confidence · queries
+title: A read from products runs 30K times in 2 minutes, one row at a time
+summary: This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+impact: 75% of executions · 2.4% of database time
+metrics:
+  - Share of executions: 75%
+  - Average duration: 0.04 ms
+fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+verify:
+  1. It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+caveats:
+  - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+queries:
+  - 9b30e6ad79d940fe: 2% of database time
+brief:
+    # A read from products runs 30K times in 2 minutes, one row at a time
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `chatty-query:9b30e6ad79d940fe`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+
+    ## Evidence
+
+    - Share of executions: 75%
+    - Average duration: 0.04 ms
+
+    ## Queries involved
+
+    Query `9b30e6ad79d940fe` — 2% of DB time, 30K runs over the 2 minutes since statistics were reset, 0.04 ms average:
+
+    ```sql
+    SELECT `id` , NAME , `price` FROM `products` WHERE `id` = ?
+    ```
+
+    ## Suggested fix
+
+    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+
+    ## How to verify
+
+    - It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## Caveats
+
+    - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding heavy-query:19bd4ff468839ea3
+low severity · high confidence · queries
+title: A read from orders examines 100K rows for every row it returns
+summary: It ran 60 times in 2 minutes at 71 ms on average: 9% of all database time in the 2 minutes since statistics were reset. Its only step with a cost is a table scan of shop.orders that examines 500K rows a run (MySQL puts no cost on the sort).
+impact: 9% of DB time · 9.5% of database time
+metrics:
+  - Share of DB time: 9%
+  - Average duration: 71 ms
+  - Rows examined per run: 500K
+  - Rows returned per run: 5
+fix: Find this statement in the application and check whether it reads more rows or columns than it needs.
+verify:
+  1. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+queries:
+  - 19bd4ff468839ea3: 9% of database time · plan step 2
+brief:
+    # A read from orders examines 100K rows for every row it returns
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `heavy-query:19bd4ff468839ea3`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    It ran 60 times in 2 minutes at 71 ms on average: 9% of all database time in the 2 minutes since statistics were reset. Its only step with a cost is a table scan of shop.orders that examines 500K rows a run (MySQL puts no cost on the sort).
+
+    ## Evidence
+
+    - Share of DB time: 9%
+    - Average duration: 71 ms
+    - Rows examined per run: 500K
+    - Rows returned per run: 5
+
+    ## Queries involved
+
+    Query `19bd4ff468839ea3` — 9% of DB time, 60 runs over the 2 minutes since statistics were reset, 71 ms average:
+
+    ```sql
+    SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?
+    ```
+
+    Plan: the step this finding is about is `Table scan` on `shop.orders` filtering `(shop.o.promo_code = '?')`. `Sort` (using filesort) has no cost of its own in the plan, so no share is given.
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it reads more rows or columns than it needs.
+
+    ## How to verify
+
+    - performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:19bd4ff468839ea3` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding heavy-query:c7b5ac9bb4bcecfe
+low severity · high confidence · queries
+title: A read from orders takes 9% of database time
+summary: It ran 2.0K times in 2 minutes at 2.1 ms on average: 9% of all database time in the 2 minutes since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+impact: 9% of DB time · 9.2% of database time
+metrics:
+  - Share of DB time: 9%
+  - Average duration: 2.1 ms
+  - Rows examined per run: 11K
+  - Rows returned per run: 1
+fix: Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run.
+verify:
+  1. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+queries:
+  - c7b5ac9bb4bcecfe: 9% of database time · plan step 1
+brief:
+    # A read from orders takes 9% of database time
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `heavy-query:c7b5ac9bb4bcecfe`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    It ran 2.0K times in 2 minutes at 2.1 ms on average: 9% of all database time in the 2 minutes since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+
+    ## Evidence
+
+    - Share of DB time: 9%
+    - Average duration: 2.1 ms
+    - Rows examined per run: 11K
+    - Rows returned per run: 1
+
+    ## Queries involved
+
+    Query `c7b5ac9bb4bcecfe` — 9% of DB time, 2.0K runs over the 2 minutes since statistics were reset, 2.1 ms average:
+
+    ```sql
+    SELECT COUNT ( * ) FROM `orders` WHERE STATUS = ? AND `created_at` >= ?
+    ```
+
+    Plan: the most expensive step (100% of estimated cost) is `Index range scan` on `shop.orders` filtering `((shop.orders.status = '?') and (shop.orders.created_at >= TIMESTAMP'?'))`.
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run.
+
+    ## How to verify
+
+    - performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:c7b5ac9bb4bcecfe` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding duplicate-index:shop.orders.ix_orders_status
+low severity · medium confidence · indexes
+title: ix_orders_status is covered by the wider ix_orders_status_created on orders
+summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+impact: 10.5 MB redundant
+metrics:
+  - Size: 10.5 MB
+fix: Drop ix_orders_status and keep ix_orders_status_created.
+  sql:
+      ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
+  cost: Frees 10.5 MB.
+caveats:
+  - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+brief:
+    # ix_orders_status is covered by the wider ix_orders_status_created on orders
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+
+    ## Evidence
+
+    - Size: 10.5 MB
+
+    ## Suggested fix
+
+    Drop ix_orders_status and keep ix_orders_status_created.
+
+    ```sql
+    ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
+    ```
+
+    Cost: Frees 10.5 MB.
+
+    ## Caveats
+
+    - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+
+=== finding duplicate-index:shop.products.ix_products_sku
+low severity · high confidence · indexes
+title: ix_products_sku duplicates uq_products_sku on products
+summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+impact: 432 KB redundant
+metrics:
+  - Size: 432 KB
+fix: Drop ix_products_sku and keep uq_products_sku.
+  sql:
+      ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
+  cost: Frees 432 KB.
+brief:
+    # ix_products_sku duplicates uq_products_sku on products
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+
+    ## Evidence
+
+    - Size: 432 KB
+
+    ## Suggested fix
+
+    Drop ix_products_sku and keep uq_products_sku.
+
+    ```sql
+    ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
+    ```
+
+    Cost: Frees 432 KB.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+
+=== finding config:slow_query_log
+low severity · medium confidence · configuration
+title: The slow query log is off
+summary: Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.
+impact: Setting
+fix: Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+  sql:
+      SET PERSIST slow_query_log = 'ON';
+      SET PERSIST long_query_time = 1;
+      SET PERSIST log_output = 'FILE,TABLE';
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # The slow query log is off
+
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `config:slow_query_log`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+
+    ## What's happening
+
+    Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.
+
+    ## Suggested fix
+
+    Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+
+    ```sql
+    SET PERSIST slow_query_log = 'ON';
+    SET PERSIST long_query_time = 1;
+    SET PERSIST log_output = 'FILE,TABLE';
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mysql-demo` and check `config:slow_query_log` the way *How to verify* says.
+
+=== plan 04cd7be9c366fadc
+insight temp-table-sort · low severity · impact 0%
+  title: Groups 499K rows in an internal temporary table, then sorts them (filesort)
+  detail: The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.
+  fix: An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.
+  verify: Explain again: no "using temporary table" on the grouping.
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
+shares: `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
+
+=== plan 19bd4ff468839ea3
+no insights
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
+shares: `Sort` (using filesort) has no cost of its own in the plan, so no share is given.
+
+=== plan c7b5ac9bb4bcecfe
+no insights
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
+
+=== plan 9b30e6ad79d940fe
+no insights
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
+
+=== plan 17f97e6ec7a22e0a
+no insights
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
+shares: `Sort` (using filesort) has no cost of its own in the plan, so no share is given.
+
+=== plan b4c0f3861e32013e
+no insights
+note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.

@@ -266,6 +266,10 @@ rules, and is reproducible offline from a saved scan.
 
 - Every check and rule has tests on the demo snapshots (`fixtures/*-demo.json`, `fixtures/*.report.json`), including
   the cases it must not flag.
+- What a person reads in each demo fixture (every finding with its evidence, fix, verify steps, caveats and brief, and
+  every plan's insights) is one plain text (`culprit_engine::reading`) compared with `fixtures/golden/<name>.txt` by
+  `crates/culprit-engine/tests/golden.rs`, so a fix that changes other findings' wording shows up as a diff; accept
+  an intended change with `CULPRIT_UPDATE_GOLDEN=1 cargo test -p culprit-engine --test all golden::`.
 - `dev/postgres` and `dev/mssql` are Docker databases with planted problems; regenerate a UI fixture with
   `culprit analyze <snapshot.json> --connection <name> --json > fixtures/<name>.report.json`.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --all`.

@@ -1,0 +1,294 @@
+reading: SQLite · database demo.db · scanned 2026-10-16T21:01:15Z
+headline: 5 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.
+top share: 99%
+findings: 5
+
+=== finding unindexed-fk:main.orders(customer_id)
+high severity · high confidence · indexes
+title: orders has no index on customer_id, its foreign key to customers
+summary: Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
+impact: 99% of DB time · 98.9% of database time
+metrics:
+  - Rows in table: 200K
+  - Foreign key: orders_fk_0
+fix: Index the foreign key column on main.orders.
+  sql:
+      CREATE INDEX IF NOT EXISTS "ix_orders_customer_id"
+          ON "main"."orders" ("customer_id");
+      -- SQLite builds an index under the database's write lock: writers wait until it finishes.
+verify:
+  1. Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone.
+caveats:
+  - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
+queries:
+  - c1b0de997fac4faa: 50% of database time
+  - 3c81e035bd6f73fa: 30% of database time
+  - 500217f7b40055be: 19% of database time · plan step 22
+brief:
+    # orders has no index on customer_id, its foreign key to customers
+
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.orders(customer_id)`: high impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+
+    ## What's happening
+
+    Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
+
+    ## Evidence
+
+    - Rows in table: 200K
+    - Foreign key: orders_fk_0
+
+    ## Queries involved
+
+    Query `c1b0de997fac4faa` — 50% of DB time, 1.1K runs over the 90 minutes the Rails log covers, 20 ms average:
+
+    ```sql
+    SELECT "orders".* FROM "orders" WHERE "orders"."customer_id" = ? ORDER BY "orders"."created_at" DESC LIMIT ?
+    ```
+
+    Query `3c81e035bd6f73fa` — 30% of DB time, 558 runs over the 90 minutes the Rails log covers, 24 ms average:
+
+    ```sql
+    SELECT "orders".* FROM "orders" WHERE "orders"."customer_id" = ? AND "orders"."status" = ? ORDER BY "orders"."total" DESC LIMIT ?
+    ```
+
+    Query `500217f7b40055be` — 19% of DB time, 90 runs over the 90 minutes the Rails log covers, 93 ms average:
+
+    ```sql
+    SELECT "customers"."email", COUNT("orders"."id") AS "orders_count" FROM "customers" LEFT OUTER JOIN "orders" ON "orders"."customer_id" = "customers"."id" WHERE "customers"."region" = ? GROUP BY "customers"."id"
+    ```
+
+    Plan: the step to look at is `Search` on `orders`: `SEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN`.
+
+    ## Suggested fix
+
+    Index the foreign key column on main.orders.
+
+    ```sql
+    CREATE INDEX IF NOT EXISTS "ix_orders_customer_id"
+        ON "main"."orders" ("customer_id");
+    -- SQLite builds an index under the database's write lock: writers wait until it finishes.
+    ```
+
+    ## How to verify
+
+    - Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone.
+
+    ## Caveats
+
+    - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. SQLite builds an index under the database's write lock, so the application's writes wait until it finishes: run it when writes are quiet. After any change is live, run `culprit scan sqlite-demo` and check `unindexed-fk:main.orders(customer_id)` the way *How to verify* says.
+
+=== finding unindexed-fk:main.order_items(product_id)
+low severity · high confidence · indexes
+title: order_items has no index on product_id, its foreign key to products
+summary: Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.
+impact: 200K rows unindexed
+metrics:
+  - Rows in table: 200K
+  - Foreign key: order_items_fk_0
+fix: Index the foreign key column on main.order_items.
+  sql:
+      CREATE INDEX IF NOT EXISTS "ix_order_items_product_id"
+          ON "main"."order_items" ("product_id");
+      -- SQLite builds an index under the database's write lock: writers wait until it finishes.
+verify:
+  1. Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone.
+caveats:
+  - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
+brief:
+    # order_items has no index on product_id, its foreign key to products
+
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.order_items(product_id)`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+
+    ## What's happening
+
+    Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.
+
+    ## Evidence
+
+    - Rows in table: 200K
+    - Foreign key: order_items_fk_0
+
+    ## Suggested fix
+
+    Index the foreign key column on main.order_items.
+
+    ```sql
+    CREATE INDEX IF NOT EXISTS "ix_order_items_product_id"
+        ON "main"."order_items" ("product_id");
+    -- SQLite builds an index under the database's write lock: writers wait until it finishes.
+    ```
+
+    ## How to verify
+
+    - Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone.
+
+    ## Caveats
+
+    - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. SQLite builds an index under the database's write lock, so the application's writes wait until it finishes: run it when writes are quiet. After any change is live, run `culprit scan sqlite-demo` and check `unindexed-fk:main.order_items(product_id)` the way *How to verify* says.
+
+=== finding duplicate-index:main.orders.ix_orders_status_again
+low severity · high confidence · indexes
+title: ix_orders_status_again duplicates ix_orders_status on orders
+summary: ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.
+impact: 3.5 MB redundant
+metrics:
+  - Size: 3.5 MB
+fix: Drop ix_orders_status_again and keep ix_orders_status.
+  sql:
+      DROP INDEX IF EXISTS "main"."ix_orders_status_again";
+  cost: Frees 3.5 MB.
+brief:
+    # ix_orders_status_again duplicates ix_orders_status on orders
+
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `duplicate-index:main.orders.ix_orders_status_again`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+
+    ## What's happening
+
+    ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.
+
+    ## Evidence
+
+    - Size: 3.5 MB
+
+    ## Suggested fix
+
+    Drop ix_orders_status_again and keep ix_orders_status.
+
+    ```sql
+    DROP INDEX IF EXISTS "main"."ix_orders_status_again";
+    ```
+
+    Cost: Frees 3.5 MB.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan sqlite-demo`: `duplicate-index:main.orders.ix_orders_status_again` should be gone.
+
+=== finding config:sqlite-statistics
+low severity · high confidence · maintenance
+title: SQLite has no statistics to choose between this file's indexes
+summary: The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
+impact: No statistics
+metrics:
+  - Secondary indexes: 3
+fix: Run ANALYZE once, then PRAGMA optimize from time to time (when a connection closes is the usual place): it re-analyzes only what changed.
+  sql:
+      ANALYZE;
+  cost: ANALYZE reads every index once and holds the write lock while it stores the results: on a large file, run it when writes are quiet.
+verify:
+  1. Scan again: the file has sqlite_stat1, and this finding is gone.
+brief:
+    # SQLite has no statistics to choose between this file's indexes
+
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-statistics`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+
+    ## What's happening
+
+    The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
+
+    ## Evidence
+
+    - Secondary indexes: 3
+
+    ## Suggested fix
+
+    Run ANALYZE once, then PRAGMA optimize from time to time (when a connection closes is the usual place): it re-analyzes only what changed.
+
+    ```sql
+    ANALYZE;
+    ```
+
+    Cost: ANALYZE reads every index once and holds the write lock while it stores the results: on a large file, run it when writes are quiet.
+
+    ## How to verify
+
+    - Scan again: the file has sqlite_stat1, and this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is upkeep of the database, not a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job, or where the application opens and closes its connections, which is where SQLite's `PRAGMA optimize` belongs). After any change is live, run `culprit scan sqlite-demo` and check `config:sqlite-statistics` the way *How to verify* says.
+
+=== finding config:sqlite-free-pages
+low severity · high confidence · maintenance
+title: 47.0 MB of the file is free pages (71% of it)
+summary: Deleted rows leave their pages in the file for SQLite to reuse; the file doesn't shrink on its own. That's fine when new rows will fill them again. If not, the file stays larger than its data, which every backup and copy pays for.
+impact: 47.0 MB free
+metrics:
+  - Free pages: 47.0 MB
+  - Share of the file: 71%
+fix: VACUUM rewrites the file without its free pages. To give space back after large deletes from then on, switch auto_vacuum to INCREMENTAL first (it takes effect with that VACUUM) and run PRAGMA incremental_vacuum when convenient.
+  sql:
+      PRAGMA auto_vacuum = INCREMENTAL;
+      VACUUM;
+  cost: VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.
+verify:
+  1. Scan again: free pages are a small part of the file.
+brief:
+    # 47.0 MB of the file is free pages (71% of it)
+
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-free-pages`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+
+    ## What's happening
+
+    Deleted rows leave their pages in the file for SQLite to reuse; the file doesn't shrink on its own. That's fine when new rows will fill them again. If not, the file stays larger than its data, which every backup and copy pays for.
+
+    ## Evidence
+
+    - Free pages: 47.0 MB
+    - Share of the file: 71%
+
+    ## Suggested fix
+
+    VACUUM rewrites the file without its free pages. To give space back after large deletes from then on, switch auto_vacuum to INCREMENTAL first (it takes effect with that VACUUM) and run PRAGMA incremental_vacuum when convenient.
+
+    ```sql
+    PRAGMA auto_vacuum = INCREMENTAL;
+    VACUUM;
+    ```
+
+    Cost: VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.
+
+    ## How to verify
+
+    - Scan again: free pages are a small part of the file.
+
+    ## What to do in the codebase
+
+    The fix is upkeep of the database, not a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job). After any change is live, run `culprit scan sqlite-demo` and check `config:sqlite-free-pages` the way *How to verify* says.
+
+=== plan c1b0de997fac4faa
+no insights
+note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+
+=== plan 3c81e035bd6f73fa
+no insights
+note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+
+=== plan 500217f7b40055be
+insight automatic-index · low severity · impact a fixed weight
+  title: SQLite builds a temporary index on orders every time this runs
+  detail: No index on orders fits this join, so SQLite builds one on customer_id for each run and throws it away.
+  fix: Create that index once, so the work happens one time instead of on every run.
+  sql:
+      CREATE INDEX IF NOT EXISTS "ix_orders_customer_id"
+          ON "orders" ("customer_id");
+      -- SQLite builds an index under the database's write lock: writers wait until it finishes.
+  verify: Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index.
+note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+
+=== plan 4971a2de8aecdcc6
+no insights
+note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+
+=== plan 84456a5661cab4aa
+no insights
+note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.

@@ -1,0 +1,429 @@
+reading: MariaDB 11.8.9 · database shop · scanned 2026-10-11T16:05:40Z
+headline: 8 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.
+top share: 95%
+findings: 8
+
+=== finding temp-spill:375c64398248650e
+low severity · high confidence · queries
+title: A read from orders builds an on-disk temporary table about once per run
+summary: The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+impact: 89% of DB time · 88.6% of database time
+metrics:
+  - On-disk temporary tables per run: 1
+  - Average duration: 2.5 s
+fix: Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart.
+  sql:
+      SET GLOBAL tmp_table_size = 67108864;
+      SET GLOBAL max_heap_table_size = 67108864;
+  cost: The limit is per temporary table per connection; size it with your connection count in mind.
+verify:
+  1. Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
+queries:
+  - 375c64398248650e: 89% of database time · plan step 2
+brief:
+    # A read from orders builds an on-disk temporary table about once per run
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `temp-spill:375c64398248650e`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+
+    ## Evidence
+
+    - On-disk temporary tables per run: 1
+    - Average duration: 2.5 s
+
+    ## Queries involved
+
+    Query `375c64398248650e` — 89% of DB time, 20 runs over the 1 minute since statistics were reset, 2.5 s average:
+
+    ```sql
+    SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
+    ```
+
+    Plan: the step this finding is about is `Temporary table`. `Sort` (sum(orders.total) desc) and `Temporary table` have no cost of their own in the plan, so no share is given.
+
+    ## Suggested fix
+
+    Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart.
+
+    ```sql
+    SET GLOBAL tmp_table_size = 67108864;
+    SET GLOBAL max_heap_table_size = 67108864;
+    ```
+
+    Cost: The limit is per temporary table per connection; size it with your connection count in mind.
+
+    ## How to verify
+
+    - Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding chatty-query:a92bb0be330ac53a
+low severity · medium confidence · queries
+title: A read from products runs 30K times in 1 minute, one row at a time
+summary: This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.
+impact: 75% of executions · 1.0% of database time
+metrics:
+  - Share of executions: 75%
+  - Average duration: 0.02 ms
+fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+verify:
+  1. It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+caveats:
+  - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+queries:
+  - a92bb0be330ac53a: 1% of database time
+brief:
+    # A read from products runs 30K times in 1 minute, one row at a time
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `chatty-query:a92bb0be330ac53a`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.
+
+    ## Evidence
+
+    - Share of executions: 75%
+    - Average duration: 0.02 ms
+
+    ## Queries involved
+
+    Query `a92bb0be330ac53a` — 1% of DB time, 30K runs over the 1 minute since statistics were reset, 0.02 ms average:
+
+    ```sql
+    SELECT ID , NAME , `price` FROM `products` WHERE ID = ?
+    ```
+
+    ## Suggested fix
+
+    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+
+    ## How to verify
+
+    - It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## Caveats
+
+    - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `chatty-query:a92bb0be330ac53a` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding heavy-query:decf59629e790076
+low severity · high confidence · queries
+title: A read from orders takes 6% of database time
+summary: It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+impact: 6% of DB time · 5.6% of database time
+metrics:
+  - Share of DB time: 6%
+  - Average duration: 1.6 ms
+  - Rows examined per run: 11K
+  - Rows returned per run: 1
+fix: Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run.
+verify:
+  1. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+queries:
+  - decf59629e790076: 6% of database time · plan step 1
+brief:
+    # A read from orders takes 6% of database time
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `heavy-query:decf59629e790076`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+
+    ## Evidence
+
+    - Share of DB time: 6%
+    - Average duration: 1.6 ms
+    - Rows examined per run: 11K
+    - Rows returned per run: 1
+
+    ## Queries involved
+
+    Query `decf59629e790076` — 6% of DB time, 2.0K runs over the 1 minute since statistics were reset, 1.6 ms average:
+
+    ```sql
+    SELECT COUNT ( * ) FROM `orders` WHERE STATUS = ? AND `created_at` >= ?
+    ```
+
+    Plan: the most expensive step (100% of estimated cost) is `Index range scan` on `shop.orders` filtering `orders.status = '?' and orders.created_at >= '?'`.
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run.
+
+    ## How to verify
+
+    - performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `heavy-query:decf59629e790076` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding scan-heavy:shop.orders
+low severity · medium confidence · indexes
+title: orders is read in full 80 times in the hour since the server last restarted (40.0M rows)
+summary: shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+impact: 4% of DB time · 4.0% of database time
+metrics:
+  - Full reads: 80
+  - Rows read without an index: 40.0M
+  - Rows in table: 499K
+fix: Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+  cost: shop.orders had no writes in the 1 h 9 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
+verify:
+  1. Re-scan after a day: full reads of orders per day drop, and its index scans rise.
+caveats:
+  - Counters accumulate since statistics were last reset; one nightly report can make up much of them.
+queries:
+  - 258e3c9b580f1ecc: 4% of database time
+brief:
+    # orders is read in full 80 times in the hour since the server last restarted (40.0M rows)
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `scan-heavy:shop.orders`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+
+    ## Evidence
+
+    - Full reads: 80
+    - Rows read without an index: 40.0M
+    - Rows in table: 499K
+
+    ## Queries involved
+
+    Query `258e3c9b580f1ecc` — 4% of DB time, 60 runs over the 1 minute since statistics were reset, 38 ms average:
+
+    ```sql
+    SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?
+    ```
+
+    ## Suggested fix
+
+    Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+
+    Cost: shop.orders had no writes in the 1 h 9 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
+
+    ## How to verify
+
+    - Re-scan after a day: full reads of orders per day drop, and its index scans rise.
+
+    ## Caveats
+
+    - Counters accumulate since statistics were last reset; one nightly report can make up much of them.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says: performance_schema keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+
+=== finding deadlocks:opposite-order:shop.customers+shop.orders
+low severity · high confidence · queries
+title: Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)
+summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.
+impact: 1 deadlock
+metrics:
+  - Deadlocks: 1
+  - Pattern: opposite access order
+  - Rolled back: root
+fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
+verify:
+  1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
+  2. Live › Deadlocks shows the graph of each one, with both statements.
+caveats:
+  - InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.
+brief:
+    # Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.
+
+    ## Evidence
+
+    - Deadlocks: 1
+    - Pattern: opposite access order
+    - Rolled back: root
+
+    ## Suggested fix
+
+    Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
+
+    ## How to verify
+
+    - Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
+    - Live › Deadlocks shows the graph of each one, with both statements.
+
+    ## Caveats
+
+    - InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.
+
+    ## What to do in the codebase
+
+    Where the fix changes how the application reads or writes `shop.customers`, search the code for the statements that touch it. After any change is live, run `culprit scan mariadb-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
+
+=== finding duplicate-index:shop.orders.ix_orders_status
+low severity · medium confidence · indexes
+title: ix_orders_status is covered by the wider ix_orders_status_created on orders
+summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+impact: 9.5 MB redundant
+metrics:
+  - Size: 9.5 MB
+fix: Drop ix_orders_status and keep ix_orders_status_created.
+  sql:
+      ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
+  cost: Frees 9.5 MB.
+caveats:
+  - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+brief:
+    # ix_orders_status is covered by the wider ix_orders_status_created on orders
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+
+    ## Evidence
+
+    - Size: 9.5 MB
+
+    ## Suggested fix
+
+    Drop ix_orders_status and keep ix_orders_status_created.
+
+    ```sql
+    ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
+    ```
+
+    Cost: Frees 9.5 MB.
+
+    ## Caveats
+
+    - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mariadb-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+
+=== finding duplicate-index:shop.products.ix_products_sku
+low severity · high confidence · indexes
+title: ix_products_sku duplicates uq_products_sku on products
+summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+impact: 432 KB redundant
+metrics:
+  - Size: 432 KB
+fix: Drop ix_products_sku and keep uq_products_sku.
+  sql:
+      ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
+  cost: Frees 432 KB.
+brief:
+    # ix_products_sku duplicates uq_products_sku on products
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+
+    ## Evidence
+
+    - Size: 432 KB
+
+    ## Suggested fix
+
+    Drop ix_products_sku and keep uq_products_sku.
+
+    ```sql
+    ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
+    ```
+
+    Cost: Frees 432 KB.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mariadb-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+
+=== finding row-lock-waits:server
+low severity · medium confidence · queries
+title: Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average
+summary: Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 2 min 32 s in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.
+impact: 2 min/h lock waits
+metrics:
+  - Lock waits since start: 20
+  - Time waiting since start: 2 min 32 s
+  - Average wait: 7.6 s
+fix: Keep transactions short (no user input or slow calls inside them), make UPDATE and DELETE filter on indexed columns, and touch tables in the same order everywhere. Live shows who blocks whom right now.
+verify:
+  1. Sample Waits → Right now during normal load: it counts row-lock waits over the sample, which should be rare and short.
+caveats:
+  - MariaDB counts row-lock waits for the whole server, so other databases' waits are in these numbers.
+brief:
+    # Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average
+
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `row-lock-waits:server`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+
+    ## What's happening
+
+    Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 2 min 32 s in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.
+
+    ## Evidence
+
+    - Lock waits since start: 20
+    - Time waiting since start: 2 min 32 s
+    - Average wait: 7.6 s
+
+    ## Suggested fix
+
+    Keep transactions short (no user input or slow calls inside them), make UPDATE and DELETE filter on indexed columns, and touch tables in the same order everywhere. Live shows who blocks whom right now.
+
+    ## How to verify
+
+    - Sample Waits → Right now during normal load: it counts row-lock waits over the sample, which should be rare and short.
+
+    ## Caveats
+
+    - MariaDB counts row-lock waits for the whole server, so other databases' waits are in these numbers.
+
+    ## What to do in the codebase
+
+    No statement is listed under *Queries involved*: the fix above says where the change is. After any change is live, run `culprit scan mariadb-demo` and check `row-lock-waits:server` the way *How to verify* says.
+
+=== plan 375c64398248650e
+insight temp-table-sort · low severity · impact 0%
+  title: Groups 500K rows in an internal temporary table, then sorts them (filesort)
+  detail: The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MariaDB builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.
+  fix: An index whose leading columns match the GROUP BY lets MariaDB group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.
+  verify: Explain again: no "using temporary table" on the grouping.
+note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.
+shares: `Sort` (sum(orders.total) desc) and `Temporary table` have no cost of their own in the plan, so no share is given.
+
+=== plan decf59629e790076
+no insights
+note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.
+
+=== plan 258e3c9b580f1ecc
+no insights
+note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.
+shares: `Sort` (o.total desc) has no cost of its own in the plan, so no share is given.
+
+=== plan 46db559fdff712fd
+no insights
+note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.
+shares: `Sort` (orders.created_at desc) has no cost of its own in the plan, so no share is given.
+
+=== plan d1f45c9664edccf9
+no insights
+note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.

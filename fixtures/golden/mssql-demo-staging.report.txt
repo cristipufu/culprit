@@ -1,0 +1,334 @@
+reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:15:12Z
+headline: 8 opportunities.
+no workload: Query Store is OFF on this database.
+findings: 8
+
+=== finding tier-limit:log-write
+high severity · high confidence · configuration
+title: Log writes hit the tier's limit 38% of the last hour: writes are throttled
+summary: Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.
+impact: at limit 38%
+metrics:
+  - Time at the limit: 38%
+  - Peak: 100%
+fix: Batch small writes into fewer transactions and avoid row-by-row changes; then consider a tier with more log throughput.
+verify:
+  1. Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it).
+brief:
+    # Log writes hit the tier's limit 38% of the last hour: writes are throttled
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `tier-limit:log-write`: high impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.
+
+    ## Evidence
+
+    - Time at the limit: 38%
+    - Peak: 100%
+
+    ## Suggested fix
+
+    Batch small writes into fewer transactions and avoid row-by-row changes; then consider a tier with more log throughput.
+
+    ## How to verify
+
+    - Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it).
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mssql-demo-staging` and check `tier-limit:log-write` the way *How to verify* says.
+
+=== finding unindexed-fk:shop.ticket_events(ticket_id)
+low severity · high confidence · indexes
+title: ticket_events has no index on ticket_id, its foreign key to support_tickets
+summary: Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
+impact: 800K rows unindexed
+metrics:
+  - Rows in table: 800K
+  - Foreign key: fk_ticket_events_ticket
+fix: Index the foreign key column on shop.ticket_events.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]
+          ON [shop].[ticket_events] ([ticket_id])
+          WITH (ONLINE = ON);
+verify:
+  1. Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+brief:
+    # ticket_events has no index on ticket_id, its foreign key to support_tickets
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
+
+    ## Evidence
+
+    - Rows in table: 800K
+    - Foreign key: fk_ticket_events_ticket
+
+    ## Suggested fix
+
+    Index the foreign key column on shop.ticket_events.
+
+    ```sql
+    CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]
+        ON [shop].[ticket_events] ([ticket_id])
+        WITH (ONLINE = ON);
+    ```
+
+    ## How to verify
+
+    - Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `unindexed-fk:shop.ticket_events(ticket_id)` the way *How to verify* says.
+
+=== finding deadlocks:key-lookup:shop.customers
+low severity · high confidence · queries
+title: Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+summary: Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
+impact: 1 deadlock
+metrics:
+  - Deadlocks: 1
+  - Pattern: key-lookup deadlock
+  - Rolled back: orders-api
+fix: Make the read skip the lookup: Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns. Or let reads stop taking shared locks: With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions.
+  sql:
+      ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+verify:
+  1. Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.
+  2. Live › Deadlocks shows the graph of each one, with both statements.
+brief:
+    # Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:key-lookup:shop.customers`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
+
+    ## Evidence
+
+    - Deadlocks: 1
+    - Pattern: key-lookup deadlock
+    - Rolled back: orders-api
+
+    ## Suggested fix
+
+    Make the read skip the lookup: Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns. Or let reads stop taking shared locks: With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions.
+
+    ```sql
+    ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+    ```
+
+    ## How to verify
+
+    - Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.
+    - Live › Deadlocks shows the graph of each one, with both statements.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo-staging` and check `deadlocks:key-lookup:shop.customers` the way *How to verify* says.
+
+=== finding deadlocks:opposite-order:shop.customers+shop.orders
+low severity · high confidence · queries
+title: Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
+summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
+impact: 1 deadlock
+metrics:
+  - Deadlocks: 1
+  - Pattern: opposite access order
+  - Rolled back: SQLCMD
+fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
+verify:
+  1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
+  2. Live › Deadlocks shows the graph of each one, with both statements.
+brief:
+    # Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
+
+    ## Evidence
+
+    - Deadlocks: 1
+    - Pattern: opposite access order
+    - Rolled back: SQLCMD
+
+    ## Suggested fix
+
+    Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
+
+    ## How to verify
+
+    - Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
+    - Live › Deadlocks shows the graph of each one, with both statements.
+
+    ## What to do in the codebase
+
+    Where the fix changes how the application reads or writes `shop.customers`, search the code for the statements that touch it. After any change is live, run `culprit scan mssql-demo-staging` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
+
+=== finding duplicate-index:shop.orders.ix_orders_status
+low severity · medium confidence · indexes
+title: ix_orders_status is covered by the wider ix_orders_status_created on orders
+summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+impact: 26.5 MB redundant
+metrics:
+  - Size: 26.5 MB
+fix: Drop ix_orders_status and keep ix_orders_status_created.
+  sql:
+      DROP INDEX [ix_orders_status] ON [shop].[orders];
+  cost: Frees 26.5 MB.
+caveats:
+  - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+brief:
+    # ix_orders_status is covered by the wider ix_orders_status_created on orders
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+
+    ## Evidence
+
+    - Size: 26.5 MB
+
+    ## Suggested fix
+
+    Drop ix_orders_status and keep ix_orders_status_created.
+
+    ```sql
+    DROP INDEX [ix_orders_status] ON [shop].[orders];
+    ```
+
+    Cost: Frees 26.5 MB.
+
+    ## Caveats
+
+    - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo-staging`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+
+=== finding duplicate-index:shop.products.ix_products_sku
+low severity · high confidence · indexes
+title: ix_products_sku duplicates uq_products_sku on products
+summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+impact: 648 KB redundant
+metrics:
+  - Size: 648 KB
+fix: Drop ix_products_sku and keep uq_products_sku.
+  sql:
+      DROP INDEX [ix_products_sku] ON [shop].[products];
+  cost: Frees 648 KB.
+brief:
+    # ix_products_sku duplicates uq_products_sku on products
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+
+    ## Evidence
+
+    - Size: 648 KB
+
+    ## Suggested fix
+
+    Drop ix_products_sku and keep uq_products_sku.
+
+    ```sql
+    DROP INDEX [ix_products_sku] ON [shop].[products];
+    ```
+
+    Cost: Frees 648 KB.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo-staging`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+
+=== finding config:cost-threshold-for-parallelism
+low severity · medium confidence · configuration
+title: Cost threshold for parallelism is still the 1990s default of 5
+summary: Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+impact: Setting
+fix: A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+  sql:
+      EXEC sp_configure 'show advanced options', 1;
+      RECONFIGURE;
+      EXEC sp_configure 'cost threshold for parallelism', 50;
+      RECONFIGURE;
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Cost threshold for parallelism is still the 1990s default of 5
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:cost-threshold-for-parallelism`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+
+    ## Suggested fix
+
+    A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+
+    ```sql
+    EXEC sp_configure 'show advanced options', 1;
+    RECONFIGURE;
+    EXEC sp_configure 'cost threshold for parallelism', 50;
+    RECONFIGURE;
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mssql-demo-staging` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
+
+=== finding config:query-store-capture
+low severity · medium confidence · configuration
+title: Query Store records every statement, including one-off ones
+summary: Capture mode ALL keeps statements that ran once or cost nothing. On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.
+impact: Setting
+fix: Switch to automatic capture.
+  sql:
+      ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Query Store records every statement, including one-off ones
+
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:query-store-capture`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+
+    ## What's happening
+
+    Capture mode ALL keeps statements that ran once or cost nothing. On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.
+
+    ## Suggested fix
+
+    Switch to automatic capture.
+
+    ```sql
+    ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo-staging` and check `config:query-store-capture` the way *How to verify* says.

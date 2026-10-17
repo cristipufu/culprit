@@ -15,6 +15,7 @@ pub mod marks;
 pub mod plans;
 mod private_fs;
 mod query_log;
+pub mod reading;
 pub mod registry;
 pub mod reports;
 pub mod saved;
@@ -281,13 +282,7 @@ impl Workspace {
 
     /// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
     pub fn analyze_file(&self, path: &std::path::Path) -> Result<Report> {
-        let bytes = std::fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-        let value: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-        let snapshot = value.get("snapshot").cloned().unwrap_or(value);
-        let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
-            .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
-        Ok(self.reread(snapshot))
+        Ok(self.reread(reports::load_snapshot(path)?))
     }
 
     /// A saved scan as this version of Culprit reads it: its plans parsed again from the text they were captured as

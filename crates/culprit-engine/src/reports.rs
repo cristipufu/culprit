@@ -184,6 +184,16 @@ pub fn load(path: &Path) -> Result<Report> {
     })
 }
 
+/// The snapshot in a snapshot file, or in a report file (its `snapshot`): what a saved scan is read again from.
+pub fn load_snapshot(path: &Path) -> Result<culprit_core::Snapshot> {
+    let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+    let snapshot = value.get("snapshot").cloned().unwrap_or(value);
+    serde_json::from_value(snapshot)
+        .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))
+}
+
 pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Ok(Vec::new());

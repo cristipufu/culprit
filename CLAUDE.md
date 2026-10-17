@@ -20,6 +20,7 @@ Read `docs/DESIGN.md` first: it is the source of truth for UX and behaviour. `do
 ```sh
 cargo test --workspace                          # a crate's tests/*.rs are modules of one binary: list a new file in tests/all.rs
 cargo test -p culprit-checks --test all brief:: # one test file
+CULPRIT_UPDATE_GOLDEN=1 cargo test -p culprit-engine --test all golden::  # accept a change in what users read (fixtures/golden/), after reading the diff
 cargo clippy --workspace --all-targets
 cargo fmt --all
 cd app && bun run typecheck && bun run dev     # browser UI on fixtures/*.report.json

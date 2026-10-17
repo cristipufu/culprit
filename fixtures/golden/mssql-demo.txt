@@ -1,0 +1,705 @@
+reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:13:47Z
+headline: 13 opportunities. The top ones touch 69% of database time over the last 5 hours.
+top share: 69%
+findings: 13
+
+=== finding plan-warnings:implicit-conversion:customers.email
+medium severity · high confidence · queries
+title: A type mismatch on customers.email stops a read from customers from seeking an index
+summary: The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
+impact: 54% of DB time · 54.4% of database time
+metrics:
+  - Share of DB time: 54%
+  - Average duration: 18 ms
+  - Column: customers.email
+fix: Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.
+verify:
+  1. Re-scan after the change; the warning should be gone from this query's plan.
+queries:
+  - 7: 54% of database time
+    note: Implicit conversion
+brief:
+    # A type mismatch on customers.email stops a read from customers from seeking an index
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-warnings:implicit-conversion:customers.email`: medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
+
+    ## Evidence
+
+    - Share of DB time: 54%
+    - Average duration: 18 ms
+    - Column: customers.email
+
+    ## Queries involved
+
+    Query `7` — 54% of DB time, 1.2K runs over the last 5 hours, 18 ms average:
+
+    ```sql
+    SELECT [id], [name], [segment] FROM [shop].[customers] WHERE [email] = @P1
+    ```
+
+    Plan: the most expensive step (88% of estimated cost) is `Index Scan` on `shop.customers` filtering `CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`.
+
+    ## Suggested fix
+
+    Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.
+
+    ## How to verify
+
+    - Re-scan after the change; the warning should be gone from this query's plan.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
+
+=== finding chatty-query:6
+medium severity · medium confidence · queries
+title: A read from products runs 60K times in 5 hours, one row at a time
+summary: This statement is 86% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+impact: 86% of executions · 2.0% of database time
+metrics:
+  - Share of executions: 86%
+  - Average duration: 0.01 ms
+fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+verify:
+  1. It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+caveats:
+  - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+queries:
+  - 6: 2% of database time
+brief:
+    # A read from products runs 60K times in 5 hours, one row at a time
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `chatty-query:6`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    This statement is 86% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+
+    ## Evidence
+
+    - Share of executions: 86%
+    - Average duration: 0.01 ms
+
+    ## Queries involved
+
+    Query `6` — 2% of DB time, 60K runs over the last 5 hours, 0.01 ms average:
+
+    ```sql
+    SELECT [id], [name], [price] FROM [shop].[products] WHERE [id] = @P1
+    ```
+
+    ## Suggested fix
+
+    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+
+    ## How to verify
+
+    - It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+
+    ## Caveats
+
+    - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
+
+=== finding regression:8
+low severity · high confidence · queries
+title: A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed
+summary: Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
+impact: 3.4× slower · 12.2% of database time
+metrics:
+  - Before: 9.5 ms
+  - Since then: 32 ms
+  - Extra time: 2.1 s
+  - Started: Oct 11, 10:45 UTC
+  - Plan change: 8 → 47
+fix: Force plan 8 to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed.
+  sql:
+      EXEC sp_query_store_force_plan @query_id = 8, @plan_id = 8;
+verify:
+  1. Re-scan after the fix: this query's trend in Queries should drop back to about 9.5 ms per run.
+queries:
+  - 8: 12% of database time
+brief:
+    # A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `regression:8`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
+
+    ## Evidence
+
+    - Before: 9.5 ms
+    - Since then: 32 ms
+    - Extra time: 2.1 s
+    - Started: Oct 11, 10:45 UTC
+    - Plan change: 8 → 47
+
+    ## Queries involved
+
+    Query `8` — 12% of DB time, 300 runs over the last 5 hours, 17 ms average:
+
+    ```sql
+    SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')
+    ```
+
+    Plan: the most expensive step (97% of estimated cost) is `Clustered Index Scan` on `shop.orders` filtering `shipped_at >= dateadd(day,@P1,'2026-01-01 00:00:00.000') AND shipped_at < dateadd(day,@P2,'2026-01-01 00:00:00.000')`.
+
+    ## Suggested fix
+
+    Force plan 8 to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed.
+
+    ```sql
+    EXEC sp_query_store_force_plan @query_id = 8, @plan_id = 8;
+    ```
+
+    ## How to verify
+
+    - Re-scan after the fix: this query's trend in Queries should drop back to about 9.5 ms per run.
+
+    ## What to do in the codebase
+
+    The fix's Query Store procedure runs against the database (Query Store keeps the plan it forces or the hint it sets), not in the application's code: run it there. After any change is live, run `culprit scan mssql-demo` and check `regression:8` the way *How to verify* says.
+
+=== finding missing-index:shop.order_items(order_id)
+low severity · high confidence · indexes
+title: order_items is searched by order_id without a supporting index
+summary: SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the minute since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The query that asked for it accounts for 17% of database time.
+impact: 17% of DB time · 16.5% of database time
+metrics:
+  - Share of DB time: 17%
+  - Lookups that wanted it: 300
+  - Estimated improvement: 99%
+  - Rows in table: 1.5M
+fix: Create an index on order_id.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_order_items_order_id]
+          ON [shop].[order_items] ([order_id])
+          WITH (ONLINE = ON);
+verify:
+  1. Create the index, let the workload run, then re-scan: this suggestion should disappear.
+  2. The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+caveats:
+  - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
+queries:
+  - 9: 17% of database time · plan step 1
+brief:
+    # order_items is searched by order_id without a supporting index
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.order_items(order_id)`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the minute since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The query that asked for it accounts for 17% of database time.
+
+    ## Evidence
+
+    - Share of DB time: 17%
+    - Lookups that wanted it: 300
+    - Estimated improvement: 99%
+    - Rows in table: 1.5M
+
+    ## Queries involved
+
+    Query `9` — 17% of DB time, 600 runs over the last 5 hours, 11 ms average:
+
+    ```sql
+    SELECT [product_id], [quantity], [unit_price] FROM [shop].[order_items] WHERE [order_id] = @P1
+    ```
+
+    Plan: the most expensive step (98% of estimated cost) is `Clustered Index Scan` on `shop.order_items` filtering `order_id = @P1`.
+
+    ## Suggested fix
+
+    Create an index on order_id.
+
+    ```sql
+    CREATE NONCLUSTERED INDEX [IX_order_items_order_id]
+        ON [shop].[order_items] ([order_id])
+        WITH (ONLINE = ON);
+    ```
+
+    ## How to verify
+
+    - Create the index, let the workload run, then re-scan: this suggestion should disappear.
+    - The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+
+    ## Caveats
+
+    - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `missing-index:shop.order_items(order_id)` the way *How to verify* says.
+
+=== finding heavy-query:10
+low severity · high confidence · queries
+title: A read from support_tickets takes 14% of database time
+summary: It ran 4.0K times in 5 hours at 1.4 ms on average: 14% of all database time in the last 5 hours. 99% of its estimated cost is a key lookup of shop.support_tickets.
+impact: 14% of DB time · 14.2% of database time
+metrics:
+  - Share of DB time: 14%
+  - Average duration: 1.4 ms
+  - Pages read per run: 3.1K
+  - Rows returned per run: 973
+  - CPU share of its time: 100%
+fix: Find this statement in the application and check whether it reads more rows or columns than it needs.
+verify:
+  1. After the change ships, re-scan and compare this query's share of database time and reads per run.
+queries:
+  - 10: 14% of database time · plan step 4
+brief:
+    # A read from support_tickets takes 14% of database time
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `heavy-query:10`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    It ran 4.0K times in 5 hours at 1.4 ms on average: 14% of all database time in the last 5 hours. 99% of its estimated cost is a key lookup of shop.support_tickets.
+
+    ## Evidence
+
+    - Share of DB time: 14%
+    - Average duration: 1.4 ms
+    - Pages read per run: 3.1K
+    - Rows returned per run: 973
+    - CPU share of its time: 100%
+
+    ## Queries involved
+
+    Query `10` — 14% of DB time, 4.0K runs over the last 5 hours, 1.4 ms average:
+
+    ```sql
+    SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1
+    ```
+
+    Plan: the most expensive step (99% of estimated cost) is `Key Lookup` on `shop.support_tickets`.
+
+    ## Suggested fix
+
+    Find this statement in the application and check whether it reads more rows or columns than it needs.
+
+    ## How to verify
+
+    - After the change ships, re-scan and compare this query's share of database time and reads per run.
+
+    ## What to do in the codebase
+
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `heavy-query:10` the way *How to verify* says.
+
+=== finding missing-index:shop.orders(shipped_at)
+low severity · high confidence · indexes
+title: orders is searched by shipped_at without a supporting index
+summary: SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the minute since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 12% of database time.
+impact: 12% of DB time · 12.2% of database time
+metrics:
+  - Share of DB time: 12%
+  - Lookups that wanted it: 150
+  - Estimated improvement: 81%
+  - Rows in table: 1.0M
+fix: Create an index on shipped_at, including total.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]
+          ON [shop].[orders] ([shipped_at])
+          INCLUDE ([total])
+          WITH (ONLINE = ON);
+verify:
+  1. Create the index, let the workload run, then re-scan: this suggestion should disappear.
+  2. The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+caveats:
+  - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
+queries:
+  - 8: 12% of database time
+brief:
+    # orders is searched by shipped_at without a supporting index
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.orders(shipped_at)`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the minute since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 12% of database time.
+
+    ## Evidence
+
+    - Share of DB time: 12%
+    - Lookups that wanted it: 150
+    - Estimated improvement: 81%
+    - Rows in table: 1.0M
+
+    ## Queries involved
+
+    Query `8` — 12% of DB time, 300 runs over the last 5 hours, 17 ms average:
+
+    ```sql
+    SELECT [id], [total] FROM [shop].[orders] WHERE [shipped_at] >= DATEADD(day, @P1, '2026-01-01') AND [shipped_at] < DATEADD(day, @P2, '2026-01-01')
+    ```
+
+    Plan: the most expensive step (97% of estimated cost) is `Clustered Index Scan` on `shop.orders` filtering `shipped_at >= dateadd(day,@P1,'2026-01-01 00:00:00.000') AND shipped_at < dateadd(day,@P2,'2026-01-01 00:00:00.000')`.
+
+    ## Suggested fix
+
+    Create an index on shipped_at, including total.
+
+    ```sql
+    CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]
+        ON [shop].[orders] ([shipped_at])
+        INCLUDE ([total])
+        WITH (ONLINE = ON);
+    ```
+
+    ## How to verify
+
+    - Create the index, let the workload run, then re-scan: this suggestion should disappear.
+    - The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+
+    ## Caveats
+
+    - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `missing-index:shop.orders(shipped_at)` the way *How to verify* says.
+
+=== finding unindexed-fk:shop.ticket_events(ticket_id)
+low severity · high confidence · indexes
+title: ticket_events has no index on ticket_id, its foreign key to support_tickets
+summary: Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
+impact: 800K rows unindexed
+metrics:
+  - Rows in table: 800K
+  - Foreign key: fk_ticket_events_ticket
+fix: Index the foreign key column on shop.ticket_events.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]
+          ON [shop].[ticket_events] ([ticket_id])
+          WITH (ONLINE = ON);
+verify:
+  1. Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+brief:
+    # ticket_events has no index on ticket_id, its foreign key to support_tickets
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
+
+    ## Evidence
+
+    - Rows in table: 800K
+    - Foreign key: fk_ticket_events_ticket
+
+    ## Suggested fix
+
+    Index the foreign key column on shop.ticket_events.
+
+    ```sql
+    CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]
+        ON [shop].[ticket_events] ([ticket_id])
+        WITH (ONLINE = ON);
+    ```
+
+    ## How to verify
+
+    - Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `unindexed-fk:shop.ticket_events(ticket_id)` the way *How to verify* says.
+
+=== finding duplicate-index:shop.orders.ix_orders_status
+low severity · medium confidence · indexes
+title: ix_orders_status is covered by the wider ix_orders_status_created on orders
+summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+impact: 26.5 MB redundant
+metrics:
+  - Size: 26.5 MB
+fix: Drop ix_orders_status and keep ix_orders_status_created.
+  sql:
+      DROP INDEX [ix_orders_status] ON [shop].[orders];
+  cost: Frees 26.5 MB.
+caveats:
+  - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+brief:
+    # ix_orders_status is covered by the wider ix_orders_status_created on orders
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
+
+    ## Evidence
+
+    - Size: 26.5 MB
+
+    ## Suggested fix
+
+    Drop ix_orders_status and keep ix_orders_status_created.
+
+    ```sql
+    DROP INDEX [ix_orders_status] ON [shop].[orders];
+    ```
+
+    Cost: Frees 26.5 MB.
+
+    ## Caveats
+
+    - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+
+=== finding duplicate-index:shop.products.ix_products_sku
+low severity · high confidence · indexes
+title: ix_products_sku duplicates uq_products_sku on products
+summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+impact: 648 KB redundant
+metrics:
+  - Size: 648 KB
+fix: Drop ix_products_sku and keep uq_products_sku.
+  sql:
+      DROP INDEX [ix_products_sku] ON [shop].[products];
+  cost: Frees 648 KB.
+brief:
+    # ix_products_sku duplicates uq_products_sku on products
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
+
+    ## Evidence
+
+    - Size: 648 KB
+
+    ## Suggested fix
+
+    Drop ix_products_sku and keep uq_products_sku.
+
+    ```sql
+    DROP INDEX [ix_products_sku] ON [shop].[products];
+    ```
+
+    Cost: Frees 648 KB.
+
+    ## What to do in the codebase
+
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+
+=== finding config:read-committed-snapshot
+low severity · medium confidence · configuration
+title: READ_COMMITTED_SNAPSHOT is off: reads would wait for writes on the same rows
+summary: With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours no read waited on locks, so it costs nothing now. It matters more as reads and writes meet on the same rows more often. Most OLTP applications run with it on; Azure SQL Database enables it by default.
+impact: Setting
+fix: Turn on row versioning for read committed. It needs a moment with no other connections, so schedule it.
+  sql:
+      ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+  cost: Row versions live in tempdb (or the database with ADR), which adds some write overhead.
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+caveats:
+  - Readers then see the last committed version instead of waiting. Code that relies on blocking reads for correctness (rare) must use locking hints.
+brief:
+    # READ_COMMITTED_SNAPSHOT is off: reads would wait for writes on the same rows
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:read-committed-snapshot`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours no read waited on locks, so it costs nothing now. It matters more as reads and writes meet on the same rows more often. Most OLTP applications run with it on; Azure SQL Database enables it by default.
+
+    ## Suggested fix
+
+    Turn on row versioning for read committed. It needs a moment with no other connections, so schedule it.
+
+    ```sql
+    ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
+    ```
+
+    Cost: Row versions live in tempdb (or the database with ADR), which adds some write overhead.
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## Caveats
+
+    - Readers then see the last committed version instead of waiting. Code that relies on blocking reads for correctness (rare) must use locking hints.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `config:read-committed-snapshot` the way *How to verify* says.
+
+=== finding config:cost-threshold-for-parallelism
+low severity · medium confidence · configuration
+title: Cost threshold for parallelism is still the 1990s default of 5
+summary: Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+impact: Setting
+fix: A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+  sql:
+      EXEC sp_configure 'show advanced options', 1;
+      RECONFIGURE;
+      EXEC sp_configure 'cost threshold for parallelism', 50;
+      RECONFIGURE;
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Cost threshold for parallelism is still the 1990s default of 5
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:cost-threshold-for-parallelism`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+
+    ## Suggested fix
+
+    A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+
+    ```sql
+    EXEC sp_configure 'show advanced options', 1;
+    RECONFIGURE;
+    EXEC sp_configure 'cost threshold for parallelism', 50;
+    RECONFIGURE;
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mssql-demo` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
+
+=== finding config:query-store-capture
+low severity · medium confidence · configuration
+title: Query Store records every statement, including one-off ones
+summary: Capture mode ALL keeps statements that ran once or cost nothing. With 7 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
+impact: Setting
+fix: Switch to automatic capture.
+  sql:
+      ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Query Store records every statement, including one-off ones
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:query-store-capture`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Capture mode ALL keeps statements that ran once or cost nothing. With 7 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
+
+    ## Suggested fix
+
+    Switch to automatic capture.
+
+    ```sql
+    ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `config:query-store-capture` the way *How to verify* says.
+
+=== finding last-actual-plans:last-query-plan-stats
+low severity · high confidence · configuration
+title: LAST_QUERY_PLAN_STATS is off for this database
+summary: With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Without it only estimated plans are available, so a bad estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+impact: Diagnostics
+fix: Turn it on for this database.
+  sql:
+      ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
+  cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
+verify:
+  1. Let the workload run, re-scan, then open a query in Queries and pick "Last actual run": the diagram shows actual rows and time per operator.
+brief:
+    # LAST_QUERY_PLAN_STATS is off for this database
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `last-actual-plans:last-query-plan-stats`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Without it only estimated plans are available, so a bad estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+
+    ## Suggested fix
+
+    Turn it on for this database.
+
+    ```sql
+    ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
+    ```
+
+    Cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
+
+    ## How to verify
+
+    - Let the workload run, re-scan, then open a query in Queries and pick "Last actual run": the diagram shows actual rows and time per operator.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `last-actual-plans:last-query-plan-stats` the way *How to verify* says.
+
+=== plan 7
+insight implicit-conversion · high severity · impact 88%
+  title: A type mismatch on customers.email stops SQL Server from seeking an index
+  detail: The value it's compared with has a different type, so SQL Server converts customers.email to nvarchar(200) on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and, by its own warning, can't seek the index.
+  fix: Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.
+  verify: Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek.
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 9
+insight missing-index-hint · high severity · impact 98%
+  title: SQL Server estimates an index on shop.order_items (order_id) would make this 99% cheaper
+  detail: The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.
+  fix: Create the index on order_id.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_order_items_order_id]
+          ON [shop].[order_items] ([order_id]);
+      -- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.
+  verify: Explain again: the suggestion is gone and the read of order_items becomes a seek.
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 10
+no insights
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 8
+insight missing-index-hint · high severity · impact 97%
+  title: SQL Server estimates an index on shop.orders (shipped_at) would make this 81% cheaper
+  detail: The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.
+  fix: Create the index on shipped_at and include total.
+  sql:
+      CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]
+          ON [shop].[orders] ([shipped_at])
+          INCLUDE ([total]);
+      -- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.
+  verify: Explain again: the suggestion is gone and the read of orders becomes a seek.
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 6
+no insights
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 5
+no insights
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+
+=== plan 35
+no insights
+note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
