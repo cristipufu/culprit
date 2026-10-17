@@ -954,9 +954,9 @@ fn sample_plan(json: &str, sample: &str, database: &str, digest_text: &str) -> R
     let mut clean = culprit_core::redact::redact_plan(&plan);
     clean.raw = plan.raw.as_deref().map(|raw| culprit_core::redact::redact_native(raw, Engine::Mysql));
     clean.statement = Some(digest_text.to_string());
-    if culprit_core::sql::has_limit(digest_text)
-        && culprit_core::sql::limit_count(digest_text).is_none()
-        && let Some(rows) = culprit_core::sql::limit_count(sample)
+    if culprit_core::sql::has_limit(digest_text, Engine::Mysql)
+        && culprit_core::sql::limit_count(digest_text, Engine::Mysql).is_none()
+        && let Some(rows) = culprit_core::sql::limit_count(sample, Engine::Mysql)
     {
         clean.props.insert(culprit_core::insights::LIMIT_ROWS.into(), rows.to_string());
     }
@@ -1656,6 +1656,12 @@ mod tests {
         // A re-read of the saved plan keeps it too.
         let reread = plan_json::reparse(&plan, Some("shop")).unwrap();
         assert_eq!(reread.props.get(culprit_core::insights::LIMIT_ROWS).map(String::as_str), Some("50"));
+        // A LIMIT written inside the sample's literal is the application's data, not the statement's shape: it never
+        // reaches the plan, which redaction would otherwise leave alone.
+        let note = "SELECT id FROM orders WHERE promo_code = 'LIMIT 4242' LIMIT ?";
+        let plan = sample_plan(json, note, "shop", digest).unwrap();
+        assert!(!plan.props.contains_key(culprit_core::insights::LIMIT_ROWS), "{:?}", plan.props);
+        assert!(!serde_json::to_string(&plan).unwrap().contains("4242"));
     }
 
     #[test]

@@ -1037,27 +1037,62 @@ fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// What follows a statement's last LIMIT (`50`, `?`, `10, 50`, `50 OFFSET 10`), upper-cased; `None` without one.
-fn limit_clause(text: &str) -> Option<String> {
-    let upper = text.to_ascii_uppercase();
-    let at = upper.rmatch_indices("LIMIT").map(|(at, _)| at).find(|at| {
-        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '`';
-        !upper[..*at].chars().next_back().is_some_and(ident) && !upper[at + 5..].chars().next().is_some_and(ident)
-    })?;
-    Some(upper[at + 5..].trim().to_string())
+/// The most rows a LIMIT count is read as: past it the number isn't a page size, and a count taken from a real
+/// statement is kept out of redaction only as a statement's shape.
+const MAX_LIMIT_ROWS: u64 = 1_000_000_000;
+
+/// The text right after the statement's own LIMIT: the last one outside strings, comments and parentheses (a
+/// subquery's LIMIT isn't the statement's), the same in every reading of the text (see [`readings`]). `None` without
+/// one, or for text the lexer can't read.
+fn after_limit(text: &str, engine: Engine) -> Option<&str> {
+    let mut at = None;
+    for tokens in readings(text, engine).ok()? {
+        let mut depth = 0i32;
+        let mut last = None;
+        for t in &tokens {
+            match t {
+                Token::Punct('(') => depth += 1,
+                Token::Punct(')') => depth -= 1,
+                Token::Word(w) if depth == 0 && w.eq_ignore_ascii_case("limit") => {
+                    last = Some(w.as_ptr() as usize - text.as_ptr() as usize + w.len());
+                }
+                _ => {}
+            }
+        }
+        if at.is_some_and(|a| Some(a) != last) {
+            return None;
+        }
+        at = last;
+    }
+    text.get(at?..)
 }
 
-/// Whether the statement has a LIMIT, whatever its count.
-pub fn has_limit(text: &str) -> bool {
-    limit_clause(text).is_some()
+/// Whether the statement has a LIMIT of its own, whatever its count.
+pub fn has_limit(text: &str, engine: Engine) -> bool {
+    after_limit(text, engine).is_some()
 }
 
-/// The row count a statement's last LIMIT asks for, where its text writes it (`LIMIT 50`, MySQL's `LIMIT 10, 50`,
-/// `LIMIT 50 OFFSET 10`); `None` without a LIMIT, or for a placeholder (`LIMIT ?`, `LIMIT $1`).
-pub fn limit_count(text: &str) -> Option<f64> {
-    let clause = limit_clause(text)?;
-    let count = clause.rsplit_once(',').map_or(clause.as_str(), |(_, n)| n).split_whitespace().next()?;
-    count.parse::<f64>().ok().filter(|n| *n > 0.0)
+/// The row count the statement's own LIMIT asks for, where its text writes it right after the keyword (`LIMIT 50`,
+/// MySQL's `LIMIT 10, 50`, `LIMIT 50 OFFSET 10`); `None` without a LIMIT, for a placeholder (`LIMIT ?`, `LIMIT $1`), for
+/// anything else between the keyword and the count, and for a count past [`MAX_LIMIT_ROWS`].
+pub fn limit_count(text: &str, engine: Engine) -> Option<f64> {
+    let rest = after_limit(text, engine)?;
+    let number = |s: &str| -> Option<(u64, usize)> {
+        let s = s.trim_start_matches([' ', '\t', '\n', '\r']);
+        let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+        let n = s.get(..digits)?.parse::<u64>().ok()?;
+        Some((n, s.len() - digits))
+    };
+    let (first, left) = number(rest)?;
+    let after_first = &rest[rest.len() - left..];
+    // `LIMIT offset, count`: the count is the second number.
+    let (count, left) = match after_first.trim_start().strip_prefix(',') {
+        Some(second) => number(second)?,
+        None => (first, left),
+    };
+    let tail = &rest[rest.len() - left..];
+    let ends = tail.chars().next().is_none_or(|c| c.is_ascii_whitespace() || matches!(c, ';' | ')'));
+    (ends && (1..=MAX_LIMIT_ROWS).contains(&count)).then_some(count as f64)
 }
 
 #[cfg(test)]
@@ -1065,13 +1100,22 @@ mod tests {
 
     #[test]
     fn a_limit_says_its_count_where_the_text_writes_it() {
-        assert_eq!(limit_count("SELECT * FROM orders WHERE promo_code = 'X' LIMIT 50"), Some(50.0));
-        assert_eq!(limit_count("SELECT * FROM orders LIMIT 10, 50"), Some(50.0));
-        assert_eq!(limit_count("select * from orders limit 50 offset 10"), Some(50.0));
-        assert_eq!(limit_count("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?"), None);
-        assert!(has_limit("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?"));
-        assert_eq!(limit_count("SELECT rate_limit FROM plans"), None);
-        assert!(!has_limit("SELECT rate_limit, limit_x FROM plans"));
+        let m = Engine::Mysql;
+        assert_eq!(limit_count("SELECT * FROM orders WHERE promo_code = 'X' LIMIT 50", m), Some(50.0));
+        assert_eq!(limit_count("SELECT * FROM orders LIMIT 10, 50", m), Some(50.0));
+        assert_eq!(limit_count("select * from orders limit 50 offset 10", Engine::Postgres), Some(50.0));
+        assert_eq!(limit_count("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?", m), None);
+        assert!(has_limit("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?", m));
+        assert_eq!(limit_count("SELECT rate_limit FROM plans", m), None);
+        assert!(!has_limit("SELECT rate_limit, limit_x FROM plans", m));
+        // A LIMIT inside a string or a comment, or a subquery's, isn't the statement's: a number written there is data.
+        assert_eq!(limit_count("SELECT * FROM notes WHERE body = 'LIMIT 4242'", m), None);
+        assert_eq!(limit_count("SELECT * FROM notes LIMIT 5 /* LIMIT 4242 */", m), Some(5.0));
+        assert_eq!(limit_count("SELECT * FROM notes LIMIT 5 -- x, 4242", m), Some(5.0));
+        assert_eq!(limit_count("SELECT * FROM t WHERE id IN (SELECT id FROM u LIMIT 7)", m), None);
+        assert_eq!(limit_count("SELECT * FROM notes LIMIT /* 4242 */ 5", m), None, "only a count right after it");
+        assert_eq!(limit_count("SELECT * FROM notes LIMIT 99999999999", m), None, "not a page size");
+        assert_eq!(limit_count("SELECT * FROM notes LIMIT 'x", m), None, "text the lexer can't read");
     }
 
     #[test]

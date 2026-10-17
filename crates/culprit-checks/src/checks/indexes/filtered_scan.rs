@@ -131,7 +131,9 @@ pub(super) fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows:
     // Under a LIMIT a run returns at most that many of the rows it keeps. Well under it on average, at most one run in
     // ten can have stopped there: the rest returned every row they kept, and are judged as without one. A LIMIT whose
     // count isn't known (the digest's `LIMIT ?`) leaves the runs unable to say.
-    if culprit_core::sql::has_limit(&q.text) && limit_rows(q).is_none_or(|limit| returned > limit * WELL_UNDER_LIMIT) {
+    if culprit_core::sql::has_limit(&q.text, Engine::Mysql)
+        && limit_rows(q).is_none_or(|limit| returned > limit * WELL_UNDER_LIMIT)
+    {
         return None;
     }
     (examined >= table_rows * 0.5).then_some(returned <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
@@ -144,7 +146,7 @@ const WELL_UNDER_LIMIT: f64 = 0.1;
 /// the engine keeps the text with a placeholder (MySQL's digest `LIMIT ?`), the count the provider read from the sample
 /// it planned ([`culprit_core::insights::LIMIT_ROWS`]).
 fn limit_rows(q: &QueryStat) -> Option<f64> {
-    culprit_core::sql::limit_count(&q.text)
+    culprit_core::sql::limit_count(&q.text, Engine::Mysql)
         .or_else(|| q.plan.as_ref()?.props.get(culprit_core::insights::LIMIT_ROWS)?.trim().parse::<f64>().ok())
         .filter(|n| *n > 0.0)
 }

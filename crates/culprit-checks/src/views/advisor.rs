@@ -835,7 +835,8 @@ pub(crate) fn uses_foreign_key(engine: Engine, text: &str, fk: &culprit_core::Fo
             return false;
         }
         let after = plain[at + 1..].trim_start();
-        let left = &before[before.rfind(|c: char| !name(c)).map_or(0, |p| p + 1)..];
+        // Past the whole character that ends the name: a byte past its start can land inside a multi-byte one.
+        let left = &before[before.char_indices().rev().find(|(_, c)| !name(*c)).map_or(0, |(p, c)| p + c.len_utf8())..];
         let right = &after[..after.find(|c: char| !name(c)).unwrap_or(after.len())];
         match (table_of(left), table_of(right)) {
             (Some(a), Some(b)) => (a == parent && b == child) || (a == child && b == parent),
@@ -872,6 +873,8 @@ mod tests {
         };
         let uses = |text: &str| super::uses_foreign_key(culprit_core::Engine::Postgres, text, &fk);
         assert!(uses("SELECT * FROM order_items WHERE order_id = $1"));
+        // A character of more than one byte just before a comparison (a statement's text is anyone's) reads, not panics.
+        assert!(!uses("SELECT * FROM orders o, order_items i WHERE «i.x»= o.id AND note\u{a0}= 'é'"));
         assert!(uses("DELETE FROM orders o USING order_items i WHERE i.x = o.id"));
         assert!(uses("DELETE FROM orders WHERE id = $1"));
         assert!(!uses("SELECT * FROM order_items WHERE product_id = $1"));
