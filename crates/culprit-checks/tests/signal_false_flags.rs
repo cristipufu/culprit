@@ -209,7 +209,7 @@ fn churn(engine: &str, rate: f64, setup: impl FnOnce(&mut Snapshot)) -> Report {
 #[test]
 fn server_wide_connection_counts_say_the_server_and_a_pools_are_not_graded() {
     let r = churn("mssql-demo", 40.0, |_| {});
-    assert_eq!(of(&r, "connection-churn")[0].title, "The server accepts 40 new connections a second: use a pool");
+    assert_eq!(of(&r, "connection-churn")[0].title, "The whole server recorded 40 new connections a second on average");
     // The instance's count is shared: however high, it isn't graded on this database.
     let r = churn("mssql-demo", 400.0, |_| {});
     assert_eq!(of(&r, "connection-churn")[0].severity, Severity::Low);
@@ -410,7 +410,7 @@ fn storage_latency_is_weighted_per_kind_and_tempdbs_log_holds_no_commit() {
     ];
     let r = analyze(s.clone());
     let titles: Vec<&str> = of(&r, "slow-storage").iter().map(|f| f.title.as_str()).collect();
-    assert_eq!(titles, vec!["Writes to shop's log average 12 ms: every commit waits for them"]);
+    assert_eq!(titles, vec!["Recorded log writes to shop's log averaged 12 ms"]);
     // Large reads on their own: bulk, Low, and said.
     pressure(&mut s).files =
         vec![file("shop_archive", "shop", FileKind::Data, (2_000.0, 600_000.0, 2_000.0 * MB), (0.0, 0.0))];
@@ -553,6 +553,14 @@ fn an_explicit_recompile_hint_is_the_planning_time_fix() {
     // The saved demo's query 249: 300 compiles / 300 runs and 6.9 seconds spent compiling.
     let mut s = demo("mssql-demo");
     let id = "planning-time:249";
+    // Only an entry whose recorded compiles all fall within the period can support this comparison.
+    let c = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "249").unwrap().costs.as_mut().unwrap();
+    c.compile_history = Some(culprit_core::signals::CompileHistory {
+        count: 300.0,
+        total_ms: 6900.0,
+        within_window: true,
+        ..Default::default()
+    });
     let r = analyze(s.clone());
     let f = r.findings.iter().find(|f| f.id == id).expect("demo's explicit RECOMPILE");
     assert!(f.summary.contains("hint explicitly asks SQL Server for a new plan"), "{}", f.summary);

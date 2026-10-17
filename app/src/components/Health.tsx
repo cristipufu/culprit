@@ -2,9 +2,12 @@ import { useState, type MouseEvent } from "react";
 import type { Engine } from "../gen/Engine";
 import type { OpenTransaction } from "../gen/OpenTransaction";
 import type { Pressure } from "../gen/Pressure";
+import type { Report } from "../gen/Report";
+import type { SignalStatus } from "../gen/SignalStatus";
 import type { ResourceSample } from "../gen/ResourceSample";
 import type { Signal } from "../gen/Signal";
 import { duration, percent } from "../lib/format";
+import { findingStatus, worstFinding } from "../lib/health";
 import { SIGNAL_SCOPE, signalValue } from "../lib/waits";
 import { Replication, StorageLatency } from "./BeyondTime";
 
@@ -15,7 +18,7 @@ export function SignalTile({ signal }: { signal: Signal }) {
   return (
     <div className={`signal-tile ${signal.status}`}>
       <div className="signal-head">
-        <span className="signal-label">{signal.label}</span>
+        <span className="signal-label" title={signal.label}>{signal.label}</span>
         {signal.status !== "info" && <i className={`sig-dot ${signal.status}`} title={signal.status === "good" ? "Healthy" : signal.status === "watch" ? "Worth a look" : "Needs attention"} />}
       </div>
       <div className="signal-value">{signalValue(signal)}</div>
@@ -27,15 +30,14 @@ export function SignalTile({ signal }: { signal: Signal }) {
   );
 }
 
-function OpenTransactionCard({ t }: { t: OpenTransaction }) {
+function OpenTransactionCard({ t, status }: { t: OpenTransaction; status: SignalStatus }) {
   // A replication slot has no start time: how far it holds the horizon back is what tells.
   const slot = t.holder === "replication-slot";
   const behind = t.xid_age ?? 0;
-  const long = slot ? behind >= 1_000_000 : t.seconds >= 1800;
-  const watch = slot ? behind >= 100_000 : t.seconds >= 600;
+  const long = status === "bad" || status === "watch";
   return (
     <div className={`open-txn ${long ? "long" : ""}`}>
-      <i className={`sig-dot ${long ? "bad" : watch ? "watch" : "good"}`} />
+      <i className={`sig-dot ${status}`} />
       <div>
         <div className="open-txn-title">
           {slot ? (
@@ -53,9 +55,9 @@ function OpenTransactionCard({ t }: { t: OpenTransaction }) {
         </div>
         <div className="open-txn-meta">
           {t.program ? `From ${t.program}. ` : ""}
-          {t.held_bytes ? `The version store holds ${Math.round(t.held_bytes / 1024 / 1024)} MB for it. ` : ""}
+          {t.held_bytes ? `The database's version store held ${Math.round(t.held_bytes / 1024 / 1024)} MB. ` : ""}
           {t.held_versions ? `InnoDB keeps ${Math.round(t.held_versions).toLocaleString()} old row versions for it. ` : ""}
-          {long ? "Long open transactions keep old row versions alive and hold locks; see the finding for the fix." : "Short-lived: nothing held back."}
+          {long ? "See the held-cleanup finding for the measured impact and next step." : "Recorded when the scan ran."}
         </div>
       </div>
     </div>
@@ -65,11 +67,13 @@ function OpenTransactionCard({ t }: { t: OpenTransaction }) {
 export function HealthTab({
   pressure,
   resources,
+  report,
   engineLabel,
   engine,
 }: {
   pressure: Pressure | null;
   resources: ResourceSample[];
+  report: Report;
   engineLabel: string;
   engine?: Engine;
 }) {
@@ -92,20 +96,29 @@ export function HealthTab({
       {signals.length > 0 && (
         <>
           <div className="health-intro">
-            Cheap counters read with the scan. {uptime != null ? `“Since start” covers ${duration(uptime * 3_600_000)} since ${engineLabel} started or its statistics were reset. ` : ""}
-            Each tile says what healthy looks like.
+            Measurements use the selected period where their source records history. Current queues are measured when the scan runs; cumulative totals keep their own period. {uptime != null ? `“Since start” covers ${duration(uptime * 3_600_000)} since ${engineLabel} started or its statistics were reset. ` : ""}
+            Each tile states its coverage; only supported health warnings are colored.
           </div>
           <div className="signal-grid">
-            {signals.map((s) => (
-              <SignalTile key={s.key} signal={s} />
-            ))}
+            {signals.filter((s) => s.scope !== "since-startup" && s.scope !== "query-history").map((s) => <SignalTile key={s.key} signal={s} />)}
           </div>
+          {signals.some((s) => s.scope === "since-startup" || s.scope === "query-history") && (
+            <details className="historical-signals">
+              <summary>Historical counters · their totals cannot be isolated to the selected period</summary>
+              <div className="signal-grid">
+                {signals.filter((s) => s.scope === "since-startup" || s.scope === "query-history").map((s) => <SignalTile key={s.key} signal={s} />)}
+              </div>
+            </details>
+          )}
         </>
       )}
-      {pressure?.oldest_transaction && <OpenTransactionCard t={pressure.oldest_transaction} />}
-      {engine && <StorageLatency files={pressure?.files ?? []} engine={engine} />}
-      <Replication replicas={pressure?.replicas ?? []} />
-      {resources.length >= 4 && <ResourceCharts samples={resources} />}
+      {(report.snapshot.server.platform === "azure-sql-database" || report.snapshot.server.cloud === "Azure SQL Database") && !signals.some((s) => s.key === "cpu-use") && (
+        <p className="muted">CPU utilization was not measured for the selected period in this scan.</p>
+      )}
+      {pressure?.oldest_transaction && <OpenTransactionCard t={pressure.oldest_transaction} status={findingStatus(worstFinding(report, (f) => f.check === "held-cleanup"))} />}
+      {engine && <StorageLatency files={pressure?.files ?? []} engine={engine} report={report} />}
+      <Replication replicas={pressure?.replicas ?? []} report={report} />
+      {resources.length >= 4 && <ResourceCharts samples={resources} signals={signals} />}
     </div>
   );
 }
@@ -118,35 +131,35 @@ const LIMIT = 95;
 
 type Pick = (s: ResourceSample) => number | null;
 
-const DIMENSIONS: { key: string; label: string; pick: Pick; effect: string }[] = [
-  { key: "log", label: "Log writes", pick: (s) => s.log_write_pct, effect: "writes are throttled" },
-  { key: "cpu", label: "CPU", pick: (s) => s.cpu_pct, effect: "queries queue for a processor" },
-  { key: "io", label: "Data reads", pick: (s) => s.data_io_pct, effect: "reads from disk are throttled" },
-  { key: "workers", label: "Worker threads", pick: (s) => s.workers_pct, effect: "new requests fail" },
+const DIMENSIONS: { key: string; label: string; pick: Pick }[] = [
+  { key: "log-write-use", label: "Log writes", pick: (s) => s.log_write_pct },
+  { key: "cpu-use", label: "CPU", pick: (s) => s.cpu_pct },
+  { key: "data-io", label: "Data reads", pick: (s) => s.data_io_pct },
+  { key: "workers-use", label: "Worker threads", pick: (s) => s.workers_pct },
 ];
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { timeZone: "UTC", hour: "2-digit", minute: "2-digit", hour12: false });
 
-function ResourceCharts({ samples }: { samples: ResourceSample[] }) {
+function ResourceCharts({ samples, signals }: { samples: ResourceSample[]; signals: Signal[] }) {
   const times = samples.map((s) => Date.parse(s.at));
   return (
     <section className="resource-charts">
       <div className="resource-head">
         <h4>Against the tier's limits</h4>
         <span className="muted">
-          {timeFmt.format(times[0]!)}–{timeFmt.format(times[times.length - 1]!)} UTC · 15-second samples · the dashed line is where Azure starts to throttle
+          {timeFmt.format(times[0]!)}–{timeFmt.format(times[times.length - 1]!)} UTC · 15-second samples · available resource history · the dashed line marks 95% of this database's limit
         </span>
       </div>
       <div className="resource-grid">
         {DIMENSIONS.map((d) => (
-          <ResourceChart key={d.key} label={d.label} effect={d.effect} times={times} values={samples.map(d.pick)} />
+          <ResourceChart key={d.key} label={d.label} status={signals.find((s) => s.key === d.key)?.status ?? "info"} times={times} values={samples.map(d.pick)} />
         ))}
       </div>
     </section>
   );
 }
 
-function ResourceChart({ label, effect, times, values }: { label: string; effect: string; times: number[]; values: (number | null)[] }) {
+function ResourceChart({ label, status, times, values }: { label: string; status: SignalStatus; times: number[]; values: (number | null)[] }) {
   const [hover, setHover] = useState<number | null>(null);
   const known = values.filter((v): v is number => v != null);
   if (known.length < 4) return null;
@@ -161,7 +174,6 @@ function ResourceChart({ label, effect, times, values }: { label: string; effect
   const peakIndex = values.reduce<number>((best, v, i) => (v != null && v > (values[best] ?? -1) ? i : best), 0);
   const peak = values[peakIndex] ?? 0;
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => from + f * (to - from));
-  const status = atLimit >= 0.3 ? "bad" : atLimit >= 0.1 ? "watch" : "good";
   const onMove = (e: MouseEvent<HTMLDivElement>) => {
     const box = e.currentTarget.getBoundingClientRect();
     const at = from + ((e.clientX - box.left) / box.width) * (to - from);
@@ -181,10 +193,10 @@ function ResourceChart({ label, effect, times, values }: { label: string; effect
         <span className="resource-sentence">
           {atLimit >= 0.01 ? (
             <>
-              At the limit <b>{percent(atLimit)}</b> of the time: {effect}
+              At or above 95% in <b>{percent(atLimit)}</b> of recorded samples
             </>
           ) : (
-            <>Never at the limit · peak {Math.round(peak)}%</>
+            <>Recorded peak {Math.round(peak)}%</>
           )}
         </span>
       </div>
@@ -195,7 +207,7 @@ function ResourceChart({ label, effect, times, values }: { label: string; effect
           <span style={{ top: "100%" }}>0</span>
         </div>
         <div className="resource-canvas">
-          <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" role="img" aria-label={`${label}: at the limit ${percent(atLimit)} of the time, peak ${Math.round(peak)}%`}>
+          <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" role="img" aria-label={`${label}: at or above 95% in ${percent(atLimit)} of recorded samples, peak ${Math.round(peak)}%`}>
             <line className="grid" x1="0" x2={VW} y1={y(50)} y2={y(50)} />
             <line className="grid" x1="0" x2={VW} y1={y(100)} y2={y(100)} />
             <line className="limit" x1="0" x2={VW} y1={y(LIMIT)} y2={y(LIMIT)} />
@@ -204,7 +216,7 @@ function ResourceChart({ label, effect, times, values }: { label: string; effect
             {hover != null && <line className="cursor" x1={x(times[hover]!)} x2={x(times[hover]!)} y1="0" y2={VH} vectorEffect="non-scaling-stroke" />}
           </svg>
           <span className="peak" style={{ left: `${(x(times[peakIndex]!) / VW) * 100}%`, top: `${(y(peak) / VH) * 100}%` }} title={`Peak ${Math.round(peak)}% at ${timeFmt.format(times[peakIndex]!)} UTC`} />
-          <span className="limit-label">limit</span>
+          <span className="limit-label">95%</span>
           {hover != null && hv != null && (
             <span className="readout" style={{ left: `${(x(times[hover]!) / VW) * 100}%` }}>
               <b>{Math.round(hv)}%</b> {timeFmt.format(times[hover]!)}

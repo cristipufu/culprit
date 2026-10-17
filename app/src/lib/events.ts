@@ -92,21 +92,22 @@ export type CloudState = { status: "loading" } | { status: "ready"; signals: Clo
 
 /** What the cloud measured over the last `hours`; `none` when the connection isn't a cloud database. */
 export function useCloud(connection: string, hours: number, refresh: number): CloudState {
-  const [state, setState] = useState<CloudState>({ status: "loading" });
+  const request = JSON.stringify([connection, hours]);
+  const [state, setState] = useState<{ request: string; value: CloudState }>({ request, value: { status: "loading" } });
   useEffect(() => {
     let cancelled = false;
-    setState((s) => (s.status === "ready" ? s : { status: "loading" }));
+    setState((s) => (s.request === request && s.value.status === "ready" ? s : { request, value: { status: "loading" } }));
     api()
       .then((client) => client.cloud(connection, eventsRequest({ hours, refresh: refresh > 0 })))
-      .then((signals) => !cancelled && setState({ status: "ready", signals }))
+      .then((signals) => !cancelled && setState({ request, value: { status: "ready", signals } }))
       .catch((e) => {
         if (cancelled) return;
         const error = errorMessage(e);
-        setState(error.code === "unsupported" ? { status: "none" } : { status: "error", error });
+        setState({ request, value: error.code === "unsupported" ? { status: "none" } : { status: "error", error } });
       });
     return () => {
       cancelled = true;
     };
-  }, [connection, hours, refresh]);
-  return state;
+  }, [connection, hours, refresh, request]);
+  return state.request === request ? state.value : { status: "loading" };
 }

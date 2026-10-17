@@ -146,10 +146,10 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             // Only reads come in bulk sizes that slow each one down; a log is judged on its commits.
             let bulk = !write && g.bulk();
             f.title = match (write, bulk) {
-                (true, _) => format!("Writes to {label} average {}: every commit waits for them", format::duration(avg)),
-                (false, false) => format!("Reads from {label} average {}: storage is slow", format::duration(avg)),
+                (true, _) => format!("Recorded log writes to {label} averaged {}", format::duration(avg)),
+                (false, false) => format!("Recorded reads from {label} averaged {}", format::duration(avg)),
                 (false, true) => format!(
-                    "Reads from {label} average {}, mostly large reads of {}",
+                    "Recorded reads from {label} averaged {}, mostly large reads of {}",
                     format::duration(avg),
                     format::bytes(g.avg_bytes().unwrap_or(0.0))
                 ),
@@ -161,7 +161,7 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             };
             // The label starts with a database name: never capitalize it, lead with the operation instead.
             f.summary = format!(
-                "{} {} took {} on average across {} {} {}. Healthy SSD storage answers in a few milliseconds{}; this slows every query that misses memory{}.{}",
+                "{} {} took {} on average across {} {} {}. Healthy SSD storage answers in a few milliseconds{}; when it happens during a query it can delay reads that miss memory{}. This historical average does not establish a delay now.{}",
                 if write { "Writes to" } else { "Reads from" },
                 label,
                 format::duration(avg),
@@ -178,12 +178,14 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                     format::bytes(g.avg_bytes().unwrap_or(0.0))
                 ));
             }
-            f.severity = match (write, avg) {
-                (false, _) if bulk => Severity::Low,
-                (true, a) if a >= 30.0 => Severity::High,
-                (false, a) if a >= 50.0 => Severity::High,
-                _ => Severity::Medium,
-            };
+            let shared = snapshot.server.engine != Engine::Mssql
+                || g.database.as_deref().is_none_or(|db| !db.eq_ignore_ascii_case(&snapshot.server.database));
+            let amount = counter_rate_per_day(snapshot, g.ms);
+            // Historical/shared averages do not establish a current incident in this database. A slow read also
+            // needs an amount behind it: a thousand old reads on a mostly idle database need no urgent warning.
+            f.severity = if bulk || shared || amount.is_none_or(|ms| ms < MEDIUM_MS_A_DAY) {
+                Severity::Low
+            } else { Severity::Medium };
             severity_score(&mut f);
             f.impact.label = format!("{} per {}", format::duration(avg), if write { "write" } else { "read" });
             f.confidence = Confidence::Medium;
@@ -205,6 +207,9 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 "Re-scan after the change: average read time should be under 10 ms.".into()
             }];
             f.caveats.push("Averages since startup: a slow hour long ago still counts.".into());
+            if shared {
+                f.caveats.push("These file statistics cover shared storage or the whole server; they do not establish that this database's queries are slow.".into());
+            }
             f
         })
         .collect()

@@ -1650,7 +1650,10 @@ fn plan_cache_carries_compiles(_: &Snapshot, findings: &mut Vec<Finding>) {
     let Some(cache) = findings.iter().position(|f| f.id == "query-family:plan-cache") else { return };
     let absorbed = findings[compiles].clone();
     let f = &mut findings[cache];
-    f.summary.push_str(&format!(" The CPU side of the same cause: {}.", absorbed.title.trim_end_matches('.')));
+    f.summary.push_str(&format!(
+        " Instance-wide compilation context (not attributed to this database): {}.",
+        absorbed.title.trim_end_matches('.')
+    ));
     f.metrics.extend(absorbed.metrics.into_iter().filter(|m| m.label.starts_with("Compiles")));
     f.severity = f.severity.max(absorbed.severity);
     f.impact.score = f.impact.score.max(absorbed.impact.score);

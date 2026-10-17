@@ -694,72 +694,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [
-        "Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate."
-      ],
-      "check": "planning-time",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Test removing OPTION (RECOMPILE) from this statement so SQL Server can reuse a plan. Compare representative parameter values, including those that need different plans: keep the hint if the extra runtime from reuse costs more than the compiles it saves. Forced parameterization does not override this hint."
-      },
-      "id": "planning-time:249",
-      "impact": {
-        "db_time_share": 0.040328933964958874,
-        "label": "34% planning",
-        "score": 20.082065124124778,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T15:55:21Z",
-      "metrics": [
-        {
-          "label": "Planning share",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.33653489513748336
-        },
-        {
-          "label": "Per plan",
-          "text": null,
-          "unit": "ms",
-          "value": 22.976689999999998
-        },
-        {
-          "label": "Plans",
-          "text": null,
-          "unit": "count",
-          "value": 300.0
-        },
-        {
-          "label": "Runs",
-          "text": null,
-          "unit": "count",
-          "value": 300.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "249",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "249"
-      },
-      "summary": "Each compile takes 23 ms and the statement then runs for 45 ms: 34% of its time goes to compiling, 6.9 s in the last 5 hours (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused. Its OPTION (RECOMPILE) hint explicitly asks SQL Server for a new plan on every run.",
-      "title": "Compiling takes 34% of the time of a read from orders",
-      "verify": [
-        "Re-scan: planning should be a small part of its time.",
-        "Compare compiles per run and planning time per run before and after, and check that time per run stays acceptable across representative parameter values. The rewritten statement has a new entry."
-      ]
-    },
-    {
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -916,61 +850,9 @@
         "name": "shop.customers"
       },
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
-      "title": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+      "title": "Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)",
       "verify": [
         "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
-        "Live › Deadlocks shows the graph of each one, with both statements."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "deadlocks",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking."
-      },
-      "id": "deadlocks:opposite-order:shop.customers+shop.orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "1 deadlock",
-        "score": 9.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T13:58:59Z",
-      "metrics": [
-        {
-          "label": "Deadlocks",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
-        },
-        {
-          "label": "Pattern",
-          "text": "opposite access order",
-          "unit": "text",
-          "value": 0.0
-        },
-        {
-          "label": "Rolled back",
-          "text": "session 75 (SQLCMD)",
-          "unit": "text",
-          "value": 0.0
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.customers"
-      },
-      "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
-      "title": "Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)",
-      "verify": [
-        "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
@@ -1689,106 +1571,6 @@
       "counted": null,
       "counted_since": null,
       "deadlocks": [
-        {
-          "at": "2026-10-11T13:58:59Z",
-          "explanation": "Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
-          "fixes": [
-            {
-              "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
-              "finding": null,
-              "sql": null,
-              "title": "Touch tables and rows in the same order everywhere"
-            },
-            {
-              "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
-              "finding": null,
-              "sql": null,
-              "title": "Keep transactions short"
-            },
-            {
-              "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
-              "finding": null,
-              "sql": null,
-              "title": "Retry the victim"
-            }
-          ],
-          "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
-          "id": "8e8d0546690aef93",
-          "objects": [
-            "shop.customers",
-            "shop.orders"
-          ],
-          "pattern": "opposite-order",
-          "processes": [
-            {
-              "application": "SQLCMD",
-              "database": "culprit_demo",
-              "host": "web-1",
-              "id": "processa14d1e4e8",
-              "isolation": "read committed",
-              "log_used": 240.0,
-              "login": "sa",
-              "procedure": null,
-              "session": "75",
-              "statement": "BEGIN TRAN; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.orders SET total = total + 1 WHERE id = 2; ROLLBACK;",
-              "victim": true,
-              "wait_mode": "X"
-            },
-            {
-              "application": "SQLCMD",
-              "database": "culprit_demo",
-              "host": "web-1",
-              "id": "processa007b4ca8",
-              "isolation": "read committed",
-              "log_used": 244.0,
-              "login": "sa",
-              "procedure": null,
-              "session": "73",
-              "statement": "BEGIN TRAN; UPDATE shop.orders SET total = total + 1 WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; ROLLBACK;",
-              "victim": false,
-              "wait_mode": "X"
-            }
-          ],
-          "resources": [
-            {
-              "holders": [
-                {
-                  "mode": "X",
-                  "process": "processa007b4ca8"
-                }
-              ],
-              "id": "locka15a63500",
-              "index": "pk_orders",
-              "kind": "keylock",
-              "object": "shop.orders",
-              "waiters": [
-                {
-                  "mode": "X",
-                  "process": "processa14d1e4e8"
-                }
-              ]
-            },
-            {
-              "holders": [
-                {
-                  "mode": "X",
-                  "process": "processa14d1e4e8"
-                }
-              ],
-              "id": "locka08802980",
-              "index": "pk_customers",
-              "kind": "keylock",
-              "object": "shop.customers",
-              "waiters": [
-                {
-                  "mode": "X",
-                  "process": "processa007b4ca8"
-                }
-              ]
-            }
-          ],
-          "source": "system_health"
-        },
         {
           "at": "2026-10-11T11:42:17Z",
           "explanation": "The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
@@ -2972,32 +2754,32 @@
         {
           "healthy": null,
           "key": "batch-requests",
-          "label": "Batch requests",
+          "label": "Batch requests (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-second",
           "value": 0.1928606841844323
         },
         {
-          "healthy": "too few batches to judge; under 10% is healthy under load",
+          "healthy": "New plan compilations compared with batches across the server. Compilation is normal; the ratio alone does not establish pressure in this database.",
           "key": "compiles-per-batch",
-          "label": "Plans compiled",
+          "label": "Plans compiled (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "percent",
           "value": 45.88688946015424
         },
         {
-          "healthy": "how long a page stays in memory once read: five minutes or more is healthy; under a minute means pages leave memory soon after they're read, often because of large scans",
+          "healthy": "A server cache counter at the scan's instant. There is no universal healthy number of seconds; cache size, workload and measured I/O matter.",
           "key": "page-life",
-          "label": "Page life expectancy",
+          "label": "Page life expectancy (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "seconds",
           "value": 4032.0
         },
         {
-          "healthy": "0 is healthy",
+          "healthy": "No requests in this queue when the scan ran. Historical waits are reported separately.",
           "key": "memory-grants-pending",
           "label": "Waiting for memory",
           "scope": "now",
@@ -3006,47 +2788,47 @@
           "value": 0.0
         },
         {
-          "healthy": "under 20% of waiting is healthy; more means queries queue for a processor",
+          "healthy": "The share of recorded waiting spent ready to run, before a worker was scheduled. This is not CPU utilization and alone does not establish CPU pressure.",
           "key": "signal-wait",
-          "label": "Waiting for CPU",
+          "label": "Scheduling share of recorded waits (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 1.7635830724973312
         },
         {
-          "healthy": "under a second an hour is healthy",
+          "healthy": "Average worker wait time over the counters' history; this does not establish a worker shortage now. The worker finding checks the amount and the database's own evidence.",
           "key": "threadpool-waits",
-          "label": "Waiting for workers, per hour",
+          "label": "Waiting for workers, per hour (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "milliseconds",
           "value": 972.7317798710956
         },
         {
           "healthy": "0 is healthy",
           "key": "threadpool-waiting",
-          "label": "Tasks without a worker",
+          "label": "Tasks without a worker (whole instance)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "count",
           "value": 0.0
         },
         {
-          "healthy": "small, and shrinking when transactions end",
+          "healthy": "Space occupied by row versions now. Keeping versions is normal; the amount alone does not establish a problem. Long transactions and storage pressure need their own evidence.",
           "key": "version-store",
           "label": "Version store",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "bytes",
           "value": 0.0
         },
         {
-          "healthy": "under 5 a second: pooled connections log in once and are reused",
+          "healthy": "The historical rate of new connections. A busy application can use a pool and still open connections; the rate alone does not prove pooling is missing.",
           "key": "new-connections",
-          "label": "New connections",
+          "label": "New connections (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "per-second",
           "value": 0.04958528669311215
         }
@@ -3960,14 +3742,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 221.93399999999997,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 127.0,
             "top_error": null,
             "warnings": null
@@ -4235,14 +4018,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 196.353,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 24.0,
             "top_error": null,
             "warnings": null
@@ -4489,14 +4273,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 128.66299999999998,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 233.0,
             "top_error": null,
             "warnings": null
@@ -4765,14 +4550,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 79.255,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 24.0,
             "top_error": null,
             "warnings": null
@@ -5037,14 +4823,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 25.719,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 224.0,
             "top_error": null,
             "warnings": null
@@ -5218,14 +5005,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 381.95900000000006,
-            "plans": 3.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
@@ -5771,14 +5559,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": 420.0,
             "log_full_pages": null,
             "log_share": 1.43465491193323e-06,
-            "plan_ms": 2.466,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
@@ -6064,14 +5853,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 1.225,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 21.0,
             "top_error": null,
             "warnings": null
@@ -6209,14 +5999,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 1.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": 732.0,
             "log_full_pages": null,
             "log_share": 2.5003985607979153e-06,
-            "plan_ms": 2.173,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
@@ -6344,14 +6135,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 50.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 1.258,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
@@ -6409,14 +6201,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 6893.007,
-            "plans": 300.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 11.0,
             "top_error": null,
             "warnings": null
@@ -7190,14 +6983,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": 242946788.0,
             "log_full_pages": null,
             "log_share": 0.829868577958574,
-            "plan_ms": 1.096,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 9.0,
             "top_error": null,
             "warnings": null
@@ -7410,14 +7204,15 @@
           "costs": {
             "aborted": 6.0,
             "aborted_mean_ms": 15015.279166666667,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": 1032.0,
             "log_full_pages": null,
             "log_share": 3.525152069321651e-06,
-            "plan_ms": 3.463,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": 15.0,
             "top_error": null,
             "warnings": null
@@ -7829,14 +7624,15 @@
           "costs": {
             "aborted": 0.0,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
             "log_bytes": null,
             "log_full_pages": null,
             "log_share": null,
-            "plan_ms": 0.979,
-            "plans": 1.0,
+            "plan_ms": null,
+            "plans": null,
             "row_bytes": null,
             "top_error": null,
             "warnings": null
@@ -7986,7 +7782,7 @@
       },
       {
         "category": "queries",
-        "count": 12
+        "count": 10
       },
       {
         "category": "maintenance",
@@ -8007,13 +7803,13 @@
         "severity": "medium"
       },
       {
-        "count": 14,
+        "count": 12,
         "severity": "low"
       }
     ],
-    "headline": "25 opportunities. The top ones touch 83% of database time over the last 5 hours.",
+    "headline": "23 opportunities. The top ones touch 83% of database time over the last 5 hours.",
     "no_workload": null,
-    "opportunities": 25,
+    "opportunities": 23,
     "over_scans": [],
     "runs_said": [
       {

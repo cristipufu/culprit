@@ -99,7 +99,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 f.verify.push("Compare compiles per run and planning time per run before and after, and check that time per run stays acceptable across representative parameter values. The rewritten statement has a new entry.".into());
             }
             if !pg {
-                f.caveats.push("Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.".into());
+                f.caveats.push("This Query Store entry's first compile falls within the selected period, so its compile totals can be compared with its runs in that period. Older entries' compile totals are shown separately as retained query history.".into());
             }
             f
         })

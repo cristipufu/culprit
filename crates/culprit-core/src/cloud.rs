@@ -121,6 +121,13 @@ pub struct ThrottleEpisode {
     pub detail: String,
     /// Still going at the end of the period.
     pub ongoing: bool,
+    // Near a limit does not itself prove query latency or throttling.
+    #[serde(default = "episode_watch")]
+    pub status: crate::SignalStatus,
+}
+
+fn episode_watch() -> crate::SignalStatus {
+    crate::SignalStatus::Watch
 }
 
 /// What the cloud measured for a server over a period, and when it held the server back.
@@ -200,17 +207,24 @@ pub struct Rule<'a> {
 pub fn episodes(series: &CloudSeries, period_seconds: u32, rule: &Rule) -> Vec<ThrottleEpisode> {
     let bad = |v: f64| if rule.floor { v <= rule.threshold } else { v >= rule.threshold };
     let points = &series.points;
+    let step = f64::from(period_seconds.max(1));
     let mut runs: Vec<(usize, usize)> = Vec::new();
     for (i, p) in points.iter().enumerate() {
         if !bad(p.value) {
             continue;
         }
         match runs.last_mut() {
-            Some((_, end)) if i <= *end + 2 => *end = i,
+            Some((_, end))
+                if i <= *end + 2
+                    && points[*end..=i].windows(2).all(|p| {
+                        epoch(&p[0].at).zip(epoch(&p[1].at)).is_some_and(|(a, b)| b > a && b - a <= step * 1.5)
+                    }) =>
+            {
+                *end = i
+            }
             _ => runs.push((i, i)),
         }
     }
-    let step = f64::from(period_seconds.max(1));
     runs.into_iter()
         .filter(|(a, b)| points[*a..=*b].iter().filter(|p| bad(p.value)).count() >= rule.min_points.max(1))
         .map(|(a, b)| {
@@ -235,6 +249,18 @@ pub fn episodes(series: &CloudSeries, period_seconds: u32, rule: &Rule) -> Vec<T
                 ongoing: b + 1 == points.len(),
                 start,
                 end,
+                status: if series.unit == CloudUnit::Percent
+                    && !rule.floor
+                    && worst >= 99.0
+                    && points[a..=b].iter().filter(|p| p.value >= 99.0).count() as f64 * step >= 1800.0
+                    && matches!(
+                        rule.kind,
+                        ThrottleKind::CpuLimit | ThrottleKind::IoLimit | ThrottleKind::LogRate | ThrottleKind::Workers
+                    ) {
+                    crate::SignalStatus::Bad
+                } else {
+                    crate::SignalStatus::Watch
+                },
             }
         })
         .collect()
@@ -257,10 +283,10 @@ pub fn sum_series(metric: &str, label: &str, unit: CloudUnit, parts: &[&CloudSer
     (!points.is_empty()).then(|| CloudSeries::new(metric, label, unit, points))
 }
 
-/// "CPU credits ran out once (1 h 10 min) and storage answered slowly twice." or "Nothing held the server back."
+/// Summarize measured episodes without asserting an effect on application requests.
 pub fn summarize(episodes: &[ThrottleEpisode], span: &str) -> String {
     if episodes.is_empty() {
-        return format!("Nothing held the server back in the {span}: no credits ran out and no limit was reached.");
+        return format!("No sustained resource-limit warnings in the available cloud measurements for the {span}.");
     }
     let mut kinds: Vec<ThrottleKind> = Vec::new();
     for e in episodes {
@@ -396,6 +422,51 @@ mod tests {
         .events();
         assert_eq!(events[0].kind, EventKind::Throttle);
         assert_eq!(events[0].until.as_deref(), Some("2026-10-11T12:25:00Z"));
+    }
+
+    #[test]
+    fn missing_hours_cannot_be_joined_into_a_sustained_episode() {
+        let detail = |_: f64, _: &str| String::new();
+        let rule = Rule {
+            metric: "cpu",
+            kind: ThrottleKind::CpuLimit,
+            threshold: 95.0,
+            floor: false,
+            min_points: 2,
+            title: "CPU near its limit",
+            detail: &detail,
+        };
+        let mut s = series(&[100.0, 100.0]);
+        s.unit = CloudUnit::Percent;
+        s.points[1].at = "2026-10-11T18:00:00Z".into();
+        assert!(episodes(&s, 300, &rule).is_empty());
+        s.points[1].at = s.points[0].at.clone();
+        assert!(episodes(&s, 300, &rule).is_empty(), "duplicate readings are not sustained evidence");
+    }
+
+    #[test]
+    fn cloud_warning_grades_distinguish_headroom_from_sustained_saturation() {
+        let detail = |_: f64, _: &str| String::new();
+        let rule = Rule {
+            metric: "cpu",
+            kind: ThrottleKind::CpuLimit,
+            threshold: 95.0,
+            floor: false,
+            min_points: 2,
+            title: "CPU near its limit",
+            detail: &detail,
+        };
+        let mut s = series(&[96.0; 6]);
+        s.unit = CloudUnit::Percent;
+        assert_eq!(episodes(&s, 300, &rule)[0].status, crate::SignalStatus::Watch);
+        for p in &mut s.points {
+            p.value = 100.0;
+        }
+        let e = episodes(&s, 300, &rule).remove(0);
+        assert_eq!(e.status, crate::SignalStatus::Bad);
+        let mut saved = serde_json::to_value(&e).unwrap();
+        saved.as_object_mut().unwrap().remove("status");
+        assert_eq!(serde_json::from_value::<ThrottleEpisode>(saved).unwrap().status, crate::SignalStatus::Watch);
     }
 
     #[test]

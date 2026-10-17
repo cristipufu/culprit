@@ -11,6 +11,18 @@ use ts_rs::TS;
 
 use crate::{Digest, Plan, QueryStat, Snapshot};
 
+/// Exact compile totals for one retained Query Store entry. Query Store does not timestamp every compilation, so
+/// totals can be compared with windowed runs only when the entry's first compile falls inside that window.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct CompileHistory {
+    pub count: f64,
+    pub total_ms: f64,
+    pub first_at: Option<String>,
+    pub last_at: Option<String>,
+    pub within_window: bool,
+}
+
 /// What a statement's runs cost besides elapsed time, as far as the engine keeps it. Totals cover all its runs in the
 /// workload's window (or since its statistics began, for sources that keep running totals).
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
@@ -43,6 +55,8 @@ pub struct QueryCosts {
     pub log_full_pages: Option<f64>,
     /// Estimated bytes per returned row, from the plan's output width (SQL Server AvgRowSize, PostgreSQL width).
     pub row_bytes: Option<f64>,
+    #[serde(default)]
+    pub compile_history: Option<CompileHistory>,
 }
 
 impl QueryCosts {
@@ -120,10 +134,8 @@ pub fn merge_logs(files: &[FileIo]) -> Vec<FileIo> {
         }
         match out.iter_mut().find(|o| o.kind == FileKind::Log && o.database == f.database) {
             Some(log) => {
-                let sum = |a: Option<f64>, b: Option<f64>| match (a, b) {
-                    (None, None) => None,
-                    (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
-                };
+                // Unknown timing or bytes for part of the log cannot become a zero and dilute its average.
+                let sum = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| a + b);
                 log.reads += f.reads;
                 log.writes += f.writes;
                 log.read_ms = sum(log.read_ms, f.read_ms);
@@ -213,6 +225,17 @@ pub struct Replica {
 pub const STANDBY_BEHIND_BYTES: f64 = 16.0 * 1024.0 * 1024.0;
 
 impl Replica {
+    /// Older standby scans reported time since the last replayed commit as lag even when replay was current.
+    pub fn effective_lag_seconds(&self, engine: crate::Engine) -> Option<f64> {
+        if engine == crate::Engine::Postgres
+            && self.role == ReplicaRole::ThisServer
+            && self.lag_bytes.is_some_and(|b| b < STANDBY_BEHIND_BYTES)
+        {
+            return Some(0.0);
+        }
+        self.lag_seconds
+    }
+
     /// A replica, slot or this server by name, with nothing measured yet.
     pub fn new(name: impl Into<String>, role: ReplicaRole) -> Replica {
         Replica {
@@ -574,5 +597,14 @@ mod merge_tests {
         let log = merged.iter().find(|f| f.kind == FileKind::Log).unwrap();
         assert_eq!((log.name.as_str(), log.writes, log.write_ms), ("redo log", 1_500.0, Some(9.0)));
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merging_an_untimed_log_file_cannot_dilute_the_known_latency() {
+        let timed = file("#ib_redo10", FileKind::Log, 1000.0, 50_000.0);
+        let untimed = FileIo { write_ms: None, ..file("#ib_redo11", FileKind::Log, 9000.0, 0.0) };
+        let merged = merge_logs(&[timed, untimed]);
+        assert_eq!(merged[0].writes, 10_000.0);
+        assert_eq!(merged[0].avg_write_ms(), None, "the missing timings are unknown, not zero");
     }
 }

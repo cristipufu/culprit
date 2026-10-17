@@ -27,8 +27,13 @@ pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
     // also holds allocation waits (CMEMTHREAD, MEMORY_ALLOCATION_EXT), which no grant change helps.
     let grant_ms = signal(snapshot, "grant-wait-ms").unwrap_or(0.0);
     let grants_per_hour = counter_hours(snapshot).map(|h| grant_ms / h);
-    let grants = grants_per_hour.is_some_and(|g| g >= MINUTE_MS);
+    let instance = !snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
+    let grants = !instance && grants_per_hour.is_some_and(|g| g >= MINUTE_MS);
     let pending = signal(snapshot, "memory-grants-pending").unwrap_or(0.0);
+    // Instance-wide grant/allocation totals cannot establish queueing in this database.
+    if instance && !windowed && pending <= 0.0 {
+        return Vec::new();
+    }
     if !history && !grants && pending <= 0.0 {
         return Vec::new();
     }
@@ -40,7 +45,6 @@ pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
         Category::Configuration,
         subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
-    let instance = !snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
     // Without Query Store's per-database waits, the totals are the instance's since it started: every database's.
     let shared = instance && !windowed;
     f.title = if pending > 0.0 {

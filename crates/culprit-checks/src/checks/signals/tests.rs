@@ -208,10 +208,7 @@ fn slow_tempdb_and_log() {
     let titles: Vec<String> = slow_storage(&s).into_iter().map(|f| f.title).collect();
     assert_eq!(
         titles,
-        vec![
-            "Reads from tempdb average 45 ms: storage is slow",
-            "Writes to shop's log average 12 ms: every commit waits for them"
-        ]
+        vec!["Recorded reads from tempdb averaged 45 ms", "Recorded log writes to shop's log averaged 12 ms"]
     );
 }
 
@@ -221,7 +218,7 @@ fn churn_thresholds_differ_per_engine() {
         Signal::new("new-connections", "New connections", rate, SignalUnit::PerSecond, SignalScope::SinceStartup)
     };
     let pg = with_pressure(Engine::Postgres, |p| p.signals = vec![signal(3.0)]);
-    assert_eq!(connection_churn(&pg)[0].title, "The application opens 3 connections a second: use a pool");
+    assert_eq!(connection_churn(&pg)[0].title, "This database recorded 3 new connections a second on average");
     let mssql = with_pressure(Engine::Mssql, |p| p.signals = vec![signal(3.0)]);
     assert!(connection_churn(&mssql).is_empty());
     let mysql = with_pressure(Engine::Mysql, |p| p.signals = vec![signal(40.0)]);

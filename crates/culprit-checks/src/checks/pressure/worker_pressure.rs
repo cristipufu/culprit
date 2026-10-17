@@ -20,7 +20,11 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {
         Engine::Sqlite => Vec::new(),
         Engine::Mssql => {
-            let waiting = signal(snapshot, "threadpool-waiting").unwrap_or(0.0);
+            let waiting = pressure(snapshot)
+                .and_then(|p| p.signal("threadpool-waiting"))
+                .filter(|s| s.label.contains("in this database"))
+                .map(|s| s.value)
+                .unwrap_or(0.0);
             let hours = counter_hours(snapshot);
             // The total since the start; scans before Culprit kept it stored an hourly average instead.
             let total = signal(snapshot, "threadpool-wait-ms").or_else(|| {
@@ -31,7 +35,11 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             // An average since the start says how much, not when: one bad hour days ago averages the same as a
             // steady trickle. Only over at least an hour of counters.
             let per_hour = total.zip(hours).map(|(t, h)| t / h);
-            let history = per_hour.is_some_and(|p| p >= 10_000.0);
+            let database_history = snapshot.server.on(culprit_core::Platform::AzureSqlDatabase)
+                || app_queries(snapshot).any(|q| {
+                    q.waits.iter().any(|w| w.category.eq_ignore_ascii_case("worker thread") && w.wait_ms >= MINUTE_MS)
+                });
+            let history = database_history && per_hour.is_some_and(|p| p >= 10_000.0);
             if waiting <= 0.0 && !history {
                 return Vec::new();
             }
@@ -64,7 +72,7 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             }
             if waiting > 0.0 {
                 parts.push(format!(
-                    "When the scan ran, {} on the instance waiting for one.",
+                    "When the scan ran, {} in this database waiting for one.",
                     if waiting == 1.0 {
                         "1 request was".to_string()
                     } else {
@@ -80,9 +88,9 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             f.summary = parts.join(" ");
             // A queue at the moment of the scan is starvation now; totals since the start describe the past (at most
             // Medium); a task or two seen once, with nothing on record, is a moment worth watching.
-            f.severity = if waiting >= 5.0 {
+            f.severity = if waiting >= 5.0 && history {
                 Severity::High
-            } else if history && per_hour.is_some_and(|p| p >= MINUTE_MS) {
+            } else if waiting >= 5.0 || (history && per_hour.is_some_and(|p| p >= MINUTE_MS)) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -132,7 +140,7 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
                 subject(SubjectKind::Setting, "max_connections"),
             );
             f.title = if used >= 85.0 {
-                format!("Connections are at {:.0}% of max_connections", used)
+                format!("The whole server's connections were at {:.0}% of max_connections when scanned", used)
             } else {
                 format!("{} reached its connection limit once, {when}", snapshot.server.name())
             };
@@ -149,7 +157,7 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
                 None => String::new(),
             };
             f.summary = format!(
-                "When every connection slot is taken, new connections are refused and the application errors out.{peak_note} {} \
+                "This count covers every database on the server, not only this database's application. When every connection slot is taken, new connections are refused and the application errors out.{peak_note} {} \
                  Each connection costs memory, so the fix is fewer, busier connections rather than a higher limit.",
                 if snapshot.server.engine == Engine::Postgres {
                     "Idle connections still hold a backend process each."
@@ -159,13 +167,8 @@ pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
             );
             // Now is measured; a peak since the start is one moment in the past: at most Medium, and Low unless it
             // was within the last day.
-            f.severity = if used >= 95.0 {
-                Severity::High
-            } else if used >= 85.0 || peak_ago.is_some_and(|s| s <= 86_400.0) {
-                Severity::Medium
-            } else {
-                Severity::Low
-            };
+            // The server's capacity is relevant context, but this count does not identify this database as its cause.
+            f.severity = Severity::Low;
             f.impact.score = base_score(f.severity);
             f.impact.label = format!("{:.0}% of connections", used);
             f.confidence = Confidence::High;

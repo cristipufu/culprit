@@ -1,4 +1,4 @@
-import { CircleCheck, Cloud, CloudAlert, RefreshCw } from "lucide-react";
+import { Info, Cloud, CloudAlert, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { CloudSeries } from "../gen/CloudSeries";
 import type { CloudSignals } from "../gen/CloudSignals";
@@ -7,12 +7,6 @@ import { bytes, count, duration } from "../lib/format";
 import { stamp, useCloud } from "../lib/events";
 import { TimeChart, VH, type Bucket, type ChartEvent } from "./TimeChart";
 import "./timeline.css";
-
-const PERIODS = [
-  { hours: 24, label: "24 h" },
-  { hours: 24 * 7, label: "7 days" },
-  { hours: 24 * 14, label: "14 days" },
-];
 
 export function cloudValue(series: Pick<CloudSeries, "unit">, v: number): string {
   switch (series.unit) {
@@ -40,11 +34,10 @@ function episodeWhen(e: ThrottleEpisode): string {
 
 /**
  * What the cloud measured for this server (CloudWatch or Azure Monitor, read through the person's own CLI sign-in) and
- * when it held the server back. Each metric is drawn against its limit, with throttling shaded, so "slower with the
- * same plan" has an answer the database's own statistics can't give.
+ * where it approached a resource limit. Resource use alone does not measure throttling or query delay.
  */
-export function CloudLimits({ connection, onCompare }: { connection: string; onCompare?: (from: number, to: number) => void }) {
-  const [hours, setHours] = useState(24);
+export function CloudLimits({ connection, windowMinutes, onCompare }: { connection: string; windowMinutes: number; onCompare?: (from: number, to: number) => void }) {
+  const hours = windowMinutes / 60;
   const [refresh, setRefresh] = useState(0);
   const state = useCloud(connection, hours, refresh);
   if (state.status === "none") return null;
@@ -61,13 +54,7 @@ export function CloudLimits({ connection, onCompare }: { connection: string; onC
           </span>
         )}
         <span className="spacer" />
-        <span className="seg">
-          {PERIODS.map((p) => (
-            <button key={p.hours} className={hours === p.hours ? "on" : ""} onClick={() => setHours(p.hours)}>
-              {p.label}
-            </button>
-          ))}
-        </span>
+        <span className="muted">Selected period · {duration(windowMinutes * 60_000)}</span>
         <button className="icon-btn" title="Read the metrics again" aria-label="Read the cloud metrics again" onClick={() => setRefresh((n) => n + 1)}>
           <RefreshCw size={13} className={state.status === "loading" ? "spin" : ""} />
         </button>
@@ -85,16 +72,17 @@ export function CloudLimits({ connection, onCompare }: { connection: string; onC
 }
 
 function Signals({ signals, onCompare }: { signals: CloudSignals; onCompare?: (from: number, to: number) => void }) {
-  const bad = signals.episodes.length > 0;
+  const warned = signals.episodes.length > 0;
+  const bad = signals.episodes.some((e) => e.status === "bad");
   const shown = signals.series.filter((s) => s.points.length > 1);
   const fetched = Date.parse(signals.fetched_at);
   return (
     <>
-      <div className={`cloud-summary ${bad ? "bad" : ""}`}>
-        {bad ? <CloudAlert size={14} color="var(--high-text)" /> : <CircleCheck size={14} color="var(--good-text)" />}
+      <div className={`cloud-summary ${bad ? "bad" : warned ? "watch" : "info"}`}>
+        {warned ? <CloudAlert size={14} color={bad ? "var(--high-text)" : "var(--medium-text)"} /> : <Info size={14} />}
         <span>{signals.summary}</span>
       </div>
-      {bad && (
+      {warned && (
         <ul className="cloud-episodes">
           {signals.episodes.map((e) => (
             <li key={`${e.kind}-${e.start}`}>
@@ -136,10 +124,12 @@ function CloudChart({ series, signals }: { series: CloudSeries; signals: CloudSi
   const episodes: ChartEvent[] = signals.episodes
     .filter((e) => e.metric === series.metric)
     .map((e) => ({ id: `${e.kind}-${e.start}`, kind: "throttle", from: Date.parse(e.start), to: Date.parse(e.end), title: e.title, when: episodeWhen(e), exact: true }));
+  const assessed = signals.episodes.filter((e) => e.metric === series.metric);
+  const status = assessed.some((e) => e.status === "bad") ? "bad" : assessed.length ? "watch" : "";
   const latest = values[values.length - 1];
   const worst = series.floor ? Math.min(...values) : peak;
   return (
-    <div className={`cloud-metric ${episodes.length ? "bad" : ""}`}>
+    <div className={`cloud-metric ${status}`}>
       <div className="trend-head">
         <span className="label">{series.label}</span>
         <span className="muted" title={series.limit_label ?? undefined}>

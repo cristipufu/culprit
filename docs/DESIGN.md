@@ -98,6 +98,8 @@ Clicking either opens one panel with three tabs (`1`/`2`/`3`, `←`/`→`, `Esc`
 
 Per engine: SQL Server attributes every Query Store wait category to queries; MySQL attributes lock time (table, metadata and InnoDB row locks) and reports the rest server-wide since startup; PostgreSQL keeps no wait history, so history is per-statement disk-read time when it's timed (WAL write and sync time is mostly the WAL writer's and commits', outside statement time, so it isn't counted as a share of it), and "right now" is session sampling. Short windows are never stretched into per-day or per-hour rates.
 
+Health colors are assessments, never thresholds on an isolated ratio or size. CPU use is measured utilization of the selected database's limit, where available; the scheduling share of waits is historical context. Resource samples and dated events follow the selected window. A source that holds only an hour, or only cumulative totals, states that coverage explicitly. Historical counters are grouped separately, and missing measurements are unavailable. Compiles come from this database's Query Store entries: lifetime compilation totals stay separate from selected-window runtime unless the entry began inside the window. Cloud measurements use the same selected period and distinguish observed limits from proven query delays. Query, table, storage, replication and health warning colors follow the report's evidence assessments.
+
 ### Finding detail (the heart of the product)
 
 ```

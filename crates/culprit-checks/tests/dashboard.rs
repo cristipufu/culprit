@@ -175,9 +175,11 @@ fn a_trend_compares_the_last_stretch_with_what_came_before() {
 fn deadlocks_are_grouped_and_postgres_only_counts_them() {
     let mut r = report("mssql-demo");
     r.snapshot.deadlocks = Some(deadlocks("mssql"));
+    r.snapshot.taken_at = "2026-10-11T14:00:00Z".into();
+    r = culprit_checks::analyze(r.snapshot);
     let d = dashboard(&r);
     let t = tile(&d, TileKey::Deadlocks);
-    assert!(matches!(t.status, TileStatus::Watch | TileStatus::Bad));
+    assert_eq!(t.status, TileStatus::Info, "two historical events follow the check's Low assessment");
     // The sample covers six hours, and the tile says so.
     assert!(t.takeaway.starts_with("2 deadlocks in the last 6 hours"), "{}", t.takeaway);
     assert!(!t.items.is_empty());
@@ -191,11 +193,19 @@ fn deadlocks_are_grouped_and_postgres_only_counts_them() {
         ..Default::default()
     });
     r.snapshot.taken_at = "2026-10-11T12:00:00Z".into();
+    r = culprit_checks::analyze(r.snapshot);
     let t = dashboard(&r).tile(TileKey::Deadlocks).cloned().unwrap();
-    assert_eq!(t.status, TileStatus::Watch);
+    assert_eq!(t.status, TileStatus::Info, "two deadlocks a day are historical context under the check's rule");
     assert_eq!(
         t.takeaway,
         "PostgreSQL counted 12 deadlocks in the 6.0 days since its statistics were reset; it keeps no details to explain them."
+    );
+    r.snapshot.deadlocks.as_mut().unwrap().counted = Some(72.0);
+    r = culprit_checks::analyze(r.snapshot);
+    assert_eq!(
+        tile(&dashboard(&r), TileKey::Deadlocks).status,
+        TileStatus::Watch,
+        "a substantial measured historical rate retains its warning"
     );
 }
 
@@ -228,6 +238,25 @@ fn a_live_read_puts_blocking_first() {
     let now = tile(&d, TileKey::Now);
     assert_eq!(now.status, TileStatus::Unavailable);
     assert_eq!(now.takeaway, "Couldn't read sessions: the server closed the connection.");
+}
+
+#[test]
+fn brief_locks_and_recent_idle_transactions_do_not_raise_live_alarms() {
+    let mut d = dashboard(&report("pg-demo"));
+    let head = session("1", "idle");
+    let mut waiting = session("2", "active");
+    waiting.blocked_by = Some("1".into());
+    waiting.wait_ms = Some(10.0);
+    with_now(&mut d, &live(vec![head, waiting], Engine::Postgres));
+    assert_eq!(tile(&d, TileKey::Now).status, TileStatus::Info);
+    let mut idle = session("1", "idle in transaction");
+    idle.transaction_ms = Some(90_000.0);
+    with_now(&mut d, &live(vec![idle.clone()], Engine::Postgres));
+    assert_eq!(tile(&d, TileKey::Now).status, TileStatus::Good);
+    idle.transaction_ms = Some(720_000.0);
+    with_now(&mut d, &live(vec![idle], Engine::Postgres));
+    assert_eq!(tile(&d, TileKey::Now).status, TileStatus::Watch);
+    assert!(tile(&d, TileKey::Now).takeaway.contains("transaction opened"));
 }
 
 #[test]
@@ -333,10 +362,11 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
         error: None,
         ..Replica::new("", ReplicaRole::Replica)
     }];
+    r = culprit_checks::analyze(r.snapshot);
     let d = dashboard(&r);
     let storage = tile(&d, TileKey::Storage);
     assert_eq!(storage.items.first().map(|i| i.label.as_str()), Some("WAL"), "the slowest file first");
-    assert_eq!(storage.items[0].status, Some(TileStatus::Bad), "40 ms per log write");
+    assert_eq!(storage.items[0].status, Some(TileStatus::Info), "a shared historical average is context");
     assert!(storage.metric("log-write-ms").is_some());
     let replication = tile(&d, TileKey::Replication);
     assert_eq!(replication.items[0].status, Some(TileStatus::Watch), "90 s behind");
@@ -352,11 +382,19 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
     let q = &mut w.queries[0];
     q.executions = 100.0;
     q.costs = Some(QueryCosts { failed: Some(30.0), ..Default::default() });
+    m = culprit_checks::analyze(m.snapshot);
     let d = dashboard(&m);
     let failures = tile(&d, TileKey::Failures);
     assert_eq!(failures.items.len(), 1);
     assert_eq!(failures.items[0].value.as_deref(), Some("30% of runs"));
-    assert_eq!(failures.items[0].status, Some(TileStatus::Bad));
+    assert_eq!(failures.items[0].status, Some(TileStatus::Info), "a historical ratio alone cannot become red");
+    m.snapshot.workload.as_mut().unwrap().queries[0].costs.as_mut().unwrap().top_error =
+        Some("1205 lock wait timeout".into());
+    m = culprit_checks::analyze(m.snapshot);
+    assert!(
+        matches!(tile(&dashboard(&m), TileKey::Failures).items[0].status, Some(TileStatus::Watch | TileStatus::Bad)),
+        "recent failures retain the assessed warning"
+    );
     for t in &d.tiles {
         assert!(t.takeaway.ends_with('.'), "{:?}: {}", t.key, t.takeaway);
     }

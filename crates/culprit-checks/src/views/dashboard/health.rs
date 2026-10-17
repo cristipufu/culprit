@@ -2,7 +2,8 @@
 
 use super::*;
 
-pub(super) fn health(s: &Snapshot) -> Tile {
+pub(super) fn health(report: &Report) -> Tile {
+    let s = &report.snapshot;
     let Some(p) = &s.pressure else {
         let headline = if s.server.engine.has_server() {
             "This scan recorded no health counters.".to_string()
@@ -43,7 +44,7 @@ pub(super) fn health(s: &Snapshot) -> Tile {
     };
     let mut takeaway = match signals.first().filter(|s| matches!(s.status, SignalStatus::Bad | SignalStatus::Watch)) {
         Some(worst) => match &worst.healthy {
-            Some(healthy) => format!("{}: {}; {healthy}.", worst.label, signal_value(worst)),
+            Some(healthy) => format!("{}: {}; {}.", worst.label, signal_value(worst), healthy.trim_end_matches('.')),
             None => format!("{}: {}.", worst.label, signal_value(worst)),
         },
         None if graded == 1 => "The one graded signal looks healthy.".to_string(),
@@ -55,10 +56,9 @@ pub(super) fn health(s: &Snapshot) -> Tile {
     };
     let mut items: Vec<TileItem> = Vec::new();
     // An old open transaction holds back cleanup on every engine; it earns a row of its own.
-    if let Some(tx) = p.oldest_transaction.as_ref().filter(|t| t.seconds >= 300.0) {
-        let idle = tx.state.as_deref().is_some_and(|s| s.contains("idle"));
-        let tx_status =
-            if tx.seconds >= 3600.0 || (idle && tx.seconds >= 600.0) { TileStatus::Watch } else { TileStatus::Info };
+    if let Some(tx) = p.oldest_transaction.as_ref() {
+        let assessed = report.findings.iter().find(|f| f.check == "held-cleanup" && !f.inactive);
+        let tx_status = assessed.map(|f| severity_status(f.severity)).unwrap_or(TileStatus::Info);
         let mut item = TileItem::new(ItemKind::Signal, "oldest-transaction", "Oldest open transaction");
         item.value = Some(format!(
             "{}{}",
@@ -66,13 +66,9 @@ pub(super) fn health(s: &Snapshot) -> Tile {
             tx.state.as_deref().map(|s| format!(" · {s}")).unwrap_or_default()
         ));
         item.status = Some(tx_status);
-        if tx_status == TileStatus::Watch && status < TileStatus::Watch {
-            status = TileStatus::Watch;
-            takeaway = format!(
-                "A transaction has been open for {}{}, holding back cleanup.",
-                format::duration(tx.seconds * 1000.0),
-                if idle { " doing nothing" } else { "" }
-            );
+        if tx_status >= TileStatus::Watch && status < tx_status {
+            status = tx_status;
+            takeaway = format!("{}.", assessed.unwrap().title.trim_end_matches('.'));
         }
         items.push(item);
     }
@@ -91,7 +87,7 @@ pub(super) fn health(s: &Snapshot) -> Tile {
             if more == 1 { "needs" } else { "need" }
         ))
     } else {
-        p.uptime_hours.map(|h| format!("Counters since startup cover {}.", span(h)))
+        Some("Each signal states the period it measures.".into())
     };
     tile.metrics = vec![
         TileMetric::new("bad", "Bad", Some(bad as f64), bad.to_string()),

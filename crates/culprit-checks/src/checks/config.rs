@@ -614,14 +614,14 @@ fn buffer_pool(snapshot: &Snapshot) -> Option<Finding> {
     }
     let reads = pressure.signal("buffer-pool-reads").map(|s| s.value);
     // Medium needs both a poor hit rate and real disk reads behind it (50 pages a second, about 0.8 MB/s).
-    let severity = if hit < 95.0 && reads.is_some_and(|r| r >= 50.0) { Severity::Medium } else { Severity::Low };
+    let severity = Severity::Low; // Both counters cover all databases; neither measures this database's delays.
     let name = snapshot.server.name();
     let mut f = setting_finding(
         "innodb_buffer_pool_size",
         severity,
-        format!("The InnoDB buffer pool holds less than half of the data, and {} of reads miss it", format::percent((100.0 - hit) / 100.0)),
+        format!("The server's InnoDB buffer pool records {} of reads missing memory", format::percent((100.0 - hit) / 100.0)),
         format!(
-            "innodb_buffer_pool_size is {}, and this database has {} of InnoDB tables and indexes. Since {name} started, {} of page reads were served from memory{}; the rest went to disk.",
+            "innodb_buffer_pool_size is {}, and this database has {} of InnoDB tables and indexes. Since {name} started, {} of page reads across the whole server were served from its buffer pool{}. The rest may have been served by the operating system cache; this does not establish slow reads in this database.",
             format::bytes(pool),
             format::bytes(data),
             format::percent(hit / 100.0),
@@ -630,11 +630,11 @@ fn buffer_pool(snapshot: &Snapshot) -> Option<Finding> {
         Fix {
             summary: match snapshot.server.platform() {
                 Some(platform) => format!(
-                    "Give the buffer pool more of the instance's memory{} ({} sizes it from the instance's memory), or move to an instance with more memory. Leave room for connections and the operating system.",
+                    "If measured read latency and this database's workload confirm a memory shortage, consider giving the buffer pool more of the instance's memory{} ({} sizes it from the instance's memory), or move to an instance with more memory. Leave room for connections and the operating system.",
                     platform.settings_control().map(|c| format!(" in {c}")).unwrap_or_default(),
                     platform.label(snapshot.server.engine)
                 ),
-                None => "Give the buffer pool most of the server's memory (often 60–75% on a dedicated host, leaving room for connections and the operating system); it can be resized online with SET GLOBAL innodb_buffer_pool_size.".into(),
+                None => "Check measured read latency and this database's workload before resizing the server's buffer pool. If they confirm a memory shortage, allow more memory for the pool while leaving room for connections and the operating system; it can be resized online with SET GLOBAL innodb_buffer_pool_size.".into(),
             },
             sql: None,
             cost: Some("Uses that much RAM; a pool larger than the free memory makes the server swap or be killed.".into()),
@@ -854,7 +854,7 @@ mod tests {
     fn buffer_pool_is_graded_on_misses_not_data_size() {
         assert!(buffer_pool(&buffer_pool_snapshot(99.9, 3.0)).is_none());
         let f = buffer_pool(&buffer_pool_snapshot(90.0, 400.0)).unwrap();
-        assert_eq!(f.severity, Severity::Medium);
+        assert_eq!(f.severity, Severity::Low);
         assert!(f.fix.as_ref().unwrap().sql.is_none());
         assert_eq!(buffer_pool(&buffer_pool_snapshot(97.0, 400.0)).unwrap().severity, Severity::Low);
         // MyISAM tables (a primary key that isn't clustered) have no pages in the buffer pool.

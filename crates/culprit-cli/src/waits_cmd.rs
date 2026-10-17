@@ -180,10 +180,12 @@ fn print_signals(title: &str, p: &Pressure, signals: &[Signal]) {
             SignalStatus::Info => " ",
         };
         let scope = match s.scope {
-            SignalScope::Now => "now",
+            SignalScope::Now => "when scanned",
             SignalScope::SinceStartup => "since start",
             SignalScope::Sampled => "sampled",
             SignalScope::LastHour => "last hour",
+            SignalScope::QueryHistory => "retained query history",
+            SignalScope::Window => "selected period",
         };
         println!("  {mark} {:<36} {:>10}  {:<11} {}", s.label, value(s), scope, s.healthy.as_deref().unwrap_or(""));
     }

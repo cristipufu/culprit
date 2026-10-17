@@ -9,6 +9,7 @@ import type { ResultSet } from "../gen/ResultSet";
 import type { TableStat } from "../gen/TableStat";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { ago, bytes, count, oneLine, percent, when } from "../lib/format";
+import { tableSignalWarning } from "../lib/health";
 import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
 import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
@@ -198,18 +199,15 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
           <Fact
             label="Average row"
             value={bytes(averageRow)}
-            warn={averageRow >= 16 * 1024 && large / own >= 0.5}
+            warn={tableSignalWarning(report, table, ["large-rows"])}
             detail={<span title="Large values kept apart from the rows: LOB pages on SQL Server, TOAST on PostgreSQL">{percent(large / own)} in large values</span>}
           />
         )}
         {knowsStats && (
           <Fact
             label="Statistics"
-            value={analyzed ? ago(analyzed) : "never updated"}
-            warn={
-              !analyzed ||
-              (table.modifications_since_analyze != null && table.rows != null && table.modifications_since_analyze > Math.max(1000, table.rows * 0.2))
-            }
+            value={analyzed ? ago(analyzed) : "no update recorded"}
+            warn={tableSignalWarning(report, table, ["stale-stats"])}
             detail={
               table.modifications_since_analyze
                 ? `${count(table.modifications_since_analyze)} changes since`

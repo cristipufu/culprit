@@ -18,7 +18,7 @@ check!(ConnectionChurnCheck: connection_churn_info, connection_churn);
 pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };
     let Some(rate) = p.signal("new-connections").map(|s| s.value) else { return Vec::new() };
-    if p.uptime_hours.is_some_and(|h| h < 1.0) {
+    if p.uptime_hours.is_none_or(|h| h < 1.0) {
         return Vec::new();
     }
     let engine = snapshot.server.engine;
@@ -31,6 +31,13 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     if rate < limit {
         return Vec::new();
     }
+    // A large pool can legitimately open many long-lived sessions. Neither a rate nor a thread-cache miss ratio
+    // establishes one connection per request. Known long-lived sessions / frequent pooled resets contradict it.
+    if (engine == Engine::Postgres && p.signal("session-length").is_some_and(|s| s.value >= 60.0))
+        || (engine == Engine::Mssql && p.signal("pooled-reuse").is_some_and(|s| s.value >= 90.0))
+    {
+        return Vec::new();
+    }
     // Keyed on `server`, never the connection's name: finding ids travel into exports and agent briefs.
     let mut f = finding(
         "connection-churn",
@@ -41,9 +48,9 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     // PostgreSQL counts sessions to this database; SQL Server's logins and MySQL's connections count the whole server,
     // every database and application on it.
     f.title = if engine == Engine::Postgres {
-        format!("The application opens {} connections a second: use a pool", format::count(rate))
+        format!("This database recorded {} new connections a second on average", format::count(rate))
     } else {
-        format!("The server accepts {} new connections a second: use a pool", format::count(rate))
+        format!("The whole server recorded {} new connections a second on average", format::count(rate))
     };
     let detail = match engine {
         Engine::Sqlite => "SQLite has no connections to pool: each one opens the file.".to_string(),
@@ -58,7 +65,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         }
         Engine::Mssql => match p.signal("pooled-reuse").map(|s| s.value) {
             Some(pct) => format!(
-                "Only {:.0}% of connection uses were served from a pool (SQL Server counts a reset when a pooled connection is reused); the rest logged in from scratch.",
+                "SQL Server recorded {:.0}% resets compared with resets plus new logins; pools can also reuse connections without a reset, so this does not identify all pool use.",
                 pct
             ),
             None => "Every login pays for TLS, authentication and session setup.".into(),
@@ -75,14 +82,18 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
         Engine::Mysql => ", counting every schema and application on it (failed attempts left out)",
     };
     f.summary = format!(
-        "{} the server accepted {} new connections a second on average{scope}. {detail} An application that connects for each request spends more time connecting than querying under load.",
+        "{} the server accepted {} new connections a second on average{scope}. {detail} If the application connects for each request, pooling can avoid that setup cost; this rate alone does not prove it does so or that connection setup is slowing requests.",
         capitalize(&since_start(snapshot)),
         format::count(rate)
     );
     // A count of the whole server's connections is shared: said, with what it counts, but not graded on this
     // database (CLAUDE.md: mark shared counters and don't grade them). PostgreSQL's is this database's own.
     let shared = engine != Engine::Postgres;
-    f.severity = if !shared && rate >= limit * 5.0 { Severity::Medium } else { Severity::Low };
+    f.severity = if !shared && rate >= limit * 5.0 && p.signal("session-length").is_some_and(|s| s.value <= 1.0) {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
     if shared {
         f.caveats.push(format!(
             "{} counts connections for the whole server, so other databases' applications are in this number.",
@@ -130,10 +141,7 @@ pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
             cost: None,
         },
     });
-    f.verify = vec![format!(
-        "Scan again a day after the change: new connections should be under {} a second.",
-        format::count(limit)
-    )];
+    f.verify = vec!["Compare new-connection counts over equal intervals before and after the change, together with request latency. Pooling should reduce connection setup for the same workload; there is no universal healthy connection rate.".into()];
     f.caveats.push("A rate since startup: one busy reconnect storm counts for the whole period.".into());
     vec![f]
 }

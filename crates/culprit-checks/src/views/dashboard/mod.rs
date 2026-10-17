@@ -83,7 +83,7 @@ pub fn dashboard(report: &Report) -> Dashboard {
         top_queries(s),
         waits(s),
         not_read(s),
-        health(s),
+        health(report),
         deadlocks(report),
         indexes(report),
         plans(s),

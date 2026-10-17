@@ -342,13 +342,13 @@
   },
   {
     "category": "configuration",
-    "description": "A large share of batches compile a new plan instead of reusing one, which costs CPU on every call.",
+    "description": "Shared compilation counters provide context for this database's literal query families; measured Query Store costs establish its compilation impact.",
     "engines": [
       "mssql"
     ],
     "id": "compile-pressure",
     "requires": [],
-    "title": "Plans compiled over and over"
+    "title": "Instance compilation context"
   },
   {
     "category": "configuration",
@@ -386,23 +386,23 @@
   },
   {
     "category": "configuration",
-    "description": "Azure SQL Database resources (CPU, data IO, log writes, workers) at the tier's limit for a real part of the last hour.",
+    "description": "Azure SQL Database resources (CPU, data IO, log writes, workers) persistently near their limits in the available selected-period samples.",
     "engines": [
       "mssql"
     ],
     "id": "tier-limit",
     "requires": [],
-    "title": "Hitting the cloud tier's limits"
+    "title": "Resource use near the cloud tier's limits"
   },
   {
     "category": "configuration",
-    "description": "Many checkpoints start because WAL filled max_wal_size rather than on schedule, causing write spikes.",
+    "description": "The server's requested checkpoints, with the possible causes and the evidence needed before changing WAL settings.",
     "engines": [
       "postgres"
     ],
     "id": "checkpoint-pressure",
     "requires": [],
-    "title": "Checkpoints forced early"
+    "title": "Requested checkpoints"
   },
   {
     "category": "queries",

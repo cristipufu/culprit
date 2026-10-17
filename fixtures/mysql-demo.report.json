@@ -294,60 +294,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [
-        "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log."
-      ],
-      "check": "deadlocks",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking."
-      },
-      "id": "deadlocks:opposite-order:shop.customers+shop.orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "at least 1 deadlock",
-        "score": 9.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T13:48:08Z",
-      "metrics": [
-        {
-          "label": "Deadlocks (at least)",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
-        },
-        {
-          "label": "Pattern",
-          "text": "opposite access order",
-          "unit": "text",
-          "value": 0.0
-        },
-        {
-          "label": "Rolled back",
-          "text": "session 75 (login root)",
-          "unit": "text",
-          "value": 0.0
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.customers"
-      },
-      "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 74 held shop.orders and wanted shop.customers; session 75 held shop.customers and wanted shop.orders. With the same order in both, the second would simply wait instead of deadlocking.",
-      "title": "Two queries deadlocked at least once, most recently on Oct 11 at 13:48 UTC (opposite access order on shop.customers and shop.orders)",
-      "verify": [
-        "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
-        "Live › Deadlocks shows the graph of each one, with both statements."
-      ]
-    },
-    {
       "category": "indexes",
       "caveats": [
         "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
@@ -811,108 +757,7 @@
     "deadlocks": {
       "counted": null,
       "counted_since": null,
-      "deadlocks": [
-        {
-          "at": "2026-10-11T13:48:08Z",
-          "explanation": "Session 74 held shop.orders and wanted shop.customers; session 75 held shop.customers and wanted shop.orders. With the same order in both, the second would simply wait instead of deadlocking.",
-          "fixes": [
-            {
-              "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
-              "finding": null,
-              "sql": null,
-              "title": "Touch tables and rows in the same order everywhere"
-            },
-            {
-              "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
-              "finding": null,
-              "sql": null,
-              "title": "Keep transactions short"
-            },
-            {
-              "detail": "A deadlock victim can be retried safely; the application should catch error 1213 and run the transaction again.",
-              "finding": null,
-              "sql": null,
-              "title": "Retry the victim"
-            }
-          ],
-          "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
-          "id": "60c5fc0c135a790f",
-          "objects": [
-            "shop.customers",
-            "shop.orders"
-          ],
-          "pattern": "opposite-order",
-          "processes": [
-            {
-              "application": null,
-              "database": null,
-              "host": "localhost",
-              "id": "(1)",
-              "isolation": null,
-              "log_used": null,
-              "login": "root",
-              "procedure": null,
-              "session": "74",
-              "statement": "UPDATE customers SET id = id WHERE id = 1",
-              "victim": false,
-              "wait_mode": null
-            },
-            {
-              "application": null,
-              "database": null,
-              "host": "localhost",
-              "id": "(2)",
-              "isolation": null,
-              "log_used": null,
-              "login": "root",
-              "procedure": null,
-              "session": "75",
-              "statement": "UPDATE orders SET id = id WHERE id = 1",
-              "victim": true,
-              "wait_mode": null
-            }
-          ],
-          "resources": [
-            {
-              "holders": [
-                {
-                  "mode": "X (row)",
-                  "process": "(1)"
-                }
-              ],
-              "id": "shop.orders/PRIMARY/6:8/2",
-              "index": "PRIMARY",
-              "kind": "RECORD",
-              "object": "shop.orders",
-              "waiters": [
-                {
-                  "mode": "X (row)",
-                  "process": "(2)"
-                }
-              ]
-            },
-            {
-              "holders": [
-                {
-                  "mode": "X (row)",
-                  "process": "(2)"
-                }
-              ],
-              "id": "shop.customers/PRIMARY/4:6/2",
-              "index": "PRIMARY",
-              "kind": "RECORD",
-              "object": "shop.customers",
-              "waiters": [
-                {
-                  "mode": "X (row)",
-                  "process": "(1)"
-                }
-              ]
-            }
-          ],
-          "source": "InnoDB status"
-        }
-      ],
+      "deadlocks": [],
       "note": "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
       "since_hours": 6.0,
       "source": "InnoDB status"
@@ -1593,7 +1438,7 @@
       "oldest_transaction": {
         "database": null,
         "held_bytes": null,
-        "held_versions": 0.0,
+        "held_versions": null,
         "holder": null,
         "program": "mysql",
         "seconds": 5.0,
@@ -1605,27 +1450,27 @@
       "replicas": [],
       "signals": [
         {
-          "healthy": "above 99% is healthy for most workloads",
+          "healthy": "The share of reads served by InnoDB's buffer pool across the whole server. A miss ratio alone does not establish a memory shortage in this database.",
           "key": "buffer-pool-hit",
-          "label": "Reads served from memory",
+          "label": "Reads served from memory (whole server)",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "percent",
           "value": 98.143429560048
         },
         {
-          "healthy": "under 10% of temporary tables is healthy",
+          "healthy": "The share of internal temporary tables written to disk across the whole server. Table sizes and the statements' measured cost determine whether this needs work.",
           "key": "tmp-disk-tables",
-          "label": "Temporary tables on disk",
+          "label": "Temporary tables on disk (whole server)",
           "scope": "since-startup",
-          "status": "bad",
+          "status": "info",
           "unit": "percent",
           "value": 67.94871794871796
         },
         {
           "healthy": null,
           "key": "questions",
-          "label": "Statements",
+          "label": "Statements (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-second",
@@ -1634,7 +1479,7 @@
         {
           "healthy": null,
           "key": "threads-running",
-          "label": "Statements running now",
+          "label": "Statements running now (whole server)",
           "scope": "now",
           "status": "info",
           "unit": "count",
@@ -1643,16 +1488,16 @@
         {
           "healthy": null,
           "key": "row-lock-waits",
-          "label": "Row-lock waits",
+          "label": "Row-lock waits (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",
           "value": 4.512220597451431
         },
         {
-          "healthy": "under 50 ms is healthy",
+          "healthy": "An average across the whole server's recorded row-lock waits, not a current wait. The lock findings use the amount of waiting too.",
           "key": "row-lock-avg",
-          "label": "Average row-lock wait",
+          "label": "Average row-lock wait (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "milliseconds",
@@ -1661,52 +1506,52 @@
         {
           "healthy": "under 80% of max_connections is healthy",
           "key": "connections",
-          "label": "Connections in use",
+          "label": "Connections in use (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 4.635761589403973
         },
         {
-          "healthy": "under 90% of max_connections is healthy",
+          "healthy": "The busiest moment since these counters started, compared with today's limit. This does not establish a connection shortage now.",
           "key": "max-used-connections",
-          "label": "Busiest moment",
+          "label": "Busiest moment (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "percent",
           "value": 4.635761589403973
         },
         {
-          "healthy": "under 100K old row versions is healthy",
+          "healthy": "Committed undo logs awaiting purge across the whole server. This is not a count of rows, and a large value alone does not establish a purge problem in this database.",
           "key": "history-length",
-          "label": "Undo history",
+          "label": "Undo history (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "count",
           "value": 0.0
         },
         {
-          "healthy": "seconds or minutes, not hours",
+          "healthy": "A cleanup holder observed at the scan's instant; no long-held-cleanup finding is supported by this scan.",
           "key": "oldest-transaction",
           "label": "Oldest open transaction",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "seconds",
           "value": 5.0
         },
         {
-          "healthy": "under 5 a second: pooled connections are opened once",
+          "healthy": "The historical rate of new connections. A busy application can use a pool and still open connections; the rate alone does not prove pooling is missing.",
           "key": "new-connections",
-          "label": "New connections",
+          "label": "New connections (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "per-second",
           "value": 0.06121943159286186
         },
         {
           "healthy": null,
           "key": "aborted-connects",
-          "label": "Failed connection attempts, per hour",
+          "label": "Failed connection attempts, per hour (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",
@@ -1715,7 +1560,7 @@
         {
           "healthy": null,
           "key": "aborted-clients",
-          "label": "Connections dropped without closing, per hour",
+          "label": "Connections dropped without closing, per hour (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",
@@ -1974,6 +1819,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -2206,6 +2052,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -2426,6 +2273,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -2675,6 +2523,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -2944,6 +2793,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -3179,6 +3029,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -3460,6 +3311,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -3607,6 +3459,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 12.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -3743,6 +3596,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 0.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -3938,6 +3792,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": 1.0,
             "jit_functions": null,
             "jit_ms": null,
@@ -4047,7 +3902,7 @@
       },
       {
         "category": "queries",
-        "count": 7
+        "count": 6
       },
       {
         "category": "configuration",
@@ -4060,13 +3915,13 @@
         "severity": "high"
       },
       {
-        "count": 10,
+        "count": 9,
         "severity": "low"
       }
     ],
-    "headline": "11 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.",
+    "headline": "10 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.",
     "no_workload": null,
-    "opportunities": 11,
+    "opportunities": 10,
     "over_scans": [],
     "runs_said": [],
     "top_share": 0.8473893165714874

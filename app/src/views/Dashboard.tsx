@@ -646,11 +646,11 @@ function NowTile({ tile, live, sessions }: { tile: Tile; live: LiveNow; sessions
               <b>{metricText(tile, "active") ?? "0"}</b>
               <span>Running</span>
             </div>
-            <div className={`dash-count ${metricValue(tile, "blocked") > 0 ? "bad" : ""}`}>
+            <div className={`dash-count ${metricValue(tile, "blocked") > 0 && (tile.status === "bad" || tile.status === "watch") ? tile.status : ""}`}>
               <b>{metricText(tile, "blocked") ?? "0"}</b>
               <span>Blocked</span>
             </div>
-            <div className={`dash-count ${metricValue(tile, "idle-in-transaction") > 0 ? "watch" : ""}`}>
+            <div className={`dash-count ${metricValue(tile, "long-idle-in-transaction") > 0 ? "watch" : ""}`}>
               <b>{metricText(tile, "idle-in-transaction") ?? "0"}</b>
               <span>Idle in tx</span>
             </div>

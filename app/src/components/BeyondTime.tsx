@@ -9,6 +9,7 @@ import type { TableStat } from "../gen/TableStat";
 import { serverName } from "../lib/engines";
 import { bytes, count, duration, percent, rowCount, when } from "../lib/format";
 import { waitKey } from "../lib/waits";
+import { querySignalStatus, replicaStatus, storageStatus, tableSignalWarning, worstFinding } from "../lib/health";
 import { SignalTile } from "./Health";
 
 /**
@@ -30,8 +31,6 @@ function verb(text: string): string {
   return (text.trimStart().replace(/^\(+/, "").match(/^[a-z]+/i)?.[0] ?? "").toLowerCase();
 }
 
-const grade = (value: number, watch: number, bad: number): Status => (value >= bad ? "bad" : value >= watch ? "watch" : "good");
-
 function lockMs(q: QueryStat): number {
   return q.waits.filter((w) => waitKey(w.category) === "lock").reduce((sum, w) => sum + w.wait_ms, 0);
 }
@@ -51,7 +50,7 @@ function costRows(report: Report, q: QueryStat): Row[] {
     if (aborted > 0) parts.push(`${count(aborted)} cancelled${c.aborted_mean_ms != null ? ` after ${duration(c.aborted_mean_ms)} on average` : ""}${timeout ? ", a client timeout" : ""}`);
     if (failed > 0) parts.push(`${count(failed)} errors${c.top_error ? `, recently ${c.top_error}` : ""}`);
     if (c.warnings) parts.push(`${count(c.warnings)} warnings`);
-    const status = aborted + failed >= 5 ? grade(rate, 0.01, 0.1) : aborted + failed > 0 ? "info" : "good";
+    const status = "info" as const;
     rows.push({
       key: "unfinished",
       label: "Didn't finish",
@@ -70,13 +69,23 @@ function costRows(report: Report, q: QueryStat): Row[] {
       label: engine === "postgres" ? "Planning" : "Compiling",
       value: `${percent(share)} of its time`,
       note: `${duration(c.plan_ms / plans)} per plan · ${plans >= runs * 0.9 ? "a new plan every run" : `each plan reused about ${count(runs / plans)} times`}`,
-      status: q.executions >= 50 ? grade(share, 0.25, 0.5) : "info",
+      status: "info",
       takeaway: `Planning takes ${percent(share)} of its time`,
     });
   } else if (engine === "postgres") {
     const tracking = report.snapshot.settings.find((s) => s.name === "pg_stat_statements.track_planning");
     if (tracking && tracking.value !== "on")
       rows.push({ key: "planning", label: "Planning", value: "not measured", note: "pg_stat_statements.track_planning is off", status: "info" });
+  }
+
+  if (engine === "mssql" && c?.plan_ms == null) {
+    const history = c?.compile_history;
+    rows.push({
+      key: "compile-history", label: "Compilation history",
+      value: history ? `${count(history.count)} compiles · ${duration(history.total_ms)}` : "not measured for this period",
+      note: history ? "Retained Query Store entry totals; compilation timestamps do not isolate the selected period" : "No compilation count measured for the selected period",
+      status: "info",
+    });
   }
 
   if (c?.jit_ms != null && q.total_time_ms > 0) {
@@ -86,7 +95,7 @@ function costRows(report: Report, q: QueryStat): Row[] {
       label: "JIT",
       value: `${percent(share)} of run time`,
       note: `${duration(c.jit_ms / runs)} per run${c.jit_functions ? ` · ${count(c.jit_functions)} functions compiled` : ""}`,
-      status: grade(share, 0.25, 0.5),
+      status: "info",
       takeaway: share >= 0.5 ? "JIT compiling takes longer than running it" : `JIT takes ${percent(share)} of its run time`,
     });
   }
@@ -99,7 +108,7 @@ function costRows(report: Report, q: QueryStat): Row[] {
       label: "Lock waits",
       value: `${percent(share)} of its time`,
       note: `${duration(lock / runs)} per run, waiting for rows other sessions hold`,
-      status: lock >= 10_000 ? grade(share, 0.25, 0.5) : "info",
+      status: "info",
       takeaway: `It waits on locks for ${percent(share)} of its time`,
     });
   }
@@ -113,11 +122,7 @@ function costRows(report: Report, q: QueryStat): Row[] {
       label: engine === "postgres" ? "WAL written" : "Log written",
       value: `${bytes(c.log_bytes / runs)} per run`,
       note: [c.log_share != null ? `${percent(c.log_share)} of all ${log}` : null, perRow != null ? `${bytes(perRow)} per row` : null].filter(Boolean).join(" · ") || "",
-      // The log-volume check's thresholds: a large share of a lot of log, or many KB per row changed.
-      status:
-        ((c.log_share ?? 0) >= 0.3 && c.log_bytes >= 1024 ** 3) || (perRow != null && perRow >= 4096 && (q.rows ?? 0) >= 1000 && c.log_bytes >= 100 * 1024 ** 2)
-          ? "watch"
-          : "info",
+      status: "info",
       takeaway: perRow != null && perRow >= 4096 ? `It writes ${bytes(perRow)} of ${log} per row it changes` : `It writes ${percent(c.log_share ?? 0)} of the ${log}`,
     });
   }
@@ -131,11 +136,15 @@ function costRows(report: Report, q: QueryStat): Row[] {
       label: "Result",
       value: `${rowCount(perRun)}${width ? ` ≈ ${bytes(perRun * width)}` : ""}`,
       note: `per run${width ? ` · about ${bytes(width)} a row, from the plan` : ""}`,
-      status: q.executions >= 20 ? grade(perRun, 10_000, 100_000) : "info",
+      status: "info",
       takeaway: `It returns ${rowCount(perRun)}${width ? ` (≈ ${bytes(perRun * width)})` : ""} per run`,
     });
   }
-  return rows;
+  const checks: Record<string, string[]> = {
+    unfinished: ["failing-query"], planning: ["planning-time"], jit: ["jit-overhead"],
+    lock: ["lock-time"], log: ["log-volume"], result: ["big-result"],
+  };
+  return rows.map((row) => ({ ...row, status: querySignalStatus(report, q, checks[row.key] ?? []) }));
 }
 
 function notKept(report: Report, q: QueryStat): string | null {
@@ -155,7 +164,7 @@ export function QueryCostsPanel({ report, query }: { report: Report; query: Quer
   const rows = costRows(report, query);
   if (rows.length === 0) return null;
   const worst = [...rows].sort((a, b) => RANK[a.status] - RANK[b.status])[0]!;
-  const lead = worst.status === "bad" || worst.status === "watch" ? `${worst.takeaway}.` : "Nothing here needs attention.";
+  const lead = worst.status === "bad" || worst.status === "watch" ? `${worst.takeaway}.` : "Recorded costs for this query.";
   const footer = notKept(report, query);
   return (
     <section className="beyond">
@@ -190,40 +199,29 @@ function avg(ms: number | null, n: number): number | null {
   return ms != null && n > 0 ? ms / n : null;
 }
 
-/** Status of a file from what its workload waits on: reads of data and temp files, writes of the log. */
-function fileStatus(f: FileIo): Status {
-  if (f.kind === "log") {
-    const w = avg(f.write_ms, f.writes);
-    return w == null || f.writes < 1000 ? "info" : grade(w, 10, 30);
-  }
-  const r = avg(f.read_ms, f.reads);
-  return r == null || f.reads < 1000 || f.kind === "other" ? "info" : grade(r, 20, 50);
-}
-
 function fileName(f: FileIo): string {
   return f.database && !f.name.startsWith(f.database) ? `${f.database} · ${f.name}` : f.name;
 }
 
-function storageLead(files: FileIo[], engine: Engine): { text: string; status: Status } {
+function storageLead(files: FileIo[], engine: Engine, report: Report): { text: string; status: Status } {
   const timed = files.filter((f) => f.read_ms != null || f.write_ms != null);
   if (timed.length === 0) {
     return engine === "postgres"
       ? { text: "PostgreSQL isn't timing reads and writes: turn on track_io_timing to see storage latency.", status: "info" }
       : { text: "The server counts reads and writes but doesn't time them.", status: "info" };
   }
-  const slow = [...files].map((f) => ({ f, s: fileStatus(f) })).sort((a, b) => RANK[a.s] - RANK[b.s])[0];
+  const slow = [...files].map((f) => ({ f, s: storageStatus(report, f) })).sort((a, b) => RANK[a.s] - RANK[b.s])[0];
   if (slow && (slow.s === "bad" || slow.s === "watch")) {
     const f = slow.f;
-    return f.kind === "log"
-      ? { text: `Writes to ${fileName(f)} average ${latency(avg(f.write_ms, f.writes))}: every commit waits for them.`, status: slow.s }
-      : { text: `Reads from ${fileName(f)} average ${latency(avg(f.read_ms, f.reads))}: storage is slow.`, status: slow.s };
+    const finding = worstFinding(report, (f) => f.check === "slow-storage");
+    return { text: finding ? `${finding.title}.` : `Recorded I/O for ${fileName(f)}.`, status: slow.s };
   }
   const reads = files.filter((f) => f.kind !== "log" && f.read_ms != null).reduce((a, f) => ({ ms: a.ms + (f.read_ms ?? 0), n: a.n + f.reads }), { ms: 0, n: 0 });
   const logs = files.filter((f) => f.kind === "log" && f.write_ms != null).reduce((a, f) => ({ ms: a.ms + (f.write_ms ?? 0), n: a.n + f.writes }), { ms: 0, n: 0 });
   const sentence = [reads.n > 0 ? `reads average ${latency(reads.ms / reads.n)}` : null, logs.n > 0 ? `log writes ${latency(logs.ms / logs.n)}` : null]
     .filter(Boolean)
     .join(" and ");
-  return { text: sentence ? `${sentence[0]!.toUpperCase()}${sentence.slice(1)}: storage keeps up.` : "Storage keeps up.", status: "good" };
+  return { text: sentence ? `${sentence[0]!.toUpperCase()}${sentence.slice(1)} over the recorded history.` : "No timed operations in this scan.", status: "info" };
 }
 
 function Latency({ ms, n, label }: { ms: number | null; n: number; label: string }) {
@@ -238,16 +236,16 @@ function Latency({ ms, n, label }: { ms: number | null; n: number; label: string
 }
 
 /** Average read and write time per file since startup, slowest first, under one sentence. */
-export function StorageLatency({ files, engine, compact }: { files: FileIo[]; engine: Engine; compact?: boolean }) {
+export function StorageLatency({ files, engine, report, compact }: { files: FileIo[]; engine: Engine; report: Report; compact?: boolean }) {
   if (files.length === 0) return null;
-  const lead = storageLead(files, engine);
+  const lead = storageLead(files, engine, report);
   return (
     <section className="io-panel">
       {!compact && (
         <div className="io-head">
           <h4>Storage</h4>
           <span className="muted">
-            average per read and write since start · {engine === "postgres" ? "whole server, including reads the OS cache served" : "by file"}
+            average per read and write over recorded history · {engine === "postgres" ? "whole server, including reads the OS cache served" : engine === "mysql" ? "whole server, by file" : "by database file"}
           </span>
         </div>
       )}
@@ -261,7 +259,7 @@ export function StorageLatency({ files, engine, compact }: { files: FileIo[]; en
         {files.slice(0, compact ? 8 : 12).map((f) => (
           <div key={`${f.database ?? ""}:${f.name}`} className="io-row" role="row">
             <span className="io-name" role="cell">
-              <i className={`sig-dot ${fileStatus(f)}`} aria-hidden />
+              <i className={`sig-dot ${storageStatus(report, f)}`} aria-hidden />
               <span className="io-file" title={fileName(f)}>
                 {fileName(f)}
               </span>
@@ -276,29 +274,15 @@ export function StorageLatency({ files, engine, compact }: { files: FileIo[]; en
   );
 }
 
-function replicaStatus(r: Replica): Status {
-  if (r.role === "slot") return r.state === "inactive" && (r.lag_bytes ?? 0) >= 1024 ** 3 ? "bad" : r.state === "inactive" ? "watch" : "good";
-  if (r.state && /stopped|not receiving|NOT SYNCHRONIZING/i.test(r.state)) return "bad";
-  const s = r.lag_seconds;
-  if (s != null) return grade(s, 30, 600);
-  return (r.lag_bytes ?? 0) >= 1024 ** 3 ? "watch" : "good";
-}
-
 const ROLE: Record<Replica["role"], string> = { replica: "replica", "this-server": "this server", slot: "slot" };
 
 /** Replicas, this server's own lag when it is one, and replication slots. */
-export function Replication({ replicas }: { replicas: Replica[] }) {
+export function Replication({ replicas, report }: { replicas: Replica[]; report: Report }) {
   if (replicas.length === 0) return null;
-  const worst = [...replicas].sort((a, b) => RANK[replicaStatus(a)] - RANK[replicaStatus(b)])[0]!;
-  const ws = replicaStatus(worst);
-  const lead =
-    ws === "good"
-      ? "Replicas are keeping up."
-      : worst.role === "slot"
-        ? `The inactive slot ${worst.name} keeps ${bytes(worst.lag_bytes)} of WAL.`
-        : worst.lag_seconds != null && ws !== "bad"
-          ? `${worst.role === "this-server" ? "This server" : worst.name} is ${duration(worst.lag_seconds * 1000)} behind.`
-          : `${worst.role === "this-server" ? "Replication to this server" : worst.name}: ${worst.state ?? "behind"}.`;
+  const worst = [...replicas].sort((a, b) => RANK[replicaStatus(report, a)] - RANK[replicaStatus(report, b)])[0]!;
+  const ws = replicaStatus(report, worst);
+  const finding = worstFinding(report, (f) => f.check === "replica-lag");
+  const lead = finding ? `${finding.title}.` : "Recorded replication state.";
   return (
     <section className="io-panel">
       <div className="io-head">
@@ -309,7 +293,7 @@ export function Replication({ replicas }: { replicas: Replica[] }) {
         {replicas.map((r) => (
           <div key={`${r.role}:${r.name}`} className="io-row repl" role="row">
             <span className="io-name" role="cell">
-              <i className={`sig-dot ${replicaStatus(r)}`} aria-hidden />
+              <i className={`sig-dot ${replicaStatus(report, r)}`} aria-hidden />
               <span className="io-file">{r.name}</span>
               <span className="io-kind">{ROLE[r.role]}</span>
             </span>
@@ -357,7 +341,7 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
         key="hot"
         label="HOT updates"
         value={percent(ratio)}
-        warn={ratio < 0.5 && (table.updates ?? 0) >= 10_000}
+        warn={tableSignalWarning(report, table, ["hot-updates"])}
         detail={`fillfactor ${s.fillfactor ?? 100}${s.new_page_updates != null ? ` · ${count(s.new_page_updates)} moved to a new page` : ""}`}
         title="Updates that stayed on their page and wrote no index entries"
       />,
@@ -371,7 +355,7 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
         key="bloat"
         label="Empty space"
         value={`≈ ${bytes(s.bloat_bytes)}`}
-        warn={share >= 0.4 && s.bloat_bytes >= 100 * 1024 ** 2}
+        warn={tableSignalWarning(report, table, ["table-bloat"])}
         detail={`${percent(share)} of the table, estimated`}
         title="Estimated from row counts and column widths in pg_stats"
       />,
@@ -388,7 +372,7 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
           key="locks"
           label="Lock waits"
           value={duration(lockMs)}
-          warn={lockMs >= 10_000}
+          warn={tableSignalWarning(report, table, ["hot-rows", "lock-escalations"])}
           detail={`${count(waits)} waits · most on ${worst.name}`}
           title="Row and page lock waits since the indexes were loaded"
         />,
@@ -401,7 +385,7 @@ export function TableSignalFacts({ report, table }: { report: Report; table: Tab
           key="latch"
           label="Page latch waits"
           value={duration(latch)}
-          warn={latch >= 10_000 && !!sequential}
+          warn={tableSignalWarning(report, table, ["last-page-insert"])}
           detail={sequential ? `last-page inserts on ${sequential.name}` : "hot pages"}
         />,
       );
@@ -459,14 +443,14 @@ export function SignalEvidence({ report, finding }: { report: Report; finding: F
       return p?.files?.length ? (
         <section>
           <h3>Evidence</h3>
-          <StorageLatency files={p.files} engine={snapshot.server.engine} compact />
+          <StorageLatency files={p.files} engine={snapshot.server.engine} report={report} compact />
         </section>
       ) : null;
     case "replica-lag":
       return p?.replicas?.length ? (
         <section>
           <h3>Evidence</h3>
-          <Replication replicas={p.replicas} />
+          <Replication replicas={p.replicas} report={report} />
         </section>
       ) : null;
     case "connection-churn": {

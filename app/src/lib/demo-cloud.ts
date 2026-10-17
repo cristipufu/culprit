@@ -53,8 +53,8 @@ export function demoCloud(connection: string, from: number, to: number): CloudSi
         metric: "CPUCreditBalance",
         worst: 0,
         title: "CPU credits ran out",
-        detail: "The credit balance hit zero: the instance was held to its 20% CPU baseline, so every query waited longer for CPU.",
-        ongoing: false,
+        detail: "The credit balance was zero; demand above the baseline can be limited in standard mode. This alone does not measure query delays.",
+        ongoing: false, status: "watch",
       },
     ];
     return {
@@ -104,8 +104,8 @@ export function demoCloud(connection: string, from: number, to: number): CloudSi
           metric: "log_write_percent",
           worst: 100,
           title: "Log writes hit the tier's limit",
-          detail: "Log writes stayed at 100% of GP_Gen5_2's limit: Azure held work back (commits wait on LOG_RATE_GOVERNOR).",
-          ongoing: false,
+          detail: "Log writes reached 100% of GP_Gen5_2's limit in recorded samples; this alone does not prove a query was delayed.",
+          ongoing: false, status: "watch",
         },
       ],
       summary: "In the period shown: log writes hit the tier's limit once.",

@@ -1,16 +1,16 @@
-//! The `checkpoint-pressure` check: Many checkpoints start because WAL filled max_wal_size rather than on schedule, causing write spikes.
+//! Requested checkpoints, with no inference of WAL pressure from the shared counter alone.
 
 use super::*;
 
 pub fn checkpoint_pressure_info() -> CheckInfo {
     CheckInfo {
         id: "checkpoint-pressure".into(),
-        title: "Checkpoints forced early".into(),
+        title: "Requested checkpoints".into(),
         category: Category::Configuration,
         engines: vec![Engine::Postgres],
         requires: vec![],
         description:
-            "Many checkpoints start because WAL filled max_wal_size rather than on schedule, causing write spikes."
+            "The server's requested checkpoints, with the possible causes and the evidence needed before changing WAL settings."
                 .into(),
     }
 }
@@ -34,19 +34,19 @@ pub fn checkpoint_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     );
     // PostgreSQL counts every checkpoint something asked for as requested: WAL reaching max_wal_size, but also a
     // manual CHECKPOINT, a base backup or CREATE DATABASE. The counter doesn't say which.
-    f.title = format!("{:.0}% of checkpoints start early, most likely because WAL fills max_wal_size", requested);
+    f.title = format!("{:.0}% of the server's recorded checkpoints were requested rather than timed", requested);
     f.summary = format!(
-        "A checkpoint writes every changed page to disk. On schedule (checkpoint_timeout) the work is spread out; forced by a full max_wal_size{} it happens all at once, causing write spikes and more full-page writes. {} of {} checkpoints since statistics were reset were requested rather than timed. WAL filling max_wal_size is the usual reason; a manual CHECKPOINT, a base backup or CREATE DATABASE requests one too, so if those run often they explain part of it.",
-        current.as_deref().map(|c| format!(" ({c})")).unwrap_or_default(),
+        "{} of {} checkpoints across the whole server were requested rather than timed since the checkpoint counters were reset. Requests can come from WAL reaching max_wal_size{}, a manual CHECKPOINT, a base backup or CREATE DATABASE. This counter does not distinguish their causes or measure write latency, so it does not establish that WAL is too small or that this database has write pressure.",
         format::count(total * requested / 100.0),
-        format::count(total)
+        format::count(total),
+        current.as_deref().map(|c| format!(" ({c})")).unwrap_or_default()
     );
-    f.severity = if requested >= 60.0 { Severity::Medium } else { Severity::Low };
+    f.severity = Severity::Low;
     f.impact.score = base_score(f.severity) + requested / 10.0;
-    f.impact.label = format!("{:.0}% forced", requested);
+    f.impact.label = format!("{:.0}% requested", requested);
     f.confidence = Confidence::Medium;
     f.metrics = vec![
-        Metric::new("Forced checkpoints", requested / 100.0, Unit::Ratio),
+        Metric::new("Requested checkpoints", requested / 100.0, Unit::Ratio),
         Metric::new("Checkpoints", total, Unit::Count),
     ];
     // More room than it has now: 8GB, or twice the current size when that's already at least 8GB.
@@ -59,12 +59,12 @@ pub fn checkpoint_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let change = setting_change(&snapshot.server, "max_wal_size", &proposed);
     f.fix = Some(Fix {
         summary: format!(
-            "Give WAL more room between checkpoints so they run on schedule. {} Check free disk space first: WAL can grow to about this size.",
+            "Inspect the checkpoint log (log_checkpoints) during normal load before changing anything. If it confirms frequent checkpoints caused by WAL filling max_wal_size, check free disk space and consider giving WAL more room: {} Backups and manual checkpoints need no WAL-size fix.",
             change.how
         ),
-        sql: change.sql,
+        sql: None,
         cost: Some("WAL takes more disk, and crash recovery can take a little longer.".into()),
     });
-    f.verify = vec!["Re-scan after a day of normal load: forced checkpoints should be under 10%.".into()];
+    f.verify = vec!["Check checkpoint reasons and write latency during comparable load. After a confirmed WAL-size change, WAL-triggered checkpoints should be less frequent; the requested-checkpoint ratio alone is not a health target.".into()];
     vec![f]
 }

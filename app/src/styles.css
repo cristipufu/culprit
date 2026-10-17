@@ -8454,6 +8454,9 @@ button.health-pill:hover {
   gap: 10px;
 }
 
+.historical-signals { margin-top: 14px; }
+.historical-signals summary { color: var(--text-2); font-size: var(--fs-ui-sm); cursor: pointer; margin-bottom: 10px; }
+
 .signal-grid.compact {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
 }

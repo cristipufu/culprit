@@ -1,16 +1,15 @@
-//! The `compile-pressure` check: A large share of batches compile a new plan instead of reusing one, which costs CPU on every call.
+//! Instance-wide compilation context, only when this database also has literal query families to inspect.
 
 use super::*;
 
 pub fn compile_pressure_info() -> CheckInfo {
     CheckInfo {
         id: "compile-pressure".into(),
-        title: "Plans compiled over and over".into(),
+        title: "Instance compilation context".into(),
         category: Category::Configuration,
         engines: vec![Engine::Mssql],
         requires: vec![],
-        description:
-            "A large share of batches compile a new plan instead of reusing one, which costs CPU on every call.".into(),
+        description: "Shared compilation counters provide context for this database's literal query families; measured Query Store costs establish its compilation impact.".into(),
     }
 }
 
@@ -18,9 +17,8 @@ check!(CompilePressureCheck: compile_pressure_info, compile_pressure);
 
 pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(compiles) = pressure(snapshot).and_then(|p| p.signal("compiles-per-batch")) else { return Vec::new() };
-    // An ungraded ratio is one the collector won't judge: on Azure SQL Database the counters are the server's behind
-    // the database (its elastic pool's too), and a handful of batches says nothing about plan reuse.
-    if compiles.status == SignalStatus::Info {
+    // Shared counters alone establish no compilation problem here; retained only as context when this database's own literal families make inspection worthwhile. Query Store supplies the database's measured compile costs.
+    if snapshot.server.on(culprit_core::Platform::AzureSqlDatabase) || snapshot.query_families.is_empty() {
         return Vec::new();
     }
     let ratio = compiles.value;
@@ -39,28 +37,19 @@ pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
         subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     f.title = format!(
-        "SQL Server compiles a new plan for {:.0}% of batches (about {} a minute)",
+        "The SQL Server instance recorded compilation for {:.0}% of batches (about {} a minute)",
         ratio,
         format::count(per_min)
     );
     f.summary = format!(
         "{}, the instance averaged {}/s batches across all its databases and compiled a new plan for {:.0}% of them, \
-         recompiles not counted. Healthy systems reuse plans and compile for under 10%. Compiling costs CPU on every \
-         call; this usually means the application sends statements with literal values instead of parameters.",
+         recompiles not counted. This ratio does not identify this database's compiles or measure its CPU pressure. This database has statements with different literal values; its own Query Store compile costs can show whether they warrant work.",
         capitalize(&uptime_phrase(snapshot)),
         format::count(batches),
         ratio
     );
-    // The counters are the instance's: this database is a likely source only when its own statements show the pattern
-    // (families of one statement with different literal values). Otherwise another database on the instance compiles.
-    let here = !snapshot.query_families.is_empty();
-    if !here {
-        f.summary.push_str(
-            " This database's own statements don't show it (no families of one statement sent with different literal values), so another database on the instance is the likelier source.",
-        );
-    }
-    // An average since the start describes the past: at most Medium.
-    f.severity = if ratio >= 25.0 && here { Severity::Medium } else { Severity::Low };
+    // Historical instance-wide context, without assigning the server's cost to this database.
+    f.severity = Severity::Low;
     f.impact.score = base_score(f.severity) + ratio / 5.0;
     f.impact.label = format!("{:.0}% of batches compile", ratio);
     f.confidence = Confidence::Medium;
@@ -71,25 +60,11 @@ pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     if let Some(recompiles) = signal(snapshot, "recompiles-per-batch").filter(|r| *r > 0.0) {
         f.metrics.push(Metric::new("Recompiles per 100 batches", recompiles, Unit::Count));
     }
-    // What cuts compiles is a plan that serves every value; caching one-off plans as stubs saves memory but compiles
-    // just as often, so it isn't the fix here (the plan-cache finding offers it for the memory).
-    f.fix = Some(if here {
-        Fix {
-            summary: "Send parameters instead of literal values (parameterized queries in the driver or ORM), so one plan serves every value. If you can't change the application, forced parameterization does it for the whole database.".into(),
-            sql: Some(format!(
-                "-- Prefer fixing the app. As a database-wide fallback:\nALTER DATABASE {} SET PARAMETERIZATION FORCED;",
-                quote(Engine::Mssql, &snapshot.server.database)
-            )),
-            cost: Some("Forced parameterization changes plans for every query, and some may suit one value badly: test it first and watch the regression findings.".into()),
-        }
-    } else {
-        Fix {
-            summary: "Find the database whose application sends literal values instead of parameters: scanning each database on the instance names its families of one statement with different values (the query-family check).".into(),
-            sql: None,
-            cost: None,
-        }
+    f.fix = Some(Fix {
+        summary: "Inspect this database's Query Store compile counts and durations and its query-family findings. If those measurements show costly repeated compilation, parameterize the affected statements. Do not change database-wide parameterization from the instance's ratio alone.".into(),
+        sql: None,
+        cost: None,
     });
-    f.verify =
-        vec!["Sample Right now in Waits (or re-scan): compilations should fall under 10% of batch requests.".into()];
+    f.verify = vec!["Compare this database's measured compilation costs under comparable load before and after the change. The instance-wide ratio alone cannot verify a fix in this database.".into()];
     vec![f]
 }

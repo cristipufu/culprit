@@ -86,7 +86,7 @@ pub(super) fn storage(report: &Report) -> Tile {
             if parts.is_empty() {
                 (TileStatus::Info, "Too little I/O since startup to judge storage speed.".to_string())
             } else {
-                (TileStatus::Good, format!("Storage answers quickly: {}.", parts.join(", ")))
+                (TileStatus::Info, format!("Recorded storage averages: {}.", parts.join(", ")))
             }
         }
     };
@@ -106,14 +106,24 @@ pub(super) fn storage(report: &Report) -> Tile {
                 let id = format!("{}:{}", f.database.as_deref().unwrap_or(""), f.name);
                 let mut item = TileItem::new(ItemKind::Signal, id, file_name(s, f));
                 item.value = Some(format!("{} per {what}", latency(avg)));
-                let limit = if f.kind == FileKind::Log { 10.0 } else { 20.0 };
-                item.status = Some(if avg >= limit * 2.5 {
-                    TileStatus::Bad
-                } else if avg >= limit {
-                    TileStatus::Watch
-                } else {
-                    TileStatus::Good
-                });
+                let prefix = format!("slow-storage:{}:", f.database.as_deref().unwrap_or(""));
+                item.status = Some(
+                    report
+                        .findings
+                        .iter()
+                        .filter(|g| !g.inactive && g.id.starts_with(&prefix))
+                        .filter(|g| {
+                            g.metrics.iter().any(|m| {
+                                matches!(m.label.as_str(), "File" | "Files")
+                                    && m.text
+                                        .as_ref()
+                                        .is_some_and(|names| names == &f.name || names.split(", ").any(|n| n == f.name))
+                            })
+                        })
+                        .map(|g| severity_status(g.severity))
+                        .max()
+                        .unwrap_or(TileStatus::Info),
+                );
                 (avg, item)
             })
         })
@@ -156,12 +166,15 @@ pub(super) fn connections(report: &Report) -> Tile {
         Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
         None => match rate {
             Some(r) if r.value >= 1.0 => (
-                TileStatus::Good,
-                format!("{} new connections a second, within what a pool keeps up with.", format::count(r.value)),
+                TileStatus::Info,
+                format!("{} new connections a second over the recorded counter history.", format::count(r.value)),
             ),
             Some(r) => (
-                TileStatus::Good,
-                format!("Connections are reused: {} new a minute.", format::count((r.value * 60.0).round())),
+                TileStatus::Info,
+                format!(
+                    "{} new connections a minute over the recorded counter history.",
+                    format::count((r.value * 60.0).round())
+                ),
             ),
             None => {
                 (TileStatus::Info, "This scan has no count of new connections; the ones in use are below.".to_string())
@@ -230,14 +243,9 @@ pub(super) fn replication(report: &Report) -> Tile {
     }
     let (status, takeaway) = match worst_finding(report, "replica-lag") {
         Some(f) => (severity_status(f.severity), format!("{}.", f.title.trim_end_matches('.'))),
-        None => (
-            TileStatus::Good,
-            format!(
-                "{} {} keeping up.",
-                capitalized(&plural(replicas.len(), "copy", "copies")),
-                if replicas.len() == 1 { "is" } else { "are" }
-            ),
-        ),
+        None => {
+            (TileStatus::Info, format!("Replication state recorded for {}.", plural(replicas.len(), "copy", "copies")))
+        }
     };
     let mut t = Tile::new(TileKey::Replication, status, takeaway);
     let mut rows: Vec<&Replica> = replicas.iter().collect();
@@ -258,13 +266,15 @@ pub(super) fn replication(report: &Report) -> Tile {
             };
             let mut item = TileItem::new(ItemKind::Signal, r.name.clone(), format!("{} ({role})", r.name));
             item.value = Some(lag_text(r));
-            item.status = Some(if r.error.is_some() || r.lag_seconds.is_some_and(|s| s >= 300.0) {
-                TileStatus::Bad
-            } else if r.lag_seconds.is_some_and(|s| s >= 30.0) || r.state.as_deref() == Some("inactive") {
-                TileStatus::Watch
-            } else {
-                TileStatus::Good
-            });
+            item.status = Some(
+                report
+                    .findings
+                    .iter()
+                    .filter(|f| f.check == "replica-lag" && !f.inactive && f.subject.name == r.name)
+                    .map(|f| severity_status(f.severity))
+                    .max()
+                    .unwrap_or(TileStatus::Info),
+            );
             item
         })
         .collect();
@@ -309,7 +319,7 @@ pub(super) fn failures(report: &Report) -> Tile {
         None => (
             TileStatus::Info,
             format!(
-                "{} didn't finish over {window}, too few to matter.",
+                "{} didn't finish over {window}; the recorded counts do not establish a current error-rate problem.",
                 capitalized(&plural(total.round() as usize, "run", "runs"))
             ),
         ),
@@ -334,15 +344,14 @@ pub(super) fn failures(report: &Report) -> Tile {
             item.share = Some(*rate);
             let id = format!("failing-query:{}", q.id);
             item.finding_id = report.findings.iter().find(|f| f.id == id).map(|f| f.id.clone());
-            item.status = Some(if *unfinished < 5.0 {
-                TileStatus::Info
-            } else if *rate >= 0.1 {
-                TileStatus::Bad
-            } else if *rate >= 0.01 {
-                TileStatus::Watch
-            } else {
-                TileStatus::Info
-            });
+            item.status = Some(
+                report
+                    .findings
+                    .iter()
+                    .find(|f| f.id == id && !f.inactive)
+                    .map(|f| severity_status(f.severity))
+                    .unwrap_or(TileStatus::Info),
+            );
             item
         })
         .collect();

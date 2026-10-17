@@ -23,7 +23,7 @@ const FRESH_SECONDS: f64 = 300.0;
 /// What a resource is (class, storage, tier) changes rarely; look it up again after a day.
 const RESOLVE_SECONDS: f64 = 86_400.0;
 /// CloudWatch keeps 1-minute points for 15 days; never ask for more than 14.
-const MAX_DAYS: f64 = 14.0;
+const MAX_DAYS: f64 = 30.0;
 const CLI_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Where a connection lives in the cloud, from its host name.
@@ -119,7 +119,7 @@ struct Cache {
     host: String,
     resource: Option<Resource>,
     resolved_at: Option<f64>,
-    /// One fetch per resolution (24 hours at 5 minutes, a week at 30, two at an hour), so switching periods is instant.
+    /// Recent fetches at each resolution, assessed for their original period.
     #[serde(default)]
     fetches: Vec<Fetch>,
 }
@@ -170,6 +170,16 @@ fn period_for(span: f64) -> u32 {
     }
 }
 
+fn reusable(fetch: &Fetch, start: f64, end: f64, now: f64) -> bool {
+    let step = f64::from(fetch.signals.period_seconds);
+    let (from, to) = (epoch(&fetch.signals.start).unwrap_or(f64::MAX), epoch(&fetch.signals.end).unwrap_or(0.0));
+    let fresh = now - fetch.at < FRESH_SECONDS;
+    ((to - from) - (end - start)).abs() < 2.0
+        && from <= start + step
+        && (to >= end - step || fresh)
+        && fetch.signals.period_seconds <= period_for(end - start)
+}
+
 /// The cloud's view of `info` between `start` and `end` (epoch seconds), from the cache when it is fresh.
 pub async fn signals(dir: &Path, info: &ConnectionInfo, start: f64, end: f64, refresh: bool) -> Result<CloudSignals> {
     let target = target(info).ok_or_else(|| {
@@ -185,17 +195,13 @@ pub async fn signals(dir: &Path, info: &ConnectionInfo, start: f64, end: f64, re
     let now = now();
     let end = end.min(now);
     let start = start.max(end - MAX_DAYS * 86_400.0).min(end - 600.0);
-    let mut cache = read_cache(dir, &info.host);
+    let cache_key = format!("{}:{}/{}", info.engine, info.host, info.database.as_deref().unwrap_or(""));
+    let mut cache = read_cache(dir, &cache_key);
     if !refresh {
         // Reuse a fetch that covers the period at least as finely as a fresh one would.
-        let reusable = cache.fetches.iter().find(|f| {
-            let step = f64::from(f.signals.period_seconds);
-            let (from, to) = (epoch(&f.signals.start).unwrap_or(f64::MAX), epoch(&f.signals.end).unwrap_or(0.0));
-            let fresh = now - f.at < FRESH_SECONDS;
-            from <= start + step && (to >= end - step || fresh) && f.signals.period_seconds <= period_for(end - start)
-        });
-        if let Some(f) = reusable {
-            return Ok(trim(&f.signals, start, end));
+        if let Some(f) = cache.fetches.iter().find(|f| reusable(f, start, end, now)) {
+            // Keep its actual recorded range and assessment together; a different selected span needs a new fetch.
+            return Ok(f.signals.clone());
         }
     }
     let resource = match (&cache.resource, cache.resolved_at) {
@@ -217,20 +223,6 @@ pub async fn signals(dir: &Path, info: &ConnectionInfo, start: f64, end: f64, re
     cache.fetches.push(Fetch { signals: signals.clone(), at: now });
     write_cache(dir, &cache);
     Ok(signals)
-}
-
-/// A longer fetch cut down to `[start, end]`: points, episodes and the summary.
-fn trim(signals: &CloudSignals, start: f64, end: f64) -> CloudSignals {
-    let inside = |at: &str| epoch(at).is_some_and(|t| t >= start - 1.0 && t <= end);
-    let mut out = signals.clone();
-    for series in &mut out.series {
-        series.points.retain(|p| inside(&p.at));
-    }
-    out.episodes.retain(|e| epoch(&e.end).is_some_and(|t| t >= start) && epoch(&e.start).is_some_and(|t| t <= end));
-    out.start = iso(start);
-    out.end = iso(end.min(epoch(&signals.end).unwrap_or(end)));
-    out.summary = summarize(&out.episodes, &span_words(start, end));
-    out
 }
 
 /// "last 24 h", or "6 h up to Tue 14:00 UTC" for a period in the past.
@@ -500,12 +492,14 @@ fn rds_judge(
         None => cpu,
     };
     let saturated = |worst: f64, lasted: &str| {
-        format!("CPU stayed above 90% for {lasted}, peaking at {worst:.0}%: queries queued for CPU.")
+        format!(
+            "CPU was above 90% in the recorded samples over {lasted}, peaking at {worst:.0}%. That leaves little headroom; these metrics alone do not measure query delays."
+        )
     };
     found.extend(episodes(
         &cpu,
         period,
-        &rule("CPUUtilization", ThrottleKind::CpuLimit, 90.0, false, 3, "CPU was saturated", &saturated),
+        &rule("CPUUtilization", ThrottleKind::CpuLimit, 90.0, false, 3, "CPU use was high", &saturated),
     ));
     series.push(cpu);
 
@@ -517,11 +511,11 @@ fn rds_judge(
         let detail = move |_: f64, lasted: &str| {
             if unlimited {
                 format!(
-                    "The credit balance hit zero for {lasted}. In unlimited mode the instance kept bursting on surplus credits, which AWS bills; in standard mode it is held to its {b:.0}% CPU baseline."
+                    "The credit balance was zero in samples over {lasted}, and surplus credits were used. Unlimited mode can continue above the {b:.0}% baseline; these counters alone do not establish query delays."
                 )
             } else {
                 format!(
-                    "The credit balance hit zero for {lasted}: the instance was held to its {b:.0}% CPU baseline, so every query waited longer for CPU."
+                    "The credit balance was zero in samples over {lasted}. In standard mode, demand above its {b:.0}% CPU baseline is limited; unlimited mode can keep bursting. Credit balance alone does not establish longer query times."
                 )
             }
         };
@@ -529,7 +523,7 @@ fn rds_judge(
         found.extend(episodes(
             &s,
             period,
-            &rule("CPUCreditBalance", ThrottleKind::CpuCredits, 0.5, true, 2, "CPU credits ran out", &detail),
+            &rule("CPUCreditBalance", ThrottleKind::CpuCredits, 0.0, true, 2, "CPU credits ran out", &detail),
         ));
         series.push(s);
     }
@@ -544,7 +538,7 @@ fn rds_judge(
                 let limit_words = format!("provisioned {} IOPS", format::count(limit));
                 let detail = move |worst: f64, lasted: &str| {
                     format!(
-                        "Reads and writes reached {} IOPS against the provisioned {} for {lasted}; IO queued behind the limit.",
+                        "Reads and writes reached {} IOPS against the provisioned {} in samples over {lasted}. Near a provisioned limit leaves little headroom; confirm read and write latency before changing capacity.",
                         format::count(worst),
                         format::count(limit)
                     )
@@ -559,7 +553,7 @@ fn rds_judge(
                         limit * 0.95,
                         false,
                         3,
-                        "IOPS hit the provisioned limit",
+                        "IOPS were near the provisioned limit",
                         &detail,
                     ),
                 ));
@@ -579,7 +573,7 @@ fn rds_judge(
         let base = gp2_baseline_iops(gb);
         let detail = move |_: f64, lasted: &str| {
             format!(
-                "The volume's burst balance hit zero for {lasted}: IO was held to its baseline of {} IOPS.",
+                "The volume's burst balance was depleted in samples over {lasted}; its baseline is {} IOPS. This alone does not establish query delays.",
                 format::count(base)
             )
         };
@@ -587,7 +581,7 @@ fn rds_judge(
         found.extend(episodes(
             &s,
             period,
-            &rule("BurstBalance", ThrottleKind::IoCredits, 1.0, true, 2, "Storage burst credits ran out", &detail),
+            &rule("BurstBalance", ThrottleKind::IoCredits, 0.0, true, 2, "Storage burst credits ran out", &detail),
         ));
         series.push(s);
     }
@@ -602,14 +596,14 @@ fn rds_judge(
         let class_words = class.clone();
         let detail = move |_: f64, lasted: &str| {
             format!(
-                "{class_words}'s EBS burst balance hit zero for {lasted}: storage bandwidth fell to the instance class's baseline."
+                "{class_words}'s EBS burst balance was depleted in samples over {lasted}. Demand above the baseline can be limited; compare actual I/O demand and latency before changing capacity."
             )
         };
         let s = CloudSeries::new(metric, label, CloudUnit::Percent, points).floor();
         found.extend(episodes(
             &s,
             period,
-            &rule(metric, ThrottleKind::IoCredits, 1.0, true, 2, "EBS burst ran out", &detail),
+            &rule(metric, ThrottleKind::IoCredits, 0.0, true, 2, "EBS burst ran out", &detail),
         ));
         series.push(s);
     }
@@ -635,7 +629,7 @@ fn rds_judge(
             Some(v) => {
                 let detail = move |worst: f64, lasted: &str| {
                     format!(
-                        "{worst:.1} sessions wanted to run on {v:.0} vCPUs, more than 1.5 per vCPU for {lasted}: sessions waited for CPU or IO."
+                        "The recorded active-session count peaked at {worst:.1} on {v:.0} vCPUs over {lasted}. Active sessions can be running or waiting on many kinds of events; this count alone does not establish a CPU shortage."
                     )
                 };
                 let s = s.limit(v, format!("{v:.0} vCPUs"));
@@ -754,7 +748,8 @@ fn finish(
 ) -> CloudSignals {
     found.sort_by(|a, b| a.start.cmp(&b.start));
     let span = span_words(start, end);
-    if series.iter().all(|s| s.points.is_empty()) {
+    let no_data = series.iter().all(|s| s.points.is_empty());
+    if no_data {
         notes.push(format!("{source} returned no data points for this period."));
     }
     let minutes = format::duration(f64::from(period) * 1000.0);
@@ -767,7 +762,11 @@ fn finish(
         start: iso(start),
         end: iso(end),
         period_seconds: period,
-        summary: summarize(&found, &span),
+        summary: if no_data {
+            format!("No cloud measurements were available for the {span}.")
+        } else {
+            summarize(&found, &span)
+        },
         series,
         episodes: found,
         notes,
@@ -920,7 +919,7 @@ fn azure_judge(
             let sku_words = sku_words.clone();
             move |worst: f64, lasted: &str| {
                 format!(
-                    "{what} stayed at {worst:.0}% of {sku_words}'s limit for {lasted}: Azure held work back{waits}."
+                    "{what} reached {worst:.0}% of {sku_words}'s limit in recorded samples over {lasted}. Near a limit leaves little headroom; actual throttling or query delay is not measured by this percentage{waits}."
                 )
             }
         };
@@ -929,50 +928,49 @@ fn azure_judge(
                 ThrottleKind::CpuLimit,
                 95.0,
                 false,
-                "CPU hit the tier's limit",
-                Box::new(limit_detail("CPU", " (queries wait on SOS_SCHEDULER_YIELD)")),
+                "CPU was near the tier's limit",
+                Box::new(limit_detail("CPU", "")),
             )),
             ("cpu_percent", _) => {
-                Some((ThrottleKind::CpuLimit, 95.0, false, "CPU was saturated", Box::new(limit_detail("CPU", ""))))
+                Some((ThrottleKind::CpuLimit, 95.0, false, "CPU use was high", Box::new(limit_detail("CPU", ""))))
             }
             ("physical_data_read_percent", _) => Some((
                 ThrottleKind::IoLimit,
                 95.0,
                 false,
-                "Data IO hit the tier's limit",
-                Box::new(limit_detail("Data IO", " (reads wait on PAGEIOLATCH)")),
+                "Data IO was near the tier's limit",
+                Box::new(limit_detail("Data IO", "")),
             )),
             ("log_write_percent", _) => Some((
                 ThrottleKind::LogRate,
                 95.0,
                 false,
-                "Log writes hit the tier's limit",
-                Box::new(limit_detail("Log writes", " (commits wait on LOG_RATE_GOVERNOR)")),
+                "Log writes were near the tier's limit",
+                Box::new(limit_detail("Log writes", "")),
             )),
             ("workers_percent", _) => Some((
                 ThrottleKind::Workers,
                 90.0,
                 false,
-                "Worker threads ran short",
-                Box::new(limit_detail("Workers in use", "; new requests wait or fail")),
+                "Worker use neared the tier's limit",
+                Box::new(limit_detail("Workers in use", "; requests can be refused at the cap")),
             )),
             ("sessions_percent", _) => Some((
                 ThrottleKind::Workers,
                 90.0,
                 false,
                 "Sessions neared the tier's limit",
-                Box::new(limit_detail("Sessions", "; new connections fail at 100%")),
+                Box::new(limit_detail("Sessions", "; connections can be refused at 100%")),
             )),
             ("disk_iops_consumed_percentage" | "io_consumption_percent", _) => Some((
                 ThrottleKind::IoLimit,
                 95.0,
                 false,
-                "Storage IOPS hit the limit",
-                Box::new(limit_detail("IOPS", "; IO queued behind the limit")),
+                "Storage IOPS were near their limit",
+                Box::new(limit_detail("IOPS", "")),
             )),
-            ("memory_percent", _) => {
-                Some((ThrottleKind::Memory, 95.0, false, "Memory ran short", Box::new(limit_detail("Memory", ""))))
-            }
+            // Allocated memory can include useful cache; a high percentage alone establishes no shortage.
+            ("memory_percent", _) => None,
             ("storage_percent", _) => Some((
                 ThrottleKind::Storage,
                 95.0,
@@ -982,12 +980,12 @@ fn azure_judge(
             )),
             ("cpu_credits_remaining", _) if burstable => Some((
                 ThrottleKind::CpuCredits,
-                1.0,
+                0.0,
                 true,
                 "CPU credits ran out",
                 Box::new(|_: f64, lasted: &str| {
                     format!(
-                        "The Burstable server's CPU credits hit zero for {lasted}: it was held to its baseline CPU."
+                        "The Burstable server's CPU-credit balance was zero in samples over {lasted}. Demand above baseline can be limited; these counters alone do not measure query delays."
                     )
                 }),
             )),
@@ -1044,6 +1042,18 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_day_cannot_supply_an_hours_assessment() {
+        let start = 1_791_720_000.0;
+        let end = start + 86400.0;
+        let signals = rds_judge(&Resource::default(), Default::default(), start, end, 300);
+        let fetch = Fetch { signals, at: end };
+        assert!(reusable(&fetch, start, end, end));
+        assert!(!reusable(&fetch, end - 3600.0, end, end));
+        assert!(!reusable(&fetch, end - 6.0 * 3600.0, end, end));
+        assert!(!reusable(&fetch, start, end + 86400.0, end + 86400.0));
+    }
+
+    #[test]
     fn hosts_map_to_cloud_resources() {
         assert_eq!(
             target(&info(Engine::Postgres, "shop-db.abc123.us-east-1.rds.amazonaws.com", None)),
@@ -1076,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn a_burstable_instance_out_of_credits_is_throttled() {
+    fn zero_credit_balance_warns_without_asserting_query_throttling() {
         let resource = Resource {
             service: "Amazon RDS for PostgreSQL".into(),
             name: "shop".into(),
@@ -1094,8 +1104,8 @@ mod tests {
         assert_eq!(s.episodes.len(), 1, "{:?}", s.episodes);
         let e = &s.episodes[0];
         assert_eq!(e.kind, ThrottleKind::CpuCredits);
-        assert!(e.ongoing);
-        assert!(e.detail.contains("held to its 20% CPU baseline"), "{}", e.detail);
+        assert!(!e.ongoing, "a positive credit balance has recovered");
+        assert!(e.detail.contains("20% CPU baseline") && e.detail.contains("alone does not establish"), "{}", e.detail);
         assert_eq!(s.tier.as_deref(), Some("db.t3.small (burstable, 2 vCPUs) · gp2, 20 GB"));
         let iops = s.series("IOPS").unwrap();
         assert_eq!(iops.limit, Some(100.0));
@@ -1120,7 +1130,18 @@ mod tests {
         let s = azure_judge(&target, &resource, raw, vec![], 1_791_720_000.0, 1_791_720_900.0, 300);
         assert_eq!(s.episodes.len(), 1);
         assert_eq!(s.episodes[0].kind, ThrottleKind::LogRate);
-        assert!(s.episodes[0].detail.contains("LOG_RATE_GOVERNOR"), "{}", s.episodes[0].detail);
+        assert_eq!(s.episodes[0].status, culprit_core::SignalStatus::Watch);
+        assert!(s.episodes[0].detail.contains("not measured by this percentage"), "{}", s.episodes[0].detail);
         assert_eq!(s.series("cpu_percent").unwrap().limit, Some(100.0));
+    }
+
+    #[test]
+    fn azure_allocated_memory_is_visible_without_asserting_a_shortage() {
+        let target = Target::AzureFlexible { engine: Engine::Postgres, server: "shop".into() };
+        let mut raw = std::collections::BTreeMap::new();
+        raw.insert("memory_percent".to_string(), points(&[100.0, 100.0, 100.0]));
+        let s = azure_judge(&target, &Resource::default(), raw, vec![], 1_791_720_000.0, 1_791_720_900.0, 300);
+        assert!(s.series("memory_percent").is_some());
+        assert!(s.episodes.is_empty(), "a full cache does not establish memory pressure");
     }
 }

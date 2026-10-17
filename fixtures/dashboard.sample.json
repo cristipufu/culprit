@@ -1,9 +1,7 @@
 {
   "mariadb-demo": {
     "attention": [
-      "statistics",
-      "deadlocks",
-      "health"
+      "statistics"
     ],
     "connection": "mariadb-demo",
     "coverage": "performance_schema, the 1 minute since statistics were reset",
@@ -259,70 +257,37 @@
         "title": "Right now"
       },
       {
-        "detail": "Counters since startup cover 69 minutes.",
+        "detail": "Each signal states the period it measures.",
         "fix_sql": null,
         "items": [
           {
             "at": null,
             "finding_id": null,
-            "id": "tmp-disk-tables",
-            "kind": "signal",
-            "label": "Temporary tables on disk",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "17%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "buffer-pool-hit",
             "kind": "signal",
-            "label": "Reads served from memory",
+            "label": "Reads served from memory (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "100%"
           },
           {
             "at": null,
             "finding_id": null,
-            "id": "connections",
+            "id": "tmp-disk-tables",
             "kind": "signal",
-            "label": "Connections in use",
+            "label": "Temporary tables on disk (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
-            "value": "3%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "history-length",
-            "kind": "signal",
-            "label": "Undo history",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "new-connections",
-            "kind": "signal",
-            "label": "New connections",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0.0/s"
+            "status": "info",
+            "value": "17%"
           },
           {
             "at": null,
             "finding_id": null,
             "id": "questions",
             "kind": "signal",
-            "label": "Statements",
+            "label": "Statements (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -333,7 +298,7 @@
             "finding_id": null,
             "id": "threads-running",
             "kind": "signal",
-            "label": "Statements running now",
+            "label": "Statements running now (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -344,11 +309,44 @@
             "finding_id": null,
             "id": "row-lock-waits",
             "kind": "signal",
-            "label": "Row-lock waits",
+            "label": "Row-lock waits (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
             "value": "17.3/h"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "row-lock-avg",
+            "kind": "signal",
+            "label": "Average row-lock wait (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "7.6 s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "3%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "max-used-connections",
+            "kind": "signal",
+            "label": "Busiest moment (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "4%"
           }
         ],
         "key": "health",
@@ -362,19 +360,19 @@
           {
             "key": "watch",
             "label": "Watch",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "4",
-            "value": 4.0
+            "text": "0",
+            "value": 0.0
           }
         ],
         "next": "culprit waits mariadb-demo",
-        "status": "watch",
-        "takeaway": "Temporary tables on disk: 17%; under 10% of temporary tables is healthy.",
+        "status": "info",
+        "takeaway": "12 signals recorded; none has a threshold to grade.",
         "title": "Health"
       },
       {
@@ -403,7 +401,7 @@
           }
         ],
         "next": "culprit deadlocks mariadb-demo",
-        "status": "watch",
+        "status": "info",
         "takeaway": "One deadlock in the last day: opposite access order on shop.customers, shop.orders.",
         "title": "Deadlocks"
       },
@@ -502,7 +500,7 @@
             "label": "shop/customers.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "43 µs per read"
           },
           {
@@ -513,7 +511,7 @@
             "label": "shop/order_items.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "22 µs per read"
           },
           {
@@ -524,7 +522,7 @@
             "label": "shop/orders.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "7 µs per read"
           }
         ],
@@ -538,8 +536,8 @@
           }
         ],
         "next": "culprit waits mariadb-demo",
-        "status": "good",
-        "takeaway": "Storage answers quickly: reads average 43 µs.",
+        "status": "info",
+        "takeaway": "Recorded storage averages: reads average 43 µs.",
         "title": "Storage"
       },
       {
@@ -551,10 +549,10 @@
             "finding_id": null,
             "id": "connections",
             "kind": "signal",
-            "label": "Connections in use",
+            "label": "Connections in use (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "3%"
           }
         ],
@@ -568,8 +566,8 @@
           }
         ],
         "next": "culprit waits mariadb-demo",
-        "status": "good",
-        "takeaway": "Connections are reused: 1 new a minute.",
+        "status": "info",
+        "takeaway": "1 new connections a minute over the recorded counter history.",
         "title": "Connections"
       },
       {
@@ -636,7 +634,6 @@
     "attention": [
       "findings",
       "failures",
-      "deadlocks",
       "waits",
       "plans"
     ],
@@ -645,7 +642,7 @@
     "database": "culprit_demo",
     "engine": "mssql",
     "environment": "local",
-    "headline": "25 opportunities; the top 3 touch 83% of database time.",
+    "headline": "23 opportunities; the top 3 touch 83% of database time.",
     "product": "SQL Server 2022",
     "report_id": "20261011T121347.162Z",
     "taken_at": "2026-10-11T12:13:47Z",
@@ -741,13 +738,13 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "14",
-            "value": 14.0
+            "text": "12",
+            "value": 12.0
           }
         ],
         "next": "culprit findings mssql-demo",
         "status": "bad",
-        "takeaway": "25 opportunities; the top 3 touch 83% of database time.",
+        "takeaway": "23 opportunities; the top 3 touch 83% of database time.",
         "title": "Findings"
       },
       {
@@ -922,20 +919,9 @@
         "title": "Right now"
       },
       {
-        "detail": "Counters since startup cover 67 minutes.",
+        "detail": "Each signal states the period it measures.",
         "fix_sql": null,
         "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "page-life",
-            "kind": "signal",
-            "label": "Page life expectancy",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "1 h 7 min"
-          },
           {
             "at": null,
             "finding_id": null,
@@ -950,12 +936,45 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "signal-wait",
+            "id": "batch-requests",
             "kind": "signal",
-            "label": "Waiting for CPU",
+            "label": "Batch requests (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
+            "value": "0.2/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "compiles-per-batch",
+            "kind": "signal",
+            "label": "Plans compiled (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "46%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "page-life",
+            "kind": "signal",
+            "label": "Page life expectancy (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "1 h 7 min"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "signal-wait",
+            "kind": "signal",
+            "label": "Scheduling share of recorded waits (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
             "value": "2%"
           },
           {
@@ -963,10 +982,10 @@
             "finding_id": null,
             "id": "threadpool-waits",
             "kind": "signal",
-            "label": "Waiting for workers, per hour",
+            "label": "Waiting for workers, per hour (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "973 ms"
           },
           {
@@ -974,10 +993,10 @@
             "finding_id": null,
             "id": "threadpool-waiting",
             "kind": "signal",
-            "label": "Tasks without a worker",
+            "label": "Tasks without a worker (whole instance)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "0"
           },
           {
@@ -988,30 +1007,8 @@
             "label": "Version store",
             "query_id": null,
             "share": null,
-            "status": "good",
-            "value": "0 B"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "new-connections",
-            "kind": "signal",
-            "label": "New connections",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0.0/s"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "batch-requests",
-            "kind": "signal",
-            "label": "Batch requests",
-            "query_id": null,
-            "share": null,
             "status": "info",
-            "value": "0.2/s"
+            "value": "0 B"
           }
         ],
         "key": "health",
@@ -1031,13 +1028,13 @@
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "7",
-            "value": 7.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit waits mssql-demo",
         "status": "good",
-        "takeaway": "All 7 graded signals look healthy.",
+        "takeaway": "The one graded signal looks healthy.",
         "title": "Health"
       },
       {
@@ -1054,17 +1051,6 @@
             "share": null,
             "status": "watch",
             "value": "1×"
-          },
-          {
-            "at": "2026-10-11T13:58:59Z",
-            "finding_id": "deadlocks:key-lookup:shop.customers",
-            "id": "8e8d0546690aef93",
-            "kind": "deadlock",
-            "label": "Opposite access order on shop.customers, shop.orders",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1×"
           }
         ],
         "key": "deadlocks",
@@ -1072,13 +1058,13 @@
           {
             "key": "count",
             "label": "Deadlocks",
-            "text": "2",
-            "value": 2.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit deadlocks mssql-demo",
-        "status": "watch",
-        "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
+        "status": "info",
+        "takeaway": "One deadlock in the last 6 hours: key-lookup deadlock on shop.customers.",
         "title": "Deadlocks"
       },
       {
@@ -1254,7 +1240,7 @@
             "label": "culprit_demo log",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "632 µs per write"
           },
           {
@@ -1265,7 +1251,7 @@
             "label": "culprit_demo",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "40 µs per read"
           }
         ],
@@ -1285,8 +1271,8 @@
           }
         ],
         "next": "culprit waits mssql-demo",
-        "status": "good",
-        "takeaway": "Storage answers quickly: reads average 40 µs, log writes 632 µs.",
+        "status": "info",
+        "takeaway": "Recorded storage averages: reads average 40 µs, log writes 632 µs.",
         "title": "Storage"
       },
       {
@@ -1303,8 +1289,8 @@
           }
         ],
         "next": "culprit waits mssql-demo",
-        "status": "good",
-        "takeaway": "Connections are reused: 3 new a minute.",
+        "status": "info",
+        "takeaway": "3 new connections a minute over the recorded counter history.",
         "title": "Connections"
       },
       {
@@ -1430,7 +1416,7 @@
     "attention": [
       "statistics",
       "findings",
-      "deadlocks"
+      "health"
     ],
     "connection": "mssql-demo-staging",
     "coverage": null,
@@ -1462,11 +1448,11 @@
             "finding_id": "tier-limit:log-write",
             "id": "tier-limit:log-write",
             "kind": "finding",
-            "label": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
+            "label": "Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes",
             "query_id": null,
             "share": null,
             "status": "bad",
-            "value": "at limit 38%"
+            "value": "near limit 38%"
           },
           {
             "at": null,
@@ -1484,7 +1470,7 @@
             "finding_id": "deadlocks:key-lookup:shop.customers",
             "id": "deadlocks:key-lookup:shop.customers",
             "kind": "finding",
-            "label": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+            "label": "Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -1508,13 +1494,13 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "7",
-            "value": 7.0
+            "text": "6",
+            "value": 6.0
           }
         ],
         "next": "culprit findings mssql-demo-staging",
         "status": "bad",
-        "takeaway": "8 opportunities, 1 of them high.",
+        "takeaway": "7 opportunities, 1 of them high.",
         "title": "Findings"
       },
       {
@@ -1614,14 +1600,89 @@
         "title": "Right now"
       },
       {
-        "detail": "Scan again to read compiles, memory, cache and connection counters.",
+        "detail": "Each signal states the period it measures.",
         "fix_sql": null,
-        "items": [],
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "log-write-use",
+            "kind": "signal",
+            "label": "Log throughput used against its limit",
+            "query_id": null,
+            "share": null,
+            "status": "bad",
+            "value": "67%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "cpu-use",
+            "kind": "signal",
+            "label": "CPU used against its limit",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "43%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "data-io",
+            "kind": "signal",
+            "label": "Storage I/O used against its limit",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "15%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "workers-use",
+            "kind": "signal",
+            "label": "Worker slots used against their limit",
+            "query_id": null,
+            "share": null,
+            "status": "good",
+            "value": "6%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "memory-use",
+            "kind": "signal",
+            "label": "Memory allocated against its limit",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "74%"
+          }
+        ],
         "key": "health",
-        "metrics": [],
+        "metrics": [
+          {
+            "key": "bad",
+            "label": "Bad",
+            "text": "1",
+            "value": 1.0
+          },
+          {
+            "key": "watch",
+            "label": "Watch",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "healthy",
+            "label": "Healthy",
+            "text": "3",
+            "value": 3.0
+          }
+        ],
         "next": "culprit waits mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "This scan recorded no health counters.",
+        "status": "bad",
+        "takeaway": "Log throughput used against its limit: 67%; 7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 99.6%. At or above 95% of this database's limit in 38% of samples. A warning needs at least 10% of samples near the limit.",
         "title": "Health"
       },
       {
@@ -1638,17 +1699,6 @@
             "share": null,
             "status": "watch",
             "value": "1×"
-          },
-          {
-            "at": "2026-10-11T13:58:59Z",
-            "finding_id": "deadlocks:key-lookup:shop.customers",
-            "id": "8e8d0546690aef93",
-            "kind": "deadlock",
-            "label": "Opposite access order on shop.customers, shop.orders",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1×"
           }
         ],
         "key": "deadlocks",
@@ -1656,13 +1706,13 @@
           {
             "key": "count",
             "label": "Deadlocks",
-            "text": "2",
-            "value": 2.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit deadlocks mssql-demo-staging",
-        "status": "watch",
-        "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
+        "status": "info",
+        "takeaway": "One deadlock in the last 6 hours: key-lookup deadlock on shop.customers.",
         "title": "Deadlocks"
       },
       {
@@ -1826,16 +1876,14 @@
     "attention": [
       "findings",
       "failures",
-      "health",
-      "statistics",
-      "deadlocks"
+      "statistics"
     ],
     "connection": "mysql-demo",
     "coverage": "performance_schema, the 2 minutes since statistics were reset",
     "database": "shop",
     "engine": "mysql",
     "environment": "local",
-    "headline": "11 opportunities; the top 3 touch 85% of database time.",
+    "headline": "10 opportunities; the top 3 touch 85% of database time.",
     "product": "MySQL 8.4.11",
     "report_id": "20261011T120900.394Z",
     "taken_at": "2026-10-11T12:09:00Z",
@@ -1925,13 +1973,13 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "10",
-            "value": 10.0
+            "text": "9",
+            "value": 9.0
           }
         ],
         "next": "culprit findings mysql-demo",
         "status": "bad",
-        "takeaway": "11 opportunities; the top 3 touch 85% of database time.",
+        "takeaway": "10 opportunities; the top 3 touch 85% of database time.",
         "title": "Findings"
       },
       {
@@ -2084,53 +2132,9 @@
         "title": "Right now"
       },
       {
-        "detail": "1 more signal also needs a look.",
+        "detail": "Each signal states the period it measures.",
         "fix_sql": null,
         "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "tmp-disk-tables",
-            "kind": "signal",
-            "label": "Temporary tables on disk",
-            "query_id": null,
-            "share": null,
-            "status": "bad",
-            "value": "68%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "buffer-pool-hit",
-            "kind": "signal",
-            "label": "Reads served from memory",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "98%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "connections",
-            "kind": "signal",
-            "label": "Connections in use",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "5%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "history-length",
-            "kind": "signal",
-            "label": "Undo history",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0"
-          },
           {
             "at": null,
             "finding_id": null,
@@ -2139,26 +2143,37 @@
             "label": "Oldest open transaction",
             "query_id": null,
             "share": null,
-            "status": "good",
-            "value": "5.0 s"
+            "status": "info",
+            "value": "5.0 s · idle in transaction"
           },
           {
             "at": null,
             "finding_id": null,
-            "id": "new-connections",
+            "id": "buffer-pool-hit",
             "kind": "signal",
-            "label": "New connections",
+            "label": "Reads served from memory (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
-            "value": "0.1/s"
+            "status": "info",
+            "value": "98%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "tmp-disk-tables",
+            "kind": "signal",
+            "label": "Temporary tables on disk (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "68%"
           },
           {
             "at": null,
             "finding_id": null,
             "id": "questions",
             "kind": "signal",
-            "label": "Statements",
+            "label": "Statements (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -2169,11 +2184,55 @@
             "finding_id": null,
             "id": "threads-running",
             "kind": "signal",
-            "label": "Statements running now",
+            "label": "Statements running now (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
             "value": "5"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "row-lock-waits",
+            "kind": "signal",
+            "label": "Row-lock waits (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "4.5/h"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "row-lock-avg",
+            "kind": "signal",
+            "label": "Average row-lock wait (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "14.5 s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "5%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "max-used-connections",
+            "kind": "signal",
+            "label": "Busiest moment (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "5%"
           }
         ],
         "key": "health",
@@ -2181,55 +2240,43 @@
           {
             "key": "bad",
             "label": "Bad",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "watch",
             "label": "Watch",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "4",
-            "value": 4.0
+            "text": "0",
+            "value": 0.0
           }
         ],
         "next": "culprit waits mysql-demo",
-        "status": "bad",
-        "takeaway": "Temporary tables on disk: 68%; under 10% of temporary tables is healthy.",
+        "status": "info",
+        "takeaway": "13 signals recorded; none has a threshold to grade.",
         "title": "Health"
       },
       {
         "detail": "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.",
         "fix_sql": null,
-        "items": [
-          {
-            "at": "2026-10-11T13:48:08Z",
-            "finding_id": "deadlocks:opposite-order:shop.customers+shop.orders",
-            "id": "60c5fc0c135a790f",
-            "kind": "deadlock",
-            "label": "Opposite access order on shop.customers, shop.orders",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1×"
-          }
-        ],
+        "items": [],
         "key": "deadlocks",
         "metrics": [
           {
             "key": "count",
             "label": "Deadlocks",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           }
         ],
         "next": "culprit deadlocks mysql-demo",
-        "status": "watch",
-        "takeaway": "One deadlock in the last 6 hours: opposite access order on shop.customers, shop.orders.",
+        "status": "good",
+        "takeaway": "No deadlocks in the last 6 hours.",
         "title": "Deadlocks"
       },
       {
@@ -2327,7 +2374,7 @@
             "label": "shop/products.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "8 µs per read"
           },
           {
@@ -2338,7 +2385,7 @@
             "label": "shop/order_items.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "7 µs per read"
           },
           {
@@ -2349,7 +2396,7 @@
             "label": "shop/orders.ibd",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "5 µs per read"
           },
           {
@@ -2360,7 +2407,7 @@
             "label": "mysql/binlog.000002",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "5 µs per write"
           }
         ],
@@ -2380,8 +2427,8 @@
           }
         ],
         "next": "culprit waits mysql-demo",
-        "status": "good",
-        "takeaway": "Storage answers quickly: reads average 8 µs, log writes 5 µs.",
+        "status": "info",
+        "takeaway": "Recorded storage averages: reads average 8 µs, log writes 5 µs.",
         "title": "Storage"
       },
       {
@@ -2393,10 +2440,10 @@
             "finding_id": null,
             "id": "connections",
             "kind": "signal",
-            "label": "Connections in use",
+            "label": "Connections in use (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "5%"
           }
         ],
@@ -2410,8 +2457,8 @@
           }
         ],
         "next": "culprit waits mysql-demo",
-        "status": "good",
-        "takeaway": "Connections are reused: 4 new a minute.",
+        "status": "info",
+        "takeaway": "4 new connections a minute over the recorded counter history.",
         "title": "Connections"
       },
       {
@@ -2512,10 +2559,8 @@
   },
   "pg-demo": {
     "attention": [
-      "health",
       "findings",
       "replication",
-      "deadlocks",
       "plans",
       "indexes"
     ],
@@ -2524,7 +2569,7 @@
     "database": "demo",
     "engine": "postgres",
     "environment": "local",
-    "headline": "Reads served from memory: 55%; above 99% is healthy for most workloads.",
+    "headline": "16 opportunities; the top 3 touch 67% of database time.",
     "product": "PostgreSQL 18.6",
     "report_id": "20261011T115421.485Z",
     "taken_at": "2026-10-11T11:54:21Z",
@@ -2762,9 +2807,20 @@
         "title": "Right now"
       },
       {
-        "detail": "3 more signals also need a look.",
+        "detail": "Each signal states the period it measures.",
         "fix_sql": null,
         "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "oldest-transaction",
+            "kind": "signal",
+            "label": "Oldest open transaction",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "4.2 s · idle in transaction"
+          },
           {
             "at": null,
             "finding_id": null,
@@ -2773,7 +2829,7 @@
             "label": "Reads served from memory",
             "query_id": null,
             "share": null,
-            "status": "bad",
+            "status": "info",
             "value": "55%"
           },
           {
@@ -2784,63 +2840,8 @@
             "label": "Temporary files written",
             "query_id": null,
             "share": null,
-            "status": "watch",
+            "status": "info",
             "value": "661 MB"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "checkpoints-requested",
-            "kind": "signal",
-            "label": "Checkpoints forced early",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "16%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "sessions-abandoned",
-            "kind": "signal",
-            "label": "Sessions the client abandoned",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "connections",
-            "kind": "signal",
-            "label": "Connections in use",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "6%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "oldest-transaction",
-            "kind": "signal",
-            "label": "Oldest open transaction",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "4.2 s"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "new-connections",
-            "kind": "signal",
-            "label": "New connections",
-            "query_id": null,
-            "share": null,
-            "status": "good",
-            "value": "0.0/s"
           },
           {
             "at": null,
@@ -2852,6 +2853,61 @@
             "share": null,
             "status": "info",
             "value": "0.7/s"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "rollbacks",
+            "kind": "signal",
+            "label": "Transactions rolled back",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "0%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "deadlocks",
+            "kind": "signal",
+            "label": "Deadlocks",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "1"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "checkpoints",
+            "kind": "signal",
+            "label": "Checkpoints (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "32"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "checkpoints-requested",
+            "kind": "signal",
+            "label": "Checkpoints forced early (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "16%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "connections",
+            "kind": "signal",
+            "label": "Connections in use (whole server)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "6%"
           }
         ],
         "key": "health",
@@ -2859,25 +2915,25 @@
           {
             "key": "bad",
             "label": "Bad",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "watch",
             "label": "Watch",
-            "text": "3",
-            "value": 3.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "healthy",
             "label": "Healthy",
-            "text": "3",
-            "value": 3.0
+            "text": "0",
+            "value": 0.0
           }
         ],
         "next": "culprit waits pg-demo",
-        "status": "bad",
-        "takeaway": "Reads served from memory: 55%; above 99% is healthy for most workloads.",
+        "status": "info",
+        "takeaway": "12 signals recorded; none has a threshold to grade.",
         "title": "Health"
       },
       {
@@ -2894,7 +2950,7 @@
           }
         ],
         "next": "culprit deadlocks pg-demo",
-        "status": "watch",
+        "status": "info",
         "takeaway": "PostgreSQL counted 1 deadlock in the 4 h 53 min since its statistics were reset; it keeps no details to explain them.",
         "title": "Deadlocks"
       },
@@ -3038,7 +3094,7 @@
             "label": "tables and indexes",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "3 µs per read"
           }
         ],
@@ -3052,8 +3108,8 @@
           }
         ],
         "next": "culprit waits pg-demo",
-        "status": "good",
-        "takeaway": "Storage answers quickly: reads average 3 µs.",
+        "status": "info",
+        "takeaway": "Recorded storage averages: reads average 3 µs.",
         "title": "Storage"
       },
       {
@@ -3065,10 +3121,10 @@
             "finding_id": null,
             "id": "connections",
             "kind": "signal",
-            "label": "Connections in use",
+            "label": "Connections in use (whole server)",
             "query_id": null,
             "share": null,
-            "status": "good",
+            "status": "info",
             "value": "6%"
           },
           {
@@ -3090,7 +3146,7 @@
             "label": "Sessions the client abandoned",
             "query_id": null,
             "share": null,
-            "status": "watch",
+            "status": "info",
             "value": "1%"
           }
         ],
@@ -3104,8 +3160,8 @@
           }
         ],
         "next": "culprit waits pg-demo",
-        "status": "good",
-        "takeaway": "Connections are reused: 1 new a minute.",
+        "status": "info",
+        "takeaway": "1 new connections a minute over the recorded counter history.",
         "title": "Connections"
       },
       {

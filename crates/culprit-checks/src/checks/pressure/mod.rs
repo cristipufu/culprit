@@ -14,6 +14,7 @@ use crate::support::*;
 
 mod checkpoint_pressure;
 mod compile_pressure;
+mod health;
 mod held_cleanup;
 mod memory_grant;
 mod memory_queue;
@@ -65,26 +66,8 @@ fn counter_hours(snapshot: &Snapshot) -> Option<f64> {
     pressure(snapshot)?.uptime_hours.filter(|h| *h >= culprit_core::RATE_MIN_HOURS)
 }
 
-/// The health squares follow the evidence rules the checks do: a collector's grade stays only where the number can
-/// carry a verdict. An average since startup over under an hour of counters (or an unknown span: a cold cache after a
-/// restart reads as a bad ratio) is shown without one; so are the totals and peaks a check grades on its own amount
-/// (a lifetime count of deadlocks, a ratio of rollbacks, a peak of connections days ago, the average of one lock
-/// wait). Forced checkpoints need ten checkpoints to be a share, and a thread-pool queue seen once is one to watch.
-pub(crate) fn grade_on_evidence(snapshot: &mut Snapshot) {
-    let Some(p) = snapshot.pressure.as_mut() else { return };
-    let counted = p.uptime_hours.is_some_and(|h| h >= culprit_core::RATE_MIN_HOURS);
-    let checkpoints = p.signal("checkpoints").map(|s| s.value);
-    for s in &mut p.signals {
-        let ungraded = (s.scope == culprit_core::SignalScope::SinceStartup && !counted)
-            || matches!(s.key.as_str(), "deadlocks" | "rollbacks" | "row-lock-avg" | "max-used-connections")
-            || (s.key == "checkpoints-requested" && checkpoints.is_none_or(|c| c < 10.0));
-        if ungraded {
-            s.status = SignalStatus::Info;
-        } else if s.key == "threadpool-waiting" && s.status == SignalStatus::Bad && s.value < 5.0 {
-            s.status = SignalStatus::Watch;
-        }
-    }
-}
+/// Normalize counters and their periods before checks; queue/cleanup grades then follow the final findings.
+pub(crate) use health::{grade_findings, grade_on_evidence};
 
 /// How long the database-level waits (`snapshot.waits`) cover, and whether that is a measured window (Query Store's
 /// intervals) rather than totals since the server started. `None` when unknown or under an hour.

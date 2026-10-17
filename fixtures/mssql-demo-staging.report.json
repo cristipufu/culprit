@@ -13,7 +13,7 @@
       "id": "tier-limit:log-write",
       "impact": {
         "db_time_share": null,
-        "label": "at limit 38%",
+        "label": "near limit 38%",
         "score": 56.25,
         "time_ms_per_day": null
       },
@@ -21,7 +21,7 @@
       "last_seen": null,
       "metrics": [
         {
-          "label": "Time at the limit",
+          "label": "Samples at or above 95%",
           "text": null,
           "unit": "ratio",
           "value": 0.375
@@ -39,8 +39,8 @@
         "kind": "database",
         "name": "culprit_demo"
       },
-      "summary": "Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.",
-      "title": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
+      "summary": "Azure caps each tier's log writes. In the last 60 minutes it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). This is measured resource use, not a share of waits: writes can be throttled at the cap. At the cap, Azure makes requests wait rather than fail, so it shows up as slowness. Samples near the cap alone do not prove throttling or failed requests occurred.",
+      "title": "Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes",
       "verify": [
         "Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it)."
       ]
@@ -136,61 +136,9 @@
         "name": "shop.customers"
       },
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
-      "title": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+      "title": "Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)",
       "verify": [
         "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
-        "Live › Deadlocks shows the graph of each one, with both statements."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "deadlocks",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking."
-      },
-      "id": "deadlocks:opposite-order:shop.customers+shop.orders",
-      "impact": {
-        "db_time_share": null,
-        "label": "1 deadlock",
-        "score": 9.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T13:58:59Z",
-      "metrics": [
-        {
-          "label": "Deadlocks",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
-        },
-        {
-          "label": "Pattern",
-          "text": "opposite access order",
-          "unit": "text",
-          "value": 0.0
-        },
-        {
-          "label": "Rolled back",
-          "text": "session 75 (SQLCMD)",
-          "unit": "text",
-          "value": 0.0
-        }
-      ],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.customers"
-      },
-      "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
-      "title": "Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)",
-      "verify": [
-        "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
@@ -804,106 +752,6 @@
       "counted": null,
       "counted_since": null,
       "deadlocks": [
-        {
-          "at": "2026-10-11T13:58:59Z",
-          "explanation": "Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.",
-          "fixes": [
-            {
-              "detail": "Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.",
-              "finding": null,
-              "sql": null,
-              "title": "Touch tables and rows in the same order everywhere"
-            },
-            {
-              "detail": "Do reads, validation and outside calls before the transaction starts; hold locks only for the writes.",
-              "finding": null,
-              "sql": null,
-              "title": "Keep transactions short"
-            },
-            {
-              "detail": "A deadlock victim can be retried safely; the application should catch error 1205 and run the transaction again.",
-              "finding": null,
-              "sql": null,
-              "title": "Retry the victim"
-            }
-          ],
-          "headline": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back.",
-          "id": "8e8d0546690aef93",
-          "objects": [
-            "shop.customers",
-            "shop.orders"
-          ],
-          "pattern": "opposite-order",
-          "processes": [
-            {
-              "application": "SQLCMD",
-              "database": "culprit_demo",
-              "host": "web-1",
-              "id": "processa14d1e4e8",
-              "isolation": "read committed",
-              "log_used": 240.0,
-              "login": "sa",
-              "procedure": null,
-              "session": "75",
-              "statement": "BEGIN TRAN; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.orders SET total = total + 1 WHERE id = 2; ROLLBACK;",
-              "victim": true,
-              "wait_mode": "X"
-            },
-            {
-              "application": "SQLCMD",
-              "database": "culprit_demo",
-              "host": "web-1",
-              "id": "processa007b4ca8",
-              "isolation": "read committed",
-              "log_used": 244.0,
-              "login": "sa",
-              "procedure": null,
-              "session": "73",
-              "statement": "BEGIN TRAN; UPDATE shop.orders SET total = total + 1 WHERE id = 2; WAITFOR DELAY '00:00:01'; UPDATE shop.customers SET created_at = DATEADD(second, 1, created_at) WHERE id = 2; WAITFOR DELAY '00:00:01'; ROLLBACK;",
-              "victim": false,
-              "wait_mode": "X"
-            }
-          ],
-          "resources": [
-            {
-              "holders": [
-                {
-                  "mode": "X",
-                  "process": "processa007b4ca8"
-                }
-              ],
-              "id": "locka15a63500",
-              "index": "pk_orders",
-              "kind": "keylock",
-              "object": "shop.orders",
-              "waiters": [
-                {
-                  "mode": "X",
-                  "process": "processa14d1e4e8"
-                }
-              ]
-            },
-            {
-              "holders": [
-                {
-                  "mode": "X",
-                  "process": "processa14d1e4e8"
-                }
-              ],
-              "id": "locka08802980",
-              "index": "pk_customers",
-              "kind": "keylock",
-              "object": "shop.customers",
-              "waiters": [
-                {
-                  "mode": "X",
-                  "process": "processa007b4ca8"
-                }
-              ]
-            }
-          ],
-          "source": "system_health"
-        },
         {
           "at": "2026-10-11T11:42:17Z",
           "explanation": "The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
@@ -1542,7 +1390,62 @@
       "window_days": 7
     },
     "plan_cache": null,
-    "pressure": null,
+    "pressure": {
+      "cpus": null,
+      "files": [],
+      "grants": [],
+      "numa_nodes": null,
+      "oldest_transaction": null,
+      "replicas": [],
+      "signals": [
+        {
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 77.1%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "key": "cpu-use",
+          "label": "CPU used against its limit",
+          "scope": "last-hour",
+          "status": "good",
+          "unit": "percent",
+          "value": 43.00887499999999
+        },
+        {
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 26.2%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "key": "data-io",
+          "label": "Storage I/O used against its limit",
+          "scope": "last-hour",
+          "status": "good",
+          "unit": "percent",
+          "value": 14.772333333333329
+        },
+        {
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 99.6%. At or above 95% of this database's limit in 38% of samples. A warning needs at least 10% of samples near the limit.",
+          "key": "log-write-use",
+          "label": "Log throughput used against its limit",
+          "scope": "last-hour",
+          "status": "bad",
+          "unit": "percent",
+          "value": 66.7080833333334
+        },
+        {
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 9.9%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "key": "workers-use",
+          "label": "Worker slots used against their limit",
+          "scope": "last-hour",
+          "status": "good",
+          "unit": "percent",
+          "value": 6.413875
+        },
+        {
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 76.0%. At or above 95% of this database's limit in 0% of samples. Allocated memory includes cache; a full cache is normal and is not graded as memory pressure.",
+          "key": "memory-use",
+          "label": "Memory allocated against its limit",
+          "scope": "last-hour",
+          "status": "info",
+          "unit": "percent",
+          "value": 73.97654166666666
+        }
+      ],
+      "uptime_hours": null
+    },
     "query_families": [],
     "resources": [
       {
@@ -4317,7 +4220,7 @@
       },
       {
         "category": "queries",
-        "count": 2
+        "count": 1
       },
       {
         "category": "configuration",
@@ -4330,13 +4233,13 @@
         "severity": "high"
       },
       {
-        "count": 7,
+        "count": 6,
         "severity": "low"
       }
     ],
-    "headline": "8 opportunities.",
+    "headline": "7 opportunities.",
     "no_workload": "Query Store is OFF on this database.",
-    "opportunities": 8,
+    "opportunities": 7,
     "over_scans": [],
     "runs_said": [],
     "top_share": null

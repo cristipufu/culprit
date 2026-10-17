@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## Unreleased
+
+### Fixes
+
+- Health shows measured database CPU use instead of grading the scheduling share of historical waits. Cache ratios, lifetime peaks, shared counters and normal version storage no longer imply current pressure on their own.
+- Health samples, dated deadlocks and cloud metrics follow the selected period where the source permits it, with limited or cumulative coverage stated explicitly. Sustained resource warnings require enough measured data.
+- Compilation counts and timings come from the selected database's Query Store. Retained compilation history is kept separate from runtime windows; unsupported prorated estimates in older scans are withdrawn.
+- Query, table, storage, replication and health indicators follow the same assessed findings. Brief queues, old shared averages, bulk reads, inactive bounded replication slots and transient idle transactions no longer receive independent alarming colors.
+
 ## 0.3.2
 
 Findings, fixes and plan explanations now use the same evidence across the desktop app, CLI, agent briefs and exports, including when a saved scan is opened again.

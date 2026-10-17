@@ -1610,20 +1610,20 @@
       ],
       "signals": [
         {
-          "healthy": "above 99% is healthy for most workloads",
+          "healthy": "Reads served by PostgreSQL's shared_buffers; misses may be served by the operating system cache. The ratio alone does not establish slow storage or a memory shortage.",
           "key": "cache-hit",
           "label": "Reads served from memory",
           "scope": "since-startup",
-          "status": "bad",
+          "status": "info",
           "unit": "percent",
           "value": 55.28549966457573
         },
         {
-          "healthy": "near zero an hour: queries that sort or hash in memory",
+          "healthy": "Temporary data written by this database over its statistics period. This amount alone does not establish a performance problem; the findings identify costly spills.",
           "key": "temp-bytes",
           "label": "Temporary files written",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "bytes",
           "value": 692606779.3109461
         },
@@ -1637,7 +1637,7 @@
           "value": 0.7230282232065369
         },
         {
-          "healthy": "under 5% is healthy",
+          "healthy": "Rollbacks can be deliberate application behavior. This historical share alone does not establish failed requests.",
           "key": "rollbacks",
           "label": "Transactions rolled back",
           "scope": "since-startup",
@@ -1646,7 +1646,7 @@
           "value": 0.25252525252525254
         },
         {
-          "healthy": "0 is healthy",
+          "healthy": "A count over the statistics period, not deadlocks happening now. The deadlock finding uses the amount and period recorded.",
           "key": "deadlocks",
           "label": "Deadlocks",
           "scope": "since-startup",
@@ -1657,50 +1657,50 @@
         {
           "healthy": null,
           "key": "checkpoints",
-          "label": "Checkpoints",
+          "label": "Checkpoints (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "count",
           "value": 32.0
         },
         {
-          "healthy": "under 10% is healthy; more means max_wal_size is too small",
+          "healthy": "Requested checkpoints include WAL-triggered checkpoints, manual CHECKPOINT, backups and CREATE DATABASE. This shared historical ratio does not identify their cause or establish current write pressure.",
           "key": "checkpoints-requested",
-          "label": "Checkpoints forced early",
+          "label": "Checkpoints forced early (whole server)",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "percent",
           "value": 15.625
         },
         {
           "healthy": "under 80% of max_connections is healthy",
           "key": "connections",
-          "label": "Connections in use",
+          "label": "Connections in use (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 6.185567010309279
         },
         {
-          "healthy": "seconds or minutes, not hours",
+          "healthy": "A cleanup holder observed at the scan's instant; no long-held-cleanup finding is supported by this scan.",
           "key": "oldest-transaction",
           "label": "Oldest open transaction",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "seconds",
           "value": 4.189612
         },
         {
-          "healthy": "under 1 a second: pooled connections are opened once",
+          "healthy": "The historical rate of new connections. A busy application can use a pool and still open connections; the rate alone does not prove pooling is missing.",
           "key": "new-connections",
           "label": "New connections",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "per-second",
           "value": 0.01695059363378647
         },
         {
-          "healthy": null,
+          "healthy": "Average session lifetime over the statistics period. Session length alone does not measure connection overhead or request latency.",
           "key": "session-length",
           "label": "Average session length",
           "scope": "since-startup",
@@ -1709,11 +1709,11 @@
           "value": 1.2576956309090908
         },
         {
-          "healthy": "under 1%: clients close their connections",
+          "healthy": "The share of sessions that ended through a lost client connection over the statistics period, not sessions failing now.",
           "key": "sessions-abandoned",
           "label": "Sessions the client abandoned",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "percent",
           "value": 1.090909090909091
         }
@@ -2141,6 +2141,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -2320,6 +2321,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -2528,6 +2530,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -2636,6 +2639,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -2781,6 +2785,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -2993,6 +2998,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -3241,6 +3247,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -3419,6 +3426,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -3531,6 +3539,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -4166,6 +4175,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -4297,6 +4307,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": null,
             "jit_ms": null,
@@ -5133,6 +5144,7 @@
           "costs": {
             "aborted": null,
             "aborted_mean_ms": null,
+            "compile_history": null,
             "failed": null,
             "jit_functions": 600.0,
             "jit_ms": 3727.272406000001,

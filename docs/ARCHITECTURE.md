@@ -206,6 +206,8 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | An event session a fix starts is one session for every finding that asks for it: created only where it isn't defined, started only where it isn't running, and the SQL says how to drop it. | `signals::event_session_sql`, `event_session_drop` |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 
+Health counters follow these rules in `checks/pressure/health.rs`: preparation corrects saved and fresh counters, honors `Snapshot::options` for dated samples, and keeps shared or descriptive ratios ungraded. Azure CPU/I/O/log/worker assessments require 30 minutes of actual 15-second samples with at least 80% coverage per dimension; allocated cache memory is contextual. After refinement, queue and cleanup colors come from final findings. The app's query/table/storage/replica colors also use those findings instead of independent thresholds. Query Store compilation history is exact and separate (`QueryCosts::compile_history`); an old prorated compilation estimate is withdrawn on reread. Cloud episode assessments require contiguous timestamps, preserve the actual fetch period, and are cached per database and period.
+
 ### Views built on a report
 
 `culprit-checks/src/views/`: the dashboard (`dashboard/`, one file per tile), the digest for scheduled jobs

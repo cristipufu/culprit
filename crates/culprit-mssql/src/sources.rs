@@ -55,6 +55,9 @@ pub const OPEN_TRANSACTIONS: Source = Source { name: "open transactions", reads:
 
 /// CPU, reads and waits per query beyond time (Query Store's runtime statistics).
 pub const QUERY_COSTS: Source = Source { name: "query costs", reads: "statement costs", delivers: &[] };
+/// This database's compilation counts and timings for retained Query Store entries.
+pub const QUERY_COMPILATION: Source =
+    Source { name: "query compilation", reads: "Query Store compilation statistics", delivers: &[] };
 /// Row and page lock waits, latch waits and escalations per index.
 pub const INDEX_CONTENTION: Source = Source { name: "index contention", reads: "index contention", delivers: &[] };
 /// Foreign keys and CHECK constraints not trusted.
@@ -88,6 +91,7 @@ pub const ALL: &[Source] = &[
     GRANTS,
     OPEN_TRANSACTIONS,
     QUERY_COSTS,
+    QUERY_COMPILATION,
     INDEX_CONTENTION,
     CONSTRAINTS,
     FILE_LATENCY,

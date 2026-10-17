@@ -1,31 +1,31 @@
 reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:15:12Z
-headline: 8 opportunities.
+headline: 7 opportunities.
 no workload: Query Store is OFF on this database.
-findings: 8
+findings: 7
 
 === finding tier-limit:log-write
 high severity · high confidence · configuration
-title: Log writes hit the tier's limit 38% of the last hour: writes are throttled
-summary: Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.
-impact: at limit 38%
+title: Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes
+summary: Azure caps each tier's log writes. In the last 60 minutes it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). This is measured resource use, not a share of waits: writes can be throttled at the cap. At the cap, Azure makes requests wait rather than fail, so it shows up as slowness. Samples near the cap alone do not prove throttling or failed requests occurred.
+impact: near limit 38%
 metrics:
-  - Time at the limit: 38%
+  - Samples at or above 95%: 38%
   - Peak: 100%
 fix: Batch small writes into fewer transactions and avoid row-by-row changes; then consider a tier with more log throughput.
 verify:
   1. Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it).
 brief:
-    # Log writes hit the tier's limit 38% of the last hour: writes are throttled
+    # Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes
 
     Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `tier-limit:log-write`: high impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
-    Azure caps each tier's log writes. In the last hour it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). At the cap, Azure makes requests wait rather than fail, so it shows up as slowness.
+    Azure caps each tier's log writes. In the last 60 minutes it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). This is measured resource use, not a share of waits: writes can be throttled at the cap. At the cap, Azure makes requests wait rather than fail, so it shows up as slowness. Samples near the cap alone do not prove throttling or failed requests occurred.
 
     ## Evidence
 
-    - Time at the limit: 38%
+    - Samples at or above 95%: 38%
     - Peak: 100%
 
     ## Suggested fix
@@ -89,7 +89,7 @@ brief:
 
 === finding deadlocks:key-lookup:shop.customers
 low severity · high confidence · queries
-title: Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+title: Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 summary: Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
 impact: 1 deadlock
 metrics:
@@ -103,7 +103,7 @@ verify:
   1. Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.
   2. Live › Deadlocks shows the graph of each one, with both statements.
 brief:
-    # Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+    # Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 
     Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:key-lookup:shop.customers`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
@@ -133,47 +133,6 @@ brief:
     ## What to do in the codebase
 
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo-staging` and check `deadlocks:key-lookup:shop.customers` the way *How to verify* says.
-
-=== finding deadlocks:opposite-order:shop.customers+shop.orders
-low severity · high confidence · queries
-title: Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
-summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
-impact: 1 deadlock
-metrics:
-  - Deadlocks: 1
-  - Pattern: opposite access order
-  - Rolled back: session 75 (SQLCMD)
-fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-verify:
-  1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-  2. Live › Deadlocks shows the graph of each one, with both statements.
-brief:
-    # Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
-
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
-
-    ## What's happening
-
-    Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
-
-    ## Evidence
-
-    - Deadlocks: 1
-    - Pattern: opposite access order
-    - Rolled back: session 75 (SQLCMD)
-
-    ## Suggested fix
-
-    Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-
-    ## How to verify
-
-    - Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-    - Live › Deadlocks shows the graph of each one, with both statements.
-
-    ## What to do in the codebase
-
-    Where the fix changes how the application reads or writes `shop.customers` and `shop.orders`, search the code for the statements that touch them. After any change is live, run `culprit scan mssql-demo-staging` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
 low severity · medium confidence · indexes

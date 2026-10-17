@@ -11,6 +11,10 @@ import { querySummary } from "./query-summary";
  * The "right now" tile from a live read. The app polls sessions itself, so this mirrors `culprit_checks::dashboard::now`:
  * the same status, takeaway and numbers (the CLI and MCP server build that tile from one read).
  */
+function blockingStatus(waiters: number, ms: number | null): TileStatus {
+  return (ms ?? 0) >= 30_000 ? "bad" : waiters >= 5 || (ms ?? 0) >= 1000 ? "watch" : "info";
+}
+
 export function nowTile(live: LiveState): Tile {
   const running = (s: Session) => s.state !== "idle" && s.state !== "sleeping" && !s.state.startsWith("idle in transaction");
   const idleInTransaction = (s: Session) => s.transaction_ms != null && (s.state.startsWith("idle in transaction") || s.state === "sleeping");
@@ -25,15 +29,15 @@ export function nowTile(live: LiveState): Tile {
   let takeaway: string;
   const chain = chains[0];
   if (chain) {
-    const severe = chain.waiters >= 5 || (chain.longest_wait_ms ?? 0) >= 30_000;
-    status = severe ? "bad" : "watch";
+    status = blockingStatus(chain.waiters, chain.longest_wait_ms);
     takeaway = chain.headline;
   } else if (blocked > 0) {
-    status = "watch";
+    const waits = live.sessions.filter((s) => s.blocked_by && s.wait_ms != null).map((s) => s.wait_ms!);
+    status = blockingStatus(blocked, waits.length ? Math.max(...waits) : null);
     takeaway = `${capitalized(plural(blocked, "session is", "sessions are"))} waiting on another session's lock.`;
-  } else if (oldestIdle && (oldestIdle.transaction_ms ?? 0) >= 60_000) {
+  } else if (oldestIdle && (oldestIdle.transaction_ms ?? 0) >= 600_000) {
     status = "watch";
-    takeaway = `Session ${oldestIdle.id} has been idle in an open transaction for ${duration(oldestIdle.transaction_ms ?? 0)}.`;
+    takeaway = `Session ${oldestIdle.id} is idle with a transaction opened ${duration(oldestIdle.transaction_ms ?? 0)} ago.`;
   } else if (active.length === 0) {
     status = "good";
     takeaway = "Nothing is running right now.";
@@ -54,14 +58,14 @@ export function nowTile(live: LiveState): Tile {
     finding_id: null,
     at: null,
   });
-  const items = chains.slice(0, 3).map((c) => item(c.head, c.headline, `${c.waiters} waiting`, "bad"));
+  const items = chains.slice(0, 3).map((c) => item(c.head, c.headline, `${c.waiters} waiting`, blockingStatus(c.waiters, c.longest_wait_ms)));
   [...active]
     .sort((a, b) => (b.elapsed_ms ?? 0) - (a.elapsed_ms ?? 0))
     .filter((s) => !chains.some((c) => c.head === s.id))
     .slice(0, 3)
     .forEach((s) => {
       const what = s.sql ? sessionLabel(s.sql) : (s.command ?? s.state);
-      items.push(item(s.id, `Session ${s.id} · ${what}`, s.elapsed_ms != null ? duration(s.elapsed_ms) : null, s.blocked_by ? "watch" : "good"));
+      items.push(item(s.id, `Session ${s.id} · ${what}`, s.elapsed_ms != null ? duration(s.elapsed_ms) : null, s.blocked_by ? blockingStatus(1, s.wait_ms) : "good"));
     });
   const metric = (key: string, label: string, value: number) => ({ key, label, value, text: String(value) });
   return {
@@ -74,6 +78,7 @@ export function nowTile(live: LiveState): Tile {
       metric("active", "Running", active.length),
       metric("blocked", "Blocked", blocked),
       metric("idle-in-transaction", "Idle in transaction", idleTx.length),
+      metric("long-idle-in-transaction", "Long open idle transactions", idleTx.filter((s) => (s.transaction_ms ?? 0) >= 600_000).length),
       metric("sessions", "Sessions", live.sessions.length),
     ],
     items,

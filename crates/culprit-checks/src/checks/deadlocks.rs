@@ -81,10 +81,10 @@ pub(crate) fn deadlock_severity(n: usize, hours: f64) -> Severity {
 pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(report) = snapshot.deadlocks.as_ref() else { return Vec::new() };
     let mut out = Vec::new();
-    let window = if report.since_hours <= 24.0 {
-        "the last day".to_string()
+    let window = if (report.since_hours - 24.0).abs() < 0.01 {
+        "the last day".into()
     } else {
-        format!("the last {:.0} days", report.since_hours / 24.0)
+        format!("the last {}", culprit_core::span_words(report.since_hours))
     };
 
     let mut groups: BTreeMap<(DeadlockPattern, Vec<String>), Vec<&Deadlock>> = BTreeMap::new();

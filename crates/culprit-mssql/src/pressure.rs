@@ -44,8 +44,12 @@ FROM sys.dm_os_sys_info i";
 
 /// Requests queued for a worker right now. System tasks (no session) wait on THREADPOOL briefly all the time, and in
 /// Azure SQL Database the view shows the whole instance, so only sessions' requests waiting a measurable time count.
-const THREADPOOL_NOW_SQL: &str = "SELECT COUNT(*) AS waiting FROM sys.dm_os_waiting_tasks
-WHERE wait_type = N'THREADPOOL' AND session_id IS NOT NULL AND wait_duration_ms >= 100";
+const THREADPOOL_NOW_SQL: &str = "SELECT COUNT(*) AS waiting FROM sys.dm_os_waiting_tasks w
+JOIN sys.dm_exec_sessions s ON s.session_id = w.session_id
+LEFT JOIN sys.dm_exec_requests r ON r.session_id = w.session_id
+WHERE w.wait_type = N'THREADPOOL' AND w.wait_duration_ms >= 100
+  AND COALESCE(r.database_id, s.database_id) = DB_ID()
+  AND s.session_id <> @@SPID AND ISNULL(s.program_name, N'') <> N'culprit'";
 
 const GRANTS_SQL: &str = r#"
 SELECT TOP (30) CONVERT(varchar(20), qs.query_hash, 1) AS query_hash,
@@ -205,14 +209,12 @@ fn counter_signals(c: &HashMap<String, f64>, uptime: Option<f64>, azure: bool) -
 /// graded, and memory in use, for context (a full cache is normal).
 fn resource_signals(data_io: f64, data_io_peak: f64, memory: f64) -> Vec<Signal> {
     vec![
-        Signal::new("data-io", "Storage I/O of its limit", data_io, SignalUnit::Percent, SignalScope::LastHour).graded(
-            &format!(
-                "under 50% is healthy; near 100% the tier throttles reads and writes (peak {data_io_peak:.0}% in the hour)"
-            ),
-            50.0,
-            80.0,
-            true,
-        ),
+        Signal {
+            healthy: Some(format!(
+                "Average use of this database's I/O limit; peak {data_io_peak:.1}%. The individual resource samples establish whether pressure was sustained."
+            )),
+            ..Signal::new("data-io", "Storage I/O of its limit", data_io, SignalUnit::Percent, SignalScope::LastHour)
+        },
         Signal {
             healthy: Some("of its memory limit; a full cache is normal, so it isn't graded".into()),
             ..Signal::new("memory-use", "Memory in use", memory, SignalUnit::Percent, SignalScope::LastHour)
@@ -264,21 +266,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
     {
         let (wait, signal) = totals.values().fold((0.0, 0.0), |(w, s), (tw, ts, _)| (w + tw, s + ts));
         if wait > 0.0 {
-            p.signals.push(
-                Signal::new(
-                    "signal-wait",
-                    "Waiting for CPU",
-                    signal / wait * 100.0,
-                    SignalUnit::Percent,
-                    SignalScope::SinceStartup,
-                )
-                .graded(
-                    "under 20% of waiting is healthy; more means queries queue for a processor",
-                    20.0,
-                    35.0,
-                    true,
-                ),
-            );
+            p.signals.push(scheduling_share(signal, wait, SignalScope::SinceStartup));
         }
         let threadpool = totals.get("THREADPOOL").map(|t| t.0).unwrap_or(0.0);
         // Totals since the start: one bad hour days ago and a steady trickle average to the same rate, so checks
@@ -320,8 +308,19 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
     if let Ok(rows) = query(client, THREADPOOL_NOW_SQL).await {
         let waiting = rows.first().map(|r| r.f64_or_zero("waiting")).unwrap_or(0.0);
         p.signals.push(
-            Signal::new("threadpool-waiting", "Tasks without a worker", waiting, SignalUnit::Count, SignalScope::Now)
-                .graded("0 is healthy", 1.0, 1.0, true),
+            Signal::new(
+                "threadpool-waiting",
+                "Requests in this database without a worker",
+                waiting,
+                SignalUnit::Count,
+                SignalScope::Now,
+            )
+            .graded(
+                "One observation; sample again to establish whether the queue persists",
+                1.0,
+                f64::INFINITY,
+                true,
+            ),
         );
     }
     if let Ok(rows) = query(client, CPUS_SQL).await
@@ -439,7 +438,7 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
 
     let rate = |name: &str| {
         let (a, b) = (counters_before.get(name)?, counters_after.get(name)?);
-        Some(((b - a) / elapsed).max(0.0))
+        (b >= a).then_some((b - a) / elapsed)
     };
     let mut signals = Vec::new();
     if let Some(batches) = rate("Batch Requests/sec") {
@@ -455,37 +454,23 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
         if let Some(compiles) =
             rate("SQL Compilations/sec").map(|c| (c - recompiles).max(0.0)).filter(|_| batches > 0.0)
         {
-            signals.push(
-                Signal::new(
-                    "compiles-per-batch",
-                    "Plans compiled",
-                    compiles / batches * 100.0,
-                    SignalUnit::Percent,
-                    SignalScope::Sampled,
-                )
-                .graded("under 10% of batches is healthy", 10.0, 25.0, true),
-            );
+            signals.push(Signal::new(
+                "compiles-per-batch",
+                "Plans compiled (whole instance)",
+                compiles / batches * 100.0,
+                SignalUnit::Percent,
+                SignalScope::Sampled,
+            ));
         }
     }
     if let Some(recompiles) = rate("SQL Re-Compilations/sec") {
         signals.push(Signal::new("recompiles", "Recompiles", recompiles, SignalUnit::PerSecond, SignalScope::Sampled));
     }
     if wait_total > 0.0 {
-        signals.push(
-            Signal::new(
-                "signal-wait",
-                "Waiting for CPU",
-                signal_total / wait_total * 100.0,
-                SignalUnit::Percent,
-                SignalScope::Sampled,
-            )
-            .graded(
-                "under 20% of waiting is healthy; more means queries queue for a processor",
-                20.0,
-                35.0,
-                true,
-            ),
-        );
+        signals.push(scheduling_share(signal_total, wait_total, SignalScope::Sampled));
+    }
+    if azure {
+        signals.retain(|s| !matches!(s.key.as_str(), "batch-requests" | "compiles-per-batch" | "recompiles"));
     }
     let view = if azure { "sys.dm_db_wait_stats" } else { "sys.dm_os_wait_stats" };
     Ok(WaitSample {
@@ -497,8 +482,20 @@ pub(crate) async fn sample(client: &mut MsClient, azure: bool, seconds: u32) -> 
         categories,
         signals,
         active_sessions: None,
-        notes: Vec::new(),
+        notes: if azure {
+            Vec::new()
+        } else {
+            vec!["These wait counters cover the whole SQL Server instance, including other databases; they do not establish pressure in the selected database.".into()]
+        },
     })
+}
+
+/// A wait composition, never CPU utilization or a CPU-pressure verdict, even in a short live sample.
+fn scheduling_share(signal: f64, wait: f64, scope: SignalScope) -> Signal {
+    Signal {
+        healthy: Some("Share of recorded waiting spent ready to run before being scheduled. This is not CPU utilization; the ratio alone does not establish CPU pressure.".into()),
+        ..Signal::new("signal-wait", "Scheduling share of recorded waits", signal / wait * 100.0, SignalUnit::Percent, scope)
+    }
 }
 
 #[cfg(test)]
@@ -552,11 +549,18 @@ mod tests {
     }
 
     #[test]
-    fn azure_grades_this_databases_own_storage_io() {
+    fn aggregate_resource_counters_need_individual_samples_before_a_pressure_verdict() {
         let calm = resource_signals(0.0, 3.0, 0.4);
-        assert_eq!(signal(&calm, "data-io").status, SignalStatus::Good);
-        assert!(signal(&calm, "data-io").healthy.as_deref().unwrap().contains("peak 3%"));
+        assert_eq!(signal(&calm, "data-io").status, SignalStatus::Info);
+        assert!(signal(&calm, "data-io").healthy.as_deref().unwrap().contains("peak 3.0%"));
         assert_eq!(signal(&calm, "memory-use").status, SignalStatus::Info);
-        assert_eq!(signal(&resource_signals(85.0, 100.0, 90.0), "data-io").status, SignalStatus::Bad);
+        assert_eq!(signal(&resource_signals(85.0, 100.0, 90.0), "data-io").status, SignalStatus::Info);
+    }
+
+    #[test]
+    fn scheduling_share_alone_never_claims_cpu_pressure() {
+        for scope in [SignalScope::SinceStartup, SignalScope::Sampled] {
+            assert_eq!(scheduling_share(99.0, 100.0, scope).status, SignalStatus::Info);
+        }
     }
 }

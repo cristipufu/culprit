@@ -347,7 +347,7 @@ pub async fn sample(client: &Client, seconds: u32) -> Result<WaitSample> {
             "SELECT wait_event_type AS type, wait_event AS event, count(*) AS n
                FROM pg_stat_activity
               WHERE state = 'active' AND backend_type = 'client backend' AND pid <> pg_backend_pid()
-                AND application_name <> 'culprit'
+                AND datname = current_database() AND application_name IS DISTINCT FROM 'culprit'
               GROUP BY 1, 2",
         )
         .await?;
@@ -380,7 +380,7 @@ pub async fn sample(client: &Client, seconds: u32) -> Result<WaitSample> {
         .map(|(category, (n, top, _))| WaitStat {
             category: category.into(),
             wait_type: Some(top),
-            wait_ms: n * 1000.0,
+            wait_ms: n / samples * elapsed * 1000.0,
             tasks: Some(n),
         })
         .collect();
@@ -404,9 +404,9 @@ pub async fn sample(client: &Client, seconds: u32) -> Result<WaitSample> {
         taken_at,
         seconds: elapsed,
         method: format!(
-            "pg_stat_activity sampled every second for {seconds} s; each busy session seen counts as one second of its time"
+            "This database's pg_stat_activity sampled every second for {seconds} s; observations are weighted over the measured sample duration"
         ),
-        total_ms: busy * 1000.0,
+        total_ms: busy / samples * elapsed * 1000.0,
         categories,
         signals,
         active_sessions: Some(if samples > 0.0 { busy / samples } else { 0.0 }),

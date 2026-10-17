@@ -124,9 +124,10 @@ export default function WaitsPanel({
           {tab === "now" && <RightNow connection={connection} history={loaded.status === "ready" ? loaded.report : null} engine={engine} />}
           {tab === "health" && (
             <>
-              <HealthTab pressure={report.snapshot.pressure ?? null} resources={report.snapshot.resources} engineLabel={engine} engine={report.snapshot.server.engine} />
+              <HealthTab report={report} pressure={report.snapshot.pressure ?? null} resources={report.snapshot.resources} engineLabel={engine} engine={report.snapshot.server.engine} />
               <CloudLimits
                 connection={connection}
+                windowMinutes={windowMinutes ?? report.snapshot.options?.window_minutes ?? (report.snapshot.options?.window_days ?? 7) * 1440}
                 onCompare={(from, to) => {
                   onClose();
                   setState({ changes: changeRequest({ recent_start: new Date(from).toISOString(), recent_end: new Date(to).toISOString() }) });

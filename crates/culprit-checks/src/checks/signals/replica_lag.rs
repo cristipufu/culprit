@@ -58,14 +58,7 @@ pub(super) fn replica_status(snapshot: &Snapshot, r: &Replica) -> ReplicaStatus 
 /// Seconds behind beyond any configured delay. A PostgreSQL standby with nothing received left to replay is caught up,
 /// whatever the time since its last replayed commit (older scans reported that time as lag).
 pub(super) fn replica_lag_seconds(snapshot: &Snapshot, r: &Replica) -> Option<f64> {
-    // Under a WAL segment left to replay, replay is current: older scans took the time since the last commit as lag.
-    if snapshot.server.engine == Engine::Postgres
-        && r.role == ReplicaRole::ThisServer
-        && r.lag_bytes.is_some_and(|b| b < culprit_core::signals::STANDBY_BEHIND_BYTES)
-    {
-        return Some(0.0);
-    }
-    r.lag_seconds
+    r.effective_lag_seconds(snapshot.server.engine)
 }
 
 pub fn replica_lag(snapshot: &Snapshot) -> Vec<Finding> {

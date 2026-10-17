@@ -304,7 +304,13 @@ fn a_foreign_key_index_does_not_claim_the_database_time_of_queries_that_name_the
 fn one_request_seen_waiting_for_a_worker_is_worth_watching_not_high() {
     let mut s = snapshot();
     let signal = |value: f64| {
-        Signal::new("threadpool-waiting", "Tasks without a worker", value, SignalUnit::Count, SignalScope::Now)
+        Signal::new(
+            "threadpool-waiting",
+            "Requests in this database without a worker",
+            value,
+            SignalUnit::Count,
+            SignalScope::Now,
+        )
     };
     s.pressure = Some(Pressure { uptime_hours: Some(120.0), signals: vec![signal(1.0)], ..Default::default() });
     let report = analyze(s.clone());
@@ -315,7 +321,7 @@ fn one_request_seen_waiting_for_a_worker_is_worth_watching_not_high() {
     assert_eq!(f.severity, Severity::Low);
     s.pressure.as_mut().unwrap().signals = vec![signal(6.0)];
     let report = analyze(s);
-    assert_eq!(report.findings.iter().find(|f| f.check == "worker-pressure").unwrap().severity, Severity::High);
+    assert_eq!(report.findings.iter().find(|f| f.check == "worker-pressure").unwrap().severity, Severity::Medium);
 }
 
 #[test]

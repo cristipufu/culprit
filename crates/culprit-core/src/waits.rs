@@ -118,6 +118,10 @@ pub enum SignalScope {
     Sampled,
     /// Over the last hour (Azure SQL Database keeps its own resource figures for about that long).
     LastHour,
+    /// Compilation totals for the query entries Query Store still retains; not the runtime window or server uptime.
+    QueryHistory,
+    /// Measurements in the selected scan window, where the source has enough history to cover it.
+    Window,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

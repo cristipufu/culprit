@@ -1440,27 +1440,27 @@
       "replicas": [],
       "signals": [
         {
-          "healthy": "above 99% is healthy for most workloads",
+          "healthy": "The share of reads served by InnoDB's buffer pool across the whole server. A miss ratio alone does not establish a memory shortage in this database.",
           "key": "buffer-pool-hit",
-          "label": "Reads served from memory",
+          "label": "Reads served from memory (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 99.95581781413362
         },
         {
-          "healthy": "under 10% of temporary tables is healthy",
+          "healthy": "The share of internal temporary tables written to disk across the whole server. Table sizes and the statements' measured cost determine whether this needs work.",
           "key": "tmp-disk-tables",
-          "label": "Temporary tables on disk",
+          "label": "Temporary tables on disk (whole server)",
           "scope": "since-startup",
-          "status": "watch",
+          "status": "info",
           "unit": "percent",
           "value": 17.161769454310623
         },
         {
           "healthy": null,
           "key": "questions",
-          "label": "Statements",
+          "label": "Statements (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-second",
@@ -1469,7 +1469,7 @@
         {
           "healthy": null,
           "key": "threads-running",
-          "label": "Statements running now",
+          "label": "Statements running now (whole server)",
           "scope": "now",
           "status": "info",
           "unit": "count",
@@ -1478,16 +1478,16 @@
         {
           "healthy": null,
           "key": "row-lock-waits",
-          "label": "Row-lock waits",
+          "label": "Row-lock waits (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",
           "value": 17.291066282420747
         },
         {
-          "healthy": "under 50 ms is healthy",
+          "healthy": "An average across the whole server's recorded row-lock waits, not a current wait. The lock findings use the amount of waiting too.",
           "key": "row-lock-avg",
-          "label": "Average row-lock wait",
+          "label": "Average row-lock wait (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "milliseconds",
@@ -1496,43 +1496,43 @@
         {
           "healthy": "under 80% of max_connections is healthy",
           "key": "connections",
-          "label": "Connections in use",
+          "label": "Connections in use (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "percent",
           "value": 2.6490066225165565
         },
         {
-          "healthy": "under 90% of max_connections is healthy",
+          "healthy": "The busiest moment since these counters started, compared with today's limit. This does not establish a connection shortage now.",
           "key": "max-used-connections",
-          "label": "Busiest moment",
+          "label": "Busiest moment (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "percent",
           "value": 3.9735099337748343
         },
         {
-          "healthy": "under 100K old row versions is healthy",
+          "healthy": "Committed undo logs awaiting purge across the whole server. This is not a count of rows, and a large value alone does not establish a purge problem in this database.",
           "key": "history-length",
-          "label": "Undo history",
+          "label": "Undo history (whole server)",
           "scope": "now",
-          "status": "good",
+          "status": "info",
           "unit": "count",
           "value": 0.0
         },
         {
-          "healthy": "under 5 a second: pooled connections are opened once",
+          "healthy": "The historical rate of new connections. A busy application can use a pool and still open connections; the rate alone does not prove pooling is missing.",
           "key": "new-connections",
-          "label": "New connections",
+          "label": "New connections (whole server)",
           "scope": "since-startup",
-          "status": "good",
+          "status": "info",
           "unit": "per-second",
           "value": 0.02189330866481653
         },
         {
           "healthy": null,
           "key": "aborted-connects",
-          "label": "Failed connection attempts",
+          "label": "Failed connection attempts (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",
@@ -1541,7 +1541,7 @@
         {
           "healthy": null,
           "key": "aborted-clients",
-          "label": "Connections dropped without closing",
+          "label": "Connections dropped without closing (whole server)",
           "scope": "since-startup",
           "status": "info",
           "unit": "per-hour",

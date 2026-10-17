@@ -5,7 +5,7 @@
   --ev-mark: #6b4ef0;
   --ev-change: var(--text-2);
   --ev-minor: var(--text-3);
-  --ev-throttle: var(--high);
+  --ev-throttle: var(--medium);
 }
 
 /* Cloud throttling shades the plot; it never intercepts the brush. */
@@ -626,3 +626,10 @@
     display: none;
   }
 }
+
+.cloud-summary.watch { background: var(--medium-bg); }
+.cloud-summary.info { background: var(--surface); }
+.cloud-metric.watch { --ev-throttle: var(--medium); }
+.cloud-metric.bad { --ev-throttle: var(--high); }
+.cloud-metric.watch .cloud-line { stroke: var(--medium); }
+.cloud-metric.watch .cloud-area { fill: color-mix(in srgb, var(--medium) 10%, transparent); }

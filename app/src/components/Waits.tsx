@@ -105,7 +105,7 @@ export function HealthLine({ report, onOpen }: { report: Report; onOpen: OpenWai
       <span className="health-line-label">Health</span>
       {notable.length === 0 ? (
         <span className="health-pill">
-          <i className="sig-dot good" /> {graded} signals look healthy
+          <i className={`sig-dot ${graded > 0 ? "good" : "info"}`} /> {graded > 0 ? `${graded} measured signals look healthy` : "Counters recorded; no health verdict"}
         </span>
       ) : (
         notable.slice(0, 1).map((s) => (

@@ -5,7 +5,7 @@
 use culprit_core::{Confidence, Engine, Finding, Fix, Metric, Severity, Snapshot, Unit, format};
 
 use crate::config::{after_restart, is_on, setting_finding, settings_change, value};
-use crate::support::{days_between, quote, setting_change};
+use crate::support::{days_between, quote, setting_change, severity_for_time};
 
 fn number(snapshot: &Snapshot, name: &str) -> Option<f64> {
     value(snapshot, &[name]).and_then(|v| v.trim().parse::<f64>().ok())
@@ -345,8 +345,15 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
         && shared <= 128.0 * 1024.0 * 1024.0
         && data >= 2.0 * 1024.0 * 1024.0 * 1024.0
     {
-        // Medium only when reads miss it: its hit ratio counts exactly the reads shared_buffers doesn't serve.
-        let missing = snapshot.pressure.as_ref().and_then(|p| p.signal("cache-hit")).is_some_and(|h| h.value < 95.0);
+        // A miss can be an operating-system cache hit. Only this database's measured I/O time establishes a cost.
+        let io_ms: f64 = snapshot
+            .waits
+            .iter()
+            .filter(|w| culprit_core::waits::category_key(&w.category) == "io")
+            .map(|w| w.wait_ms)
+            .sum();
+        let runtime = snapshot.workload.as_ref().map(|w| w.total_time_ms).unwrap_or(0.0);
+        let slow_io = runtime > 0.0 && severity_for_time(snapshot, io_ms, io_ms / runtime) >= Severity::Medium;
         let title = if (shared - 128.0 * 1024.0 * 1024.0).abs() < 1.0 {
             "shared_buffers is still the 128 MB default".to_string()
         } else {
@@ -354,19 +361,19 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
         };
         let mut f = setting_finding(
             "shared_buffers",
-            if missing { Severity::Medium } else { Severity::Low },
+            if slow_io { Severity::Medium } else { Severity::Low },
             title,
             format!(
                 "PostgreSQL keeps only {} of this database's {} in its own cache and leans on the operating system for the \
-                 rest, which costs a copy and an extra lookup on every read.",
+                 rest. Operating-system cache hits can still be fast; this size and the cache-hit ratio alone do not establish a memory shortage.",
                 format::bytes(shared),
                 format::bytes(data)
             ),
             Fix {
-                summary: "A common starting point is a quarter of the server's memory.".into(),
+                summary: "Measure this database's read latency and I/O time during normal load before changing shared_buffers. If they confirm substantial I/O, a common starting point is a quarter of the server's memory, with room left for the operating system and query memory.".into(),
                 // The server's memory isn't readable over SQL: the size is the reader's to fill in, never a guess that
                 // could keep a small server from starting.
-                sql: Some(
+                sql: slow_io.then(||
                     "-- A quarter of the server's memory (4GB on a 16 GB server); takes effect after a restart.\nALTER SYSTEM SET shared_buffers = '<a quarter of RAM>';"
                         .into(),
                 ),

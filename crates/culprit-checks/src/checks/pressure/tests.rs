@@ -15,7 +15,13 @@ fn with_signals(engine: Engine, signals: Vec<Signal>) -> Snapshot {
 }
 
 fn sig(key: &str, value: f64) -> Signal {
-    Signal::new(key, key, value, SignalUnit::Count, SignalScope::SinceStartup)
+    Signal::new(
+        key,
+        if key == "threadpool-waiting" { "Requests in this database without a worker" } else { key },
+        value,
+        SignalUnit::Count,
+        SignalScope::SinceStartup,
+    )
 }
 
 /// A signal the collector graded (it does for a server's own counters under load).
@@ -130,7 +136,7 @@ fn a_single_pending_grant_is_low_and_grant_history_is_at_most_medium() {
     let mut s = with_signals(Engine::Mssql, vec![sig("grant-wait-ms", 72.0 * 30.0 * MINUTE_MS)]);
     let f = memory_queue(&s);
     // The instance's totals, with nothing of this database's queueing: said, not graded on this database.
-    assert_eq!(f[0].severity, Severity::Low);
+    assert!(f.is_empty());
     // On Azure SQL Database the instance is the database: the same history is this database's, at most Medium.
     s.server.platform = Some(culprit_core::Platform::AzureSqlDatabase);
     let f = memory_queue(&s);
@@ -147,10 +153,8 @@ fn a_single_pending_grant_is_low_and_grant_history_is_at_most_medium() {
 #[test]
 fn compile_pressure_needs_load_and_ratio() {
     let mut s = with_signals(Engine::Mssql, vec![graded("compiles-per-batch", 31.0), sig("batch-requests", 120.0)]);
-    // The instance's counters, and this database's statements show no literal values: Low, and no fix aimed here.
-    let f = compile_pressure(&s);
-    assert_eq!(f[0].severity, Severity::Low);
-    assert!(f[0].fix.as_ref().unwrap().sql.is_none());
+    // The server-wide ratio alone establishes no compilation problem in this database.
+    assert!(compile_pressure(&s).is_empty());
     // This database sends one statement with different literal values: it's a likely source.
     s.query_families = vec![culprit_core::QueryFamily {
         key: "0xAB".into(),
@@ -163,11 +167,9 @@ fn compile_pressure_needs_load_and_ratio() {
     }];
     let f = compile_pressure(&s);
     assert!(f[0].title.contains("31% of batches (about 2.2K a minute)"), "{}", f[0].title);
-    // An average since the start: Medium at most.
-    assert_eq!(f[0].severity, Severity::Medium);
-    // The fix cuts compiles; caching one-off plans as stubs wouldn't.
-    let sql = f[0].fix.as_ref().unwrap().sql.clone().unwrap();
-    assert!(sql.contains("PARAMETERIZATION FORCED") && !sql.contains("optimize for ad hoc"), "{sql}");
+    // Shared historical context does not attribute CPU cost to this database.
+    assert_eq!(f[0].severity, Severity::Low);
+    assert!(f[0].fix.as_ref().unwrap().sql.is_none());
     assert!(
         compile_pressure(&with_signals(
             Engine::Mssql,
@@ -292,7 +294,7 @@ fn postgres_slots_and_prepared_transactions_get_their_own_fix() {
 #[test]
 fn connection_limits_for_postgres_and_mysql() {
     let f = worker_pressure(&with_signals(Engine::Postgres, vec![sig("connections", 92.0)]));
-    assert_eq!(f[0].title, "Connections are at 92% of max_connections");
+    assert_eq!(f[0].title, "The whole server's connections were at 92% of max_connections when scanned");
     assert!(worker_pressure(&with_signals(Engine::Mysql, vec![sig("connections", 40.0)])).is_empty());
 }
 
@@ -310,14 +312,17 @@ fn a_connection_peak_since_startup_is_not_a_current_emergency() {
     assert_eq!(f[0].severity, Severity::Low);
     assert!(f[0].title.starts_with("MySQL reached its connection limit once, 9.0 days ago"), "{}", f[0].title);
     assert!(f[0].summary.contains("the limit was lowered after that"));
-    assert_eq!(peak(100.0, 3600.0)[0].severity, Severity::Medium);
+    assert_eq!(peak(100.0, 3600.0)[0].severity, Severity::Low);
 }
 
 // C14: THREADPOOL totals since the start are said as totals, at most Medium; a queue seen now is High; one or two
 // requests seen once are Low.
 #[test]
 fn threadpool_waits_since_startup_are_totals_not_rates() {
-    let f = worker_pressure(&with_signals(Engine::Mssql, vec![sig("threadpool-wait-ms", 72.0 * 120_000.0)]));
+    let mut s = with_signals(Engine::Mssql, vec![sig("threadpool-wait-ms", 72.0 * 120_000.0)]);
+    assert!(worker_pressure(&s).is_empty(), "another database may account for the instance totals");
+    s.server.cloud = Some("Azure SQL Database".into());
+    let f = worker_pressure(&s);
     assert_eq!(f[0].severity, Severity::Medium);
     assert!(
         f[0].title.starts_with("Requests waited 2 h 24 min for a worker thread since SQL Server started 3 days ago"),
@@ -328,7 +333,7 @@ fn threadpool_waits_since_startup_are_totals_not_rates() {
     let f = worker_pressure(&with_signals(Engine::Mssql, vec![sig("threadpool-waiting", 2.0)]));
     assert_eq!((f[0].severity, f[0].confidence), (Severity::Low, Confidence::Low));
     let f = worker_pressure(&with_signals(Engine::Mssql, vec![sig("threadpool-waiting", 6.0)]));
-    assert_eq!(f[0].severity, Severity::High);
+    assert_eq!(f[0].severity, Severity::Medium);
     assert!(f[0].title.contains("THREADPOOL"));
     // Under an hour since the start, a total is no rate: nothing to grade unless someone is waiting now.
     let mut s = with_signals(Engine::Mssql, vec![sig("threadpool-wait-ms", 900_000.0)]);
@@ -352,11 +357,11 @@ fn network_waits_name_big_result_sets() {
 }
 
 fn samples(pick: impl Fn(usize) -> (f64, f64)) -> Vec<ResourceSample> {
-    (0..20)
+    (0..240)
         .map(|i| {
             let (log, workers) = pick(i);
             ResourceSample {
-                at: format!("2026-10-11T10:{:02}:00Z", i * 3),
+                at: format::iso_from_epoch(format::epoch_seconds("2026-10-11T10:00:15Z").unwrap() + i as f64 * 15.0),
                 cpu_pct: Some(30.0),
                 data_io_pct: Some(10.0),
                 log_write_pct: Some(log),
@@ -373,8 +378,12 @@ fn tier_limits_from_resource_samples() {
     s.resources = samples(|i| (if i % 5 < 2 { 99.0 } else { 40.0 }, 5.0));
     let f = tier_limit(&s);
     assert_eq!(f.len(), 1);
-    // Twenty samples three minutes apart: the span said as it is.
-    assert!(f[0].title.starts_with("Log writes hit the tier's limit 40% of the last 57 minutes"), "{}", f[0].title);
+    // A full hour of dense 15-second samples.
+    assert!(
+        f[0].title.starts_with("Log writes reached 95% of the tier's limit in 40% of samples over the last 60 minutes"),
+        "{}",
+        f[0].title
+    );
     assert!(f[0].summary.contains("wait rather than fail"));
     // Minutes of samples (after a failover or a resume) aren't a real part of the hour: no finding.
     s.resources.truncate(8);
@@ -387,7 +396,8 @@ fn the_worker_limit_refuses_requests() {
     let mut s = snapshot_with(Engine::Mssql);
     s.resources = samples(|i| (10.0, if i % 2 == 0 { 100.0 } else { 60.0 }));
     let f = tier_limit(&s);
-    assert!(f[0].title.ends_with("new requests are refused (error 10928)"), "{}", f[0].title);
+    assert!(f[0].title.starts_with("Worker threads reached 95%"), "{}", f[0].title);
+    assert!(f[0].summary.contains("alone do not prove throttling or failed requests occurred"));
     assert!(f[0].summary.contains("refuses new requests with error 10928"));
     assert!(!f[0].summary.contains("rather than fail"));
 }
@@ -398,7 +408,7 @@ fn forced_checkpoints_name_every_cause() {
         Engine::Postgres,
         vec![sig("checkpoints-requested", 62.0), sig("checkpoints", 50.0)],
     ));
-    assert!(f[0].title.starts_with("62% of checkpoints start early, most likely because WAL fills max_wal_size"));
+    assert!(f[0].title.starts_with("62% of the server's recorded checkpoints were requested rather than timed"));
     assert!(f[0].summary.contains("a manual CHECKPOINT, a base backup or CREATE DATABASE"));
 }
 

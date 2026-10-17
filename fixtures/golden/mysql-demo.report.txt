@@ -1,7 +1,7 @@
 reading: MySQL 8.4.11 · database shop · scanned 2026-10-11T12:09:00Z
-headline: 11 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.
+headline: 10 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.
 top share: 85%
-findings: 11
+findings: 10
 
 === finding failing-query:4515abd524a46f37
 high severity · high confidence · queries
@@ -305,53 +305,6 @@ brief:
     ## What to do in the codebase
 
     Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run in a test environment. Check the actual row counts and IO for that run before choosing a change to the application's statements, indexes or statistics. After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
-
-=== finding deadlocks:opposite-order:shop.customers+shop.orders
-low severity · high confidence · queries
-title: Two queries deadlocked at least once, most recently on Oct 11 at 13:48 UTC (opposite access order on shop.customers and shop.orders)
-summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 74 held shop.orders and wanted shop.customers; session 75 held shop.customers and wanted shop.orders. With the same order in both, the second would simply wait instead of deadlocking.
-impact: at least 1 deadlock
-metrics:
-  - Deadlocks (at least): 1
-  - Pattern: opposite access order
-  - Rolled back: session 75 (login root)
-fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-verify:
-  1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-  2. Live › Deadlocks shows the graph of each one, with both statements.
-caveats:
-  - InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.
-brief:
-    # Two queries deadlocked at least once, most recently on Oct 11 at 13:48 UTC (opposite access order on shop.customers and shop.orders)
-
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
-
-    ## What's happening
-
-    Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 74 held shop.orders and wanted shop.customers; session 75 held shop.customers and wanted shop.orders. With the same order in both, the second would simply wait instead of deadlocking.
-
-    ## Evidence
-
-    - Deadlocks (at least): 1
-    - Pattern: opposite access order
-    - Rolled back: session 75 (login root)
-
-    ## Suggested fix
-
-    Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-
-    ## How to verify
-
-    - Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-    - Live › Deadlocks shows the graph of each one, with both statements.
-
-    ## Caveats
-
-    - InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log.
-
-    ## What to do in the codebase
-
-    Where the fix changes how the application reads or writes `shop.customers` and `shop.orders`, search the code for the statements that touch them. After any change is live, run `culprit scan mysql-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
 low severity · medium confidence · indexes

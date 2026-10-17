@@ -1,7 +1,7 @@
 reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:13:47Z
-headline: 25 opportunities. The top ones touch 83% of database time over the last 5 hours.
+headline: 23 opportunities. The top ones touch 83% of database time over the last 5 hours.
 top share: 83%
-findings: 25
+findings: 23
 
 === finding hot-rows:shop.orders
 high severity · high confidence · indexes
@@ -776,65 +776,6 @@ brief:
 
     The fix's Query Store procedure runs against the database (Query Store keeps the plan it forces or the hint it sets), not in the application's code: run it there. After any change is live, run `culprit scan mssql-demo` and check `regression:8` the way *How to verify* says.
 
-=== finding planning-time:249
-low severity · medium confidence · queries
-title: Compiling takes 34% of the time of a read from orders
-summary: Each compile takes 23 ms and the statement then runs for 45 ms: 34% of its time goes to compiling, 6.9 s in the last 5 hours (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused. Its OPTION (RECOMPILE) hint explicitly asks SQL Server for a new plan on every run.
-impact: 34% planning · 4.0% of database time
-metrics:
-  - Planning share: 34%
-  - Per plan: 23 ms
-  - Plans: 300
-  - Runs: 300
-fix: Test removing OPTION (RECOMPILE) from this statement so SQL Server can reuse a plan. Compare representative parameter values, including those that need different plans: keep the hint if the extra runtime from reuse costs more than the compiles it saves. Forced parameterization does not override this hint.
-verify:
-  1. Re-scan: planning should be a small part of its time.
-  2. Compare compiles per run and planning time per run before and after, and check that time per run stays acceptable across representative parameter values. The rewritten statement has a new entry.
-caveats:
-  - Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.
-queries:
-  - 249: 4% of database time
-brief:
-    # Compiling takes 34% of the time of a read from orders
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `planning-time:249`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    Each compile takes 23 ms and the statement then runs for 45 ms: 34% of its time goes to compiling, 6.9 s in the last 5 hours (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused. Its OPTION (RECOMPILE) hint explicitly asks SQL Server for a new plan on every run.
-
-    ## Evidence
-
-    - Planning share: 34%
-    - Per plan: 23 ms
-    - Plans: 300
-    - Runs: 300
-
-    ## Queries involved
-
-    Query `249` — 4% of DB time, 300 runs over the last 5 hours, 45 ms average:
-
-    ```sql
-    SELECT COUNT(*) FROM shop.orders o1 JOIN shop.customers c1 ON c1.id = o1.customer_id JOIN shop.order_items i1 ON i1.order_id = o1.id JOIN shop.products p1 ON p1.id = i1.product_id JOIN shop.orders o2 ON o2.customer_id = c1.id JOIN shop.order_items i2 ON i2.order_id = o2.id JOIN shop.products p2 ON p2.id = i2.product_id JOIN shop.customers c2 ON c2.id = o2.customer_id WHERE o1.id = @id AND p1.price > 0 AND p2.price > 0 AND c2.segment IS NOT NULL OPTION (RECOMPILE)
-    ```
-
-    ## Suggested fix
-
-    Test removing OPTION (RECOMPILE) from this statement so SQL Server can reuse a plan. Compare representative parameter values, including those that need different plans: keep the hint if the extra runtime from reuse costs more than the compiles it saves. Forced parameterization does not override this hint.
-
-    ## How to verify
-
-    - Re-scan: planning should be a small part of its time.
-    - Compare compiles per run and planning time per run before and after, and check that time per run stays acceptable across representative parameter values. The rewritten statement has a new entry.
-
-    ## Caveats
-
-    - Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.
-
-    ## What to do in the codebase
-
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `planning-time:249` the way *How to verify* says.
-
 === finding unindexed-fk:shop.ticket_events(ticket_id)
 low severity · high confidence · indexes
 title: ticket_events has no index on ticket_id, its foreign key to support_tickets
@@ -963,7 +904,7 @@ brief:
 
 === finding deadlocks:key-lookup:shop.customers
 low severity · high confidence · queries
-title: Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+title: Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 summary: Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
 impact: 1 deadlock
 metrics:
@@ -977,7 +918,7 @@ verify:
   1. Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.
   2. Live › Deadlocks shows the graph of each one, with both statements.
 brief:
-    # Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
+    # Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 
     Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `deadlocks:key-lookup:shop.customers`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
@@ -1007,47 +948,6 @@ brief:
     ## What to do in the codebase
 
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `deadlocks:key-lookup:shop.customers` the way *How to verify* says.
-
-=== finding deadlocks:opposite-order:shop.customers+shop.orders
-low severity · high confidence · queries
-title: Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
-summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
-impact: 1 deadlock
-metrics:
-  - Deadlocks: 1
-  - Pattern: opposite access order
-  - Rolled back: session 75 (SQLCMD)
-fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-verify:
-  1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-  2. Live › Deadlocks shows the graph of each one, with both statements.
-brief:
-    # Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 75's transaction was rolled back. Session 75 held shop.customers and wanted shop.orders; session 73 held shop.orders and wanted shop.customers. With the same order in both, the second would simply wait instead of deadlocking.
-
-    ## Evidence
-
-    - Deadlocks: 1
-    - Pattern: opposite access order
-    - Rolled back: session 75 (SQLCMD)
-
-    ## Suggested fix
-
-    Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
-
-    ## How to verify
-
-    - Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
-    - Live › Deadlocks shows the graph of each one, with both statements.
-
-    ## What to do in the codebase
-
-    Where the fix changes how the application reads or writes `shop.customers` and `shop.orders`, search the code for the statements that touch them. After any change is live, run `culprit scan mssql-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
 low severity · medium confidence · indexes

@@ -34,7 +34,8 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
             "The server's latest deadlock report doesn't say when it happened.".to_string(),
         );
         tile.detail = d.note.clone().or_else(|| Some(format!("Read from {}.", d.source)));
-        tile.metrics = vec![TileMetric::new("count", "Deadlocks", Some(0.0), "0")];
+        tile.metrics =
+            vec![TileMetric::new("count", "Undated reports", Some(here.len() as f64), here.len().to_string())];
         return tile;
     }
     if !here.is_empty() {
@@ -59,11 +60,13 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
             format!("{n} deadlocks in {when}; {} of them the same {pattern}{on}.", biggest.len())
         };
         // Bad where the check says High: by how often, not how many.
-        let status = if crate::deadlocks::deadlock_severity(n, d.since_hours) == Severity::High {
-            TileStatus::Bad
-        } else {
-            TileStatus::Watch
-        };
+        let status = report
+            .findings
+            .iter()
+            .filter(|f| f.check == "deadlocks" && !f.inactive)
+            .map(|f| severity_status(f.severity))
+            .max()
+            .unwrap_or(TileStatus::Info);
         let mut tile = Tile::new(TileKey::Deadlocks, status, takeaway);
         tile.detail = d.note.clone().or_else(|| Some(format!("Read from {}.", d.source)));
         tile.metrics = vec![TileMetric::new("count", "Deadlocks", Some(n as f64), n.to_string())];
@@ -94,7 +97,13 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
             // A total with no reset on record is from an unknown span: said, not graded.
             Tile::new(
                 TileKey::Deadlocks,
-                if since.is_some() { TileStatus::Watch } else { TileStatus::Info },
+                report
+                    .findings
+                    .iter()
+                    .filter(|f| f.check == "deadlocks" && !f.inactive)
+                    .map(|f| severity_status(f.severity))
+                    .max()
+                    .unwrap_or(TileStatus::Info),
                 format!(
                     "{family} counted {} deadlock{}{over}; it keeps no details to explain them.",
                     format::count(counted),

@@ -39,6 +39,11 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
         snapshot.constraints = list;
     }
     let pressure = snapshot.pressure.get_or_insert_with(Pressure::default);
+    if from_query_store {
+        let compiles =
+            sources::read(&mut coverage, &sources::QUERY_COMPILATION, database_compiles(client).await, grant);
+        pressure.signals.extend(compiles.unwrap_or_default());
+    }
     if probe.can_read_dmvs() {
         let azure = probe.is_azure_sql_database();
         if let Some(files) = sources::read(&mut coverage, &sources::FILE_LATENCY, files(client, azure).await, grant) {
@@ -52,6 +57,49 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
 }
 
 // ── per query ──────────────────────────────────────────────────────────────────────────────────────
+
+/// An exact database-scoped count, not a ratio against the instance's batches or an estimate for a runtime window.
+async fn database_compiles(client: &mut MsClient) -> tiberius::Result<Vec<Signal>> {
+    let sql = r#"
+SELECT SUM(CAST(q.count_compiles AS float)) AS compiles,
+       SUM(q.avg_compile_duration * q.count_compiles) / 1000.0 AS compile_ms,
+       CONVERT(varchar(33), MIN(q.initial_compile_start_time), 127) AS first_compile,
+       CONVERT(varchar(33), MAX(q.last_compile_start_time), 127) AS last_compile
+FROM sys.query_store_query q
+JOIN sys.query_store_query_text t ON t.query_text_id = q.query_text_id
+WHERE q.is_internal_query = 0 AND q.is_clouddb_internal_query = 0 AND t.query_sql_text NOT LIKE N'%/* culprit */%'
+"#;
+    let rows = query(client, sql).await?;
+    let Some(r) = rows.first() else { return Ok(Vec::new()) };
+    let (Some(compiles), Some(ms)) = (r.f64("compiles"), r.f64("compile_ms")) else { return Ok(Vec::new()) };
+    let context = format!(
+        "Only user queries retained by this database's Query Store; first compile {}, most recent {}. Counts cover those entries' history, not the selected runtime window. Compilation duration is elapsed time, not measured CPU usage.",
+        r.string("first_compile"),
+        r.string("last_compile")
+    );
+    Ok(vec![
+        Signal {
+            healthy: Some(context.clone()),
+            ..Signal::new(
+                "database-compiles",
+                "Compiles recorded",
+                compiles,
+                SignalUnit::Count,
+                SignalScope::QueryHistory,
+            )
+        },
+        Signal {
+            healthy: Some(context),
+            ..Signal::new(
+                "database-compile-time",
+                "Compilation time",
+                ms,
+                SignalUnit::Milliseconds,
+                SignalScope::QueryHistory,
+            )
+        },
+    ])
+}
 
 /// Aborted (3) and exception (4) runs, their log bytes, and compile time from Query Store.
 async fn attach_costs(
@@ -102,19 +150,15 @@ WHERE i.end_time >= @since
     };
     let by_id: HashMap<String, Rec> = rows.into_iter().map(|r| (r.string("query_id"), r)).collect();
 
-    // Compile statistics cover the query's whole life in Query Store, from its first compile; its runtime statistics
-    // only the intervals Query Store still keeps (cleanup removes older ones). How long each covers turns the
-    // compiles into a per-run cost for the runs that are kept.
+    // Keep compilation totals in their own history. Compare with windowed runs only if the entry began inside
+    // that window; Query Store does not say when each older compilation happened.
     let compile_sql = format!(
         r#"
 SELECT q.query_id, q.count_compiles, q.avg_compile_duration / 1000.0 AS avg_compile_ms,
-  DATEDIFF(second, q.initial_compile_start_time, SYSDATETIMEOFFSET()) AS compiling_s,
-  r.runs AS lifetime_runs, DATEDIFF(second, r.first_start, SYSDATETIMEOFFSET()) AS kept_s
+  CONVERT(varchar(33), q.initial_compile_start_time, 127) AS first_compile,
+  CONVERT(varchar(33), q.last_compile_start_time, 127) AS last_compile,
+  DATEDIFF(second, q.initial_compile_start_time, SYSDATETIMEOFFSET()) AS compiling_s
 FROM sys.query_store_query q
-OUTER APPLY (SELECT SUM(rs.count_executions) AS runs, MIN(i.start_time) AS first_start
-     FROM sys.query_store_runtime_stats rs
-     JOIN sys.query_store_runtime_stats_interval i ON i.runtime_stats_interval_id = rs.runtime_stats_interval_id
-     JOIN sys.query_store_plan p ON p.plan_id = rs.plan_id WHERE p.query_id = q.query_id) r
 WHERE q.query_id IN ({list})
 "#
     );
@@ -139,13 +183,23 @@ WHERE q.query_id IN ({list})
         let compiled = compiles.get(&q.id).map(|r| Compiles {
             count: r.f64_or_zero("count_compiles"),
             avg_ms: r.f64_or_zero("avg_compile_ms"),
-            kept_runs: r.f64("lifetime_runs"),
             compiling_s: r.f64("compiling_s"),
-            kept_s: r.f64("kept_s"),
         });
-        if let Some((plan_ms, plans)) = compiled.and_then(|c| c.for_runs(q.executions)) {
-            costs.plan_ms = Some(plan_ms);
-            costs.plans = Some(plans);
+        costs.plan_ms = None;
+        costs.plans = None;
+        if let Some(c) = compiled {
+            let within_window = c.in_window(window_minutes).is_some();
+            costs.compile_history = Some(culprit_core::signals::CompileHistory {
+                count: c.count,
+                total_ms: c.count * c.avg_ms,
+                first_at: compiles.get(&q.id).map(|r| r.string("first_compile")),
+                last_at: compiles.get(&q.id).map(|r| r.string("last_compile")),
+                within_window,
+            });
+            if within_window {
+                costs.plan_ms = Some(c.count * c.avg_ms);
+                costs.plans = Some(c.count);
+            }
         }
         q.costs = (!costs.is_empty()).then_some(costs);
     }
@@ -157,35 +211,14 @@ struct Compiles {
     /// count_compiles: every compile since the first (initial_compile_start_time).
     count: f64,
     avg_ms: f64,
-    /// Runs in the runtime statistics Query Store still keeps.
-    kept_runs: Option<f64>,
     /// Seconds since its first compile.
     compiling_s: Option<f64>,
-    /// Seconds since the oldest runtime interval kept for it.
-    kept_s: Option<f64>,
 }
 
 impl Compiles {
-    /// Compile time and compiles for `runs` of its runs, at the rate per run of the period both statistics cover. The
-    /// compile counts run from the first compile; once cleanup has removed older runtime intervals, dividing them by
-    /// the runs still kept would claim more compiles than runs: the compiles are then scaled to the kept span. `None`
-    /// without runs or a span to scale by.
-    fn for_runs(&self, runs: f64) -> Option<(f64, f64)> {
-        let kept_runs = self.kept_runs.filter(|n| *n > 0.0)?;
-        if self.count <= 0.0 {
-            return None;
-        }
-        // An interval's length of slack: the first runtime interval starts on its boundary, before the first compile.
-        const SLACK_S: f64 = 3_600.0;
-        let share = match (self.compiling_s, self.kept_s) {
-            (Some(life), Some(kept)) if life > kept + SLACK_S && life > 0.0 => (kept / life).clamp(0.0, 1.0),
-            (Some(_), Some(_)) => 1.0,
-            _ => return None,
-        };
-        let compiles = self.count * share;
-        let per_run = compiles * self.avg_ms / kept_runs;
-        let plans = (compiles / kept_runs * runs).round().min(runs.max(compiles));
-        Some((per_run * runs, plans))
+    fn in_window(&self, minutes: u32) -> Option<(f64, f64)> {
+        (self.count > 0.0 && self.compiling_s.is_some_and(|s| s >= 0.0 && s <= f64::from(minutes) * 60.0))
+            .then_some((self.count * self.avg_ms, self.count))
     }
 }
 
@@ -468,26 +501,12 @@ WHERE drs.database_id = DB_ID()
 mod tests {
     use super::*;
 
-    // Query Store's cleanup removed the runtime intervals of the query's first 29 days; its compile count still runs
-    // from day one. Dividing all its compiles by the runs still kept would claim a compile for every run.
     #[test]
-    fn compiles_are_scaled_to_the_runtime_statistics_still_kept() {
-        let day = 86_400.0;
-        let compiles = |compiling_s: f64| Compiles {
-            count: 1_500.0,
-            avg_ms: 20.0,
-            kept_runs: Some(1_500.0),
-            compiling_s: Some(compiling_s),
-            kept_s: Some(day),
-        };
-        // Both cover the same day: a compile for every run.
-        let (plan_ms, plans) = compiles(day).for_runs(100.0).unwrap();
-        assert_eq!((plan_ms, plans), (2_000.0, 100.0));
-        // Compiling for 30 days, runs kept for the last one: a compile every 30 runs.
-        let (plan_ms, plans) = compiles(30.0 * day).for_runs(100.0).unwrap();
-        assert_eq!(plans, 3.0);
-        assert!((plan_ms - 2_000.0 / 30.0).abs() < 1e-6, "{plan_ms}");
-        assert!(Compiles { kept_runs: None, ..compiles(day) }.for_runs(100.0).is_none());
+    fn only_compiles_wholly_in_the_selected_period_are_compared_with_its_runs() {
+        let c = Compiles { count: 1500.0, avg_ms: 20.0, compiling_s: Some(3600.0) };
+        assert_eq!(c.in_window(60), Some((30_000.0, 1500.0)));
+        assert_eq!(c.in_window(30), None);
+        assert_eq!(Compiles { compiling_s: None, ..c }.in_window(60), None);
     }
 
     // On Azure SQL Database the login counters are the server process's, shared by the pool: never graded.

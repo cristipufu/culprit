@@ -402,7 +402,7 @@ fn signal(key: &str, value: f64) -> Signal {
 
 // C3: compiles and single-use plans are one cause (literal values); the plan-cache finding keeps the compile load.
 #[test]
-fn compile_pressure_and_the_plan_cache_are_one_finding() {
+fn server_compiles_do_not_prove_this_database_causes_cpu_pressure() {
     let mut s = with_pressure(
         snapshot("mssql-demo.json"),
         vec![
@@ -419,12 +419,8 @@ fn compile_pressure_and_the_plan_cache_are_one_finding() {
     let report = analyze(s);
     assert!(report.findings.iter().all(|f| f.check != "compile-pressure"));
     let cache = find(&report.findings, "query-family:plan-cache").expect("plan cache");
-    assert!(
-        cache.summary.contains("The CPU side of the same cause: SQL Server compiles a new plan for 45%"),
-        "{}",
-        cache.summary
-    );
-    assert!(cache.metrics.iter().any(|m| m.label == "Compiles per 100 batches"));
+    assert!(!cache.summary.contains("CPU side of the same cause"));
+    assert!(!cache.metrics.iter().any(|m| m.label == "Compiles per 100 batches"));
     assert_eq!(cache.severity, Severity::Medium);
 }
 

@@ -212,6 +212,7 @@ impl Pipeline {
             rule.refine(&snapshot, &mut findings);
         }
         rank(&mut findings);
+        crate::pressure::grade_findings(&mut snapshot, &findings);
         let summary = crate::summarize(&snapshot, &findings);
         Report { snapshot, findings, locked, summary }
     }

@@ -42,21 +42,28 @@ pub fn now(live: &LiveState) -> Tile {
     let chains = live.blocking.as_ref().map(|b| b.chains.as_slice()).unwrap_or_default();
 
     let (status, takeaway) = if let Some(chain) = chains.first() {
-        let severe = chain.waiters >= 5 || chain.longest_wait_ms.is_some_and(|ms| ms >= 30_000.0);
-        (if severe { TileStatus::Bad } else { TileStatus::Watch }, chain.headline.clone())
+        let status = blocking_status(chain.waiters as usize, chain.longest_wait_ms);
+        (status, chain.headline.clone())
     } else if blocked > 0 {
         (
-            TileStatus::Watch,
+            blocking_status(
+                blocked,
+                live.sessions
+                    .iter()
+                    .filter(|s| s.blocked_by.is_some())
+                    .filter_map(|s| s.wait_ms)
+                    .max_by(f64::total_cmp),
+            ),
             format!(
                 "{} waiting on another session's lock.",
                 capitalized(&plural(blocked, "session is", "sessions are"))
             ),
         )
-    } else if let Some(s) = oldest_idle.filter(|s| s.transaction_ms.unwrap_or(0.0) >= 60_000.0) {
+    } else if let Some(s) = oldest_idle.filter(|s| s.transaction_ms.unwrap_or(0.0) >= 600_000.0) {
         (
             TileStatus::Watch,
             format!(
-                "Session {} has been idle in an open transaction for {}.",
+                "Session {} is idle with a transaction opened {} ago.",
                 s.id,
                 format::duration(s.transaction_ms.unwrap_or(0.0))
             ),
@@ -83,6 +90,12 @@ pub fn now(live: &LiveState) -> Tile {
             Some(idle_tx.len() as f64),
             idle_tx.len().to_string(),
         ),
+        TileMetric::new(
+            "long-idle-in-transaction",
+            "Long open idle transactions",
+            Some(idle_tx.iter().filter(|s| s.transaction_ms.is_some_and(|ms| ms >= 600_000.0)).count() as f64),
+            idle_tx.iter().filter(|s| s.transaction_ms.is_some_and(|ms| ms >= 600_000.0)).count().to_string(),
+        ),
         TileMetric::new("sessions", "Sessions", Some(live.sessions.len() as f64), live.sessions.len().to_string()),
     ];
     let mut items: Vec<TileItem> = chains
@@ -91,7 +104,7 @@ pub fn now(live: &LiveState) -> Tile {
         .map(|c| {
             let mut item = TileItem::new(ItemKind::Session, c.head.clone(), c.headline.clone());
             item.value = Some(format!("{} waiting", c.waiters));
-            item.status = Some(TileStatus::Bad);
+            item.status = Some(blocking_status(c.waiters as usize, c.longest_wait_ms));
             item
         })
         .collect();
@@ -105,10 +118,20 @@ pub fn now(live: &LiveState) -> Tile {
             .unwrap_or_else(|| s.command.clone().unwrap_or_else(|| s.state.clone()));
         let mut item = TileItem::new(ItemKind::Session, s.id.clone(), format!("Session {} · {label}", s.id));
         item.value = s.elapsed_ms.map(format::duration);
-        item.status = Some(if s.blocked_by.is_some() { TileStatus::Watch } else { TileStatus::Good });
+        item.status = Some(if s.blocked_by.is_some() { blocking_status(1, s.wait_ms) } else { TileStatus::Good });
         item
     }));
     tile.items = items;
     tile.detail = Some(format!("Read {}.", culprit_core::changes::short_time(&live.taken_at)));
     tile
+}
+
+fn blocking_status(waiters: usize, ms: Option<f64>) -> TileStatus {
+    if ms.is_some_and(|ms| ms >= 30_000.0) {
+        TileStatus::Bad
+    } else if waiters >= 5 || ms.is_some_and(|ms| ms >= 1000.0) {
+        TileStatus::Watch
+    } else {
+        TileStatus::Info
+    }
 }

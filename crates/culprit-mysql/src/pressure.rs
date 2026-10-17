@@ -415,7 +415,7 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
     let mut observed: BTreeMap<(&'static str, String), f64> = BTreeMap::new();
     let ticks = seconds.max(1) + 1;
     for tick in 0..ticks {
-        for r in query(conn, SESSIONS_SQL).await.unwrap_or_default() {
+        for r in query(conn, SESSIONS_SQL).await? {
             let state = r.text("state").filter(|s| !s.is_empty()).unwrap_or_else(|| "executing".into());
             let lock_wait = r.text("trx_state").is_some_and(|t| t.eq_ignore_ascii_case("LOCK WAIT"));
             let label = if lock_wait && !state.to_ascii_lowercase().contains("lock") {
@@ -442,12 +442,12 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
     };
     let samples = f64::from(ticks);
     let busy: f64 = observed.values().sum();
-    let mut notes = Vec::new();
+    let mut notes = vec!["These wait and connection counters cover the whole server, including other databases. They do not establish pressure in the selected database.".into()];
     let (categories, method) = if instrumented.iter().map(|c| c.wait_ms).sum::<f64>() > 0.0 {
         (
             instrumented,
             format!(
-                "Difference of two readings of performance_schema.events_waits_summary_global_by_event_name {seconds} s apart"
+                "Whole-server difference of two readings of performance_schema.events_waits_summary_global_by_event_name {seconds} s apart"
             ),
         )
     } else {
@@ -466,7 +466,7 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
             .map(|(category, (n, top, _))| WaitStat {
                 category: category.into(),
                 wait_type: Some(top),
-                wait_ms: n * 1000.0,
+                wait_ms: n / samples * elapsed * 1000.0,
                 tasks: Some(n),
             })
             .collect();
@@ -478,26 +478,30 @@ pub async fn sample(conn: &mut Conn, seconds: u32) -> Result<WaitSample> {
         (
             sampled,
             format!(
-                "The process list sampled once a second for {seconds} s: each observation is one second of one session's time"
+                "The whole server's process list sampled once a second for {seconds} s; observations are weighted over the measured sample duration"
             ),
         )
     };
     let total_ms: f64 = categories.iter().map(|c| c.wait_ms).sum();
-    let rate = |k: &str| Some(((status_after.get(k)? - status_before.get(k)?) / elapsed).max(0.0));
+    let delta = |k: &str| {
+        let d = status_after.get(k)? - status_before.get(k)?;
+        (d >= 0.0).then_some(d)
+    };
+    let rate = |k: &str| delta(k).map(|d| d / elapsed);
     let mut signals = Vec::new();
     if let Some(q) = rate("Questions") {
         signals.push(Signal::new("questions", "Statements", q, SignalUnit::PerSecond, SignalScope::Sampled));
     }
-    if let Some(w) = rate("Innodb_row_lock_waits") {
+    if let Some(w) = delta("Innodb_row_lock_waits") {
         signals.push(Signal::new(
             "row-lock-waits",
-            "Row-lock waits",
-            w * 3600.0,
-            SignalUnit::PerHour,
+            "Row-lock waits during sample (whole server)",
+            w,
+            SignalUnit::Count,
             SignalScope::Sampled,
         ));
     }
-    if total_ms == 0.0 && notes.is_empty() {
+    if total_ms == 0.0 {
         notes.push("No enabled wait instrument recorded anything and no session was busy. Many instruments are off by default; enable them in performance_schema.setup_instruments to see more.".into());
     }
     Ok(WaitSample {
