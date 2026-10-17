@@ -11,13 +11,13 @@ impact: 89% of DB time · 88.6% of database time
 metrics:
   - On-disk temporary tables per run: 1
   - Average duration: 2.5 s
-fix: Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart.
+fix: Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
   sql:
       SET GLOBAL tmp_table_size = 67108864;
       SET GLOBAL max_heap_table_size = 67108864;
   cost: The limit is per temporary table per connection; size it with your connection count in mind.
 verify:
-  1. Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+  1. Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 queries:
   - 375c64398248650e: 89% of database time · plan step 2
 brief:
@@ -46,7 +46,7 @@ brief:
 
     ## Suggested fix
 
-    Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart.
+    Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
 
     ```sql
     SET GLOBAL tmp_table_size = 67108864;
@@ -57,11 +57,11 @@ brief:
 
     ## How to verify
 
-    - Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+    - Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says.
+    If you choose an index from the fix's options, ship it through this project's schema migrations. If you choose a query change, find where the application sends the statements above (search for their table and column names) and make that change in the calling code. If you choose the session-setting option, set those variables on the application's connections. The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says.
 
 === finding chatty-query:a92bb0be330ac53a
 low severity · medium confidence · queries
@@ -172,16 +172,17 @@ brief:
 === finding scan-heavy:shop.orders
 low severity · medium confidence · indexes
 title: orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)
-summary: shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+summary: shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 impact: 4% of DB time · 4.0% of database time
 metrics:
   - Full reads: 80
   - Rows read without an index: 40.0M
   - Rows in table: 499K
-fix: Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+fix: Explain the statements listed with this finding to check their access paths. To measure each filter, capture an actual plan with representative values in a controlled environment: this runs the statement. Compare rows kept with rows read. If a filter keeps at most 10% of the rows read, consider an index on the columns it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan.
   cost: shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.
 verify:
-  1. The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (80 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster.
+  1. After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (80 full reads in this scan).
+  2. Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
 caveats:
   - Counters accumulate since statistics were last reset; one nightly report can make up much of them.
 queries:
@@ -193,7 +194,7 @@ brief:
 
     ## What's happening
 
-    shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+    shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 
     ## Evidence
 
@@ -211,13 +212,14 @@ brief:
 
     ## Suggested fix
 
-    Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+    Explain the statements listed with this finding to check their access paths. To measure each filter, capture an actual plan with representative values in a controlled environment: this runs the statement. Compare rows kept with rows read. If a filter keeps at most 10% of the rows read, consider an index on the columns it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan.
 
     Cost: shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.
 
     ## How to verify
 
-    - The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (80 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster.
+    - After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (80 full reads in this scan).
+    - Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mariadb-demo --since <ship time>`): there its time per run should drop.
 
     ## Caveats
 
@@ -225,7 +227,7 @@ brief:
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
+    Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run in a test environment. Check the actual row counts and IO for that run before choosing a change to the application's statements, indexes or statistics. After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding deadlocks:opposite-order:shop.customers+shop.orders
 low severity · high confidence · queries
@@ -285,6 +287,9 @@ fix: Drop ix_orders_status and keep ix_orders_status_created.
   sql:
       ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 9.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+  2. Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -310,13 +315,18 @@ brief:
 
     Cost: Frees 9.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+    - Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mariadb-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mariadb-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
 low severity · high confidence · indexes
@@ -329,6 +339,9 @@ fix: Drop ix_products_sku and keep uq_products_sku.
   sql:
       ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 432 KB.
+verify:
+  1. Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+  2. Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
@@ -352,9 +365,14 @@ brief:
 
     Cost: Frees 432 KB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+    - Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mariadb-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mariadb-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding row-lock-waits:server
 low severity · medium confidence · queries
@@ -405,8 +423,8 @@ brief:
 insight temp-table-sort · low severity · impact no share stated
   title: Groups 500K rows in an internal temporary table, then sorts them (filesort)
   detail: The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MariaDB builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.
-  fix: An index whose leading columns match the GROUP BY lets MariaDB group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.
-  verify: Explain again: no "using temporary table" on the grouping.
+  fix: An index whose leading columns match the GROUP BY may let MariaDB group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.
+  verify: Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself.
 note: MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.
 shares: `Sort` (sum(orders.total) desc) and `Temporary table` have no cost of their own in the plan, so no share is given.
 

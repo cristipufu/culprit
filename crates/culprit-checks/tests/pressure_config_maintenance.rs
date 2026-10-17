@@ -39,6 +39,13 @@ fn dead_rows_wait_for_the_tables_own_trigger_and_absorb_stale_statistics() {
     assert!(wide.summary.contains("Its statistics are behind too"), "{}", wide.summary);
     assert!(find(&report.findings, "stale-stats:archive.wide").is_none(), "absorbed by dead-rows");
     assert!(wide.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("VACUUM (ANALYZE)"));
+    let verify = wide.verify.join(" ");
+    assert!(verify.contains("dead-row count should fall below the table's autovacuum trigger"), "{verify}");
+    assert!(
+        verify.contains("last analyze time should be newer") && verify.contains("changes since analyze should fall"),
+        "{verify}"
+    );
+    assert!(verify.contains("after representative writes"), "{verify}");
 
     // 25% of a busy table dead is just past the default trigger (50 + 20%): autovacuum's rhythm, not a backlog.
     let mut s = report_snapshot("pg-demo");
@@ -550,10 +557,36 @@ fn a_restart_is_named_only_where_the_setting_needs_one() {
     let s = snapshot("mysql-demo.json");
     let f = find(&analyze(s.clone()).findings, "config:slow_query_log").cloned().expect("the slow log is off");
     assert_eq!(f.verify, vec!["Re-scan once the change has taken effect: this finding is gone.".to_string()]);
+    assert!(f.fix.as_ref().unwrap().summary.contains("long_query_time applies to new connections"), "{:?}", f.fix);
     let mut off = s;
     set(&mut off, "performance_schema", "OFF");
     let f = find(&analyze(off).findings, "config:performance_schema").cloned().expect("performance_schema off");
     assert!(f.verify[0].starts_with("Re-scan after the server has restarted with the change"), "{:?}", f.verify);
+}
+
+#[test]
+fn mysql_and_mariadb_temp_limits_reach_existing_connections_only_when_the_app_sets_them() {
+    let spill = |s: Snapshot| analyze(s).findings.into_iter().find(|f| f.check == "temp-spill").unwrap();
+    for s in [snapshot("mysql-demo.json"), report_snapshot("mariadb-demo")] {
+        let f = spill(s);
+        let fix = f.fix.as_ref().unwrap();
+        assert!(fix.summary.contains("Global values apply to new connections"), "{}", fix.summary);
+        assert!(
+            fix.summary.contains("reopen the application's existing connections")
+                && fix.summary.contains("set these session variables on them"),
+            "{}",
+            fix.summary
+        );
+        assert!(f.verify[0].starts_with("Once the application's connections use the new limits"), "{:?}", f.verify);
+    }
+    // Before MySQL 8.0.28, the TempTable engine has only its server-wide RAM cap: no new session is needed for that.
+    let mut shared = snapshot("mysql-demo.json");
+    shared.server.version = "8.0.27".into();
+    set(&mut shared, "internal_tmp_mem_storage_engine", "TempTable");
+    set(&mut shared, "temptable_max_ram", "1073741824");
+    let f = spill(shared);
+    assert!(!f.fix.as_ref().unwrap().summary.contains("new connections"), "{:?}", f.fix);
+    assert!(f.verify[0].starts_with("Once the change is live"), "{:?}", f.verify);
 }
 
 // Aptabase EU: scans by older versions counted the server's WAL write and sync time as 99.98% of statement time. A

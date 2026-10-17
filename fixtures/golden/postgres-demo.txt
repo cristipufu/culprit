@@ -365,6 +365,9 @@ fix: Drop orders_status_idx and keep orders_status_created_idx.
   sql:
       DROP INDEX CONCURRENTLY public.orders_status_idx;
   cost: Frees 13.3 MB.
+verify:
+  1. Re-scan after removing orders_status_idx: this finding should be gone, and orders_status_created_idx should still exist.
+  2. Compare queries on public.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - orders_status_idx is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -390,13 +393,18 @@ brief:
 
     Cost: Frees 13.3 MB.
 
+    ## How to verify
+
+    - Re-scan after removing orders_status_idx: this finding should be gone, and orders_status_created_idx should still exist.
+    - Compare queries on public.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - orders_status_idx is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After the change is live, run `culprit scan pg-demo`: `duplicate-index:public.orders.orders_status_idx` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.orders.orders_status_idx` the way *How to verify* says.
 
 === finding duplicate-index:public.products.products_sku_idx
 low severity · high confidence · indexes
@@ -409,6 +417,9 @@ fix: Drop products_sku_idx and keep products_sku_key.
   sql:
       DROP INDEX CONCURRENTLY public.products_sku_idx;
   cost: Frees 328 KB.
+verify:
+  1. Re-scan after removing products_sku_idx: this finding should be gone, and products_sku_key should still exist.
+  2. Compare queries on public.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # products_sku_idx duplicates products_sku_key on products
 
@@ -432,9 +443,14 @@ brief:
 
     Cost: Frees 328 KB.
 
+    ## How to verify
+
+    - Re-scan after removing products_sku_idx: this finding should be gone, and products_sku_key should still exist.
+    - Compare queries on public.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After the change is live, run `culprit scan pg-demo`: `duplicate-index:public.products.products_sku_idx` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.products.products_sku_idx` the way *How to verify* says.
 
 === finding heavy-query:-8886085649470066503
 low severity · high confidence · queries

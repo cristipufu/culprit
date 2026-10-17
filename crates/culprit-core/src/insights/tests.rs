@@ -108,6 +108,38 @@ fn a_temporary_table_on_the_grouping_differs_from_sorting_the_groups() {
 }
 
 #[test]
+fn grouping_in_index_order_does_not_remove_aggregate_order_materialization() {
+    for mariadb in [false, true] {
+        let mut scan = node(3, "Table scan", NodeKind::Scan);
+        scan.est_rows = 499_000.0;
+        scan.object = Some("shop.orders".into());
+        let mut group = node(2, if mariadb { "Temporary table" } else { "Group" }, NodeKind::Aggregate);
+        group.detail = Some("using temporary table".into());
+        group.est_rows = 499_000.0;
+        group.children = vec![scan];
+        let mut sort = node(1, "Sort", NodeKind::Sort);
+        sort.est_rows = 499_000.0;
+        sort.children = vec![group];
+        let mut p = plan(Engine::Mysql, sort);
+        p.statement = Some(
+            "SELECT customer_id, channel, SUM(total) AS spent FROM orders GROUP BY customer_id, channel ORDER BY spent DESC LIMIT 20".into(),
+        );
+        if mariadb {
+            p.props.insert("flavor".into(), "MariaDB".into());
+        }
+        let found =
+            insights(&p).into_iter().find(|i| i.rule == "temp-table-sort").expect("grouping in a temporary table");
+        assert!(
+            found.fix.contains("may let") && found.fix.contains("can still need a temporary table and sort"),
+            "{}",
+            found.fix
+        );
+        assert!(!found.fix.contains("with no temporary table"), "{}", found.fix);
+        assert!(found.verify.contains("can remain") && found.verify.contains("on new runs"), "{}", found.verify);
+    }
+}
+
+#[test]
 fn converting_a_parameter_is_not_a_type_mismatch() {
     // SQL Server converts the parameter, not the column: the index works and estimates are fine.
     let mut scan = node(1, "Clustered Index Seek", NodeKind::Seek);

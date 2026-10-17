@@ -138,7 +138,7 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
                     engine_name(snapshot)
                 ));
             } else if !mssql {
-                f.caveats.push(format!("{} counts errors per statement since it started, so old failures stay in the total until it restarts.", engine_name(snapshot)));
+                f.caveats.push(format!("{} counts errors from when each statement's entry began counting, so old failures stay in its total until the counters are reset or the server restarts.", engine_name(snapshot)));
             }
             f
         })

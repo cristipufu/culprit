@@ -109,6 +109,14 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: Some("VACUUM doesn't block reads or writes; it does add I/O while it runs.".into()),
                 }
             });
+            let when = if held {
+                "After ending the cleanup holder and running VACUUM (ANALYZE), re-scan"
+            } else {
+                "Re-scan after VACUUM (ANALYZE)"
+            };
+            f.verify = vec![format!(
+                "{when}: the dead-row count should fall below the table's autovacuum trigger, the last analyze time should be newer, and changes since analyze should fall. Check again after representative writes to confirm autovacuum keeps the dead-row count near its trigger rather than letting the backlog return."
+            )];
             Some(f)
         })
         .collect()

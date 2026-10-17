@@ -312,21 +312,18 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
         sql: None,
         cost: None,
     });
-    // On running totals a statement's pages a run hold every run from before the change; What changed shows its time
-    // a run between two scans, never its reads.
-    let statements_read_less = match &snapshot.workload {
-        _ if statements.is_empty() => String::new(),
-        Some(w) if !w.windowed => format!(
-            ", and the statements below should take less time a run between a scan taken when it ships and one a day or more later (What changed, `{}`)",
-            crate::queries::WHAT_CHANGED_COMMAND
-        ),
-        _ => ", and the statements below should read fewer pages a run".to_string(),
+    let compare_time = if statements.is_empty() {
+        "Record representative runs of the changed statement in the workload, then compare its time per run."
+            .to_string()
+    } else {
+        crate::queries::what_changed_between_scans(snapshot, "the changed statements", "compare their time per run")
+            .unwrap_or_else(|| "Compare the changed statements' time per run in windows before and after the change, for the same rows and representative values.".into())
     };
     f.verify = vec![
         format!(
-            "Re-scan after the change: the table's average row and its share of large values should drop{statements_read_less}."
+            "If you read fewer columns, measure how much data the application receives for the same rows before and after. {compare_time} A rewritten statement has a new entry. Reading fewer columns need not change the table's stored size or the number of in-row pages read."
         ),
-        "A later scan says whether it still grows: it compares the table's size with this scan's.".into(),
+        "If you make stored values smaller, compare bytes per live row in later scans; if you remove rows or values, compare total large-value bytes and subsequent growth. Catalog page counts can lag until freed space is reclaimed, and the percentage in large values need not fall.".into(),
     ];
     f.caveats = vec!["Sizes are the pages the table has reserved, from the catalog: they include space allocated but not yet filled.".into()];
     f

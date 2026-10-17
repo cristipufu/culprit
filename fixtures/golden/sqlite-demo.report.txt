@@ -13,8 +13,8 @@ metrics:
   - Foreign key: orders_fk_0
 fix: Index the foreign key column on main.orders.
   sql:
-      CREATE INDEX IF NOT EXISTS "ix_orders_customer_id"
-          ON "main"."orders" ("customer_id");
+      CREATE INDEX IF NOT EXISTS "main"."ix_orders_customer_id"
+          ON "orders" ("customer_id");
       -- SQLite builds an index under the database's write lock: writers wait until it finishes.
 verify:
   1. Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING INDEX ix_orders_customer_id`) instead of reading all of it.
@@ -67,8 +67,8 @@ brief:
     Index the foreign key column on main.orders.
 
     ```sql
-    CREATE INDEX IF NOT EXISTS "ix_orders_customer_id"
-        ON "main"."orders" ("customer_id");
+    CREATE INDEX IF NOT EXISTS "main"."ix_orders_customer_id"
+        ON "orders" ("customer_id");
     -- SQLite builds an index under the database's write lock: writers wait until it finishes.
     ```
 
@@ -96,8 +96,8 @@ metrics:
   - Foreign key: order_items_fk_0
 fix: Index the foreign key column on main.order_items.
   sql:
-      CREATE INDEX IF NOT EXISTS "ix_order_items_product_id"
-          ON "main"."order_items" ("product_id");
+      CREATE INDEX IF NOT EXISTS "main"."ix_order_items_product_id"
+          ON "order_items" ("product_id");
       -- SQLite builds an index under the database's write lock: writers wait until it finishes.
 verify:
   1. Re-scan once the index exists: this finding should be gone, and a delete from main.products then finds the rows of main.order_items it checks through the index, not by scanning the table.
@@ -122,8 +122,8 @@ brief:
     Index the foreign key column on main.order_items.
 
     ```sql
-    CREATE INDEX IF NOT EXISTS "ix_order_items_product_id"
-        ON "main"."order_items" ("product_id");
+    CREATE INDEX IF NOT EXISTS "main"."ix_order_items_product_id"
+        ON "order_items" ("product_id");
     -- SQLite builds an index under the database's write lock: writers wait until it finishes.
     ```
 
@@ -150,6 +150,9 @@ fix: Drop ix_orders_status_again and keep ix_orders_status.
   sql:
       DROP INDEX IF EXISTS "main"."ix_orders_status_again";
   cost: Frees 3.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status_again: this finding should be gone, and ix_orders_status should still exist.
+  2. Compare queries on main.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_orders_status_again duplicates ix_orders_status on orders
 
@@ -173,9 +176,14 @@ brief:
 
     Cost: Frees 3.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status_again: this finding should be gone, and ix_orders_status should still exist.
+    - Compare queries on main.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan sqlite-demo`: `duplicate-index:main.orders.ix_orders_status_again` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan sqlite-demo` and check `duplicate-index:main.orders.ix_orders_status_again` the way *How to verify* says.
 
 === finding config:sqlite-statistics
 low severity · high confidence · maintenance
@@ -233,7 +241,7 @@ fix: VACUUM rewrites the file without its free pages. To give space back after l
   sql:
       PRAGMA auto_vacuum = INCREMENTAL;
       VACUUM;
-  cost: VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.
+  cost: VACUUM holds the write lock for its whole run and can need up to twice the original file's size in free disk space.
 verify:
   1. Scan again: free pages are a small part of the file.
 brief:
@@ -259,7 +267,7 @@ brief:
     VACUUM;
     ```
 
-    Cost: VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.
+    Cost: VACUUM holds the write lock for its whole run and can need up to twice the original file's size in free disk space.
 
     ## How to verify
 

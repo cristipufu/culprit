@@ -68,7 +68,7 @@
             "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
           }
         ],
-        "reason": "Read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows without an index). Explain the statement listed with it to see which filter has no index.",
+        "reason": "Read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows without an index). Explain the statement listed with it to check its access path, then measure rows kept in representative runs.",
         "rows": 498573.0,
         "rows_scanned_per_day": null,
         "schema": "shop",
@@ -405,7 +405,7 @@
             "text": "SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?"
           }
         ],
-        "reason": "Read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows without an index). Explain the statement listed with it to see which filter has no index.",
+        "reason": "Read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows without an index). Explain the statement listed with it to check its access path, then measure rows kept in representative runs.",
         "rows": 498573.0,
         "rows_scanned_per_day": null,
         "schema": "shop",
@@ -597,7 +597,7 @@
         "requests": [],
         "schema": "main",
         "source": "engine-built",
-        "sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"main\".\"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_orders_customer_id\"\n    ON \"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
         "table": "orders",
         "table_rows": 200000.0,
         "verify": [
@@ -622,7 +622,7 @@
         "requests": [],
         "schema": "main",
         "source": "foreign-key",
-        "sql": "CREATE INDEX IF NOT EXISTS \"ix_order_items_product_id\"\n    ON \"main\".\"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_order_items_product_id\"\n    ON \"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
         "table": "order_items",
         "table_rows": 200000.0,
         "verify": [

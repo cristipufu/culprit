@@ -568,7 +568,15 @@ fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             "The slow query log is off".into(),
             "Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.".into(),
             Fix {
-                summary: format!("Turn it on with a threshold that matches your latency budget. {}", change.how),
+                summary: format!(
+                    "Turn it on with a threshold that matches your latency budget. {}{}",
+                    change.how,
+                    if lower_already {
+                        ""
+                    } else {
+                        " The new long_query_time applies to new connections: reopen the application's existing connections, or have the application set the session variable on them."
+                    }
+                ),
                 sql: change.sql,
                 // What the table costs the lock time every check reads: the reason Culprit asks for it said beside it.
                 cost: snapshot.server.is_mariadb().then(|| {

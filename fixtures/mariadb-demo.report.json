@@ -8,7 +8,7 @@
       "fix": {
         "cost": "The limit is per temporary table per connection; size it with your connection count in mind.",
         "sql": "SET GLOBAL tmp_table_size = 67108864;\nSET GLOBAL max_heap_table_size = 67108864;",
-        "summary": "Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart."
+        "summary": "Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: the smaller one wins). Set tmp_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Set max_heap_table_size to 67108864 now, and in the server's option file (my.cnf) so it survives a restart. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them."
       },
       "id": "temp-spill:375c64398248650e",
       "impact": {
@@ -48,7 +48,7 @@
       "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
       "verify": [
-        "Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)."
+        "Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)."
       ]
     },
     {
@@ -177,7 +177,7 @@
       "fix": {
         "cost": "shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.",
         "sql": null,
-        "summary": "Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan."
+        "summary": "Explain the statements listed with this finding to check their access paths. To measure each filter, capture an actual plan with representative values in a controlled environment: this runs the statement. Compare rows kept with rows read. If a filter keeps at most 10% of the rows read, consider an index on the columns it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan."
       },
       "id": "scan-heavy:shop.orders",
       "impact": {
@@ -220,10 +220,11 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
       "title": "orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)",
       "verify": [
-        "The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (80 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster."
+        "After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (80 full reads in this scan).",
+        "Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
       ]
     },
     {
@@ -317,7 +318,10 @@
       },
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
-      "verify": []
+      "verify": [
+        "Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.",
+        "Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
+      ]
     },
     {
       "category": "indexes",
@@ -354,7 +358,10 @@
       },
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
-      "verify": []
+      "verify": [
+        "Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.",
+        "Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
+      ]
     },
     {
       "category": "queries",

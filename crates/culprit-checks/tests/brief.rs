@@ -90,6 +90,108 @@ fn a_setting_is_changed_where_the_server_is_managed_not_found_in_the_code() {
 }
 
 #[test]
+fn a_log_throughput_brief_keeps_batching_before_capacity_changes() {
+    let path = format!("{}/../../fixtures/mssql-demo-staging.report.json", env!("CARGO_MANIFEST_DIR"));
+    let saved: Report = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("report");
+    let report = analyze(saved.snapshot);
+    let finding = finding(&report, "tier-limit:log-write");
+    let section = codebase(&agent_brief(&report, finding));
+    let batch = section.find("batch small writes into fewer transactions").expect("application batching");
+    let capacity = section.find("change the service tier or capacity").expect("capacity fallback");
+    assert!(batch < capacity, "{section}");
+    assert!(section.contains("application or job"), "{section}");
+    assert!(!section.contains("The fix is a setting of the database server"), "{section}");
+}
+
+#[test]
+fn a_measurement_only_fix_gathers_evidence_before_prescribing_code_changes() {
+    let report = report("mssql-demo.json");
+    let heavy = finding(&report, "heavy-query:");
+    for diagnostic in [
+        "Read a retained actual plan when the server has one; otherwise capture a representative actual plan in a test environment.",
+        "Capture an actual execution plan for a representative run in a test environment.",
+    ] {
+        let f = with_fix(heavy, diagnostic, None);
+        let section = codebase(&agent_brief(&report, &f));
+        assert!(section.contains("Gather the runtime evidence the fix asks for first"), "{section}");
+        assert!(section.contains("before choosing a change"), "{section}");
+        assert!(!section.contains("apply the fix in that calling code"), "{section}");
+        assert!(section.contains("How to verify"), "{section}");
+    }
+}
+
+#[test]
+fn a_scan_heavy_diagnostic_gathers_measurements_before_choosing_a_change() {
+    let path = format!("{}/../../fixtures/mariadb-demo.report.json", env!("CARGO_MANIFEST_DIR"));
+    let saved: Report = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for engine in [culprit_core::Engine::Mysql, culprit_core::Engine::Postgres] {
+        let mut snapshot = saved.snapshot.clone();
+        snapshot.server.engine = engine;
+        let report = analyze(snapshot);
+        let diagnostic = finding(&report, "scan-heavy:");
+        let fix = diagnostic.fix.as_ref().unwrap();
+        assert!(fix.sql.is_none() && fix.summary.contains("capture an actual plan with representative values"));
+        if engine == culprit_core::Engine::Postgres {
+            assert!(fix.summary.contains("Culprit can show a generic plan, which does not measure actual rows"));
+        }
+        let section = codebase(&agent_brief(&report, diagnostic));
+        assert!(section.contains("Gather the runtime evidence the fix asks for first"), "{section}");
+        assert!(section.contains("before choosing a change"), "{section}");
+        assert!(!section.contains("apply the fix in that calling code"), "{section}");
+        assert!(!section.contains("Ship the fix's index change"), "{section}");
+        assert!(section.contains("How to verify"), "{section}");
+    }
+}
+
+#[test]
+fn a_role_only_query_fix_leaves_calling_code_alone_but_keeps_local_options() {
+    let postgres = report("postgres-demo.json");
+    let query = finding(&postgres, "temp-spill:");
+    let role =
+        with_fix(query, "Turn JIT off for the application's role.", Some("ALTER ROLE <app_role> SET jit = off;"));
+    let section = codebase(&agent_brief(&postgres, &role));
+    assert!(section.contains("The role setting in the fix's SQL"), "{section}");
+    assert!(!section.contains("apply the fix in that calling code"), "{section}");
+
+    let local = with_fix(
+        query,
+        "Raise memory for the application's role or just for this statement.",
+        Some("ALTER ROLE <app_role> SET work_mem = '64MB';\nSET LOCAL work_mem = '64MB';"),
+    );
+    let section = codebase(&agent_brief(&postgres, &local));
+    assert!(section.contains("The role setting in the fix's SQL"), "{section}");
+    assert!(section.contains("apply the fix in that calling code"), "{section}");
+    assert!(section.contains("`SET LOCAL` is the exception"), "{section}");
+    assert!(section.contains("inside the transaction that runs the statement"), "{section}");
+}
+
+#[test]
+fn temp_spill_options_route_application_and_index_work_conditionally() {
+    let mysql = report("mysql-demo.json");
+    let path = format!("{}/../../fixtures/mariadb-demo.report.json", env!("CARGO_MANIFEST_DIR"));
+    let saved: Report = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mariadb = analyze(saved.snapshot);
+    for report in [&mysql, &mariadb] {
+        let spill = finding(report, "temp-spill:");
+        let section = codebase(&agent_brief(report, spill));
+        assert!(section.contains("If you choose an index") && section.contains("schema migrations"), "{section}");
+        assert!(section.contains("If you choose a query change") && section.contains("calling code"), "{section}");
+        assert!(section.contains("If you choose the session-setting option"), "{section}");
+        assert!(section.contains("The setting in the fix's SQL belongs to the database server"), "{section}");
+        assert!(!section.contains("apply the fix in that calling code"), "{section}");
+    }
+    // The TempTable engine's shared RAM cap offers no session-variable route.
+    let shared = with_fix(
+        finding(&mysql, "temp-spill:"),
+        "Check whether an index helps, or raise the shared TempTable RAM cap.",
+        Some("SET GLOBAL temptable_max_ram = 2147483648;"),
+    );
+    let section = codebase(&agent_brief(&mysql, &shared));
+    assert!(section.contains("If you choose an index"), "{section}");
+    assert!(!section.contains("session-setting option"), "{section}");
+}
+
+#[test]
 fn a_database_or_role_setting_is_sql_run_against_the_database() {
     // ALTER DATABASE … SET and SQL Server's database options live in the database: run once as its owner or shipped as
     // a migration, never put in a parameter group that sets every database on the server.
@@ -562,9 +664,9 @@ fn a_statement_that_ran_once_is_scanned_again_only_if_it_runs_again() {
 fn without_a_verify_step_the_brief_says_what_a_later_scan_shows() {
     // An index dropped is gone from the next scan's catalog.
     let mssql = report("mssql-demo.json");
-    let dropped = finding(&mssql, "duplicate-index:");
-    assert!(dropped.verify.is_empty());
-    let section = codebase(&agent_brief(&mssql, dropped));
+    let mut dropped = finding(&mssql, "duplicate-index:").clone();
+    dropped.verify.clear();
+    let section = codebase(&agent_brief(&mssql, &dropped));
     assert!(section.contains(&format!("`{}` should be gone", dropped.id)), "{section}");
     assert!(!section.contains("with this scan"), "{section}");
 

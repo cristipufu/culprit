@@ -94,7 +94,7 @@ fn free_space(s: &Snapshot) -> Option<Finding> {
         Fix {
             summary: "VACUUM rewrites the file without its free pages. To give space back after large deletes from then on, switch auto_vacuum to INCREMENTAL first (it takes effect with that VACUUM) and run PRAGMA incremental_vacuum when convenient.".into(),
             sql: Some("PRAGMA auto_vacuum = INCREMENTAL;\nVACUUM;".into()),
-            cost: Some("VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.".into()),
+            cost: Some("VACUUM holds the write lock for its whole run and can need up to twice the original file's size in free disk space.".into()),
         }
     });
     f.verify = vec!["Scan again: free pages are a small part of the file.".into()];

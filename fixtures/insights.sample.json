@@ -9,7 +9,7 @@
         {
           "area": "index",
           "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MariaDB builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
-          "fix": "An index whose leading columns match the GROUP BY lets MariaDB group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
+          "fix": "An index whose leading columns match the GROUP BY may let MariaDB group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.",
           "fix_sql": null,
           "fixed_weight": false,
           "impact": 0.0,
@@ -19,7 +19,7 @@
           "rule": "temp-table-sort",
           "severity": "low",
           "title": "Groups 500K rows in an internal temporary table, then sorts them (filesort)",
-          "verify": "Explain again: no \"using temporary table\" on the grouping."
+          "verify": "Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself."
         }
       ],
       "note": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills."
@@ -194,7 +194,7 @@
         {
           "area": "index",
           "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
-          "fix": "An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
+          "fix": "An index whose leading columns match the GROUP BY may let MySQL group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.",
           "fix_sql": null,
           "fixed_weight": false,
           "impact": 0.0,
@@ -204,7 +204,7 @@
           "rule": "temp-table-sort",
           "severity": "low",
           "title": "Groups 499K rows in an internal temporary table, then sorts them (filesort)",
-          "verify": "Explain again: no \"using temporary table\" on the grouping."
+          "verify": "Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself."
         }
       ],
       "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."

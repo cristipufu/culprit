@@ -75,7 +75,11 @@ fn jit_longer_than_the_query() {
     q.costs = Some(QueryCosts { jit_ms: Some(2_500.0), jit_functions: Some(800.0), ..Default::default() });
     let f = jit_overhead(&s);
     assert_eq!(f[0].title, "JIT compilation takes longer than running a read from orders");
-    assert!(f[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("jit_above_cost"));
+    assert!(s.setting("jit_above_cost").is_none());
+    assert!(f[0].summary.contains("Culprit did not read jit_above_cost."));
+    let sql = f[0].fix.as_ref().unwrap().sql.as_ref().unwrap();
+    assert!(sql.contains("ALTER ROLE <app_role> SET jit = off;"), "{sql}");
+    assert!(!sql.contains("ALTER SYSTEM"), "an unknown threshold must not be guessed: {sql}");
 }
 
 #[test]

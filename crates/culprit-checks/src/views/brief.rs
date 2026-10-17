@@ -436,6 +436,36 @@ fn where_the_change_is(
 ) {
     let fix = finding.fix.as_ref();
     let declines = fix.is_some_and(advises_no_change);
+    // Reaching a cloud cap has two routes: reduce the workload first, then change capacity if needed. Its
+    // Configuration category doesn't make batching the application's writes a server setting.
+    if finding.check == "tier-limit" {
+        let workload = if finding.id == "tier-limit:log-write" {
+            "First change the application or job that writes the rows: batch small writes into fewer transactions \
+             and avoid row-by-row changes."
+        } else {
+            "First apply the fix's query and workload changes where those statements are sent; ship any index \
+             changes as migrations."
+        };
+        said.push(format!(
+            "{workload} If the resource still reaches its cap, change the service tier or capacity where this project \
+             manages its cloud database."
+        ));
+        return;
+    }
+    if fix.is_some_and(|f| {
+        f.sql.is_none()
+            && (finding.check == "scan-heavy"
+                || f.summary.starts_with("Read a retained actual plan")
+                || f.summary.starts_with("Capture an actual execution plan"))
+    }) {
+        said.push(
+            "Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run \
+             in a test environment. Check the actual row counts and IO for that run before choosing a change to \
+             the application's statements, indexes or statistics."
+                .into(),
+        );
+        return;
+    }
     // An index advised for statements that stay as they are: the index is the whole change.
     let index_only = finding.category == Category::Indexes && sql.only_schema();
     // The statements to find in the code, and how a sentence refers back to them.
@@ -459,6 +489,18 @@ fn where_the_change_is(
              table and column names) and change {them} the way this project ships query changes (an ORM change or a \
              query rewrite). The fix's SQL is only the fallback it names, for when the application can't change."
         ));
+    } else if finding.check == "temp-spill" && s.server.engine == Engine::Mysql && sql.settings() && !declines {
+        said.push(format!(
+            "If you choose an index from the fix's options, ship it through this project's schema migrations. If you \
+             choose a query change, find where the application sends {these} (search for {their} table and column \
+             names) and make that change in the calling code."
+        ));
+        if fix.is_some_and(|f| f.summary.contains("set these session variables")) {
+            said.push(
+                "If you choose the session-setting option, set those variables on the application's connections."
+                    .into(),
+            );
+        }
     } else if !app.is_empty() && !declines && !sql.in_the_application && !sql.only_runs_on_the_database() && !index_only
     {
         said.push(
@@ -746,7 +788,6 @@ fn verify_line(
     let (runs, does) = if one { ("it runs", "it does") } else { ("they run", "they do") };
     // The slowest run and the spread are kept since the reset whatever runs after it: a scan can't show the change.
     if finding.check == "unstable-query"
-        && (finding.verify.is_empty() || finding.inactive)
         && let Some(w) = workload.filter(|w| !w.windowed)
     {
         let kept = format!(
@@ -765,6 +806,9 @@ fn verify_line(
                      change: {kept}."
                 )
             };
+        }
+        if !finding.verify.is_empty() {
+            return format!("Judge `{id}` from the new execution samples described under *How to verify*.");
         }
         return format!(
             "A later {scan} can't show the change: {kept}. Catch the next slow runs instead, the way the fix says."
@@ -973,11 +1017,12 @@ impl FixSql {
                 || self.in_the_application)
     }
 
-    /// The fix's SQL is the whole change and none of it is the application's: upkeep, a plan forced in Query Store, or
-    /// a diagnostic run on the database. The statements stay as they are.
+    /// The fix's SQL is the whole change and none of it is the application's: a setting, upkeep, a plan forced in
+    /// Query Store, or a diagnostic run on the database. Explicit statement-local and application options still need
+    /// the calling code.
     fn only_runs_on_the_database(&self) -> bool {
-        (self.upkeep || self.plan_pin || self.diagnostic())
-            && !(self.settings() || self.local || self.schema || self.other || self.in_the_application)
+        (self.settings() || self.upkeep || self.plan_pin || self.diagnostic())
+            && !(self.local || self.schema || self.other || self.in_the_application)
     }
 }
 

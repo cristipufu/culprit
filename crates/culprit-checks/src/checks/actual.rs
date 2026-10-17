@@ -57,10 +57,11 @@ pub fn last_actual_plans(snapshot: &Snapshot) -> Vec<Finding> {
         };
         f.title = "LAST_QUERY_PLAN_STATS is off for this database".into();
         f.summary = format!(
-            "With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's \
-             most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, \
-             without running it again. Without it only estimated plans are available, so a bad estimate can only be \
-             guessed at.{trace_flag}"
+            "With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached \
+             query's most recent run. Complex or resource-intensive queries can then show where they actually spent \
+             their time, operator by operator, without running them again. Simple transactional queries may retain only the \
+             root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained \
+             runtime data, the saved estimated plan cannot confirm a row misestimate.{trace_flag}"
         );
         f.fix = Some(Fix {
             summary: "Turn it on for this database.".into(),
@@ -72,8 +73,9 @@ pub fn last_actual_plans(snapshot: &Snapshot) -> Vec<Finding> {
             ),
         });
         f.verify = vec![
-            "Let the workload run, re-scan, then open a query in Queries and pick \"Last actual run\": the diagram \
-             shows actual rows and time per operator."
+            "Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick \
+             \"Last actual run\" when available: the diagram shows the rows and timings SQL Server retained. A simple \
+             query may have only a root operator, and an uncached or evicted plan has no last-run data."
                 .into(),
         ];
         out.push(f);
@@ -122,6 +124,14 @@ mod tests {
         assert_eq!(found[0].id, "last-actual-plans:last-query-plan-stats");
         assert!(found[0].fix.as_ref().unwrap().sql.as_deref().unwrap().contains("LAST_QUERY_PLAN_STATS = ON"));
         assert!(found[0].summary.contains("Trace flag 2451"), "a server you manage can set it: {}", found[0].summary);
+        assert!(found[0].summary.contains("eligible cached"), "{}", found[0].summary);
+        assert!(
+            found[0].summary.contains("Simple transactional queries may retain only the root operator"),
+            "{}",
+            found[0].summary
+        );
+        assert!(found[0].verify[0].contains("when available"), "{:?}", found[0].verify);
+        assert!(found[0].verify[0].contains("uncached or evicted"), "{:?}", found[0].verify);
         assert!(last_actual_plans(&snapshot("postgres-demo.json")).is_empty());
     }
 

@@ -425,21 +425,19 @@ brief:
 === finding jit-overhead:6425265648074738764
 low severity · high confidence · queries
 title: JIT compilation takes longer than running a read from products
-summary: PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 5 hours ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.
+summary: PostgreSQL spent 31 ms of its 32 ms per run compiling parts of this statement to machine code (3.7 s in all since its statistics began 5 hours ago). JIT is chosen at plan time when the estimated cost exceeds the effective jit_above_cost. Culprit did not read jit_above_cost. The application's role, database or session can use another setting, and a cached plan can keep a decision made before this scan. JIT pays off for long analytical queries; on short runs its compilation can cost more than it saves. These totals alone do not show that the planner overestimated the rows.
 impact: 98% JIT · 2.4% of database time
 metrics:
   - JIT share: 98%
   - JIT per run: 31 ms
   - Run time: 32 ms
-fix: Raise the cost threshold so JIT only starts for plans ten times as expensive as now (100K today): Set jit_above_cost to 1000000 and reload the configuration (settings marked as needing a restart take effect after one). Or turn JIT off for the application's role. Fixing the row estimate that inflates the cost also helps.
+fix: Turn JIT off for the application's role, or raise jit_above_cost in the scope that enables it. This scan does not establish that threshold for the application, so it cannot choose a higher value safely. Check the role, database and session settings before changing it; a role's new connections use the SQL below unless the application overrides it.
   sql:
-      -- JIT only for plans the planner thinks are 10× more expensive than today's threshold
-      ALTER SYSTEM SET jit_above_cost = 1000000;
-      SELECT pg_reload_conf();
-      -- Or for the application's role only:
-      -- ALTER ROLE app_user SET jit = off;
+      -- For the role the application connects as (takes effect on its next connections):
+      ALTER ROLE <app_role> SET jit = off;
+  cost: This affects every statement that role runs, including analytical queries that may benefit from JIT.
 verify:
-  1. Between two scans, its JIT time per run should drop to zero or near it: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
+  1. Once the application's connections use the change, its JIT time per run should drop to zero or near it between two scans: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
 queries:
   - 6425265648074738764: 2% of database time
 brief:
@@ -449,7 +447,7 @@ brief:
 
     ## What's happening
 
-    PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 5 hours ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.
+    PostgreSQL spent 31 ms of its 32 ms per run compiling parts of this statement to machine code (3.7 s in all since its statistics began 5 hours ago). JIT is chosen at plan time when the estimated cost exceeds the effective jit_above_cost. Culprit did not read jit_above_cost. The application's role, database or session can use another setting, and a cached plan can keep a decision made before this scan. JIT pays off for long analytical queries; on short runs its compilation can cost more than it saves. These totals alone do not show that the planner overestimated the rows.
 
     ## Evidence
 
@@ -467,23 +465,22 @@ brief:
 
     ## Suggested fix
 
-    Raise the cost threshold so JIT only starts for plans ten times as expensive as now (100K today): Set jit_above_cost to 1000000 and reload the configuration (settings marked as needing a restart take effect after one). Or turn JIT off for the application's role. Fixing the row estimate that inflates the cost also helps.
+    Turn JIT off for the application's role, or raise jit_above_cost in the scope that enables it. This scan does not establish that threshold for the application, so it cannot choose a higher value safely. Check the role, database and session settings before changing it; a role's new connections use the SQL below unless the application overrides it.
 
     ```sql
-    -- JIT only for plans the planner thinks are 10× more expensive than today's threshold
-    ALTER SYSTEM SET jit_above_cost = 1000000;
-    SELECT pg_reload_conf();
-    -- Or for the application's role only:
-    -- ALTER ROLE app_user SET jit = off;
+    -- For the role the application connects as (takes effect on its next connections):
+    ALTER ROLE <app_role> SET jit = off;
     ```
+
+    Cost: This affects every statement that role runs, including analytical queries that may benefit from JIT.
 
     ## How to verify
 
-    - Between two scans, its JIT time per run should drop to zero or near it: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
+    - Once the application's connections use the change, its JIT time per run should drop to zero or near it between two scans: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says.
+    The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says.
 
 === finding dead-rows:archive.wide
 low severity · high confidence · maintenance
@@ -500,6 +497,8 @@ fix: Vacuum it now, and make autovacuum visit this table sooner. If dead rows co
       VACUUM (ANALYZE) archive.wide;
       ALTER TABLE archive.wide SET (autovacuum_vacuum_scale_factor = 0.02);
   cost: VACUUM doesn't block reads or writes; it does add I/O while it runs.
+verify:
+  1. Re-scan after VACUUM (ANALYZE): the dead-row count should fall below the table's autovacuum trigger, the last analyze time should be newer, and changes since analyze should fall. Check again after representative writes to confirm autovacuum keeps the dead-row count near its trigger rather than letting the backlog return.
 caveats:
   - PostgreSQL's statistics also estimate about 123 MB of wide (74%) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum.
 brief:
@@ -529,13 +528,17 @@ brief:
 
     Cost: VACUUM doesn't block reads or writes; it does add I/O while it runs.
 
+    ## How to verify
+
+    - Re-scan after VACUUM (ANALYZE): the dead-row count should fall below the table's autovacuum trigger, the last analyze time should be newer, and changes since analyze should fall. Check again after representative writes to confirm autovacuum keeps the dead-row count near its trigger rather than letting the backlog return.
+
     ## Caveats
 
     - PostgreSQL's statistics also estimate about 123 MB of wide (74%) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum.
 
     ## What to do in the codebase
 
-    The upkeep in the fix's SQL isn't a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job). Ship the fix's schema change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan pg-demo`: `dead-rows:archive.wide` should be gone.
+    The upkeep in the fix's SQL isn't a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job). Ship the fix's schema change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan pg-demo` and check `dead-rows:archive.wide` the way *How to verify* says.
 
 === finding unindexed-fk:public.order_items(order_id)
 low severity · high confidence · indexes
@@ -655,6 +658,9 @@ fix: Drop orders_status_idx and keep orders_status_created_idx.
   sql:
       DROP INDEX CONCURRENTLY public.orders_status_idx;
   cost: Frees 13.3 MB.
+verify:
+  1. Re-scan after removing orders_status_idx: this finding should be gone, and orders_status_created_idx should still exist.
+  2. Compare queries on public.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - orders_status_idx is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -680,13 +686,18 @@ brief:
 
     Cost: Frees 13.3 MB.
 
+    ## How to verify
+
+    - Re-scan after removing orders_status_idx: this finding should be gone, and orders_status_created_idx should still exist.
+    - Compare queries on public.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - orders_status_idx is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After the change is live, run `culprit scan pg-demo`: `duplicate-index:public.orders.orders_status_idx` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.orders.orders_status_idx` the way *How to verify* says.
 
 === finding duplicate-index:public.products.products_sku_idx
 low severity · high confidence · indexes
@@ -699,6 +710,9 @@ fix: Drop products_sku_idx and keep products_sku_key.
   sql:
       DROP INDEX CONCURRENTLY public.products_sku_idx;
   cost: Frees 328 KB.
+verify:
+  1. Re-scan after removing products_sku_idx: this finding should be gone, and products_sku_key should still exist.
+  2. Compare queries on public.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # products_sku_idx duplicates products_sku_key on products
 
@@ -722,9 +736,14 @@ brief:
 
     Cost: Frees 328 KB.
 
+    ## How to verify
+
+    - Re-scan after removing products_sku_idx: this finding should be gone, and products_sku_key should still exist.
+    - Compare queries on public.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After the change is live, run `culprit scan pg-demo`: `duplicate-index:public.products.products_sku_idx` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.products.products_sku_idx` the way *How to verify* says.
 
 === finding deadlocks:counter
 low severity · medium confidence · queries

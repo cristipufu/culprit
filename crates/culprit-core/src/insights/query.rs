@@ -917,9 +917,9 @@ pub(super) fn temp_table_sort(cx: &Cx) -> Vec<Draft> {
                 "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so {server} builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result."
             );
             d.fix = format!(
-                "An index whose leading columns match the GROUP BY lets {server} group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small."
+                "An index whose leading columns match the GROUP BY may let {server} group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work."
             );
-            d.verify = "Explain again: no \"using temporary table\" on the grouping.".into();
+            d.verify = "Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself.".into();
             out.push(d);
         } else if !grouped_below(n, &in_temp) {
             // The ordering step's temporary table: the grouping below already reads an index in order, so only the

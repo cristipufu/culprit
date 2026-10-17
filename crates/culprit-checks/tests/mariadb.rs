@@ -180,8 +180,8 @@ fn a_statement_with_no_where_is_not_told_to_index_its_filter() {
     assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), vec!["258e3c9b580f1ecc"]);
     assert!(
         f.summary.ends_with(
-            "1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no \
-             index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE \
+            "1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, \
+             then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE \
              clause, so no index on a filter changes that."
         ),
         "{}",
@@ -189,7 +189,7 @@ fn a_statement_with_no_where_is_not_told_to_index_its_filter() {
     );
     assert!(f.impact.db_time_share.unwrap_or(0.0) < 0.1, "{:?}", f.impact.db_time_share);
     let fix = f.fix.as_ref().unwrap();
-    assert!(fix.summary.starts_with("Explain the statements listed with this finding and index"), "{}", fix.summary);
+    assert!(fix.summary.starts_with("Explain the statements listed with this finding to check"), "{}", fix.summary);
     // Read in full only by it, as often as the counters count: nothing for an index on a filter to remove.
     let mut s = snapshot();
     let w = s.workload.as_mut().unwrap();
@@ -214,7 +214,7 @@ fn rows_examined_say_which_statements_read_the_table_in_full() {
     assert!(
         f.summary.contains(
             "1 of the captured statements reads it in full (it examines 500K rows a run, about the whole table); \
-             explain it to see which filter has no index."
+             explain it to check the access path, then measure rows kept in representative runs."
         ),
         "{}",
         f.summary
@@ -225,6 +225,40 @@ fn rows_examined_say_which_statements_read_the_table_in_full() {
     // No SQL creates an index: the cost line names the one the reader would add (MY-6).
     let cost = f.fix.as_ref().and_then(|x| x.cost.as_deref()).unwrap_or_default();
     assert!(!cost.contains("this index") && cost.contains("any index you add"), "{cost}");
+}
+
+#[test]
+fn a_full_read_does_not_prove_that_an_index_would_help() {
+    for planned in [true, false] {
+        let mut s = snapshot();
+        if !planned {
+            for q in s.workload.as_mut().unwrap().queries.iter_mut() {
+                q.plan = None;
+            }
+        }
+        // The captured plan's filter keeps every row by its estimate, and the parameterized LIMIT prevents the
+        // statement's rows returned from proving otherwise. Without the plan, all we know is a full read too.
+        let report = analyze(s);
+        assert!(find(&report, "filtered-scan:shop.orders(promo_code)").is_none());
+        let f = find(&report, "scan-heavy:shop.orders").expect("full reads still need a look");
+        let fix = f.fix.as_ref().unwrap();
+        assert!(fix.sql.is_none());
+        assert!(
+            fix.summary.contains("capture an actual plan with representative values in a controlled environment")
+                && fix.summary.contains("this runs the statement")
+                && fix.summary.contains("If a filter keeps at most 10%")
+                && fix.summary.contains("if it keeps more, read fewer rows or columns"),
+            "{}",
+            fix.summary
+        );
+        assert!(f.verify[0].starts_with("After adding an index for a selective filter"), "{:?}", f.verify);
+        assert!(f.verify[1].contains("Whether the fix adds an index or reads fewer rows or columns"), "{:?}", f.verify);
+        assert!(
+            f.verify[1].contains("What changed") && f.verify[1].contains("time per run should drop"),
+            "{:?}",
+            f.verify
+        );
+    }
 }
 
 // InnoDB keeps only its most recent deadlock: "deadlocked once in the last day" counted what it doesn't count.

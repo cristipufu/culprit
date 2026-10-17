@@ -442,6 +442,7 @@ export function PlanCompare() {
             <PlanDiagram
               key={`a-${a.id}-${b.id}-${ready ? 1 : 0}`}
               plan={a.plan}
+              query={a.query}
               marks={view.marksA}
               tints={view.tintsA}
               selectedId={pickA}
@@ -457,7 +458,7 @@ export function PlanCompare() {
               }}
             />
           ) : (
-            <PlanView key={`a-${a.id}`} plan={a.plan} focus={pickA} />
+            <PlanView key={`a-${a.id}`} plan={a.plan} query={a.query} selectedId={pickA} />
           )}
         </Side>
         <Side label="B" item={b} innerRef={sideB}>
@@ -465,6 +466,7 @@ export function PlanCompare() {
             <PlanDiagram
               key={`b-${a.id}-${b.id}-${ready ? 1 : 0}`}
               plan={b.plan}
+              query={b.query}
               marks={view.marksB}
               tints={view.tintsB}
               selectedId={pickB}
@@ -480,7 +482,7 @@ export function PlanCompare() {
               }}
             />
           ) : (
-            <PlanView key={`b-${b.id}`} plan={b.plan} focus={pickB} />
+            <PlanView key={`b-${b.id}`} plan={b.plan} query={b.query} selectedId={pickB} />
           )}
         </Side>
       </div>

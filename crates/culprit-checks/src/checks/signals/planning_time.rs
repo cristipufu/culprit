@@ -32,6 +32,7 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
             f.title = format!("{word} {takes} {} of the time of {handle}", share_words(share));
             let per_plan = per_run(plan_ms, plans.max(1.0));
             let every_run = plans >= q.executions * 0.9;
+            let recompile_hint = !pg && culprit_core::sql::has_mssql_recompile_hint(&q.text);
             let reuse = if every_run {
                 "a new plan for every run".to_string()
             } else {
@@ -49,6 +50,9 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 ran_phrase(snapshot, q),
                 reuse
             );
+            if recompile_hint {
+                f.summary.push_str(" Its OPTION (RECOMPILE) hint explicitly asks SQL Server for a new plan on every run.");
+            }
             f.severity = if share >= 0.5 && window_at_least(snapshot, q, plan_ms, 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
@@ -63,6 +67,12 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
             f.fix = Some(if pg {
                 Fix {
                     summary: "Prepare it once and reuse it: most drivers do when you bind parameters (pgjdbc prepareThreshold, Npgsql Max Auto Prepare, psycopg prepare=True). Behind PgBouncer in transaction mode, prepared statements need 1.21+ with max_prepared_statements set. If planning stays slow when reused, look at the number of joins and partitions it touches.".into(),
+                    sql: None,
+                    cost: None,
+                }
+            } else if recompile_hint {
+                Fix {
+                    summary: "Test removing OPTION (RECOMPILE) from this statement so SQL Server can reuse a plan. Compare representative parameter values, including those that need different plans: keep the hint if the extra runtime from reuse costs more than the compiles it saves. Forced parameterization does not override this hint.".into(),
                     sql: None,
                     cost: None,
                 }
@@ -85,6 +95,9 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 Some(compare) => format!("Between two scans, its planning time per run should drop: {compare}."),
                 None => "Re-scan: planning should be a small part of its time.".into(),
             }];
+            if recompile_hint {
+                f.verify.push("Compare compiles per run and planning time per run before and after, and check that time per run stays acceptable across representative parameter values. The rewritten statement has a new entry.".into());
+            }
             if !pg {
                 f.caveats.push("Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.".into());
             }

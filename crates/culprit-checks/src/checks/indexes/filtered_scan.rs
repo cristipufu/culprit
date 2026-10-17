@@ -59,8 +59,12 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
                             culprit_core::insights::condition_count(predicate),
                         )
                     }));
-            let estimate_keeps_few = !guessed
-                && node.est_rows_total() <= rows * node.est_executions.max(1.0) * culprit_core::INDEX_KEEPS_AT_MOST;
+            let estimate_keeps_few = if node.act_rows.is_some() {
+                node.kept_share().is_some_and(|kept| kept <= culprit_core::INDEX_KEEPS_AT_MOST)
+            } else {
+                !guessed
+                    && node.est_rows_total() <= rows * node.est_executions.max(1.0) * culprit_core::INDEX_KEEPS_AT_MOST
+            };
             // What the runs measured, where they can say, outweighs the estimate either way.
             let keeps_few = measured_keeps_few(snapshot, q, rows).unwrap_or(estimate_keeps_few);
             if rows < 10_000.0 || !keeps_few {
@@ -128,12 +132,9 @@ pub(super) fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows:
     }
     let examined = q.logical_reads.map(|r| r / q.executions).unwrap_or(0.0);
     let returned = q.rows.map(|r| r / q.executions)?;
-    // Under a LIMIT a run returns at most that many of the rows it keeps. Well under it on average, at most one run in
-    // ten can have stopped there: the rest returned every row they kept, and are judged as without one. A LIMIT whose
-    // count isn't known (the digest's `LIMIT ?`) leaves the runs unable to say.
-    if culprit_core::sql::has_limit(&q.text, Engine::Mysql)
-        && limit_rows(q).is_none_or(|limit| returned > limit * WELL_UNDER_LIMIT)
-    {
+    // These totals group runs whose LIMIT values can differ. A literal in a sample or its captured plan establishes
+    // no common limit for them, so returned rows cannot establish the filter's selectivity under a LIMIT.
+    if culprit_core::sql::has_limit(&q.text, Engine::Mysql) {
         return None;
     }
     (examined >= table_rows * 0.5).then_some(returned <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
@@ -147,6 +148,15 @@ pub(super) fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows:
 pub fn mark_measured_kept(snapshot: &mut Snapshot) {
     if snapshot.server.engine != Engine::Mysql {
         return;
+    }
+    // Saved snapshots can carry an annotation inferred by an older version. Re-establish it from today's evidence
+    // rules, including withdrawing it when a sample LIMIT never described all of the statement's runs.
+    fn clear(node: &mut culprit_core::PlanNode) {
+        node.props.remove(culprit_core::plan::MEASURED_KEPT);
+        node.children.iter_mut().for_each(clear);
+    }
+    for plan in snapshot.workload.iter_mut().flat_map(|w| &mut w.queries).filter_map(|q| q.plan.as_mut()) {
+        clear(&mut plan.root);
     }
     let mut marks: Vec<(String, u32, f64)> = Vec::new();
     for q in snapshot.queries() {
@@ -181,22 +191,10 @@ pub fn mark_measured_kept(snapshot: &mut Snapshot) {
     }
 }
 
-/// Rows returned a run, as a share of the LIMIT, under which at most one run in ten can have returned the LIMIT's count.
-const WELL_UNDER_LIMIT: f64 = 0.1;
-
-/// The row count a statement's LIMIT asks for: a literal in its text ([`culprit_core::sql::limit_count`]), or, where
-/// the engine keeps the text with a placeholder (MySQL's digest `LIMIT ?`), the count the provider read from the sample
-/// it planned ([`culprit_core::insights::LIMIT_ROWS`]).
-fn limit_rows(q: &QueryStat) -> Option<f64> {
-    culprit_core::sql::limit_count(&q.text, Engine::Mysql)
-        .or_else(|| q.plan.as_ref()?.props.get(culprit_core::insights::LIMIT_ROWS)?.trim().parse::<f64>().ok())
-        .filter(|n| *n > 0.0)
-}
-
 /// Whether a statement returns every row its filter keeps, so that rows returned measure the filter: a SELECT from one
 /// table, without aggregates, GROUP BY, DISTINCT, TOP or FETCH, HAVING, a set operation or a subquery. Any of those
-/// returns fewer rows than the filter keeps, and a join can return fewer or more. A LIMIT is judged by
-/// [`measured_keeps_few`], against its count.
+/// returns fewer rows than the filter keeps, and a join can return fewer or more. A LIMIT prevents the statement's
+/// returned-row totals from measuring its filter ([`measured_keeps_few`]).
 pub(super) fn returns_every_kept_row(text: &str) -> bool {
     const AGGREGATES: [&str; 14] = [
         "COUNT",

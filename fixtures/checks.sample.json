@@ -438,13 +438,13 @@
   },
   {
     "category": "queries",
-    "description": "Statements where PostgreSQL's JIT compilation (pg_stat_statements jit_* columns, 15+) takes a large part of their run time: usually short queries whose cost the planner overestimates.",
+    "description": "Statements where PostgreSQL's JIT compilation (pg_stat_statements jit_* columns, 15+) takes a large part of their run time.",
     "engines": [
       "postgres"
     ],
     "id": "jit-overhead",
     "requires": [],
-    "title": "JIT compilation that costs more than it saves"
+    "title": "JIT compilation that takes much of a statement's time"
   },
   {
     "category": "queries",

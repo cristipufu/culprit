@@ -21,6 +21,19 @@ fn every_demo_fixture_opens() {
     assert!(reports.iter().all(|(_, r)| !r.findings.is_empty()), "every demo has findings");
 }
 
+#[test]
+fn every_demo_finding_explains_how_to_verify_its_advice() {
+    for (name, report) in demo_reports() {
+        for finding in &report.findings {
+            assert!(
+                !finding.verify.is_empty(),
+                "{name} {} leaves the app and agent without a verification step",
+                finding.id
+            );
+        }
+    }
+}
+
 /// The browser loads these files directly; golden readings re-analyze them, which alone cannot catch stale UI data.
 #[test]
 fn browser_demo_outputs_match_current_analysis() {

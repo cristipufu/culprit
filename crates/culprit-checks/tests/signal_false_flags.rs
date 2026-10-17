@@ -284,6 +284,10 @@ fn a_blocking_chain_is_one_finding() {
     let notes: Vec<_> = hot[0].queries.iter().filter_map(|q| q.note.as_deref()).collect();
     assert!(notes.iter().any(|n| n.starts_with("Waited 2 min on locks, nearly all of its time")), "{notes:?}");
     assert!(hot[0].summary.contains("waited 2 min for these locks"), "{}", hot[0].summary);
+    let note = |id: &str| hot[0].queries.iter().find(|q| q.id == id).and_then(|q| q.note.as_deref()).unwrap();
+    assert!(note("138").starts_with("Waited 2 min on locks"), "{}", note("138"));
+    assert!(note("143").starts_with("Waited 1 min on locks"), "{}", note("143"));
+    assert!(hot[0].summary.contains("A read from orders waited 1 min for these locks"), "{}", hot[0].summary);
 }
 
 // Lock waits on two indexes of one table are one table's rows fought over.
@@ -468,7 +472,100 @@ fn a_scan_of_the_in_row_pages_is_not_a_whole_row_read() {
     let r = analyze(s);
     let large = of(&r, "large-rows")[0];
     assert_eq!(large.queries.len(), 1);
-    assert!(large.verify[0].contains("the statements below should read fewer pages a run"), "{:?}", large.verify);
+    assert!(large.verify[0].contains("measure how much data the application receives"), "{:?}", large.verify);
+    assert!(large.verify[0].contains("time per run"), "{:?}", large.verify);
+    assert!(large.verify[0].contains("need not change the table's stored size"), "{:?}", large.verify);
+}
+
+#[test]
+fn large_row_verification_separates_projection_from_storage_changes() {
+    let mut s = tickets("mssql-demo");
+    let q = heaviest(&mut s);
+    q.text = "SELECT * FROM shop.support_tickets WHERE id = @P1".into();
+    q.plan = None;
+    (q.executions, q.rows, q.logical_reads) = (5_000.0, Some(5_000.0), Some(280.0 * 5_000.0));
+    let before = analyze(s.clone());
+    let stored = |f: &Finding| {
+        f.metrics
+            .iter()
+            .filter(|m| matches!(m.label.as_str(), "Table data" | "Average row"))
+            .map(|m| m.value)
+            .collect::<Vec<_>>()
+    };
+    let before_size = stored(of(&before, "large-rows")[0]);
+    // Selecting just the id makes each read cheaper but leaves all stored values in the table.
+    let q = heaviest(&mut s);
+    q.text = "SELECT id FROM shop.support_tickets WHERE id = @P1".into();
+    q.logical_reads = Some(3.0 * 5_000.0);
+    let after = analyze(s.clone());
+    let large = of(&after, "large-rows")[0];
+    assert_eq!(stored(large), before_size);
+    assert!(large.verify[0].contains("in-row pages read"), "{:?}", large.verify);
+    assert!(large.verify[1].starts_with("If you make stored values smaller"), "{:?}", large.verify);
+    assert!(large.verify[1].contains("percentage in large values need not fall"), "{:?}", large.verify);
+    // Only changing the stored values can remove this table-size finding.
+    let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+    (t.lob_bytes, t.data_bytes) = (Some(16.0 * MB), Some(47.0 * MB));
+    assert!(of(&analyze(s), "large-rows").is_empty());
+
+    // PostgreSQL keeps running totals: a rewrite has a new entry, and elapsed time is compared over scans.
+    let mut s = tickets("postgres-demo");
+    let q = heaviest(&mut s);
+    q.text = "SELECT * FROM public.events WHERE id = $1".into();
+    q.plan = None;
+    (q.executions, q.rows, q.logical_reads) = (5_000.0, Some(5_000.0), Some(280.0 * 5_000.0));
+    let r = analyze(s);
+    let large = of(&r, "large-rows")[0];
+    assert!(large.verify[0].contains("What changed"), "{:?}", large.verify);
+    assert!(large.verify[0].contains("A rewritten statement has a new entry"), "{:?}", large.verify);
+}
+
+#[test]
+fn sequential_key_pacing_is_verified_by_throughput_not_zero_wait_growth() {
+    let mut s = demo("mssql-demo");
+    let id = "last-page-insert:archive.hot.pk_hot";
+    let r = analyze(s.clone());
+    let f = r.findings.iter().find(|f| f.id == id).expect("demo's contended insert index");
+    assert!(f.verify[0].contains("OPTIMIZE_FOR_SEQUENTIAL_KEY is ON"), "{:?}", f.verify);
+    assert!(f.verify[0].contains("completed inserts per second"), "{:?}", f.verify);
+    assert!(f.verify[0].contains("comparable writer concurrency"), "{:?}", f.verify);
+    assert!(f.verify[1].contains("BTREE_INSERT_FLOW_CONTROL"), "{:?}", f.verify);
+    assert!(f.verify[1].contains("cumulative wait totals need not stop growing"), "{:?}", f.verify);
+    fn hot(s: &mut Snapshot) -> &mut IndexContention {
+        s.indexes.iter_mut().find(|i| i.schema == "archive" && i.name == "pk_hot").unwrap().contention.as_mut().unwrap()
+    }
+    hot(&mut s).optimize_for_sequential_key = Some(true);
+    assert!(analyze(s.clone()).findings.iter().all(|f| f.id != id));
+    // Older versions get key/batching advice; a mostly-updated hot page gets row-change verification.
+    hot(&mut s).optimize_for_sequential_key = None;
+    let r = analyze(s.clone());
+    let f = r.findings.iter().find(|f| f.id == id).unwrap();
+    assert!(f.verify[0].contains("inserts per second"), "{:?}", f.verify);
+    assert!(!f.verify.iter().any(|v| v.contains("BTREE_INSERT_FLOW_CONTROL")), "{:?}", f.verify);
+    hot(&mut s).leaf_inserts = Some(1.0);
+    let r = analyze(s);
+    let f = r.findings.iter().find(|f| f.id == id).unwrap();
+    assert!(f.verify[0].contains("row changes per second"), "{:?}", f.verify);
+}
+
+#[test]
+fn an_explicit_recompile_hint_is_the_planning_time_fix() {
+    // The saved demo's query 249: 300 compiles / 300 runs and 6.9 seconds spent compiling.
+    let mut s = demo("mssql-demo");
+    let id = "planning-time:249";
+    let r = analyze(s.clone());
+    let f = r.findings.iter().find(|f| f.id == id).expect("demo's explicit RECOMPILE");
+    assert!(f.summary.contains("hint explicitly asks SQL Server for a new plan"), "{}", f.summary);
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.summary.contains("Test removing OPTION (RECOMPILE)"), "{}", fix.summary);
+    assert!(fix.sql.is_none(), "forced parameterization cannot override RECOMPILE");
+    assert!(f.verify.iter().any(|v| v.contains("representative parameter values")), "{:?}", f.verify);
+    // Hint text in a comment/literal is not evidence of a compile request. Keep the generic path there.
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "249").unwrap();
+    q.text = q.text.replace("OPTION (RECOMPILE)", "/* OPTION (RECOMPILE) */ AND N'OPTION (RECOMPILE)' <> N''");
+    let r = analyze(s);
+    let f = r.findings.iter().find(|f| f.id == id).unwrap();
+    assert!(f.fix.as_ref().unwrap().sql.as_ref().unwrap().contains("SET PARAMETERIZATION FORCED"));
 }
 
 // ── 13. results that never reach the client ────────────────────────────────────────────────────────
@@ -564,7 +661,13 @@ fn old_mysql_failures_are_history_and_nowait_is_not_a_failure() {
             Some(QueryCosts { failed: Some(300.0), top_error: top_error.map(str::to_string), ..Default::default() });
         analyze(s)
     };
-    assert_eq!(of(&failing(Some("1062 duplicate key")), "failing-query")[0].severity, Severity::High);
+    let recent = failing(Some("1062 duplicate key"));
+    let f = of(&recent, "failing-query")[0];
+    assert_eq!(f.severity, Severity::High);
+    let caveats = f.caveats.join(" ");
+    assert!(caveats.contains("from when each statement's entry began counting"), "{caveats}");
+    assert!(caveats.contains("until the counters are reset or the server restarts"), "{caveats}");
+    assert!(!caveats.contains("since it started"), "{caveats}");
     let r = failing(None);
     let f = of(&r, "failing-query")[0];
     assert_eq!(f.severity, Severity::Low);
@@ -711,7 +814,7 @@ fn one_lock_episode_on_a_table_is_one_finding() {
 
 // ── 17. advice that can be applied ─────────────────────────────────────────────────────────────────
 
-fn jit(setup: impl FnOnce(&mut Snapshot)) -> culprit_core::Fix {
+fn jit_finding(setup: impl FnOnce(&mut Snapshot)) -> Finding {
     let mut s = fixture("postgres-demo");
     let q = heaviest(&mut s);
     q.text = "SELECT count(*) FROM orders WHERE status = $1".into();
@@ -720,18 +823,60 @@ fn jit(setup: impl FnOnce(&mut Snapshot)) -> culprit_core::Fix {
     q.mean_time_ms = 40.0;
     q.costs = Some(QueryCosts { jit_ms: Some(2_500.0), jit_functions: Some(800.0), ..Default::default() });
     setup(&mut s);
-    of(&analyze(s), "jit-overhead")[0].fix.clone().unwrap()
+    of(&analyze(s), "jit-overhead")[0].clone()
+}
+
+fn jit(setup: impl FnOnce(&mut Snapshot)) -> culprit_core::Fix {
+    jit_finding(setup).fix.unwrap()
 }
 
 #[test]
 fn jit_advice_raises_the_current_threshold_where_the_server_is_configured() {
-    assert!(jit(|_| {}).sql.unwrap().contains("ALTER SYSTEM SET jit_above_cost = 1000000;"));
+    // With no captured threshold, a default is no evidence of the application's current setting.
+    let unknown = jit(|_| {});
+    let sql = unknown.sql.unwrap();
+    assert!(sql.contains("ALTER ROLE <app_role> SET jit = off;") && !sql.contains("ALTER SYSTEM"), "{sql}");
+    assert!(unknown.summary.contains("does not establish that threshold"), "{}", unknown.summary);
+    assert!(!unknown.summary.contains("100K today"), "{}", unknown.summary);
+    let default = jit(|s| set(s, "jit_above_cost", "100000"));
+    assert!(default.sql.unwrap().contains("ALTER SYSTEM SET jit_above_cost = 1000000;"));
     // Already above the threshold the old advice set: ten times higher, never lower.
     let raised = jit(|s| set(s, "jit_above_cost", "5000000")).sql.unwrap();
     assert!(raised.contains("jit_above_cost = 50000000;"), "{raised}");
     // RDS refuses ALTER SYSTEM: the parameter group.
-    let rds = jit(|s| s.server.cloud = Some("Amazon RDS".into()));
+    let rds = jit(|s| {
+        s.server.cloud = Some("Amazon RDS".into());
+        set(s, "jit_above_cost", "100000");
+    });
     assert!(!rds.sql.unwrap().contains("ALTER SYSTEM") && rds.summary.contains("DB parameter group"));
+    // A captured -1 disables threshold-driven JIT: raising it would enable something the scan found disabled.
+    assert!(!jit(|s| set(s, "jit_above_cost", "-1")).sql.unwrap().contains("ALTER SYSTEM"));
+}
+
+#[test]
+fn jit_counters_do_not_prove_the_current_plan_or_a_bad_row_estimate_enabled_it() {
+    let f = jit_finding(|s| {
+        set(s, "jit_above_cost", "100000");
+        let plan = s
+            .workload
+            .as_mut()
+            .unwrap()
+            .queries
+            .iter_mut()
+            .find(|q| q.costs.as_ref().is_some_and(|c| c.jit_ms.is_some()))
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        plan.total_cost = 250.0;
+    });
+    assert!(f.summary.contains("jit_above_cost is 100000 in Culprit's session"), "{}", f.summary);
+    assert!(f.summary.contains("chosen at plan time"), "{}", f.summary);
+    assert!(f.summary.contains("another setting") && f.summary.contains("cached plan"), "{}", f.summary);
+    let fix = f.fix.unwrap();
+    assert!(fix.summary.contains("first check the application's effective threshold"), "{}", fix.summary);
+    assert!(!fix.summary.contains("row estimate that inflates"), "{}", fix.summary);
+    assert!(!f.summary.contains("usually because"), "{}", f.summary);
 }
 
 // ── 18. MariaDB's guess ────────────────────────────────────────────────────────────────────────────

@@ -38,7 +38,7 @@ brief:
 
     ## What to do in the codebase
 
-    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, make the change by hand the way the fix says. After any change is live, run `culprit scan mssql-demo-staging` and check `tier-limit:log-write` the way *How to verify* says.
+    First change the application or job that writes the rows: batch small writes into fewer transactions and avoid row-by-row changes. If the resource still reaches its cap, change the service tier or capacity where this project manages its cloud database. After any change is live, run `culprit scan mssql-demo-staging` and check `tier-limit:log-write` the way *How to verify* says.
 
 === finding unindexed-fk:shop.ticket_events(ticket_id)
 low severity · high confidence · indexes
@@ -186,6 +186,9 @@ fix: Drop ix_orders_status and keep ix_orders_status_created.
   sql:
       DROP INDEX [ix_orders_status] ON [shop].[orders];
   cost: Frees 26.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+  2. Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -211,13 +214,18 @@ brief:
 
     Cost: Frees 26.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+    - Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo-staging`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
 low severity · high confidence · indexes
@@ -230,6 +238,9 @@ fix: Drop ix_products_sku and keep uq_products_sku.
   sql:
       DROP INDEX [ix_products_sku] ON [shop].[products];
   cost: Frees 648 KB.
+verify:
+  1. Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+  2. Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
@@ -253,9 +264,14 @@ brief:
 
     Cost: Frees 648 KB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+    - Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo-staging`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding config:cost-threshold-for-parallelism
 low severity · medium confidence · configuration

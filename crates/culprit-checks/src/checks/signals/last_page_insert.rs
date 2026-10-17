@@ -82,7 +82,7 @@ pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: None,
                 },
                 Some(_) => Fix {
-                    summary: "SQL Server 2019 can pace inserts into a sequential key so the page isn't handed back and forth: turn OPTIMIZE_FOR_SEQUENTIAL_KEY on for this index. It's a metadata change and takes effect at once.".into(),
+                    summary: "SQL Server 2019 can pace concurrent inserts into a sequential key to help sustain throughput when many writers compete for the last page: try OPTIMIZE_FOR_SEQUENTIAL_KEY on this index and compare throughput. It's a metadata change and takes effect at once.".into(),
                     sql: Some(format!(
                         "ALTER INDEX {} ON {} SET (OPTIMIZE_FOR_SEQUENTIAL_KEY = ON);",
                         quote(Engine::Mssql, &i.name),
@@ -96,7 +96,17 @@ pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: None,
                 },
             });
-            f.verify = vec!["Re-scan under the same load: page latch waits on this index should stop growing.".into()];
+            f.verify = if inserts && c.optimize_for_sequential_key.is_some() {
+                vec![
+                    "Re-scan to confirm OPTIMIZE_FOR_SEQUENTIAL_KEY is ON. Compare completed inserts per second and the time to insert the same batch before and after, under comparable writer concurrency: the goal is better insert throughput under contention.".into(),
+                    "Page-latch waits can continue, and BTREE_INSERT_FLOW_CONTROL waits may appear. Compare measurements over equal intervals; cumulative wait totals need not stop growing.".into(),
+                ]
+            } else {
+                vec![format!(
+                    "Compare completed {} and their time under comparable load before and after. Compare the increase in page-latch wait time over equal intervals for that work; cumulative wait totals need not stop growing.",
+                    if inserts { "inserts per second" } else { "row changes per second" }
+                )]
+            };
             f
         })
         .collect()

@@ -662,11 +662,11 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     how_many(s, scans_total, days, "time", "times"),
                     format::count(read_total),
                     match listed.len() {
-                        0 => "None of the captured statements shows which filter has no index: the full reads come \
+                        0 => "None of the captured statements explains these full reads: they come \
                               from statements outside the top of the workload."
                             .to_string(),
-                        1 => "Explain the statement listed with it to see which filter has no index.".to_string(),
-                        _ => "Explain the statements listed with it to see which filter has no index.".to_string(),
+                        1 => "Explain the statement listed with it to check its access path, then measure rows kept in representative runs.".to_string(),
+                        _ => "Explain the statements listed with it to check their access paths, then measure rows kept in representative runs.".to_string(),
                     }
                 ),
                 rows: t.rows,

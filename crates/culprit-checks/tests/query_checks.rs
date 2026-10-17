@@ -288,6 +288,17 @@ fn many_slow_runs_are_an_unstable_query_rated_by_their_time() {
         f.summary
     );
     assert!(f.caveats.iter().any(|c| c.contains("could be from any time")), "{:?}", f.caveats);
+    let verify = f.verify.join(" ");
+    assert!(
+        verify.contains("before the change and again after it") && verify.contains("same logging threshold"),
+        "{verify}"
+    );
+    assert!(verify.contains("Compare their durations and any recorded lock waits"), "{verify}");
+    assert!(
+        verify.contains("historical maximum and standard deviation do not isolate runs after the change"),
+        "{verify}"
+    );
+    assert!(verify.contains("use the new log samples"), "{verify}");
     let extra = f.metrics.iter().find(|m| m.label.starts_with("Slow runs' extra time")).unwrap().value;
     assert!((extra - 100.0 * (5000.0 - mean)).abs() / extra < 0.1, "{extra}");
 }
@@ -642,6 +653,9 @@ fn mysql_temp_table_advice_raises_only_what_limits_and_never_lowers() {
     let f = find(&report.findings, &format!("temp-spill:{GROUP_BY}")).unwrap();
     let sql = f.fix.as_ref().unwrap().sql.clone().unwrap();
     assert_eq!(sql, "SET PERSIST tmp_table_size = 67108864;");
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(fix.contains("can still need a temporary table and sort"), "{fix}");
+    assert!(!fix.contains("so no temporary table is needed"), "{fix}");
     assert!(f.title.ends_with("builds an on-disk temporary table about once per run"), "{}", f.title);
     // Which engine it uses unread (the demo's saved scan): MEMORY's cap is both variables, so both are raised.
     let f = find(&analyze(snapshot("mysql-demo.json")).findings, &format!("temp-spill:{GROUP_BY}")).cloned().unwrap();
@@ -1431,8 +1445,8 @@ fn a_check_for_a_row_names_the_unique_index_its_plan_seeks() {
     assert!(!fix.contains("with a unique index on those columns"), "{fix}");
 }
 
-/// Query 7 as a seek of ix_customers_email costed for one row whose key lookups check `segment` and keep none: 750
-/// pages a run (about 250 lookups into a clustered index three levels deep), and no row returned.
+/// A residual filter in an estimated plan beside many recorded pages and no returned row. Large values, repeated
+/// page accesses or another plan can account for those pages: they do not establish an intermediate row count.
 fn lookups_for_nothing() -> Snapshot {
     let mut s = point_lookup(1.0, 0.0066);
     let q = query(&mut s, "7");
@@ -1445,101 +1459,29 @@ fn lookups_for_nothing() -> Snapshot {
 }
 
 #[test]
-fn lookups_that_find_nothing_are_the_plans_estimate_not_the_applications_code() {
-    let f = find(&analyze(lookups_for_nothing()).findings, "heavy-query:7").cloned().expect("heavy");
-    assert!(f.title.ends_with("reads 750 pages a run to return nothing"), "{}", f.title);
-    assert!(
-        f.summary.contains(
-            "Its plan expects 1 row from ix_customers_email (on email), then looks up each row it finds in the table to check segment: its runs read 750 pages each, about 250 lookups at 3 pages each, and return nothing."
-        ),
-        "{}",
-        f.summary
-    );
-    assert!(f.summary.ends_with("The plan was costed for far fewer rows than its runs find."), "{}", f.summary);
-    assert_eq!(f.queries[0].plan_node, Some(4), "the lookup that checks segment");
-    // No index leads with segment: one that does, and the statistics the plan was costed with.
-    let fix = f.fix.clone().unwrap();
-    assert!(!fix.summary.contains("Find this statement in the application"), "{}", fix.summary);
-    assert!(fix.summary.contains("The plan was costed for 1 row from ix_customers_email, but its runs look up about 250 rows each and keep none"), "{}", fix.summary);
-    assert!(fix.summary.contains("an index that leads with segment finds the rows directly"), "{}", fix.summary);
-    let sql = fix.sql.unwrap();
-    assert!(
-        sql.contains("CREATE NONCLUSTERED INDEX [IX_customers_segment]")
-            && sql.ends_with("UPDATE STATISTICS [shop].[customers];"),
-        "{sql}"
-    );
-    assert_eq!(f.verify, vec!["After the change, re-scan: its pages read per run should drop from 750 to a handful."]);
-
-    // An index already leads with segment: the statistics are the fix, and the index is named, the one that holds
-    // every row before a filtered one.
-    let mut s = lookups_for_nothing();
-    let email = s.indexes.iter().find(|i| i.name == "ix_customers_email").cloned().unwrap();
-    let mut filtered = email.clone();
-    (filtered.name, filtered.columns, filtered.filter) =
-        ("ix_customers_segment_active".into(), vec!["segment".into()], Some("([is_active]=(1))".into()));
-    let mut segment = email;
-    (segment.name, segment.columns) = ("ix_customers_segment".into(), vec!["segment".into()]);
-    s.indexes.extend([filtered, segment]);
-    let fix = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
-    assert!(
-        fix.summary.contains("find the rows by segment instead: ix_customers_segment already leads with it."),
-        "{}",
-        fix.summary
-    );
-    assert_eq!(fix.sql.as_deref(), Some("UPDATE STATISTICS [shop].[customers];"));
-}
-
-// A staging SQL Server reading: heavy-query:36649 told to update statistics the catalog shows updated with a full scan two
-// days after the plan was compiled, the runs since still reading 750 pages, and with no way on if they keep doing so.
-#[test]
-fn statistics_updated_since_the_plan_was_compiled_are_said_with_a_way_on() {
-    let mut s = lookups_for_nothing();
-    let email = s.indexes.iter().find(|i| i.name == "ix_customers_email").cloned().unwrap();
-    let mut segment = email;
-    (segment.name, segment.columns) = ("ix_customers_segment".into(), vec!["segment".into()]);
-    s.indexes.push(segment);
-    // The plan was compiled with the statistics of Oct 1; the catalog has them updated from every row on Oct 5, and
-    // every run measured came after.
-    query(&mut s, "7").plan.as_mut().unwrap().raw = Some(
-        r#"<ShowPlanXML><StatisticsInfo LastUpdate="2026-10-01T10:00:00.00" ModificationCount="12" SamplingPercent="100" Statistics="[ix_customers_email]" Table="[customers]" Schema="[shop]" Database="[culprit_demo]" /></ShowPlanXML>"#
-            .into(),
-    );
-    let stat = s.statistics.iter_mut().find(|st| st.name == "ix_customers_email").unwrap();
-    (stat.last_updated, stat.rows, stat.rows_sampled) = (Some("2026-10-05T10:00:00Z".into()), Some(2e5), Some(2e5));
-    let fix = find(&analyze(s.clone()).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
-    assert!(
-        fix.summary.contains(
-            "The statistics on ix_customers_email were last updated on Oct 5 from every row, after this plan was compiled with those of Oct 1, and the runs measured since still look up as many rows: fresh statistics may not change the estimate."
-        ),
-        "{}",
-        fix.summary
-    );
-    // CX-2: a bare FORCESEEK allows the seek the plan already does; the hint names the index and the columns it seeks
-    // on, and goes in the statement where the application sends it, which the fix's SQL says for the brief.
-    assert!(
-        fix.summary.ends_with(
-            "change the statement where the application sends it to read shop.customers with a table hint that seeks ix_customers_segment on segment: `WITH (FORCESEEK ([ix_customers_segment] ([segment])))`."
-        ),
-        "{}",
-        fix.summary
-    );
-    assert_eq!(
-        fix.sql.as_deref(),
-        Some(
-            "UPDATE STATISTICS [shop].[customers];\n\n-- If a re-scan still shows about 750 pages a run, change the statement in the application:\n--    read [shop].[customers] WITH (FORCESEEK ([ix_customers_segment] ([segment])))"
-        )
-    );
-    // The brief allows the code change the fallback is: the upkeep is not the whole fix.
-    let report = analyze(s.clone());
-    let finding = find(&report.findings, "heavy-query:7").cloned().unwrap();
-    let brief = culprit_checks::agent_brief(&report, &finding);
-    assert!(!brief.contains("The fix is upkeep of the database, not a change to the application's code"), "{brief}");
-    assert!(brief.contains("The fix's other option is a change in the application's code"), "{brief}");
-    // Statistics as old as the plan's: the update is the fix, as before.
-    s.statistics.iter_mut().find(|st| st.name == "ix_customers_email").unwrap().last_updated =
-        Some("2026-10-01T10:00:00Z".into());
-    let fix = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
-    assert!(!fix.summary.contains("last updated") && !fix.summary.contains("table hint"), "{}", fix.summary);
+fn pages_read_by_a_residual_lookup_establish_no_row_count_or_statistics_fix() {
+    for has_other_index in [false, true] {
+        let mut s = lookups_for_nothing();
+        if has_other_index {
+            let mut segment = s.indexes.iter().find(|i| i.name == "ix_customers_email").cloned().unwrap();
+            (segment.name, segment.columns) = ("ix_customers_segment".into(), vec!["segment".into()]);
+            s.indexes.push(segment);
+        }
+        let report = analyze(s);
+        let f = find(&report.findings, "heavy-query:7").expect("heavy");
+        assert!(f.title.ends_with("reads 750 pages a run to return nothing"), "{}", f.title);
+        assert!(f.summary.contains("The captured plan estimates 1 row from ix_customers_email"), "{}", f.summary);
+        assert!(f.summary.contains("those totals do not show how many rows each plan step handled"), "{}", f.summary);
+        assert!(!f.summary.contains("250 lookups") && !f.summary.contains("far fewer rows"), "{}", f.summary);
+        assert_eq!(f.queries[0].plan_node, Some(4));
+        let fix = f.fix.as_ref().unwrap();
+        assert!(fix.sql.is_none(), "{fix:?}");
+        assert!(fix.summary.contains("representative actual plan"), "{}", fix.summary);
+        assert!(!fix.summary.contains("UPDATE STATISTICS") && !fix.summary.contains("FORCESEEK"), "{}", fix.summary);
+        assert!(f.verify[0].contains("IO"), "{:?}", f.verify);
+        let brief = culprit_checks::agent_brief(&report, f);
+        assert!(!brief.contains("about 250 lookups") && !brief.contains("UPDATE STATISTICS"), "{brief}");
+    }
 }
 
 #[test]

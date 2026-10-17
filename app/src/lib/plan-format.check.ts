@@ -3,6 +3,7 @@
 import fixture from "../../../fixtures/mssql-demo.json";
 import type { QueryStat } from "../gen/QueryStat";
 import { findingNoShareReason, noShareReason, sharesNote } from "./plan-format";
+import { addPlan, getPlans, removePlan } from "./plans";
 
 function check(ok: boolean, message: string): void {
   if (!ok) throw new Error(message);
@@ -57,4 +58,22 @@ plan.root.table_rows = plan.root.rows_read = 3900;
 check(noShareReason(plan, plan.root, query)!.includes("as a whole is cheap"), "the general size bar still holds");
 note = findingNoShareReason(plan, plan.root, query)!;
 check(note.includes("all 3.9K rows of shop.widgets"), note);
+
+// A retained plan keeps the measurements it was opened with, across later scans and connection switches.
+plan.root.kind = "seek";
+plan.root.object = null;
+const opened = addPlan(plan, "Captured plan", "Demo query", { show: false, query });
+const saved = getPlans().items.find((p) => p.id === opened)!;
+const original = sharesNote(saved.plan, saved.query);
+query.logical_reads = query.executions * 750;
+query.mean_time_ms = 50;
+query.total_time_ms = query.executions * query.mean_time_ms;
+check(sharesNote(saved.plan, saved.query) === original, "a later scan changed the retained plan's measurements");
+const reopened = addPlan(structuredClone(plan), "Captured plan", "Demo query", { show: false, query });
+check(reopened !== opened, "opening a newer plan with the same name silently reused the old scan");
+const latest = getPlans().items.find((p) => p.id === reopened)!;
+check(sharesNote(latest.plan, latest.query)!.includes("750 pages a run"), "the newer plan lost its own measurements");
+check(addPlan(plan, "Captured plan", "Demo query", { show: false, query }) === opened, "the same plan object opened twice is duplicated");
+removePlan(opened);
+removePlan(reopened);
 console.log("Plan explanations keep their measurement basis and finding context");

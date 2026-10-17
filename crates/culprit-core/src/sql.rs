@@ -963,6 +963,42 @@ pub fn table_aliases(text: &str, engine: Engine) -> Vec<(String, String)> {
     table_refs(text, engine).into_iter().filter_map(|(name, alias)| Some((alias?, name))).collect()
 }
 
+/// Whether T-SQL explicitly asks to compile a statement on every run with `OPTION (RECOMPILE)`, including a list
+/// with other query hints. Literals, comments and quoted names cannot supply the hint; unreadable text is unknown.
+pub fn has_mssql_recompile_hint(text: &str) -> bool {
+    let Ok(readings) = readings(text, Engine::Mssql) else { return false };
+    readings.iter().all(|tokens| {
+        tokens.iter().enumerate().any(|(i, t)| {
+            if !matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("option"))
+                || tokens.get(i + 1) != Some(&Token::Punct('('))
+            {
+                return false;
+            }
+            let mut depth = 1;
+            for at in i + 2..tokens.len() {
+                if depth == 1
+                    && matches!(tokens[at], Token::Word(w) if w.eq_ignore_ascii_case("recompile"))
+                    && matches!(tokens[at - 1], Token::Punct('(' | ','))
+                    && matches!(tokens.get(at + 1), Some(Token::Punct(',' | ')')))
+                {
+                    return true;
+                }
+                match tokens[at] {
+                    Token::Punct('(') => depth += 1,
+                    Token::Punct(')') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        })
+    })
+}
+
 /// Each table a statement names after FROM, JOIN, INTO, UPDATE…, with the alias it gives it.
 fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     let Some(tokens) = modes(engine).iter().find_map(|m| lex(text, engine, *m).ok()) else {
@@ -1097,6 +1133,28 @@ pub fn limit_count(text: &str, engine: Engine) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_recompile_hint_is_code_in_the_option_list() {
+        for text in [
+            "SELECT * FROM dbo.orders WHERE id = @P1 OPTION (RECOMPILE)",
+            "select * from dbo.orders option (maxdop 1, /* why */ recompile, force order);",
+            "SELECT * FROM dbo.orders OPTION (USE HINT ('DISABLE_PARAMETER_SNIFFING'), RECOMPILE)",
+        ] {
+            assert!(has_mssql_recompile_hint(text), "{text}");
+        }
+        for text in [
+            "SELECT 'OPTION (RECOMPILE)' FROM dbo.orders",
+            "SELECT \"OPTION (RECOMPILE)\", [RECOMPILE] FROM dbo.orders",
+            "SELECT * FROM dbo.orders /* OPTION (RECOMPILE) */ OPTION (MAXDOP 1)",
+            "SELECT * FROM dbo.orders -- OPTION (RECOMPILE)",
+            "SELECT * FROM dbo.orders OPTION (USE HINT ('RECOMPILE'))",
+            "SELECT * FROM dbo.orders OPTION (OPTIMIZE FOR (@RECOMPILE = 1))",
+            "SELECT * FROM dbo.orders OPTION (RECOMPILE) /* unclosed",
+        ] {
+            assert!(!has_mssql_recompile_hint(text), "{text}");
+        }
+    }
 
     #[test]
     fn a_limit_says_its_count_where_the_text_writes_it() {

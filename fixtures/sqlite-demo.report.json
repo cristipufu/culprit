@@ -9,7 +9,7 @@
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"main\".\"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_orders_customer_id\"\n    ON \"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
         "summary": "Index the foreign key column on main.orders."
       },
       "id": "unindexed-fk:main.orders(customer_id)",
@@ -74,7 +74,7 @@
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "CREATE INDEX IF NOT EXISTS \"ix_order_items_product_id\"\n    ON \"main\".\"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+        "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_order_items_product_id\"\n    ON \"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
         "summary": "Index the foreign key column on main.order_items."
       },
       "id": "unindexed-fk:main.order_items(product_id)",
@@ -147,7 +147,10 @@
       },
       "summary": "ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.",
       "title": "ix_orders_status_again duplicates ix_orders_status on orders",
-      "verify": []
+      "verify": [
+        "Re-scan after removing ix_orders_status_again: this finding should be gone, and ix_orders_status should still exist.",
+        "Compare queries on main.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
+      ]
     },
     {
       "category": "maintenance",
@@ -194,7 +197,7 @@
       "check": "config",
       "confidence": "high",
       "fix": {
-        "cost": "VACUUM holds the write lock for its whole run and needs free disk space about the size of the file.",
+        "cost": "VACUUM holds the write lock for its whole run and can need up to twice the original file's size in free disk space.",
         "sql": "PRAGMA auto_vacuum = INCREMENTAL;\nVACUUM;",
         "summary": "VACUUM rewrites the file without its free pages. To give space back after large deletes from then on, switch auto_vacuum to INCREMENTAL first (it takes effect with that VACUUM) and run PRAGMA incremental_vacuum when convenient."
       },

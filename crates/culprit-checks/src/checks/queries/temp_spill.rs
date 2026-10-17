@@ -248,7 +248,11 @@ pub(super) fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
             f.queries = vec![QueryRef { id: q.id.clone(), plan_node: spilling_step(q, true), note: None }];
             f.verify = vec![spill_verify(
                 snapshot,
-                "Once the change is live",
+                if large.is_empty() && !limits.caps.is_empty() {
+                    "Once the application's connections use the new limits"
+                } else {
+                    "Once the change is live"
+                },
                 "on-disk temporary tables",
                 format!("{} in {} runs", format::count(tables), format::count(q.executions)),
             )];
@@ -358,7 +362,7 @@ impl TempLimits {
 
     /// Raise every cap below the proposal to it, through the server's own way of changing settings; never lower one.
     fn fix(&self, snapshot: &Snapshot) -> Fix {
-        let index = "Add an index that delivers rows already grouped or ordered so no temporary table is needed";
+        let index = "Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort)";
         let (names, current): (Vec<&str>, Option<f64>) = if self.caps.is_empty() {
             (vec!["temptable_max_ram"], self.shared_ram.flatten())
         } else {
@@ -377,9 +381,10 @@ impl TempLimits {
         if names.iter().any(|n| now(n).is_none()) {
             return Fix {
                 summary: format!(
-                    "{index}, or raise {} (the scan didn't read {}).",
+                    "{index}, or raise {} (the scan didn't read {}).{}",
                     format::list(&names.iter().map(|n| n.to_string()).collect::<Vec<_>>()),
-                    if names.len() == 1 { "its current value" } else { "their current values" }
+                    if names.len() == 1 { "its current value" } else { "their current values" },
+                    if self.caps.is_empty() { "" } else { NEW_CONNECTION_LIMITS }
                 ),
                 sql: None,
                 cost: None,
@@ -397,14 +402,15 @@ impl TempLimits {
         let how: Vec<String> = changes.iter().map(|c| c.how.clone()).collect();
         Fix {
             summary: format!(
-                "{index}, or raise the in-memory limit to {}{}. {}",
+                "{index}, or raise the in-memory limit to {}{}. {}{}",
                 format::bytes(proposed),
                 match self.caps.len() {
                     0 | 1 => "",
                     _ if self.engine_unknown => " (both variables: with the MEMORY engine the smaller one wins)",
                     _ => " (both variables: the smaller one wins)",
                 },
-                how.join(" ")
+                how.join(" "),
+                if self.caps.is_empty() { "" } else { NEW_CONNECTION_LIMITS }
             ),
             sql: (!sql.is_empty()).then(|| sql.join("\n")),
             cost: Some(if self.caps.is_empty() {
@@ -415,6 +421,9 @@ impl TempLimits {
         }
     }
 }
+
+/// The per-table caps are session variables on both MySQL and MariaDB; the shared TempTable RAM cap isn't.
+const NEW_CONNECTION_LIMITS: &str = " Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.";
 
 /// TEXT and BLOB columns of the statement's tables that its text names (or all of them, for `SELECT *`).
 pub(super) fn large_value_columns(snapshot: &Snapshot, q: &QueryStat) -> Vec<String> {

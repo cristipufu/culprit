@@ -120,13 +120,21 @@ impl Dialect for Sqlite {
 
     fn create_index(&self, index: &NewIndex) -> String {
         // No INCLUDE and no online build: SQLite builds an index under the database's write lock, so writers wait.
-        let mut sql = format!(
-            "CREATE {}INDEX IF NOT EXISTS {}\n    ON {} ({})",
-            unique(index),
-            self.quote(index.name),
-            index.target,
-            keys(self, index)
-        );
+        // SQLite qualifies the index, not the ON table. The target was quoted by this dialect: a dot inside a
+        // quoted identifier (including one with doubled quotes) is part of the name, not a schema separator.
+        let mut quoted = false;
+        let split = index.target.char_indices().find_map(|(at, ch)| {
+            if ch == '"' {
+                quoted = !quoted;
+            }
+            (ch == '.' && !quoted).then_some(at)
+        });
+        let (name, target) = match split {
+            Some(at) => (format!("{}.{}", &index.target[..at], self.quote(index.name)), &index.target[at + 1..]),
+            None => (self.quote(index.name), index.target),
+        };
+        let mut sql =
+            format!("CREATE {}INDEX IF NOT EXISTS {}\n    ON {} ({})", unique(index), name, target, keys(self, index));
         if let Some(filter) = index.filter {
             sql.push_str(&format!("\n    WHERE {filter}"));
         }

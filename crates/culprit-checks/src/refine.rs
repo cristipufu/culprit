@@ -1499,29 +1499,40 @@ fn one_blocking_chain(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             i += 1;
             continue;
         };
-        let lock = metric(&findings[i], "Lock wait").unwrap_or(0.0);
-        let share = metric(&findings[i], "Share of its time").map(|s| {
-            if s >= 0.97 { "nearly all of its time".to_string() } else { format!("{} of its time", format::percent(s)) }
-        });
         let window = snapshot.workload.as_ref().map(|w| format!(" in {}", w.window_phrase())).unwrap_or_default();
-        let note = format!(
-            "Waited {} on locks{}{window}.",
-            format::duration(lock),
-            share.as_ref().map(|s| format!(", {s}")).unwrap_or_default()
-        );
-        let handle = snapshot
-            .workload
-            .as_ref()
-            .and_then(|w| w.query(ids.first()?))
-            .map(support::query_handle)
-            .unwrap_or_else(|| "A statement".into());
-        findings[target].summary.push_str(&format!(
-            " {} waited {} for these locks{window}{}.",
-            capitalize(&handle),
-            format::duration(lock),
-            share.map(|s| format!(", {s}")).unwrap_or_default()
-        ));
-        absorb(snapshot, findings, target, i, Some(note));
+        // A lock-time finding may already contain an episode with several statements. Its metrics describe the
+        // leading statement only: each reference keeps the waits its own runs recorded when the episode joins the
+        // table's finding.
+        let notes: Vec<_> = ids
+            .iter()
+            .filter_map(|id| snapshot.workload.as_ref()?.query(id))
+            .map(|q| {
+                let lock = signals::lock_ms(q);
+                let share = if q.total_time_ms > 0.0 { (lock / q.total_time_ms).min(1.0) } else { 0.0 };
+                let share = if share >= 0.97 {
+                    "nearly all of its time".to_string()
+                } else {
+                    format!("{} of its time", format::percent(share))
+                };
+                let waited = format::duration(lock);
+                let note = format!("Waited {waited} on locks, {share}{window}.");
+                let sentence = format!(
+                    " {} waited {waited} for these locks{window}, {share}.",
+                    capitalize(&support::query_handle(q))
+                );
+                (q.id.clone(), note, sentence)
+            })
+            .collect();
+        for (_, _, sentence) in &notes {
+            findings[target].summary.push_str(sentence);
+        }
+        absorb(snapshot, findings, target, i, None);
+        let target = if i < target { target - 1 } else { target };
+        for (id, note, _) in notes {
+            if let Some(reference) = findings[target].queries.iter_mut().find(|q| q.id == id) {
+                reference.note = Some(note);
+            }
+        }
     }
 }
 

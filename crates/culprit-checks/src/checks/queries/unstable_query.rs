@@ -174,6 +174,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: None,
                 },
             });
+            f.verify = vec![verify_new_runs(snapshot)];
             if snapshot.server.engine == Engine::Postgres {
                 let since = q
                     .first_seen
@@ -193,6 +194,31 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             Some(f)
         })
         .collect()
+}
+
+/// A spread must be checked on new runs: cumulative extrema and variance cannot isolate the runs after a fix.
+fn verify_new_runs(snapshot: &Snapshot) -> String {
+    let workload = snapshot.workload.as_ref().expect("the check needs a workload");
+    let compare = "Compare their durations and any recorded lock waits: runs with comparable parameter values should be faster; if locks caused the slow runs, those waits should be shorter or absent.";
+    match workload.kind() {
+        Some(culprit_core::WorkloadKind::QueryStore) => format!(
+            "Compare equal Query Store windows before and after the change, with the later window containing only runs after it. Check the query's average and slowest run times, and lock waits per run where recorded, under a representative workload. {compare}"
+        ),
+        Some(culprit_core::WorkloadKind::PlanCache) => format!(
+            "On a test copy, capture actual execution plans and duration samples for representative parameter values before and after the change, under comparable load. {compare} {} keeps running totals, so its cached maximum and standard deviation do not isolate runs after the change; compare the new execution samples instead.",
+            workload.source
+        ),
+        Some(culprit_core::WorkloadKind::SlowLog | culprit_core::WorkloadKind::QueryLog) => format!(
+            "Collect equal-length query-log samples before and after the change, keeping the same logging threshold and a representative workload. Include only runs whose timestamps fall in their respective period. {compare}"
+        ),
+        _ => {
+            let log = if snapshot.server.engine == Engine::Mysql { "slow query log" } else { "server log" };
+            format!(
+                "Capture slow runs in the {log} before the change and again after it, with the same logging threshold and a representative workload. {compare} {} keeps running totals, so its historical maximum and standard deviation do not isolate runs after the change; use the new log samples to judge it.",
+                workload.source
+            )
+        }
+    }
 }
 
 /// What the runs of a statement that writes the values it is given can have waited for, from the catalog and the
@@ -804,5 +830,32 @@ mod tests {
         assert_eq!(values_rows("INSERT INTO t (a, b) VALUES ($1, $2) ON CONFLICT DO NOTHING"), Some(1));
         assert_eq!(values_rows("INSERT INTO t (a, b) VALUES ($1, '(x)'), ($3, $4)"), Some(2));
         assert_eq!(values_rows("INSERT INTO t (a) SELECT a FROM u"), None);
+    }
+
+    #[test]
+    fn verification_uses_new_runs_from_the_sources_own_periods() {
+        for engine in ["postgres", "mysql"] {
+            let s = fixture(&format!("{engine}-demo.json"));
+            let step = verify_new_runs(&s);
+            assert!(step.contains("keeps running totals") && step.contains("use the new log samples"), "{step}");
+            assert!(step.contains("same logging threshold"), "{step}");
+        }
+        let mut s = fixture("mssql-demo.json");
+        let step = verify_new_runs(&s);
+        assert!(step.contains("equal Query Store windows") && step.contains("only runs after it"), "{step}");
+        assert!(step.contains("lock waits per run where recorded"), "{step}");
+        let workload = s.workload.as_mut().unwrap();
+        workload.kind = Some(culprit_core::WorkloadKind::PlanCache);
+        workload.source = "Plan cache".into();
+        workload.windowed = false;
+        let step = verify_new_runs(&s);
+        assert!(step.contains("actual execution plans") && step.contains("Plan cache keeps running totals"), "{step}");
+        let s = fixture("sqlite-demo.json");
+        let step = verify_new_runs(&s);
+        assert!(step.contains("equal-length query-log samples") && step.contains("timestamps"), "{step}");
+        assert!(!step.contains("server log") && !step.contains("keeps running totals"), "{step}");
+        let mut s = fixture("mysql-demo.json");
+        s.workload.as_mut().unwrap().kind = Some(culprit_core::WorkloadKind::SlowLog);
+        assert!(verify_new_runs(&s).contains("equal-length query-log samples"));
     }
 }

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Plan } from "../gen/Plan";
+import type { QueryStat } from "../gen/QueryStat";
 import { api, errorMessage, type ApiError } from "./api";
 import { setState, toast } from "./store";
 
@@ -10,6 +11,8 @@ export type LoadedPlan = {
   /** Where it came from, shown under the name: a file name, "Pasted", "mssql-demo · query 7". */
   origin: string;
   plan: Plan;
+  /** Measurements from the scan this plan was opened from; a later scan must not change its explanation. */
+  query?: QueryStat;
   /** The scan the plan came from, when it came from one: scenarios read that scan's statistics, and exports can fetch
    * the plan's original text (.sqlplan). */
   source?: PlanSource;
@@ -51,10 +54,10 @@ export function usePlans<T>(select: (s: PlansState) => T): T {
 }
 
 /** Add a plan and show it. The same plan object sent twice (e.g. "Open in Plans" again) is not duplicated. */
-export function addPlan(plan: Plan, name: string, origin: string, options: { show?: boolean; source?: PlanSource } = {}): string {
-  const existing = state.items.find((p) => p.plan === plan || (p.name === name && p.origin === origin));
+export function addPlan(plan: Plan, name: string, origin: string, options: { show?: boolean; source?: PlanSource; query?: QueryStat } = {}): string {
+  const existing = state.items.find((p) => p.plan === plan);
   const id = existing?.id ?? `p${++counter}`;
-  if (!existing) update({ items: [...state.items, { id, name, origin, plan, source: options.source }] });
+  if (!existing) update({ items: [...state.items, { id, name, origin, plan, source: options.source, query: options.query && structuredClone(options.query) }] });
   if (options.show ?? true) {
     update({ selected: id, mode: "single", error: null });
     setState({ view: "plans" });
@@ -102,11 +105,11 @@ export function swapSides(): void {
 }
 
 /** Open two plans side by side (from Queries' plan variants). */
-type Side = { plan: Plan; name: string; origin: string; source?: PlanSource };
+type Side = { plan: Plan; name: string; origin: string; source?: PlanSource; query?: QueryStat };
 
 export function compare(a: Side, b: Side): void {
-  const idA = addPlan(a.plan, a.name, a.origin, { show: false, source: a.source });
-  const idB = addPlan(b.plan, b.name, b.origin, { show: false, source: b.source });
+  const idA = addPlan(a.plan, a.name, a.origin, { show: false, source: a.source, query: a.query });
+  const idB = addPlan(b.plan, b.name, b.origin, { show: false, source: b.source, query: b.query });
   update({ mode: "compare", a: idA, b: idB, selected: idB, error: null });
   setState({ view: "plans" });
 }

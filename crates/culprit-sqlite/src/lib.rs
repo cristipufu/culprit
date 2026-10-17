@@ -126,3 +126,65 @@ impl Provider for SqliteProvider {
         blocking(move || collect::run(&conn, &statement, limit)).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use culprit_core::{NewIndex, Online};
+
+    #[test]
+    fn index_fixes_execute_in_main_and_attached_schemas() {
+        let conn = Connection::open_in_memory().unwrap();
+        let dialect = Engine::Sqlite.dialect();
+        let attached = "audit.\"logs";
+        conn.execute_batch(&format!("ATTACH ':memory:' AS {};", dialect.quote(attached))).unwrap();
+        let table = "or.\"ders";
+        let column = "customer.\"id";
+        let keys = vec![format!("{column} DESC")];
+        let filter = format!("{} IS NOT NULL", dialect.quote(column));
+        for schema in ["main", attached] {
+            conn.execute_batch(&format!(
+                "CREATE TABLE {} ({} INTEGER);",
+                dialect.qualified(&[schema, table]),
+                dialect.quote(column)
+            ))
+            .unwrap();
+        }
+        // Main, attached, and unqualified targets all use SQLite's grammar. Dots and quotes inside identifiers must
+        // survive the move of the schema from the table to the index, as must unique, descending and partial keys.
+        for (schema, qualified, name) in
+            [("main", true, "ix.\"main"), (attached, true, "ix.\"attached"), ("main", false, "ix.\"unqualified")]
+        {
+            let target = if qualified { dialect.qualified(&[schema, table]) } else { dialect.quote(table) };
+            let sql = dialect.create_index(&NewIndex {
+                target: &target,
+                unique: true,
+                name,
+                keys: &keys,
+                include: &[],
+                filter: Some(&filter),
+                online: Online::No,
+            });
+            conn.execute_batch(&sql).unwrap_or_else(|error| panic!("{sql}\n{error}"));
+            let found: (String, bool) = conn
+                .query_row(
+                    &format!(
+                        "SELECT tbl_name, sql LIKE 'CREATE UNIQUE INDEX%WHERE%' FROM {}.sqlite_schema WHERE name = ?",
+                        dialect.quote(schema)
+                    ),
+                    [name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(found, (table.to_string(), true), "{sql}");
+            let descending: bool = conn
+                .query_row(
+                    &format!("PRAGMA {}.index_xinfo({});", dialect.quote(schema), dialect.quote(name)),
+                    [],
+                    |row| row.get(3),
+                )
+                .unwrap();
+            assert!(descending, "{sql}");
+        }
+    }
+}

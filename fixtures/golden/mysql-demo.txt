@@ -11,13 +11,13 @@ impact: 77% of DB time · 76.8% of database time
 metrics:
   - On-disk temporary tables per run: 1
   - Average duration: 1.7 s
-fix: Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+fix: Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
   sql:
       SET PERSIST tmp_table_size = 67108864;
       SET PERSIST max_heap_table_size = 67108864;
   cost: The limit is per temporary table per connection; size it with your connection count in mind.
 verify:
-  1. Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+  1. Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 queries:
   - 04cd7be9c366fadc: 77% of database time · plan step 2
 brief:
@@ -46,7 +46,7 @@ brief:
 
     ## Suggested fix
 
-    Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+    Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
 
     ```sql
     SET PERSIST tmp_table_size = 67108864;
@@ -57,11 +57,11 @@ brief:
 
     ## How to verify
 
-    - Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+    - Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
+    If you choose an index from the fix's options, ship it through this project's schema migrations. If you choose a query change, find where the application sends the statements above (search for their table and column names) and make that change in the calling code. If you choose the session-setting option, set those variables on the application's connections. The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
 
 === finding chatty-query:9b30e6ad79d940fe
 low severity · medium confidence · queries
@@ -233,6 +233,9 @@ fix: Drop ix_orders_status and keep ix_orders_status_created.
   sql:
       ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 10.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+  2. Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -258,13 +261,18 @@ brief:
 
     Cost: Frees 10.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+    - Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
 low severity · high confidence · indexes
@@ -277,6 +285,9 @@ fix: Drop ix_products_sku and keep uq_products_sku.
   sql:
       ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 432 KB.
+verify:
+  1. Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+  2. Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
@@ -300,16 +311,21 @@ brief:
 
     Cost: Frees 432 KB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+    - Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding config:slow_query_log
 low severity · medium confidence · configuration
 title: The slow query log is off
 summary: Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.
 impact: Setting
-fix: Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+fix: Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts. The new long_query_time applies to new connections: reopen the application's existing connections, or have the application set the session variable on them.
   sql:
       SET PERSIST slow_query_log = 'ON';
       SET PERSIST long_query_time = 1;
@@ -327,7 +343,7 @@ brief:
 
     ## Suggested fix
 
-    Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+    Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts. The new long_query_time applies to new connections: reopen the application's existing connections, or have the application set the session variable on them.
 
     ```sql
     SET PERSIST slow_query_log = 'ON';
@@ -347,8 +363,8 @@ brief:
 insight temp-table-sort · low severity · impact no share stated
   title: Groups 499K rows in an internal temporary table, then sorts them (filesort)
   detail: The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.
-  fix: An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.
-  verify: Explain again: no "using temporary table" on the grouping.
+  fix: An index whose leading columns match the GROUP BY may let MySQL group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.
+  verify: Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself.
 note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
 shares: `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
 

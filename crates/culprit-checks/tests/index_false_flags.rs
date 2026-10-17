@@ -742,10 +742,10 @@ fn a_table_that_is_gone_gets_no_index() {
     assert!(running.fix.as_ref().unwrap().sql.is_some(), "{:?}", running.fix);
 }
 
-// MY-10: rows returned under a LIMIT measure the filter where they are well under its count: 5 a run under LIMIT 50
-// means the runs returned every row they kept. At the LIMIT's count, or with a count nobody knows, they say nothing.
+// Rows returned under a LIMIT never establish the filter's selectivity from grouped statement totals: a sampled
+// LIMIT can differ across runs. Actual operator counts can establish it, as can an uncapped single-table read.
 #[test]
-fn rows_returned_well_under_a_limit_measure_the_filter() {
+fn sampled_limits_do_not_turn_returned_rows_into_filter_evidence() {
     let plant = |text: &str, rows_per_run: f64, sample_limit: Option<&str>| {
         let mut s = snapshot("mysql-demo.json");
         let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "c7b5ac9bb4bcecfe").unwrap();
@@ -773,13 +773,33 @@ fn rows_returned_well_under_a_limit_measure_the_filter() {
         format!("SELECT `id` , `total` FROM `orders` WHERE `promo_code` = ? ORDER BY `total` DESC LIMIT {limit}")
     };
     let report = plant(&text("50"), 5.0, None);
-    assert!(finding(&report, id).is_some(), "{:?}", ids(&report));
+    assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
     let report = plant(&text("5"), 5.0, None);
     assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
     let report = plant(&text("?"), 5.0, None);
     assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
-    // The digest's `LIMIT ?`, with the count the provider read from the sample it planned.
+    // The digest's `LIMIT ?`, with one sample's count: other runs can have used LIMIT 5 and matched the whole table.
     let report = plant(&text("?"), 5.0, Some("50"));
+    assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
+
+    let no_limit = "SELECT id, total FROM orders WHERE promo_code = ? ORDER BY total DESC";
+    let uncapped = plant(no_limit, 5.0, None);
+    assert!(finding(&uncapped, id).is_some(), "{:?}", ids(&uncapped));
+    // Reopening a prepared snapshot withdraws the old inferred mark once the evidence no longer supports it.
+    let mut saved = uncapped.snapshot;
+    saved.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "c7b5ac9bb4bcecfe").unwrap().text = text("?");
+    let report = analyze(saved);
+    assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
+
+    let mut actual = plant(&text("?"), 5.0, Some("50")).snapshot;
+    let q = actual.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "c7b5ac9bb4bcecfe").unwrap();
+    let plan = q.plan.as_mut().unwrap();
+    plan.kind = culprit_core::PlanKind::Actual;
+    let node = &mut plan.root;
+    let scan = if node.object.is_some() { node } else { &mut node.children[0] };
+    scan.act_rows = Some(5.0);
+    scan.act_executions = Some(1.0);
+    let report = analyze(actual);
     assert!(finding(&report, id).is_some(), "{:?}", ids(&report));
 }
 

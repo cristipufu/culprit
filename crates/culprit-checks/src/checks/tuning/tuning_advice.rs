@@ -911,8 +911,9 @@ pub(super) fn create_index_advice(
         (None, Some(p)) => Fix {
             summary: format!(
                 "{rated}Nothing to create: {} already leads with {}, which query {} compares with a value, but its \
-                 plan picks {} expecting {}, and its runs read {} pages each to return {}. That comes from the plan's \
-                 estimate, not from a missing index (see heavy-query:{}). Let the recommendation expire.",
+                 plan picks {} expecting {}, and its runs read {} pages each to return {}. The recorded pages do not \
+                 establish why that plan was chosen: inspect a representative actual plan before choosing a change \
+                 (see heavy-query:{}). Let the recommendation expire.",
                 p.other.name,
                 format::list(&p.keys),
                 p.query.id,
@@ -983,8 +984,9 @@ pub(super) fn create_index_advice(
         "Nothing to change: once Azure lets the recommendation expire, this finding goes with it.".to_string()
     } else if let Some(p) = picked.as_ref().filter(|_| picked_nothing) {
         format!(
-            "Nothing to change here: once heavy-query:{}'s fix is in, query {} reads a few pages a run, and when Azure \
-             lets the recommendation expire, this finding goes with it.",
+            "Nothing to create here: gather the actual-plan and IO evidence described in heavy-query:{} first. \
+             After a change supported by that evidence, compare equivalent runs of query {} for lower reads and \
+             time per run. When Azure lets the recommendation expire, this finding goes with it.",
             p.query.id, p.query.id
         )
     } else if conditional {
@@ -1053,11 +1055,10 @@ struct PickedElsewhere<'a> {
     rows: f64,
 }
 
-/// Whether the heavy statement behind a recommendation reads the table by a seek its plan costed for far fewer rows than
-/// its runs read (the heavy-query check's misestimate), while another index leads with a key it compares with a value
-/// and the seek doesn't seek on (one it can use: unfiltered, or its filter as the statement writes it). The plan chose
-/// its index on that estimate: the engine's own choice, shown in the plan, and the heavy-query finding's to fix, with
-/// statistics that let it find the rows by that key. `None` without a plan, or when it seeks no index on the table.
+/// A heavy statement with many recorded pages beside a seek estimated at few rows, while another index leads with a
+/// key it compares with a value and the seek doesn't seek on. That index can serve the predicate (unfiltered, or its
+/// filter as the statement writes it); the page count proves no row misestimate or reason for the choice. The
+/// heavy-query finding asks for actual measurements. `None` without a plan or a seek on the table.
 fn picked_elsewhere<'a>(
     snapshot: &'a Snapshot,
     ix: &RecommendedIndex,

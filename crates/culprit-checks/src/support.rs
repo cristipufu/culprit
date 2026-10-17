@@ -1960,12 +1960,11 @@ pub fn find_lock_holder(snapshot: &Snapshot, q: &QueryStat, waits: Option<f64>) 
 }
 
 /// A statistic a plan was compiled with, as SQL Server's plan XML names it (its `StatisticsInfo`, kept in the plan's raw
-/// XML; the parser keeps nothing else of it): unquoted names, and when it was last updated, in the server's local time.
+/// XML; the parser keeps nothing else of it): unquoted names.
 pub struct PlanStatistic {
     pub schema: String,
     pub table: String,
     pub name: String,
-    pub last_update: Option<String>,
 }
 
 /// The statistics `plan` was compiled with ([`PlanStatistic`]): none for a plan without raw XML, or another engine's.
@@ -1983,7 +1982,6 @@ pub fn plan_statistics(plan: &culprit_core::Plan) -> Vec<PlanStatistic> {
                 schema: attr(&tag, "Schema")?,
                 table: attr(&tag, "Table")?,
                 name: attr(&tag, "Statistics")?,
-                last_update: attr(&tag, "LastUpdate"),
             })
         })
         .collect()

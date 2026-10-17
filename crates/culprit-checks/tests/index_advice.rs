@@ -97,7 +97,7 @@ fn the_advisor_lists_a_table_read_in_full_only_with_its_finding() {
         finding.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>()
     );
     assert!(
-        table.reason.ends_with("Explain the statement listed with it to see which filter has no index."),
+        table.reason.ends_with("Explain the statement listed with it to check its access path, then measure rows kept in representative runs."),
         "{}",
         table.reason
     );
@@ -1392,7 +1392,7 @@ fn a_heavy_statement_names_the_index_its_plan_reads_through() {
         w.queries.push(q);
         analyze(s).findings.into_iter().find(|f| f.id == ID).expect("the recommendation")
     };
-    // The staging scan's query 36649: the seek was costed for 1 row, and the runs look up about 250 each.
+    // A seek estimated at one row beside 750 pages a run: the pages establish no intermediate row count or cause.
     let f = with_plan(true, 3.0, 1.0);
     let fix = f.fix.as_ref().unwrap();
     assert!(fix.sql.is_none(), "{:?}", fix.sql);
@@ -1408,14 +1408,21 @@ fn a_heavy_statement_names_the_index_its_plan_reads_through() {
     );
     assert!(
         fix.summary.ends_with(
-            "and its runs read 750 pages each to return nothing. That comes from the plan's estimate, not from a \
-             missing index (see heavy-query:777). Let the recommendation expire."
+            "and its runs read 750 pages each to return nothing. The recorded pages do not establish why that plan \
+             was chosen: inspect a representative actual plan before choosing a change (see heavy-query:777). \
+             Let the recommendation expire."
         ),
         "{}",
         fix.summary
     );
     assert!(f.caveats.is_empty(), "{:?}", f.caveats);
-    assert!(f.verify[0].starts_with("Nothing to change here: once heavy-query:777's fix is in"), "{:?}", f.verify);
+    assert!(
+        f.verify[0].starts_with("Nothing to create here: gather the actual-plan and IO evidence"),
+        "{:?}",
+        f.verify
+    );
+    assert!(f.verify[0].contains("After a change supported by that evidence"), "{:?}", f.verify);
+    assert!(!f.verify[0].contains("a few pages a run"), "{:?}", f.verify);
     assert!(f.impact.db_time_share.is_none(), "{:?}", f.impact.db_time_share);
 
     // Azure scores it high: its own word stands, and the caveat says what the statement's plan chose.

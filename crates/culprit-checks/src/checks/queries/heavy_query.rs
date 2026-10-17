@@ -80,10 +80,10 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
     // A plan that does no real work (a point lookup), run cheaply as measured: its time is the call itself, so no step
     // of it is the lead.
     let cheap_plan = q.plan.as_ref().is_some_and(|p| culprit_core::insights::runs_cheaply(p, q));
-    // A seek costed for a row or two whose runs look up many rows and keep none: the plan's estimate is what's wrong.
+    // A residual filter may explain the reads, but only an actual plan can establish its row counts.
     let lookups = reads_for_nothing
         .filter(|_| hot.is_none() && idle.is_none())
-        .and_then(|(reads, nothing)| lookups_for_nothing(snapshot, q.plan.as_ref()?, reads, nothing));
+        .and_then(|(reads, nothing)| residual_read(q.plan.as_ref()?, reads, nothing));
     // Costed under the bar every step's share needs, yet not cheap because a step reads a whole table: no share of the
     // time is put on that step, but it is the one the fix is about.
     let whole_scan = q
@@ -255,9 +255,9 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
             f.verify = vec![verify_line(snapshot, q, idle.verify())];
         }
         None => {
-            // The fixes that rest on one step: the lookups that find nothing, a whole table read under the cost bar.
+            // The next steps tied to one operator: measure a seek's residual filter, or inspect a whole-table read.
             let step_fix = match (&lookups, whole_scan) {
-                (Some(lookups), _) => Some((lookups.check.id, lookups.fix(snapshot, q))),
+                (Some(lookups), _) => Some((lookups.check.id, lookups.fix(snapshot))),
                 (None, Some((plan, node))) => scan_step_fix(snapshot, plan, node, q, kind).map(|fix| (node.id, fix)),
                 _ => None,
             };
@@ -270,7 +270,7 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
             };
             f.fix = Some(fix);
             let expect = match (&lookups, &wait) {
-                (Some(lookups), _) => Expect::Drop(format::count(lookups.reads)),
+                (Some(_), _) => Expect::Measure,
                 // A read that waits for storage: what the change shortens is the wait, not the pages a run reads.
                 (None, Some((WaitKind::Storage, wait_share, _)))
                     if matches!(kind, StatementKind::Read | StatementKind::Aggregate) =>
@@ -296,8 +296,8 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
 
 /// What a change shows in a later scan, for the verify step ([`verify_line`]).
 enum Expect {
-    /// The lookups that find nothing gone: what a run reads drops from this many pages (rows examined) to a handful.
-    Drop(String),
+    /// The cause is not known yet: get operator measurements before prescribing a change.
+    Measure,
     /// Less of its time waiting for storage, which is this share of it now.
     Storage(String),
     /// A fix that makes each run cheaper: its reads and time per run drop.
@@ -318,12 +318,14 @@ enum Expect {
 /// carries runs and time and no reads ([`verify_between_scans`]).
 fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
     let mysql = snapshot.server.engine == Engine::Mysql;
-    let (verb, unit, reads) =
-        if mysql { ("examines", "rows", "rows examined") } else { ("reads", "pages", "pages read") };
+    let reads = if mysql { "rows examined" } else { "pages read" };
+    if matches!(expect, Expect::Measure) {
+        return format!(
+            "Use an actual plan to check row counts, and collect IO measurements for the same run to locate the reads. After a change supported by that evidence, compare equivalent runs: {reads} and time per run should fall without changing the result."
+        );
+    }
     let between = match &expect {
-        Expect::Drop(now) => {
-            format!("its time per run should drop, as each run {verb} a handful of {unit} instead of {now}")
-        }
+        Expect::Measure => unreachable!(),
         Expect::Storage(now) => {
             format!("its time per run should drop, as less of it waits for storage ({now} of it now)")
         }
@@ -338,9 +340,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
     }
     let time = time_noun(snapshot);
     match expect {
-        Expect::Drop(now) => {
-            format!("After the change, re-scan: its {reads} per run should drop from {now} to a handful.")
-        }
+        Expect::Measure => unreachable!(),
         Expect::Storage(now) => format!(
             "After the change ships, re-scan: this query's share of {time} should drop, with less of its time spent waiting for storage ({now} now)."
         ),
@@ -1383,43 +1383,17 @@ fn storage_fix(snapshot: &Snapshot, q: &QueryStat, kind: StatementKind, cheap_pl
     fix
 }
 
-/// A seek the plan costed for a row or two, whose runs look up many more rows and keep none: the condition checked after
-/// the seek (a SQL Server key lookup's residual predicate, or a filter on the seek itself) throws away every row the
-/// seek finds. The plan's estimate is what's wrong, so the fix is the statistics it was costed with, and an index that
-/// leads with the checked column.
-struct LookupsForNothing<'a> {
-    /// The step that checks the condition: the lookup into the table, or the seek itself.
+/// A seek followed by a filter, beside a statement that reads many pages and returns little. The plan's estimates
+/// and the statement's recorded reads are separate evidence: pages cannot establish how many rows a lookup handled.
+struct ResidualRead<'a> {
     check: &'a PlanNode,
     schema: String,
     table: String,
-    /// The columns the condition checked after the seek compares with a value, an index can seek on.
-    checked: Vec<String>,
-    /// The columns the seek compares, in words: "tenant_id and account_id".
-    sought: String,
-    /// The index the seek reads, unquoted.
-    index: String,
-    /// The plan the seek is in, for the statistics it was compiled with.
-    plan: &'a Plan,
-    /// "1 row from ix_call_sessions_active": what the plan was costed for.
-    expected: String,
-    /// "its runs look up about 250 rows each": what the runs did instead.
-    measured: String,
-    /// Pages (rows examined, MySQL) a run reads.
-    reads: f64,
-    /// The sentence for the summary.
     evidence: String,
 }
 
-/// The plan of a read that reads `reads` pages a run to return `nothing` ([`LookupsForNothing`]), when it has that
-/// shape: a seek estimated at a row or two, then a condition on other columns checked for each row it finds.
-fn lookups_for_nothing<'a>(
-    snapshot: &Snapshot,
-    plan: &'a Plan,
-    reads: f64,
-    nothing: &str,
-) -> Option<LookupsForNothing<'a>> {
+fn residual_read<'a>(plan: &'a Plan, reads: f64, nothing: &str) -> Option<ResidualRead<'a>> {
     let nodes = plan.nodes();
-    // A key or RID lookup with a residual predicate, after a seek of the same table; or a seek with its own filter.
     let (seek, check) = nodes
         .iter()
         .copied()
@@ -1441,266 +1415,50 @@ fn lookups_for_nothing<'a>(
     let checked_columns = predicate_columns(check.predicate.as_deref()?);
     let mut checked = checked_columns.equality.clone();
     checked.extend(checked_columns.range.into_iter().take(1));
-    // The condition checked after the seek is about other columns than it seeks: SQL Server's residual is, a filter
-    // that repeats the seek's own condition isn't.
     if keys.equality.is_empty()
         || checked.is_empty()
         || checked.iter().any(|c| keys.equality.iter().any(|k| k.eq_ignore_ascii_case(c)))
     {
         return None;
     }
-    // A key lookup descends the table's clustered index for each row, a RID lookup reads one page of a heap: the pages
-    // a run reads say how many rows it looked up.
     let (schema, table) = crate::indexes::split_object(seek.object.as_deref()?)?;
-    let lookup_pages = if check.op.contains("RID Lookup") {
-        Some(1.0)
-    } else if check.op.contains("Key Lookup") {
-        let index = check.index.as_deref().map(|i| i.trim_matches(['[', ']', '"']));
-        snapshot
-            .indexes_on(&schema, &table)
-            .find(|i| {
-                index.is_some_and(|name| i.name.eq_ignore_ascii_case(name)) || (index.is_none() && i.is_clustered)
-            })
-            .and_then(|i| i.size_bytes)
-            .or_else(|| snapshot.table(&schema, &table).and_then(|t| t.data_bytes))
-            .map(|bytes| btree_levels(bytes / 8192.0))
-    } else {
-        None
-    };
-    let looked_up = lookup_pages.map(|pages| (rough(reads / pages), pages));
-    // Expected: the seek's estimate. Measured: an order of magnitude more, or the plan isn't what's wrong.
-    let expected = seek.est_rows_total();
-    let measured = looked_up.map_or(reads, |(rows, _)| rows);
-    if expected * culprit_core::MISESTIMATE_FACTOR > measured {
-        return None;
-    }
-    let mysql = snapshot.server.engine == Engine::Mysql;
     let index = seek.index.as_deref().unwrap_or_default().trim_matches(['[', ']', '"', '`']);
+    let expected = seek.est_rows_total().round().max(1.0);
+    let expected = format!("{} row{} from {index}", format::count(expected), if expected == 1.0 { "" } else { "s" });
     let sought = format::list(&keys.equality);
-    let expected = format!(
-        "{} row{} from {index}",
-        format::count(expected.round().max(1.0)),
-        if expected.round() <= 1.0 { "" } else { "s" }
-    );
     let checks = format::list(&checked);
-    let what = if std::ptr::eq(seek, check) {
-        format!("Its plan expects {expected} (on {sought}) and checks each row it finds for {checks}")
+    let shape = if std::ptr::eq(seek, check) {
+        format!("The captured plan estimates {expected} (on {sought}) and checks each row it finds for {checks}")
     } else {
         format!(
-            "Its plan expects {expected} (on {sought}), then looks up each row it finds in the table to check {checks}"
+            "The captured plan estimates {expected} (on {sought}), then looks up each row it finds in the table to check {checks}"
         )
     };
-    let (runs, measured) = match looked_up {
-        Some((rows, pages)) => (
-            format!(
-                "its runs read {} pages each, about {} lookups at {} page{} each",
-                format::count(reads),
-                format::count(rows),
-                format::count(pages),
-                if pages == 1.0 { "" } else { "s" }
-            ),
-            format!("its runs look up about {} rows each", format::count(rows)),
-        ),
-        None if mysql => {
-            let runs = format!("its runs examine {} rows each", format::count(reads));
-            (runs.clone(), runs)
-        }
-        None => {
-            let runs = format!("its runs read {} pages each", format::count(reads));
-            (runs.clone(), runs)
-        }
-    };
+    let (verb, unit) = if plan.engine == Engine::Mysql { ("examine", "rows") } else { ("read", "pages") };
     let nothing = if nothing == "nothing" { "nothing".to_string() } else { format!("{nothing} each") };
-    Some(LookupsForNothing {
+    Some(ResidualRead {
         check,
         schema,
         table,
-        checked,
-        sought,
-        index: index.to_string(),
-        plan,
-        expected,
-        measured,
-        reads,
         evidence: format!(
-            "{what}: {runs}, and return {nothing}. The plan was costed for far fewer rows than its runs find."
+            "{shape}. The statement's runs {verb} {} {unit} each and return {nothing}; those totals do not show how many rows each plan step handled.",
+            format::count(reads)
         ),
     })
 }
 
-impl LookupsForNothing<'_> {
-    /// The statistics the plan was costed with, refreshed; and an index that leads with the checked column: the one
-    /// that exists, or, where the index rules allow one (the statement keeps running, and the check keeps a small share
-    /// of the rows it looks up), a new one.
-    fn fix(&self, snapshot: &Snapshot, q: &QueryStat) -> Fix {
-        let engine = snapshot.server.engine;
-        let refresh = engine.spec().refresh_statistics(&qualified(engine, &self.schema, &self.table));
-        let name = format!("{}.{}", self.schema, self.table);
-        let column = &self.checked[0];
-        let opening = format!("The plan was costed for {}, but {} and keep none", self.expected, self.measured);
-        let statistics = format!(
-            "so the plan is compiled again with an estimate of how many rows the seek on {} finds",
-            self.sought
-        );
-        // Less than a row kept of the many each run looks up: far under the share an index is advice for.
-        let keeps_few =
-            q.rows_per_execution().is_some_and(|rows| rows <= self.reads * culprit_core::INDEX_KEEPS_AT_MOST);
-        // Statistics the catalog says were updated after the plan was compiled with them: the plan running now may
-        // already have them, so an update alone may change nothing.
-        let updated = statistics_since_plan(snapshot, self.plan, &self.schema, &self.table, &self.index);
-        let updated_note = updated.as_ref().map(|u| {
-            format!(
-                ". The statistics on {} were last updated on {}{}, after this plan was compiled with those of {}{}: fresh statistics may not change the estimate",
-                self.index,
-                u.catalog,
-                if u.full { " from every row" } else { "" },
-                u.plan,
-                if u.runs_since { ", and the runs measured since still look up as many rows" } else { "" }
-            )
-        });
-        match index_leading_with(snapshot, &self.schema, &self.table, column) {
-            Some(index) => {
-                let filtered = index
-                    .filter
-                    .as_deref()
-                    .map(|f| format!(" (it holds only the rows where `{f}`)"))
-                    .unwrap_or_default();
-                // The engine's own hint is the fallback that doesn't rest on the estimate: a seek on the index by the
-                // columns the statement compares with a value, the index's own leading keys (a bare FORCESEEK allows
-                // the seek the plan already does). It goes in the statement, where the application sends it.
-                let seek_columns: Vec<&str> = index
-                    .key_names()
-                    .into_iter()
-                    .take_while(|k| self.checked.iter().any(|c| c.eq_ignore_ascii_case(k)))
-                    .collect();
-                let hint = format!(
-                    "WITH (FORCESEEK ({} ({})))",
-                    quote(engine, &index.name),
-                    seek_columns.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ")
-                );
-                let mut sql = refresh.sql.clone();
-                let summary = match updated_note {
-                    Some(note) if engine == Engine::Mssql && !seek_columns.is_empty() => {
-                        // The brief reads a comment that offers a change in the application as one (`FixSql`).
-                        sql = sql.map(|refresh| {
-                            format!(
-                                "{refresh}\n\n-- If a re-scan still shows about {} pages a run, change the statement in the application:\n--    read {} {}",
-                                format::count(self.reads),
-                                crate::support::comment_text(&qualified(engine, &self.schema, &self.table)),
-                                crate::support::comment_text(&hint)
-                            )
-                        });
-                        format!(
-                            "{opening}{note}. Update them anyway (the SQL below), {statistics}; with that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}. If a re-scan still shows its runs reading about {} pages each, the estimate isn't the statistics' age: change the statement where the application sends it to read {name} with a table hint that seeks {} on {}: `{hint}`.",
-                            index.name,
-                            format::count(self.reads),
-                            index.name,
-                            format::list(&seek_columns.iter().map(|c| c.to_string()).collect::<Vec<_>>())
-                        )
-                    }
-                    Some(note) => format!(
-                        "{opening}{note}. Update them anyway (the SQL below), {statistics}; with that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}.",
-                        index.name
-                    ),
-                    None => format!(
-                        "{opening}: update the statistics on {name} (the SQL below), {statistics}. With that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}.",
-                        index.name
-                    ),
-                };
-                Fix { summary, sql, cost: refresh.cost }
-            }
-            None if keeps_few && !crate::query_is_history(snapshot, q) => {
-                let create = create_index_sql(snapshot, &self.schema, &self.table, &self.checked, &[]);
-                Fix {
-                    summary: format!(
-                        "{opening}. No index on {name} leads with {column}, so fresh statistics alone may not change how it finds them: an index that leads with {column} finds the rows directly (the first statement below). Update the statistics on {name} too (the second), {statistics}."
-                    ),
-                    sql: Some(match refresh.sql {
-                        Some(refresh) => format!("{create}\n\n{refresh}"),
-                        None => create,
-                    }),
-                    cost: None,
-                }
-            }
-            None => Fix {
-                summary: match updated_note {
-                    Some(note) => format!("{opening}{note}. Update them anyway (the SQL below), {statistics}."),
-                    None => format!("{opening}: update the statistics on {name} (the SQL below), {statistics}."),
-                },
-                sql: refresh.sql,
-                cost: refresh.cost,
-            },
-        }
+impl ResidualRead<'_> {
+    fn fix(&self, snapshot: &Snapshot) -> Fix {
+        let capture = if snapshot.server.engine.spec().abilities().last_actual_plan {
+            "Read a retained actual plan when the server has one; otherwise capture a representative actual plan in a test environment."
+        } else {
+            "Capture an actual execution plan for a representative run in a test environment."
+        };
+        advice(format!(
+            "{capture} Check how many rows each step reads and keeps, and collect IO measurements for the same run to locate the reads on {}.{}. Use that evidence to decide whether a change to statistics or the access path is justified.",
+            self.schema, self.table
+        ))
     }
-}
-
-/// Statistics of an index a plan seeks that the catalog says were updated after the plan was compiled with them, in
-/// words: the dates (the catalog's, the plan's), whether that update read every row, and whether the runs the workload
-/// measured all came after it.
-struct UpdatedSince {
-    catalog: String,
-    plan: String,
-    full: bool,
-    runs_since: bool,
-}
-
-/// [`UpdatedSince`] for statistic `name` on `schema.table`, from what the plan itself says it was compiled with: SQL
-/// Server's plan XML names each statistic it used and when it was last updated (its `StatisticsInfo`, kept in the
-/// plan's raw XML; the parser keeps nothing else of it). That time is the server's local time, so only an update more
-/// than a day later than it counts.
-fn statistics_since_plan(
-    snapshot: &Snapshot,
-    plan: &Plan,
-    schema: &str,
-    table: &str,
-    name: &str,
-) -> Option<UpdatedSince> {
-    let compiled_with = plan_statistics(plan).into_iter().find_map(|s| {
-        (s.name.eq_ignore_ascii_case(name)
-            && s.table.eq_ignore_ascii_case(table)
-            && s.schema.eq_ignore_ascii_case(schema))
-        .then_some(s.last_update)?
-    })?;
-    let stat = snapshot.statistics.iter().find(|st| {
-        st.schema.eq_ignore_ascii_case(schema)
-            && st.table.eq_ignore_ascii_case(table)
-            && st.name.eq_ignore_ascii_case(name)
-    })?;
-    let catalog = stat.last_updated.as_deref()?;
-    let (at, then) = (parse_epoch_seconds(catalog)?, parse_epoch_seconds(&compiled_with)?);
-    if at - then < 86_400.0 {
-        return None;
-    }
-    let window_start = snapshot
-        .workload
-        .as_ref()
-        .and_then(|w| Some(parse_epoch_seconds(w.window_end.as_deref()?)? - w.window_hours * 3600.0));
-    Some(UpdatedSince {
-        catalog: format::friendly_date(catalog, &snapshot.taken_at),
-        plan: format::friendly_date(&compiled_with, &snapshot.taken_at),
-        full: matches!((stat.rows, stat.rows_sampled), (Some(rows), Some(sampled)) if rows > 0.0 && sampled >= rows),
-        runs_since: window_start.is_some_and(|start| start > at),
-    })
-}
-
-/// Levels of a B-tree over `pages` pages, what a lookup through it reads: a page holds a few hundred keys.
-fn btree_levels(pages: f64) -> f64 {
-    const KEYS_PER_PAGE: f64 = 300.0;
-    let (mut levels, mut above) = (1.0, pages.max(1.0).ceil());
-    while above > 1.0 {
-        above = (above / KEYS_PER_PAGE).ceil();
-        levels += 1.0;
-    }
-    levels
-}
-
-/// A count derived from others, to two significant digits: 249.3 lookups read as about 250.
-fn rough(value: f64) -> f64 {
-    if value < 100.0 {
-        return value.round();
-    }
-    let unit = 10f64.powf(value.log10().floor() - 1.0);
-    (value / unit).round() * unit
 }
 
 /// An enabled index on `schema.table` whose first key is `column`: one that holds every row first, since a filtered

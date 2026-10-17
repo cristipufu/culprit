@@ -175,7 +175,7 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             if measured { format!(" {}", since_phrase(snapshot)) } else { String::new() },
             if !proven.is_empty() {
                 format!(
-                    "{} of the captured statements {} it in full ({shown}){}; explain {} to see which filter has no index.{}",
+                    "{} of the captured statements {} it in full ({shown}){}; explain {} to check the access path, then measure rows kept in representative runs.{}",
                     proven.len(),
                     if proven.len() == 1 { "reads" } else { "read" },
                     if unplanned.is_empty() {
@@ -247,8 +247,16 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         };
         f.fix = Some(Fix {
             summary: format!(
-                "{explain}{} and index the columns in their WHERE clause; small lookup tables are fine to scan.",
-                if snapshot.server.engine == Engine::Postgres { " (Culprit can show a generic plan)" } else { "" }
+                "{explain}{} to check their access paths. To measure each filter, capture an actual plan with \
+                 representative values in a controlled environment: this runs the statement. Compare rows kept \
+                 with rows read. If a filter keeps at most {} of the rows read, consider an index on the columns \
+                 it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan.",
+                if snapshot.server.engine == Engine::Postgres {
+                    " (Culprit can show a generic plan, which does not measure actual rows)"
+                } else {
+                    ""
+                },
+                format::percent(culprit_core::plan::INDEX_KEEPS_AT_MOST)
             ),
             sql: None,
             // No SQL creates an index here: the cost line names the one the reader would add.
@@ -257,11 +265,18 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         // The counters keep totals since they started, so a day moves a rate over weeks by a hair: what shows the
         // change is what they grow by between two scans.
         f.verify = vec![format!(
-            "The scan counters of {} keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later ({} full reads{} in this scan): between the two, its full reads should grow far slower, and its index scans faster.",
+            "After adding an index for a selective filter, the full reads of {} should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later ({} full reads{} in this scan).",
             t.name,
             format::count(scans_total),
             t.index_scans.map(|n| format!(" and {} index scans", format::count(n))).unwrap_or_default()
         )];
+        if !f.queries.is_empty() {
+            let (queries, their) = if f.queries.len() == 1 { ("the query", "its") } else { ("the queries", "their") };
+            let cheaper = format!("{their} time per run should drop");
+            let verify = crate::queries::what_changed_between_scans(snapshot, queries, &cheaper)
+                .unwrap_or_else(|| format!("Re-scan after the workload has run: {cheaper}."));
+            f.verify.push(format!("Whether the fix adds an index or reads fewer rows or columns: {verify}"));
+        }
         f.caveats.push(
             "Counters accumulate since statistics were last reset; one nightly report can make up much of them.".into(),
         );

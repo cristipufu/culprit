@@ -431,8 +431,8 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
       const [first, second] = await Promise.all([load(dominant), load(other)]);
       // The faster plan is the baseline, so the comparison reads "the slow plan does X where the fast one does Y".
       const speed = (id: string) => variants.find((v) => v.id === id)?.mean_time_ms ?? 0;
-      const a = { plan: first, name: nameOf(dominant), origin, source: { connection, queryId: query.id, planId: dominant } };
-      const b = { plan: second, name: nameOf(other), origin, source: { connection, queryId: query.id, planId: other } };
+      const a = { plan: first, name: nameOf(dominant), origin, source: { connection, queryId: query.id, planId: dominant }, query: { ...query, plan_id: dominant } };
+      const b = { plan: second, name: nameOf(other), origin, source: { connection, queryId: query.id, planId: other }, query: { ...query, plan_id: other } };
       if (speed(dominant) <= speed(other)) compare(a, b);
       else compare(b, a);
     } catch (e) {
@@ -459,7 +459,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
             </button>
           )}
           {state.status === "ready" && (
-            <button className="btn ghost" title="Open this plan in Plans to save it or compare it with another" onClick={() => addPlan(state.plan, nameOf(planId), origin, { source: { connection, queryId: query.id, planId } })}>
+            <button className="btn ghost" title="Open this plan in Plans to save it or compare it with another" onClick={() => addPlan(state.plan, nameOf(planId), origin, { source: { connection, queryId: query.id, planId }, query: { ...query, plan_id: planId } })}>
               <SquareArrowOutUpRight size={13} /> Open in Plans
             </button>
           )}

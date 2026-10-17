@@ -231,7 +231,10 @@
       },
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
-      "verify": []
+      "verify": [
+        "Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.",
+        "Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
+      ]
     },
     {
       "category": "indexes",
@@ -268,7 +271,10 @@
       },
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
-      "verify": []
+      "verify": [
+        "Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.",
+        "Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
+      ]
     },
     {
       "category": "configuration",

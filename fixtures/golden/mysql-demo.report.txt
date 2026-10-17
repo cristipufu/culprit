@@ -21,7 +21,7 @@ fix: Another transaction holds the rows it needs for longer than innodb_lock_wai
 verify:
   1. Between two scans, runs that fail or are cancelled should drop to near zero: performance_schema keeps running totals, so compare its failed runs and runs in a scan taken once the change is live and one a day or more later (12 of 43 runs in this scan).
 caveats:
-  - MySQL counts errors per statement since it started, so old failures stay in the total until it restarts.
+  - MySQL counts errors from when each statement's entry began counting, so old failures stay in its total until the counters are reset or the server restarts.
 queries:
   - 4515abd524a46f37: 4% of database time
 brief:
@@ -64,7 +64,7 @@ brief:
 
     ## Caveats
 
-    - MySQL counts errors per statement since it started, so old failures stay in the total until it restarts.
+    - MySQL counts errors from when each statement's entry began counting, so old failures stay in its total until the counters are reset or the server restarts.
 
     ## What to do in the codebase
 
@@ -194,13 +194,13 @@ impact: 12% of DB time · 12.0% of database time
 metrics:
   - On-disk temporary tables per run: 1
   - Average duration: 1.7 s
-fix: Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+fix: Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
   sql:
       SET PERSIST tmp_table_size = 67108864;
       SET PERSIST max_heap_table_size = 67108864;
   cost: The limit is per temporary table per connection; size it with your connection count in mind.
 verify:
-  1. Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+  1. Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 queries:
   - 04cd7be9c366fadc: 12% of database time · plan step 2
 brief:
@@ -229,7 +229,7 @@ brief:
 
     ## Suggested fix
 
-    Add an index that delivers rows already grouped or ordered so no temporary table is needed, or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts.
+    Check whether an index matching the GROUP BY or ORDER BY reduces temporary-table work (an ORDER BY that differs from the grouping can still need a temporary table and sort), or raise the in-memory limit to 64.0 MB (both variables: with the MEMORY engine the smaller one wins). Set tmp_table_size to 67108864; SET PERSIST keeps it across restarts. Set max_heap_table_size to 67108864; SET PERSIST keeps it across restarts. Global values apply to new connections: reopen the application's existing connections, or have the application set these session variables on them.
 
     ```sql
     SET PERSIST tmp_table_size = 67108864;
@@ -240,25 +240,26 @@ brief:
 
     ## How to verify
 
-    - Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
+    - Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan).
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
+    If you choose an index from the fix's options, ship it through this project's schema migrations. If you choose a query change, find where the application sends the statements above (search for their table and column names) and make that change in the calling code. If you choose the session-setting option, set those variables on the application's connections. The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
 
 === finding scan-heavy:shop.orders
 low severity · medium confidence · indexes
 title: orders is read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows)
-summary: shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+summary: shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 impact: 1% of DB time · 1.5% of database time
 metrics:
   - Full reads: 81
   - Rows read without an index: 40.5M
   - Rows in table: 499K
-fix: Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+fix: Explain the statements listed with this finding to check their access paths. To measure each filter, capture an actual plan with representative values in a controlled environment: this runs the statement. Compare rows kept with rows read. If a filter keeps at most 10% of the rows read, consider an index on the columns it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan.
   cost: shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.
 verify:
-  1. The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (81 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster.
+  1. After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (81 full reads in this scan).
+  2. Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
 caveats:
   - Counters accumulate since statistics were last reset; one nightly report can make up much of them.
 queries:
@@ -270,7 +271,7 @@ brief:
 
     ## What's happening
 
-    shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+    shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 
     ## Evidence
 
@@ -288,13 +289,14 @@ brief:
 
     ## Suggested fix
 
-    Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan.
+    Explain the statements listed with this finding to check their access paths. To measure each filter, capture an actual plan with representative values in a controlled environment: this runs the statement. Compare rows kept with rows read. If a filter keeps at most 10% of the rows read, consider an index on the columns it searches by; if it keeps more, read fewer rows or columns instead. Small lookup tables are fine to scan.
 
     Cost: shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.
 
     ## How to verify
 
-    - The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (81 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster.
+    - After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (81 full reads in this scan).
+    - Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mysql-demo --since <ship time>`): there its time per run should drop.
 
     ## Caveats
 
@@ -302,7 +304,7 @@ brief:
 
     ## What to do in the codebase
 
-    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
+    Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run in a test environment. Check the actual row counts and IO for that run before choosing a change to the application's statements, indexes or statistics. After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding deadlocks:opposite-order:shop.customers+shop.orders
 low severity · high confidence · queries
@@ -362,6 +364,9 @@ fix: Drop ix_orders_status and keep ix_orders_status_created.
   sql:
       ALTER TABLE `shop`.`orders` DROP INDEX `ix_orders_status`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 10.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+  2. Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -387,13 +392,18 @@ brief:
 
     Cost: Frees 10.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+    - Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
 low severity · high confidence · indexes
@@ -406,6 +416,9 @@ fix: Drop ix_products_sku and keep uq_products_sku.
   sql:
       ALTER TABLE `shop`.`products` DROP INDEX `ix_products_sku`, ALGORITHM=INPLACE, LOCK=NONE;
   cost: Frees 432 KB.
+verify:
+  1. Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+  2. Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
@@ -429,9 +442,14 @@ brief:
 
     Cost: Frees 432 KB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+    - Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mysql-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding row-lock-waits:server
 low severity · medium confidence · queries
@@ -540,7 +558,7 @@ low severity · medium confidence · configuration
 title: The slow query log is off
 summary: Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.
 impact: Setting
-fix: Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+fix: Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts. The new long_query_time applies to new connections: reopen the application's existing connections, or have the application set the session variable on them.
   sql:
       SET PERSIST slow_query_log = 'ON';
       SET PERSIST long_query_time = 1;
@@ -558,7 +576,7 @@ brief:
 
     ## Suggested fix
 
-    Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts.
+    Turn it on with a threshold that matches your latency budget. Set slow_query_log to ON, long_query_time to 1 and log_output to FILE,TABLE; SET PERSIST keeps it across restarts. The new long_query_time applies to new connections: reopen the application's existing connections, or have the application set the session variable on them.
 
     ```sql
     SET PERSIST slow_query_log = 'ON';
@@ -578,8 +596,8 @@ brief:
 insight temp-table-sort · low severity · impact no share stated
   title: Groups 499K rows in an internal temporary table, then sorts them (filesort)
   detail: The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.
-  fix: An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.
-  verify: Explain again: no "using temporary table" on the grouping.
+  fix: An index whose leading columns match the GROUP BY may let MySQL group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.
+  verify: Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself.
 note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
 shares: `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
 

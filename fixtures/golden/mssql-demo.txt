@@ -426,6 +426,9 @@ fix: Drop ix_orders_status and keep ix_orders_status_created.
   sql:
       DROP INDEX [ix_orders_status] ON [shop].[orders];
   cost: Frees 26.5 MB.
+verify:
+  1. Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+  2. Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 caveats:
   - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 brief:
@@ -451,13 +454,18 @@ brief:
 
     Cost: Frees 26.5 MB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.
+    - Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## Caveats
 
     - ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo`: `duplicate-index:shop.orders.ix_orders_status` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
 low severity · high confidence · indexes
@@ -470,6 +478,9 @@ fix: Drop ix_products_sku and keep uq_products_sku.
   sql:
       DROP INDEX [ix_products_sku] ON [shop].[products];
   cost: Frees 648 KB.
+verify:
+  1. Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+  2. Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
@@ -493,9 +504,14 @@ brief:
 
     Cost: Frees 648 KB.
 
+    ## How to verify
+
+    - Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.
+    - Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed.
+
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan mssql-demo`: `duplicate-index:shop.products.ix_products_sku` should be gone.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding config:read-committed-snapshot
 low severity · medium confidence · configuration
@@ -620,14 +636,14 @@ brief:
 === finding last-actual-plans:last-query-plan-stats
 low severity · high confidence · configuration
 title: LAST_QUERY_PLAN_STATS is off for this database
-summary: With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Without it only estimated plans are available, so a bad estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+summary: With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
 impact: Diagnostics
 fix: Turn it on for this database.
   sql:
       ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
   cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
 verify:
-  1. Let the workload run, re-scan, then open a query in Queries and pick "Last actual run": the diagram shows actual rows and time per operator.
+  1. Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
 brief:
     # LAST_QUERY_PLAN_STATS is off for this database
 
@@ -635,7 +651,7 @@ brief:
 
     ## What's happening
 
-    With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, without running it again. Without it only estimated plans are available, so a bad estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+    With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
 
     ## Suggested fix
 
@@ -649,7 +665,7 @@ brief:
 
     ## How to verify
 
-    - Let the workload run, re-scan, then open a query in Queries and pick "Last actual run": the diagram shows actual rows and time per operator.
+    - Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
 
     ## What to do in the codebase
 
