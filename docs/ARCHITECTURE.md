@@ -286,4 +286,7 @@ rules, and is reproducible offline from a saved scan.
   an intended change with `CULPRIT_UPDATE_GOLDEN=1 cargo test -p culprit-engine --test all golden::`.
 - `dev/postgres` and `dev/mssql` are Docker databases with planted problems; regenerate a UI fixture with
   `culprit analyze <snapshot.json> --connection <name> --json > fixtures/<name>.report.json`.
+  After changing findings or plan advice, `python3 dev/refresh-demo.py` refreshes the browser's saved reports and all
+  their derived findings, dashboard, index advice, check metadata, plan insights and share samples together. A test
+  compares the browser's saved output with today's analysis, so golden readings cannot hide stale demo data.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`, `cargo fmt --all`.

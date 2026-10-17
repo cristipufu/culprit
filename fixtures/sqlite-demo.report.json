@@ -60,7 +60,9 @@
       "summary": "Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
       "title": "orders has no index on customer_id, its foreign key to customers",
       "verify": [
-        "Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone."
+        "Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING INDEX ix_orders_customer_id`) instead of reading all of it.",
+        "Re-scan once the index exists: this finding should be gone, and a delete from main.customers then finds the rows of main.orders it checks through the index, not by scanning the table.",
+        "Re-scan after the workload has run: the queries' time per run should drop."
       ]
     },
     {
@@ -107,7 +109,7 @@
       "summary": "Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.",
       "title": "order_items has no index on product_id, its foreign key to products",
       "verify": [
-        "Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone."
+        "Re-scan once the index exists: this finding should be gone, and a delete from main.products then finds the rows of main.order_items it checks through the index, not by scanning the table."
       ]
     },
     {
@@ -1392,6 +1394,8 @@
     "headline": "5 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.",
     "no_workload": null,
     "opportunities": 5,
+    "over_scans": [],
+    "runs_said": [],
     "top_share": 0.9887727501019123
   }
 }

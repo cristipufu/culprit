@@ -156,7 +156,7 @@
     ],
     "id": "chatty-query",
     "requires": [],
-    "title": "Chatty queries (N+1)"
+    "title": "Chatty queries"
   },
   {
     "category": "queries",

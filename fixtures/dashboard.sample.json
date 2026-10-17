@@ -51,17 +51,6 @@
         "items": [
           {
             "at": null,
-            "finding_id": "scan-heavy:shop.orders",
-            "id": "scan-heavy:shop.orders",
-            "kind": "finding",
-            "label": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
-            "query_id": null,
-            "share": 0.9255406753671112,
-            "status": "info",
-            "value": "93% of DB time"
-          },
-          {
-            "at": null,
             "finding_id": "temp-spill:375c64398248650e",
             "id": "temp-spill:375c64398248650e",
             "kind": "finding",
@@ -73,14 +62,25 @@
           },
           {
             "at": null,
-            "finding_id": "lock-time:375c64398248650e",
-            "id": "lock-time:375c64398248650e",
+            "finding_id": "chatty-query:a92bb0be330ac53a",
+            "id": "chatty-query:a92bb0be330ac53a",
             "kind": "finding",
-            "label": "A read from orders spends nearly all its time waiting on locks, 2.5 s per run",
+            "label": "A read from products runs 30K times in 1 minute, one key at a time",
             "query_id": null,
-            "share": 0.8855883790586936,
+            "share": 0.010408117938943744,
             "status": "info",
-            "value": "50.0 s waiting on locks"
+            "value": "75% of executions"
+          },
+          {
+            "at": null,
+            "finding_id": "heavy-query:decf59629e790076",
+            "id": "heavy-query:decf59629e790076",
+            "kind": "finding",
+            "label": "A read from orders takes 6% of database time",
+            "query_id": null,
+            "share": 0.05613893923861639,
+            "status": "info",
+            "value": "6% of DB time"
           }
         ],
         "key": "findings",
@@ -100,13 +100,13 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "9",
-            "value": 9.0
+            "text": "8",
+            "value": 8.0
           }
         ],
         "next": "culprit findings mariadb-demo",
         "status": "info",
-        "takeaway": "9 opportunities; the top 3 touch 93% of database time.",
+        "takeaway": "8 opportunities; the top 3 touch 95% of database time.",
         "title": "Findings"
       },
       {
@@ -227,7 +227,7 @@
             "id": "lock",
             "kind": "wait",
             "label": "Locks",
-            "query_id": "375c64398248650e",
+            "query_id": "a92bb0be330ac53a",
             "share": 4.0298532683243014e-05,
             "status": null,
             "value": "<1%"
@@ -469,19 +469,7 @@
       {
         "detail": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.",
         "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "temp-table-sort",
-            "kind": "rule",
-            "label": "A temporary table and filesort",
-            "query_id": "375c64398248650e",
-            "share": 0.8855883790586936,
-            "status": "info",
-            "value": "1 plan"
-          }
-        ],
+        "items": [],
         "key": "plans",
         "metrics": [
           {
@@ -493,17 +481,17 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           }
         ],
-        "next": "culprit explain mariadb-demo --query-id 375c64398248650e",
-        "status": "info",
-        "takeaway": "One of the 5 captured plans has something to fix: a temporary table and filesort (89% of database time).",
+        "next": null,
+        "status": "good",
+        "takeaway": "None of the 5 captured plans shows a known problem.",
         "title": "Plans"
       },
       {
-        "detail": "Averages in the hour since the server last restarted.",
+        "detail": "Averages since the server started or its performance_schema counters were last reset.",
         "fix_sql": null,
         "items": [
           {
@@ -644,402 +632,6 @@
       }
     ]
   },
-  "mssql-demo-staging": {
-    "attention": [
-      "statistics",
-      "findings",
-      "deadlocks"
-    ],
-    "connection": "mssql-demo-staging",
-    "coverage": null,
-    "database": "culprit_demo",
-    "engine": "mssql",
-    "environment": "staging",
-    "headline": "No query history: Query Store is OFF on this database.",
-    "product": "SQL Server 2022",
-    "report_id": "20261011T121512.204Z",
-    "taken_at": "2026-10-11T12:15:12Z",
-    "tiles": [
-      {
-        "detail": "Query statistics shows how to get them.",
-        "fix_sql": null,
-        "items": [],
-        "key": "db-time",
-        "metrics": [],
-        "next": "culprit changes mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "No query history, so database time isn't measured.",
-        "title": "Database time"
-      },
-      {
-        "detail": null,
-        "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": "tier-limit:log-write",
-            "id": "tier-limit:log-write",
-            "kind": "finding",
-            "label": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
-            "query_id": null,
-            "share": null,
-            "status": "bad",
-            "value": "at limit 38%"
-          },
-          {
-            "at": null,
-            "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
-            "id": "unindexed-fk:shop.ticket_events(ticket_id)",
-            "kind": "finding",
-            "label": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
-            "query_id": null,
-            "share": null,
-            "status": "info",
-            "value": "800K rows unindexed"
-          },
-          {
-            "at": null,
-            "finding_id": "deadlocks:key-lookup:shop.customers",
-            "id": "deadlocks:key-lookup:shop.customers",
-            "kind": "finding",
-            "label": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
-            "query_id": null,
-            "share": null,
-            "status": "info",
-            "value": "1 deadlock"
-          }
-        ],
-        "key": "findings",
-        "metrics": [
-          {
-            "key": "high",
-            "label": "High",
-            "text": "1",
-            "value": 1.0
-          },
-          {
-            "key": "medium",
-            "label": "Medium",
-            "text": "0",
-            "value": 0.0
-          },
-          {
-            "key": "low",
-            "label": "Low",
-            "text": "7",
-            "value": 7.0
-          }
-        ],
-        "next": "culprit findings mssql-demo-staging",
-        "status": "bad",
-        "takeaway": "8 opportunities, 1 of them high.",
-        "title": "Findings"
-      },
-      {
-        "detail": "Query statistics shows how to get them.",
-        "fix_sql": null,
-        "items": [],
-        "key": "top-queries",
-        "metrics": [],
-        "next": "culprit top mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "No query history, so there is no query list.",
-        "title": "Top queries"
-      },
-      {
-        "detail": "Server totals since SQL Server started.",
-        "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "latch",
-            "kind": "wait",
-            "label": "In-memory contention",
-            "query_id": null,
-            "share": 0.7741593186278652,
-            "status": null,
-            "value": "77%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "parallelism",
-            "kind": "wait",
-            "label": "Parallel queries",
-            "query_id": null,
-            "share": 0.16588256284568648,
-            "status": null,
-            "value": "17%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "memory",
-            "kind": "wait",
-            "label": "Memory",
-            "query_id": null,
-            "share": 0.05584509489064804,
-            "status": null,
-            "value": "6%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "cpu",
-            "kind": "wait",
-            "label": "CPU",
-            "query_id": null,
-            "share": 0.003972166661971434,
-            "status": null,
-            "value": "<1%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "lock",
-            "kind": "wait",
-            "label": "Locks",
-            "query_id": null,
-            "share": 0.00014085697382877426,
-            "status": null,
-            "value": "<1%"
-          }
-        ],
-        "key": "waits",
-        "metrics": [
-          {
-            "key": "total",
-            "label": "Waiting since start",
-            "text": "2 min",
-            "value": 106491.0
-          }
-        ],
-        "next": "culprit waits mssql-demo-staging",
-        "status": "info",
-        "takeaway": "Most time goes to in-memory contention (77%), then parallel queries (17%).",
-        "title": "Where time goes"
-      },
-      {
-        "detail": "The app reads them every few seconds; `culprit live` reads them once.",
-        "fix_sql": null,
-        "items": [],
-        "key": "now",
-        "metrics": [],
-        "next": "culprit live mssql-demo-staging",
-        "status": "info",
-        "takeaway": "Sessions weren't read for this dashboard.",
-        "title": "Right now"
-      },
-      {
-        "detail": "Scan again to read compiles, memory, cache and connection counters.",
-        "fix_sql": null,
-        "items": [],
-        "key": "health",
-        "metrics": [],
-        "next": "culprit waits mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "This scan recorded no health counters.",
-        "title": "Health"
-      },
-      {
-        "detail": "Read from system_health event files and ring buffer.",
-        "fix_sql": null,
-        "items": [
-          {
-            "at": "2026-10-11T11:42:17Z",
-            "finding_id": "deadlocks:key-lookup:shop.customers",
-            "id": "948217a42dfae823",
-            "kind": "deadlock",
-            "label": "Key-lookup deadlock on shop.customers",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1×"
-          },
-          {
-            "at": "2026-10-11T13:58:59Z",
-            "finding_id": "deadlocks:key-lookup:shop.customers",
-            "id": "8e8d0546690aef93",
-            "kind": "deadlock",
-            "label": "Opposite access order on shop.customers, shop.orders",
-            "query_id": null,
-            "share": null,
-            "status": "watch",
-            "value": "1×"
-          }
-        ],
-        "key": "deadlocks",
-        "metrics": [
-          {
-            "key": "count",
-            "label": "Deadlocks",
-            "text": "2",
-            "value": 2.0
-          }
-        ],
-        "next": "culprit deadlocks mssql-demo-staging",
-        "status": "watch",
-        "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
-        "title": "Deadlocks"
-      },
-      {
-        "detail": "Index usage counters have counted for 2 min; an index has to go unread for a week before it's listed to clean up.",
-        "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
-            "id": "shop.ticket_events(ticket_id)",
-            "kind": "index-add",
-            "label": "ticket_events (ticket_id)",
-            "query_id": null,
-            "share": null,
-            "status": null,
-            "value": null
-          },
-          {
-            "at": null,
-            "finding_id": "duplicate-index:shop.orders.ix_orders_status",
-            "id": "shop.orders.ix_orders_status",
-            "kind": "index-cleanup",
-            "label": "ix_orders_status on orders",
-            "query_id": null,
-            "share": null,
-            "status": null,
-            "value": "26.5 MB"
-          },
-          {
-            "at": null,
-            "finding_id": "duplicate-index:shop.products.ix_products_sku",
-            "id": "shop.products.ix_products_sku",
-            "kind": "index-cleanup",
-            "label": "ix_products_sku on products",
-            "query_id": null,
-            "share": null,
-            "status": null,
-            "value": "648 KB"
-          }
-        ],
-        "key": "indexes",
-        "metrics": [
-          {
-            "key": "add",
-            "label": "To add",
-            "text": "1",
-            "value": 1.0
-          },
-          {
-            "key": "cleanup",
-            "label": "To clean up",
-            "text": "2",
-            "value": 2.0
-          },
-          {
-            "key": "reclaim",
-            "label": "Space back",
-            "text": "27.1 MB",
-            "value": 28459008.0
-          },
-          {
-            "key": "tables",
-            "label": "Tables to look at",
-            "text": "0",
-            "value": 0.0
-          }
-        ],
-        "next": "culprit indexes mssql-demo-staging",
-        "status": "info",
-        "takeaway": "One new index is worth a look; 2 indexes can go (27.1 MB).",
-        "title": "Indexes"
-      },
-      {
-        "detail": "Query statistics shows how to get them.",
-        "fix_sql": null,
-        "items": [],
-        "key": "plans",
-        "metrics": [],
-        "next": null,
-        "status": "unavailable",
-        "takeaway": "No query history, so there are no plans to read.",
-        "title": "Plans"
-      },
-      {
-        "detail": null,
-        "fix_sql": null,
-        "items": [],
-        "key": "storage",
-        "metrics": [],
-        "next": "culprit waits mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "This scan has no storage timings.",
-        "title": "Storage"
-      },
-      {
-        "detail": null,
-        "fix_sql": null,
-        "items": [],
-        "key": "connections",
-        "metrics": [],
-        "next": "culprit waits mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "This scan has no connection counters.",
-        "title": "Connections"
-      },
-      {
-        "detail": null,
-        "fix_sql": null,
-        "items": [],
-        "key": "replication",
-        "metrics": [],
-        "next": "culprit waits mssql-demo-staging",
-        "status": "good",
-        "takeaway": "No availability group or geo-replica: nothing can fall behind.",
-        "title": "Replication"
-      },
-      {
-        "detail": "Query statistics shows how to get them.",
-        "fix_sql": null,
-        "items": [],
-        "key": "failures",
-        "metrics": [],
-        "next": "culprit findings mssql-demo-staging",
-        "status": "unavailable",
-        "takeaway": "No query history, so failed runs aren't counted.",
-        "title": "Failing queries"
-      },
-      {
-        "detail": "Until they're on, Culprit checks tables, indexes and settings only: no query list, plans or trends.",
-        "fix_sql": "ALTER DATABASE CURRENT SET QUERY_STORE = ON;",
-        "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "query-store",
-            "kind": "capability",
-            "label": "Query Store",
-            "query_id": null,
-            "share": null,
-            "status": "bad",
-            "value": "off"
-          }
-        ],
-        "key": "statistics",
-        "metrics": [
-          {
-            "key": "locked",
-            "label": "Locked checks",
-            "text": "5",
-            "value": 5.0
-          }
-        ],
-        "next": "culprit doctor mssql-demo-staging",
-        "status": "bad",
-        "takeaway": "No query history: Query Store is OFF on this database.",
-        "title": "Query statistics"
-      }
-    ]
-  },
   "mssql-demo": {
     "attention": [
       "findings",
@@ -1105,9 +697,9 @@
             "kind": "finding",
             "label": "Sessions wait 37.3 s each on row locks in orders",
             "query_id": null,
-            "share": 0.34120252699679854,
+            "share": 0.561121078462286,
             "status": "bad",
-            "value": "3 min waiting on locks"
+            "value": "3 min 7 s waiting on locks"
           },
           {
             "at": null,
@@ -1834,6 +1426,402 @@
       }
     ]
   },
+  "mssql-demo-staging": {
+    "attention": [
+      "statistics",
+      "findings",
+      "deadlocks"
+    ],
+    "connection": "mssql-demo-staging",
+    "coverage": null,
+    "database": "culprit_demo",
+    "engine": "mssql",
+    "environment": "staging",
+    "headline": "No query history: Query Store is OFF on this database.",
+    "product": "SQL Server 2022",
+    "report_id": "20261011T121512.204Z",
+    "taken_at": "2026-10-11T12:15:12Z",
+    "tiles": [
+      {
+        "detail": "Query statistics shows how to get them.",
+        "fix_sql": null,
+        "items": [],
+        "key": "db-time",
+        "metrics": [],
+        "next": "culprit changes mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "No query history, so database time isn't measured.",
+        "title": "Database time"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "tier-limit:log-write",
+            "id": "tier-limit:log-write",
+            "kind": "finding",
+            "label": "Log writes hit the tier's limit 38% of the last hour: writes are throttled",
+            "query_id": null,
+            "share": null,
+            "status": "bad",
+            "value": "at limit 38%"
+          },
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
+            "id": "unindexed-fk:shop.ticket_events(ticket_id)",
+            "kind": "finding",
+            "label": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "800K rows unindexed"
+          },
+          {
+            "at": null,
+            "finding_id": "deadlocks:key-lookup:shop.customers",
+            "id": "deadlocks:key-lookup:shop.customers",
+            "kind": "finding",
+            "label": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "1 deadlock"
+          }
+        ],
+        "key": "findings",
+        "metrics": [
+          {
+            "key": "high",
+            "label": "High",
+            "text": "1",
+            "value": 1.0
+          },
+          {
+            "key": "medium",
+            "label": "Medium",
+            "text": "0",
+            "value": 0.0
+          },
+          {
+            "key": "low",
+            "label": "Low",
+            "text": "7",
+            "value": 7.0
+          }
+        ],
+        "next": "culprit findings mssql-demo-staging",
+        "status": "bad",
+        "takeaway": "8 opportunities, 1 of them high.",
+        "title": "Findings"
+      },
+      {
+        "detail": "Query statistics shows how to get them.",
+        "fix_sql": null,
+        "items": [],
+        "key": "top-queries",
+        "metrics": [],
+        "next": "culprit top mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "No query history, so there is no query list.",
+        "title": "Top queries"
+      },
+      {
+        "detail": "Server totals since SQL Server started.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "latch",
+            "kind": "wait",
+            "label": "In-memory contention",
+            "query_id": null,
+            "share": 0.7741593186278652,
+            "status": null,
+            "value": "77%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "parallelism",
+            "kind": "wait",
+            "label": "Parallel queries",
+            "query_id": null,
+            "share": 0.16588256284568648,
+            "status": null,
+            "value": "17%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "memory",
+            "kind": "wait",
+            "label": "Memory",
+            "query_id": null,
+            "share": 0.05584509489064804,
+            "status": null,
+            "value": "6%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "cpu",
+            "kind": "wait",
+            "label": "CPU",
+            "query_id": null,
+            "share": 0.003972166661971434,
+            "status": null,
+            "value": "<1%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "lock",
+            "kind": "wait",
+            "label": "Locks",
+            "query_id": null,
+            "share": 0.00014085697382877426,
+            "status": null,
+            "value": "<1%"
+          }
+        ],
+        "key": "waits",
+        "metrics": [
+          {
+            "key": "total",
+            "label": "Waiting since start",
+            "text": "2 min",
+            "value": 106491.0
+          }
+        ],
+        "next": "culprit waits mssql-demo-staging",
+        "status": "info",
+        "takeaway": "Most time goes to in-memory contention (77%), then parallel queries (17%).",
+        "title": "Where time goes"
+      },
+      {
+        "detail": "The app reads them every few seconds; `culprit live` reads them once.",
+        "fix_sql": null,
+        "items": [],
+        "key": "now",
+        "metrics": [],
+        "next": "culprit live mssql-demo-staging",
+        "status": "info",
+        "takeaway": "Sessions weren't read for this dashboard.",
+        "title": "Right now"
+      },
+      {
+        "detail": "Scan again to read compiles, memory, cache and connection counters.",
+        "fix_sql": null,
+        "items": [],
+        "key": "health",
+        "metrics": [],
+        "next": "culprit waits mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "This scan recorded no health counters.",
+        "title": "Health"
+      },
+      {
+        "detail": "Read from system_health event files and ring buffer.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": "2026-10-11T11:42:17Z",
+            "finding_id": "deadlocks:key-lookup:shop.customers",
+            "id": "948217a42dfae823",
+            "kind": "deadlock",
+            "label": "Key-lookup deadlock on shop.customers",
+            "query_id": null,
+            "share": null,
+            "status": "watch",
+            "value": "1×"
+          },
+          {
+            "at": "2026-10-11T13:58:59Z",
+            "finding_id": "deadlocks:key-lookup:shop.customers",
+            "id": "8e8d0546690aef93",
+            "kind": "deadlock",
+            "label": "Opposite access order on shop.customers, shop.orders",
+            "query_id": null,
+            "share": null,
+            "status": "watch",
+            "value": "1×"
+          }
+        ],
+        "key": "deadlocks",
+        "metrics": [
+          {
+            "key": "count",
+            "label": "Deadlocks",
+            "text": "2",
+            "value": 2.0
+          }
+        ],
+        "next": "culprit deadlocks mssql-demo-staging",
+        "status": "watch",
+        "takeaway": "2 deadlocks in the last 6 hours, each a different kind.",
+        "title": "Deadlocks"
+      },
+      {
+        "detail": "Index usage counters have counted for 2 min; an index has to go unread for a week before it's listed to clean up.",
+        "fix_sql": null,
+        "items": [
+          {
+            "at": null,
+            "finding_id": "unindexed-fk:shop.ticket_events(ticket_id)",
+            "id": "shop.ticket_events(ticket_id)",
+            "kind": "index-add",
+            "label": "ticket_events (ticket_id)",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": null
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:shop.orders.ix_orders_status",
+            "id": "shop.orders.ix_orders_status",
+            "kind": "index-cleanup",
+            "label": "ix_orders_status on orders",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "26.5 MB"
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:shop.products.ix_products_sku",
+            "id": "shop.products.ix_products_sku",
+            "kind": "index-cleanup",
+            "label": "ix_products_sku on products",
+            "query_id": null,
+            "share": null,
+            "status": null,
+            "value": "648 KB"
+          }
+        ],
+        "key": "indexes",
+        "metrics": [
+          {
+            "key": "add",
+            "label": "To add",
+            "text": "1",
+            "value": 1.0
+          },
+          {
+            "key": "cleanup",
+            "label": "To clean up",
+            "text": "2",
+            "value": 2.0
+          },
+          {
+            "key": "reclaim",
+            "label": "Space back",
+            "text": "27.1 MB",
+            "value": 28459008.0
+          },
+          {
+            "key": "tables",
+            "label": "Tables to look at",
+            "text": "0",
+            "value": 0.0
+          }
+        ],
+        "next": "culprit indexes mssql-demo-staging",
+        "status": "info",
+        "takeaway": "One new index is worth a look; 2 indexes can go (27.1 MB).",
+        "title": "Indexes"
+      },
+      {
+        "detail": "Query statistics shows how to get them.",
+        "fix_sql": null,
+        "items": [],
+        "key": "plans",
+        "metrics": [],
+        "next": null,
+        "status": "unavailable",
+        "takeaway": "No query history, so there are no plans to read.",
+        "title": "Plans"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "storage",
+        "metrics": [],
+        "next": "culprit waits mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "This scan has no storage timings.",
+        "title": "Storage"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "connections",
+        "metrics": [],
+        "next": "culprit waits mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "This scan has no connection counters.",
+        "title": "Connections"
+      },
+      {
+        "detail": null,
+        "fix_sql": null,
+        "items": [],
+        "key": "replication",
+        "metrics": [],
+        "next": "culprit waits mssql-demo-staging",
+        "status": "good",
+        "takeaway": "No availability group or geo-replica: nothing can fall behind.",
+        "title": "Replication"
+      },
+      {
+        "detail": "Query statistics shows how to get them.",
+        "fix_sql": null,
+        "items": [],
+        "key": "failures",
+        "metrics": [],
+        "next": "culprit findings mssql-demo-staging",
+        "status": "unavailable",
+        "takeaway": "No query history, so failed runs aren't counted.",
+        "title": "Failing queries"
+      },
+      {
+        "detail": "Until they're on, Culprit checks tables, indexes and settings only: no query list, plans or trends.",
+        "fix_sql": "ALTER DATABASE CURRENT SET QUERY_STORE = ON;",
+        "items": [
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "query-store",
+            "kind": "capability",
+            "label": "Query Store",
+            "query_id": null,
+            "share": null,
+            "status": "bad",
+            "value": "off"
+          }
+        ],
+        "key": "statistics",
+        "metrics": [
+          {
+            "key": "locked",
+            "label": "Locked checks",
+            "text": "5",
+            "value": 5.0
+          }
+        ],
+        "next": "culprit doctor mssql-demo-staging",
+        "status": "bad",
+        "takeaway": "No query history: Query Store is OFF on this database.",
+        "title": "Query statistics"
+      }
+    ]
+  },
   "mysql-demo": {
     "attention": [
       "findings",
@@ -1847,7 +1835,7 @@
     "database": "shop",
     "engine": "mysql",
     "environment": "local",
-    "headline": "13 opportunities; the top 3 touch 84% of database time.",
+    "headline": "11 opportunities; the top 3 touch 85% of database time.",
     "product": "MySQL 8.4.11",
     "report_id": "20261011T120900.394Z",
     "taken_at": "2026-10-11T12:09:00Z",
@@ -1904,20 +1892,20 @@
             "kind": "finding",
             "label": "A read from orders spends nearly all its time waiting on locks, 28.8 s per run",
             "query_id": null,
-            "share": 0.400906129644737,
+            "share": 0.8018117839760446,
             "status": "info",
-            "value": "2 min waiting on locks"
+            "value": "4 min waiting on locks"
           },
           {
             "at": null,
-            "finding_id": "lock-time:fc709554a9248878",
-            "id": "lock-time:fc709554a9248878",
+            "finding_id": "chatty-query:9b30e6ad79d940fe",
+            "id": "chatty-query:9b30e6ad79d940fe",
             "kind": "finding",
-            "label": "An update of orders spends nearly all its time waiting on locks, 14.4 s per run",
+            "label": "A read from products runs 30K times in 2 minutes, one key at a time",
             "query_id": null,
-            "share": 0.4009056543313076,
+            "share": 0.003693135616982355,
             "status": "info",
-            "value": "2 min waiting on locks"
+            "value": "75% of executions"
           }
         ],
         "key": "findings",
@@ -1937,13 +1925,13 @@
           {
             "key": "low",
             "label": "Low",
-            "text": "12",
-            "value": 12.0
+            "text": "10",
+            "value": 10.0
           }
         ],
         "next": "culprit findings mysql-demo",
         "status": "bad",
-        "takeaway": "13 opportunities; the top 3 touch 84% of database time.",
+        "takeaway": "11 opportunities; the top 3 touch 85% of database time.",
         "title": "Findings"
       },
       {
@@ -2306,19 +2294,7 @@
       {
         "detail": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.",
         "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "temp-table-sort",
-            "kind": "rule",
-            "label": "A temporary table and filesort",
-            "query_id": "04cd7be9c366fadc",
-            "share": 0.11989445082158064,
-            "status": "info",
-            "value": "1 plan"
-          }
-        ],
+        "items": [],
         "key": "plans",
         "metrics": [
           {
@@ -2330,17 +2306,17 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           }
         ],
-        "next": "culprit explain mysql-demo --query-id 04cd7be9c366fadc",
-        "status": "info",
-        "takeaway": "One of the 8 captured plans has something to fix: a temporary table and filesort (12% of database time).",
+        "next": null,
+        "status": "good",
+        "takeaway": "None of the 8 captured plans shows a known problem.",
         "title": "Plans"
       },
       {
-        "detail": "Averages in the hour since the server last restarted.",
+        "detail": "Averages since the server started or its performance_schema counters were last reset.",
         "fix_sql": null,
         "items": [
           {
@@ -2600,17 +2576,6 @@
           },
           {
             "at": null,
-            "finding_id": "big-result:9065391607317686058",
-            "id": "big-result:9065391607317686058",
-            "kind": "finding",
-            "label": "A read from orders returns 247K rows (≈ 17.4 MB) per run",
-            "query_id": null,
-            "share": 0.4402906625894278,
-            "status": "watch",
-            "value": "247K rows per run"
-          },
-          {
-            "at": null,
             "finding_id": "filtered-scan:public.orders(customer_id)",
             "id": "filtered-scan:public.orders(customer_id)",
             "kind": "finding",
@@ -2619,6 +2584,17 @@
             "share": 0.23358130099961572,
             "status": "watch",
             "value": "23% of DB time"
+          },
+          {
+            "at": null,
+            "finding_id": "planning-time:-967240904657798800",
+            "id": "planning-time:-967240904657798800",
+            "kind": "finding",
+            "label": "Planning takes almost all of the time of a read from orders",
+            "query_id": null,
+            "share": 9.965739591641848e-05,
+            "status": "watch",
+            "value": "100% planning"
           }
         ],
         "key": "findings",
@@ -2632,19 +2608,19 @@
           {
             "key": "medium",
             "label": "Medium",
-            "text": "7",
-            "value": 7.0
+            "text": "4",
+            "value": 4.0
           },
           {
             "key": "low",
             "label": "Low",
-            "text": "10",
-            "value": 10.0
+            "text": "12",
+            "value": 12.0
           }
         ],
         "next": "culprit findings pg-demo",
         "status": "watch",
-        "takeaway": "17 opportunities; the top 3 touch 67% of database time.",
+        "takeaway": "16 opportunities; the top 3 touch 67% of database time.",
         "title": "Findings"
       },
       {
@@ -2676,28 +2652,6 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "-8886085649470066503",
-            "kind": "query",
-            "label": "a call to pg_sleep (ran once)",
-            "query_id": "-8886085649470066503",
-            "share": 0.12411350992902503,
-            "status": null,
-            "value": "12%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "4911431806993420100",
-            "kind": "query",
-            "label": "an update of products (ran once)",
-            "query_id": "4911431806993420100",
-            "share": 0.1175241790094473,
-            "status": null,
-            "value": "12%"
-          },
-          {
-            "at": null,
-            "finding_id": null,
             "id": "-3722457391793582113",
             "kind": "query",
             "label": "a read from order_items",
@@ -2705,6 +2659,28 @@
             "share": 0.042080061020187354,
             "status": null,
             "value": "4%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "6425265648074738764",
+            "kind": "query",
+            "label": "a read from products",
+            "query_id": "6425265648074738764",
+            "share": 0.02364142753518516,
+            "status": null,
+            "value": "2%"
+          },
+          {
+            "at": null,
+            "finding_id": null,
+            "id": "2004611025554862962",
+            "kind": "query",
+            "label": "a read from orders",
+            "query_id": "2004611025554862962",
+            "share": 0.014733976173058787,
+            "status": null,
+            "value": "1%"
           }
         ],
         "key": "top-queries",
@@ -2718,8 +2694,8 @@
           {
             "key": "top5-share",
             "label": "Top five",
-            "text": "96%",
-            "value": 0.9575897135477032
+            "text": "75%",
+            "value": 0.7543274283174748
           },
           {
             "key": "queries",
@@ -3021,13 +2997,13 @@
           {
             "at": null,
             "finding_id": null,
-            "id": "big-sort",
+            "id": "scan-filter",
             "kind": "rule",
-            "label": "A large sort",
-            "query_id": "9065391607317686058",
-            "share": 0.44029066258942773,
-            "status": "watch",
-            "value": "1 plan"
+            "label": "A scan reading far more rows than it keeps",
+            "query_id": "5308963031944094559",
+            "share": 0.27566136201980307,
+            "status": "bad",
+            "value": "2 plans"
           }
         ],
         "key": "plans",
@@ -3041,13 +3017,13 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "1",
-            "value": 1.0
+            "text": "2",
+            "value": 2.0
           }
         ],
-        "next": "culprit explain pg-demo --query-id 9065391607317686058",
+        "next": "culprit explain pg-demo --query-id 5308963031944094559",
         "status": "watch",
-        "takeaway": "One of the 8 captured plans has something to fix: a large sort (44% of database time).",
+        "takeaway": "2 of 8 captured plans have something to fix; a scan reading far more rows than it keeps shows up in 2 plans (28% of database time).",
         "title": "Plans"
       },
       {
@@ -3214,7 +3190,7 @@
     "database": "demo.db",
     "engine": "sqlite",
     "environment": "development",
-    "headline": "6 opportunities; the top 3 touch 99% of database time.",
+    "headline": "5 opportunities; the top 3 touch 99% of database time.",
     "product": "SQLite",
     "report_id": "20261016T210115.862Z",
     "taken_at": "2026-10-16T21:01:15Z",
@@ -3260,20 +3236,9 @@
             "kind": "finding",
             "label": "orders has no index on customer_id, its foreign key to customers",
             "query_id": null,
-            "share": 0.687787860155988,
-            "status": "watch",
-            "value": "69% of DB time"
-          },
-          {
-            "at": null,
-            "finding_id": "heavy-query:3c81e035bd6f73fa",
-            "id": "heavy-query:3c81e035bd6f73fa",
-            "kind": "finding",
-            "label": "A read from orders takes 30% of database time",
-            "query_id": null,
-            "share": 0.3009848899459243,
-            "status": "watch",
-            "value": "30% of DB time"
+            "share": 0.9887727501019123,
+            "status": "bad",
+            "value": "99% of DB time"
           },
           {
             "at": null,
@@ -3285,6 +3250,17 @@
             "share": null,
             "status": "info",
             "value": "200K rows unindexed"
+          },
+          {
+            "at": null,
+            "finding_id": "duplicate-index:main.orders.ix_orders_status_again",
+            "id": "duplicate-index:main.orders.ix_orders_status_again",
+            "kind": "finding",
+            "label": "ix_orders_status_again duplicates ix_orders_status on orders",
+            "query_id": null,
+            "share": null,
+            "status": "info",
+            "value": "3.5 MB redundant"
           }
         ],
         "key": "findings",
@@ -3292,14 +3268,14 @@
           {
             "key": "high",
             "label": "High",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           },
           {
             "key": "medium",
             "label": "Medium",
-            "text": "2",
-            "value": 2.0
+            "text": "0",
+            "value": 0.0
           },
           {
             "key": "low",
@@ -3309,8 +3285,8 @@
           }
         ],
         "next": "culprit findings sqlite-demo",
-        "status": "watch",
-        "takeaway": "6 opportunities; the top 3 touch 99% of database time.",
+        "status": "bad",
+        "takeaway": "5 opportunities; the top 3 touch 99% of database time.",
         "title": "Findings"
       },
       {
@@ -3454,9 +3430,9 @@
             "kind": "index-add",
             "label": "orders (customer_id)",
             "query_id": "500217f7b40055be",
-            "share": 0.687787860155988,
+            "share": 0.9887727501019123,
             "status": null,
-            "value": "69%"
+            "value": "99%"
           },
           {
             "at": null,
@@ -3510,25 +3486,13 @@
         ],
         "next": "culprit indexes sqlite-demo",
         "status": "watch",
-        "takeaway": "2 new indexes would help queries that take 69% of database time; 1 index can go (3.5 MB).",
+        "takeaway": "2 new indexes would help queries that take 99% of database time; 1 index can go (3.5 MB).",
         "title": "Indexes"
       },
       {
         "detail": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.",
         "fix_sql": null,
-        "items": [
-          {
-            "at": null,
-            "finding_id": null,
-            "id": "automatic-index",
-            "kind": "rule",
-            "label": "Automatic index",
-            "query_id": "500217f7b40055be",
-            "share": 0.18767187151611794,
-            "status": "info",
-            "value": "1 plan"
-          }
-        ],
+        "items": [],
         "key": "plans",
         "metrics": [
           {
@@ -3540,13 +3504,13 @@
           {
             "key": "flagged",
             "label": "With problems",
-            "text": "1",
-            "value": 1.0
+            "text": "0",
+            "value": 0.0
           }
         ],
-        "next": "culprit explain sqlite-demo --query-id 500217f7b40055be",
-        "status": "info",
-        "takeaway": "One of the 5 captured plans has something to fix: automatic index (19% of database time).",
+        "next": null,
+        "status": "good",
+        "takeaway": "None of the 5 captured plans shows a known problem.",
         "title": "Plans"
       },
       {

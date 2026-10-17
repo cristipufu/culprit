@@ -188,7 +188,7 @@ fn coverage_notes_say_what_each_plan_cannot_show() {
 }
 
 /// Regenerates `fixtures/insights.sample.json`, the browser demo's insights for the plans in the demo reports (the
-/// desktop app computes them live). Run with `cargo test -p culprit-engine --test insights -- --ignored`.
+/// desktop app computes them live). Run with `python3 dev/refresh-demo.py`.
 #[test]
 #[ignore]
 fn write_demo_sidecar() {
@@ -201,7 +201,7 @@ fn write_demo_sidecar() {
         .collect();
     names.sort();
     for name in names {
-        let report: culprit_core::Report = serde_json::from_slice(&std::fs::read(root.join(&name)).unwrap()).unwrap();
+        let report = culprit_engine::reading::open(&root.join(&name)).unwrap();
         let mut by_query = serde_json::Map::new();
         for q in report.snapshot.workload.iter().flat_map(|w| &w.queries) {
             if let Some(plan) = &q.plan {

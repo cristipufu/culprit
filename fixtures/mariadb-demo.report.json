@@ -48,7 +48,7 @@
       "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
       "verify": [
-        "Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset."
+        "Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)."
       ]
     },
     {
@@ -61,7 +61,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+        "summary": "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this."
       },
       "id": "chatty-query:a92bb0be330ac53a",
       "impact": {
@@ -98,10 +98,10 @@
         "kind": "query",
         "name": "a92bb0be330ac53a"
       },
-      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.",
-      "title": "A read from products runs 30K times in 1 minute, one row at a time",
+      "summary": "Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.",
+      "title": "A read from products runs 30K times in 1 minute, one key at a time",
       "verify": [
-        "It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -164,7 +164,7 @@
       "summary": "It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.",
       "title": "A read from orders takes 6% of database time",
       "verify": [
-        "performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -175,7 +175,7 @@
       "check": "scan-heavy",
       "confidence": "medium",
       "fix": {
-        "cost": "shop.orders had no writes in the 1 h 9 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
+        "cost": "shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.",
         "sql": null,
         "summary": "Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan."
       },
@@ -220,10 +220,10 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
-      "title": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
+      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+      "title": "orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)",
       "verify": [
-        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
+        "The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (80 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster."
       ]
     },
     {
@@ -241,7 +241,7 @@
       "id": "deadlocks:opposite-order:shop.customers+shop.orders",
       "impact": {
         "db_time_share": null,
-        "label": "1 deadlock",
+        "label": "at least 1 deadlock",
         "score": 9.0,
         "time_ms_per_day": null
       },
@@ -249,7 +249,7 @@
       "last_seen": "2026-10-11T16:05:39Z",
       "metrics": [
         {
-          "label": "Deadlocks",
+          "label": "Deadlocks (at least)",
           "text": null,
           "unit": "count",
           "value": 1.0
@@ -262,7 +262,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "root",
+          "text": "session 202 (login root)",
           "unit": "text",
           "value": 0.0
         }
@@ -2732,6 +2732,8 @@
     "headline": "8 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.",
     "no_workload": null,
     "opportunities": 8,
-    "top_share": 0.9521354362362537
+    "over_scans": [],
+    "runs_said": [],
+    "top_share": 0.9521354362362536
   }
 }

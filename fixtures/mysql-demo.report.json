@@ -10,7 +10,7 @@
       "fix": {
         "cost": null,
         "sql": "SELECT MYSQL_ERRNO, RETURNED_SQLSTATE, MESSAGE_TEXT\n  FROM performance_schema.events_statements_history\n WHERE DIGEST = '4515abd524a46f378b048f32e532cb1befdfd6c88178caeab12746b1f6c2b9c6' AND MYSQL_ERRNO <> 0;",
-        "summary": "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout: find the holder in Live while it happens and keep transactions short. The recent errors and their messages are in performance_schema."
+        "summary": "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout. Find what holds the locks while it waits (Live shows the blocking chain). Keep transactions short. The recent errors and their messages are in performance_schema."
       },
       "id": "failing-query:4515abd524a46f37",
       "impact": {
@@ -62,7 +62,7 @@
       "summary": "12 of its 43 runs since its statistics began 2 minutes ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
       "title": "An update of orders fails 28% of the time (1205 lock wait timeout)",
       "verify": [
-        "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
+        "Between two scans, runs that fail or are cancelled should drop to near zero: performance_schema keeps running totals, so compare its failed runs and runs in a scan taken once the change is live and one a day or more later (12 of 43 runs in this scan)."
       ]
     },
     {
@@ -75,13 +75,13 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
+        "summary": "Find what holds the locks while it waits (Live shows the blocking chain). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
       },
       "id": "lock-time:4167fe7f2c20deb7",
       "impact": {
-        "db_time_share": 0.40090612964473693,
-        "label": "2 min waiting on locks",
-        "score": 63.316691655909075,
+        "db_time_share": 0.8018117839760446,
+        "label": "4 min waiting on locks",
+        "score": 89.54394362412484,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -111,6 +111,11 @@
           "id": "4167fe7f2c20deb7",
           "note": null,
           "plan_node": null
+        },
+        {
+          "id": "fc709554a9248878",
+          "note": "Waited 2 min (nearly all of its time) on locks on shop.orders in the same hours; the holder isn't recorded.",
+          "plan_node": null
         }
       ],
       "severity": "low",
@@ -118,69 +123,10 @@
         "kind": "query",
         "name": "4167fe7f2c20deb7"
       },
-      "summary": "Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only.",
+      "summary": "Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.",
       "title": "A read from orders spends nearly all its time waiting on locks, 28.8 s per run",
       "verify": [
-        "Re-scan: lock waits should be a small part of its time."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [
-        "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
-      ],
-      "check": "lock-time",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
-      },
-      "id": "lock-time:fc709554a9248878",
-      "impact": {
-        "db_time_share": 0.4009056543313076,
-        "label": "2 min waiting on locks",
-        "score": 63.316106256111304,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T14:19:09Z",
-      "metrics": [
-        {
-          "label": "Lock wait",
-          "text": null,
-          "unit": "ms",
-          "value": 115296.687
-        },
-        {
-          "label": "Share of its time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.9999682638853996
-        },
-        {
-          "label": "Per run",
-          "text": null,
-          "unit": "ms",
-          "value": 14412.085875
-        }
-      ],
-      "queries": [
-        {
-          "id": "fc709554a9248878",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "fc709554a9248878"
-      },
-      "summary": "Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only.",
-      "title": "An update of orders spends nearly all its time waiting on locks, 14.4 s per run",
-      "verify": [
-        "Re-scan: lock waits should be a small part of its time."
+        "Between two scans, its lock time per run should drop: performance_schema keeps running totals, so compare its lock time and runs in a scan taken once the change is live and one a day or more later (2 min over 4 runs in this scan)."
       ]
     },
     {
@@ -193,7 +139,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+        "summary": "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this."
       },
       "id": "chatty-query:9b30e6ad79d940fe",
       "impact": {
@@ -230,10 +176,10 @@
         "kind": "query",
         "name": "9b30e6ad79d940fe"
       },
-      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
-      "title": "A read from products runs 30K times in 2 minutes, one row at a time",
+      "summary": "Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
+      "title": "A read from products runs 30K times in 2 minutes, one key at a time",
       "verify": [
-        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -284,7 +230,7 @@
       "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
       "verify": [
-        "Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset."
+        "Once the change is live, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)."
       ]
     },
     {
@@ -295,7 +241,7 @@
       "check": "scan-heavy",
       "confidence": "medium",
       "fix": {
-        "cost": "shop.orders had no writes in the 1 h 20 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
+        "cost": "shop.orders had no writes in what its counters cover, which may be short: performance_schema's counters start over when they are reset, and a weekly job may not have run since; each write it gets will also update any index you add.",
         "sql": null,
         "summary": "Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan."
       },
@@ -307,7 +253,7 @@
         "time_ms_per_day": null
       },
       "inactive": false,
-      "last_seen": "2026-10-11T16:00:50Z",
+      "last_seen": "2026-10-11T12:07:17Z",
       "metrics": [
         {
           "label": "Full reads",
@@ -333,16 +279,6 @@
           "id": "19bd4ff468839ea3",
           "note": null,
           "plan_node": null
-        },
-        {
-          "id": "4515abd524a46f37",
-          "note": null,
-          "plan_node": null
-        },
-        {
-          "id": "fc709554a9248878",
-          "note": null,
-          "plan_node": null
         }
       ],
       "severity": "low",
@@ -350,10 +286,10 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 81 times in the hour since the server last restarted: 40.5M rows read without an index. 1 of the captured statements reads it in full by its plan, and 2 more without a captured plan may; explain them to see which filter has no index. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
-      "title": "orders is read in full 81 times in the hour since the server last restarted (40.5M rows)",
+      "summary": "shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no index. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+      "title": "orders is read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows)",
       "verify": [
-        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
+        "The scan counters of orders keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later (81 full reads in this scan): between the two, its full reads should grow far slower, and its index scans faster."
       ]
     },
     {
@@ -371,7 +307,7 @@
       "id": "deadlocks:opposite-order:shop.customers+shop.orders",
       "impact": {
         "db_time_share": null,
-        "label": "1 deadlock",
+        "label": "at least 1 deadlock",
         "score": 9.0,
         "time_ms_per_day": null
       },
@@ -379,7 +315,7 @@
       "last_seen": "2026-10-11T13:48:08Z",
       "metrics": [
         {
-          "label": "Deadlocks",
+          "label": "Deadlocks (at least)",
           "text": null,
           "unit": "count",
           "value": 1.0
@@ -392,7 +328,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "root",
+          "text": "session 75 (login root)",
           "unit": "text",
           "value": 0.0
         }
@@ -593,7 +529,7 @@
       "summary": "Each run sends 20K rows to the application; its 25 runs since its statistics began 2 minutes ago moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
       "title": "A read from order_items returns 20K rows per run",
       "verify": [
-        "Re-scan: rows per run should drop to what a page or a job actually uses."
+        "Between two scans, the rows it returns per run should drop to what a page or a job actually uses: performance_schema keeps running totals, so compare its rows and runs in a scan taken once the change is live and one a day or more later (500K rows in 25 runs in this scan)."
       ]
     },
     {
@@ -4104,7 +4040,7 @@
       },
       {
         "category": "queries",
-        "count": 8
+        "count": 7
       },
       {
         "category": "configuration",
@@ -4117,13 +4053,15 @@
         "severity": "high"
       },
       {
-        "count": 11,
+        "count": 10,
         "severity": "low"
       }
     ],
-    "headline": "12 opportunities. The top ones touch 84% of database time over the 2 minutes since statistics were reset.",
+    "headline": "11 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.",
     "no_workload": null,
-    "opportunities": 12,
-    "top_share": 0.843696180954505
+    "opportunities": 11,
+    "over_scans": [],
+    "runs_said": [],
+    "top_share": 0.8473893165714874
   }
 }

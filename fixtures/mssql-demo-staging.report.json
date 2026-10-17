@@ -87,7 +87,7 @@
       "summary": "Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.",
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
       "verify": [
-        "Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone."
+        "Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table."
       ]
     },
     {
@@ -124,7 +124,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "orders-api",
+          "text": "session 61 (orders-api)",
           "unit": "text",
           "value": 0.0
         }
@@ -138,7 +138,7 @@
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
       "title": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
       "verify": [
-        "Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.",
+        "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
@@ -176,7 +176,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "SQLCMD",
+          "text": "session 75 (SQLCMD)",
           "unit": "text",
           "value": 0.0
         }
@@ -4331,6 +4331,8 @@
     "headline": "8 opportunities.",
     "no_workload": "Query Store is OFF on this database.",
     "opportunities": 8,
+    "over_scans": [],
+    "runs_said": [],
     "top_share": null
   }
 }

@@ -21,6 +21,68 @@ fn every_demo_fixture_opens() {
     assert!(reports.iter().all(|(_, r)| !r.findings.is_empty()), "every demo has findings");
 }
 
+/// The browser loads these files directly; golden readings re-analyze them, which alone cannot catch stale UI data.
+#[test]
+fn browser_demo_outputs_match_current_analysis() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let sample =
+        |name: &str| -> serde_json::Value { serde_json::from_slice(&std::fs::read(root.join(name)).unwrap()).unwrap() };
+    let dashboards = sample("dashboard.sample.json");
+    let advice = sample("index-advice.sample.json");
+    let insights = sample("insights.sample.json");
+    let refresh = "refresh the browser demo with `python3 dev/refresh-demo.py`";
+    assert_browser_json(&sample("checks.sample.json"), &serde_json::json!(culprit_checks::infos()), refresh);
+    for (name, path) in crate::golden::demo_files().into_iter().filter(|(name, _)| name.ends_with(".report")) {
+        let saved = culprit_engine::reports::load(&path).unwrap();
+        let current = culprit_engine::reading::open(&path).unwrap();
+        let connection = &current.snapshot.connection;
+        let context = format!("{name}: {refresh}");
+        assert_browser_json(
+            &serde_json::json!([saved.findings, saved.summary, saved.locked]),
+            &serde_json::json!([current.findings, current.summary, current.locked]),
+            &context,
+        );
+        // CLI navigation commands are added by the CLI, while the desktop uses tile keys.
+        let mut dashboard = dashboards[connection].clone();
+        for tile in dashboard["tiles"].as_array_mut().unwrap() {
+            tile["next"] = serde_json::Value::Null;
+        }
+        assert_browser_json(&dashboard, &serde_json::json!(culprit_engine::dashboard_report(&current)), &context);
+        assert_browser_json(&advice[connection], &serde_json::json!(culprit_checks::index_advice(&current)), &context);
+        let by_query: serde_json::Map<String, serde_json::Value> = current
+            .snapshot
+            .queries()
+            .iter()
+            .filter_map(|q| Some((q.id.clone(), serde_json::json!(q.plan.as_ref()?.insights))))
+            .collect();
+        assert_browser_json(&insights[connection], &serde_json::Value::Object(by_query), &context);
+    }
+}
+
+/// Ignore only floating-point round-trip noise; report the first different field instead of pages of JSON.
+fn assert_browser_json(saved: &serde_json::Value, current: &serde_json::Value, path: &str) {
+    use serde_json::Value;
+    match (saved, current) {
+        (Value::Object(a), Value::Object(b)) => {
+            assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>(), "{path}");
+            for (key, value) in a {
+                assert_browser_json(value, &b[key], &format!("{path}/{key}"));
+            }
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            assert_eq!(a.len(), b.len(), "{path}: array length");
+            for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                assert_browser_json(a, b, &format!("{path}/{index}"));
+            }
+        }
+        (Value::Number(a), Value::Number(b)) if a.is_f64() || b.is_f64() => {
+            let (a, b) = (a.as_f64().unwrap(), b.as_f64().unwrap());
+            assert!((a - b).abs() <= 1e-12 * a.abs().max(b.abs()).max(1.0), "{path}: {a} != {b}");
+        }
+        _ => assert_eq!(saved, current, "{path}"),
+    }
+}
+
 #[test]
 fn no_stopped_finding_promises_a_fix_when_only_its_table_grows() {
     let mut seen = 0;

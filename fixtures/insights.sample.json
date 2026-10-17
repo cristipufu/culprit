@@ -11,6 +11,7 @@
           "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MariaDB builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
           "fix": "An index whose leading columns match the GROUP BY lets MariaDB group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
           "fix_sql": null,
+          "fixed_weight": false,
           "impact": 0.0,
           "nodes": [
             2
@@ -59,7 +60,8 @@
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
           "fix": "Create the index on order_id.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fixed_weight": false,
           "impact": 0.491,
           "nodes": [
             12
@@ -83,6 +85,7 @@
           "detail": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join.",
           "fix": "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose.",
           "fix_sql": null,
+          "fixed_weight": false,
           "impact": 0.999,
           "nodes": [
             1,
@@ -95,16 +98,17 @@
         },
         {
           "area": "parallelism",
-          "detail": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead.",
-          "fix": "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server.",
+          "detail": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead.",
+          "fix": "Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU.",
           "fix_sql": null,
+          "fixed_weight": true,
           "impact": 0.1,
           "nodes": [
             0
           ],
           "rule": "parallelism-blocked",
           "severity": "medium",
-          "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
+          "title": "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)",
           "verify": "Explain again: no NonParallelPlanReason, and Parallelism operators appear."
         }
       ],
@@ -129,6 +133,7 @@
           "detail": "The value it's compared with has a different type, so SQL Server converts customers.email to nvarchar(200) on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and, by its own warning, can't seek the index.",
           "fix": "Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.",
           "fix_sql": null,
+          "fixed_weight": false,
           "impact": 0.88,
           "nodes": [
             2
@@ -147,7 +152,8 @@
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.",
           "fix": "Create the index on shipped_at and include total.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fixed_weight": false,
           "impact": 0.974,
           "nodes": [
             1
@@ -166,7 +172,8 @@
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
           "fix": "Create the index on order_id.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [ix_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fixed_weight": false,
           "impact": 0.979,
           "nodes": [
             1
@@ -189,6 +196,7 @@
           "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
           "fix": "An index whose leading columns match the GROUP BY lets MySQL group in index order with no temporary table; ordering by an aggregate (COUNT(*) DESC) always needs a sort, so keep the grouped set small.",
           "fix_sql": null,
+          "fixed_weight": false,
           "impact": 0.0,
           "nodes": [
             2
@@ -232,7 +240,23 @@
   },
   "pg-demo": {
     "-3722457391793582113": {
-      "items": [],
+      "items": [
+        {
+          "area": "index",
+          "detail": "As planned, the Seq Scan reads the rows and checks `(order_items.product_id = $1)` on each one, so most of the reading is thrown away. 93% of this plan's work.",
+          "fix": "No index on order_items starts with product_id: one on product_id lets the database go straight to the matching rows.",
+          "fix_sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
+          "fixed_weight": false,
+          "impact": 0.926,
+          "nodes": [
+            3
+          ],
+          "rule": "scan-filter",
+          "severity": "high",
+          "title": "Reads 1.0M rows of public.order_items to keep 101",
+          "verify": "Explain again: order_items reads about as many rows as it keeps."
+        }
+      ],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "-463560455567765064": {
@@ -276,7 +300,23 @@
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "5308963031944094559": {
-      "items": [],
+      "items": [
+        {
+          "area": "index",
+          "detail": "As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away. 98% of this plan's work.",
+          "fix": "No index on orders starts with customer_id: one on customer_id lets the database go straight to the matching rows.",
+          "fix_sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
+          "fixed_weight": false,
+          "impact": 0.977,
+          "nodes": [
+            3
+          ],
+          "rule": "scan-filter",
+          "severity": "high",
+          "title": "Reads 2.0M rows of public.orders to keep 12",
+          "verify": "Explain again: orders reads about as many rows as it keeps."
+        }
+      ],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "6425265648074738764": {
@@ -288,23 +328,46 @@
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "9065391607317686058": {
+      "items": [],
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+    }
+  },
+  "sqlite-demo": {
+    "3c81e035bd6f73fa": {
+      "items": [],
+      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+    },
+    "4971a2de8aecdcc6": {
+      "items": [],
+      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+    },
+    "500217f7b40055be": {
       "items": [
         {
           "area": "index",
-          "detail": "The rows arrive in a different order than the query needs (sort key: orders.note), so they're all collected and sorted before the first one comes out.",
-          "fix": "An index whose key order matches the ORDER BY (with the WHERE equality columns first) returns rows already sorted; or sort fewer rows by filtering earlier or limiting the result.",
-          "fix_sql": null,
-          "impact": 0.233,
+          "detail": "No index on orders fits this join, so SQLite builds one on customer_id for each run and throws it away.",
+          "fix": "Create that index once, so the work happens one time instead of on every run.",
+          "fix_sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+          "fixed_weight": true,
+          "impact": 1.0,
           "nodes": [
-            1
+            22
           ],
-          "rule": "big-sort",
-          "severity": "medium",
-          "title": "Sorting 278K rows is 23% of this plan's work",
-          "verify": "Explain again: no Sort, or one over far fewer rows."
+          "rule": "automatic-index",
+          "severity": "low",
+          "title": "SQLite builds a temporary index on orders every time this runs",
+          "verify": "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index."
         }
       ],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+    },
+    "84456a5661cab4aa": {
+      "items": [],
+      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+    },
+    "c1b0de997fac4faa": {
+      "items": [],
+      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
     }
   }
 }

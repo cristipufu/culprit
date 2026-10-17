@@ -60,8 +60,8 @@
       "summary": "A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.",
       "title": "A read from orders writes about 19.9 MB of temp files per run",
       "verify": [
-        "Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), scan again after the statement has run a while and compare its temp files with this scan's: 4.2 GB over 214 runs now. pg_stat_statements keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.",
-        "If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses."
+        "Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), its temp files should stop growing while its runs go on: pg_stat_statements keeps running totals, so compare its temp files and runs in a scan taken once the change is live and one a day or more later (4.2 GB over 214 runs in this scan).",
+        "If it now returns fewer rows, the rows it returns per run between those two scans should drop to what a page or a job actually uses."
       ]
     },
     {
@@ -119,7 +119,7 @@
       "title": "orders is read in full to find rows by customer_id",
       "verify": [
         "Explain the query again: the scan of orders should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the query's share of database time lower."
+        "Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
       ]
     },
     {
@@ -134,7 +134,7 @@
       },
       "id": "planning-time:-967240904657798800",
       "impact": {
-        "db_time_share": 0.00009965739591641849,
+        "db_time_share": 9.965739591641849e-05,
         "label": "100% planning",
         "score": 22.0,
         "time_ms_per_day": null
@@ -182,7 +182,7 @@
       "summary": "Each plan takes 90 ms and the statement then runs for 0.05 ms: almost all of its time goes to planning, 27.0 s since its statistics began 5 hours ago (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused.",
       "title": "Planning takes almost all of the time of a read from orders",
       "verify": [
-        "Re-scan: planning should be a small part of its time."
+        "Between two scans, its planning time per run should drop: pg_stat_statements keeps running totals, so compare its planning time and runs in a scan taken once the change is live and one a day or more later (27.0 s over 300 runs in this scan)."
       ]
     },
     {
@@ -306,7 +306,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+        "summary": "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this."
       },
       "id": "chatty-query:3432126458605143571",
       "impact": {
@@ -343,10 +343,10 @@
         "kind": "query",
         "name": "3432126458605143571"
       },
-      "summary": "This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
-      "title": "A read from customers runs 8.2K times in 5 hours, one row at a time",
+      "summary": "Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
+      "title": "A read from customers runs 8.2K times in 5 hours, one key at a time",
       "verify": [
-        "It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -404,7 +404,7 @@
       "title": "order_items is read in full to find rows by product_id",
       "verify": [
         "Explain the query again: the scan of order_items should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the query's share of database time lower."
+        "Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
       ]
     },
     {
@@ -461,7 +461,7 @@
       "summary": "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 5 hours ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.",
       "title": "JIT compilation takes longer than running a read from products",
       "verify": [
-        "Re-scan: JIT time per run should drop to zero or near it, and the average run time with it."
+        "Between two scans, its JIT time per run should drop to zero or near it: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan)."
       ]
     },
     {
@@ -517,7 +517,7 @@
         "kind": "table",
         "name": "archive.wide"
       },
-      "summary": "archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K rows changed since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.",
+      "summary": "archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K changes since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.",
       "title": "74% of wide is dead rows",
       "verify": []
     },
@@ -563,7 +563,7 @@
       "summary": "Deleting a row from public.orders, or changing its key, makes the database look for matching rows in public.order_items (1.0M rows) without an index, which means reading the whole table. Queries that load order_items rows for one orders row can't seek either.",
       "title": "order_items has no index on order_id, its foreign key to orders",
       "verify": [
-        "Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone."
+        "Re-scan once the index exists: this finding should be gone, and a delete from public.orders then finds the rows of public.order_items it checks through the index, not by scanning the table."
       ]
     },
     {
@@ -576,7 +576,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Find what holds the locks while it waits (Live shows the blocking chain) and keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait."
+        "summary": "It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait."
       },
       "id": "heavy-query:4911431806993420100",
       "impact": {
@@ -625,11 +625,11 @@
         "kind": "query",
         "name": "4911431806993420100"
       },
-      "summary": "It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).",
+      "summary": "It ran once at 19.0 s, sometime between 08:41 and 09:28 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).",
       "title": "An update of products takes 12% of database time, most likely waiting for locks",
       "verify": [
         "Re-scan later: if it hasn't run again, there is nothing to do.",
-        "pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its average run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -838,11 +838,11 @@
         "kind": "query",
         "name": "-8886085649470066503"
       },
-      "summary": "It ran once in 5 hours at 20.0 s: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.",
+      "summary": "It ran once at 20.0 s, sometime between 10:12 and 10:57 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.",
       "title": "A call to pg_sleep takes 12% of database time, sleeping",
       "verify": [
         "Re-scan later: if it hasn't run again, there is nothing to do.",
-        "pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     }
   ],
@@ -2200,7 +2200,7 @@
                         "Parent Relationship": "Outer",
                         "Plan Rows per process": "277777",
                         "Plan Width": "74",
-                        "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
+                        "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): with a real value the planner may well use an index instead.",
                         "Startup Cost": "0.0"
                       },
                       "rows_read": null,
@@ -2208,7 +2208,7 @@
                       "seek_predicate": null,
                       "self_cost": 47368.3,
                       "subtree_cost": 47368.3,
-                      "table_rows": null,
+                      "table_rows": 1999995.0,
                       "warnings": []
                     }
                   ],
@@ -2385,12 +2385,12 @@
                             "Plan Width": "29",
                             "Startup Cost": "0.0"
                           },
-                          "rows_read": null,
+                          "rows_read": 1999995.0,
                           "runtime": null,
                           "seek_predicate": null,
                           "self_cost": 43201.64,
                           "subtree_cost": 43201.64,
-                          "table_rows": null,
+                          "table_rows": 1999995.0,
                           "warnings": []
                         }
                       ],
@@ -2633,7 +2633,7 @@
             "jit_ms": null,
             "log_bytes": 2923.0,
             "log_full_pages": 1.0,
-            "log_share": 2.2276925721146497e-6,
+            "log_share": 2.2276925721146497e-06,
             "plan_ms": null,
             "plans": null,
             "row_bytes": null,
@@ -2696,7 +2696,7 @@
                   "seek_predicate": "(products.id = $1)",
                   "self_cost": 8.3,
                   "subtree_cost": 8.3,
-                  "table_rows": null,
+                  "table_rows": 10000.0,
                   "warnings": []
                 }
               ],
@@ -2723,7 +2723,7 @@
               "seek_predicate": null,
               "self_cost": 0.0,
               "subtree_cost": 8.3,
-              "table_rows": null,
+              "table_rows": 10000.0,
               "warnings": []
             },
             "statement": "UPDATE products SET name = name WHERE id = $1",
@@ -2846,12 +2846,12 @@
                             "Plan Width": "10",
                             "Startup Cost": "0.0"
                           },
-                          "rows_read": null,
+                          "rows_read": 1000000.0,
                           "runtime": null,
                           "seek_predicate": null,
                           "self_cost": 12561.33,
                           "subtree_cost": 12561.33,
-                          "table_rows": null,
+                          "table_rows": 1000000.0,
                           "warnings": []
                         }
                       ],
@@ -3061,7 +3061,7 @@
                                 "Parent Relationship": "Outer",
                                 "Plan Rows per process": "277777",
                                 "Plan Width": "13",
-                                "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
+                                "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): with a real value the planner may well use an index instead.",
                                 "Startup Cost": "0.0"
                               },
                               "rows_read": null,
@@ -3069,7 +3069,7 @@
                               "seek_predicate": null,
                               "self_cost": 47368.3,
                               "subtree_cost": 47368.3,
-                              "table_rows": null,
+                              "table_rows": 1999995.0,
                               "warnings": []
                             }
                           ],
@@ -3238,7 +3238,7 @@
             "jit_ms": null,
             "log_bytes": 14802.0,
             "log_full_pages": 0.0,
-            "log_share": 0.0000112809803121591,
+            "log_share": 1.12809803121591e-05,
             "plan_ms": null,
             "plans": null,
             "row_bytes": 14.0,
@@ -3306,7 +3306,7 @@
                       "seek_predicate": "(events.customer_id = $1)",
                       "self_cost": 12.32,
                       "subtree_cost": 12.32,
-                      "table_rows": null,
+                      "table_rows": 300000.0,
                       "warnings": []
                     }
                   ],
@@ -3473,7 +3473,7 @@
               "seek_predicate": "(customers.id = $1)",
               "self_cost": 8.44,
               "subtree_cost": 8.44,
-              "table_rows": null,
+              "table_rows": 200000.0,
               "warnings": []
             },
             "statement": "SELECT name, email FROM customers WHERE id = $1",
@@ -3644,7 +3644,7 @@
                   "seek_predicate": "(products.id = $1)",
                   "self_cost": 8.3,
                   "subtree_cost": 8.3,
-                  "table_rows": null,
+                  "table_rows": 10000.0,
                   "warnings": []
                 }
               ],
@@ -3671,7 +3671,7 @@
               "seek_predicate": null,
               "self_cost": 0.0,
               "subtree_cost": 8.3,
-              "table_rows": null,
+              "table_rows": 10000.0,
               "warnings": []
             },
             "statement": "UPDATE products SET price = price WHERE id = $1",
@@ -4219,12 +4219,12 @@
                     "Plan Width": "10",
                     "Startup Cost": "0.0"
                   },
-                  "rows_read": null,
+                  "rows_read": 45000.0,
                   "runtime": null,
                   "seek_predicate": null,
                   "self_cost": 22104.56,
                   "subtree_cost": 22104.56,
-                  "table_rows": null,
+                  "table_rows": 45000.0,
                   "warnings": []
                 }
               ],
@@ -4251,7 +4251,7 @@
               "seek_predicate": null,
               "self_cost": 0.0,
               "subtree_cost": 22104.56,
-              "table_rows": null,
+              "table_rows": 45000.0,
               "warnings": []
             },
             "statement": "UPDATE archive.wide SET touched = touched + $1 WHERE id % $2 = $3",
@@ -4406,7 +4406,7 @@
                                                           "seek_predicate": "(o1.id = $1)",
                                                           "self_cost": 8.45,
                                                           "subtree_cost": 8.45,
-                                                          "table_rows": null,
+                                                          "table_rows": 1999995.0,
                                                           "warnings": []
                                                         },
                                                         {
@@ -4440,7 +4440,7 @@
                                                           "seek_predicate": "(o2.id = $1)",
                                                           "self_cost": 8.45,
                                                           "subtree_cost": 8.45,
-                                                          "table_rows": null,
+                                                          "table_rows": 1999995.0,
                                                           "warnings": []
                                                         }
                                                       ],
@@ -4502,7 +4502,7 @@
                                                       "seek_predicate": "(o3.id = $1)",
                                                       "self_cost": 8.45,
                                                       "subtree_cost": 8.45,
-                                                      "table_rows": null,
+                                                      "table_rows": 1999995.0,
                                                       "warnings": []
                                                     }
                                                   ],
@@ -4564,7 +4564,7 @@
                                                   "seek_predicate": "(o4.id = $1)",
                                                   "self_cost": 8.45,
                                                   "subtree_cost": 8.45,
-                                                  "table_rows": null,
+                                                  "table_rows": 1999995.0,
                                                   "warnings": []
                                                 }
                                               ],
@@ -4626,7 +4626,7 @@
                                               "seek_predicate": "(o5.id = $1)",
                                               "self_cost": 8.45,
                                               "subtree_cost": 8.45,
-                                              "table_rows": null,
+                                              "table_rows": 1999995.0,
                                               "warnings": []
                                             }
                                           ],
@@ -4688,7 +4688,7 @@
                                           "seek_predicate": "(o6.id = $1)",
                                           "self_cost": 8.45,
                                           "subtree_cost": 8.45,
-                                          "table_rows": null,
+                                          "table_rows": 1999995.0,
                                           "warnings": []
                                         }
                                       ],
@@ -4750,7 +4750,7 @@
                                       "seek_predicate": "(o7.id = $1)",
                                       "self_cost": 8.45,
                                       "subtree_cost": 8.45,
-                                      "table_rows": null,
+                                      "table_rows": 1999995.0,
                                       "warnings": []
                                     }
                                   ],
@@ -4812,7 +4812,7 @@
                                   "seek_predicate": "(o8.id = $1)",
                                   "self_cost": 8.45,
                                   "subtree_cost": 8.45,
-                                  "table_rows": null,
+                                  "table_rows": 1999995.0,
                                   "warnings": []
                                 }
                               ],
@@ -4874,7 +4874,7 @@
                               "seek_predicate": "(o9.id = $1)",
                               "self_cost": 8.45,
                               "subtree_cost": 8.45,
-                              "table_rows": null,
+                              "table_rows": 1999995.0,
                               "warnings": []
                             }
                           ],
@@ -4936,7 +4936,7 @@
                           "seek_predicate": "(o10.id = $1)",
                           "self_cost": 8.45,
                           "subtree_cost": 8.45,
-                          "table_rows": null,
+                          "table_rows": 1999995.0,
                           "warnings": []
                         }
                       ],
@@ -4998,7 +4998,7 @@
                       "seek_predicate": "(o11.id = $1)",
                       "self_cost": 8.45,
                       "subtree_cost": 8.45,
-                      "table_rows": null,
+                      "table_rows": 1999995.0,
                       "warnings": []
                     }
                   ],
@@ -5060,7 +5060,7 @@
                   "seek_predicate": "(o12.id = $1)",
                   "self_cost": 8.45,
                   "subtree_cost": 8.45,
-                  "table_rows": null,
+                  "table_rows": 1999995.0,
                   "warnings": []
                 }
               ],
@@ -5184,6 +5184,7 @@
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "19",
+                    "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
                     "Startup Cost": "0.0"
                   },
                   "rows_read": null,
@@ -5191,7 +5192,7 @@
                   "seek_predicate": null,
                   "self_cost": 209.0,
                   "subtree_cost": 209.0,
-                  "table_rows": null,
+                  "table_rows": 10000.0,
                   "warnings": []
                 }
               ],
@@ -5329,6 +5330,45 @@
     "headline": "16 opportunities. The top ones touch 67% of database time over the 5 hours since statistics were reset.",
     "no_workload": null,
     "opportunities": 16,
-    "top_share": 0.6739716209849598
+    "over_scans": [],
+    "runs_said": [
+      {
+        "query": "-8886085649470066503",
+        "runs": "1 run, sometime between 10:12 and 10:57 UTC on Oct 11"
+      },
+      {
+        "query": "4911431806993420100",
+        "runs": "1 run, sometime between 08:41 and 09:28 UTC on Oct 11"
+      },
+      {
+        "query": "4237762245898133153",
+        "runs": "1 run, sometime between 07:20 and 08:05 UTC on Oct 11"
+      },
+      {
+        "query": "-6576252161252119529",
+        "runs": "1 run, sometime between 09:28 and 10:12 UTC on Oct 11"
+      },
+      {
+        "query": "5306524445554315840",
+        "runs": "1 run, sometime between 10:12 and 10:57 UTC on Oct 11"
+      },
+      {
+        "query": "2169115237613314459",
+        "runs": "1 run, sometime between 10:12 and 10:57 UTC on Oct 11"
+      },
+      {
+        "query": "-8017746645856686016",
+        "runs": "1 run, sometime between 09:28 and 10:12 UTC on Oct 11"
+      },
+      {
+        "query": "6097083398544187049",
+        "runs": "1 run, sometime between 09:28 and 10:12 UTC on Oct 11"
+      },
+      {
+        "query": "4854991825702068830",
+        "runs": "1 run, sometime between 07:20 and 08:05 UTC on Oct 11"
+      }
+    ],
+    "top_share": 0.6739716209849599
   }
 }

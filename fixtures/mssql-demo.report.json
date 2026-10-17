@@ -14,9 +14,9 @@
       },
       "id": "hot-rows:shop.orders",
       "impact": {
-        "db_time_share": 0.34120252699679854,
+        "db_time_share": 0.561121078462286,
         "label": "3 min 7 s waiting on locks",
-        "score": 58.41101195528443,
+        "score": 74.90801548981831,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -49,7 +49,7 @@
         },
         {
           "id": "143",
-          "note": "Waited 1 min on locks, nearly all of its time in the last 5 hours.",
+          "note": "Waited 2 min on locks, nearly all of its time in the last 5 hours.",
           "plan_node": null
         },
         {
@@ -63,7 +63,7 @@
         "kind": "index",
         "name": "shop.orders.pk_orders"
       },
-      "summary": "Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
+      "summary": "Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time.",
       "title": "Sessions wait 37.3 s each on row locks in orders",
       "verify": [
         "Re-scan a day later: lock waits on orders should stop growing."
@@ -139,12 +139,12 @@
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "-- Capture errors raised in this database; drop the session when you're done\nCREATE EVENT SESSION culprit_errors ON SERVER\nADD EVENT sqlserver.error_reported (\n  ACTION (sqlserver.client_app_name, sqlserver.sql_text)\n  WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')\nADD TARGET package0.ring_buffer;\nALTER EVENT SESSION culprit_errors ON SERVER STATE = START;\n-- Later: DROP EVENT SESSION culprit_errors ON SERVER;",
+        "sql": "-- Capture errors raised in this database (one session for every failing statement: once is enough)\nIF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_errors')\n    CREATE EVENT SESSION culprit_errors ON SERVER\n    ADD EVENT sqlserver.error_reported (\n      ACTION (sqlserver.client_app_name, sqlserver.sql_text)\n      WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')\n    ADD TARGET package0.ring_buffer;\nIF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_errors')\n    ALTER EVENT SESSION culprit_errors ON SERVER STATE = START;\n-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_errors ON SERVER;",
         "summary": "Query Store counts the errors but doesn't keep them. Capture them for a while with an Extended Events session on error_reported for this database, read the ring buffer, then drop the session."
       },
       "id": "failing-query:246",
       "impact": {
-        "db_time_share": 0.000027041685060225765,
+        "db_time_share": 2.7041685060225765e-05,
         "label": "25% of runs fail",
         "score": 45.0,
         "time_ms_per_day": null
@@ -198,7 +198,7 @@
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\nCREATE EVENT SESSION culprit_lock_escalation ON SERVER\nADD EVENT sqlserver.lock_escalation (\n    SET collect_statement = 1\n    ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n    WHERE sqlserver.database_name = N'culprit_demo')\nADD TARGET package0.ring_buffer\nWITH (STARTUP_STATE = ON);\nALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);",
+        "sql": "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.\n-- It catches them on every table, so another table's finding starts this same session: once is enough.\nIF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')\n    CREATE EVENT SESSION culprit_lock_escalation ON SERVER\n    ADD EVENT sqlserver.lock_escalation (\n        SET collect_statement = 1\n        ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n        WHERE sqlserver.database_name = N'culprit_demo')\n    ADD TARGET package0.ring_buffer\n    WITH (STARTUP_STATE = ON);\nIF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')\n    ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);\n\n-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;",
         "summary": "Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement."
       },
       "id": "lock-escalations:shop.support_tickets",
@@ -394,7 +394,7 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5), so SQL Server would consider a parallel plan for it; the whole run happens on a single core instead. Seen in a read from order_items.",
+      "summary": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.",
       "title": "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)",
       "verify": [
         "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
@@ -411,7 +411,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+        "summary": "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this."
       },
       "id": "chatty-query:6",
       "impact": {
@@ -448,10 +448,10 @@
         "kind": "query",
         "name": "6"
       },
-      "summary": "This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
-      "title": "A read from products runs 60K times in 5 hours, one row at a time",
+      "summary": "Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
+      "title": "A read from products runs 60K times in 5 hours, one key at a time",
       "verify": [
-        "It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times."
+        "It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all."
       ]
     },
     {
@@ -799,7 +799,7 @@
       "summary": "Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.",
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
       "verify": [
-        "Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone."
+        "Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table."
       ]
     },
     {
@@ -853,7 +853,7 @@
         {
           "id": "8",
           "note": null,
-          "plan_node": null
+          "plan_node": 1
         }
       ],
       "severity": "low",
@@ -902,7 +902,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "orders-api",
+          "text": "session 61 (orders-api)",
           "unit": "text",
           "value": 0.0
         }
@@ -916,7 +916,7 @@
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
       "title": "Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)",
       "verify": [
-        "Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.",
+        "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
@@ -954,7 +954,7 @@
         },
         {
           "label": "Rolled back",
-          "text": "SQLCMD",
+          "text": "session 75 (SQLCMD)",
           "unit": "text",
           "value": 0.0
         }
@@ -1148,7 +1148,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Log this heavy usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, and update only the columns that change."
+        "summary": "Nothing to change: archive.wide isn't in the database's catalog any more, so it was dropped or renamed since these statements ran. If the application now uses other tables, scan those before making a change."
       },
       "id": "log-volume:255",
       "impact": {
@@ -1194,8 +1194,7 @@
       "summary": "It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
       "title": "An update of wide writes 7.9 KB of transaction log per row it changes",
       "verify": [
-        "Re-scan later: if it hasn't run again, there is nothing to do.",
-        "Re-scan: its share of the transaction log and the bytes per row should drop."
+        "Nothing to check: the tables are gone. If these statements return against replacement tables, scan those to see what needs a change."
       ]
     },
     {
@@ -5387,7 +5386,7 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 0.00002090000000000078,
+                  "self_cost": 2.090000000000078e-05,
                   "subtree_cost": 0.0166031,
                   "table_rows": null,
                   "warnings": []
@@ -5419,7 +5418,7 @@
               "rows_read": null,
               "runtime": null,
               "seek_predicate": null,
-              "self_cost": 5.000000000005e-7,
+              "self_cost": 5.000000000005e-07,
               "subtree_cost": 0.0166036,
               "table_rows": null,
               "warnings": []
@@ -5769,7 +5768,7 @@
             "jit_ms": null,
             "log_bytes": 420.0,
             "log_full_pages": null,
-            "log_share": 1.43465491193323e-6,
+            "log_share": 1.43465491193323e-06,
             "plan_ms": 2.466,
             "plans": 1.0,
             "row_bytes": 9.0,
@@ -5904,7 +5903,7 @@
                           "rows_read": null,
                           "runtime": null,
                           "seek_predicate": null,
-                          "self_cost": 9.99999999998398e-8,
+                          "self_cost": 9.99999999998398e-08,
                           "subtree_cost": 0.0032832,
                           "table_rows": null,
                           "warnings": []
@@ -5936,7 +5935,7 @@
                       "rows_read": null,
                       "runtime": null,
                       "seek_predicate": null,
-                      "self_cost": 9.99999999998398e-8,
+                      "self_cost": 9.99999999998398e-08,
                       "subtree_cost": 0.0032833,
                       "table_rows": null,
                       "warnings": []
@@ -6207,7 +6206,7 @@
             "jit_ms": null,
             "log_bytes": 732.0,
             "log_full_pages": null,
-            "log_share": 2.5003985607979153e-6,
+            "log_share": 2.5003985607979153e-06,
             "plan_ms": 2.173,
             "plans": 1.0,
             "row_bytes": 9.0,
@@ -6779,7 +6778,7 @@
                                       "rows_read": null,
                                       "runtime": null,
                                       "seek_predicate": null,
-                                      "self_cost": 4.999999999810711e-6,
+                                      "self_cost": 4.999999999810711e-06,
                                       "subtree_cost": 6.16346,
                                       "table_rows": null,
                                       "warnings": []
@@ -6857,7 +6856,7 @@
                                   "rows_read": null,
                                   "runtime": null,
                                   "seek_predicate": null,
-                                  "self_cost": 2.490000000854309e-6,
+                                  "self_cost": 2.490000000854309e-06,
                                   "subtree_cost": 6.16675,
                                   "table_rows": null,
                                   "warnings": []
@@ -7013,7 +7012,7 @@
                           "rows_read": null,
                           "runtime": null,
                           "seek_predicate": null,
-                          "self_cost": 0.00007429999999963854,
+                          "self_cost": 7.429999999963854e-05,
                           "subtree_cost": 12.2196,
                           "table_rows": null,
                           "warnings": []
@@ -7309,7 +7308,7 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 9.99999999998398e-8,
+                  "self_cost": 9.99999999998398e-08,
                   "subtree_cost": 0.0032832,
                   "table_rows": null,
                   "warnings": []
@@ -7408,7 +7407,7 @@
             "jit_ms": null,
             "log_bytes": 1032.0,
             "log_full_pages": null,
-            "log_share": 3.525152069321651e-6,
+            "log_share": 3.525152069321651e-06,
             "plan_ms": 3.463,
             "plans": 1.0,
             "row_bytes": 15.0,
@@ -8007,6 +8006,13 @@
     "headline": "25 opportunities. The top ones touch 83% of database time over the last 5 hours.",
     "no_workload": null,
     "opportunities": 25,
-    "top_share": 0.828513210346887
+    "over_scans": [],
+    "runs_said": [
+      {
+        "query": "35",
+        "runs": "2 runs on Oct 11, 11:54–12:13 UTC"
+      }
+    ],
+    "top_share": 0.8285132103468869
   }
 }
