@@ -46,15 +46,16 @@ pub fn plan_insights(snapshot: &Snapshot) -> Vec<Finding> {
             if COVERED.contains(&i.rule.as_str()) || (i.severity == Severity::Low && !weighed_here) {
                 continue;
             }
-            let object =
-                plan.nodes().into_iter().find(|n| Some(&n.id) == i.nodes.first()).and_then(|n| n.object.clone());
+            // An insight about the whole plan names no step of it, nor the table of the root it points at: it is the
+            // query's.
+            let step = i.nodes.first().copied().filter(|_| !whole_plan(plan, &i));
+            let object = plan.nodes().into_iter().find(|n| Some(n.id) == step).and_then(|n| n.object.clone());
             let key = format!(
                 "{}:{}",
                 i.rule,
                 object.as_deref().map(str::to_ascii_lowercase).unwrap_or_else(|| format!("query-{}", q.id))
             );
-            let reference =
-                QueryRef { id: q.id.clone(), plan_node: i.nodes.first().copied(), note: Some(rule_label(&i)) };
+            let reference = QueryRef { id: q.id.clone(), plan_node: step, note: Some(rule_label(&i)) };
             match out.iter_mut().find(|f| f.id == format!("plan-insights:{key}")) {
                 Some(existing) => {
                     if !existing.queries.iter().any(|r| r.id == q.id) {
@@ -133,6 +134,17 @@ fn build(
     f
 }
 
+/// Rules about the whole plan that weigh it by a time of their own (compiling it, JIT-compiling it) rather than a share
+/// of a step's cost.
+const TIMED_WHOLE_PLAN: &[&str] = &["slow-compile", "jit"];
+
+/// An insight about the plan as a whole (it runs on one CPU, the optimizer stopped searching, its compile, a grant for
+/// the whole run): it points at the plan's root with a rule's own weight, or a time of its own, not at a step whose
+/// share of the cost is the problem.
+fn whole_plan(plan: &culprit_core::Plan, i: &PlanInsight) -> bool {
+    i.nodes.first() == Some(&plan.root.id) && (i.fixed_weight || TIMED_WHOLE_PLAN.contains(&i.rule.as_str()))
+}
+
 fn rule_label(i: &PlanInsight) -> String {
     culprit_core::insights::RULES
         .iter()
@@ -166,5 +178,22 @@ mod tests {
             ids.dedup();
             assert_eq!(ids.len(), found.len(), "{name}: one finding per problem and table");
         }
+    }
+
+    #[test]
+    fn an_insight_about_the_whole_plan_names_no_step() {
+        // Query 263 runs on one CPU (MaxDOPSetToOne): the plan's root it points at isn't where the problem is.
+        let snapshot = report("mssql-demo.report.json").snapshot;
+        let found = plan_insights(&snapshot);
+        let blocked = found
+            .iter()
+            .find(|f| f.id.starts_with("plan-insights:parallelism-blocked:"))
+            .unwrap_or_else(|| panic!("{:?}", found.iter().map(|f| &f.id).collect::<Vec<_>>()));
+        assert_eq!(blocked.id, "plan-insights:parallelism-blocked:query-263");
+        assert!(blocked.queries.iter().all(|r| r.plan_node.is_none()), "{:?}", blocked.queries);
+        // A rule about a step still names it.
+        assert!(
+            found.iter().filter(|f| !f.id.contains(":parallelism-blocked:")).all(|f| f.queries[0].plan_node.is_some())
+        );
     }
 }

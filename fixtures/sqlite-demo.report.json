@@ -14,9 +14,9 @@
       },
       "id": "unindexed-fk:main.orders(customer_id)",
       "impact": {
-        "db_time_share": 0.687787860155988,
-        "label": "69% of DB time",
-        "score": 82.9329765627635,
+        "db_time_share": 0.9887727501019123,
+        "label": "99% of DB time",
+        "score": 99.43705295823646,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -42,71 +42,25 @@
           "plan_node": null
         },
         {
+          "id": "3c81e035bd6f73fa",
+          "note": null,
+          "plan_node": null
+        },
+        {
           "id": "500217f7b40055be",
           "note": null,
           "plan_node": 22
         }
       ],
-      "severity": "medium",
+      "severity": "high",
       "subject": {
         "kind": "table",
         "name": "main.orders"
       },
-      "summary": "Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 69% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
+      "summary": "Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
       "title": "orders has no index on customer_id, its foreign key to customers",
       "verify": [
         "Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone."
-      ]
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "heavy-query",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Find this statement in the application (copy the brief for your coding agent) and check whether it reads more rows or columns than it needs."
-      },
-      "id": "heavy-query:3c81e035bd6f73fa",
-      "impact": {
-        "db_time_share": 0.3009848899459243,
-        "label": "30% of DB time",
-        "score": 54.86208982037818,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-15T10:29:51Z",
-      "metrics": [
-        {
-          "label": "Share of DB time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.3009848899459243
-        },
-        {
-          "label": "Average duration",
-          "text": null,
-          "unit": "ms",
-          "value": 23.949820788530452
-        }
-      ],
-      "queries": [
-        {
-          "id": "3c81e035bd6f73fa",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "3c81e035bd6f73fa"
-      },
-      "summary": "It ran 558 times in 90 minutes at 24 ms on average: 30% of all database time in the 90 minutes the Rails log covers.",
-      "title": "A read from orders takes 30% of database time",
-      "verify": [
-        "After the change ships, re-scan and compare this query's share of database time and reads per run."
       ]
     },
     {
@@ -229,7 +183,7 @@
       "summary": "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.",
       "title": "SQLite has no statistics to choose between this file's indexes",
       "verify": [
-        "Scan again: the file has statistics, and each table's row count appears."
+        "Scan again: the file has sqlite_stat1, and this finding is gone."
       ]
     },
     {
@@ -455,9 +409,10 @@
     "connection": "sqlite-demo",
     "constraints": [],
     "deadlocks": null,
-    "duration_ms": 180.5645,
+    "duration_ms": 214.635166,
     "environment": "development",
     "escalations_before": null,
+    "evictions_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -501,7 +456,7 @@
     ],
     "format": 1,
     "histograms": null,
-    "id": "20261015T225627.091Z",
+    "id": "20261016T210115.862Z",
     "indexes": [
       {
         "columns": [
@@ -860,7 +815,7 @@
         "xid_age": null
       }
     ],
-    "taken_at": "2026-10-15T22:56:27Z",
+    "taken_at": "2026-10-16T21:01:15Z",
     "tuning": null,
     "waits": [],
     "workload": {
@@ -909,7 +864,9 @@
                   "object": "orders",
                   "op": "Scan",
                   "predicate": null,
-                  "props": {},
+                  "props": {
+                    "Indexes on the table (catalog)": "ix_orders_status_again=status\nix_orders_status=status"
+                  },
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
@@ -1131,7 +1088,9 @@
                   "object": "customers",
                   "op": "Scan",
                   "predicate": null,
-                  "props": {},
+                  "props": {
+                    "Indexes on the table (catalog)": "sqlite_autoindex_customers_1=email"
+                  },
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
@@ -1416,27 +1375,23 @@
         "count": 3
       },
       {
-        "category": "queries",
-        "count": 1
-      },
-      {
         "category": "maintenance",
         "count": 2
       }
     ],
     "by_severity": [
       {
-        "count": 2,
-        "severity": "medium"
+        "count": 1,
+        "severity": "high"
       },
       {
         "count": 4,
         "severity": "low"
       }
     ],
-    "headline": "6 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.",
+    "headline": "5 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.",
     "no_workload": null,
-    "opportunities": 6,
+    "opportunities": 5,
     "top_share": 0.9887727501019123
   }
 }

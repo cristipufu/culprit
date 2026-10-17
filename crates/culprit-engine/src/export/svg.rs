@@ -135,7 +135,7 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
     let hottest = plan.hottest().map(|n| n.id);
     let mut hot_path = Vec::new();
     let hot: HashSet<u32> = match plan.hottest() {
-        Some(hottest) if share(plan, hottest) >= 0.05 => {
+        Some(hottest) if share(plan, hottest).is_some_and(|s| s >= 0.05) => {
             path_to(&plan.root, hottest.id, &mut hot_path);
             hot_path.into_iter().collect()
         }
@@ -185,7 +185,10 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
     for p in &placed {
         let n = p.node;
         let (x, y) = (px(p.x), py(p.depth));
-        let s = share(plan, n);
+        // No share where the plan can't state one (no costs, a step it doesn't cost, a default guess): no bar, and a dash
+        // on a plan that weighs its steps.
+        let stated = share(plan, n);
+        let s = stated.unwrap_or(0.0);
         let mark = marks.get(&n.id).copied();
         let mut classes = vec!["card".to_string()];
         match mark {
@@ -241,7 +244,11 @@ pub fn diagram(plan: &Plan, marks: &HashMap<u32, Mark>, focus: Option<u32>, labe
             x + W - 12.0,
             y + 18.0,
             badge,
-            format::percent(s)
+            match stated {
+                Some(s) => format::percent(s),
+                None if plan.weighed() => "—".into(),
+                None => String::new(),
+            }
         );
         let _ = write!(
             svg,

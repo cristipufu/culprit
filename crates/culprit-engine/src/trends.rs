@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 pub const HISTORY_DAYS: f64 = 30.0;
 /// The heaviest queries get a trend line; the rest would only grow the report.
 const TREND_QUERIES: usize = 40;
+/// And so do the statements that grew most since the oldest scan among the rest: what is heavy now, whose entry's
+/// running total may not be (an entry the application began sending days ago).
+const RECENT_QUERIES: usize = 10;
 const MAX_BUCKETS: f64 = 120.0;
 const MIN_BUCKET_SECONDS: f64 = 300.0;
 
@@ -34,14 +37,14 @@ pub struct Counters {
     /// What "What changed" needs to name a query and notice a new plan without re-reading the report.
     #[serde(default)]
     pub meta: BTreeMap<String, QueryMeta>,
-    /// Entries the source has evicted since its counters started (pg_stat_statements_info.dealloc, 14+): when it grew
-    /// between two scans, entries left and took their totals with them.
+    /// Eviction rounds since the source's counters started (pg_stat_statements_info.dealloc, 14+; each round evicts
+    /// about 5% of the entries): when it grew between two scans, entries left and took their totals with them.
     #[serde(default)]
     pub evictions: Option<f64>,
 }
 
 /// The setting a pg_stat_statements scan reports its evictions in.
-const EVICTIONS_SETTING: &str = "pg_stat_statements.dealloc";
+pub(crate) const EVICTIONS_SETTING: &str = "pg_stat_statements.dealloc";
 
 /// A tracked query as one scan saw it.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -140,17 +143,22 @@ pub enum StepKind {
     Unknown,
 }
 
+/// A time summed from several entries (pg_stat_statements keeps one per role; the provider adds them up) moves in its
+/// last digits when the same entries are added in another order: a difference this small is no time.
+const SUM_JITTER_MS: f64 = 0.5;
+
 pub fn step_kind(ta: f64, a: &Counters, b: &Counters) -> StepKind {
     if b.window_start.as_deref().and_then(epoch).is_some_and(|r| r > ta + 1.0) {
         return StepKind::Reset;
     }
-    let shrank = b.total_executions < a.total_executions || b.total_time_ms < a.total_time_ms - 0.5;
+    let shrank = b.total_executions < a.total_executions || b.total_time_ms < a.total_time_ms - SUM_JITTER_MS;
     let evicted = matches!((a.evictions, b.evictions), (Some(x), Some(y)) if y > x);
     if shrank || evicted { StepKind::Unknown } else { StepKind::Growth }
 }
 
 /// What query `id` ran in a step: its difference, everything for a reset or for an entry the source created afresh in
-/// between, `None` when neither scan can account for it.
+/// between, `None` when neither scan can account for it. Never more than the whole database ran in a step whose totals
+/// grew: a statement can't outrun the database, so such a reading is a counter misread, not a run.
 pub fn query_step(
     kind: StepKind,
     ta: f64,
@@ -163,14 +171,43 @@ pub fn query_step(
     if kind == StepKind::Reset {
         return Some(after);
     }
-    match a.queries.get(id) {
-        Some(before) if after[1] >= before[1] && after[0] >= before[0] => {
-            Some([after[0] - before[0], after[1] - before[1]])
-        }
-        // The source dropped and re-created the entry; it counts from zero again.
-        Some(_) => Some(after),
+    let step = match a.queries.get(id) {
+        Some(&before) => entry_step(kind, before, after, ta, first_seen),
         // Not tracked by the earlier scan: known only when the query first ran after it.
         None => first_seen.is_some_and(|f| f + 1.0 > ta).then_some(after),
+    };
+    let within = |[time, runs]: [f64; 2]| {
+        kind != StepKind::Growth
+            || (time <= b.total_time_ms - a.total_time_ms + SUM_JITTER_MS
+                && runs <= b.total_executions - a.total_executions + 0.5)
+    };
+    step.filter(|s| within(*s))
+}
+
+/// What an entry tracked by both scans (`[time ms, executions]`, `before` and `after`) ran in between. A statement's
+/// time grows only with its runs, so:
+/// - more runs: the difference;
+/// - the same runs: nothing, whatever the last digits of a summed time say;
+/// - fewer runs: the source dropped the entry and created it again, counting from zero, when the entry says it started
+///   after the earlier scan (`first_seen`), or, saying nothing, in a step whose totals grew (what it counted is then
+///   held to what the database ran). An entry counting since before the earlier scan, or one in a step where entries
+///   were evicted, may be a sum that lost one of its entries (a role's) and kept the others' totals.
+///
+/// That, and a time that shrank while its runs didn't, is unknown: never the whole counter, which would put everything
+/// since the last reset in one bucket.
+fn entry_step(kind: StepKind, before: [f64; 2], after: [f64; 2], ta: f64, first_seen: Option<f64>) -> Option<[f64; 2]> {
+    let ([time_before, runs_before], [time_after, runs_after]) = (before, after);
+    let time = time_after - time_before;
+    if runs_after > runs_before {
+        (time > -SUM_JITTER_MS).then(|| [time.max(0.0), runs_after - runs_before])
+    } else if runs_after == runs_before {
+        (time.abs() <= SUM_JITTER_MS).then_some([0.0, 0.0])
+    } else {
+        let created_again = match first_seen {
+            Some(first) => first + 1.0 > ta,
+            None => kind == StepKind::Growth,
+        };
+        created_again.then_some(after)
     }
 }
 
@@ -220,7 +257,12 @@ pub fn from_scans(
 
     let mut tracked: Vec<&culprit_core::QueryStat> = workload.queries.iter().collect();
     tracked.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
-    tracked.truncate(TREND_QUERIES);
+    let mut rest = tracked.split_off(TREND_QUERIES.min(tracked.len()));
+    // What each grew by since the oldest scan: all of it for an entry that scan didn't have.
+    let oldest = points[0].1;
+    let grown = |q: &culprit_core::QueryStat| q.total_time_ms - oldest.queries.get(&q.id).map_or(0.0, |v| v[0]);
+    rest.sort_by(|a, b| grown(b).total_cmp(&grown(a)));
+    tracked.extend(rest.into_iter().filter(|q| grown(q) > 0.0).take(RECENT_QUERIES));
     let ids: Vec<String> = tracked.iter().map(|q| q.id.clone()).collect();
     let first_seen: HashMap<&str, f64> =
         tracked.iter().filter_map(|q| Some((q.id.as_str(), epoch(q.first_seen.as_deref()?)?))).collect();
@@ -475,6 +517,24 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_heavy_since_the_scans_gets_a_trend_whatever_its_total() {
+        // Forty statements with years of totals, and one the application began sending since the first scan: its
+        // total is the smallest, but it is what grew, and the checks judge a recent entry by its trend.
+        let reset = "2023-01-01T00:00:00Z";
+        let old: Vec<(String, f64, f64)> =
+            (0..TREND_QUERIES).map(|i| (format!("old{i}"), 1_000_000.0 + i as f64, 100_000.0)).collect();
+        let mut before: Vec<(&str, f64, f64)> = old.iter().map(|(id, t, r)| (id.as_str(), *t, *r)).collect();
+        before.push(("new", 10.0, 20.0));
+        let history = vec![counters("2026-10-10T00:00:00Z", reset, &before)];
+        let mut queries: Vec<QueryStat> = old.iter().map(|(id, t, r)| query(id, *t, *r)).collect();
+        queries.push(query("new", 500.0, 1_000.0));
+        let mut w = workload(reset, queries);
+        from_scans(&mut w, "shop", "2026-10-11T00:00:00Z", None, &history);
+        let new = w.queries.iter().find(|q| q.id == "new").unwrap();
+        assert_eq!(new.trend.as_ref().unwrap().executions, vec![Some(980.0)]);
+    }
+
+    #[test]
     fn a_statistics_reset_counts_from_zero() {
         let history = vec![counters("2026-10-10T00:00:00Z", "2026-10-01T00:00:00Z", &[("a", 1000.0, 100.0)])];
         let mut w = workload("2026-10-10T03:00:00Z", vec![query("a", 30.0, 3.0)]);
@@ -541,6 +601,47 @@ mod tests {
         assert_eq!(step_kind(epoch(&a.taken_at).unwrap(), &a, &b), StepKind::Unknown);
         b.evictions = Some(3.0);
         assert_eq!(step_kind(epoch(&a.taken_at).unwrap(), &a, &b), StepKind::Growth);
+    }
+
+    #[test]
+    fn a_summed_time_that_moves_in_its_last_digits_is_not_a_new_entry() {
+        // pg_stat_statements per role, summed by the provider: the same entries added in another order come out a hair
+        // lower. That statement didn't run, and its whole lifetime isn't put in the bucket.
+        let reset = "2026-09-01T00:00:00Z";
+        let history =
+            vec![counters("2026-10-10T00:00:00Z", reset, &[("q", 110_822.000_000_2, 21_936.0), ("a", 100.0, 10.0)])];
+        let mut w = workload(reset, vec![query("q", 110_821.999_999_9, 21_936.0), query("a", 3_198.0, 400.0)]);
+        from_scans(&mut w, "shop", "2026-10-10T06:00:00Z", None, &history);
+        let t = w.timeline.as_ref().unwrap();
+        assert_eq!((t.time_ms[0], t.executions[0]), (3_098.0, 390.0));
+        let q = w.queries.iter().find(|q| q.id == "q").unwrap().trend.as_ref().unwrap();
+        assert_eq!((q.time_ms[0], q.executions[0]), (Some(0.0), Some(0.0)));
+
+        let at = |s: &str| epoch(s).unwrap();
+        let (ta, before) = (at("2026-10-10T00:00:00Z"), [5_000.0, 500.0]);
+        let step =
+            |after: [f64; 2], first_seen: Option<f64>| entry_step(StepKind::Growth, before, after, ta, first_seen);
+        // More runs: the difference, a time a hair under counting as none.
+        assert_eq!(step([5_300.0, 530.0], None), Some([300.0, 30.0]));
+        assert_eq!(step([4_999.9, 501.0], None), Some([0.0, 1.0]));
+        // More runs in less time, or the same runs in another time: a sum that lost a role's entry. Unknown.
+        assert_eq!(step([3_000.0, 600.0], None), None);
+        assert_eq!(step([4_000.0, 500.0], None), None);
+        // Fewer runs: created again since the earlier scan, counting from zero…
+        assert_eq!(step([40.0, 4.0], None), Some([40.0, 4.0]));
+        assert_eq!(step([40.0, 4.0], Some(at("2026-10-10T03:00:00Z"))), Some([40.0, 4.0]));
+        // …unless it has been counting since before it, or entries were evicted and it doesn't say: what's left of a
+        // sum, not what ran.
+        assert_eq!(step([4_000.0, 450.0], Some(at("2026-09-20T00:00:00Z"))), None);
+        assert_eq!(entry_step(StepKind::Unknown, before, [4_000.0, 450.0], ta, None), None);
+
+        // Whatever an entry seems to say, a statement doesn't run more than the whole database did.
+        let a = counters("2026-10-10T00:00:00Z", reset, &[("q", 900_000.0, 90_000.0), ("b", 100.0, 10.0)]);
+        let mut b = counters("2026-10-10T06:00:00Z", reset, &[("q", 800_000.0, 80_000.0), ("b", 200.0, 20.0)]);
+        (b.total_time_ms, b.total_executions) = (a.total_time_ms + 3_000.0, a.total_executions + 300.0);
+        assert_eq!(step_kind(ta, &a, &b), StepKind::Growth);
+        assert_eq!(query_step(StepKind::Growth, ta, &a, &b, "q", None), None);
+        assert_eq!(query_step(StepKind::Growth, ta, &a, &b, "b", None), Some([100.0, 10.0]));
     }
 
     #[test]

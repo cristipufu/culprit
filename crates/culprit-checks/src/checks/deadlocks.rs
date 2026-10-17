@@ -115,7 +115,17 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
         let mut f = finding("deadlocks", &key, Category::Queries, subject(kind, subject_name));
         f.severity = deadlock_severity(n, report.since_hours);
         f.confidence = if n > 0 { Confidence::High } else { Confidence::Medium };
-        f.title = if n > 0 {
+        // InnoDB keeps only its most recent deadlock: one in its report says the pattern happened at least once, and
+        // when it last did, never how many times.
+        let latest_only = snapshot.server.engine == Engine::Mysql;
+        f.title = if n > 0 && latest_only {
+            format!(
+                "{who} deadlocked at least once, most recently {} ({} on {})",
+                latest.at.as_deref().map(crate::queries::when_phrase).unwrap_or_default(),
+                pattern.label(),
+                tables(&objects)
+            )
+        } else if n > 0 {
             format!(
                 "{who} deadlocked {times} in {window}{} ({} on {})",
                 if undated > 0 { format!(", and {undated} more at an unknown time") } else { String::new() },

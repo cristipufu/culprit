@@ -32,10 +32,10 @@ fn an_index_sqlite_builds_on_every_run_is_advice() {
     assert_eq!(c.source, CandidateSource::EngineBuilt);
     assert!(c.sql.as_deref().is_some_and(|s| s.contains("CREATE INDEX")), "{:?}", c.sql);
     // The listing whose plan reads every order to filter by customer needs the same index (it's also the foreign key):
-    // its statement and share are the candidate's too, so it outweighs the report alone. The listing SQLite searches by
-    // status instead isn't: its plan doesn't show that the key's index would serve it.
-    assert_eq!(c.queries.len(), 2, "{:?}", c.queries);
-    assert!(c.queries.iter().all(|q| !q.text.contains("\"status\" = ?")), "{:?}", c.queries);
+    // its statement and share are the candidate's too, so it outweighs the report alone. So does the listing SQLite
+    // searches through the index on status (MY-7): it reads every order of that status and checks customer_id on each.
+    assert_eq!(c.queries.len(), 3, "{:?}", c.queries);
+    assert!(c.queries.iter().any(|q| q.text.contains("\"status\" = ?")), "{:?}", c.queries);
     let report_share = report
         .snapshot
         .workload
@@ -51,16 +51,17 @@ fn an_index_sqlite_builds_on_every_run_is_advice() {
         report.findings.iter().find(|f| f.id == "unindexed-fk:main.orders(customer_id)").expect("the key's finding");
     assert!(fk.summary.contains("builds this index for itself"), "{}", fk.summary);
     assert!(fk.queries.iter().any(|r| r.plan_node.is_some()), "{:?}", fk.queries);
-    // It lists only the statements it claims. The listing SQLite searches by status isn't one, so that statement keeps a
-    // finding of its own, and the headline adds the two.
-    assert_eq!(fk.queries.len(), 2, "{:?}", fk.queries);
-    let status = report
-        .findings
-        .iter()
-        .find(|f| f.check == "heavy-query" && f.queries.iter().any(|r| !fk.queries.iter().any(|x| x.id == r.id)))
-        .expect("the status listing's own finding");
-    let together = fk.impact.db_time_share.unwrap_or(0.0) + status.impact.db_time_share.unwrap_or(0.0);
-    assert_eq!(report.summary.top_share.map(|s| (s * 100.0).round()), Some((together * 100.0).round()));
+    // It lists the statements it claims, the status listing among them: one cause, one finding, so that statement's
+    // heavy-query finding goes into this one, and the headline counts the key's share once.
+    assert_eq!(fk.queries.len(), 3, "{:?}", fk.queries);
+    assert!(
+        !report.findings.iter().any(|f| f.id == "heavy-query:3c81e035bd6f73fa"),
+        "{:?}",
+        report.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+    );
+    let share = fk.impact.db_time_share.unwrap_or(0.0);
+    assert!(share > 0.95, "{share}");
+    assert_eq!(report.summary.top_share.map(|s| (s * 100.0).round()), Some((share * 100.0).round()));
 }
 
 #[test]
@@ -112,4 +113,13 @@ fn a_statement_that_only_names_the_key_adds_no_weight() {
     assert_eq!(fk.severity, Severity::Low, "{}", fk.summary);
     assert_eq!(fk.impact.db_time_share, None);
     assert!(!fk.summary.contains("of database time"), "{}", fk.summary);
+}
+
+// Row counts appear with or without statistics: what a scan after ANALYZE shows is sqlite_stat1.
+#[test]
+fn the_statistics_finding_is_verified_by_sqlite_stat1() {
+    let report = analyze(demo());
+    let f = report.findings.iter().find(|f| f.id == "config:sqlite-statistics").expect("no statistics");
+    assert!(f.verify.iter().any(|v| v.contains("sqlite_stat1")), "{:?}", f.verify);
+    assert!(!f.verify.iter().any(|v| v.contains("row count")), "{:?}", f.verify);
 }

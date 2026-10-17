@@ -117,19 +117,154 @@ pub(crate) fn existing_match<'a>(
     same_keys_on_table(snapshot, c)
         .filter(|i| match i.filter.as_deref() {
             None => true,
-            Some(filter) => fits_filter(filter, asking),
+            Some(filter) => fits_filter(&c.table, filter, asking),
         })
         .min_by_key(|i| i.is_disabled)
 }
 
-/// A filtered index with the suggestion's keys that [`existing_match`] passed over: the queries don't ask for only the
-/// rows it holds, or Culprit can't show that they do.
+/// A filtered index that would serve the suggestion but that [`existing_match`] and [`overlapping_index`] passed over,
+/// with what it has of it ("has these keys", "leads with tenant_id and account_id"): the queries don't ask for only
+/// the rows it holds, or Culprit can't show that they do.
 pub(super) fn filtered_bystander<'a>(
     snapshot: &'a Snapshot,
     c: &Candidate,
     asking: &[&QueryStat],
-) -> Option<&'a IndexStat> {
-    same_keys_on_table(snapshot, c).find(|i| i.filter.as_deref().is_some_and(|f| !fits_filter(f, asking)))
+) -> Option<(&'a IndexStat, String)> {
+    let passed_over = |i: &&IndexStat| i.filter.as_deref().is_some_and(|f| !fits_filter(&c.table, f, asking));
+    if let Some(i) = same_keys_on_table(snapshot, c).find(passed_over) {
+        return Some((i, "has these keys".into()));
+    }
+    snapshot.indexes.iter().filter(|i| on_table(i, c) && !i.is_disabled).filter(passed_over).find_map(|i| {
+        let overlap = overlap(i, c).filter(Overlap::serves)?;
+        Some((i, format!("leads with {}", format::list(&overlap.seeks))))
+    })
+}
+
+fn on_table(i: &IndexStat, c: &Candidate) -> bool {
+    i.schema.eq_ignore_ascii_case(&c.schema) && i.table.eq_ignore_ascii_case(&c.table)
+}
+
+/// What an existing index does for a suggestion: the columns it seeks on (its leading keys that the suggestion's
+/// equality columns are, in any order, then its first range column if that comes next), those its filter fixes
+/// (`is_deleted = 0`), and those it does neither for, which it checks on the rows it finds: equality columns, and a
+/// range column it has no key for after them.
+struct Overlap {
+    seeks: Vec<String>,
+    filtered: Vec<String>,
+    missing: Vec<String>,
+    /// The request's range column is among `missing`: the index has no key for it after the equality columns.
+    range_missing: bool,
+}
+
+impl Overlap {
+    /// It finds the suggestion's rows by all of its columns but at most one, and by at least two: what's left is
+    /// checked on the rows it finds, which costs little once it narrows by the rest. A seek on one of several columns
+    /// may read many rows the others reject; that is what the optimizer asked about.
+    fn serves(&self) -> bool {
+        self.seeks.len() + self.filtered.len() >= 2 && self.missing.len() <= 1
+    }
+}
+
+fn overlap(i: &IndexStat, c: &Candidate) -> Option<Overlap> {
+    // More than one range column can't all be sought, or checked as cheaply as one: the request is for its own index.
+    if c.equality.is_empty() || c.inequality.len() > 1 {
+        return None;
+    }
+    let asked = |column: &str| c.equality.iter().any(|e| e.eq_ignore_ascii_case(column));
+    let keys = i.key_names();
+    let mut seeks: Vec<String> = keys.iter().take_while(|k| asked(k)).map(|k| k.to_string()).collect();
+    if seeks.is_empty() {
+        return None;
+    }
+    let filtered: Vec<String> = i
+        .filter
+        .as_deref()
+        .and_then(filter_equalities)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(column, _)| column)
+        .filter(|column| asked(column) && !seeks.iter().any(|s| s.eq_ignore_ascii_case(column)))
+        .collect();
+    let mut missing: Vec<String> = c
+        .equality
+        .iter()
+        .filter(|e| !seeks.iter().chain(&filtered).any(|s| s.eq_ignore_ascii_case(e)))
+        .cloned()
+        .collect();
+    // The range: sought when it is the key right after every equality column, otherwise checked on the rows found.
+    let mut range_missing = false;
+    if let Some(range) = c.inequality.first() {
+        let next = keys.get(seeks.len()).filter(|k| missing.is_empty() && k.eq_ignore_ascii_case(range));
+        match next {
+            Some(_) => seeks.push(range.clone()),
+            None => {
+                missing.push(range.clone());
+                range_missing = true;
+            }
+        }
+    }
+    Some(Overlap { seeks, filtered, missing, range_missing })
+}
+
+/// An existing index that finds a request's rows by every one of its equality columns (its keys and its filter) but
+/// has no key for its range, when the request is for an index of its own: the new index seeks the range as well. One a
+/// query can use (unfiltered, or its filter as the queries write it); the one that seeks on the most.
+fn lacks_only_the_range<'a>(
+    snapshot: &'a Snapshot,
+    c: &Candidate,
+    asking: &[&QueryStat],
+) -> Option<(&'a IndexStat, Overlap)> {
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| on_table(i, c) && !i.is_disabled)
+        .filter(|i| i.filter.as_deref().is_none_or(|f| fits_filter(&c.table, f, asking)))
+        .filter_map(|i| {
+            let o = overlap(i, c).filter(|o| o.range_missing && o.missing.len() == 1 && o.serves())?;
+            Some((i, o))
+        })
+        .max_by_key(|(i, o)| (o.seeks.len() + o.filtered.len(), i.filter.is_none(), std::cmp::Reverse(i.columns.len())))
+}
+
+/// The enabled index on a request's table that already finds its rows by all of its columns but one
+/// ([`Overlap::serves`]), whether or not its queries are shown to fit its filter: the one that seeks on the most,
+/// unfiltered first, then the narrowest. Said where there is nothing to create, as what the lookups have meanwhile.
+fn serving_index<'a>(snapshot: &'a Snapshot, c: &Candidate) -> Option<(&'a IndexStat, Overlap)> {
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| on_table(i, c) && !i.is_disabled)
+        .filter_map(|i| Some((i, overlap(i, c).filter(Overlap::serves)?)))
+        .max_by_key(|(i, o)| (o.seeks.len() + o.filtered.len(), i.filter.is_none(), std::cmp::Reverse(i.columns.len())))
+}
+
+/// An existing index that already finds a suggestion's rows by all of its equality columns but one ([`Overlap::serves`]),
+/// when [`existing_match`] found none with its keys: including the column it lacks, and the suggestion's included
+/// columns, serves the queries with one index fewer to maintain than a new one. Only one Culprit can widen without
+/// changing what it is (not the clustered index, a primary key or a unique one), and a filtered one only for queries
+/// that ask for the rows it holds ([`fits_filter`]). The one that seeks on the most, unfiltered first, then the
+/// narrowest; with the columns to include.
+fn overlapping_index<'a>(
+    snapshot: &'a Snapshot,
+    c: &Candidate,
+    asking: &[&QueryStat],
+) -> Option<(&'a IndexStat, Overlap, Vec<String>)> {
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| on_table(i, c) && !i.is_disabled && !i.is_clustered && !i.is_primary_key && !i.is_unique)
+        .filter(|i| i.filter.as_deref().is_none_or(|f| fits_filter(&c.table, f, asking)))
+        .filter_map(|i| {
+            // A range the index has no key for is the request's own index: checking it on every row the equality
+            // columns find can cost what the range was asked for to spare.
+            let overlap = overlap(i, c).filter(|o| o.serves() && !o.range_missing)?;
+            let include: Vec<String> = overlap.missing.iter().chain(&c.include).cloned().collect();
+            let add = lacking_includes(i, &include);
+            (!add.is_empty()).then_some((i, overlap, add))
+        })
+        .max_by_key(|(i, o, _)| {
+            (o.seeks.len() + o.filtered.len(), i.filter.is_none(), std::cmp::Reverse(i.columns.len()))
+        })
 }
 
 /// The indexes on the suggestion's table whose leading keys are its equality columns (in any order), then its range.
@@ -147,19 +282,19 @@ pub(super) fn same_keys_on_table<'a>(snapshot: &'a Snapshot, c: &Candidate) -> i
     })
 }
 
-/// Every query in `asking` (at least one) compares each of the filter's columns to the filter's own literal.
-pub(super) fn fits_filter(filter: &str, asking: &[&QueryStat]) -> bool {
+/// Every query in `asking` (at least one) compares each of the filter's columns of `table` to the filter's own literal.
+pub(crate) fn fits_filter(table: &str, filter: &str, asking: &[&QueryStat]) -> bool {
     let Some(conditions) = filter_equalities(filter) else { return false };
     !asking.is_empty()
         && asking.iter().all(|q| {
             conditions
                 .iter()
-                .all(|(column, literal)| compared_to(&q.text, column, |value| same_literal(value, literal)))
+                .all(|(column, literal)| compared_to(&q.text, table, column, |value| same_literal(value, literal)))
         })
 }
 
 /// A filter as people read it: "is_deleted = 0", or the definition without its brackets.
-pub(super) fn readable_filter(filter: &str) -> String {
+pub(crate) fn readable_filter(filter: &str) -> String {
     match filter_equalities(filter) {
         Some(conditions) => {
             format::list(&conditions.iter().map(|(column, value)| format!("{column} = {value}")).collect::<Vec<_>>())
@@ -217,22 +352,30 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
             // What the index saves is the queries' time times the optimizer's estimate of the gain: 11% of a query at
             // 0.01% of database time is nothing to rank or raise above Low.
             let gain = (c.impact_pct / 100.0).clamp(0.0, 1.0);
-            let time_ms: f64 = linked.iter().map(|q| q.total_time_ms).sum();
             f.impact.score = score_for_share(impact.share * gain);
-            f.severity = severity_for_time(snapshot, time_ms * gain, impact.share * gain);
-            f.confidence = if c.impact_pct >= 50.0 { Confidence::High } else { Confidence::Medium };
+            f.severity = request_severity(snapshot, &c, &linked);
+            // How sure, not how much (the severity says that): the optimizer's estimate is a share of what its
+            // queries read. Where their runs measured real reading ([`MEASURED_READS`] pages a run) of a table of
+            // SCAN_ROWS rows or more, a large gain is certain; on a small table, or runs that read a few pages, a
+            // large share of very little is a guess.
+            let measured = reads_per_run(&linked).is_some_and(|pages| pages >= MEASURED_READS);
+            f.confidence = if c.impact_pct >= 50.0 && measured && rows.is_some_and(|r| r >= SCAN_ROWS) {
+                Confidence::High
+            } else {
+                Confidence::Medium
+            };
         }
         None if linked.is_empty() && snapshot.workload.is_some() => {
             summary.push_str(
                 " None of the queries in this scan asked for it: the requests came from plans that ran before the scan's window, or that Query Store no longer keeps.",
             );
-            f.severity = unlinked_severity(snapshot, &c, lookups);
+            f.severity = request_severity(snapshot, &c, &linked);
             f.impact.score = (6.0 * (c.weight + 1.0).log10()).clamp(4.0, 40.0);
             f.impact.label = format!("{} lookups", format::count(lookups));
             f.confidence = if lookups >= 1000.0 { Confidence::Medium } else { Confidence::Low };
         }
         None => {
-            f.severity = unlinked_severity(snapshot, &c, lookups);
+            f.severity = request_severity(snapshot, &c, &linked);
             f.impact.score = (6.0 * (c.weight + 1.0).log10()).clamp(4.0, 40.0);
             f.impact.label = format!("{} lookups", format::count(lookups));
             f.confidence = if lookups >= 1000.0 { Confidence::Medium } else { Confidence::Low };
@@ -257,20 +400,9 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
         f.metrics.insert(0, Metric::new("Share of DB time", share, Unit::Ratio));
     }
 
-    if let Some(note) = drop_large_includes(snapshot, &c.schema, &c.table, &mut c.include) {
-        f.caveats.push(note);
-    }
-    let wide_include = c.include.len() > MAX_INCLUDE;
-    if wide_include {
-        f.caveats.push(format!(
-            "SQL Server also suggested including {} more columns. That makes a large, write-heavy index; the fix keeps the keys only. Add INCLUDE columns only for the columns the hot queries actually select.",
-            c.include.len()
-        ));
-        c.include.clear();
-    }
-
     if let Some((last, window)) = wanted_before_window(snapshot, &c) {
         f.inactive = true;
+        f.title = format!("{} was searched by {} without a supporting index", c.table, key_text);
         f.severity = Severity::Low;
         f.impact.score *= 0.25;
         f.last_seen = Some(last.clone());
@@ -284,11 +416,66 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
         );
     }
 
-    f.fix = Some(candidate_fix(snapshot, &c, &linked).fix);
-    f.verify = vec![
-        "Create the index, let the workload run, then re-scan: this suggestion should disappear.".into(),
-        "The queries listed here should show an Index Seek on the new index and far fewer reads per execution.".into(),
-    ];
+    if too_small_to_index(snapshot, &c, &linked) {
+        return too_small_finding(snapshot, f, &c, &linked);
+    }
+    // A request no query in the window made is history: it gets no index of its own.
+    if f.inactive {
+        let writes = measured_writes(snapshot, &c.schema, &c.table)
+            .filter(|(writes, _)| *writes > 0.0)
+            .map(|(writes, days)| {
+                format!(
+                    ", and an index on {key_text} would add to every write on {table_name} ({})",
+                    how_many(snapshot, writes, days, "write", "writes")
+                )
+            })
+            .unwrap_or_default();
+        f.fix = Some(Fix {
+            summary: format!(
+                "Nothing to create unless the statements that wanted it come back: they have most likely changed or \
+                 stopped running{writes}. If they come back, the optimizer asks for it again, and a scan then shows \
+                 them and the index to create."
+            ),
+            sql: None,
+            cost: None,
+        });
+        f.verify = vec![
+            "Nothing to check unless they come back: if the optimizer asks for this index again within a scan's \
+             window, this finding names the queries behind it and gives the index to create."
+                .into(),
+        ];
+        return f;
+    }
+    // Columns to include matter only for an index worth creating.
+    if let Some(note) = drop_large_includes(snapshot, &c.schema, &c.table, &mut c.include) {
+        f.caveats.push(note);
+    }
+    let wide_include = c.include.len() > MAX_INCLUDE;
+    if wide_include {
+        f.caveats.push(format!(
+            "SQL Server also suggested including {} more columns. That makes a large, write-heavy index; the fix keeps the keys only. Add INCLUDE columns only for the columns the hot queries actually select.",
+            c.include.len()
+        ));
+        c.include.clear();
+    }
+
+    let fixed = candidate_fix(snapshot, &c, &linked);
+    // A widen rebuilds an existing index under its own name: the queries seek that one, not a new one.
+    let first = match (&fixed.widens, fixed.fix.sql.is_some()) {
+        (Some(name), true) => {
+            format!("Rebuild {name} as above, let the workload run, then re-scan: this suggestion should disappear.")
+        }
+        (Some(name), false) => format!("Once the queries use {name}, re-scan: this suggestion should disappear."),
+        (None, _) => "Create the index, let the workload run, then re-scan: this suggestion should disappear.".into(),
+    };
+    f.verify = vec![first];
+    if !linked.is_empty() {
+        f.verify.push(format!(
+            "The queries listed here should show an Index Seek on {} and far fewer reads per execution.",
+            fixed.widens.as_deref().unwrap_or("the new index")
+        ));
+    }
+    f.fix = Some(fixed.fix);
     f.caveats.push("Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.".into());
     f
 }
@@ -328,16 +515,22 @@ pub(crate) struct CandidateFix {
 /// the index advisor both take it from here, so they never disagree.
 pub(crate) fn candidate_fix(snapshot: &Snapshot, c: &Candidate, linked: &[&QueryStat]) -> CandidateFix {
     let keys = c.keys();
-    let create = |why: Option<String>| Fix {
-        summary: format!(
-            "{}Create an index on {}{}. Equality columns come first; put the most selective one at the front if you know it.{}",
+    let create = |why: Option<String>| {
+        new_index_fix(snapshot, &c.schema, &c.table, &keys, &c.include, linked, format!(
+            "{}Create an index on {}{}.{}{}",
             why.map(|w| format!("{w} ")).unwrap_or_default(),
             format::list(&keys),
             if c.include.is_empty() { String::new() } else { format!(", including {}", format::list(&c.include)) },
+            // Key order is a choice only among two or more columns compared with a value.
+            if c.equality.len() >= 2 {
+                " Equality columns come first; put the most selective one at the front if you know it."
+            } else {
+                ""
+            },
             filtered_bystander(snapshot, c, linked)
-                .map(|i| {
+                .map(|(i, has)| {
                     let rows = format!(
-                        " {} has these keys but holds only the rows where {}",
+                        " {} {has} but holds only the rows where {}",
                         i.name,
                         readable_filter(i.filter.as_deref().unwrap_or_default())
                     );
@@ -347,12 +540,56 @@ pub(crate) fn candidate_fix(snapshot: &Snapshot, c: &Candidate, linked: &[&Query
                         _ => format!("{rows}, which the queries below don't ask for."),
                     }
                 })
+                .or_else(|| {
+                    let (i, o) = lacks_only_the_range(snapshot, c, linked)?;
+                    Some(format!(
+                        " {} already finds these rows by {}{}, but has no key for {}: this index seeks the range as well.",
+                        i.name,
+                        format::list(&o.seeks),
+                        i.filter
+                            .as_deref()
+                            .map(|f| format!(", in the rows where {}", readable_filter(f)))
+                            .unwrap_or_default(),
+                        format::list(&o.missing)
+                    ))
+                })
                 .unwrap_or_default()
-        ),
-        sql: Some(create_index_sql(snapshot, &c.schema, &c.table, &keys, &c.include)),
-        cost: write_cost(snapshot, &c.schema, &c.table),
+        ))
     };
     let Some(existing) = existing_match(snapshot, c, linked) else {
+        if let Some((index, overlap, add)) = overlapping_index(snapshot, c, linked)
+            && let Widening::Sql(fix) = widen_index(snapshot, index, &add)
+        {
+            let filter = index
+                .filter
+                .as_deref()
+                .map(|f| format!(", in the rows where {}", readable_filter(f)))
+                .unwrap_or_default();
+            let lead = format!("{} already finds these rows by {}{filter}", index.name, format::list(&overlap.seeks));
+            let summary = if overlap.missing.is_empty() {
+                format!(
+                    "{lead}. Rebuild it with {} included rather than add an index, so it covers {} without going back to the table.",
+                    format::list(&add),
+                    if linked.len() == 1 { "the query below" } else { "the queries below" }
+                )
+            } else {
+                format!(
+                    "{lead}: all the request asks for but {}. Widen it rather than add an index: with {} included, it checks {} on the rows it finds without going back to the table, and there is one index fewer to maintain.",
+                    format::list(&overlap.missing),
+                    format::list(&add),
+                    format::list(&overlap.missing)
+                )
+            };
+            return CandidateFix {
+                fix: Fix {
+                    summary: format!(
+                        "{summary} The statement keeps its keys, their order, its filter and the columns it already includes; restate DATA_COMPRESSION, FILLFACTOR or its partition scheme in it if the index uses them."
+                    ),
+                    ..fix
+                },
+                widens: Some(index.name.clone()),
+            };
+        }
         return CandidateFix { fix: create(None), widens: None };
     };
     let widened = |fix: Fix| CandidateFix { fix, widens: Some(existing.name.clone()) };
@@ -371,6 +608,100 @@ pub(crate) fn candidate_fix(snapshot: &Snapshot, c: &Candidate, linked: &[&Query
         sql: None,
         cost: None,
     })
+}
+
+/// Tables of this many rows or more: reading one in full where a seek would do costs something. Under it, an index is
+/// advice only where the statements that want one take real time. The bar every index advice for a table's reads uses.
+pub(crate) const SCAN_ROWS: f64 = 10_000.0;
+
+/// Pages a run from which what the queries behind a request read is real reading, not the few pages any lookup reads.
+const MEASURED_READS: f64 = 100.0;
+
+/// The pages a run the queries behind a request read, over all their runs; `None` where the engine doesn't count them.
+fn reads_per_run(linked: &[&QueryStat]) -> Option<f64> {
+    let runs: f64 = linked.iter().map(|q| q.executions).sum();
+    let reads: f64 = linked.iter().map(|q| q.logical_reads).sum::<Option<f64>>()?;
+    (runs > 0.0).then(|| reads / runs)
+}
+
+/// How much an optimizer request is worth: what the queries that asked for it would save (their time times its
+/// estimated gain), or, with none of them in the window, how often it was asked for.
+fn request_severity(snapshot: &Snapshot, c: &Candidate, linked: &[&QueryStat]) -> Severity {
+    match query_impact(snapshot, linked) {
+        Some(impact) => {
+            let gain = (c.impact_pct / 100.0).clamp(0.0, 1.0);
+            let time_ms: f64 = linked.iter().map(|q| q.total_time_ms).sum();
+            severity_for_time(snapshot, time_ms * gain, impact.share * gain)
+        }
+        None => unlinked_severity(snapshot, c, c.seeks + c.scans),
+    }
+}
+
+/// Whether a request is on a table too small for an index to pay: under [`SCAN_ROWS`] rows reading it whole costs
+/// little, so unless what its queries would save comes to real time (above Low), or Azure SQL, weighing a longer
+/// history, recommends the same index, an index costs every write more than it saves. The missing-index finding and the
+/// index advisor both ask this, so neither advises what the other calls not worth it.
+pub(crate) fn too_small_to_index(snapshot: &Snapshot, c: &Candidate, linked: &[&QueryStat]) -> bool {
+    snapshot.table(&c.schema, &c.table).and_then(|t| t.rows).is_some_and(|rows| rows < SCAN_ROWS)
+        && request_severity(snapshot, c, linked) == Severity::Low
+        && crate::tuning::recommended_create(snapshot, &c.schema, &c.table, &c.keys()).is_none()
+}
+
+/// The finding for a request on a table too small for an index to pay ([`too_small_to_index`]): what the optimizer
+/// asked for, and why there is nothing to create.
+fn too_small_finding(snapshot: &Snapshot, mut f: Finding, c: &Candidate, linked: &[&QueryStat]) -> Finding {
+    let rows = snapshot.table(&c.schema, &c.table).and_then(|t| t.rows).unwrap_or(0.0);
+    let table_name = format!("{}.{}", c.schema, c.table);
+    f.title = format!("SQL Server asks for an index on {}, which is too small for one to pay off", c.table);
+    f.severity = Severity::Low;
+    f.confidence = Confidence::Medium;
+    f.impact.score *= 0.25;
+    let time_ms: f64 = linked.iter().map(|q| q.total_time_ms).sum();
+    let took = match (linked.len(), snapshot.workload.as_ref()) {
+        (0, _) | (_, None) => String::new(),
+        (n, Some(w)) => format!(
+            ", and the {} that asked for it took {} in {}",
+            if n == 1 { "query".to_string() } else { format!("{n} queries") },
+            format::duration(time_ms),
+            w.window_phrase()
+        ),
+    };
+    let writes = measured_writes(snapshot, &c.schema, &c.table)
+        .filter(|(writes, _)| *writes > 0.0)
+        .map(|(writes, days)| format!(" ({})", how_many(snapshot, writes, days, "write", "writes")))
+        .unwrap_or_default();
+    // An index the table has that already narrows these lookups by most of their columns: what they can use meanwhile.
+    let existing = serving_index(snapshot, c)
+        .map(|(i, o)| {
+            format!(
+                " {} already leads with {}{}.",
+                i.name,
+                format::list(&o.seeks),
+                i.filter
+                    .as_deref()
+                    .map(|filter| format!(", for the rows where {}", readable_filter(filter)))
+                    .unwrap_or_default()
+            )
+        })
+        .unwrap_or_default();
+    f.fix = Some(Fix {
+        summary: format!(
+            "Nothing to create while {table_name} stays this small: it holds {} rows{took}, so reading it whole costs \
+             little, and an index on {} would add to every one of its writes{writes}.{existing} Create one only if the \
+             table grows past {} rows or these lookups come to take real time.",
+            format::count(rows),
+            format::list(&c.keys()),
+            format::count(SCAN_ROWS)
+        ),
+        sql: None,
+        cost: None,
+    });
+    f.verify = vec![format!(
+        "Nothing to check while it stays this small: once {table_name} holds {} rows or more, a scan says whether the index is worth creating.",
+        format::count(SCAN_ROWS)
+    )];
+    f.caveats.push("Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.".into());
+    f
 }
 
 /// A request no query in the window shows: Medium only for a large estimated gain asked for often, a thousand
@@ -509,7 +840,7 @@ pub(crate) fn parameterized_filter<'a>(
         // Every condition of the filter: the request asks for its column, and a query passes it as a parameter.
         let all_passed = conditions.iter().all(|(column, _)| {
             c.equality.iter().any(|k| k.eq_ignore_ascii_case(column))
-                && asking.iter().any(|q| compares_to_parameter(&q.text, column))
+                && asking.iter().any(|q| compares_to_parameter(&q.text, &c.table, column))
         });
         if !all_passed {
             return None;
@@ -550,13 +881,13 @@ pub(super) fn filter_equalities(filter: &str) -> Option<Vec<(String, String)>> {
         .filter(|c| !c.is_empty())
 }
 
-pub(super) fn is_literal(word: &str) -> bool {
+pub(crate) fn is_literal(word: &str) -> bool {
     word.parse::<f64>().is_ok() || (word.ends_with('\'') && (word.starts_with('\'') || word.starts_with("N'")))
 }
 
-/// Whether `text` compares `column` to a parameter: `[column] = @p`, `t.column = @p` or `@p = column`.
-pub(super) fn compares_to_parameter(text: &str, column: &str) -> bool {
-    compared_to(text, column, |value| value.starts_with('@') && value.len() > 1)
+/// Whether `text` compares `table`'s `column` to a parameter: `[column] = @p`, `t.column = @p` or `@p = column`.
+pub(super) fn compares_to_parameter(text: &str, table: &str, column: &str) -> bool {
+    compared_to(text, table, column, |value| value.starts_with('@') && value.len() > 1)
 }
 
 /// Whether `a` and `b` are the same literal: `0` and `(0)`, `'open'` and `N'open'`.
@@ -572,26 +903,39 @@ pub(super) fn same_literal(a: &str, b: &str) -> bool {
     }
 }
 
-/// Whether `text` compares `column` with `=` to a value `wanted` accepts, on either side, the column perhaps bracketed
-/// or qualified: `[column] = @p`, `t.column = 0`, `N'open' = column`. Text is compared lower-cased.
-pub(super) fn compared_to(text: &str, column: &str, wanted: impl Fn(&str) -> bool) -> bool {
+/// Whether `text` compares `table`'s `column` with `=` to a value `wanted` accepts, on either side, the column perhaps
+/// bracketed or qualified: `[column] = @p`, `t.column = 0`, `N'open' = column`. A column qualified by another table's
+/// name or alias (`[app].[call_sessions].[is_deleted] = 0` in a join) is that table's, not this one's. Text is compared
+/// lower-cased, its aliases read as SQL Server writes them (the optimizer's requests and Azure's are its own).
+pub(crate) fn compared_to(text: &str, table: &str, column: &str, wanted: impl Fn(&str) -> bool) -> bool {
     let plain = text.chars().filter(|c| !matches!(c, '[' | ']' | '"')).collect::<String>().to_ascii_lowercase();
     let column = column.to_ascii_lowercase();
+    let table = table.to_ascii_lowercase();
+    let aliases = culprit_core::sql::table_aliases(text, Engine::Mssql);
+    let ours = |qualifier: &str| {
+        qualifier == table
+            || aliases.iter().any(|(alias, name)| alias == qualifier && name.rsplit('.').next() == Some(table.as_str()))
+    };
     let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '#' | '$');
     plain.match_indices(&column).any(|(at, _)| {
         let end = at + column.len();
         if plain[..at].chars().next_back().is_some_and(part) || plain[end..].chars().next().is_some_and(part) {
             return false;
         }
+        // The column perhaps qualified: by this table, or an alias the statement gives it.
+        let mut before = &plain[..at];
+        if let Some(qualified) = before.strip_suffix('.') {
+            let unqualified = qualified.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+            if !ours(&qualified[unqualified.len()..]) {
+                return false;
+            }
+            before = unqualified;
+        }
         // `column = value`
         if let Some(value) = plain[end..].trim_start().strip_prefix('=') {
             return wanted(operand_after(value));
         }
-        // `value = column`, the column perhaps qualified
-        let mut before = &plain[..at];
-        if let Some(qualified) = before.strip_suffix('.') {
-            before = qualified.trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
-        }
+        // `value = column`
         before.trim_end().strip_suffix('=').is_some_and(|lhs| {
             // `<=`, `>=` and `!=` aren't equality.
             !lhs.ends_with(['<', '>', '!']) && wanted(operand_before(lhs))
@@ -791,19 +1135,36 @@ pub(crate) fn drop_large_includes(
         return None;
     }
     include.retain(|c| !is_large(c));
-    let size = snapshot
-        .table(schema, table)
-        .and_then(|t| t.data_bytes)
-        .map(|b| format!(" ({schema}.{table} holds {})", format::bytes(b)))
-        .unwrap_or_default();
-    Some(format!(
-        "Left {} out of INCLUDE: {} large values, and including {} would copy that data into the index{size}. The rows the \
-         index finds go back to the table for {}, which costs less.",
-        format::list(&large),
-        if large.len() == 1 { "it holds" } else { "they hold" },
-        if large.len() == 1 { "it" } else { "them" },
-        if large.len() == 1 { "it" } else { "them" },
-    ))
+    let one = large.len() == 1;
+    let (it, they) = if one { ("it", "it") } else { ("them", "they") };
+    // What the table keeps apart from its rows (LOB and row-overflow pages) says whether the large values are there; the
+    // type alone says only that they can be.
+    let apart = snapshot.table(schema, table).and_then(|t| match (t.lob_bytes, t.overflow_bytes) {
+        (None, None) => None,
+        (lob, overflow) => Some(lob.unwrap_or(0.0) + overflow.unwrap_or(0.0)),
+    });
+    Some(match apart {
+        Some(bytes) if bytes > 0.0 => format!(
+            "Left {} out of INCLUDE: {} type can hold large values, and {schema}.{table} keeps {} of large values apart \
+             from its rows. Including {it} could copy that data into the index; the rows the index finds go back to the \
+             table for {it}, which costs less.",
+            format::list(&large),
+            if one { "its" } else { "their" },
+            format::bytes(bytes),
+        ),
+        _ => format!(
+            "Left {} out of INCLUDE: {} type can hold large values{}, and including {it} would copy whatever {they} \
+             {} into the index. The rows the index finds go back to the table for {it}.",
+            format::list(&large),
+            if one { "its" } else { "their" },
+            if apart.is_some() {
+                format!(", though {schema}.{table} keeps none apart from its rows now")
+            } else {
+                String::new()
+            },
+            if one { "holds" } else { "hold" },
+        ),
+    })
 }
 
 /// Inserts, updates and deletes a day on a table, from the clustered index's update counter (SQL Server) or the

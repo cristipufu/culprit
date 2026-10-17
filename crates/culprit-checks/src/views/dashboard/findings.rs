@@ -45,9 +45,31 @@ pub(super) fn findings(report: &Report) -> Tile {
     ];
     if stopped > 0 {
         tile.metrics.push(TileMetric::new("stopped", "Stopped running", Some(stopped as f64), stopped.to_string()));
+        // Unchanged since Culprit's first scan, that scan is only the latest they can have run: they may have stopped
+        // long before it, and the deploy that changed them may be an earlier one.
+        let by_first_scan = report.snapshot.workload.as_ref().is_some_and(|w| {
+            report
+                .findings
+                .iter()
+                .filter(|f| f.inactive)
+                .all(|f| f.last_seen.as_deref().is_some_and(|last| crate::refine::last_ran_by_first_scan(w, last)))
+        });
+        // One statement behind them all is "a query … it", however many findings rest on it.
+        let behind = crate::summary::Stopped::of(&report.findings);
+        let one = behind.statements + behind.unnamed == 1;
+        let (queries, it) = if one { ("a query that", "it") } else { ("queries that", "them") };
         tile.detail = Some(format!(
-            "{} about queries that stopped running, most likely changed by a deploy.",
-            capitalized(&plural(stopped, "more is", "more are"))
+            "{} about {queries} {}.",
+            capitalized(&plural(stopped, "more is", "more are")),
+            if by_first_scan {
+                format!(
+                    "{} run since Culprit's first scan and may have stopped before it: a deploy before that scan may \
+                     have changed {it}",
+                    if one { "hasn't" } else { "haven't" }
+                )
+            } else {
+                format!("stopped running: a deploy may have changed {it}")
+            }
         ));
     }
     tile.items = top

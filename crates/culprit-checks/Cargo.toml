@@ -4,6 +4,17 @@ description = "Culprit's built-in checks: pure functions from a Snapshot to Find
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# The files in tests/ are modules of one test binary, tests/all.rs.
+autotests = false
+
+[lib]
+# Its doc comments hold no Rust examples: rustdoc would have nothing to test.
+doctest = false
+
+# All of tests/ in one binary: each test binary is linked, and scanned on its first run, on its own.
+[[test]]
+name = "all"
+path = "tests/all.rs"
 
 [dependencies]
 culprit-core.workspace = true

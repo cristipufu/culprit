@@ -29,7 +29,7 @@ object: string | null,
  */
 db_time_share: number | null, total_ms: number, runs: number, mean_ms: number, 
 /**
- * It stopped running before the window ended, most likely changed by a deploy.
+ * It stopped running before the window ended: a deploy may have changed it.
  */
 stopped: boolean, 
 /**

@@ -54,6 +54,62 @@ fn postgres_tables_read_in_full_are_flagged_and_advised() {
     assert!(advice.notes.iter().any(|n| n.contains("PostgreSQL doesn't record missing-index requests")));
 }
 
+// The advisor lists a table read in full only where the scan-heavy finding does, with that finding's statements: full
+// reads that all come from a statement with no WHERE (a report over every row) have no filter to index, so neither the
+// finding nor the advisor speaks.
+#[test]
+fn the_advisor_lists_a_table_read_in_full_only_with_its_finding() {
+    let planted = |where_clause: bool| {
+        let mut s = ten_days(snapshot("postgres-demo.json"));
+        let t = s.tables.iter_mut().find(|t| t.name == "events").expect("events");
+        let rows = t.rows.unwrap();
+        t.seq_scans = Some(4000.0);
+        t.seq_rows_read = Some(4000.0 * rows);
+        let w = s.workload.as_mut().unwrap();
+        let mut q = w.queries.iter().find(|q| q.id == "-3722457391793582113").unwrap().clone();
+        q.id = "4242".into();
+        q.text = if where_clause {
+            "SELECT count(*) FROM events WHERE kind = $1".into()
+        } else {
+            "SELECT kind, count(*) FROM events GROUP BY kind".into()
+        };
+        q.executions = 4000.0;
+        fn retarget(n: &mut PlanNode) {
+            if n.object.is_some() {
+                n.object = Some("public.events".into());
+                n.predicate = None;
+            }
+            n.children.iter_mut().for_each(retarget);
+        }
+        retarget(&mut q.plan.as_mut().unwrap().root);
+        w.queries.push(q);
+        analyze(s)
+    };
+    let report = planted(true);
+    let finding = report.findings.iter().find(|f| f.id == "scan-heavy:public.events").expect("scan-heavy");
+    let advice = index_advice(&report);
+    let table =
+        advice.tables.iter().find(|t| t.kind == TableAdviceKind::ScanHeavy && t.table == "events").expect("listed");
+    assert_eq!(table.finding_id.as_deref(), Some(finding.id.as_str()));
+    assert_eq!(
+        table.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(),
+        finding.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>()
+    );
+    assert!(
+        table.reason.ends_with("Explain the statement listed with it to see which filter has no index."),
+        "{}",
+        table.reason
+    );
+
+    let report = planted(false);
+    assert!(!report.findings.iter().any(|f| f.id == "scan-heavy:public.events"), "{:?}", ids_of(&report));
+    assert!(!index_advice(&report).tables.iter().any(|t| t.kind == TableAdviceKind::ScanHeavy && t.table == "events"));
+}
+
+fn ids_of(report: &culprit_core::Report) -> Vec<&str> {
+    report.findings.iter().map(|f| f.id.as_str()).collect()
+}
+
 #[test]
 fn mysql_rows_read_without_an_index_count_as_full_reads() {
     let mut s = ten_days(snapshot("mysql-demo.json"));
@@ -216,6 +272,37 @@ fn forced_plans_are_listed_and_one_that_scans_past_a_newer_index_stands_out() {
     let list = &listed.caveats[0];
     assert!(list.contains(": plan 9, forced by automatic tuning on Oct 3."), "{list}");
     assert!(list.contains("Query 90001: plan 4, forced by hand; not run since Oct 2."), "{list}");
+    // CX-L: with automatic plan correction off (or unknown), nothing checks a forced plan.
+    assert!(
+        listed.summary.ends_with(
+            "Once the query or its indexes change, a forced plan can become the slower one without anything saying so."
+        ),
+        "{}",
+        listed.summary
+    );
+    // On, it keeps checking the plan it forced; only the one forced by hand goes unchecked.
+    let mut on = s.clone();
+    on.tuning.as_mut().unwrap().automatic_tuning = vec![AutomaticTuningOption {
+        name: "FORCE_LAST_GOOD_PLAN".into(),
+        desired: "ON".into(),
+        actual: "ON".into(),
+        reason: None,
+    }];
+    let checked = tuning(&on).into_iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plans");
+    assert!(
+        checked.summary.ends_with(
+            "Automatic plan correction forced one of them after its query got slower with a new plan. It is still on, \
+             so it keeps checking the plans it forced and unforces one that turns out slower. The other plan stays \
+             forced until someone unforces it: once its query or indexes change, it can become the slower one \
+             without anything saying so."
+        ),
+        "{}",
+        checked.summary
+    );
+    on.tuning.as_mut().unwrap().forced_plans.retain(|p| p.query_id == "9");
+    let all = tuning(&on).into_iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plan");
+    assert!(!all.summary.contains("without anything saying so"), "{}", all.summary);
+    assert!(all.summary.ends_with("unforces one that turns out slower."), "{}", all.summary);
     assert!(
         listed
             .fix
@@ -695,4 +782,632 @@ fn a_filtered_index_is_widened_only_for_queries_that_fit_its_filter() {
     let sql = report.findings.iter().find(|f| f.id == id).expect("the request").fix.clone().unwrap().sql.unwrap();
     assert!(sql.starts_with("CREATE NONCLUSTERED INDEX [ix_support_tickets_customer_id]"), "{sql}");
     assert!(sql.contains("WITH (DROP_EXISTING = ON") && !sql.contains("WHERE"), "{sql}");
+}
+
+/// One check's findings on a snapshot, before the pipeline refines them.
+fn run(check: &str, s: &Snapshot) -> Vec<Finding> {
+    culprit_checks::all().into_iter().find(|c| c.info().id == check).expect("a check").run(s)
+}
+
+// A one-off monitoring statement (`SELECT TOP 15 … FROM sys.query_store_*`) is the operator's, not the application's:
+// the plan-insights check passes it over, as the other checks do, however its plan reads.
+#[test]
+fn a_monitoring_statement_gets_no_plan_insight_findings() {
+    let mut s = snapshot("mssql-demo.json");
+    // Query 10 looks up 20K tickets one at a time: nearly all of its plan's work.
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "10").unwrap();
+    let plan = q.plan.as_mut().unwrap();
+    (plan.total_cost, plan.root.subtree_cost) = (61.0, 61.0);
+    let lookup = node_mut(&mut plan.root, 4).unwrap();
+    lookup.est_executions = 20_000.0;
+    (lookup.self_cost, lookup.subtree_cost) = (60.0, 60.0);
+    let on_10 = |s: &Snapshot| run("plan-insights", s).into_iter().any(|f| f.queries.iter().any(|r| r.id == "10"));
+    assert!(on_10(&s), "the application's statement");
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "10").unwrap();
+    q.text = format!("SELECT TOP 15 q.query_id FROM sys.query_store_query q CROSS APPLY ({}) t", q.text);
+    assert!(!on_10(&s), "a monitoring statement");
+}
+
+// An index that already finds the request's rows by all of its columns but one is widened with that one, not joined
+// by a near twin. One column of two is too little to go on.
+#[test]
+fn a_request_one_column_past_an_existing_index_widens_it() {
+    let id = "missing-index:shop.support_tickets(customer_id,priority,is_deleted)";
+    let with_index = |mut s: Snapshot, name: &str, columns: &[&str], filter: Option<&str>| {
+        let mut i = s.indexes.iter().find(|i| i.name == "ix_support_tickets_customer_id").unwrap().clone();
+        i.name = name.into();
+        i.columns = columns.iter().map(|c| c.to_string()).collect();
+        i.filter = filter.map(str::to_string);
+        s.indexes.push(i);
+        s
+    };
+    let request = || asked(&["customer_id", "priority", "is_deleted"], &[], &["status"], "[is_deleted] = 0", None);
+    let fix = |s: Snapshot| analyze(s).findings.into_iter().find(|f| f.id == id).expect("the request").fix.unwrap();
+
+    let s = with_index(request(), "ix_support_tickets_priority_customer", &["priority", "customer_id"], None);
+    let report = analyze(s);
+    let widen = report.findings.iter().find(|f| f.id == id).expect("the request").fix.clone().unwrap();
+    assert!(
+        widen.summary.starts_with(
+            "ix_support_tickets_priority_customer already finds these rows by priority and customer_id: all the \
+             request asks for but is_deleted. Widen it rather than add an index"
+        ),
+        "{}",
+        widen.summary
+    );
+    let sql = widen.sql.unwrap();
+    assert!(
+        sql.starts_with(
+            "CREATE NONCLUSTERED INDEX [ix_support_tickets_priority_customer]\n    ON [shop].[support_tickets] ([priority], [customer_id])\n    INCLUDE ([is_deleted], [status])\n    WITH (DROP_EXISTING = ON"
+        ),
+        "{sql}"
+    );
+    let advice = index_advice(&report);
+    let c = advice.candidates.iter().find(|c| c.finding_id.as_deref() == Some(id)).expect("advised");
+    assert_eq!(c.widens.as_deref(), Some("ix_support_tickets_priority_customer"));
+
+    // A filtered index serves the queries that ask for the rows it holds: its filter stands for is_deleted.
+    let filtered =
+        || with_index(request(), "ix_support_tickets_open", &["customer_id", "priority"], Some("([is_deleted]=(0))"));
+    let widen = fix(filtered());
+    assert!(
+        widen.summary.starts_with(
+            "ix_support_tickets_open already finds these rows by customer_id and priority, in the rows where \
+             is_deleted = 0. Rebuild it with status included"
+        ),
+        "{}",
+        widen.summary
+    );
+    assert!(
+        widen.sql.unwrap().contains("INCLUDE ([status])\n    WHERE ([is_deleted]=(0))\n    WITH (DROP_EXISTING = ON")
+    );
+
+    // No query in the scan to show they ask for those rows: a new index, and the filtered one named.
+    let mut s = filtered();
+    s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
+    let create = fix(s);
+    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
+    assert!(
+        create.summary.ends_with(
+            " ix_support_tickets_open leads with customer_id and priority but holds only the rows where is_deleted = 0, \
+             and Culprit can't show that these lookups ask for only those."
+        ),
+        "{}",
+        create.summary
+    );
+
+    // ix_support_tickets_customer_id seeks on customer_id alone: not enough of (customer_id, is_deleted) to widen.
+    let report = analyze(asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = 0", None));
+    let create = report.findings.iter().find(|f| f.id == ASKED).expect("the request").fix.clone().unwrap();
+    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
+}
+
+// Confidence is how sure, severity how much. The optimizer's 95% of runs that read 2,000 pages each of a 300K-row
+// table is certain however little time they took; of runs that read 3 pages it is a guess about very little.
+#[test]
+fn a_missing_index_is_as_confident_as_what_its_runs_read() {
+    let request = |ms: Option<f64>, pages_a_run: f64| {
+        let mut s = asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = @par1", None);
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "4242").unwrap();
+        q.logical_reads = Some(q.executions * pages_a_run);
+        if let Some(ms) = ms {
+            q.total_time_ms = ms;
+        }
+        analyze(s).findings.into_iter().find(|f| f.id == ASKED).expect("the request")
+    };
+    let busy = request(None, 2_000.0);
+    assert!(busy.severity >= Severity::Medium, "{:?}", busy.severity);
+    assert_eq!(busy.confidence, culprit_core::Confidence::High);
+    let quiet = request(Some(27.0), 2_000.0);
+    assert_eq!((quiet.severity, quiet.confidence), (Severity::Low, culprit_core::Confidence::High));
+    let cheap = request(None, 3.0);
+    assert_eq!(cheap.confidence, culprit_core::Confidence::Medium);
+
+    // The demo's lookup by order_id scans the 1.5M-row clustered index for 1.5 rows (7,993 pages a run), and SQL
+    // Server estimates 99% cheaper: certain, though it takes little time.
+    let report = analyze(snapshot("mssql-demo.json"));
+    let f = report.findings.iter().find(|f| f.id == "missing-index:shop.order_items(order_id)").expect("the request");
+    assert_eq!(f.confidence, culprit_core::Confidence::High);
+    // One key: no word about the order of keys.
+    assert_eq!(f.fix.as_ref().unwrap().summary, "Create an index on order_id.");
+}
+
+// A request on a table too small for an index to pay (160 rows, 27 ms of queries in the scan) says there's nothing to
+// create, with no SQL, and the index advisor doesn't list it; the same request on a large table is advice.
+#[test]
+fn a_table_too_small_for_an_index_gets_none() {
+    let small = |rows: f64| {
+        let mut s = asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = @par1", None);
+        s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap().rows = Some(rows);
+        s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "4242").unwrap().total_time_ms = 27.0;
+        analyze(s)
+    };
+    let report = small(160.0);
+    let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert_eq!(f.title, "SQL Server asks for an index on support_tickets, which is too small for one to pay off");
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with(
+            "Nothing to create while shop.support_tickets stays this small: it holds 160 rows, and the query that asked for it took 27 ms in "
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(!index_advice(&report).candidates.iter().any(|c| c.table == "support_tickets" && c.keys.len() == 2));
+
+    // An index there already narrows these lookups by most of their columns (a staging database's *_active indexes, filtered
+    // to is_deleted = 0): the fix names it.
+    let index: &[&str] = &["customer_id"];
+    let mut s = asked(&["customer_id", "is_deleted"], &["opened_at"], &[], "[is_deleted] = 0", Some(index));
+    s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap().rows = Some(1_200.0);
+    s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "4242").unwrap().total_time_ms = 27.0;
+    let report = analyze(s);
+    let f = report
+        .findings
+        .iter()
+        .find(|f| f.id == "missing-index:shop.support_tickets(customer_id,is_deleted,opened_at)")
+        .expect("the request");
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.contains(
+            " ix_support_tickets_open already leads with customer_id, for the rows where is_deleted = 0. Create one only \
+             if the table grows past 10K rows"
+        ),
+        "{}",
+        fix.summary
+    );
+
+    let large = small(300_000.0);
+    let f = large.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().is_some_and(|sql| sql.starts_with("CREATE")), "{:?}", f.fix);
+}
+
+// A request with a range (pending_generation) on a table whose filtered index already finds its rows by the equality
+// columns (tenant_id and account_id, where is_deleted = 0) names that index, as one without a range does.
+#[test]
+fn an_index_that_lacks_only_the_range_is_named() {
+    const RANGED: &str = "missing-index:shop.support_tickets(customer_id,is_deleted,opened_at)";
+    let index: &[&str] = &["customer_id"];
+    // No query in the scan to show they ask for those rows.
+    let mut s = asked(&["customer_id", "is_deleted"], &["opened_at"], &[], "[is_deleted] = 0", Some(index));
+    s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
+    let report = analyze(s);
+    let fix = report.findings.iter().find(|f| f.id == RANGED).expect("the request").fix.clone().unwrap();
+    assert!(
+        fix.summary.ends_with(
+            " ix_support_tickets_open leads with customer_id but holds only the rows where is_deleted = 0, and Culprit \
+             can't show that these lookups ask for only those."
+        ),
+        "{}",
+        fix.summary
+    );
+
+    // A query that asks for those rows: the index finds them by customer_id and has no key for the range, so the new
+    // index seeks it; nothing is widened to check the range row by row.
+    let report = analyze(asked(&["customer_id", "is_deleted"], &["opened_at"], &[], "[is_deleted] = 0", Some(index)));
+    let fix = report.findings.iter().find(|f| f.id == RANGED).expect("the request").fix.clone().unwrap();
+    assert!(!fix.sql.as_deref().unwrap_or_default().contains("DROP_EXISTING"), "{:?}", fix.sql);
+    assert!(
+        fix.summary.ends_with(
+            " ix_support_tickets_open already finds these rows by customer_id, in the rows where is_deleted = 0, but \
+             has no key for opened_at: this index seeks the range as well."
+        ),
+        "{}",
+        fix.summary
+    );
+}
+
+// A widen rebuilds an existing index under its own name: the verify names it, not "the new index".
+#[test]
+fn a_widen_is_verified_on_the_index_it_rebuilds() {
+    let index: &[&str] = &["customer_id", "created_at"];
+    let report = analyze(asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = 0", Some(index)));
+    let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("DROP_EXISTING"), "{:?}", f.fix);
+    assert_eq!(
+        f.verify,
+        vec![
+            "Rebuild ix_support_tickets_open as above, let the workload run, then re-scan: this suggestion should disappear.".to_string(),
+            "The queries listed here should show an Index Seek on ix_support_tickets_open and far fewer reads per execution.".to_string(),
+        ]
+    );
+    let advice = index_advice(&report);
+    let c = advice.candidates.iter().find(|c| c.widens.as_deref() == Some("ix_support_tickets_open")).expect("advised");
+    assert!(
+        c.verify
+            .iter()
+            .any(|v| v == "The queries listed seek on ix_support_tickets_open and read far fewer pages per run."),
+        "{:?}",
+        c.verify
+    );
+}
+
+// A column whose type can hold large values stays out of INCLUDE; the caveat says the table holds large values only
+// where its LOB and row-overflow pages say so (a staging SQL Server reading said "it holds large values" of a table with none).
+#[test]
+fn large_values_are_said_only_where_the_table_keeps_them() {
+    let caveat = |lob: Option<f64>| {
+        let mut s = asked(&["customer_id", "is_deleted"], &[], &["subject"], "[is_deleted] = @par1", None);
+        s.columns.iter_mut().find(|c| c.table == "support_tickets" && c.name == "subject").unwrap().data_type =
+            "nvarchar(max)".into();
+        let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+        t.lob_bytes = lob;
+        t.overflow_bytes = lob.map(|_| 0.0);
+        let report = analyze(s);
+        let f = report.findings.iter().find(|f| f.id == ASKED).expect("the request");
+        f.caveats.iter().find(|c| c.starts_with("Left subject out of INCLUDE")).cloned().expect("the caveat")
+    };
+    assert_eq!(
+        caveat(Some(0.0)),
+        "Left subject out of INCLUDE: its type can hold large values, though shop.support_tickets keeps none apart from \
+         its rows now, and including it would copy whatever it holds into the index. The rows the index finds go back to \
+         the table for it."
+    );
+    assert_eq!(
+        caveat(Some(1.5 * 1024.0 * 1024.0)),
+        "Left subject out of INCLUDE: its type can hold large values, and shop.support_tickets keeps 1.5 MB of large \
+         values apart from its rows. Including it could copy that data into the index; the rows the index finds go back \
+         to the table for it, which costs less."
+    );
+    assert!(caveat(None).starts_with("Left subject out of INCLUDE: its type can hold large values, and including it"));
+}
+
+// Azure's index recommendations, read like the optimizer's requests: large values stay out of INCLUDE, an index that
+// already leads with the keys is named with its own key order and widened rather than twinned, a low score says the
+// index is hardly worth having, and an index that leads with some of the keys is pointed out.
+#[test]
+fn azure_index_recommendations_are_weighed_against_the_indexes_there() {
+    let mut s = snapshot("mssql-demo.json");
+    s.columns.iter_mut().find(|c| c.table == "support_tickets" && c.name == "subject").unwrap().data_type =
+        "nvarchar(max)".into();
+    let mut index = s.indexes.iter().find(|i| i.name == "ix_support_tickets_customer_id").unwrap().clone();
+    index.name = "ix_support_tickets_customer_priority".into();
+    index.columns = vec!["customer_id".into(), "priority".into()];
+    s.indexes.push(index);
+    let recommend = |name: &str, columns: &[&str], include: &[&str], score: f64| {
+        let quoted = |v: &[&str]| v.iter().map(|c| format!("[{c}]")).collect::<Vec<_>>().join(", ");
+        TuningRecommendation {
+            name: format!("IR_{name}"),
+            kind: "CreateIndex".into(),
+            state: Some("Active".into()),
+            score: Some(score),
+            script: Some(format!(
+                "CREATE NONCLUSTERED INDEX [{name}] ON [shop].[support_tickets] ({}){} WITH (ONLINE = ON)",
+                quoted(columns),
+                if include.is_empty() { String::new() } else { format!(" INCLUDE ({})", quoted(include)) }
+            )),
+            index: Some(RecommendedIndex {
+                schema: "shop".into(),
+                table: "support_tickets".into(),
+                name: Some(name.into()),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+                include: include.iter().map(|c| c.to_string()).collect(),
+            }),
+            ..Default::default()
+        }
+    };
+    s.tuning = Some(TuningAdvice {
+        recommendations: vec![
+            recommend("nci_1", &["priority", "customer_id"], &["subject"], 2.0),
+            recommend("nci_2", &["customer_id", "priority"], &["subject", "status"], 40.0),
+            recommend("nci_3", &["opened_at"], &[], 3.0),
+            recommend("nci_4", &["customer_id", "status"], &[], 60.0),
+        ],
+        ..Default::default()
+    });
+    let found = run("tuning-advice", &s);
+    let advice = |keys: &str| {
+        found
+            .iter()
+            .find(|f| f.id == format!("tuning-advice:create-index:shop.support_tickets({keys})"))
+            .unwrap_or_else(|| panic!("{keys}: {:?}", found.iter().map(|f| &f.id).collect::<Vec<_>>()))
+    };
+
+    // The index there differs only by the large column: nothing to create, said in the index's own key order.
+    let only_large = advice("priority,customer_id");
+    assert_eq!(
+        only_large.caveats[0],
+        "ix_support_tickets_customer_priority already leads with customer_id and priority; the recommended index \
+         differs from it only by including subject."
+    );
+    // CX-K: nothing to create, so nothing was left out of an index either.
+    assert!(
+        !only_large.caveats.iter().any(|c| c.starts_with("Left subject out of INCLUDE")),
+        "{:?}",
+        only_large.caveats
+    );
+    let fix = only_large.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with(
+            "Azure scores it 2 out of 100: it expects the index to save little next to what it costs every write, so \
+             it's usually not worth having. Nothing to create: ix_support_tickets_customer_priority already finds"
+        ),
+        "{}",
+        fix.summary
+    );
+
+    // A column worth including: the index there is widened with it, and never with the large one.
+    let widen = advice("customer_id,priority");
+    assert!(
+        widen.caveats[0].starts_with(
+            "ix_support_tickets_customer_priority already leads with customer_id and priority; the recommended index \
+             adds status"
+        ),
+        "{:?}",
+        widen.caveats
+    );
+    let sql = widen.fix.as_ref().unwrap().sql.as_deref().unwrap();
+    assert!(
+        sql.starts_with(
+            "CREATE NONCLUSTERED INDEX [ix_support_tickets_customer_priority]\n    ON [shop].[support_tickets] ([customer_id], [priority])\n    INCLUDE ([status])\n    WITH (DROP_EXISTING = ON"
+        ),
+        "{sql}"
+    );
+    assert!(!sql.contains("subject"), "{sql}");
+
+    // Scored low, with nothing there: Azure's word that it's hardly worth it comes first.
+    let low = advice("opened_at");
+    let fix = low.fix.as_ref().unwrap();
+    assert!(fix.summary.starts_with("Azure scores it 3 out of 100"), "{}", fix.summary);
+    assert!(fix.summary.contains("If the queries that read support_tickets are slow all the same, create it online"));
+    assert!(fix.sql.as_deref().unwrap().starts_with("CREATE NONCLUSTERED INDEX [nci_3]"));
+    assert!(low.caveats.is_empty(), "{:?}", low.caveats);
+
+    // An index leads with one of the keys: worth checking before adding another.
+    let partly = advice("customer_id,status");
+    assert_eq!(
+        partly.caveats[0],
+        "ix_support_tickets_customer_id already leads with customer_id, 1 of the 2 recommended keys: check whether \
+         the queries that read support_tickets use it before adding an index beside it."
+    );
+    assert!(partly.fix.as_ref().unwrap().summary.starts_with("Create it online"));
+}
+
+/// The demo with Azure's recommendation of an index on `table` (`columns`, including `include`), scored `score`.
+fn recommended(s: &mut Snapshot, table: &str, columns: &[&str], include: &[&str], score: f64) {
+    s.tuning = Some(TuningAdvice {
+        recommendations: vec![TuningRecommendation {
+            name: "IR_low".into(),
+            kind: "CreateIndex".into(),
+            state: Some("Active".into()),
+            score: Some(score),
+            valid_since: Some("2026-10-06T00:00:00Z".into()),
+            index: Some(RecommendedIndex {
+                schema: "shop".into(),
+                table: table.into(),
+                name: Some(format!("nci_msft_{table}")),
+                columns: columns.iter().map(|c| c.to_string()).collect(),
+                include: include.iter().map(|c| c.to_string()).collect(),
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+}
+
+// Azure scores an index low, but a heavy statement the scan measured filters on exactly its keys and reads 750 pages a
+// run to return nothing: the finding cites it and doesn't call the index not worth having. Without such a statement it
+// says the ones it was recommended for may be gone, and checking it is conditional, as the advice is.
+#[test]
+fn a_low_azure_score_gives_way_to_a_heavy_statement_on_its_keys() {
+    const ID: &str = "tuning-advice:create-index:shop.support_tickets(customer_id,status)";
+    let with_statement = |heavy: bool| {
+        let mut s = snapshot("mssql-demo.json");
+        recommended(&mut s, "support_tickets", &["customer_id", "status"], &[], 3.0);
+        let w = s.workload.as_mut().expect("workload");
+        let mut q = w.queries.iter().find(|q| q.id == "10").expect("query 10").clone();
+        q.id = "777".into();
+        q.query_hash = None;
+        q.plan = None;
+        q.plans = Vec::new();
+        q.text =
+            "SELECT [id], [subject] FROM [shop].[support_tickets] WHERE [customer_id] = @P1 AND [status] = @P2".into();
+        q.executions = 2000.0;
+        q.logical_reads = Some(1_500_000.0);
+        q.rows = Some(0.0);
+        q.total_time_ms = if heavy { 4000.0 } else { 40.0 };
+        q.mean_time_ms = q.total_time_ms / q.executions;
+        w.queries.push(q);
+        let report = analyze(s);
+        report.findings.into_iter().find(|f| f.id == ID).expect("the recommendation")
+    };
+
+    let heavy = with_statement(true);
+    let fix = heavy.fix.as_ref().unwrap().summary.clone();
+    assert!(!fix.contains("usually not worth having"), "{fix}");
+    assert!(
+        fix.contains("but a read from support_tickets, query 777 below, filters on exactly these columns, takes 10% of database time and reads 750 pages a run to return nothing: an index on them would find its rows directly. Create it online"),
+        "{fix}"
+    );
+    assert!(
+        heavy
+            .summary
+            .contains("a read from support_tickets (below) compares all of customer_id and status with a value"),
+        "{}",
+        heavy.summary
+    );
+    assert!(heavy.queries.iter().any(|q| q.id == "777"), "{:?}", heavy.queries);
+    assert_eq!(
+        heavy.verify,
+        vec![
+            "Re-scan a day later: the recommendation is gone, and query 777 reads far fewer than 750 pages a run."
+                .to_string()
+        ]
+    );
+
+    // A statement on the keys that takes little time doesn't outweigh Azure's score.
+    let light = with_statement(false);
+    assert!(light.fix.as_ref().unwrap().summary.contains("usually not worth having"));
+    assert!(light.verify[0].starts_with("Only if you apply it: re-scan a day later"), "{:?}", light.verify);
+
+    // No statement on the keys: say so, rather than "check that those queries still run as they did".
+    let mut s = snapshot("mssql-demo.json");
+    recommended(&mut s, "support_tickets", &["customer_id", "status"], &[], 3.0);
+    let none = analyze(s).findings.into_iter().find(|f| f.id == ID).expect("the recommendation");
+    assert!(
+        none.summary.ends_with("none of the statements this scan captured compares all of customer_id and status with a value: the ones it was recommended for may have changed, stopped running, or not be among them."),
+        "{}",
+        none.summary
+    );
+    assert!(!none.summary.contains("still run as they did"), "{}", none.summary);
+}
+
+// A staging scan's call_sessions (CX-A): an index leads with keys the heavy statement compares with a value, but its plan reads the
+// table through another one, picked on its estimate. Its reading for nothing comes from that choice, which heavy-query
+// is about: no evidence for creating Azure's index, so with Azure's low score there is nothing to create. The finding
+// takes no share of database time, so the heavy-query finding stays.
+#[test]
+fn a_heavy_statement_names_the_index_its_plan_reads_through() {
+    const ID: &str = "tuning-advice:create-index:shop.support_tickets(customer_id,status)";
+    let with_plan = |plan: bool, score: f64, estimate: f64| {
+        let mut s = snapshot("mssql-demo.json");
+        recommended(&mut s, "support_tickets", &["customer_id", "status"], &[], score);
+        let w = s.workload.as_mut().expect("workload");
+        // Query 10's plan seeks ix_support_tickets_priority, then looks each row up in pk_support_tickets.
+        let mut q = w.queries.iter().find(|q| q.id == "10").expect("query 10").clone();
+        q.id = "777".into();
+        q.query_hash = None;
+        q.plans = Vec::new();
+        if !plan {
+            q.plan = None;
+        }
+        if let Some(seek) = q.plan.as_mut().and_then(|p| node_mut(&mut p.root, 2)) {
+            seek.est_rows = estimate;
+        }
+        q.text =
+            "SELECT [id], [subject] FROM [shop].[support_tickets] WHERE [customer_id] = @P1 AND [status] = @P2".into();
+        q.executions = 2000.0;
+        q.logical_reads = Some(1_500_000.0);
+        q.rows = Some(0.0);
+        q.total_time_ms = 4000.0;
+        q.mean_time_ms = q.total_time_ms / q.executions;
+        w.queries.push(q);
+        analyze(s).findings.into_iter().find(|f| f.id == ID).expect("the recommendation")
+    };
+    // The staging scan's query 36649: the seek was costed for 1 row, and the runs look up about 250 each.
+    let f = with_plan(true, 3.0, 1.0);
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with(
+            "Azure scores it 3 out of 100: it expects the index to save little next to what it costs every write, so \
+             it's usually not worth having. Nothing to create: ix_support_tickets_customer_id already leads with \
+             customer_id, which query 777 compares with a value, but its plan picks ix_support_tickets_priority \
+             expecting 1 row, and its runs read 750 pages each to return nothing."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(
+        fix.summary.ends_with(
+            "and its runs read 750 pages each to return nothing. That comes from the plan's estimate, not from a \
+             missing index (see heavy-query:777). Let the recommendation expire."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(f.caveats.is_empty(), "{:?}", f.caveats);
+    assert!(f.verify[0].starts_with("Nothing to change here: once heavy-query:777's fix is in"), "{:?}", f.verify);
+    assert!(f.impact.db_time_share.is_none(), "{:?}", f.impact.db_time_share);
+
+    // Azure scores it high: its own word stands, and the caveat says what the statement's plan chose.
+    let f = with_plan(true, 60.0, 1.0);
+    assert!(f.fix.as_ref().unwrap().sql.is_some());
+    assert!(
+        f.caveats[0].starts_with(
+            "ix_support_tickets_customer_id already leads with customer_id, 1 of the 2 recommended keys, but query \
+             777's plan reads support_tickets through ix_support_tickets_priority instead, expecting 1 row: \
+             heavy-query:777 is about that choice."
+        ),
+        "{:?}",
+        f.caveats
+    );
+    // A seek costed for about the rows it finds is no misestimate: the index it seeks narrows too little, and the
+    // statement is evidence for the recommended one.
+    let f = with_plan(true, 3.0, 288.0);
+    assert!(f.fix.as_ref().unwrap().summary.contains("an index on them would find its rows directly"));
+    assert_eq!(
+        f.caveats[0],
+        "ix_support_tickets_customer_id already leads with customer_id, 1 of the 2 recommended keys, but query 777's \
+         plan reads support_tickets through ix_support_tickets_priority instead, so that index isn't serving it."
+    );
+    // Without the plan, nothing says which index it reads: the statement is evidence, and the caveat asks to check.
+    let f = with_plan(false, 3.0, 1.0);
+    assert!(f.fix.as_ref().unwrap().summary.contains("an index on them would find its rows directly"));
+    assert!(
+        f.caveats[0].ends_with(
+            ": check whether the queries that read support_tickets use it before adding an index beside it."
+        ),
+        "{:?}",
+        f.caveats
+    );
+}
+
+// CX-I: the count says how many statements compare the key, the list shows the heaviest five, and a column of another
+// table in a join isn't this table's. One key reads as the column alone.
+#[test]
+fn a_recommendation_counts_the_statements_on_its_own_columns() {
+    let mut s = snapshot("mssql-demo.json");
+    recommended(&mut s, "support_tickets", &["status"], &[], 3.0);
+    let w = s.workload.as_mut().expect("workload");
+    let template = w.queries.iter().find(|q| q.id == "10").expect("query 10").clone();
+    for n in 0..7 {
+        let mut q = template.clone();
+        q.id = format!("90{n}");
+        q.query_hash = None;
+        q.plan = None;
+        q.plans = Vec::new();
+        q.text = format!("SELECT [id] FROM [shop].[support_tickets] WHERE [status] = @P1 AND [priority] = {n}");
+        q.total_time_ms = 10.0 + n as f64;
+        w.queries.push(q);
+    }
+    let mut join = template.clone();
+    join.id = "999".into();
+    join.query_hash = None;
+    join.plan = None;
+    join.plans = Vec::new();
+    join.text = "SELECT [t].[id] FROM [shop].[support_tickets] [t] JOIN [shop].[customers] [c] ON [c].[id] = \
+                 [t].[customer_id] WHERE [c].[status] = @P1"
+        .into();
+    w.queries.push(join);
+    let f = analyze(s)
+        .findings
+        .into_iter()
+        .find(|f| f.id == "tuning-advice:create-index:shop.support_tickets(status)")
+        .expect("the recommendation");
+    assert!(
+        f.summary.ends_with(
+            "7 statements this scan captured compare status with a value; the 5 that take the most time are below."
+        ),
+        "{}",
+        f.summary
+    );
+    assert_eq!(f.queries.len(), 5, "{:?}", f.queries);
+    assert!(f.queries.iter().all(|q| q.id != "999"), "{:?}", f.queries);
+    assert_eq!(f.queries[0].id, "906", "{:?}", f.queries);
+}
+
+// An index already finds the rows by the recommended keys and the recommendation only adds a large column: nothing to
+// create, so nothing to check either; the verify doesn't ask for fewer reads.
+#[test]
+fn nothing_to_create_has_nothing_to_verify() {
+    let mut s = snapshot("mssql-demo.json");
+    let mut notes = s.columns.iter().find(|c| c.table == "customers" && c.name == "name").expect("a column").clone();
+    notes.name = "notes".into();
+    notes.data_type = "nvarchar(max)".into();
+    s.columns.push(notes);
+    recommended(&mut s, "customers", &["email"], &["notes"], 2.0);
+    let f = analyze(s)
+        .findings
+        .into_iter()
+        .find(|f| f.id == "tuning-advice:create-index:shop.customers(email)")
+        .expect("the recommendation");
+    assert!(f.fix.as_ref().unwrap().summary.contains("Nothing to create"), "{:?}", f.fix);
+    assert_eq!(
+        f.verify,
+        vec!["Nothing to change: once Azure lets the recommendation expire, this finding goes with it.".to_string()]
+    );
 }

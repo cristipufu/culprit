@@ -251,17 +251,20 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
     };
     let own = self_times(plan);
     let slowest = own.as_ref().and_then(|t| t.iter().max_by(|a, b| a.1.total_cmp(b.1)).map(|(id, ms)| (*id, *ms)));
-    // A bad estimate repeats in every operator above the one where it starts; report where it starts (the deepest
-    // operator within a factor of two of the worst), since that is what a fix has to reach.
-    let factor = |n: &PlanNode| n.misestimate().filter(|_| n.act_rows.unwrap_or(0.0).max(n.est_rows_total()) >= 100.0);
-    let largest = nodes.iter().filter_map(|n| factor(n)).map(f64::abs).fold(0.0, f64::max);
+    // Misestimates by the rule behind the Misestimate warning (`PlanNode::misestimates`): an operator a Limit stopped
+    // early read fewer rows than its estimate for a full run, which is no misestimate. A bad estimate repeats in every
+    // operator above the one where it starts; report where it starts (the deepest operator within a factor of two of
+    // the worst), since that is what a fix has to reach.
+    let found: std::collections::HashMap<u32, f64> = plan.root.misestimates().into_iter().collect();
+    let factor = |n: &PlanNode| found.get(&n.id).copied();
+    let largest = found.values().map(|f| f.abs()).fold(0.0, f64::max);
     fn origin(n: &PlanNode, at_least: f64, factor: &dyn Fn(&PlanNode) -> Option<f64>) -> Option<(u32, f64)> {
         n.children
             .iter()
             .find_map(|c| origin(c, at_least, factor))
             .or_else(|| factor(n).filter(|f| f.abs() >= at_least).map(|f| (n.id, f)))
     }
-    let worst = (largest >= 10.0).then(|| origin(&plan.root, largest / 2.0, &factor)).flatten();
+    let worst = (!found.is_empty()).then(|| origin(&plan.root, largest / 2.0, &factor)).flatten();
     Some(ActualSummary {
         elapsed_ms: prop("ElapsedMs").or(plan.root.act_time_ms),
         cpu_ms: prop("CpuMs").or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms))),
@@ -335,6 +338,15 @@ mod tests {
         let s = actual_summary(&p).unwrap();
         assert_eq!((s.slowest_node, s.elapsed_ms), (Some(1), Some(100.0)));
         assert_eq!(s.worst_estimate_node, Some(1), "50,000 rows against an estimate of 10");
+    }
+
+    #[test]
+    fn a_scan_a_limit_stopped_is_not_the_worst_estimate() {
+        // The scan's 50,000 rows are its estimate for a full run; the Limit took 10 and stopped it.
+        let mut limit = node(0, 10.0, 10.0, 10.0, 1.0, vec![node(1, 9.0, 50_000.0, 10.0, 9.0, vec![])]);
+        limit.op = "Limit".into();
+        let s = actual_summary(&plan(limit)).unwrap();
+        assert_eq!((s.worst_estimate_node, s.worst_estimate), (None, None));
     }
 
     #[test]

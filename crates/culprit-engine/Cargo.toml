@@ -4,6 +4,12 @@ description = "Culprit's engine: connection store, provider registry, scans and 
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# The files in tests/ are modules of one test binary, tests/all.rs.
+autotests = false
+
+[lib]
+# Its doc comments hold no Rust examples: rustdoc would have nothing to test.
+doctest = false
 
 [features]
 default = ["mssql", "postgres", "mysql", "sqlite"]
@@ -11,6 +17,11 @@ mssql = ["dep:culprit-mssql"]
 postgres = ["dep:culprit-postgres"]
 mysql = ["dep:culprit-mysql"]
 sqlite = ["dep:culprit-sqlite"]
+
+# All of tests/ in one binary: each test binary is linked, and scanned on its first run, on its own.
+[[test]]
+name = "all"
+path = "tests/all.rs"
 
 [dependencies]
 zeroize = "1.9.1"

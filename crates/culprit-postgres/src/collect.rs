@@ -423,6 +423,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        evictions_before: None,
         sizes_before: None,
     };
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
@@ -805,6 +806,7 @@ async fn attach_plans(
         if let Ok(mut plan) = plan_json::parse(&json, PlanKind::Generic, Some(statement)) {
             crate::tables::fill(client, &mut plan).await;
             mark_generic(&mut plan);
+            mark_planned_text(&mut plan, &queries[index].id);
             queries[index].plan = Some(plan);
             planned += 1;
         }
@@ -823,12 +825,35 @@ async fn attach_plans(
     Ok((!notes.is_empty()).then(|| notes.join(" ")))
 }
 
-/// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values (estimates for `$n`
-/// use default selectivities), and partitions pruned only when it runs.
+/// Say on a generic plan what it can't know, so what reads it can weigh it: no parameter values, and partitions pruned
+/// only when it runs. Without a value the planner still estimates `= $n` from statistics (as an average value of the
+/// column); only a range or pattern on `$n` (a fixed share) and `ANY($n)` (an array of guessed length) are guesses.
 pub(crate) fn mark_generic(plan: &mut culprit_core::Plan) {
     plan.props.insert(
         "Generic Plan".into(),
-        "Planned without parameter values: estimates for $n use default selectivities, and partitions are pruned only when it runs.".into(),
+        "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.".into(),
+    );
+}
+
+/// Plan prop that says the plan is of the text pg_stat_statements kept, not of the statement the application sent.
+pub(crate) const PLANNED_TEXT: &str = "Planned Text";
+
+/// What is planned is the text pg_stat_statements kept: the application's constants are `$n` in it, like its
+/// parameters, and each `$n` gets the type PostgreSQL infers for it. Where that is another statement than the one the
+/// application sent (constants planned as parameters, a parameter typed otherwise), EXPLAIN's Query Identifier isn't
+/// the statement's: shown as it is, it reads as the plan of another statement. It is said instead, with what follows
+/// from it.
+pub(crate) fn mark_planned_text(plan: &mut culprit_core::Plan, statement_id: &str) {
+    let Some(planned) = plan.props.get("Query Identifier").filter(|id| id.trim() != statement_id.trim()).cloned()
+    else {
+        return;
+    };
+    plan.props.remove("Query Identifier");
+    plan.props.insert(
+        PLANNED_TEXT.into(),
+        format!(
+            "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query {planned}, not as this statement ({statement_id}). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
+        ),
     );
 }
 
@@ -1344,13 +1369,36 @@ mod tests {
         assert_eq!(opclasses(Some("COLLATE \"C\"")), Some(vec!["COLLATE \"C\"".to_string()]));
     }
 
+    // Aptabase US 10: pg_stat_statements keeps the application's constants as $n, so what Culprit plans is another
+    // query text, with another identifier. Shown as "Query Identifier", it read as the plan of another statement.
+    #[test]
+    fn a_generic_plan_of_another_query_text_says_so() {
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
+            "Plan Rows": 5, "Total Cost": 4500.0}, "Query Identifier": -1861577503065104055}]"#;
+        let plan = plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        let mut same = plan.clone();
+        mark_planned_text(&mut same, "-1861577503065104055");
+        assert_eq!(same.props.get("Query Identifier").map(String::as_str), Some("-1861577503065104055"));
+        assert!(!same.props.contains_key(PLANNED_TEXT));
+        let mut other = plan;
+        mark_planned_text(&mut other, "8010113193859655017");
+        assert!(!other.props.contains_key("Query Identifier"));
+        let note = &other.props[PLANNED_TEXT];
+        assert!(note.contains("as query -1861577503065104055, not as this statement (8010113193859655017)"), "{note}");
+        assert!(note.contains("can be planned differently"), "{note}");
+    }
+
     #[test]
     fn a_generic_plan_says_what_it_cannot_know() {
         let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
             "Plan Rows": 5, "Total Cost": 4500.0, "Filter": "(customer_id = $1)"}}]"#;
         let mut plan = plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
         mark_generic(&mut plan);
-        assert!(plan.props["Generic Plan"].contains("default selectivities"));
+        // An equality on a parameter is still estimated from statistics; only ranges, patterns and arrays are guesses.
+        let note = &plan.props["Generic Plan"];
+        assert!(note.contains("= $n is estimated from statistics"), "{note}");
+        assert!(note.contains("range or pattern on $n by a fixed guess"), "{note}");
+        assert!(!note.contains("default selectivities"), "{note}");
         assert!(!plan.props.contains_key("search_path"));
     }
 

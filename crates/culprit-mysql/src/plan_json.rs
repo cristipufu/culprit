@@ -57,6 +57,35 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option
     Ok(plan)
 }
 
+/// Plan props a scan adds to the plan it reads: the server that made it, where its sample statement came from, and the
+/// row count of the sample's LIMIT.
+const SCAN_PROPS: &[&str] = &["server_version", "flavor", "Sample", culprit_core::insights::LIMIT_ROWS];
+
+/// A plan a scan saved, read again from its text with this parser (EXPLAIN JSON, or the tree of EXPLAIN ANALYZE), so a
+/// scan saved by an older Culprit reads the way one taken today would. The scan kept the plan's JSON with the sample's
+/// values replaced, and the plan read from it is redacted the same way; what the scan said of the plan stays. `None`
+/// when the plan kept no text, or this parser can't read it.
+pub fn reparse(saved: &Plan, schema: Option<&str>) -> Option<Plan> {
+    let raw = saved.raw.as_deref()?;
+    let text = raw.trim_start();
+    let plan = if text.starts_with('{') || text.starts_with('[') {
+        parse(raw, saved.kind, saved.statement.as_deref(), schema)
+    } else if text.starts_with("->") {
+        crate::plan_tree::parse(raw, saved.statement.as_deref(), schema)
+    } else {
+        return None;
+    }
+    .ok()?;
+    let mut clean = culprit_core::redact::redact_plan(&plan);
+    clean.raw = saved.raw.clone();
+    for key in SCAN_PROPS {
+        if let Some(value) = saved.props.get(*key) {
+            clean.props.insert(key.to_string(), value.clone());
+        }
+    }
+    Some(clean)
+}
+
 pub(crate) struct Context {
     pub aliases: HashMap<String, (Option<String>, String)>,
     pub schema: Option<String>,
@@ -210,8 +239,21 @@ fn nested_loop(value: &Value, cx: &Context, id: &mut u32) -> PlanNode {
         .as_array()
         .map(|items| items.iter().filter_map(Value::as_object).flat_map(|item| operations(item, cx, id)).collect())
         .unwrap_or_default();
+    // A table's rows examined are per scan of it, and its rows produced count the join up to it. Joined row by row (or
+    // a batch of keys at a time, Batched Key Access), it is scanned once per row the tables before it produce; behind a
+    // block nested loop or hash join buffer, once per buffer fill (the plan doesn't say how many fills; count one).
+    let mut prefix = 1.0;
+    for child in node.children.iter_mut() {
+        let read_once = child.props.get("using_join_buffer").is_some_and(|b| !b.contains("Batched Key Access"));
+        if prefix > 1.0 && !read_once && child.props.contains_key("rows_produced_per_join") {
+            child.est_executions = prefix;
+            child.est_rows /= prefix;
+            child.rows_read = child.rows_read.map(|per_scan| per_scan * prefix);
+        }
+        prefix = child.est_rows_total();
+    }
     node.subtree_cost = node.children.iter().map(|c| c.subtree_cost).sum();
-    node.est_rows = node.children.last().map(|c| c.est_rows).unwrap_or(0.0);
+    node.est_rows = node.children.last().map(|c| c.est_rows_total()).unwrap_or(0.0);
     node
 }
 
@@ -267,6 +309,7 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     };
     node.predicate = text(table, "attached_condition").map(|c| unquote(&c));
 
+    // Per scan, and the join's rows so far: `nested_loop` counts a joined table's scans.
     let examined = number_field(table, "rows_examined_per_scan");
     let produced = number_field(table, "rows_produced_per_join");
     node.rows_read = examined;
@@ -605,6 +648,28 @@ mod tests {
         assert_eq!(lookup.seek_predicate.as_deref(), Some("customer_id = const"));
         assert_eq!(lookup.detail.as_deref(), Some("covering index"));
         assert_eq!(join.children[0].object.as_deref(), Some("shop.customers"));
+    }
+
+    #[test]
+    fn joined_tables_count_their_scans() {
+        // Each order looks up its customer (1,000 lookups of one row); the items are read once into a hash join buffer.
+        let json = r#"{"query_block": {"select_id": 1, "cost_info": {"query_cost": "9000.00"}, "nested_loop": [
+          {"table": {"table_name": "o", "access_type": "ALL", "rows_examined_per_scan": 1000,
+                     "rows_produced_per_join": 1000, "filtered": "100.00"}},
+          {"table": {"table_name": "c", "access_type": "eq_ref", "key": "PRIMARY", "used_key_parts": ["id"],
+                     "ref": ["shop.o.customer_id"], "rows_examined_per_scan": 1, "rows_produced_per_join": 1000,
+                     "filtered": "100.00"}},
+          {"table": {"table_name": "i", "access_type": "ALL", "rows_examined_per_scan": 5000,
+                     "rows_produced_per_join": 500000, "filtered": "10.00", "using_join_buffer": "hash join",
+                     "attached_condition": "(`shop`.`i`.`order_id` = `shop`.`o`.`id`)"}}
+        ]}}"#;
+        let plan = parse(json, PlanKind::Estimated, None, Some("shop")).unwrap();
+        let join = &plan.root.children[0];
+        let (lookup, buffered) = (&join.children[1], &join.children[2]);
+        assert_eq!((lookup.est_executions, lookup.est_rows, lookup.rows_read), (1000.0, 1.0, Some(1000.0)));
+        assert_eq!((buffered.est_executions, buffered.rows_read), (1.0, Some(5000.0)));
+        assert_eq!(buffered.est_rows_total(), 500_000.0);
+        assert_eq!(join.est_rows, 500_000.0);
     }
 
     #[test]

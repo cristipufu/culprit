@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { Plan } from "../gen/Plan";
 import { actualFacts } from "../lib/actual";
 import { count, duration, percent, rowCount, when } from "../lib/format";
+import { estRowsForRuns } from "../lib/plan-format";
 
 function kb(value: number): string {
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} GB`;
@@ -52,7 +53,8 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
   }
   if (f.worstEstimate) {
     const n = f.worstEstimate.node;
-    const expected = n.est_rows * Math.max(1, n.est_executions);
+    // The estimate for the runs that happened: what the factor compares the actual rows with.
+    const expected = estRowsForRuns(n);
     callouts.push({
       key: "estimate",
       tone: "warn",

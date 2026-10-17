@@ -403,7 +403,7 @@ impl Out {
                 self.paint(
                     BOLD,
                     &format!(
-                        "Stopped running ({}): their queries no longer run, likely changed by a deploy",
+                        "Stopped running ({}): their queries no longer run; a deploy may have changed them",
                         stopped.len()
                     )
                 )
@@ -553,6 +553,12 @@ impl Out {
         let total_time = own.as_ref().map(|t| t.values().sum::<f64>()).filter(|t| *t > 0.0);
         let flagged: Vec<u32> = found.items.iter().filter_map(|i| i.nodes.first().copied()).collect();
         self.plan_node(plan, &plan.root, 0, own.as_ref().zip(total_time), &flagged);
+        // Shares of the estimated cost: why a step shows none ("—").
+        if total_time.is_none()
+            && let Some(note) = culprit_engine::export::shares_note(plan)
+        {
+            println!("{}", self.paint(DIM, &format!("   —  {note}")));
+        }
         self.plan_insights(&found, plan.weighed());
     }
 
@@ -611,15 +617,17 @@ impl Out {
         flagged: &[u32],
     ) {
         let own_ms = time.and_then(|(t, _)| t.get(&node.id).copied());
+        // The share of the measured time, else of the estimated cost where the plan can state one (none beside a step it
+        // puts no cost on, nor on rows that rest on a default guess).
         let pct = match time {
-            Some((t, total)) => t.get(&node.id).copied().unwrap_or(0.0) / total,
-            None if plan.total_cost > 0.0 => node.self_cost / plan.total_cost,
-            None => 0.0,
+            Some((t, total)) => Some(t.get(&node.id).copied().unwrap_or(0.0) / total),
+            None => plan.step_share(node),
         };
         // A plan without costs or times (SQLite) has no shares or estimates to print.
         let weighed = time.is_some() || plan.weighed();
         let rows = match node.act_rows {
-            Some(a) => format!("rows {} → {}", format::count(node.est_rows_total()), format::count(a)),
+            // The estimate for the runs that happened, so an inner seek estimated right per run isn't shown as off.
+            Some(a) => format!("rows {} → {}", format::count(node.est_rows_for_runs()), format::count(a)),
             None if weighed => format!("rows {}", format::count(node.est_rows_total())),
             None => String::new(),
         };
@@ -630,8 +638,12 @@ impl Out {
             node.object.as_deref().map(|o| format!(" {o}")).unwrap_or_default(),
             node.index.as_deref().map(|i| format!(" ({i})")).unwrap_or_default()
         );
-        let pct_text = if weighed { format!("{:>4}", format::percent(pct)) } else { "   ·".to_string() };
-        let pct_text = if weighed && pct >= 0.3 { self.paint(RED, &pct_text) } else { pct_text };
+        let pct_text = match pct {
+            Some(p) if weighed => format!("{:>4}", format::percent(p)),
+            None if weighed => "   —".to_string(),
+            _ => "   ·".to_string(),
+        };
+        let pct_text = if weighed && pct.is_some_and(|p| p >= 0.3) { self.paint(RED, &pct_text) } else { pct_text };
         let warnings: Vec<&str> = node.warnings.iter().map(|w| w.label()).collect();
         let timing =
             own_ms.filter(|ms| *ms >= 0.5).map(|ms| format!(" · {}", format::duration(ms))).unwrap_or_default();
@@ -1121,13 +1133,16 @@ impl Out {
 fn query_json(report: &Report, q: &QueryStat) -> Value {
     let w = report.snapshot.workload.as_ref();
     let hot = q.plan.as_ref().and_then(|p| {
-        let n = p.hottest()?;
+        // Where the plan's work is: none in a plan too cheap for any of its steps to matter, nor where the plan can't
+        // state the step's share (beside a step it puts no cost on, or on rows that rest on a default guess).
+        let n = culprit_core::insights::working_step(p)?;
+        let share = p.step_share(n)?;
         Some(json!({
             "op": n.op,
             "object": n.object,
             "index": n.index,
             "predicate": n.predicate,
-            "cost_share": if p.total_cost > 0.0 { n.self_cost / p.total_cost } else { 0.0 },
+            "cost_share": share,
             "warnings": n.warnings,
         }))
     });
@@ -1234,7 +1249,7 @@ fn markdown_report(report: &Report) -> String {
     table(&mut out, &active, 0);
     if !stopped.is_empty() {
         out.push_str(&format!(
-            "\n## Stopped running ({})\n\nTheir queries no longer run, likely changed by a deploy.\n\n",
+            "\n## Stopped running ({})\n\nTheir queries no longer run; a deploy may have changed them.\n\n",
             stopped.len()
         ));
         table(&mut out, &stopped, active.len());

@@ -43,8 +43,8 @@ pub(super) fn top_queries(s: &Snapshot) -> Tile {
         match stopped {
             0 => String::new(),
             n if n == top.len() =>
-                " All of these stopped running before the window ended, most likely changed by a deploy.".into(),
-            n => format!(" {n} of these stopped running before the window ended, most likely changed by a deploy."),
+                " All of these stopped running before the window ended: a deploy may have changed them.".into(),
+            n => format!(" {n} of these stopped running before the window ended: a deploy may have changed them."),
         }
     ));
     tile.metrics = vec![

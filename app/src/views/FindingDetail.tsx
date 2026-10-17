@@ -6,12 +6,14 @@ import { PlanView, shortPredicate } from "../components/PlanView";
 import { Prose } from "../components/Prose";
 import { Sql } from "../components/Sql";
 import type { Finding } from "../gen/Finding";
+import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
 import { api } from "../lib/api";
-import { ago, count, duration, metric, percent, rowCount } from "../lib/format";
+import { ago, count, duration, findingMetric, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
+import { ABOUT_THE_PLAN, doesRealWork, estRows, findingNoShareReason, findingStepShare, hottestStep, rowsOut, rowsRead, stepShare } from "../lib/plan-format";
 import { honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
@@ -63,8 +65,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
           <div className="notice" style={{ marginTop: 12 }}>
             <History size={15} style={{ flexShrink: 0, marginTop: 1 }} />
             <div>
-              <b>Stopped running {finding.last_seen ? ago(finding.last_seen) : ""}.</b> These queries no longer run, most likely changed by a deploy. Check
-              the current version of this code path before acting.
+              <StoppedRunning report={report} lastSeen={finding.last_seen} /> Check the current version of this code path before acting.
             </div>
           </div>
         )}
@@ -78,7 +79,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
             <div className="metrics">
               {finding.metrics.slice(0, 6).map((m) => (
                 <div className="metric" key={m.label}>
-                  <div className="value">{metric(m.value, m.unit, m.text)}</div>
+                  <div className="value">{findingMetric(m)}</div>
                   <div className="label">{m.label}</div>
                 </div>
               ))}
@@ -99,9 +100,9 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
             {firstWithPlan?.query.plan && (
               <>
                 <HotNode
-                  plan={firstWithPlan.query.plan.root}
+                  plan={firstWithPlan.query.plan}
                   focus={firstWithPlan.ref.plan_node}
-                  total={firstWithPlan.query.plan.total_cost}
+                  aboutThePlan={ABOUT_THE_PLAN.has(finding.check)}
                   weighed={can(firstWithPlan.query.plan.engine, "plan_estimates") || firstWithPlan.query.plan.kind === "actual"}
                 />
                 <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => setShowPlan((v) => !v)}>
@@ -277,6 +278,28 @@ function QueryCard({ report, query, node }: { report: Report; query: QueryStat; 
   );
 }
 
+/** When an inactive finding's statements last ran, the way the findings list says it (Overview's `lastRan`). Unchanged
+ * since Culprit's first scan of a source that keeps no last run, that scan is only the latest they can have run: they may
+ * have stopped long before it, and the deploy that changed them may be an earlier one (culprit_checks'
+ * `last_ran_by_first_scan`). */
+function StoppedRunning({ report, lastSeen }: { report: Report; lastSeen: string | null }) {
+  const workload = report.snapshot.workload;
+  const firstScan = workload && !workload.windowed ? (workload.timeline?.starts[0] ?? null) : null;
+  const first = firstScan != null ? Date.parse(firstScan) : NaN;
+  if (lastSeen != null && Math.abs(first - Date.parse(lastSeen)) < 1000) {
+    return (
+      <>
+        <b>Not run since Culprit's first scan, {ago(firstScan)}.</b> These queries may have stopped before it: a deploy before that scan may have changed them.
+      </>
+    );
+  }
+  return (
+    <>
+      <b>{lastSeen ? `Last ran ${ago(lastSeen)}.` : "Stopped running."}</b> These queries no longer run: a deploy may have changed them.
+    </>
+  );
+}
+
 function find(node: PlanNode, id: number): PlanNode | null {
   if (node.id === id) return node;
   for (const c of node.children) {
@@ -286,14 +309,13 @@ function find(node: PlanNode, id: number): PlanNode | null {
   return null;
 }
 
-function hottest(node: PlanNode): PlanNode {
-  return node.children.map(hottest).reduce((a, b) => (b.self_cost > a.self_cost ? b : a), node);
-}
-
-/** The step to look at: the one the finding names, or the costliest. A plan without costs or row estimates (SQLite's)
- *  names only the step the finding points at, with what it searches by, and claims no share or estimate. */
-function HotNode({ plan, focus, total, weighed }: { plan: PlanNode; focus: number | null; total: number; weighed: boolean }) {
-  const named = focus != null ? find(plan, focus) : null;
+/** The step to look at, as the brief picks it (culprit_checks::finding_step): the one the finding names, else, for a
+ *  finding about where its plan does its work, the costliest step (never an exchange) in a plan that does real work and
+ *  can state its share. A finding about something else (a result's size, how often a statement runs) points at no
+ *  step. A plan without costs or row estimates (SQLite's) names only the step the finding points at, with what it
+ *  searches by, and claims no share or estimate. */
+function HotNode({ plan, focus, weighed, aboutThePlan }: { plan: Plan; focus: number | null; weighed: boolean; aboutThePlan: boolean }) {
+  const named = focus != null ? find(plan.root, focus) : null;
   if (!weighed) {
     if (!named) return null;
     const by = named.seek_predicate ?? named.predicate;
@@ -311,9 +333,16 @@ function HotNode({ plan, focus, total, weighed }: { plan: PlanNode; focus: numbe
       </div>
     );
   }
-  const node = named ?? hottest(plan);
-  const share = total > 0 ? node.self_cost / total : 0;
-  const read = node.rows_read ?? node.table_rows;
+  const hot = aboutThePlan && doesRealWork(plan) ? hottestStep(plan) : null;
+  const node = named ?? (hot && stepShare(plan, hot) != null ? hot : null);
+  if (!node) return null;
+  // A share only where the plan can state one, in a plan that does real work; otherwise why not.
+  const share = findingStepShare(plan, node);
+  const why = share == null ? findingNoShareReason(plan, node) : null;
+  const read = rowsRead(node);
+  // Counted only by an actual plan whose engine reported it; otherwise the optimizer's estimate or the table's size.
+  const counted = plan.kind === "actual" && node.rows_read != null;
+  const returned = node.act_rows != null ? count(node.act_rows) : `~${count(Math.max(1, Math.round(rowsOut(node))))}`;
   return (
     <div className="hotnode">
       <Flame size={16} color="var(--heat-4)" style={{ marginTop: 1, flexShrink: 0 }} />
@@ -321,13 +350,17 @@ function HotNode({ plan, focus, total, weighed }: { plan: PlanNode; focus: numbe
         <div>
           <span className="op">{node.op}</span>
           {node.object && <span className="mono"> {node.object}</span>}
-          <span className="muted"> · {percent(share)} of the plan's cost</span>
+          {share != null && <span className="muted"> · {percent(share)} of the plan's cost</span>}
         </div>
         <div className="muted" style={{ marginTop: 2 }}>
-          {read != null ? `Reads ${rowCount(read)}` : `Estimates ${rowCount(node.est_rows)}`}
-          {read != null && ` to return ~${count(Math.max(1, Math.round(node.est_rows)))}`}
+          {read != null ? `${counted ? "Reads" : "Expected to read"} ${rowCount(read)} to return ${returned}` : node.act_rows != null ? `Returns ${rowCount(node.act_rows)}` : `Estimates ${rowCount(estRows(node))}`}
           {node.predicate ? ` · filter ${shortPredicate(node.predicate)}` : ""}
         </div>
+        {why && (
+          <div className="muted" style={{ marginTop: 2 }}>
+            {why}
+          </div>
+        )}
       </div>
     </div>
   );

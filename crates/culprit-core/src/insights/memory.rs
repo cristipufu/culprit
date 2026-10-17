@@ -80,7 +80,9 @@ pub(super) fn lossy_bitmap(cx: &Cx) -> Vec<Draft> {
         })
         .take(1)
         .map(|(n, lossy)| {
-            let rechecked = prop_f64(n, "Rows Removed by Index Recheck").unwrap_or(0.0);
+            // PostgreSQL gives it per loop, like its actual rows.
+            let rechecked = prop_f64(n, "Rows Removed by Index Recheck").unwrap_or(0.0)
+                * n.act_executions.unwrap_or(1.0).max(1.0);
             // A BRIN index only ever gives pages: one in the bitmap (the catalog marks its kind) explains lossy pages
             // with work_mem to spare. Bitmaps combined (BitmapOr, BitmapAnd) on a plan the catalog didn't mark may hold
             // one, so work_mem is then one cause, not the cause.

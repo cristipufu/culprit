@@ -115,7 +115,11 @@ pub fn query_impact(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<Query
     // Each statement's share weighed as the source allows (`Workload::share_of`: a plan cached for a month against
     // one compiled an hour ago).
     let share: f64 = queries.iter().map(|q| workload.share_of(q.total_time_ms, q)).sum();
-    Some(QueryImpact { share: share.min(1.0), per_day_ms: workload.per_day_measured(total_ms) })
+    // A day's worth only of runs that came that way: a burst's or a single run's time spread over the window is a
+    // rate it never ran at.
+    let per_day_ms =
+        workload.per_day_measured(total_ms).filter(|_| queries.iter().any(|q| workload.runs_per_day_of(q).is_some()));
+    Some(QueryImpact { share: share.min(1.0), per_day_ms })
 }
 
 pub fn apply_query_impact(f: &mut Finding, impact: &QueryImpact) {
@@ -150,6 +154,111 @@ pub fn queries_touching<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -
             None => mentions_word(&q.text, &table_lower),
         })
         .collect()
+}
+
+/// Whether an object name as an engine writes it (`[app].[orders]`, `"public"."orders"`, `db.dbo.orders`, `orders`)
+/// names `schema.table`.
+pub fn names_table(object: &str, schema: &str, table: &str) -> bool {
+    let o = object.to_ascii_lowercase().replace(['[', ']', '"', '`'], "");
+    let qualified = format!("{schema}.{table}").to_ascii_lowercase();
+    o == qualified || o.ends_with(&format!(".{qualified}")) || o == table.to_ascii_lowercase()
+}
+
+/// Where a statement's first SELECT, INSERT, UPDATE, DELETE or MERGE is, as a whole word, and which it is: past any
+/// parameter declarations and comments the engine kept with the text (Query Store's `(@p0 int)UPDATE …`).
+pub fn first_verb(text: &str) -> Option<(usize, &'static str)> {
+    let lower = text.to_ascii_lowercase();
+    ["select", "insert", "update", "delete", "merge"]
+        .into_iter()
+        .filter_map(|k| {
+            lower
+                .match_indices(k)
+                .find(|(at, _)| {
+                    let before = lower[..*at].chars().next_back();
+                    let after = lower[at + k.len()..].chars().next();
+                    !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .map(|(at, _)| (at, k))
+        })
+        .min_by_key(|(at, _)| *at)
+}
+
+/// The table an INSERT, UPDATE, DELETE or MERGE names as the one it changes, as written (`dbo.orders`), unquoted and
+/// lower-cased: past a `WITH` list, `TOP (n)`, INTO, FROM and ONLY, and an alias (T-SQL's `UPDATE o … FROM orders o`)
+/// resolved to its table. `None` for a read, a table variable, or anything else.
+pub fn write_target(text: &str, engine: Engine) -> Option<String> {
+    // MySQL's digest text spaces the dot of a qualified name: `shop` . `orders`.
+    let text = text.replace("` . `", "`.`");
+    let main = main_statement(&text);
+    let (at, verb) = first_verb(main)?;
+    if verb == "select" {
+        return None;
+    }
+    let mut rest = main[at + verb.len()..].trim_start();
+    loop {
+        let word = rest.chars().take_while(|c| c.is_ascii_alphabetic() || *c == '_').collect::<String>();
+        match word.to_ascii_lowercase().as_str() {
+            "into" | "from" | "only" | "low_priority" | "quick" | "ignore" | "delayed" | "high_priority" => {
+                rest = rest[word.len()..].trim_start();
+            }
+            // TOP (1000), TOP 50, TOP (@n) PERCENT
+            "top" => {
+                rest = rest[word.len()..].trim_start();
+                let end = if rest.starts_with('(') {
+                    rest.find(')').map_or(rest.len(), |i| i + 1)
+                } else {
+                    rest.find(char::is_whitespace).unwrap_or(rest.len())
+                };
+                rest = rest[end..].trim_start();
+                if rest.get(..7).is_some_and(|w| w.eq_ignore_ascii_case("percent")) {
+                    rest = rest[7..].trim_start();
+                }
+            }
+            _ => break,
+        }
+    }
+    let token: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '"' | '`' | '#' | '$' | '@'))
+        .collect();
+    let name = token
+        .split('.')
+        .map(|part| part.trim_matches(|c| matches!(c, '[' | ']' | '"' | '`')))
+        .collect::<Vec<_>>()
+        .join(".")
+        .to_ascii_lowercase();
+    if name.is_empty() || name.starts_with('@') {
+        return None;
+    }
+    if !name.contains('.')
+        && let Some((_, table)) = culprit_core::sql::table_aliases(main, engine).into_iter().find(|(a, _)| *a == name)
+    {
+        return Some(table);
+    }
+    Some(name)
+}
+
+/// The tables `q` changes rows of, as named: those its plan's modifying steps write, or, with no such step in a
+/// captured plan, the target its INSERT, UPDATE, DELETE or MERGE names ([`write_target`]). A table it only reads (in a
+/// join, a subquery, an EXISTS) isn't one.
+pub fn write_targets(q: &QueryStat, engine: Engine) -> Vec<String> {
+    let modified: Vec<String> = q
+        .plan
+        .iter()
+        .flat_map(|p| p.nodes())
+        .filter(|n| n.kind == culprit_core::NodeKind::Modify)
+        .filter_map(|n| n.object.clone())
+        .collect();
+    if !modified.is_empty() {
+        return modified;
+    }
+    write_target(&q.text, engine).into_iter().collect()
+}
+
+/// Whether `q` changes rows of `schema.table` ([`write_targets`]), rather than only reading it.
+pub fn writes_table(q: &QueryStat, engine: Engine, schema: &str, table: &str) -> bool {
+    write_targets(q, engine).iter().any(|o| names_table(o, schema, table))
 }
 
 /// Statements reading the engine's own catalogs (monitoring tools, IDEs, migrations' introspection): real load, but not the application's to fix.
@@ -358,7 +467,7 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
         "since the server last restarted"
     };
     match counter_days(snapshot) {
-        Some(days) if days >= 2.0 => format!("in the {} days {since}", days.round()),
+        Some(days) if days >= 2.0 => format!("in the {} days {since}", days_counted(days)),
         Some(days) if days * 24.0 < 1.0 => {
             let minutes = (days * 24.0 * 60.0).round().max(1.0);
             if minutes == 1.0 { format!("in the minute {since}") } else { format!("in the {minutes} minutes {since}") }
@@ -366,6 +475,18 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
         Some(days) if days * 24.0 < 1.5 => format!("in the hour {since}"),
         Some(days) => format!("in the {} hours {since}", (days * 24.0).round()),
         None => since.to_string(),
+    }
+}
+
+/// Days counted, never more than were: a tenth under 10 (9.51 days are "9.5", not "10"), whole days from 10 on.
+pub fn days_counted(days: f64) -> String {
+    // A hair under a whole number from adding hours is that number.
+    let days = days + 1e-9;
+    if days < 10.0 {
+        let tenths = format!("{:.1}", (days * 10.0).floor() / 10.0);
+        tenths.strip_suffix(".0").unwrap_or(&tenths).to_string()
+    } else {
+        format!("{}", days.floor())
     }
 }
 
@@ -527,20 +648,65 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
     (!name.is_empty() && name != "(").then_some(name)
 }
 
-/// "about 48K times a day" over a day or more of history, otherwise the real count: extrapolating 35 minutes to a day misleads.
-pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
-    // "once", never "1 times".
-    let times = |n: f64| match format::count(n).as_str() {
+/// "once", never "1 times": a count of runs in a sentence.
+fn times(n: f64) -> String {
+    match format::count(n).as_str() {
         "1" => "once".to_string(),
         count => format!("{count} times"),
-    };
+    }
+}
+
+/// "about 48K times a day" over a day or more of history, otherwise the real count: extrapolating 35 minutes to a day
+/// misleads, and so does "0.2 times a day" for one run in six days.
+pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
     match &snapshot.workload {
+        Some(w) if w.window_hours >= 20.0 && w.per_day(executions) < 1.0 => {
+            format!("{} in {}", times(executions), w.window_phrase())
+        }
         Some(w) if w.window_hours >= 20.0 => format!("about {} a day", times(w.per_day(executions))),
         // A window nobody can date (a log without timestamps, counters with no reset time) isn't "1 minute".
         Some(w) if w.window_unknown() => format!("{} over {}", times(executions), w.window_phrase()),
         Some(w) => format!("{} in {}", times(executions), culprit_core::span_words(w.window_hours)),
         None => times(executions),
     }
+}
+
+/// How often statement `q` ran, for a sentence that names its window right after it ("It ran {} at 2 ms on average:
+/// 25% of all database time in the last 6 days"): the count and, where it's part of the answer, when
+/// ([`culprit_core::Workload::cadence`]). A rate a day only for runs that came that way: "750 times" and ", on Oct 11,
+/// 15:51–15:55 UTC" for a burst, the count alone for fewer runs than the window has days.
+pub fn statement_runs(snapshot: &Snapshot, q: &QueryStat) -> (String, String) {
+    let Some(w) = snapshot.workload.as_ref() else { return (times(q.executions), String::new()) };
+    let cadence = w.cadence(q);
+    let when = match (cadence.when(), &cadence) {
+        (Some(when), culprit_core::Cadence::Burst { .. }) => format!(", {when}"),
+        (Some(when), _) => format!(" {when}"),
+        (None, _) => String::new(),
+    };
+    let count = match cadence {
+        culprit_core::Cadence::Daily(per_day) | culprit_core::Cadence::DailyWithin { per_day, .. } => {
+            format!("about {} a day", times(per_day))
+        }
+        culprit_core::Cadence::Burst { runs, .. } => times(runs),
+        // The window the sentence names holds them.
+        culprit_core::Cadence::Counted(runs) if w.window_hours >= culprit_core::PER_DAY_MIN_HOURS => times(runs),
+        culprit_core::Cadence::Counted(runs) => runs_phrase(snapshot, runs),
+    };
+    (count, when)
+}
+
+/// What Culprit's own scans measured of `q` on a source of running totals, as a sentence, when they cover a day
+/// ([`culprit_core::Workload::over_scans`]): what runs now, beside the totals since the source began counting. "Over 72
+/// hours of Culprit's own scans it ran about 1.7K times a day, 43% of database time."
+pub fn scans_sentence(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
+    let w = snapshot.workload.as_ref()?;
+    let s = w.over_scans(q).filter(|s| s.runs > 0.0)?;
+    Some(format!(
+        "Over {} of Culprit's own scans it ran about {} a day, {} of database time.",
+        s.length(),
+        times(s.per_day(s.runs)),
+        format::percent(s.share())
+    ))
 }
 
 /// Share of database time behind the top three active findings: their distinct queries, each counted once, so
@@ -666,6 +832,37 @@ pub(crate) mod tests {
         let _ = setting_change(&server, "work_mem", "64MB ünï");
     }
 
+    // The aptabase readings: random_page_cost can be set for one database, which RDS allows at once and without a
+    // custom parameter group; the parameter group re-plans every database on the instance. Settings only a superuser
+    // sets per database (track_io_timing), and those that are the server's alone (pg_stat_statements.max), stay the
+    // platform's.
+    #[test]
+    fn a_per_database_setting_is_set_for_this_database_first_on_a_managed_server() {
+        let mut server = crate::waits::snapshot_with(Engine::Postgres).server;
+        server.cloud = Some("Amazon RDS".into());
+        let change = setting_change(&server, "random_page_cost", "1.1");
+        assert_eq!(change.sql.as_deref(), Some("ALTER DATABASE demo SET random_page_cost = 1.1;"));
+        assert!(change.how.starts_with("Set random_page_cost to 1.1 for this database only"), "{}", change.how);
+        assert!(change.how.contains("sessions that connect after the change use it"), "{}", change.how);
+        assert!(change.how.ends_with("set it in the instance's DB parameter group."), "{}", change.how);
+        for name in ["track_io_timing", "pg_stat_statements.max", "autovacuum"] {
+            let change = setting_change(&server, name, "on");
+            assert!(change.sql.is_none() && change.how.contains("DB parameter group"), "{name}: {}", change.how);
+        }
+        // A name that needs quoting is quoted.
+        server.database = "Shop-EU".into();
+        let change = setting_change(&server, "work_mem", "64MB");
+        assert_eq!(change.sql.as_deref(), Some("ALTER DATABASE \"Shop-EU\" SET work_mem = '64MB';"));
+        // A server you run takes ALTER SYSTEM, as before; MySQL keeps no settings per database.
+        server.cloud = None;
+        let change = setting_change(&server, "random_page_cost", "1.1");
+        assert!(change.sql.unwrap().starts_with("ALTER SYSTEM SET random_page_cost = 1.1;"));
+        let mut mysql = crate::waits::snapshot_with(Engine::Mysql).server;
+        mysql.cloud = Some("Amazon RDS".into());
+        let change = setting_change(&mysql, "sort_buffer_size", "4194304");
+        assert!(change.sql.is_none() && change.how.contains("DB parameter group"), "{}", change.how);
+    }
+
     #[test]
     fn usage_windows_say_how_long_the_server_has_been_up() {
         let mut s = crate::waits::snapshot_with(Engine::Mssql);
@@ -679,6 +876,11 @@ pub(crate) mod tests {
         assert_eq!(at("2026-10-11T16:05:00Z"), "in the hour since the server last restarted");
         assert_eq!(at("2026-10-11T12:05:00Z"), "in the 5 hours since the server last restarted");
         assert_eq!(at("2026-10-01T17:05:00Z"), "in the 10 days since the server last restarted");
+        // A staging SQL Server reading: 9.51 days of counters were "the 10 days", more than they counted.
+        assert_eq!(at("2026-10-02T04:50:36Z"), "in the 9.5 days since the server last restarted");
+        assert_eq!(at("2026-10-02T05:05:00Z"), "in the 9.5 days since the server last restarted");
+        assert_eq!(at("2026-10-09T17:05:00Z"), "in the 2 days since the server last restarted");
+        assert_eq!(at("2026-09-28T23:53:00Z"), "in the 12 days since the server last restarted");
     }
 
     #[test]
@@ -1149,11 +1351,18 @@ pub use culprit_core::SettingChange;
 /// How to change a server setting where this server runs. On a server you manage it is SQL, as the engine spells it
 /// (`EngineSpec::change_setting`: `ALTER SYSTEM` and a reload on PostgreSQL, `SET PERSIST`/`SET GLOBAL` on MySQL and
 /// MariaDB…); a managed service refuses those, so there it is the platform's own control (a DB parameter group, server
-/// parameters, database flags) and no SQL. Every check that suggests a setting words it with this, so advice is always
-/// something the reader can run.
+/// parameters, database flags) and no SQL. A setting the engine keeps per database, which the database's owner may set
+/// (`EngineSpec::database_setting`: PostgreSQL's `random_page_cost`, `work_mem`), is set for this database first there:
+/// it changes nothing else on the instance and needs no parameter group or reboot; the platform's control is the
+/// route for every database. Every check that suggests a setting words it with this, so advice is always something the
+/// reader can run.
 pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str) -> SettingChange {
     // A managed service changes server settings in its own control, not with SQL (`Platform::settings_control`).
     if let Some(control) = server.platform().and_then(|p| p.settings_control()) {
+        if let Some(mut database) = server.engine.spec().database_setting(server, name, value) {
+            database.how.push_str(&format!(" To change it for every database on the server, set it in {control}."));
+            return database;
+        }
         return SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
     }
     server.engine.spec().change_setting(server, name, value)

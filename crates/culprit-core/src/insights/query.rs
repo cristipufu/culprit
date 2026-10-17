@@ -432,11 +432,14 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
         }
         let outer = &n.children[0];
         let inner = &n.children[n.children.len() - 1];
-        // Said better elsewhere: key lookups, NOT IN's row count spool, a cross join, MySQL's join buffer (no repeats).
+        // Said better elsewhere: key lookups, NOT IN's row count spool, a cross join. A join buffer, MySQL's or
+        // MariaDB's (`block-nl-join`), is no repeat: the table is read once per buffer fill, not once per row.
         let mut inner_nodes = Vec::new();
         inner.walk(&mut inner_nodes);
+        let buffered =
+            |x: &PlanNode| x.props.contains_key("using_join_buffer") || x.props.contains_key("join_buffer_join_type");
         if inner.kind == NodeKind::Lookup
-            || inner_nodes.iter().any(|x| x.op == "Row Count Spool" || x.props.contains_key("using_join_buffer"))
+            || inner_nodes.iter().any(|x| x.op == "Row Count Spool" || buffered(x))
             || cross.contains(&n.id)
             || inner_nodes.iter().any(|x| not_in_ids.contains(&x.id))
         {
@@ -748,6 +751,8 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
         if not_in_work(cx, parent).is_some() {
             continue;
         }
+        // Without measured runs, the parent's rows bound them from above: "up to" that many.
+        let mut at_most = false;
         let (runs, outer, impact) = match cx.engine() {
             Engine::Postgres => {
                 if n.props.get("Parent Relationship").map(String::as_str) != Some("SubPlan") {
@@ -760,8 +765,17 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
                 if parent_text.to_ascii_lowercase().contains(&format!("hashed {name}")) {
                     continue;
                 }
-                // Measured runs; else once for each row the parent evaluates the condition on.
-                let runs = n.act_executions.unwrap_or_else(|| rows_read(parent));
+                // Measured runs. Else, in one of the parent's conditions, it runs for each row the parent tests, at most
+                // the rows it reads (another condition may reject a row first); anywhere else (the select list), once
+                // for each row the parent returns, never for each row of a table the parent scans to return a few.
+                let runs = match n.act_executions {
+                    Some(runs) => runs,
+                    None if names_subplan(parent, &name) => {
+                        at_most = true;
+                        rows_read(parent)
+                    }
+                    None => rows_out(parent),
+                };
                 // PostgreSQL charges every run of the SubPlan to the parent's own cost.
                 (runs, first_object(parent), (cx.share(parent) + cx.subtree(n)).min(1.0))
             }
@@ -802,7 +816,11 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
         }
         let mut d = Draft::new("correlated-subquery", InsightArea::Query, impact, vec![n.id]);
         let outer_name = outer.as_deref().map(table_leaf).unwrap_or_else(|| "the outer query".into());
-        d.title = format!("A subquery runs {} times, once per row of {outer_name}", format::count(runs));
+        d.title = format!(
+            "A subquery runs {}{} times, once per row of {outer_name}",
+            if at_most { "up to " } else { "" },
+            format::count(runs)
+        );
         d.detail = format!(
             "{} the subquery for every row instead of once for the whole set{}.",
             if cx.engine() == Engine::Mysql {
@@ -819,6 +837,20 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
         out.push(d);
     }
     out.into_iter().take(2).collect()
+}
+
+/// Whether one of a PostgreSQL operator's conditions runs the SubPlan `name` ("subplan 1", lowercase): `(total >
+/// (SubPlan 1))` in its Filter, never `SubPlan 12`.
+fn names_subplan(n: &PlanNode, name: &str) -> bool {
+    const CONDITIONS: [&str; 6] = ["Filter", "Join Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond"];
+    [n.predicate.as_deref(), n.seek_predicate.as_deref()]
+        .into_iter()
+        .chain(CONDITIONS.iter().map(|k| n.props.get(*k).map(String::as_str)))
+        .flatten()
+        .any(|text| {
+            let text = text.to_ascii_lowercase();
+            text.match_indices(name).any(|(at, _)| !text[at + name.len()..].starts_with(|c: char| c.is_ascii_digit()))
+        })
 }
 
 pub(super) fn temp_table_sort(cx: &Cx) -> Vec<Draft> {

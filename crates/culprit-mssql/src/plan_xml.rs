@@ -63,6 +63,13 @@ pub fn parse(xml: &str) -> Result<Plan> {
     parse_statement(xml, None)
 }
 
+/// A plan a scan saved, read again from its XML with this parser, so a scan saved by an older Culprit reads the way
+/// one taken today would: the same statement of the document (by the `QueryHash` the saved plan carries). `None` when
+/// the plan kept no XML, or this parser can't read it.
+pub fn reparse(saved: &Plan) -> Option<Plan> {
+    parse_statement(saved.raw.as_deref()?, saved.props.get("QueryHash").map(String::as_str)).ok()
+}
+
 /// Parse the statement whose `QueryHash` matches (a batch or procedure plan holds every statement), or the most
 /// expensive statement when none matches.
 pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
@@ -460,7 +467,8 @@ type Counters = (Option<f64>, Option<f64>, Option<f64>, Option<NodeRuntime>);
 fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
     let mut rows = 0.0;
     let mut executions = 0.0;
-    let mut rows_read = 0.0;
+    // Where SQL Server counted it: a measured 0 (an empty table, a seek that found nothing) is a count, not a gap.
+    let mut rows_read: Option<f64> = None;
     let (mut rebinds, mut rewinds): (Option<f64>, Option<f64>) = (None, None);
     let mut threads_run = 0.0;
     let mut elapsed: Option<f64> = None;
@@ -488,7 +496,7 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
         if thread_executions > 0.0 && thread.attribute("Thread").is_some_and(|t| t != "0") {
             threads_run += 1.0;
         }
-        rows_read += attr_f64(thread, "ActualRowsRead");
+        add(&mut rows_read, opt(thread, "ActualRowsRead"));
         // Spools: a rebind runs the input again, a rewind replays the rows the spool already holds.
         add(&mut rebinds, opt(thread, "ActualRebinds"));
         add(&mut rewinds, opt(thread, "ActualRewinds"));
@@ -519,8 +527,8 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
         props.insert("ThreadCount".into(), workers.to_string());
         props.insert("ThreadRowsMax".into(), busiest.to_string());
     }
-    if rows_read > 0.0 {
-        props.insert("ActualRowsRead".into(), rows_read.to_string());
+    if let Some(read) = rows_read {
+        props.insert("ActualRowsRead".into(), read.to_string());
     }
     if threads_run >= 2.0 {
         props.insert(PARALLEL_THREADS.into(), threads_run.to_string());
@@ -898,6 +906,26 @@ mod tests {
         let lookup = &estimated.root.children[1];
         assert_eq!(lookup.est_executions, 40.0);
         assert_eq!(estimated.root.children[0].rows_read, Some(1_800_000.0));
+    }
+
+    #[test]
+    fn a_measured_zero_rows_read_is_kept() {
+        // The scan ran and read nothing (the table is empty now); its estimate of 500,000 rows read is no count.
+        let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
+          <StmtSimple StatementText="SELECT 1" StatementSubTreeCost="4">
+            <QueryPlan>
+              <RelOp NodeId="0" PhysicalOp="Clustered Index Scan" LogicalOp="Clustered Index Scan" EstimateRows="1000" EstimatedRowsRead="500000" TableCardinality="500000" EstimatedTotalSubtreeCost="4">
+                <OutputList />
+                <RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="0" ActualRowsRead="0" ActualExecutions="1" /></RunTimeInformation>
+                <IndexScan><Object Database="[db]" Schema="[dbo]" Table="[t]" Index="[pk]" />
+                  <Predicate><ScalarOperator ScalarString="[db].[dbo].[t].[a]=(1)" /></Predicate></IndexScan>
+              </RelOp>
+            </QueryPlan>
+          </StmtSimple>
+        </Statements></Batch></BatchSequence></ShowPlanXML>"#;
+        let scan = parse(xml).unwrap().root;
+        assert_eq!(scan.rows_read, Some(0.0));
+        assert!(!scan.warnings.contains(&PlanWarning::ResidualPredicate), "nothing read, nothing thrown away");
     }
 
     #[test]

@@ -309,7 +309,7 @@ fn hot_rows_are_one_finding_per_table() {
         hot[0].summary
     );
     assert!(
-        hot[0].summary.contains("20 times for locks on the rows and pages of orders, 12 min in all"),
+        hot[0].summary.contains("20 times for locks on the rows and pages of orders, 11 min 40 s in all"),
         "{}",
         hot[0].summary
     );
@@ -457,12 +457,18 @@ fn a_scan_of_the_in_row_pages_is_not_a_whole_row_read() {
     // 31 MB in-row is 3,968 pages: a scan reads about that many.
     q.logical_reads = Some(4_000.0 * 5_000.0);
     let r = analyze(s.clone());
-    assert!(of(&r, "large-rows")[0].queries.is_empty());
+    let large = of(&r, "large-rows")[0];
+    assert!(large.queries.is_empty());
+    // With no statements listed, the verify doesn't point at "the statements below".
+    assert!(large.verify.iter().all(|v| !v.contains("statements below")), "{:?}", large.verify);
     // One ticket by id reading 280 pages pulls its large values.
     let q = heaviest(&mut s);
     q.text = "SELECT * FROM shop.support_tickets WHERE id = @P1".into();
     q.logical_reads = Some(280.0 * 5_000.0);
-    assert_eq!(of(&analyze(s), "large-rows")[0].queries.len(), 1);
+    let r = analyze(s);
+    let large = of(&r, "large-rows")[0];
+    assert_eq!(large.queries.len(), 1);
+    assert!(large.verify[0].contains("the statements below should read fewer pages a run"), "{:?}", large.verify);
 }
 
 // ── 13. results that never reach the client ────────────────────────────────────────────────────────
@@ -585,6 +591,49 @@ fn a_short_lock_incident_in_a_quiet_database_is_not_high() {
     assert_eq!(of(&r, "lock-time")[0].severity, Severity::Low, "two minutes of statistics make no daily figure");
 }
 
+// A read on SQL Server with READ_COMMITTED_SNAPSHOT off waits for writers' locks because reads take shared locks
+// there: the change that removes the wait is row versioning, as config:read-committed-snapshot says. A read that locks
+// what it reads (UPDLOCK) waits with row versioning on too, and a write isn't spared by it.
+#[test]
+fn a_read_blocked_by_writers_is_told_of_row_versioning() {
+    let fix = |text: &str, rcsi: &str| {
+        let mut s = fixture("mssql-demo");
+        s.settings.retain(|x| x.name != "is_read_committed_snapshot_on");
+        s.settings.push(Setting {
+            name: "is_read_committed_snapshot_on".into(),
+            value: rcsi.into(),
+            default_value: None,
+            scope: "database".into(),
+        });
+        let q = heaviest(&mut s);
+        q.text = text.into();
+        q.executions = 40.0;
+        q.total_time_ms = 120_000.0;
+        q.waits = vec![WaitStat { category: "Lock".into(), wait_type: None, wait_ms: 110_000.0, tasks: None }];
+        let id = format!("lock-time:{}", q.id);
+        let r = analyze(s);
+        let f = r.findings.iter().find(|f| f.id == id);
+        f.and_then(|f| f.fix.as_ref()).map(|x| x.summary.clone()).unwrap_or_default()
+    };
+    let read = "SELECT id, status FROM dbo.orders WHERE customer_id = @p0";
+    let said = fix(read, "0");
+    assert!(
+        said.starts_with("This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. Without it, find the holder while it happens"),
+        "{said}"
+    );
+    for (text, rcsi) in [
+        (read, "1"),
+        ("SELECT id, status FROM dbo.orders WITH (UPDLOCK) WHERE customer_id = @p0", "0"),
+        ("UPDATE dbo.orders SET status = @p1 WHERE customer_id = @p0", "0"),
+    ] {
+        let said = fix(text, rcsi);
+        assert!(
+            said.starts_with("Find the holder while it happens") && !said.contains("row versioning"),
+            "{text}: {said}"
+        );
+    }
+}
+
 // ── 17. advice that can be applied ─────────────────────────────────────────────────────────────────
 
 fn jit(setup: impl FnOnce(&mut Snapshot)) -> culprit_core::Fix {
@@ -629,6 +678,28 @@ fn mariadb_without_column_statistics_assumes_no_filtering() {
     assert!(f.summary.contains("assumes the condition keeps every row") && !f.summary.contains("10%"), "{}", f.summary);
 }
 
+// The fresh MySQL reading: "a histogram for promo_code and created_at". The count's range on ix_orders_status_created
+// takes created_at from the index (a key part, filtered 100: MySQL dives into the index), and the promo_code read
+// reads orders whole the only way it can (no index serves its filter or its ORDER BY): neither estimate is a guess a
+// histogram would change.
+#[test]
+fn a_histogram_is_advised_only_for_a_guess_the_optimizer_chooses_with() {
+    let mut s = fixture("mysql-demo");
+    s.histograms = Some(vec![]);
+    assert!(of(&analyze(s.clone()), "missing-histogram").is_empty());
+    // With an index on the column it sorts by, MySQL chooses between reading that index in order until the LIMIT and
+    // scanning and sorting, and the guessed share of rows that match promo_code weighs that choice.
+    let mut by_total = s.indexes.iter().find(|i| i.name == "ix_orders_status").expect("index").clone();
+    by_total.name = "ix_orders_total".into();
+    by_total.columns = vec!["total".into()];
+    s.indexes.push(by_total);
+    let r = analyze(s);
+    let f = of(&r, "missing-histogram");
+    assert_eq!(f.len(), 1, "{:?}", f.iter().map(|f| &f.title).collect::<Vec<_>>());
+    assert_eq!(f[0].title, "MySQL guesses how many orders rows match promo_code: no histogram");
+    assert_eq!(f[0].queries.iter().map(|q| &q.id[..4]).collect::<Vec<_>>(), vec!["19bd"]);
+}
+
 // ── 19. tables without indexes ─────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -637,4 +708,247 @@ fn updates_to_a_table_without_indexes_rewrite_no_index() {
     updated(&mut s, "public.orders", 5_000_000.0, Some(48.0));
     s.indexes.retain(|i| i.table != "orders");
     assert!(of(&analyze(s), "hot-updates").is_empty());
+}
+
+// ── 20. log volume ─────────────────────────────────────────────────────────────────────────────────
+
+/// The PostgreSQL demo with its heaviest statement an insert into events that wrote `bytes` of WAL (99% of what
+/// statements wrote) for `rows` rows, in the `hours` since its statistics were reset.
+fn wal(bytes: f64, rows: f64, hours: f64) -> Snapshot {
+    let mut s = fixture("postgres-demo");
+    s.workload.as_mut().unwrap().window_hours = hours;
+    let q = heaviest(&mut s);
+    q.text = "INSERT INTO events (kind, payload) VALUES ($1, $2)".into();
+    q.plan = None;
+    q.executions = rows;
+    q.rows = Some(rows);
+    q.costs = Some(QueryCosts { log_bytes: Some(bytes), log_share: Some(0.99), ..Default::default() });
+    s
+}
+
+// The aptabase reading: 2.9 GB of WAL in the 1,277 days since pg_stat_statements was reset is 2.3 MB a day, yet it
+// fired on the total and ranked second on the statement's share of database time.
+#[test]
+fn a_few_megabytes_of_wal_a_day_is_no_log_finding() {
+    let r = analyze(wal(2.9 * GB, 450_000.0, 1_277.0 * 24.0));
+    assert!(of(&r, "log-volume").is_empty(), "{:?}", of(&r, "log-volume").iter().map(|f| &f.title).collect::<Vec<_>>());
+    // 290 MB a day of 6.8 KB rows is one, ranked by the log it writes a day, not its time: Low, below any Medium.
+    let r = analyze(wal(2.9 * GB, 450_000.0, 240.0));
+    let f = of(&r, "log-volume")[0];
+    assert_eq!(f.severity, Severity::Low);
+    assert!(f.impact.score < 22.0, "{}", f.impact.score);
+    assert!(f.summary.contains("since its statistics began 10 days ago"), "{}", f.summary);
+    // Over years, the window is said in days, never "1277.0 days".
+    let r = analyze(wal(1_277.0 * 200.0 * MB, 1_277.0 * 200.0 * MB / 6_900.0, 1_277.0 * 24.0));
+    let f = of(&r, "log-volume")[0];
+    assert!(f.summary.contains("since its statistics began 1277 days ago"), "{}", f.summary);
+}
+
+// "Drop indexes nobody reads" only where the table has one, after a week of counters.
+#[test]
+fn log_advice_drops_an_index_only_where_one_is_unread() {
+    let mut s = wal(2.9 * GB, 450_000.0, 240.0);
+    let fix = of(&analyze(s.clone()), "log-volume")[0].fix.clone().unwrap();
+    assert!(!fix.summary.contains("nobody reads"), "{}", fix.summary);
+    s.pressure.get_or_insert_with(Pressure::default).uptime_hours = Some(240.0);
+    let mut idle = s.indexes.iter().find(|i| i.name == "events_customer_idx").expect("an index on events").clone();
+    idle.name = "events_idle_idx".into();
+    idle.columns = vec!["kind".into()];
+    idle.reads = Some(0.0);
+    idle.size_bytes = Some(8.0 * MB);
+    s.indexes.push(idle);
+    let fix = of(&analyze(s), "log-volume")[0].fix.clone().unwrap();
+    assert!(fix.summary.contains("events has one nobody reads: drop it (see Indexes)"), "{}", fix.summary);
+}
+
+// A staging SQL Server reading: 192 inserts writing 412 KB of log each into a table of 284 KB rows. The bytes per row went unsaid
+// (fewer than 1,000 rows), so the log wasn't tied to the large values, and the fix said to update fewer columns.
+#[test]
+fn a_few_inserts_of_large_values_log_the_values() {
+    // support_tickets: 9,728 rows in 2.9 GB, about 300 KB a row, nearly all of it large values.
+    let mut s = tickets("mssql-demo");
+    let q = heaviest(&mut s);
+    q.text = "INSERT INTO shop.support_tickets (body, attachments) VALUES (@P1, @P2)".into();
+    q.plan = None;
+    q.executions = 192.0;
+    q.rows = Some(192.0);
+    q.costs = Some(QueryCosts { log_bytes: Some(192.0 * 412.0 * 1024.0), log_share: Some(0.6), ..Default::default() });
+    let id = q.id.clone();
+    let r = analyze(s.clone());
+    assert!(of(&r, "log-volume").iter().all(|f| f.queries[0].id != id), "one cause, one finding: large-rows");
+    let large = of(&r, "large-rows")[0];
+    let note = large.queries.iter().find(|q| q.id == id).and_then(|q| q.note.clone());
+    assert_eq!(note.as_deref(), Some("Writes about 412 KB of transaction log a row."));
+    // A table too small for a large-rows finding of its own: log-volume stays, with large-rows' fix.
+    let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").unwrap();
+    (t.rows, t.in_row_bytes, t.lob_bytes, t.data_bytes) = (Some(500.0), Some(MB), Some(150.0 * MB), Some(151.0 * MB));
+    let r = analyze(s);
+    let f = of(&r, "log-volume").into_iter().find(|f| f.queries[0].id == id).expect("log-volume");
+    assert_eq!(f.title, "An insert into support_tickets writes 412 KB of transaction log per row it changes");
+    let fix = f.fix.clone().unwrap();
+    assert!(fix.summary.contains("COMPRESS()"), "{}", fix.summary);
+    assert!(!fix.summary.contains("update only the columns"), "{}", fix.summary);
+}
+
+// A staging SQL Server reading: an update setting some of workflow_executions' large values logged 90 KB a row against rows of
+// 284 KB, outside the "about the average row" band the merge asked for, so log-volume repeated large-rows' fix as a
+// second Medium finding, and large-rows' list of statements left out the table's costliest writer.
+#[test]
+fn an_update_of_some_large_values_is_the_large_rows_finding_too() {
+    let mut s = tickets("mssql-demo");
+    let w = s.workload.as_mut().unwrap();
+    // A read of whole tickets, which large-rows lists.
+    let reader = w.queries.iter_mut().find(|q| q.id == "10").expect("demo query");
+    reader.text = "SELECT * FROM shop.support_tickets WHERE id = @P1".into();
+    reader.plan = None;
+    (reader.executions, reader.rows, reader.logical_reads) = (5_000.0, Some(5_000.0), Some(280.0 * 5_000.0));
+    // An update of two of a ticket's columns, a few pages a run: not a whole-row statement.
+    let writer = w.queries.iter_mut().find(|q| q.id == "7").expect("demo query");
+    writer.text = "UPDATE shop.support_tickets SET body = @P1, status = @P2 WHERE id = @P3".into();
+    writer.plan = None;
+    (writer.executions, writer.rows, writer.logical_reads) = (1_000.0, Some(1_000.0), Some(3_000.0));
+    writer.costs =
+        Some(QueryCosts { log_bytes: Some(1_000.0 * 90.0 * 1024.0), log_share: Some(0.5), ..Default::default() });
+    let r = analyze(s);
+    assert!(of(&r, "log-volume").iter().all(|f| f.queries[0].id != "7"), "one cause, one finding: large-rows");
+    let large = of(&r, "large-rows")[0];
+    let note = large.queries.iter().find(|q| q.id == "7").and_then(|q| q.note.clone());
+    assert_eq!(note.as_deref(), Some("Writes about 90.0 KB of transaction log a row."));
+    assert!(large.queries.iter().any(|q| q.id == "10"), "{:?}", large.queries);
+    // The count is of every statement listed (a staging SQL Server reading counted 3 of the 4 below).
+    assert!(large.summary.contains(" The 2 statements below read or write them "), "{}", large.summary);
+    assert!(
+        large
+            .summary
+            .contains("An update of support_tickets wrote 87.9 MB of transaction log for them, about 90.0 KB a row"),
+        "{}",
+        large.summary
+    );
+}
+
+// ── 21. what lock escalations name ─────────────────────────────────────────────────────────────────
+
+// A staging SQL Server reading: inserts into another table that check this one in an EXISTS, and an update of another table whose
+// plan seeks this one, were listed as "the writes to it", and the table's own single-row update was left out. Its fix
+// led with a DELETE TOP (1000) loop for a table written a row at a time.
+#[test]
+fn an_escalation_lists_the_writes_to_its_own_table() {
+    let mut s = fixture("mssql-demo");
+    s.server.started_at = Some("2026-10-11T00:13:03Z".into());
+    s.indexes.iter_mut().for_each(|i| i.contention = None);
+    let i = s.indexes.iter_mut().find(|i| i.name == "pk_order_items").unwrap();
+    i.contention = Some(IndexContention { lock_escalations: 2.0, ..Default::default() });
+    let w = s.workload.as_mut().unwrap();
+    let exists = w.queries.iter_mut().find(|q| q.id == "7").unwrap();
+    exists.text = "INSERT INTO [shop].[orders] ([customer_id]) SELECT @P1 WHERE EXISTS (SELECT 1 FROM [shop].[order_items] WHERE [order_id] = @P2)".into();
+    exists.plan = None;
+    // An update of orders whose plan seeks order_items: its modifying step names orders.
+    let through = w.queries.iter_mut().find(|q| q.id == "9").unwrap();
+    through.text = "UPDATE o SET [total] = @P1 FROM [shop].[orders] o JOIN [shop].[order_items] i ON i.[order_id] = o.[id] WHERE i.[id] = @P2".into();
+    let plan = through.plan.as_mut().expect("the demo's plan reading order_items");
+    plan.root = culprit_core::PlanNode {
+        op: "Clustered Index Update".into(),
+        kind: culprit_core::NodeKind::Modify,
+        object: Some("[culprit_demo].[shop].[orders]".into()),
+        index: Some("pk_orders".into()),
+        children: vec![plan.root.clone()],
+        ..plan.root.clone()
+    };
+    let own = w.queries.iter_mut().find(|q| q.id == "5").unwrap();
+    own.text = "UPDATE [shop].[order_items] SET [quantity] = @P1 WHERE [id] = @P2".into();
+    own.plan = None;
+    // 252 rows in 257 runs reads as a row a run, as a statement that changes exactly one does ("1.0 rows" did).
+    own.rows = Some(own.executions * 252.0 / 257.0);
+    let r = analyze(s);
+    let f =
+        of(&r, "lock-escalations").into_iter().find(|f| f.id == "lock-escalations:shop.order_items").expect("finding");
+    let listed: Vec<(&str, Option<&str>)> = f.queries.iter().map(|q| (q.id.as_str(), q.note.as_deref())).collect();
+    assert_eq!(listed, vec![("5", Some("Changes about 1 row a run."))]);
+    let fix = f.fix.clone().unwrap();
+    let sql = fix.sql.unwrap_or_default();
+    assert!(!sql.contains("DELETE TOP") && sql.contains("CREATE EVENT SESSION culprit_lock_escalation"), "{sql}");
+    assert!(
+        fix.summary.starts_with(
+            "None of the statements in the query history changes thousands of rows of order_items at once"
+        ),
+        "{}",
+        fix.summary
+    );
+}
+
+// The fresh SQL Server reading: escalations on support_tickets, which no statement in the query history writes, were
+// blamed on "jobs, migrations and maintenance", and "may be old" three minutes after a restart. The demo's lookup of
+// tickets by priority returns hundreds of rows a run through key lookups its plan prefetches, which keeps their row
+// locks until the statement ends: the read is the likely one.
+#[test]
+fn an_escalation_with_no_write_names_the_read_that_keeps_its_locks() {
+    let mut s = fixture("mssql-demo");
+    s.indexes.iter_mut().for_each(|i| i.contention = None);
+    let i = s.indexes.iter_mut().find(|i| i.name == "ix_support_tickets_priority").unwrap();
+    i.contention = Some(IndexContention { lock_escalations: 5.0, ..Default::default() });
+    let r = analyze(s);
+    let f = of(&r, "lock-escalations")
+        .into_iter()
+        .find(|f| f.id == "lock-escalations:shop.support_tickets")
+        .expect("finding");
+    assert!(
+        f.summary.contains(
+            "5 times since it started, on Oct 11 at 12:13 UTC, a minute before this scan, so none is older than that."
+        ) && !f.summary.contains("may be old"),
+        "{}",
+        f.summary
+    );
+    assert!(!f.summary.contains("jobs, migrations and maintenance"), "{}", f.summary);
+    assert!(
+        f.summary.ends_with(
+            "The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends."
+        ),
+        "{}",
+        f.summary
+    );
+    let listed: Vec<(&str, Option<&str>)> = f.queries.iter().map(|q| (q.id.as_str(), q.note.as_deref())).collect();
+    assert_eq!(
+        listed,
+        vec![(
+            "10",
+            Some(
+                "Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends."
+            )
+        )]
+    );
+    let fix = f.fix.clone().unwrap();
+    assert!(
+        fix.summary
+            .starts_with("Start the event session below (culprit_lock_escalation) to learn which statement escalates")
+    );
+    assert!(fix.summary.contains("READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks"));
+    assert!(!fix.summary.contains("UPDATE loop"), "{}", fix.summary);
+    assert!(fix.sql.unwrap().starts_with("-- SQL Server doesn't record which statement escalated"));
+}
+
+// ── 22. totals of waiting ──────────────────────────────────────────────────────────────────────────
+
+// A staging SQL Server reading "1 min in all" for 88,960 ms next to "23 ms each": a total under an hour is said to the second.
+#[test]
+fn a_total_wait_is_said_to_the_second() {
+    let mut s = fixture("mssql-demo");
+    s.server.started_at = Some("2026-10-11T00:13:03Z".into());
+    s.indexes.iter_mut().for_each(|i| i.contention = None);
+    let i = s.indexes.iter_mut().find(|i| i.name == "pk_orders").unwrap();
+    i.contention = Some(IndexContention { row_lock_waits: 3_901.0, row_lock_wait_ms: 88_960.0, ..Default::default() });
+    let r = analyze(s);
+    let hot = of(&r, "hot-rows")[0];
+    // A staging scan's brief named the index as if it were a column: it is said as the table's index.
+    assert!(
+        hot.summary.starts_with("Since its index pk_orders was loaded into memory, sessions waited"),
+        "{}",
+        hot.summary
+    );
+    assert!(
+        hot.summary
+            .contains("3.9K times for locks on the rows and pages of orders, 1 min 29 s in all, 23 ms each on average"),
+        "{}",
+        hot.summary
+    );
+    assert_eq!(hot.impact.label, "1 min 29 s waiting on locks");
 }

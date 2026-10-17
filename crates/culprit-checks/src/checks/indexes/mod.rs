@@ -221,11 +221,61 @@ pub(crate) fn widen_fix(snapshot: &Snapshot, existing: &IndexStat, include: &[St
     }
 }
 
+/// Whether a table the statements behind a finding read is gone: the catalog no longer lists it, and they all stopped
+/// running (a dropped table stops the statements that read it; one the catalog doesn't list, an indexed view, doesn't).
+/// A table of that name in any schema counts as there (a plan can name one without its schema), and so does every table
+/// when the scan read no catalog of tables, or no statement is shown.
+pub(crate) fn table_gone(snapshot: &Snapshot, table: &str, statements: &[&QueryStat]) -> bool {
+    !snapshot.tables.is_empty()
+        && !snapshot.tables.iter().any(|t| t.name.eq_ignore_ascii_case(table))
+        && !statements.is_empty()
+        && statements.iter().all(|q| crate::query_is_history(snapshot, q))
+}
+
+/// The fix that creates an index on `keys` (including `include`) of a table for `statements`, with `summary`: the one
+/// place an index to add is written. A table that is gone ([`table_gone`]) gets no SQL, which would fail: the fix says
+/// so.
+pub(crate) fn new_index_fix(
+    snapshot: &Snapshot,
+    schema: &str,
+    table: &str,
+    keys: &[String],
+    include: &[String],
+    statements: &[&QueryStat],
+    summary: String,
+) -> Fix {
+    if table_gone(snapshot, table, statements) {
+        return Fix {
+            summary: format!(
+                "Nothing to create: {schema}.{table} isn't in the database's catalog any more, so it was dropped or \
+                 renamed since these statements ran. If they now read a table under another name, a scan of it says \
+                 whether that one needs an index."
+            ),
+            sql: None,
+            cost: None,
+        };
+    }
+    Fix {
+        summary,
+        sql: Some(create_index_sql(snapshot, schema, table, keys, include)),
+        cost: write_cost(snapshot, schema, table),
+    }
+}
+
 pub(crate) fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
     let (writes, days) = measured_writes(snapshot, schema, table)?;
+    // No writes says the table gets none only after a week of counters: a weekly job has had its chance to run.
+    if writes <= 0.0 && watched_long_enough(snapshot) {
+        return Some(format!(
+            "{schema}.{table} received no writes {}, so this index would cost next to nothing to maintain.",
+            since_phrase(snapshot)
+        ));
+    }
     if writes <= 0.0 {
         return Some(format!(
-            "{schema}.{table} received no writes, so this index would cost nothing to keep up there."
+            "{schema}.{table} had no writes in the {} its counters cover, too short to say it gets none (a weekly job \
+             may not have run yet); each write it gets will also update this index.",
+            format::duration(days * 86_400_000.0)
         ));
     }
     Some(format!(

@@ -1,5 +1,6 @@
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
+import { doesRealWork, hottestStep, misestimate, sharesNote, stepShare, subtreeShare, uncostedSteps } from "./plan-format";
 
 function nodesOf(n: PlanNode, out: PlanNode[] = []): PlanNode[] {
   out.push(n);
@@ -39,14 +40,34 @@ export function ownTimes(root: PlanNode, time: (n: PlanNode) => number | null | 
 /** How operator shares are measured: actual time when the plan carries per-operator timing, estimated cost otherwise. */
 export type Shares = {
   basis: "time" | "cost";
-  /** Own share of the whole, 0..1, by node id. */
+  /** Own share of the whole, 0..1, by node id: for laying the plan out (what to fold, what to open), never to show. */
   own: Map<number, number>;
   /** Share including everything underneath, 0..1, by node id (used to fold cheap subtrees). */
   subtree: Map<number, number>;
+  /** The own share a person reads, by node id: the measured time's, or the cost's where the plan can state one
+   * (`stepShare`); null where it can't (a step it puts no cost on beside it, rows that rest on a default guess). */
+  stated: Map<number, number | null>;
+  /** The share with everything underneath a person reads, under the same rule. */
+  statedSubtree: Map<number, number | null>;
+  /** Why some steps show no share, for under the plan; null when each step that has a cost shows one. */
+  note: string | null;
+  /** The step where the work is, as the core picks it (never an exchange such as Gather Merge), in a plan that does real
+   * work and only where its share can be stated: what the flame marks and the views open on. */
+  hottest: PlanNode | null;
   /** Own milliseconds by node id, for time-based shares. */
   ms: Map<number, number>;
   total: number;
 };
+
+/** The largest of `shares` over steps that aren't exchanges. */
+function largest(nodes: PlanNode[], shares: Map<number, number | null>): PlanNode | null {
+  let best: PlanNode | null = null;
+  for (const n of nodes) {
+    const s = shares.get(n.id);
+    if (n.kind !== "parallelism" && s != null && (!best || s >= (shares.get(best.id) ?? 0))) best = n;
+  }
+  return best;
+}
 
 /** Timed operators must be at least half the plan, or the picture would be mostly guesswork. */
 export function planShares(plan: Plan): Shares {
@@ -64,14 +85,26 @@ export function planShares(plan: Plan): Shares {
         return v;
       };
       sum(plan.root);
-      return { basis: "time", own, subtree, ms, total };
+      // Measured time: every share is stated.
+      const stated = new Map<number, number | null>(own);
+      const hottest = doesRealWork(plan) ? largest(nodes, stated) : null;
+      return { basis: "time", own, subtree, stated, statedSubtree: new Map(subtree), note: null, hottest, ms, total };
     }
   }
   const total = Math.max(plan.total_cost, plan.root.subtree_cost, nodes.reduce((s, n) => s + n.self_cost, 0)) || 1;
+  const uncosted = uncostedSteps(plan);
+  const stated = new Map(nodes.map((n) => [n.id, stepShare(plan, n, uncosted)]));
+  // The core's hottest step, and only where its share can be stated: beside an uncosted filesort, or on a guess, no step
+  // is called the most expensive.
+  const hot = doesRealWork(plan) ? hottestStep(plan) : null;
   return {
     basis: "cost",
     own: new Map(nodes.map((n) => [n.id, n.self_cost / total])),
     subtree: new Map(nodes.map((n) => [n.id, n.subtree_cost / total])),
+    stated,
+    statedSubtree: new Map(nodes.map((n) => [n.id, subtreeShare(plan, n, uncosted)])),
+    note: sharesNote(plan),
+    hottest: hot && stated.get(hot.id) != null ? hot : null,
     ms: new Map(),
     total,
   };
@@ -115,17 +148,12 @@ export function actualFacts(plan: Plan): ActualFacts | null {
     }
   }
   // A bad estimate repeats in every operator above the one it starts at; name where it starts (the deepest operator
-  // within a factor of two of the worst), since that's what a fix (statistics, an index, a hint) has to reach.
-  const factorOf = (n: PlanNode) => {
-    if (n.act_rows == null) return null;
-    const est = Math.max(1, n.est_rows * Math.max(1, n.est_executions));
-    const act = Math.max(1, n.act_rows);
-    if (Math.max(est, act) < 100) return null;
-    return act >= est ? act / est : -(est / act);
-  };
+  // within a factor of two of the worst), since that's what a fix (statistics, an index, a hint) has to reach. Only
+  // operators the core flagged count: its warning holds the 10× and 100-row bars and leaves out an operator stopped early.
+  const factorOf = (n: PlanNode) => (n.warnings.includes("misestimate") ? misestimate(n) : null);
   const largest = Math.max(0, ...nodes.map((n) => Math.abs(factorOf(n) ?? 0)));
   let worst: ActualFacts["worstEstimate"] = null;
-  if (largest >= 10) {
+  if (largest > 0) {
     const postOrder = (n: PlanNode): PlanNode | null => {
       for (const c of n.children) {
         const found = postOrder(c);

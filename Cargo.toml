@@ -52,3 +52,11 @@ codegen-units = 1
 strip = true
 panic = "abort"
 opt-level = 3
+
+# Line numbers for backtraces, without full debug info: on macOS every linked binary keeps its object files next to it
+# for debug info, so full debug info makes each link slower and each test binary bigger to scan. Dependencies need none.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

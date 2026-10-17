@@ -221,12 +221,6 @@
           "text": null,
           "unit": "bytes",
           "value": 27795456.0
-        },
-        {
-          "label": "Reads of ix_orders_status",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -264,12 +258,6 @@
           "text": null,
           "unit": "bytes",
           "value": 663552.0
-        },
-        {
-          "label": "Reads of ix_products_sku",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
         }
       ],
       "queries": [],
@@ -310,7 +298,9 @@
       },
       "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
       "title": "Cost threshold for parallelism is still the 1990s default of 5",
-      "verify": []
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
     },
     {
       "category": "configuration",
@@ -338,9 +328,11 @@
         "kind": "setting",
         "name": "query-store-capture"
       },
-      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. They crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
+      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
       "title": "Query Store records every statement, including one-off ones",
-      "verify": []
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
     }
   ],
   "locked": [
@@ -1013,6 +1005,7 @@
     "duration_ms": 456.244667,
     "environment": "staging",
     "escalations_before": null,
+    "evictions_before": null,
     "foreign_keys": [
       {
         "columns": [

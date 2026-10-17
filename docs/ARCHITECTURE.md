@@ -118,14 +118,25 @@ indexes, columns, foreign keys, statistics, waits, settings, pressure signals, a
 applies to every engine is written once. Types the UI shows derive `ts_rs::TS`; `cargo test -p culprit-core -p
 culprit-engine` regenerates `app/src/gen`.
 
+A saved scan is read as this version would read it. Whenever one is loaded (`culprit analyze`, the latest report the
+app, CLI, MCP and exports show, the index advisor, the digest), `Workspace::reread` parses each plan again from the text
+it was captured as (`culprit_engine::plans::reparse_saved`, through each provider's `reparse`: `plan_json::reparse` on
+PostgreSQL and MySQL, `plan_xml::reparse` on SQL Server) and runs the pipeline again, so a parser or check fix reaches
+the scans saved before it. What the scan added that the text doesn't hold stays as saved (the statement it planned, the
+server's version, where a sample came from and its LIMIT, table sizes), and so do SQLite's plans, whose text keeps the
+steps but not their tree.
+
 ## 3. The pipeline: from a snapshot to a report
 
 `culprit-checks/src/pipeline.rs` runs four stages, in order, each a list you can read top to bottom:
 
 1. **Prepare**: make the snapshot say what the database says now, before anything reads it
    (`pipeline.rs::preparation()`): plans captured before a column changed type, MySQL's possible keys named with their
-   columns, plan operators marked with their index's kind from the catalog (a BRIN bitmap counts pages, not rows), and
-   the health counters' grades held to the evidence rules (`pressure::grade_on_evidence`).
+   columns, plan operators marked with their index's kind from the catalog (a BRIN bitmap counts pages, not rows), the
+   health counters' grades held to the evidence rules (`pressure::grade_on_evidence`), PostgreSQL's WAL write and sync
+   time kept out of statement-time waits in scans saved before the collector did so (`statement_time_without_wal`), and
+   MariaDB's lock time read as unknown where the slow log to a table counts a statement's whole run as it
+   (`lock_time_that_counts_the_run`, through `signals::lock_time_counts_the_run`).
 2. **Detect**: every check that applies to the engine and can run with what the login sees (`culprit_checks::all()`).
    A check that needs a missing capability is reported as locked, with the reason, instead of running on missing data.
 3. **Refine**: rules over all the findings (`culprit-checks/src/refine.rs`): two findings about one cause become one,
@@ -159,7 +170,8 @@ Every check and insight follows these. Each has one implementation; use it rathe
 
 | Rule | Where |
 |---|---|
-| A rate compared with a threshold needs at least an hour of data; a sentence that says "a day" needs 20 hours, otherwise it says what was counted and over how long. | `RATE_MIN_HOURS`, `PER_DAY_MIN_HOURS`; `support::rate_per_day`, `counter_rate_per_day`, `how_many`, `runs_phrase` |
+| A rate compared with a threshold needs at least an hour of data; a sentence that says "a day" needs 20 hours, otherwise it says what was counted and over how long. Runs said as they came: a burst is when it ran ("750 runs on Oct 11, 15:51–15:55 UTC"), fewer runs than days a count ("1 run in the last 6 days"). | `RATE_MIN_HOURS`, `PER_DAY_MIN_HOURS`; `support::rate_per_day`, `counter_rate_per_day`, `how_many`, `runs_phrase`; `Workload::cadence`, `how_often_of` |
+| On a source of running totals (pg_stat_statements, performance_schema, the plan cache), a statement's rate and share are what Culprit's own scans measured, over 20 hours or more of them, with the average since the totals began beside it where the two differ twofold; a recent entry is judged by its share over the scans. A change shows between two scans (What changed), never in the totals, and a rewritten statement is a new entry. | `Workload::over_scans`, `how_often_of`, `cadence`; `queries::recent_entry`, `verify_between_scans` |
 | No reads, no scans, nothing happened: a claim of absence needs a week of counters (a weekly job has had a chance to run). | `indexes::is_unused`, `watched_long_enough` |
 | A statement that ran once, or stopped running, is history: its findings say so, rank low and get no index of their own. | refine rules `statements that ran once` / `statements that stopped running`; `query_is_history` |
 | A claim about a cause is the engine's own verdict, never inferred from a plan's shape ("stops a seek" needs SQL Server's Seek Plan warning). | `insights::implicit_conversion` |
@@ -172,6 +184,9 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | Index keys come only from conditions an index can seek on: a plain column compared with a value. An OR across columns, `<>`, two columns compared, arithmetic or a cast on the column, a hash join's bitmap probe give none. | `insights::seekable_columns`, `support::predicate_columns` |
 | Statements a driver or a pool sends (BEGIN, COMMIT, SET, DISCARD ALL, `SELECT 1`) aren't the application's: no N+1, no "find it in the code". | `sql::is_session_statement` |
 | A plan insight states a share of the plan's work only where it measured one; a rule's own weight is not shown as a share and raises nothing. | `PlanInsight::fixed_weight` |
+| A plan's numbers say what they are: rows read are what the engine reports, or a table's size only for a scan that reads it in full; estimates are compared with actual rows for the runs that happened; a step's share is of what the plan's costs add up to, and none is stated beside a step the plan puts no cost on or above a guessed estimate. | `PlanNode::rows_read_total`, `est_rows_for_runs`, `PlanNode::misestimates`, `Plan::cost_share`, `Plan::step_share` |
+| A plan's step is where a statement's work is only in a plan that does real work (a measured run of 10 ms, or an estimate of what reading about 10K rows costs), and only for runs measured cheap (under 10 ms, a few pages per row, rows near the plan's estimate, no table read whole) is a statement's time "how often it runs". A finding states its step's share of the plan only there, on every surface (brief, exports, app). Advice for a step (a covering index, a sorted index, an index for a scan) follows the plan's own rule for that step. | `insights::does_real_work`, `working_step`, `runs_cheaply`, `has_insight`; `finding_step_share` (`Plan::step_share` in a plan that does real work), `no_share_reason`; `filtered_scan::scan_groups` |
+| No index, statistics or rewrite advice on the engine's own objects (`sys.*`, `pg_catalog`, `information_schema`, `performance_schema`, `sqlite_*`): nothing an application changes. | `insights::on_system_objects` |
 | A statement's share is graded as the source allows: where entries count from different moments (the plan cache counts each plan from its compile), a statement claims at most its share of the time an hour, so a plan cached for a month doesn't outweigh one compiled an hour ago by its age. | `Workload::share_of`, `share_weight`, `hourly_time_ms`; `support::query_impact` |
 | One cause, one finding. | refine rules |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |

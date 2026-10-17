@@ -71,7 +71,7 @@ pub struct DigestTopQuery {
     pub total_ms: f64,
     pub runs: f64,
     pub mean_ms: f64,
-    /// It stopped running before the window ended, most likely changed by a deploy.
+    /// It stopped running before the window ended: a deploy may have changed it.
     pub stopped: bool,
     /// The ids of the findings about it.
     pub findings: Vec<String>,
@@ -180,7 +180,7 @@ pub struct DigestCounts {
     pub high: u32,
     pub medium: u32,
     pub low: u32,
-    /// Findings about queries that stopped running, most likely changed by a deploy.
+    /// Findings about queries that stopped running: a deploy may have changed them.
     pub stopped: u32,
 }
 

@@ -54,7 +54,7 @@ fn statistics(s: &Snapshot) -> Option<Finding> {
         sql: Some("ANALYZE;".into()),
         cost: Some("ANALYZE reads every index once and holds the write lock while it stores the results: on a large file, run it when writes are quiet.".into()),
     });
-    f.verify = vec!["Scan again: the file has statistics, and each table's row count appears.".into()];
+    f.verify = vec!["Scan again: the file has sqlite_stat1, and this finding is gone.".into()];
     Some(f)
 }
 

@@ -53,6 +53,11 @@ pub(super) fn only_excludes_null_keys(filter: &str, columns: &[String]) -> bool 
 /// Child tables smaller than this get no finding of their own: reading one in full is cheap today.
 pub(crate) const FK_OWN_FINDING_ROWS: f64 = 10_000.0;
 
+/// A child table this big, read in full for each parent row deleted this many times a day, is Medium: about half a
+/// second a read of a million rows makes it a minute a day, Medium's amount of time.
+const FK_MEDIUM_ROWS: f64 = 1_000_000.0;
+const FK_MEDIUM_PARENT_DELETES_A_DAY: f64 = 100.0;
+
 /// An index led by the key's columns that its filter keeps from serving the key.
 pub(super) fn filtered_fk_index<'a>(snapshot: &'a Snapshot, fk: &'a culprit_core::ForeignKey) -> Option<&'a IndexStat> {
     snapshot.indexes_on(&fk.schema, &fk.table).find(|i| {
@@ -86,8 +91,11 @@ pub(crate) fn enforced_foreign_keys(snapshot: &Snapshot) -> impl Iterator<Item =
 /// for rows by the key (its filter names a key column and keeps few of the rows it reads), or an index the engine
 /// builds on those columns for itself on every run. The engine's own account, never the text alone; a statement without
 /// a captured plan shows nothing. A full read that filters on something else, or on nothing (a report over every row,
-/// the build side of a hash join), wouldn't use an index on the key.
-pub(crate) fn plan_reads_whole(q: &QueryStat, table: &str, columns: &[String]) -> bool {
+/// the build side of a hash join), wouldn't use an index on the key. On SQLite, whose plans name no conditions, a
+/// search through another index that isn't unique, by something other than the key, counts too when the statement
+/// compares the key with a value: it reads every row that index finds and checks the key on each (`customer_id = ? AND
+/// status = ?` searching an index on status).
+pub(crate) fn plan_reads_whole(snapshot: &Snapshot, q: &QueryStat, table: &str, columns: &[String]) -> bool {
     let Some(plan) = &q.plan else { return false };
     let leaf = |name: &str| {
         name.rsplit('.')
@@ -129,14 +137,30 @@ pub(crate) fn plan_reads_whole(q: &QueryStat, table: &str, columns: &[String]) -
         };
         names_key && n.kept_share().is_none_or(|k| k <= culprit_core::plan::INDEX_KEEPS_AT_MOST)
     };
-    plan.nodes()
-        .iter()
-        .any(|n| n.kind == NodeKind::Scan && n.object.as_deref().is_some_and(|o| leaf(o) == table) && by_key(n))
-        || culprit_core::insights::engine_built_indexes(plan).iter().any(|b| {
-            leaf(&b.table) == table
-                && b.keys.len() >= columns.len()
-                && b.keys.iter().zip(columns).all(|(k, c)| k.eq_ignore_ascii_case(c))
-        })
+    // An index of the table's in the catalog that holds a key value more than once: a search through it can find many
+    // rows. The rowid and primary key (SQLite's plan names them so) find one.
+    let not_unique = |index: &str| {
+        snapshot
+            .indexes
+            .iter()
+            .find(|i| leaf(&i.table) == table && i.name.eq_ignore_ascii_case(index))
+            .is_some_and(|i| !i.is_unique && !i.is_primary_key)
+    };
+    let searches_past_key = |n: &culprit_core::PlanNode| {
+        sqlite
+            && n.kind == NodeKind::Seek
+            && n.index.as_deref().is_some_and(not_unique)
+            && !n.seek_predicate.as_deref().is_some_and(|s| names(s, false))
+            && names(&q.text, true)
+    };
+    plan.nodes().iter().any(|n| {
+        n.object.as_deref().is_some_and(|o| leaf(o) == table)
+            && ((n.kind == NodeKind::Scan && by_key(n)) || searches_past_key(n))
+    }) || culprit_core::insights::engine_built_indexes(plan).iter().any(|b| {
+        leaf(&b.table) == table
+            && b.keys.len() >= columns.len()
+            && b.keys.iter().zip(columns).all(|(k, c)| k.eq_ignore_ascii_case(c))
+    })
 }
 
 pub(crate) fn unindexed_foreign_keys(snapshot: &Snapshot) -> Vec<(&culprit_core::ForeignKey, Option<f64>)> {
@@ -201,14 +225,24 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     // parent's primary key, which needs no index here.
     let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
         .into_iter()
-        .filter(|q| crate::advisor::uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
+        .filter(|q| crate::advisor::uses_foreign_key(snapshot.server.engine, &q.text, fk))
         .filter(|q| !crate::query_is_history(snapshot, q))
         .collect();
     let quiet_parent = parent_never_deletes(snapshot, fk);
     // SQLite checks foreign keys only on connections that turn PRAGMA foreign_keys on, which Culprit can't see.
     let sqlite = snapshot.server.engine == Engine::Sqlite;
-    f.severity =
-        if rows >= 1_000_000.0 && quiet_parent.is_none() && !sqlite { Severity::Medium } else { Severity::Low };
+    // Severity needs an amount, not the table's size alone: the parent's deletes, each a full read of this table, as a
+    // rate over an hour or more of counters (or, below, the time of the statements the plans show slowed).
+    let parent_deletes = snapshot.table(&fk.ref_schema, &fk.ref_table).and_then(|t| t.deletes).filter(|d| *d > 0.0);
+    let deletes_a_day = parent_deletes.and_then(|d| counter_rate_per_day(snapshot, d));
+    let measured = deletes_a_day.is_some_and(|d| d >= FK_MEDIUM_PARENT_DELETES_A_DAY);
+    f.severity = if rows >= FK_MEDIUM_ROWS && measured && !sqlite { Severity::Medium } else { Severity::Low };
+    if let (Some(deletes), Some(days)) = (parent_deletes.filter(|_| measured), counter_days(snapshot)) {
+        f.summary.push_str(&format!(
+            " Deletes from {parent} came to {}, each a read of the whole of {child}.",
+            how_many(snapshot, deletes, days, "row", "rows")
+        ));
+    }
     if sqlite {
         f.caveats.push(
             "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
@@ -221,7 +255,7 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     // their database time is its weight too, graded by the same amount rule. Only those whose plan shows it: naming the
     // key in the text isn't enough, since another index can serve the statement or the column can be another table's.
     let slowed: Vec<&QueryStat> =
-        touching.iter().copied().filter(|q| plan_reads_whole(q, &fk.table, &fk.columns)).collect();
+        touching.iter().copied().filter(|q| plan_reads_whole(snapshot, q, &fk.table, &fk.columns)).collect();
     if let Some(impact) = query_impact(snapshot, &slowed).filter(|i| i.share >= 0.01) {
         let by_rows = f.impact.score;
         apply_query_impact(&mut f, &impact);

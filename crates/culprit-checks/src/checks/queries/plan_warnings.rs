@@ -43,9 +43,9 @@ pub fn plan_warnings(snapshot: &Snapshot) -> Vec<Finding> {
     merge_same_cause(snapshot, out)
 }
 
-/// One root cause (a type mismatch on one column) is one finding, however many queries hit it. It stops them using an
+/// One root cause (a type mismatch on one column) is one finding, however many queries hit it. It stops them seeking an
 /// index only where SQL Server said so of one of them (a "Seek Plan" warning, kept as High confidence); otherwise the
-/// conversion slows them, and their share doesn't raise it.
+/// conversion slows them, and their share doesn't raise it. Seeking, not using: the plan may still scan the index.
 pub(super) fn merge_same_cause(snapshot: &Snapshot, findings: Vec<Finding>) -> Vec<Finding> {
     let mut merged: Vec<Finding> = Vec::new();
     for f in findings {
@@ -73,7 +73,7 @@ pub(super) fn merge_same_cause(snapshot: &Snapshot, findings: Vec<Finding>) -> V
         let column = m.subject.name.clone();
         if m.confidence == Confidence::High {
             m.severity = m.severity.max(severity_for_workload_share(snapshot, impact.share));
-            m.title = format!("A type mismatch on {column} stops {} queries from using an index", queries.len());
+            m.title = format!("A type mismatch on {column} stops {} queries from seeking an index", queries.len());
         } else {
             m.title = format!("A type mismatch on {column} slows down {} queries", queries.len());
         }
@@ -128,10 +128,11 @@ pub(super) fn plan_warning_finding(
             let target = converted.map(|(_, t)| t);
             let unicode = target.as_deref().is_some_and(|t| t.to_ascii_lowercase().starts_with("nvarchar"));
             let convert = issue.map(|l| l.split_once(": ").map(|(_, e)| e).unwrap_or(l).to_string());
-            // "Can't use an index" is SQL Server's verdict (a "Seek Plan" warning), not a reading of the conversion: without
-            // it the plan may still seek (a range through the conversion), and the warning is about its estimates.
+            // "Can't seek an index" is SQL Server's verdict (a "Seek Plan" warning), not a reading of the conversion: without
+            // it the plan may still seek (a range through the conversion), and the warning is about its estimates. With it,
+            // the plan may still scan the index, so the index isn't unused: it can't be searched.
             f.title = match &column {
-                Some(c) if blocks_seek => format!("A type mismatch on {c} stops {handle} from using an index"),
+                Some(c) if blocks_seek => format!("A type mismatch on {c} stops {handle} from seeking an index"),
                 Some(c) => format!("A type mismatch on {c} slows down {handle}"),
                 None => format!("A type mismatch slows down {handle}"),
             };
@@ -163,7 +164,12 @@ pub(super) fn plan_warning_finding(
         PlanWarning::Spill => {
             f.title = format!("{} runs out of memory and spills to disk", capitalize(&handle));
             f.summary = "A sort or hash in this plan needed more memory than it was granted and wrote the overflow to disk (tempdb or temp files). Spills usually come from a row estimate that was far too low, or a sort the index could have avoided.".into();
-            f.severity = severity_for_workload_share(snapshot, impact.share);
+            // A spill too small to matter stays Low, as the plan's own `spill` insight rates it.
+            f.severity = if q.plan.as_ref().is_some_and(culprit_core::insights::spills_are_minor) {
+                Severity::Low
+            } else {
+                severity_for_workload_share(snapshot, impact.share)
+            };
             f.confidence = Confidence::High;
             f.fix = Some(Fix {
                 summary: match snapshot.server.engine {
@@ -221,16 +227,95 @@ pub(super) fn plan_warning_finding(
             f.summary = "The optimizer had to guess how many rows match because some columns have no statistics. Guesses lead to the wrong join type or memory grant.".into();
             f.severity = Severity::Low;
             f.confidence = Confidence::Medium;
-            f.fix = Some(Fix {
-                summary: "Make sure automatic statistics creation is on, or create statistics on the columns named in the plan warning.".into(),
-                sql: None,
-                cost: None,
+            // The plan's own insight knows whether the columns are an index's keys (statistics exist but are empty:
+            // update them) or have none at all (a database setting): one reading for the finding and the plan view.
+            let insight = q
+                .plan
+                .as_ref()
+                .and_then(|p| culprit_core::insights::insights(p).into_iter().find(|i| i.rule == "missing-statistics"));
+            let stale = q.plan.as_ref().and_then(culprit_core::insights::stale_index_statistics);
+            f.fix = Some(match insight {
+                Some(i) => {
+                    f.summary = i.detail;
+                    // An index's keys have statistics: say they're out of date, and what the catalog says of them.
+                    if let Some(stale) = &stale {
+                        f.title = format!(
+                            "{} is planned on out-of-date statistics on {}",
+                            capitalize(&handle),
+                            format::list(&stale.columns)
+                        );
+                        if let Some(said) = statistics_now(snapshot, stale) {
+                            f.summary = culprit_core::insights::stale_index_statistics_detail(stale, Some(&said));
+                        }
+                    }
+                    Fix { summary: i.fix, sql: i.fix_sql, cost: None }
+                }
+                None => Fix {
+                    summary: "Make sure automatic statistics creation is on, or create statistics on the columns named in the plan warning.".into(),
+                    sql: None,
+                    cost: None,
+                },
             });
         }
         _ => return None,
     }
     f.verify = vec!["Re-scan after the change; the warning should be gone from this query's plan.".into()];
     Some(f)
+}
+
+/// What the catalog says now of the statistics a plan warned held nothing usable: when each was last updated, from how
+/// many rows, and the changes counted since, with the table's rows when the plan was compiled and now. None when the
+/// scan read none of them.
+fn statistics_now(snapshot: &Snapshot, stale: &culprit_core::insights::StaleIndexStatistics) -> Option<String> {
+    let (schema, table) = match stale.table.rsplit_once('.') {
+        Some((schema, table)) => (schema.rsplit('.').next(), table),
+        None => (None, stale.table.as_str()),
+    };
+    let same_table =
+        |s: &str, t: &str| t.eq_ignore_ascii_case(table) && schema.is_none_or(|schema| s.eq_ignore_ascii_case(schema));
+    let rows = |n: f64| format!("{} {}", format::count(n), if n == 1.0 { "row" } else { "rows" });
+    let said: Vec<String> = stale
+        .indexes
+        .iter()
+        .filter_map(|index| {
+            let st = snapshot
+                .statistics
+                .iter()
+                .find(|st| same_table(&st.schema, &st.table) && st.name.eq_ignore_ascii_case(index))?;
+            let when = st.last_updated.as_deref().map(|at| {
+                format!(
+                    " were last updated on {}{}",
+                    format::friendly_date(at, &snapshot.taken_at),
+                    st.rows.map(|n| format!(", when the table had {}", rows(n))).unwrap_or_default()
+                )
+            })?;
+            let since = match st.modifications {
+                Some(m) if m > 0.0 => {
+                    format!(
+                        ", and have counted {} {} since",
+                        format::count(m),
+                        if m == 1.0 { "change" } else { "changes" }
+                    )
+                }
+                Some(_) => ", with no changes counted since".into(),
+                None => String::new(),
+            };
+            Some(format!("The statistics of {index}{when}{since}"))
+        })
+        .collect();
+    if said.is_empty() {
+        return None;
+    }
+    let now = snapshot.tables.iter().find(|t| same_table(&t.schema, &t.name)).and_then(|t| t.rows);
+    let table_rows = match (stale.table_rows, now) {
+        (Some(then), Some(now)) => {
+            format!("; the table held {} when this plan was compiled, and holds {} now", rows(then), format::count(now))
+        }
+        (Some(then), None) => format!("; the table held {} when this plan was compiled", rows(then)),
+        (None, Some(now)) => format!("; the table holds {} now", rows(now)),
+        (None, None) => String::new(),
+    };
+    Some(format!("{}{table_rows}.", said.join("; ")))
 }
 
 pub(super) fn warning_key(w: PlanWarning) -> &'static str {

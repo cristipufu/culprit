@@ -50,3 +50,24 @@ fn postgres_counters_measured_over_weeks_do() {
     s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(24.0 * 40.0);
     assert!(flags_idle_index(s));
 }
+
+// A duplicate's reads are a count only once the counters have counted for a week: "Reads 0" over seconds since a
+// restart says nothing, so it's left out until then, and shown with how long it counted.
+#[test]
+fn a_duplicates_reads_are_shown_over_a_week_of_counters() {
+    let metrics = |hours: f64| {
+        let mut s = snapshot();
+        s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(hours);
+        analyze(s)
+            .findings
+            .into_iter()
+            .find(|f| f.id == "duplicate-index:public.products.products_sku_idx")
+            .expect("products_sku_idx duplicates products_sku_key")
+            .metrics
+    };
+    let fresh = metrics(0.01);
+    assert!(!fresh.iter().any(|m| m.label.starts_with("Reads of")), "{fresh:?}");
+    let weeks = metrics(24.0 * 40.0);
+    assert!(weeks.iter().any(|m| m.label == "Reads of products_sku_idx" && m.value == 0.0), "{weeks:?}");
+    assert!(weeks.iter().any(|m| m.label == "Counting for" && m.value == 40.0), "{weeks:?}");
+}

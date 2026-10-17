@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
 import { duration, percent } from "../lib/format";
-import { cost, estRows, exact, propValue, rowError } from "../lib/plan-format";
+import { cost, estRowsForRuns, exact, misestimate, propValue } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
@@ -37,10 +37,11 @@ const SHOWN = new Set([
   "Parent Relationship",
 ]);
 
+/** How far the actual rows were from the estimate; marked as bad only where the core flagged the operator. */
 function ratio(n: PlanNode) {
-  const err = rowError(n);
-  if (!err || err.factor < 2) return null;
-  return <span className={`nd-ratio ${err.factor >= 10 ? "bad" : ""}`}>{`×${exact(Math.round(err.factor))} ${err.more ? "more than expected" : "fewer than expected"}`}</span>;
+  const factor = misestimate(n);
+  if (factor == null || Math.abs(factor) < 2) return null;
+  return <span className={`nd-ratio ${n.warnings.includes("misestimate") ? "bad" : ""}`}>{`×${exact(Math.round(Math.abs(factor)))} ${factor > 0 ? "more than expected" : "fewer than expected"}`}</span>;
 }
 
 /** One operator, explained: what it does, its rows and cost, what's wrong with it, then every raw property on demand. */
@@ -48,15 +49,22 @@ export function NodeDetails({
   node,
   share,
   subtreeShare,
+  noShare,
   insights = [],
   estimates = true,
+  actual = false,
 }: {
   node: PlanNode;
-  share: number;
-  subtreeShare?: number;
+  /** Its own share of the work; null where the plan can't state one (see `stepShare`). */
+  share: number | null;
+  subtreeShare?: number | null;
+  /** Why there is no share, when there isn't one. */
+  noShare?: string | null;
   insights?: PlanInsight[];
   /** The plan weighs its steps (costs or measured time); SQLite's has the access path only. */
   estimates?: boolean;
+  /** An actual plan: the rows it read were counted, not estimated. */
+  actual?: boolean;
 }) {
   const [filter, setFilter] = useState("");
   const props = useMemo(() => {
@@ -90,12 +98,17 @@ export function NodeDetails({
             </div>
           )}
         </div>
-        {estimates && (
-          <span className="nd-share" title="Share of the plan's work done by this operator itself">
-            {percent(share)}
-            <span className="muted"> of the work</span>
-          </span>
-        )}
+        {estimates &&
+          (share != null ? (
+            <span className="nd-share" title="Share of the plan's work done by this operator itself">
+              {percent(share)}
+              <span className="muted"> of the work</span>
+            </span>
+          ) : (
+            <span className="nd-share muted" title={noShare ?? undefined}>
+              no share of the work
+            </span>
+          ))}
       </div>
 
       {insights.length > 0 && (
@@ -132,7 +145,7 @@ export function NodeDetails({
           <h4>Rows</h4>
           <dl>
             <dt>Estimated</dt>
-            <dd>{exact(estRows(node))}</dd>
+            <dd title={node.act_executions != null ? "Rows per run as estimated, times the runs that happened" : undefined}>{exact(estRowsForRuns(node))}</dd>
             {node.act_rows != null && (
               <>
                 <dt>Actual</dt>
@@ -149,7 +162,7 @@ export function NodeDetails({
             )}
             {node.rows_read != null && (
               <>
-                <dt>Read</dt>
+                <dt>{actual ? "Read" : "Expected to read"}</dt>
                 <dd>{exact(node.rows_read)}</dd>
               </>
             )}
@@ -174,7 +187,7 @@ export function NodeDetails({
           <dl>
             <dt>This operator</dt>
             <dd>
-              {percent(share)} <span className="muted">· {cost(node.self_cost)} units</span>
+              {share != null ? percent(share) : "no share"} <span className="muted">· {cost(node.self_cost)} units</span>
             </dd>
             {subtreeShare != null && (
               <>
@@ -189,6 +202,7 @@ export function NodeDetails({
               </>
             )}
           </dl>
+          {share == null && noShare && <p className="muted" style={{ margin: "6px 0 0", fontSize: 12 }}>{noShare}</p>}
           {split != null && (
             <div className="nd-split" title={`CPU ${percent(split)} · I/O ${percent(1 - split)} of the estimate`}>
               <div className="nd-split-bar">

@@ -205,9 +205,13 @@ fn nested_loop(value: &Value, cx: &Context, id: &mut u32, costed: bool) -> Vec<P
         if let Some(rows) = child.props.get("rows").and_then(|r| r.parse::<f64>().ok())
             && !child.props.contains_key("loops")
         {
-            let buffered = child.props.contains_key("join_buffer_join_type");
+            let buffered = child.props.get("join_buffer_join_type").is_some_and(|j| !j.starts_with("BKA"));
             let per_row = prefix.max(1.0);
             child.est_executions = if buffered { 1.0 } else { per_row };
+            // Rows read over every run, unless ANALYZE counted them.
+            if child.act_rows.is_none() {
+                child.rows_read = Some(rows * child.est_executions);
+            }
             if !costed {
                 let inner: f64 = child.children.iter().map(|c| c.subtree_cost).sum();
                 child.subtree_cost = rows * child.est_executions + inner;
@@ -364,11 +368,14 @@ fn table_node(
         .or_else(|| text(table, "index_condition"));
     node.predicate = condition.map(|c| unquote(&c));
 
-    // Estimates are per loop: rows read by one scan, and the percentage of them the condition keeps.
+    // Estimates are per loop: rows read by one scan, and the percentage of them the condition keeps. Rows read count
+    // every scan: one per loop (Batched Key Access looks each buffered row up), but a table behind a block nested loop
+    // or hash join buffer is read once per buffer fill (the plan doesn't say how many fills; count one).
     let loops = number_field(table, "loops").unwrap_or(1.0).max(1.0);
     let read = number_field(table, "rows");
     let filtered = number_field(table, "filtered").unwrap_or(100.0);
-    node.rows_read = read;
+    let read_once = buffer.is_some_and(|b| !text(b, "join_type").is_some_and(|j| j.starts_with("BKA")));
+    node.rows_read = read.map(|r| if read_once { r } else { r * loops });
     node.est_executions = loops;
     node.est_rows = read.map(|r| r * filtered / 100.0).unwrap_or(0.0);
     // A fixed guess for a condition without statistics says nothing about how much the filter keeps.
@@ -409,7 +416,9 @@ fn table_node(
                 node.warnings.push(PlanWarning::ResidualPredicate);
             }
         } else if r_loops == 0.0 {
+            // Never ran: nothing read, whatever was estimated.
             node.act_rows = Some(0.0);
+            node.rows_read = Some(0.0);
         }
         let own_ms = ["r_table_time_ms", "r_other_time_ms"].iter().filter_map(|k| number_field(table, k)).sum::<f64>();
         let timed = table.contains_key("r_table_time_ms") || table.contains_key("r_other_time_ms");
@@ -665,5 +674,29 @@ mod tests {
         assert_eq!(join.children[1].est_executions, 1.0);
         assert_eq!(join.children[2].est_executions, 4.0 * 19_658.0);
         assert_eq!(join.est_rows, 4.0 * 19_658.0 * 24_870.0);
+    }
+
+    #[test]
+    fn rows_read_count_every_loop_and_a_buffered_table_once() {
+        let join_of = |json: &str| {
+            let plan = crate::plan_json::parse(json, PlanKind::Estimated, None, Some("shop")).unwrap();
+            plan.root.children[0].children.clone()
+        };
+        // MariaDB 11: two product lookups of one row; the customers read once into the join buffer.
+        let tables = join_of(JOIN_11);
+        assert_eq!((tables[1].rows_read, tables[2].rows_read), (Some(2.0), Some(20_000.0)));
+        // Before 11: the lookup runs once per row joined so far, the buffered table once.
+        let tables = join_of(JOIN_10_5);
+        assert_eq!(tables[1].rows_read, Some(19_658.0));
+        assert_eq!(tables[2].rows_read, Some(24_870.0 * 4.0 * 19_658.0));
+
+        // ANALYZE: the outer table found nothing, so the scan of customers never ran and read nothing.
+        let json = r#"{"query_block": {"select_id": 1, "r_loops": 1, "r_total_time_ms": 3, "nested_loop": [
+            {"table": {"table_name": "o", "access_type": "ALL", "loops": 1, "r_loops": 1, "rows": 10, "r_rows": 0,
+                       "filtered": 100, "r_filtered": 100}},
+            {"table": {"table_name": "c", "access_type": "ALL", "loops": 10, "r_loops": 0, "rows": 50000,
+                       "r_rows": null, "filtered": 100, "r_filtered": null}}]}}"#;
+        let never = &join_of(json)[1];
+        assert_eq!((never.act_rows, never.rows_read), (Some(0.0), Some(0.0)));
     }
 }

@@ -89,13 +89,22 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             }
             let mut f = finding("plan-regression", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_impact(snapshot, &mut f, &impact);
-            let wasted_per_day = workload.per_day_measured(wasted);
-            f.impact.time_ms_per_day = wasted_per_day;
-            f.impact.score = score_for_share(latest_share.max(wasted_share));
-            f.impact.label = format!("{} slower", format::factor(factor));
             // Its time a day since it took over, so a regression that began this morning isn't diluted by the week.
             let since = latest.first_seen.as_deref().and_then(parse_epoch_seconds);
             let end = workload.window_end.as_deref().or(Some(snapshot.taken_at.as_str())).and_then(parse_epoch_seconds);
+            // The extra time a day over the hours the slow plan ran, from its first run to its last (to the window's end
+            // while it still runs), and only over a day of them: a burst of three minutes is no rate a day.
+            let stopped = crate::query_stopped(snapshot, q).is_some();
+            let until = if stopped { latest.last_seen.as_deref().and_then(parse_epoch_seconds) } else { end };
+            let wasted_per_day = match (since, until) {
+                (Some(since), Some(until)) if (until - since) / 3600.0 >= culprit_core::PER_DAY_MIN_HOURS => {
+                    Some(wasted * 86_400.0 / (until - since))
+                }
+                _ => None,
+            };
+            f.impact.time_ms_per_day = wasted_per_day;
+            f.impact.score = score_for_share(latest_share.max(wasted_share));
+            f.impact.label = format!("{} slower", format::factor(factor));
             let amount = match (since, end) {
                 (Some(since), Some(end)) => severity_for_recent_time((end - since) / 3600.0, latest.total_time_ms, 1.0),
                 _ => severity_for_time(snapshot, latest.total_time_ms, 1.0),
@@ -107,21 +116,39 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             f.confidence = Confidence::High;
             f.title = format!("{} got {} slower after its plan changed", capitalize(&query_handle(q)), format::factor(factor));
             let when = |at: Option<&str>| at.map(crate::queries::short_when).unwrap_or_default();
+            // A statement that stopped ran the slow plan for a while, not "since".
+            let slow_when = match (stopped, latest.first_seen.as_deref(), latest.last_seen.as_deref()) {
+                (true, Some(first), Some(last)) => culprit_core::span_when(first, last),
+                _ => format!("since {}", when(latest.first_seen.as_deref())),
+            };
             f.summary = format!(
-                "Query Store saw this query run with plan {} at {} on average until {}, and with plan {} at {} since {} ({} runs). The plan choice changed, typically after a statistics update, a schema change or a recompile with unusual parameter values.",
+                "Query Store saw this query run with plan {} at {} on average until {}, and with plan {} at {} {slow_when} ({} runs). The plan choice changed, typically after a statistics update, a schema change or a recompile with unusual parameter values.",
                 best.id,
                 format::duration(best.mean_time_ms),
                 when(best.last_seen.as_deref()),
                 latest.id,
                 format::duration(latest.mean_time_ms),
-                when(latest.first_seen.as_deref()),
                 format::count(latest.executions)
             );
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Fast plan", best.mean_time_ms, Unit::Ms));
             f.metrics.push(Metric::new("Current plan", latest.mean_time_ms, Unit::Ms));
-            if let Some(extra) = wasted_per_day {
-                f.metrics.push(Metric::new("Extra time per day", extra, Unit::Ms));
+            match wasted_per_day {
+                Some(extra) => f.metrics.push(Metric::new("Extra time per day", extra, Unit::Ms)),
+                None => f.metrics.push(Metric::new("Extra time", wasted, Unit::Ms)),
+            }
+            // A plan forced onto a table that is gone can't apply: there is nothing to force.
+            if let Some(gone) = table_gone(snapshot, q) {
+                f.fix = Some(Fix {
+                    summary: format!(
+                        "{gone} is no longer in the catalog, so the statement can't run as it was, and plan {} can't be forced onto it: a forced plan that names a table or an index that is gone fails to apply. Nothing to force; if a statement on the table that replaced it is slow, its own findings say so.",
+                        best.id
+                    ),
+                    sql: None,
+                    cost: None,
+                });
+                f.verify = vec!["Nothing to check unless the statement runs again.".into()];
+                return Some(f);
             }
             f.fix = Some(Fix {
                 summary: "Force the fast plan now to stop the bleeding, then find out why the optimizer changed its mind (statistics, parameter values, schema). Unforce once the cause is fixed.".into(),
@@ -133,4 +160,26 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             Some(f)
         })
         .collect()
+}
+
+/// A table the statement's plan reads that the catalog no longer has (dropped or renamed since), by its name as the
+/// plan writes it. `None` when the scan read no tables at all (the catalog wasn't readable), for temporary tables and
+/// table variables, and for a name the plan doesn't qualify with its schema.
+fn table_gone(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
+    if snapshot.tables.is_empty() {
+        return None;
+    }
+    q.plan
+        .as_ref()?
+        .nodes()
+        .into_iter()
+        .filter(|n| matches!(n.kind, NodeKind::Scan | NodeKind::Seek | NodeKind::Lookup))
+        .find_map(|n| {
+            let object = n.object.as_deref().filter(|o| o.contains('.'))?;
+            let (schema, table) = crate::indexes::split_object(object)?;
+            if table.starts_with(['#', '@']) {
+                return None;
+            }
+            snapshot.table(&schema, &table).is_none().then(|| format!("{schema}.{table}"))
+        })
 }

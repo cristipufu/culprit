@@ -469,3 +469,65 @@ fn a_few_unindexed_keys_on_small_tables_are_not_a_habit() {
     assert!(finding(&analyze(snapshot()).findings, "unindexed-fk:schema").is_none());
     assert!(finding(&analyze(with_small_children(2)).findings, "unindexed-fk:schema").is_none());
 }
+
+// A staging SQL Server reading: once an update's log joined large-rows:workflow_executions, its summary counted 3 of the 4 statements
+// it lists ("Of the statements below, 3 read or write them 696 times…"), its log total left out a writer that logged
+// 6.3 MB, and "the large values are logged in full… smaller or fewer values will" came twice, once per writer.
+#[test]
+fn large_rows_says_every_statement_it_lists_and_the_log_of_each_writer_once() {
+    const MB: f64 = 1024.0 * 1024.0;
+    let mut s = snapshot();
+    let t = s.tables.iter_mut().find(|t| t.name == "support_tickets").expect("demo table");
+    (t.rows, t.in_row_bytes, t.lob_bytes, t.overflow_bytes, t.data_bytes) =
+        (Some(9_728.0), Some(31.0 * MB), Some(2_900.0 * MB), Some(0.0), Some(2_931.0 * MB));
+    let w = s.workload.as_mut().unwrap();
+    let mut plant = |id: &str, text: &str, runs: f64, rows: f64, pages: f64, log_kb: Option<f64>| {
+        let q = w.queries.iter_mut().find(|q| q.id == id).expect("demo query");
+        q.text = text.into();
+        q.plan = None;
+        (q.executions, q.rows, q.logical_reads) = (runs, Some(rows), Some(pages * runs));
+        q.costs = log_kb.map(|kb| culprit_core::QueryCosts {
+            log_bytes: Some(rows * kb * 1024.0),
+            log_share: Some(0.3),
+            ..Default::default()
+        });
+    };
+    // A read of whole tickets, an insert and an update that read them whole too, and an update of two of a ticket's
+    // columns that reads a few pages: large-rows lists the first three, log-volume flags the insert and that update.
+    plant("10", "SELECT * FROM shop.support_tickets WHERE id = @P1", 435.0, 422.0, 300.0, None);
+    plant(
+        "9",
+        "INSERT INTO shop.support_tickets (body, attachments) VALUES (@P1, @P2)",
+        192.0,
+        192.0,
+        340.0,
+        Some(412.0),
+    );
+    plant("8", "UPDATE shop.support_tickets SET body = @P1, status = @P2 WHERE id = @P3", 69.0, 67.0, 80.0, Some(92.0));
+    plant("7", "UPDATE shop.support_tickets SET attachments = @P1 WHERE id = @P2", 1_000.0, 1_000.0, 3.0, Some(90.0));
+    let report = analyze(s);
+    assert!(report.findings.iter().all(|f| f.check != "log-volume"), "one cause, one finding: large-rows");
+    let large = report.findings.iter().find(|f| f.check == "large-rows").expect("large-rows");
+    let listed = large.queries.len();
+    assert!(["10", "9", "8", "7"].iter().all(|id| large.queries.iter().any(|q| q.id == *id)), "{:?}", large.queries);
+    // The count is of every statement listed.
+    assert!(
+        large.summary.contains(&format!(" The {listed} statements below read or write them ")),
+        "{}",
+        large.summary
+    );
+    assert!(!large.summary.contains("Of the statements below"), "{}", large.summary);
+    // Each writer's log, the one that made no log-volume finding of its own too, in one sentence said once.
+    assert!(
+        large.summary.contains(" The 3 statements below that write them logged ")
+            && large.summary.contains(" by an insert (about 412 KB a row)")
+            && large.summary.contains(" by 2 updates (about 90.1 KB a row)"),
+        "{}",
+        large.summary
+    );
+    assert_eq!(large.summary.matches("logged in full").count(), 1, "{}", large.summary);
+    let log = large.metrics.iter().find(|m| m.label == "Log written by its writes").expect("its log").value;
+    assert!((log - (192.0 * 412.0 + 67.0 * 92.0 + 1_000.0 * 90.0) * 1024.0).abs() < 1.0, "{log}");
+    let note = large.queries.iter().find(|q| q.id == "8").and_then(|q| q.note.clone());
+    assert_eq!(note.as_deref(), Some("Writes about 92.0 KB of transaction log a row."));
+}

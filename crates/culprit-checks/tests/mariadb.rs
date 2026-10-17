@@ -1,12 +1,16 @@
 //! MariaDB rides on the MySQL engine: the same checks, in MariaDB's words and syntax, on the MariaDB demo scan.
 
 use culprit_checks::{analyze, index_advice};
-use culprit_core::{Capability, Report, Setting, Severity, Snapshot};
+use culprit_core::{Capability, Finding, Report, Setting, Severity, Snapshot, WaitStat};
 
 fn snapshot() -> Snapshot {
     let path = format!("{}/../../fixtures/mariadb-demo.report.json", env!("CARGO_MANIFEST_DIR"));
     let report: Report = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("report");
     report.snapshot
+}
+
+fn find<'a>(report: &'a Report, id: &str) -> Option<&'a Finding> {
+    report.findings.iter().find(|f| f.id == id)
 }
 
 fn set(s: &mut Snapshot, name: &str, value: &str) {
@@ -79,4 +83,107 @@ fn without_performance_schema_the_slow_log_is_offered_first() {
     let f = report.findings.iter().find(|f| f.id == "config:performance_schema").expect("finding");
     assert_eq!(f.severity, Severity::Medium);
     assert!(f.summary.contains("Culprit reads the slow query log"), "{}", f.summary);
+}
+
+// The saved demo: lock-time:375c "spends nearly all its time waiting on locks, 2.5 s per run" for a GROUP BY that reads
+// a million rows a run (49,963.3 ms of lock in 49,963.9). Its slow log writes to a table (log_output FILE,TABLE,
+// long_query_time 20 ms), and MariaDB then counts a logged statement's whole run as its lock time: a scan with the slow
+// log off showed 9.6 ms. row-lock-waits named the same plain SELECT, which takes no InnoDB row locks, as the statement
+// that waited longest, and said "3 min" for 152 s.
+/// The demo scan as it was read, with the lock time MariaDB reported for its two logged statements. The saved report
+/// holds the snapshot its analysis prepared, where that lock time is unknown (`pipeline.rs`
+/// `lock_time_that_counts_the_run`): what the scan recorded is put back to test the rule on it.
+fn as_scanned() -> Snapshot {
+    let mut s = snapshot();
+    for q in s.workload.as_mut().unwrap().queries.iter_mut() {
+        let lock = match q.id.as_str() {
+            "375c64398248650e" => 49_963.346,
+            "258e3c9b580f1ecc" => 2_251.482,
+            _ => continue,
+        };
+        q.spread.as_mut().expect("the slow log's spread").lock_ms = Some(lock);
+        q.waits.push(WaitStat {
+            category: "Lock".into(),
+            wait_type: Some("lock time".into()),
+            wait_ms: lock,
+            tasks: None,
+        });
+    }
+    s
+}
+
+#[test]
+fn lock_time_mariadb_makes_of_a_logged_run_is_not_waiting() {
+    let report = analyze(as_scanned());
+    assert!(
+        report
+            .snapshot
+            .notes
+            .iter()
+            .any(|n| n.message.contains("the lock time of 2 statements is left out as unknown")),
+        "{:?}",
+        report.snapshot.notes
+    );
+    let locks: Vec<&str> = report.findings.iter().filter(|f| f.check == "lock-time").map(|f| f.id.as_str()).collect();
+    assert!(locks.is_empty(), "{locks:?}");
+    let waits = find(&report, "row-lock-waits:server").expect("finding");
+    assert!(waits.title.starts_with("Transactions on this server waited 2 min 32 s for row locks"), "{}", waits.title);
+    assert!(waits.summary.contains("20 times, 2 min 32 s in all"), "{}", waits.summary);
+    assert!(!waits.summary.contains("waited longest") && waits.queries.is_empty(), "{}", waits.summary);
+
+    // Logged to a file only, the lock time is the statement's own; a plain SELECT still took no row locks, and a
+    // write that waited is the one named.
+    let mut file = as_scanned();
+    set(&mut file, "log_output", "FILE");
+    let report = analyze(file.clone());
+    assert!(find(&report, "lock-time:375c64398248650e").is_some());
+    assert!(!find(&report, "row-lock-waits:server").unwrap().summary.contains("waited longest"));
+    let q = file.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "375c64398248650e").unwrap();
+    q.text = "UPDATE `orders` SET `total` = `total` + ? WHERE `customer_id` = ?".into();
+    q.plan = None;
+    let waits = find(&analyze(file), "row-lock-waits:server").cloned().unwrap();
+    assert!(
+        waits.summary.contains("In this database, an update of orders waited longest on locks"),
+        "{}",
+        waits.summary
+    );
+}
+
+// The saved demo: scan-heavy:shop.orders counted the GROUP BY over every row (375c, no WHERE: temp-spill's) with the
+// statements whose filter has no index, at "93% of DB time", told it to "index the columns in their WHERE clause", and
+// said "explain the statements below" where the statements are listed above the fix.
+#[test]
+fn a_statement_with_no_where_is_not_told_to_index_its_filter() {
+    let report = analyze(snapshot());
+    let f = find(&report, "scan-heavy:shop.orders").expect("finding");
+    assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), vec!["258e3c9b580f1ecc"]);
+    assert!(
+        f.summary.ends_with(
+            "1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. \
+             A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no \
+             index on a filter changes that."
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(f.impact.db_time_share.unwrap_or(0.0) < 0.1, "{:?}", f.impact.db_time_share);
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.summary.starts_with("Explain the statements listed with this finding and index"), "{}", fix.summary);
+    // Read in full only by it, as often as the counters count: nothing for an index on a filter to remove.
+    let mut s = snapshot();
+    let w = s.workload.as_mut().unwrap();
+    w.queries.retain(|q| q.id != "258e3c9b580f1ecc");
+    w.queries.iter_mut().find(|q| q.id == "375c64398248650e").unwrap().executions = 80.0;
+    assert!(find(&analyze(s), "scan-heavy:shop.orders").is_none());
+}
+
+// InnoDB keeps only its most recent deadlock: "deadlocked once in the last day" counted what it doesn't count.
+#[test]
+fn innodbs_latest_deadlock_is_at_least_one() {
+    let report = analyze(snapshot());
+    let f = report.findings.iter().find(|f| f.check == "deadlocks").expect("finding");
+    assert_eq!(
+        f.title,
+        "Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)"
+    );
 }

@@ -203,7 +203,8 @@ fn notes_from_insights_appear_in_every_format() {
 #[test]
 fn finding_exports_never_name_the_connection_and_redact_query_text() {
     for file in ["mssql-demo.report.json", "pg-demo.report.json", "mysql-demo.report.json"] {
-        let report = report(file);
+        // Read the way a saved report is opened now: with today's checks, which the export runs too.
+        let report = culprit_checks::analyze(report(file).snapshot);
         for finding in &report.findings {
             for out in [
                 export::finding_markdown(&report, finding, &ExportOptions::default()),

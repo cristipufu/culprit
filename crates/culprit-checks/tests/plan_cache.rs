@@ -84,3 +84,33 @@ fn a_plan_cached_for_a_month_claims_what_it_costs_an_hour() {
     // The recent one keeps its raw share (10%), which can only understate it.
     assert!((share(&recent) - 0.1).abs() < 1e-9, "recent plan graded at {}", share(&recent));
 }
+
+// The PostgreSQL demo: a family of statements split by their value lists' lengths named no statement in its fix, and
+// its brief said "No statement of the application is named here" beside a caveat quoting one. The fix says where the
+// change is: the code that sends the statement it quotes.
+#[test]
+fn a_family_fix_points_at_the_statement_it_quotes() {
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/postgres-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let mut s: Snapshot = serde_json::from_str(&text).expect("snapshot");
+    let sample = "SELECT count(*) FROM (VALUES ($1),($2)) v(x) JOIN orders o ON o.id = v.x";
+    s.query_families = vec![culprit_core::QueryFamily {
+        key: "f2f04171f37597d5793a740be1361d5c".into(),
+        sample: sample.into(),
+        variants: 6.0,
+        executions: 6.0,
+        total_time_ms: 1.0,
+        cached_bytes: None,
+        query_ids: vec!["1".into(), "2".into()],
+    }];
+    let report = analyze(s);
+    let f = report.findings.iter().find(|f| f.check == "query-family").expect("the family");
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(
+        fix.starts_with(
+            "In the code that sends this statement (one copy is quoted below, as recorded), pass value lists"
+        ),
+        "{fix}"
+    );
+    assert!(f.caveats.iter().any(|c| c == &format!("One of them, as recorded:\n{sample}")), "{:?}", f.caveats);
+}

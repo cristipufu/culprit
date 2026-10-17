@@ -28,10 +28,17 @@ pub(crate) fn full_scans_measured(snapshot: &Snapshot, t: &culprit_core::TableSt
     Some((scans, scanned, days))
 }
 
-/// The captured statements that read a table in full: their plan scans it, or, without a plan, they read or change
-/// rows of it (SELECT, UPDATE, DELETE, MERGE) and name it. A statement that seeks the table through an index, or only
-/// inserts into it, isn't behind its full reads, so its time isn't theirs.
-pub(crate) fn scanning_queries<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -> Vec<&'a QueryStat> {
+/// A statement with no WHERE: a GROUP BY or a report over the whole table, an UPDATE of every row. It reads the table
+/// in full by what it asks for; its sort, grouping or result size is another finding's.
+fn reads_every_row(q: &QueryStat) -> bool {
+    !mentions_word(&q.text, "where")
+}
+
+/// The captured statements that read a table in full: their plan scans it, or, without a plan, they read or change rows
+/// of it (SELECT, UPDATE, DELETE, MERGE) and name it. A statement that seeks the table through an index, or only
+/// inserts into it, isn't behind its full reads, so its time isn't theirs. The check sets apart those with no WHERE
+/// ([`reads_every_row`]), which read every row on purpose, and lists the rest; the index advisor lists what it lists.
+fn reading_in_full<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -> Vec<&'a QueryStat> {
     let qualified = format!("{schema}.{table}").to_ascii_lowercase();
     let names_table = |object: &str| {
         let o = object.to_ascii_lowercase().replace(['[', ']', '"', '`'], "");
@@ -51,6 +58,29 @@ pub(crate) fn scanning_queries<'a>(snapshot: &'a Snapshot, schema: &str, table: 
             }
         })
         .collect()
+}
+
+/// The sentence for statements with no WHERE that read the table in full: on purpose, and nothing an index on a
+/// filter changes. They aren't listed with the finding (its fix is about filters), so it names them.
+fn on_purpose(whole: &[&QueryStat]) -> String {
+    let ids: Vec<String> = whole.iter().map(|q| q.id.clone()).collect();
+    match whole.len() {
+        0 => String::new(),
+        1 => {
+            let handle = query_handle(whole[0]);
+            let mut chars = handle.chars();
+            let handle =
+                chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default();
+            format!(
+                " {handle} (query {}) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+                ids[0]
+            )
+        }
+        n => format!(
+            " {n} statements with no WHERE clause (queries {}) read it in full too, on purpose: no index on a filter changes that.",
+            format::list(&ids)
+        ),
+    }
 }
 
 pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
@@ -76,10 +106,18 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         let table_name = t.qualified();
         let touching: Vec<&QueryStat> =
             queries_touching(snapshot, &t.schema, &t.name).into_iter().filter(|q| !is_monitoring_query(q)).collect();
-        let scanning = scanning_queries(snapshot, &t.schema, &t.name);
+        let (whole, scanning): (Vec<&QueryStat>, Vec<&QueryStat>) =
+            reading_in_full(snapshot, &t.schema, &t.name).into_iter().partition(|q| reads_every_row(q));
         // A plan that scans it shows the full read; a statement without one may as well seek it (most reads by key
         // do): listed to explain, but its time isn't counted as the scans' cost.
         let (proven, unplanned): (Vec<&QueryStat>, Vec<&QueryStat>) = scanning.iter().partition(|q| q.plan.is_some());
+        // Statements with no WHERE are behind full reads too, but on purpose. When the query history has nothing else
+        // that reads it in full and their plans read it whole as often as it was read in full, the reads are theirs, and
+        // no index on a filter has anything to remove.
+        let whole_runs: f64 = whole.iter().filter(|q| q.plan.is_some()).map(|q| q.executions).sum();
+        if scanning.is_empty() && !whole.is_empty() && whole_runs >= scans_total {
+            continue;
+        }
         let mut f = finding("scan-heavy", &table_name, Category::Indexes, subject(SubjectKind::Table, &table_name));
         let rows_text = if measured {
             format!("{} rows a day", format::count(rows_read))
@@ -99,18 +137,32 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             if measured { format!(" {}", since_phrase(snapshot)) } else { String::new() },
             if !proven.is_empty() {
                 format!(
-                    "{} of the captured statements read it in full by their plans{}; explain them to see which filter has no index.",
+                    "{} of the captured statements {} it in full by {}{}; explain {} to see which filter has no index.{}",
                     proven.len(),
+                    if proven.len() == 1 { "reads" } else { "read" },
+                    if proven.len() == 1 { "its plan" } else { "their plans" },
                     if unplanned.is_empty() {
                         String::new()
                     } else {
                         format!(", and {} more without a captured plan may", unplanned.len())
-                    }
+                    },
+                    if proven.len() + unplanned.len() == 1 { "it" } else { "them" },
+                    on_purpose(&whole)
                 )
             } else if !unplanned.is_empty() {
                 format!(
-                    "{} of the captured statements read or change it without a captured plan; explain them to see whether they read it in full.",
-                    unplanned.len()
+                    "{} of the captured statements {} or {} it without a captured plan; explain {} to see whether {} it in full.{}",
+                    unplanned.len(),
+                    if unplanned.len() == 1 { "reads" } else { "read" },
+                    if unplanned.len() == 1 { "changes" } else { "change" },
+                    if unplanned.len() == 1 { "it" } else { "them" },
+                    if unplanned.len() == 1 { "it reads" } else { "they read" },
+                    on_purpose(&whole)
+                )
+            } else if !whole.is_empty() {
+                format!(
+                    "{} The rest come from statements outside the top of the workload.",
+                    on_purpose(&whole).trim_start()
                 )
             } else if !touching.is_empty() {
                 "The captured statements that name it reach it through an index, so the full reads come from \
@@ -151,15 +203,16 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         if let Some(rows) = t.rows {
             f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
         }
+        let explain = if f.queries.is_empty() {
+            "Find the statements that read it in full (they aren't among the heaviest this scan captured), explain them"
+        } else {
+            "Explain the statements listed with this finding"
+        };
         f.fix = Some(Fix {
-            summary: match snapshot.server.engine {
-                Engine::Postgres => "Explain the statements below (Culprit can show a generic plan) and index the \
-                    columns in their WHERE clause; small lookup tables are fine to scan."
-                    .into(),
-                _ => "Explain the statements below and index the columns in their WHERE clause; small lookup tables \
-                    are fine to scan."
-                    .into(),
-            },
+            summary: format!(
+                "{explain}{} and index the columns in their WHERE clause; small lookup tables are fine to scan.",
+                if snapshot.server.engine == Engine::Postgres { " (Culprit can show a generic plan)" } else { "" }
+            ),
             sql: None,
             cost: crate::indexes::write_cost(snapshot, &t.schema, &t.name),
         });

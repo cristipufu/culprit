@@ -2,9 +2,10 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
+import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
 import { duration, percent } from "../lib/format";
-import { allNodes, costBasis, estRows, insightsByNode, rowError, rows } from "../lib/plan-format";
+import { allNodes, estRowsForRuns, insightsByNode, misestimate, noShareReason, rows } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
@@ -13,8 +14,9 @@ type SortKey = "cost" | "subtree" | "est" | "act" | "error" | "runs" | "read" | 
 type Row = {
   node: PlanNode;
   depth: number;
-  self: number;
-  subtree: number;
+  /** Shares the plan can state; null where it can't (see `stepShare`). */
+  self: number | null;
+  subtree: number | null;
   error: number;
   issues: number;
   worst: "high" | "medium" | "low" | null;
@@ -23,7 +25,7 @@ type Row = {
 const COLUMNS: { key: SortKey; label: string; title: string; actual?: boolean }[] = [
   { key: "cost", label: "Self", title: "Share of the plan's work done by this operator itself" },
   { key: "subtree", label: "With inputs", title: "Share including everything below it" },
-  { key: "est", label: "Est. rows", title: "Rows the optimizer expected, over all executions" },
+  { key: "est", label: "Est. rows", title: "Rows the optimizer expected, over all executions (the measured ones in an actual plan)" },
   { key: "act", label: "Actual rows", title: "Rows that actually came out", actual: true },
   { key: "error", label: "Off by", title: "How far the estimate was from the actual rows", actual: true },
   { key: "runs", label: "Runs", title: "How many times the operator ran" },
@@ -38,7 +40,8 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
   const [query, setQuery] = useState("");
   const [issuesOnly, setIssuesOnly] = useState(false);
   const body = useRef<HTMLTableSectionElement>(null);
-  const total = costBasis(plan);
+  // The same shares as the diagram and the tree: own time in a timed run, the estimated cost otherwise.
+  const shares = useMemo(() => planShares(plan), [plan]);
   const actual = allNodes(plan.root).some((n) => n.act_rows != null);
   const timed = allNodes(plan.root).some((n) => n.act_time_ms != null);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
@@ -47,13 +50,13 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
     const out: Row[] = [];
     const visit = (n: PlanNode, depth: number) => {
       const list = flagged.get(n.id) ?? [];
-      const err = rowError(n);
+      const err = misestimate(n);
       out.push({
         node: n,
         depth,
-        self: n.self_cost / total,
-        subtree: n.subtree_cost / total,
-        error: err ? err.factor : 0,
+        self: shares.stated.get(n.id) ?? null,
+        subtree: shares.statedSubtree.get(n.id) ?? null,
+        error: err != null ? Math.abs(err) : 0,
         issues: list.length + n.warnings.length,
         worst: list[0]?.severity ?? (n.warnings.length ? "low" : null),
       });
@@ -61,18 +64,18 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
     };
     visit(plan.root, 0);
     return out;
-  }, [plan, total, flagged]);
+  }, [plan, shares, flagged]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const value = (r: Row): number => {
       switch (sort.key) {
         case "cost":
-          return r.self;
+          return r.self ?? -1;
         case "subtree":
-          return r.subtree;
+          return r.subtree ?? -1;
         case "est":
-          return estRows(r.node);
+          return estRowsForRuns(r.node);
         case "act":
           return r.node.act_rows ?? -1;
         case "error":
@@ -159,7 +162,7 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
                   aria-sort={sort.key === c.key ? (sort.desc ? "descending" : "ascending") : "none"}
                   onClick={() => setSort((s) => (s.key === c.key ? { key: c.key, desc: !s.desc } : { key: c.key, desc: true }))}
                 >
-                  {c.label}
+                  {c.key === "read" && plan.kind !== "actual" ? "Est. read" : c.label}
                   {sort.key === c.key && (sort.desc ? <ArrowDown size={11} /> : <ArrowUp size={11} />)}
                 </th>
               ))}
@@ -168,7 +171,7 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
           <tbody ref={body}>
             {visible.map((r) => {
               const n = r.node;
-              const err = rowError(n);
+              const err = misestimate(n);
               const runs = n.act_executions ?? n.est_executions;
               return (
                 <tr key={n.id} className={`${n.id === selectedId ? "sel" : ""}`} onClick={() => onSelect(n.id)}>
@@ -192,18 +195,23 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
                   </td>
                   {columns.map((c) => (
                     <td key={c.key} className={`r num col-${c.key}`}>
-                      {c.key === "cost" && (
-                        <span className="ops-cost">
-                          <span className="ops-cost-bar">
-                            <span style={{ width: `${Math.min(100, r.self * 100)}%` }} />
+                      {c.key === "cost" &&
+                        (r.self != null ? (
+                          <span className="ops-cost">
+                            <span className="ops-cost-bar">
+                              <span style={{ width: `${Math.min(100, r.self * 100)}%` }} />
+                            </span>
+                            {percent(r.self)}
                           </span>
-                          {percent(r.self)}
-                        </span>
-                      )}
-                      {c.key === "subtree" && percent(r.subtree)}
-                      {c.key === "est" && rows(estRows(n))}
+                        ) : (
+                          <span className="muted" title={shares.basis === "cost" ? noShareReason(plan, n) ?? undefined : undefined}>
+                            —
+                          </span>
+                        ))}
+                      {c.key === "subtree" && (r.subtree != null ? percent(r.subtree) : <span className="muted">—</span>)}
+                      {c.key === "est" && rows(estRowsForRuns(n))}
                       {c.key === "act" && (n.act_rows != null ? rows(n.act_rows) : "—")}
-                      {c.key === "error" && (err && err.factor >= 2 ? <span className={`ops-err ${err.factor >= 10 ? "bad" : ""}`}>{`×${rows(err.factor)} ${err.more ? "more" : "fewer"}`}</span> : <span className="muted">—</span>)}
+                      {c.key === "error" && (err != null && Math.abs(err) >= 2 ? <span className={`ops-err ${n.warnings.includes("misestimate") ? "bad" : ""}`}>{`×${rows(Math.abs(err))} ${err > 0 ? "more" : "fewer"}`}</span> : <span className="muted">—</span>)}
                       {c.key === "runs" && (runs > 1 ? rows(runs) : <span className="muted">1</span>)}
                       {c.key === "read" && (n.rows_read != null ? rows(n.rows_read) : <span className="muted">—</span>)}
                       {c.key === "time" && (n.act_time_ms != null ? duration(n.act_time_ms) : <span className="muted">—</span>)}

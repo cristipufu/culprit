@@ -116,6 +116,49 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Every plan a saved scan captured, read again from the text it was captured as (`raw`) by this version's parsers,
+/// before anything reads the scan: a parser fix (the inner side of a nested loop, a parallel plan's rows, a guess the
+/// collector marks) reaches the scans saved before it, so an old report shows the plan a scan taken now would. What
+/// the scan added that the text doesn't hold stays as it was: the statement it was planned for and the kind of plan
+/// here, the notes a collector puts on a plan (the server's version, where its sample came from) and what it looked up
+/// for it (table sizes) in the provider's own `reparse`. The marks a report's preparation adds (changed columns, index
+/// kinds) and the plan's insights are worked out again when it is analyzed. A plan with no text, or text this build
+/// can't read, stays as saved; so does SQLite's, whose text keeps the steps but not their tree.
+pub fn reparse_saved(snapshot: &mut culprit_core::Snapshot) {
+    let database = snapshot.server.database.clone();
+    let Some(workload) = snapshot.workload.as_mut() else { return };
+    // A pg_stat_statements entry's plan is planned from the text it keeps; a log's statement is the application's.
+    let statement_stats = workload.kind() == Some(culprit_core::WorkloadKind::StatementStats);
+    for q in workload.queries.iter_mut() {
+        let Some(saved) = q.plan.as_ref() else { continue };
+        let entry = statement_stats.then_some(q.id.as_str());
+        if let Some(fresh) = reparse(saved, entry, &database) {
+            q.plan = Some(fresh);
+        }
+    }
+}
+
+/// `saved` read again by its engine's parser; `entry` is the pg_stat_statements entry it was planned for.
+fn reparse(saved: &Plan, entry: Option<&str>, database: &str) -> Option<Plan> {
+    let _ = (entry, database);
+    let mut plan = match saved.engine {
+        #[cfg(feature = "mssql")]
+        culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved),
+        #[cfg(feature = "postgres")]
+        culprit_core::Engine::Postgres => culprit_postgres::plan_json::reparse(saved, entry),
+        #[cfg(feature = "mysql")]
+        culprit_core::Engine::Mysql => {
+            culprit_mysql::plan_json::reparse(saved, Some(database).filter(|d| !d.is_empty()))
+        }
+        _ => None,
+    }
+    .filter(|plan| plan.engine == saved.engine)?;
+    plan.kind = saved.kind;
+    plan.statement = saved.statement.clone();
+    plan.insights = None;
+    Some(plan)
+}
+
 fn detect_clean(text: &str) -> Option<PlanFormat> {
     if text.starts_with('<') {
         return text.contains("ShowPlanXML").then_some(PlanFormat::ShowplanXml);

@@ -19,11 +19,13 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("a missing-index request absorbs the scan behind it", missing_index_absorbs_scan),
         rule("a rewrite, not an index, fixes a scan behind a function or wildcard", rewrite_replaces_index),
         rule("a spill explains the big sort", spill_explains_sort),
+        rule("a spill carries the result it sorts", spill_carries_its_result),
         rule("an index to add covers the foreign key", index_covers_foreign_key),
         rule("an index the engine builds for itself is the foreign key's", engine_built_index_is_the_foreign_keys),
         rule("an index to add replaces a histogram", index_replaces_histogram),
         rule("a regression carries its plan change", regression_carries_plan_change),
         rule("one plan story per query", one_plan_story),
+        rule("a scan that came with a plan change carries the regression", scan_carries_its_regression),
         rule("dead rows are the table's empty space", dead_rows_explain_bloat),
         rule("updates that aren't HOT explain their WAL", cold_updates_explain_log),
         rule("large values explain the log their writes make", large_values_explain_log),
@@ -76,6 +78,44 @@ fn spill_explains_sort(_: &Snapshot, findings: &mut Vec<Finding>) {
         !(f.id.starts_with("plan-insights:big-sort:") || f.id.starts_with("plan-insights:temp-table-sort:"))
             || !f.queries.iter().all(|q| spilled.contains(&q.id))
     });
+}
+
+/// A statement that sends tens of thousands of rows a run and spills its sort or hash to temporary files: big-result
+/// and temp-spill would each carry the statement's share, with two fixes. One finding, the spill's, which keeps the
+/// share and the memory fix and says what the result adds (the rows each run sends, and returning fewer).
+fn spill_carries_its_result(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    let mut i = 0;
+    while i < findings.len() {
+        let f = &findings[i];
+        let candidate = (f.check == "big-result").then(|| f.queries.first().and_then(|r| workload.query(&r.id)));
+        let Some(q) = candidate.flatten() else {
+            i += 1;
+            continue;
+        };
+        let target = findings
+            .iter()
+            .position(|s| s.check == "temp-spill" && matches!(s.queries.as_slice(), [r] if r.id == q.id));
+        let (Some(target), Some(said)) = (target, signals::result_of_a_spill(snapshot, q)) else {
+            i += 1;
+            continue;
+        };
+        let metrics: Vec<culprit_core::Metric> =
+            findings[i].metrics.iter().filter(|m| m.label != "Runs").cloned().collect();
+        let s = &mut findings[target];
+        s.summary.push_str(&said.summary);
+        if let Some(fix) = s.fix.as_mut() {
+            fix.summary.push_str(&said.fix);
+        }
+        s.verify.extend(said.verify);
+        for m in metrics {
+            if !s.metrics.iter().any(|x| x.label == m.label) {
+                s.metrics.push(m);
+            }
+        }
+        // `absorb` removed `i`: the next finding is now there.
+        absorb(snapshot, findings, target, i, None);
+    }
 }
 
 /// The keys of every index the findings suggest adding, by table.
@@ -158,31 +198,71 @@ fn regression_carries_plan_change(_: &Snapshot, findings: &mut Vec<Finding>) {
 }
 
 /// "This query takes a lot of time" is the fallback for a heavy query nothing else explains; when another finding
-/// names why (a missing index, a spill, lock waits, a type mismatch…), that finding is the one to act on. What a plan
-/// shows explains the time only when it weighs as much: a plan warning or insight graded lower (a join condition
-/// that is there after all, statistics the plan merely lacks) leaves the heavy query standing. The list of forced plans
-/// ("nothing to do while they help") explains nothing.
-fn explained_heavy_query(_: &Snapshot, findings: &mut Vec<Finding>) {
-    let mut explained: BTreeMap<String, Severity> = BTreeMap::new();
+/// names why (a missing index, a spill, lock waits, a type mismatch…), that finding is the one to act on. It explains
+/// the time only when it accounts for it: the time it accounts for in that statement is at least half the heavy
+/// query's share. A finding about several statements accounts for each one's part of its share, not for the whole of
+/// it: two statements' 16% doesn't explain either one's 8%. A finding that weighs no time (a table's lock
+/// escalations), a part of it (an unstable query's slow runs, a few percent of a statement that runs all day) or none
+/// it measured (see [`measures_no_time`]) leaves the heavy query standing, so the statement's everyday cost is still
+/// said. What a plan shows explains the time only when it weighs as much: a plan warning or insight graded lower (a
+/// join condition that is there after all, statistics the plan merely lacks) leaves the heavy query standing. The list
+/// of forced plans ("nothing to do while they help") explains nothing.
+fn explained_heavy_query(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    /// The share of a heavy query's time another finding must weigh to explain it.
+    const ACCOUNTS_FOR: f64 = 0.5;
+    let workload = snapshot.workload.as_ref();
+    // A statement's own share of database time, weighed the way every check weighs it.
+    let own_share = |id: &str| workload.and_then(|w| w.query(id).map(|q| w.share_of(q.total_time_ms, q)));
+    // Per statement: the grade of each finding that names a cause for it, and the share it accounts for there.
+    let mut causes: BTreeMap<String, Vec<(Severity, f64)>> = BTreeMap::new();
     for f in findings.iter().filter(|f| {
         // An over-sized grant slows others, not the query itself; waiting on the application explains a query only
-        // when it is most of its time (`network_wait_explains_heavy_query`).
+        // when it is most of its time (`network_wait_explains_heavy_query`); an unstable query's slow runs are a part
+        // of its time, never what the statement costs every day.
         !matches!(
             f.check.as_str(),
-            "heavy-query" | "unused-index" | "duplicate-index" | "stale-stats" | "memory-grant" | "network-wait"
-        ) && !f.id.starts_with("tuning-advice:forced-plans")
+            "heavy-query" | "unused-index" | "duplicate-index" | "memory-grant" | "network-wait" | "unstable-query"
+        ) && !measures_no_time(f)
     }) {
+        let Some(share) = f.impact.db_time_share else { continue };
         // A cause another check names explains it at any grade; a plan's remark only at the heavy query's.
         let weight =
             if matches!(f.check.as_str(), "plan-warnings" | "plan-insights") { f.severity } else { Severity::High };
-        for q in &f.queries {
-            let s = explained.entry(q.id.clone()).or_insert(weight);
-            *s = (*s).max(weight);
+        // Each statement's part of the finding's share, by its own share of database time.
+        let parts: Vec<(String, f64)> = match f.queries.as_slice() {
+            [one] => vec![(one.id.clone(), share)],
+            refs => {
+                let weights: Vec<(String, f64)> =
+                    refs.iter().filter_map(|r| Some((r.id.clone(), own_share(&r.id)?))).collect();
+                let total: f64 = weights.iter().map(|(_, w)| w).sum();
+                if total <= 0.0 {
+                    continue;
+                }
+                weights.into_iter().map(|(id, w)| (id, share * w / total)).collect()
+            }
+        };
+        for (id, part) in parts {
+            causes.entry(id).or_default().push((weight, part));
         }
     }
     findings.retain(|f| {
-        f.check != "heavy-query" || !f.queries.iter().any(|q| explained.get(&q.id).is_some_and(|s| *s >= f.severity))
+        let own = f.impact.db_time_share.unwrap_or(0.0);
+        f.check != "heavy-query"
+            || !f.queries.iter().any(|q| {
+                causes.get(&q.id).is_some_and(|c| c.iter().any(|(w, s)| *w >= f.severity && *s >= own * ACCOUNTS_FOR))
+            })
     });
+}
+
+/// A finding whose share of database time is its statements' but measures none of it: a guess at what the optimizer
+/// may misjudge (a column with no histogram, statistics behind their table) or an engine's estimate of what an index
+/// would save (Azure's index advice), and the list of forced plans. It never explains a heavy query away. SQL Server's
+/// own plan advice stands on what it measured: the regression behind a plan to force, a forced plan's scan.
+fn measures_no_time(f: &Finding) -> bool {
+    matches!(f.check.as_str(), "missing-histogram" | "stale-stats")
+        || (f.check == "tuning-advice"
+            && !f.id.starts_with("tuning-advice:force:")
+            && !f.id.starts_with("tuning-advice:forced-scan:"))
 }
 
 /// SQL Server writes names with the database in front; prose drops it (see `without_database`).
@@ -392,6 +472,29 @@ pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, 
     Some((silence, last_text))
 }
 
+/// Once `q` stopped (see `query_stopped`), the statement that may have replaced it: one still running that writes the
+/// same table the same way (an insert into it, for an insert), and wasn't already running before `q` began; the one
+/// that runs most. Only for writes: many statements read a table, and none of them says it took a read's place.
+pub(crate) fn query_successor<'a>(snapshot: &'a Snapshot, q: &QueryStat) -> Option<&'a QueryStat> {
+    let engine = snapshot.server.engine;
+    let table = support::write_targets(q, engine)
+        .into_iter()
+        .find_map(|o| snapshot.tables.iter().find(|t| support::names_table(&o, &t.schema, &t.name)))?;
+    let verb = support::first_verb(support::main_statement(&q.text)).map(|(_, v)| v)?;
+    support::app_queries(snapshot)
+        .filter(|o| o.id != q.id && o.executions > 0.0 && !query_is_history(snapshot, o))
+        .filter(|o| support::first_verb(support::main_statement(&o.text)).is_some_and(|(_, v)| v == verb))
+        .filter(|o| support::writes_table(o, engine, &table.schema, &table.name))
+        // One that was already running before this one began didn't replace it.
+        .filter(|o| match (o.first_seen.as_deref(), q.first_seen.as_deref()) {
+            (Some(theirs), Some(ours)) => {
+                support::parse_epoch_seconds(theirs).zip(support::parse_epoch_seconds(ours)).is_none_or(|(a, b)| a >= b)
+            }
+            _ => true,
+        })
+        .max_by(|a, b| a.executions.total_cmp(&b.executions))
+}
+
 /// A statement seen once in the window: an export, a backfill, a migration or a query someone ran by hand looks like
 /// this. One run shows what it cost, not that it will run again, so it isn't a pattern to fix.
 pub(crate) fn ran_once(q: &QueryStat) -> bool {
@@ -472,7 +575,9 @@ fn ran_once_only(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     }
 }
 
-/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled: a deploy most likely changed or fixed them.
+/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled: a deploy
+/// most likely changed or fixed them. A finding about one statement names what may have replaced it
+/// ([`query_successor`]): the version of the code to check is that one.
 #[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
 fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     let Some(workload) = &snapshot.workload else { return };
@@ -490,17 +595,48 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         let (silence, last) = silences.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).expect("non-empty");
         f.inactive = true;
         f.impact.score *= 0.25;
-        f.caveats.insert(
-            0,
+        let one = queries.len() == 1;
+        let successor = queries
+            .first()
+            .filter(|_| one)
+            .and_then(|q| query_successor(snapshot, q))
+            .map(|next| {
+                format!(
+                    " Query {}, {} too, still runs and may be what replaced it: check that one.",
+                    next.id,
+                    support::query_handle(next)
+                )
+            })
+            .unwrap_or_default();
+        let caveat = if last_ran_by_first_scan(workload, &last) {
             format!(
-                "{} not run since {} ({} before this scan's data ends). A deploy most likely changed or fixed {}; check that the current version of this code doesn't have the same problem.",
-                if queries.len() == 1 { "This query has" } else { "None of these queries has" },
+                "{} run in the {} since Culprit's first scan ({}); {} may have stopped earlier. A deploy before that scan may have changed or fixed {}, at a time the counters don't show; check that the current version of this code doesn't have the same problem.",
+                if one { "This query hasn't" } else { "None of these queries has" },
+                format::duration(silence * 1000.0),
+                crate::queries::short_when(&last),
+                if one { "it" } else { "they" },
+                if one { "it" } else { "them" }
+            )
+        } else {
+            format!(
+                "{} not run since {} ({} before this scan's data ends). A deploy may have changed or fixed {}; check that the current version of this code doesn't have the same problem.",
+                if one { "This query has" } else { "None of these queries has" },
                 last.get(..16).unwrap_or(&last).replace('T', " "),
                 format::duration(silence * 1000.0),
-                if queries.len() == 1 { "it" } else { "them" }
-            ),
-        );
+                if one { "it" } else { "them" }
+            )
+        };
+        f.caveats.insert(0, caveat + &successor);
     }
+}
+
+/// Whether a statement's last run is only the oldest of Culprit's scans that tracked it. A source that keeps no last
+/// run (pg_stat_statements) is dated by the scans: one whose count hasn't grown since the first of them last ran by
+/// then at the latest, and may have stopped long before (see `culprit_engine::trends::last_seen_from_scans`).
+pub(crate) fn last_ran_by_first_scan(workload: &culprit_core::Workload, last: &str) -> bool {
+    let first = workload.timeline.as_ref().and_then(|t| t.starts.first()).and_then(|s| support::parse_epoch_seconds(s));
+    !workload.windowed
+        && first.zip(support::parse_epoch_seconds(last)).is_some_and(|(first, last)| (first - last).abs() < 1.0)
 }
 
 // ── indexes ──
@@ -584,6 +720,78 @@ fn one_plan_story(_: &Snapshot, findings: &mut Vec<Finding>) {
         index += 1;
         keep
     });
+}
+
+/// A statement whose plan changed for the worse, and whose current plan reads a table for want of an index: the
+/// regression (plan-regression, or a regression a new plan started with) and the scan's finding (filtered-scan, or
+/// the missing-index request that absorbed it) are one cause, with two fixes (force the old plan, add the index). The
+/// scan's finding stays, with the index; the regression's timeline joins it as its first sentence, with what each plan
+/// read where Query Store counted it.
+fn scan_carries_its_regression(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    let mut i = 0;
+    while i < findings.len() {
+        let f = &findings[i];
+        let regressed = f.check == "plan-regression"
+            || (f.check == "regression" && f.metrics.iter().any(|m| m.label == crate::queries::PLAN_CHANGE));
+        let Some(q) = regressed.then(|| f.queries.first().and_then(|r| workload.query(&r.id))).flatten() else {
+            i += 1;
+            continue;
+        };
+        // The scan is in the plan that runs now: the finding points at its step.
+        let target = findings.iter().position(|s| {
+            matches!(s.check.as_str(), "filtered-scan" | "missing-index")
+                && s.queries.iter().any(|r| r.id == q.id && r.plan_node.is_some())
+        });
+        let Some(target) = target else {
+            i += 1;
+            continue;
+        };
+        let source = findings[i].clone();
+        let first = source.summary.split_once(". ").map_or(source.summary.as_str(), |(first, _)| first);
+        let first = first.trim_end_matches('.');
+        let s = &mut findings[target];
+        let first = if s.queries.len() > 1 {
+            first.replacen("this query", &format!("query {}", q.id), 1)
+        } else {
+            first.to_string()
+        };
+        let sentence = match first.strip_prefix("Until ") {
+            Some(rest) => format!("Query Store's timeline: until {rest}."),
+            None => format!("{first}."),
+        };
+        s.summary = format!("{} {sentence}{}", s.summary.trim_end(), plans_read(q));
+        for m in source.metrics {
+            if !s.metrics.iter().any(|x| x.label == m.label) {
+                s.metrics.push(m);
+            }
+        }
+        absorb(snapshot, findings, target, i, None);
+    }
+}
+
+/// What the plan a statement ran fast with read a run, against the plan it runs now, where the source counted reads
+/// per plan: " The scan came with the plan change: plan 276 read about 3 pages a run, plan 282 reads about 5.7K."
+fn plans_read(q: &QueryStat) -> String {
+    let per_run =
+        |p: &culprit_core::PlanVariant| p.logical_reads.filter(|_| p.executions > 0.0).map(|r| r / p.executions);
+    let now = q
+        .plans
+        .iter()
+        .find(|p| q.plan_id.as_deref() == Some(p.id.as_str()))
+        .or_else(|| q.plans.iter().max_by(|a, b| a.last_seen.cmp(&b.last_seen)));
+    let Some(now) = now else { return String::new() };
+    let fast = q.plans.iter().filter(|p| p.id != now.id).min_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms));
+    match (fast.and_then(|p| Some((p, per_run(p)?))), per_run(now)) {
+        (Some((fast, before)), Some(after)) if after > before * 2.0 => format!(
+            " The scan came with the plan change: plan {} read about {} pages a run, plan {} reads about {}.",
+            fast.id,
+            format::count(before),
+            now.id,
+            format::count(after)
+        ),
+        _ => String::new(),
+    }
 }
 
 /// SQL Server's recommendation, said on the parameter-sensitivity finding for the same query.
@@ -771,44 +979,165 @@ fn cold_updates_explain_log(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     }
 }
 
-/// Inserting or updating large values logs them in full: a log-volume finding whose bytes per row are about the size
-/// of a large-rows table's average row is that table's large values, and batching or dropping indexes (log-volume's
-/// advice) can't shrink them. One finding, large-rows, with the statement and its log.
+/// Inserting or updating large values logs them in full: a log-volume finding about a write to a large-rows table that
+/// logs more than a page a row is that table's large values (log-volume already gave large-rows' fix for it), whether
+/// it sets all of them (an insert, about the average row) or some (an update of a few columns, a fraction of it). One
+/// finding, large-rows, with the statement among those it lists. Once one joins, large-rows says what every statement
+/// it lists does: how often they run, and the log each one that writes the table made, in one sentence.
 fn large_values_explain_log(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    /// Log a row past which the row's large values are what is logged.
+    const LARGE_VALUES_PER_ROW: f64 = 8_192.0;
     let Some(workload) = &snapshot.workload else { return };
-    let log = if snapshot.server.engine == Engine::Postgres { "WAL" } else { "transaction log" };
+    // The large-rows findings a writer joined, by id.
+    let mut joined: BTreeSet<String> = BTreeSet::new();
     let mut i = 0;
     while i < findings.len() {
         let f = &findings[i];
         let candidate = (f.check == "log-volume")
             .then(|| f.queries.first().and_then(|r| workload.query(&r.id)))
             .flatten()
-            .and_then(|q| Some((q, written_table(q)?, metric(f, "Per row")?)));
-        let Some((q, (_, table), per_row)) = candidate else {
+            .and_then(|q| Some((written_table(q)?, metric(f, "Per row")?)))
+            .filter(|(_, per_row)| *per_row >= LARGE_VALUES_PER_ROW);
+        let Some(((_, table), _)) = candidate else {
             i += 1;
             continue;
         };
-        let target = findings.iter().position(|l| {
-            l.check == "large-rows"
-                && leaf(&finding_table(l)) == table
-                && metric(l, "Average row").is_some_and(|avg| avg > 0.0 && (0.5..=3.0).contains(&(per_row / avg)))
-        });
+        let target = findings.iter().position(|l| l.check == "large-rows" && leaf(&finding_table(l)) == table);
         let Some(target) = target else {
             i += 1;
             continue;
         };
-        let bytes = metric(&findings[i], "Log written").unwrap_or(0.0);
-        let handle = support::query_handle(q);
-        let l = &mut findings[target];
-        l.summary.push_str(&format!(
-            " {} wrote {} of {log} for them, about {} a row: the large values are logged in full, so batching the writes or dropping indexes won't shrink it; smaller or fewer values will.",
-            capitalize(&handle),
-            format::bytes(bytes),
-            format::bytes(per_row)
-        ));
-        l.metrics.push(culprit_core::Metric::new("Log its writes wrote", bytes, culprit_core::Unit::Bytes));
-        absorb(snapshot, findings, target, i, Some(format!("Writes about {} of {log} a row.", format::bytes(per_row))));
+        joined.insert(findings[target].id.clone());
+        absorb(snapshot, findings, target, i, None);
     }
+    for l in findings.iter_mut().filter(|l| joined.contains(&l.id)) {
+        let listed: Vec<&QueryStat> = l.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
+        l.summary = statements_below(snapshot, &l.summary, &listed);
+        let table = leaf(&finding_table(l)).to_string();
+        let writers: Vec<(&QueryStat, &'static str, f64)> = listed
+            .iter()
+            .filter_map(|q| {
+                let (verb, written) = written_table(q)?;
+                let bytes = q.costs.as_ref()?.log_bytes.filter(|b| *b > 0.0)?;
+                (written == table).then_some((*q, verb, bytes))
+            })
+            .collect();
+        let Some(said) = log_of_writers(snapshot, &writers) else { continue };
+        l.summary.push_str(&said);
+        let total: f64 = writers.iter().map(|(_, _, bytes)| bytes).sum();
+        match l.metrics.iter_mut().find(|m| m.label == "Log written by its writes") {
+            Some(m) => m.value = total,
+            None => {
+                l.metrics.push(culprit_core::Metric::new("Log written by its writes", total, culprit_core::Unit::Bytes))
+            }
+        }
+        for (q, _, bytes) in &writers {
+            if let Some(r) = l.queries.iter_mut().find(|r| r.id == q.id && r.note.is_none()) {
+                r.note = Some(match per_row(q, *bytes) {
+                    Some(b) => format!("Writes about {} of {} a row.", format::bytes(b), log_name(snapshot)),
+                    None => format!("Wrote {} of {}.", format::bytes(*bytes), log_name(snapshot)),
+                });
+            }
+        }
+    }
+}
+
+/// What the engine calls its log, as a sentence names it.
+fn log_name(snapshot: &Snapshot) -> &'static str {
+    if snapshot.server.engine == Engine::Postgres { "WAL" } else { "transaction log" }
+}
+
+/// Log a statement wrote for each row it changed, when it counted them.
+fn per_row(q: &QueryStat, bytes: f64) -> Option<f64> {
+    q.rows.filter(|r| *r > 0.0).map(|rows| bytes / rows)
+}
+
+/// The log the writes of a large-rows table made, said once for all of them: one writer by its handle, several by what
+/// they are ("77.2 MB by an insert (about 412 KB a row) and 15.3 MB by 2 updates (about 90.8 KB a row)").
+fn log_of_writers(snapshot: &Snapshot, writers: &[(&QueryStat, &'static str, f64)]) -> Option<String> {
+    const IN_FULL: &str = "the large values are logged in full, so batching the writes or dropping indexes won't shrink it; smaller or fewer values will.";
+    let log = log_name(snapshot);
+    let a_row = |bytes: f64, rows: Option<f64>| {
+        rows.filter(|r| *r > 0.0).map(|r| format!("about {} a row", format::bytes(bytes / r)))
+    };
+    if let [(q, _, bytes)] = writers {
+        return Some(format!(
+            " {} wrote {} of {log} for them{}: {IN_FULL}",
+            capitalize(&support::query_handle(q)),
+            format::bytes(*bytes),
+            a_row(*bytes, q.rows).map(|r| format!(", {r}")).unwrap_or_default()
+        ));
+    }
+    // By kind of write, the kind that logged most first; a row count only where every one of them counted its rows.
+    let mut kinds: Vec<(&'static str, usize, f64, Option<f64>)> = Vec::new();
+    for (q, verb, bytes) in writers {
+        match kinds.iter_mut().find(|(v, ..)| v == verb) {
+            Some((_, n, b, rows)) => {
+                *n += 1;
+                *b += bytes;
+                *rows = rows.zip(q.rows).map(|(a, r)| a + r);
+            }
+            None => kinds.push((verb, 1, *bytes, q.rows)),
+        }
+    }
+    kinds.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let total: f64 = kinds.iter().map(|(_, _, b, _)| b).sum();
+    let noun = |verb: &str, n: usize| match (verb, n) {
+        ("insert", 1) => "an insert".to_string(),
+        ("update", 1) => "an update".to_string(),
+        (verb, 1) => format!("a {verb}"),
+        (verb, n) => format!("{n} {verb}s"),
+    };
+    Some(match kinds.as_slice() {
+        [] => return None,
+        // Several writes of one kind (one alone is said by its handle above).
+        [(verb, n, bytes, rows)] => format!(
+            " The {n} {verb}s below logged {} of {log} for them{}: {IN_FULL}",
+            format::bytes(*bytes),
+            a_row(*bytes, *rows).map(|r| format!(", {r}")).unwrap_or_default()
+        ),
+        _ => {
+            let parts: Vec<String> = kinds
+                .iter()
+                .map(|(verb, n, bytes, rows)| {
+                    format!(
+                        "{} by {}{}",
+                        format::bytes(*bytes),
+                        noun(verb, *n),
+                        a_row(*bytes, *rows).map(|r| format!(" ({r})")).unwrap_or_default()
+                    )
+                })
+                .collect();
+            format!(
+                " The {} statements below that write them logged {} of {log}: {}. {}",
+                writers.len(),
+                format::bytes(total),
+                format::list(&parts),
+                capitalize(IN_FULL)
+            )
+        }
+    })
+}
+
+/// large-rows' sentence about the statements that read or write whole rows ("The 3 statements below read or write
+/// them 696 times in 2 hours, going through about 294 pages (2.3 MB) a run."), said again of every statement it lists
+/// once a writer joined them, so the count is of the statements below ([`signals::statements_below`]).
+fn statements_below(snapshot: &Snapshot, summary: &str, listed: &[&QueryStat]) -> String {
+    let start = summary.find(" The statement below ").or_else(|| {
+        summary.match_indices(" The ").map(|(at, _)| at).find(|at| {
+            summary[at + " The ".len()..]
+                .split_once(" statements below ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        })
+    });
+    let Some(start) = start else { return summary.to_string() };
+    let Some(end) = summary[start..].find(" a run.").map(|at| start + at + " a run.".len()) else {
+        return summary.to_string();
+    };
+    if listed.is_empty() {
+        return summary.to_string();
+    }
+    format!("{}{}{}", &summary[..start], signals::statements_below(snapshot, listed), &summary[end..])
 }
 
 /// Statements waiting on locks on a table and that table's lock waits are one blocking chain: hot-rows (the table's
@@ -947,6 +1276,149 @@ fn network_wait_explains_heavy_query(_: &Snapshot, findings: &mut Vec<Finding>) 
         .flat_map(|f| f.queries.iter().map(|q| q.id.clone()))
         .collect();
     findings.retain(|f| f.check != "heavy-query" || !f.queries.iter().any(|q| explained.contains(&q.id)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::support::{finding, subject};
+    use culprit_core::{Category, QueryRef};
+
+    fn fixture(name: &str) -> Snapshot {
+        let text =
+            std::fs::read_to_string(format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).expect("fixture");
+        serde_json::from_str(&text).expect("snapshot")
+    }
+
+    fn query<'a>(s: &'a mut Snapshot, id: &str) -> &'a mut QueryStat {
+        s.workload.as_mut().expect("workload").queries.iter_mut().find(|q| q.id == id).expect("query")
+    }
+
+    /// A finding of `check` about the statements `ids`, weighing `share` of database time.
+    fn about(check: &str, key: &str, ids: &[&str], share: f64) -> Finding {
+        let mut f = finding(check, key, Category::Queries, subject(SubjectKind::Query, key));
+        f.impact.db_time_share = Some(share);
+        f.queries = ids.iter().map(|id| QueryRef { id: id.to_string(), plan_node: None, note: None }).collect();
+        f
+    }
+
+    // The fresh MySQL reading: missing-histogram's guess about two statements' estimates (16% of database time, the
+    // two together) took away both heavy queries (8.5% and 7.9%), the planted scan with them. A finding explains a
+    // heavy query only by the time it measured in that statement.
+    #[test]
+    fn a_heavy_query_is_explained_only_by_the_time_a_finding_measured_in_it() {
+        let s = fixture("mysql-demo.json");
+        let w = s.workload.as_ref().unwrap();
+        let ids = ["19bd4ff468839ea3", "c7b5ac9bb4bcecfe"];
+        let shares: Vec<f64> =
+            ids.iter().map(|id| w.query(id).map(|q| w.share_of(q.total_time_ms, q)).unwrap()).collect();
+        let (a, b) = (shares[0], shares[1]);
+        let heavy = |at: usize| about("heavy-query", ids[at], &ids[at..=at], shares[at]);
+        let left = |cause: Finding| {
+            let mut findings = vec![heavy(0), heavy(1), cause];
+            explained_heavy_query(&s, &mut findings);
+            findings.into_iter().filter(|f| f.check == "heavy-query").map(|f| f.id).collect::<Vec<_>>()
+        };
+        // A guess at estimates measures no time: both stay.
+        assert_eq!(left(about("missing-histogram", "shop.orders", &ids, a + b)).len(), 2);
+        assert_eq!(left(about("stale-stats", "shop.orders", &ids, a + b)).len(), 2);
+        assert_eq!(left(about("tuning-advice", "create-index:shop.orders(promo_code)", &ids, a + b)).len(), 2);
+        // A scan both statements make is each one's time: both go.
+        assert!(left(about("filtered-scan", "shop.orders(promo_code)", &ids, a + b)).is_empty());
+        // Waits that are a third of their time together are a third of each one's: under half, both stay, though
+        // the total passes half of either.
+        assert!((a + b) / 3.0 >= a.min(b) * 0.5, "{a} {b}");
+        assert_eq!(left(about("hot-rows", "shop.orders", &ids, (a + b) / 3.0)).len(), 2);
+        // SQL Server's plan to force stands on the regression it measured.
+        let force = about("tuning-advice", &format!("force:{}", ids[0]), &ids[..1], a);
+        assert_eq!(left(force), vec![format!("heavy-query:{}", ids[1])]);
+    }
+
+    // The PostgreSQL demo: the sort that spills and the result it returns are one statement, one share: big-result
+    // and temp-spill each said 45% of database time, with two fixes.
+    #[test]
+    fn a_spill_carries_the_big_result_it_sorts() {
+        let report = crate::analyze(fixture("postgres-demo.json"));
+        let id = "9065391607317686058";
+        assert!(!report.findings.iter().any(|f| f.id == format!("big-result:{id}")));
+        let spill = report.findings.iter().find(|f| f.id == format!("temp-spill:{id}")).expect("the spill");
+        assert!(
+            spill.summary.contains(" Each run also sends 247K rows (≈ 17.4 MB) to the application"),
+            "{}",
+            spill.summary
+        );
+        let fix = &spill.fix.as_ref().unwrap().summary;
+        assert!(
+            fix.contains(
+                "Where the application doesn't use every row it receives, return only what's used: page the results"
+            ),
+            "{fix}"
+        );
+        assert!(spill.verify.iter().any(|v| v.contains("rows per run should drop")), "{:?}", spill.verify);
+        assert!(spill.metrics.iter().any(|m| m.label == "Rows per run"));
+        assert_eq!(report.findings.iter().filter(|f| f.queries.iter().any(|q| q.id == id)).count(), 1);
+    }
+
+    // The fresh SQL Server reading: plan-regression:244 said to force the fast plan and filtered-scan to create an
+    // index, for one statement whose plan began scanning when the index it sought went away.
+    #[test]
+    fn a_scan_that_came_with_a_plan_change_carries_the_regression() {
+        let mut s = fixture("mssql-demo.json");
+        let q = query(&mut s, "8");
+        q.plan_id = Some("47".into());
+        for p in q.plans.iter_mut() {
+            p.logical_reads = Some(p.executions * if p.id == "47" { 5_700.0 } else { 3.0 });
+        }
+        let mut scan = about("filtered-scan", "shop.orders(shipped_at)", &["8"], 0.12);
+        scan.queries[0].plan_node = Some(2);
+        scan.summary = "One query plans to read every row of shop.orders.".into();
+        let mut regression = about("plan-regression", "8", &["8"], 0.12);
+        regression.summary = "Query Store saw this query run with plan 8 at 9.5 ms on average until Oct 11, 10:44 UTC, and with plan 47 at 32 ms since Oct 11, 10:46 UTC (93 runs). The plan choice changed, typically after a statistics update.".into();
+        regression.metrics.push(culprit_core::Metric::new("Fast plan", 9.5, culprit_core::Unit::Ms));
+        let mut findings = vec![regression.clone(), scan.clone()];
+        scan_carries_its_regression(&s, &mut findings);
+        assert_eq!(findings.len(), 1, "{:?}", findings.iter().map(|f| &f.id).collect::<Vec<_>>());
+        assert_eq!(
+            findings[0].summary,
+            "One query plans to read every row of shop.orders. Query Store saw this query run with plan 8 at 9.5 ms on average until Oct 11, 10:44 UTC, and with plan 47 at 32 ms since Oct 11, 10:46 UTC (93 runs). The scan came with the plan change: plan 8 read about 3 pages a run, plan 47 reads about 5.7K."
+        );
+        assert!(findings[0].metrics.iter().any(|m| m.label == "Fast plan"));
+        // A scan the plan doesn't show (SQL Server's index request alone) is another story: the regression stays.
+        scan.queries[0].plan_node = None;
+        let mut findings = vec![regression, scan];
+        scan_carries_its_regression(&s, &mut findings);
+        assert_eq!(findings.len(), 2);
+    }
+
+    // The aptabase-us reading: an insert stopped and another took its place, named only in one finding's fix.
+    #[test]
+    fn a_stopped_statement_names_what_may_have_replaced_it() {
+        let mut s = fixture("postgres-demo.json");
+        let gone = query(&mut s, "3432126458605143571");
+        gone.text = "INSERT INTO events (customer_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING".into();
+        gone.plan = None;
+        // Quiet for the last four hours of the window.
+        gone.last_seen = Some("2026-10-11T08:00:00Z".into());
+        let next = query(&mut s, "2885972271926804069");
+        next.text =
+            "INSERT INTO events (customer_id, kind) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET kind = $2".into();
+        next.plan = None;
+        let mut findings = vec![about("heavy-query", "3432126458605143571", &["3432126458605143571"], 0.2)];
+        stopped_running(&s, &mut findings);
+        assert!(findings[0].inactive);
+        assert!(
+            findings[0].caveats[0].ends_with(
+                "Query 2885972271926804069, an insert into events too, still runs and may be what replaced it: check that one."
+            ),
+            "{:?}",
+            findings[0].caveats
+        );
+        // A read of the same table took no write's place.
+        query(&mut s, "2885972271926804069").text = "SELECT kind FROM events WHERE customer_id = $1".into();
+        let mut findings = vec![about("heavy-query", "3432126458605143571", &["3432126458605143571"], 0.2)];
+        stopped_running(&s, &mut findings);
+        assert!(!findings[0].caveats[0].contains("replaced"), "{:?}", findings[0].caveats);
+    }
 }
 
 #[cfg(test)]

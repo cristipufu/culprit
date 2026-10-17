@@ -1,8 +1,9 @@
 import { GitBranch, ListTree, Network, TableProperties } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Plan } from "../gen/Plan";
+import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
-import { allNodes, cost, costBasis, insightsByNode } from "../lib/plan-format";
+import { allNodes, cost, insightsByNode, noShareReason } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { PlanDiagram } from "./PlanDiagram";
 import { PlanInsights } from "./PlanInsights";
@@ -68,11 +69,16 @@ export function PlanSurface({ plan, focus, look, badge }: { plan: Plan; focus?: 
 }
 
 function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: number | null; onSelect: (id: number) => void }) {
-  const total = costBasis(plan);
+  // The same shares as the diagram and the tree: own time in a timed run, the estimated cost otherwise.
+  const shares = useMemo(() => planShares(plan), [plan]);
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
-  const hottest = useMemo(() => nodes.reduce((a, b) => (b.self_cost > a.self_cost ? b : a), plan.root), [nodes, plan.root]);
-  const current = nodes.find((n) => n.id === (selected ?? hottest.id)) ?? null;
+  // The share a person reads: none where the plan can't state one.
+  const shareOf = (id: number) => shares.stated.get(id) ?? null;
+  // Open on the step where the work is (the core's pick, never an exchange), in a plan that does real work and where its
+  // share can be stated; otherwise on the plan's root.
+  const start = shares.hottest ?? plan.root;
+  const current = nodes.find((n) => n.id === (selected ?? start.id)) ?? null;
   return (
     <div className="plan">
       <div className="plan-head">
@@ -86,7 +92,17 @@ function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: n
         <span className="muted">click a row to see the operator</span>
       </div>
       <PlanOperations plan={plan} selectedId={current?.id ?? null} onSelect={onSelect} />
-      {current && <NodeDetails estimates={can(plan.engine, "plan_estimates")} node={current} share={current.self_cost / total} subtreeShare={current.subtree_cost / total} insights={flagged.get(current.id)} />}
+      {current && (
+        <NodeDetails
+          estimates={can(plan.engine, "plan_estimates")}
+          actual={plan.kind === "actual"}
+          node={current}
+          share={shareOf(current.id)}
+          subtreeShare={shares.statedSubtree.get(current.id) ?? null}
+          noShare={shares.basis === "cost" ? noShareReason(plan, current) : null}
+          insights={flagged.get(current.id)}
+        />
+      )}
     </div>
   );
 }

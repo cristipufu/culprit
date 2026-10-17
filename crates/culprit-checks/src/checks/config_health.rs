@@ -4,8 +4,8 @@
 
 use culprit_core::{Confidence, Engine, Finding, Fix, Metric, Severity, Snapshot, Unit, format};
 
-use crate::config::{is_on, setting_finding, settings_change, value};
-use crate::support::{quote, setting_change};
+use crate::config::{after_restart, is_on, setting_finding, settings_change, value};
+use crate::support::{days_between, quote, setting_change};
 
 fn number(snapshot: &Snapshot, name: &str) -> Option<f64> {
     value(snapshot, &[name]).and_then(|v| v.trim().parse::<f64>().ok())
@@ -87,19 +87,34 @@ pub(crate) fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
             .is_some_and(|v| v.eq_ignore_ascii_case("ALL"))
     {
         let busy = snapshot.workload.as_ref().is_some_and(|w| w.query_count >= 5000.0);
+        // The statements the scan read are those of its window, not everything the store holds: said as what ran in
+        // it. A handful crowds nothing, so the cost is said as what ALL would do once one-off statements arrive.
+        let effect = match snapshot.workload.as_ref().filter(|w| w.query_count > 0.0) {
+            Some(w) if busy => format!(
+                " ({} statements in {}). They crowd the store, shorten how far back it can look and add overhead; \
+                 AUTO keeps what matters.",
+                format::count(w.query_count),
+                w.window_phrase()
+            ),
+            Some(w) => format!(
+                ". With {} {} in {} it costs little now; once one-off statements arrive (ad-hoc queries, generated \
+                 SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what \
+                 matters.",
+                format::count(w.query_count),
+                if w.query_count == 1.0 { "statement" } else { "statements" },
+                w.window_phrase()
+            ),
+            None => {
+                ". On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO \
+                     keeps what matters."
+                    .into()
+            }
+        };
         let mut f = setting_finding(
             "query-store-capture",
             if busy { Severity::Medium } else { Severity::Low },
             "Query Store records every statement, including one-off ones".into(),
-            format!(
-                "Capture mode ALL keeps statements that ran once or cost nothing{}. They crowd the store, shorten how far \
-                 back it can look and add overhead; AUTO keeps what matters.",
-                snapshot
-                    .workload
-                    .as_ref()
-                    .map(|w| format!(" (it tracks {} statements now)", format::count(w.query_count)))
-                    .unwrap_or_default()
-            ),
+            format!("Capture mode ALL keeps statements that ran once or cost nothing{effect}"),
             Fix {
                 summary: "Switch to automatic capture.".into(),
                 sql: Some(format!("ALTER DATABASE {db} SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);")),
@@ -278,6 +293,14 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             },
         );
         f.confidence = Confidence::Medium;
+        // The SQL names the five biggest: more tables may follow the server's factor after it.
+        f.verify = vec![if big.len() > 5 {
+            "Re-scan: the tables the SQL changed have their own scale factor and drop out of this finding; the next \
+             ones it names need the same change."
+                .into()
+        } else {
+            "Re-scan: the tables have their own scale factor and this finding is gone.".into()
+        }];
         out.push(f);
     }
 
@@ -294,35 +317,24 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
         ));
     }
 
-    if let Some(dealloc) = number(snapshot, "pg_stat_statements.dealloc").filter(|d| *d > 0.0) {
-        let max = value(snapshot, &["pg_stat_statements.max"]).unwrap_or("5000").to_string();
-        // More room than it has now: 20,000, or twice the current size when that's already more.
-        let room = max.trim().parse::<f64>().map_or(20_000.0, |m| (m * 2.0).max(20_000.0));
-        let change = setting_change(&snapshot.server, "pg_stat_statements.max", &format!("{room:.0}"));
-        // Evictions since its statistics were reset, as a rate over that same window: a burst long ago isn't today's.
-        let per_day = crate::support::rate_per_day(snapshot, dealloc);
-        let mut f = setting_finding(
-            "pg_stat_statements.max",
-            if per_day.is_some_and(|d| d >= 1000.0) { Severity::Medium } else { Severity::Low },
-            format!("pg_stat_statements forgot statements {} times to make room", format::count(dealloc)),
-            format!(
-                "It keeps at most {max} distinct statements and has evicted the least-used ones {} times since its \
-                 statistics were reset, so the numbers for anything that isn't constantly running are incomplete. This \
-                 usually means the app sends many distinct statements (growing IN lists, generated SQL).",
-                format::count(dealloc)
-            ),
-            Fix {
-                summary: format!(
-                    "Keep more entries, and fix the statement families that create them. {} It takes effect after a restart.",
-                    change.how
-                ),
-                sql: change.sql,
-                cost: Some("About 2 KB of shared memory per entry.".into()),
-            },
-        );
-        f.confidence = Confidence::High;
-        f.metrics.push(Metric::new("Evictions", dealloc, Unit::Count));
-        out.push(f);
+    if let Some(rounds) = number(snapshot, "pg_stat_statements.dealloc").filter(|d| *d > 0.0) {
+        // The rounds since the previous scan, an hour or more ago, when it's the same count (no reset since): what goes
+        // on now, where the lifetime count can't clear after the fix.
+        let since = snapshot
+            .evictions_before
+            .as_ref()
+            .filter(|b| !b.restarted)
+            .and_then(|b| {
+                Some((b.taken_at.as_str(), (rounds - b.count).max(0.0), days_between(&b.taken_at, &snapshot.taken_at)?))
+            })
+            .filter(|(_, _, days)| *days >= 1.0 / 24.0);
+        // Long enough without a round: the table has had room since, whatever the count says about before. After the
+        // limit was raised, that is as long as the room it added takes to fill (`Evictions::quiet_days`).
+        let evicted = Evictions::of(snapshot, rounds);
+        let quiet = evicted.quiet_days(evicted.raised_room());
+        if !since.is_some_and(|(_, new, days)| new == 0.0 && days >= quiet) {
+            out.push(statements_evicted(snapshot, &evicted, since));
+        }
     }
 
     let shared = value(snapshot, &["shared_buffers"]).and_then(bytes);
@@ -361,9 +373,283 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             },
         );
         f.confidence = Confidence::Medium;
+        after_restart(&mut f);
         out.push(f);
     }
     out
+}
+
+/// pg_stat_statements' evictions, counted. `dealloc` counts rounds, not entries: each time the table is full it drops
+/// the least-used 5% of its entries, at least 10 (`entry_dealloc`), so the entries lost are about that many times the
+/// rounds. A limit above its default may have been raised after some of the rounds: then the default's 5% is the floor.
+#[derive(Clone, Copy)]
+struct Evictions {
+    rounds: f64,
+    max: Option<f64>,
+    default: Option<f64>,
+    raised_from: Option<f64>,
+    per_round: f64,
+    entries: f64,
+    /// The entries evicted a day over the window the count covers (an hour of it at least). While the table is full,
+    /// new statements arrive as fast as old ones are evicted: it is also how fast new room fills.
+    per_day: Option<f64>,
+}
+
+impl Evictions {
+    fn of(snapshot: &Snapshot, rounds: f64) -> Evictions {
+        let max = number(snapshot, "pg_stat_statements.max").filter(|m| *m > 0.0);
+        let default = snapshot
+            .setting("pg_stat_statements.max")
+            .and_then(|s| s.default_value.as_deref())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|d| *d > 0.0);
+        let raised_from = default.zip(max).filter(|(d, m)| d < m).map(|(d, _)| d);
+        // From a full table, so 5% of the limit; without the limit only the floor of 10 a round is known.
+        let per_round = raised_from.or(max).map_or(10.0, per_round_at);
+        let entries = rounds * per_round;
+        // Evictions since its statistics were reset, as a rate over that same window: a burst long ago isn't today's.
+        let per_day = crate::support::rate_per_day(snapshot, entries);
+        Evictions { rounds, max, default, raised_from, per_round, entries, per_day }
+    }
+
+    /// The room a raise of the limit added, at most: from its default to the limit now. None when it wasn't raised.
+    fn raised_room(&self) -> f64 {
+        self.raised_from.zip(self.max).map_or(0.0, |(d, m)| m - d)
+    }
+
+    /// How long a later scan must see no new round before the table counts as having room: a day, or, after the limit
+    /// was raised by `room` entries, as long as that room takes to fill at the rate entries are evicted now. Nothing is
+    /// evicted while new room fills, whatever the statements do, so a shorter quiet span proves nothing. At most a
+    /// week, the span an absence is claimed over everywhere (a weekly job has had its chance): room that takes longer
+    /// fills at fewer entries a day than that, and a round after it reopens the finding.
+    fn quiet_days(&self, room: f64) -> f64 {
+        let fill = match self.per_day {
+            _ if room <= 0.0 => 0.0,
+            Some(per_day) if per_day > 0.0 => room / per_day,
+            _ => 7.0,
+        };
+        fill.clamp(20.0 / 24.0, 7.0)
+    }
+}
+
+/// The entries one round evicts from a full table of `limit`: the least-used 5%, at least 10.
+fn per_round_at(limit: f64) -> f64 {
+    (limit * 0.05).floor().max(10.0).min(limit)
+}
+
+/// "a day", "5 days", "a week": a quiet span from [`Evictions::quiet_days`].
+fn quiet_span(days: f64) -> String {
+    match days.ceil() {
+        d if d <= 1.0 => "a day".into(),
+        d if d >= 7.0 => "a week".into(),
+        d => format!("{d:.0} days"),
+    }
+}
+
+/// The finding about pg_stat_statements' evictions. The count runs from pg_stat_statements' last statistics reset,
+/// outlives restarts and isn't cleared by a higher limit: what shows the fix is the count no longer growing. `since` is
+/// the previous scan's (when it was taken, the rounds since, the days between): with it the grade is what goes on now,
+/// and a quiet span without a round closes the finding. Without it, after a raise the rounds may all be from before
+/// it: the grade can't say they go on, and the fix is comparing two scans before raising it again.
+fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&str, f64, f64)>) -> Finding {
+    let Evictions { rounds, max, default, raised_from, per_round, entries, per_day: entries_per_day } = *evicted;
+    // More room than it has now: 20,000, or twice the current size when that's already more.
+    let room = max.map_or(20_000.0, |m| (m * 2.0).max(20_000.0));
+    let change = setting_change(&snapshot.server, "pg_stat_statements.max", &format!("{room:.0}"));
+    let estimate = max.is_some() && raised_from.is_none();
+    let about = if estimate { "about" } else { "at least" };
+    let workload = snapshot.workload.as_ref();
+    let reset = workload
+        .and_then(|w| w.window_start.as_deref())
+        .map(|start| format!("since its statistics were reset on {}", format::friendly_date(start, &snapshot.taken_at)))
+        .unwrap_or_else(|| "since its statistics were reset".into());
+    // The entries and their evictions are the server's, every database's together; this database's own entries say
+    // whether its statements are the ones filling the table. Far below the limit, they likely aren't: the evictions are
+    // other databases' (or tools'), said as the server's and not graded here. A count of this database's statements
+    // now against evictions over the whole window can't say whose they were then, only who likely sends them.
+    let mine = workload.map(|w| w.query_count).filter(|n| *n > 0.0);
+    let others = mine.zip(max).filter(|(n, limit)| *n * 4.0 <= *limit).map(|(n, _)| n);
+    // Without the limit or this database's count, whose statements fill it is unknown: no cause is named.
+    let fills = mine.zip(max).is_some_and(|(n, limit)| n * 4.0 > limit);
+    let cause = match others {
+        Some(n) => format!(
+            " This database has only {} of them, so the statements filling it likely come from other databases on the \
+             server, or tools connected to them; they can still push this database's rarely run statements out.",
+            format::count(n)
+        ),
+        None if fills => {
+            " This usually means the app sends many distinct statements (growing IN lists, generated SQL).".into()
+        }
+        None => String::new(),
+    };
+    // The limit as it is set ("5000"), not rounded ("5.0K").
+    let limit =
+        max.map_or_else(|| "its limit of distinct statements".to_string(), |m| format!("{m:.0} distinct statements"));
+    let each = match (max, raised_from) {
+        (Some(m), Some(d)) => format!(
+            "the least-used 5% of them: {} entries at today's limit of {m:.0}, {} at its default of {d:.0}",
+            format::count(per_round_at(m)),
+            format::count(per_round_at(d))
+        ),
+        (Some(m), None) => {
+            format!("the least-used 5% of them, {} entries at a limit of {m:.0}", format::count(per_round))
+        }
+        (None, _) => "the least-used 5% of them, at least 10 entries".into(),
+    };
+    let per_day = workload
+        .and_then(|w| w.per_day_measured(entries))
+        .map(|d| format!(", {about} {} a day", format::count(d)))
+        .unwrap_or_default();
+    // Since the previous scan: the rounds, the entries they evicted and how that reads over the time between.
+    let recent = since.filter(|(_, new, _)| *new > 0.0).map(|(taken_at, new, days)| {
+        let new_entries = new * per_round;
+        let rate = if days >= 20.0 / 24.0 {
+            format!(", {about} {} a day", format::count(new_entries / days))
+        } else {
+            format!(" in {}", culprit_core::span_words(days * 24.0))
+        };
+        let when = crate::queries::when_phrase(taken_at);
+        (
+            new,
+            new_entries,
+            new_entries / days,
+            format!(
+                " Since the previous scan {when}, it ran out of room {} more times: {about} {} entries{rate}.",
+                format::count(new),
+                format::count(new_entries)
+            ),
+        )
+    });
+    // Medium when this database's statements fill it and it loses at least a thousand entries a day: since the previous
+    // scan where there is one. Without it, after a raise the rounds may all be from before it: what goes on now only a
+    // second scan shows.
+    let losing = match &recent {
+        Some((_, _, a_day, _)) => *a_day >= 1000.0,
+        None => raised_from.is_none() && entries_per_day.is_some_and(|d| d >= 1000.0),
+    };
+    let severity = if fills && losing { Severity::Medium } else { Severity::Low };
+    let whose =
+        if others.is_some() { " (pg_stat_statements without a database filter shows whose they are)" } else { "" };
+    let fix = match raised_from {
+        Some(d) if recent.is_some() => format!(
+            "The limit is already above its default of {d:.0}, and the eviction rounds still grow between scans: keep \
+             more entries, and fix the statement families that create them{whose}. {} It takes effect after a restart.",
+            change.how
+        ),
+        Some(d) => format!(
+            "The limit is already above its default of {d:.0}, and the count includes any rounds from before it was \
+             raised: compare the eviction rounds between two scans first. If they still grow, keep more entries, and \
+             fix the statement families that create them{whose}. {} It takes effect after a restart.",
+            change.how
+        ),
+        None => format!(
+            "Keep more entries, and fix the statement families that create them{whose}. {} It takes effect after a \
+             restart.",
+            change.how
+        ),
+    };
+    let mut f = setting_finding(
+        "pg_stat_statements.max",
+        severity,
+        match &recent {
+            Some((new, new_entries, _, _)) => format!(
+                "pg_stat_statements ran out of room {} times since the previous scan, evicting {about} {} entries",
+                format::count(*new),
+                format::count(*new_entries)
+            ),
+            None => format!(
+                "pg_stat_statements ran out of room {} times, evicting {about} {} entries",
+                format::count(rounds),
+                format::count(entries)
+            ),
+        },
+        format!(
+            "It keeps at most {limit} for the whole server. {}, it has run out of room {} times, and each time it \
+             evicts {each}: {about} {} entries in all{per_day}.{} The numbers for anything that isn't constantly \
+             running are incomplete.{cause}",
+            capitalize(&reset),
+            format::count(rounds),
+            format::count(entries),
+            recent.as_ref().map_or("", |(_, _, _, said)| said.as_str())
+        ),
+        Fix {
+            summary: fix,
+            sql: change.sql,
+            // An entry (pgssEntry and its slot in the hash table) is about 0.4 KB on PostgreSQL 15 and grows a little as
+            // versions add counters; since 9.4 the statement's text is in a file, not in shared memory.
+            cost: Some(format!(
+                "Under half a kilobyte of shared memory per entry, set aside when the server starts: at most about {} \
+                 for {room:.0} entries. The statements' text is kept in a file on disk, not in shared memory.",
+                format::bytes(room * 512.0)
+            )),
+        },
+    );
+    f.confidence = Confidence::High;
+    f.metrics.push(Metric::new("Eviction rounds", rounds, Unit::Count));
+    if let Some((new, _, _, _)) = &recent {
+        f.metrics.push(Metric::new("Eviction rounds since the previous scan", *new, Unit::Count));
+    }
+    f.metrics.push(Metric::new(
+        if estimate { "Entries evicted (estimate)" } else { "Entries evicted (at least)" },
+        entries,
+        Unit::Count,
+    ));
+    // The rounds exact: a count rounded to "15K" hides the growth this step looks for. The span between the two scans
+    // is the one a later scan closes the finding on: the room above the default, which the new limit's next scan
+    // reads as raised, or the room the change adds where the default isn't known.
+    let added = room - default.filter(|d| *d < room).or(max).unwrap_or(0.0);
+    let quiet = evicted.quiet_days(added);
+    let fills = match entries_per_day {
+        _ if quiet <= 20.0 / 24.0 => String::new(),
+        Some(a_day) => format!(
+            " The room the change adds (at most {} entries) fills first, at about {} new entries a day (the rate it has \
+             been evicting them), and nothing is evicted until it is full: a shorter quiet span proves nothing.{}",
+            format::count(added),
+            format::count(a_day),
+            if added / a_day > 7.0 { " A round after the week reopens this finding." } else { "" }
+        ),
+        None => {
+            " How fast new statements arrive isn't known, and nothing is evicted until the room the change adds is \
+                 full: a shorter quiet span proves nothing."
+                .into()
+        }
+    };
+    f.verify = vec![format!(
+        "Re-scan once the change has taken effect, then {} later: the eviction rounds ({rounds:.0} now) should not grow \
+         between those two scans, and with none between them this finding is gone.{fills} The count itself only starts \
+         over when pg_stat_statements' statistics are reset.",
+        quiet_span(quiet)
+    )];
+    f.caveats.push(format!(
+        "The count covers everything {reset}, and neither a restart nor a higher limit clears it.{}",
+        if default.is_none() {
+            " If pg_stat_statements.max was raised after these evictions, compare the count between two scans before \
+             raising it again."
+        } else {
+            ""
+        }
+    ));
+    match (max, raised_from) {
+        (Some(m), Some(_)) => f.caveats.push(format!(
+            "The entries are counted at the default's {} a round, a floor: rounds after the limit was raised to {m:.0} \
+             evicted {} each.",
+            format::count(per_round),
+            format::count(per_round_at(m))
+        )),
+        // Without its default, whether the limit was ever different is unknown.
+        (Some(_), None) if default.is_none() => f.caveats.push(
+            "The entries are estimated at today's limit: rounds counted while the limit was different evicted 5% of \
+             that one."
+                .into(),
+        ),
+        _ => {}
+    }
+    f
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// The settings that have the server log slow statements to the table Culprit reads (and, on MariaDB, count index
@@ -458,6 +744,7 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             },
         );
         f.confidence = Confidence::High;
+        after_restart(&mut f);
         out.push(f);
         return out;
     }
@@ -518,6 +805,12 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             },
         );
         f.confidence = Confidence::High;
+        // Digests lost is a status counter: a restart starts it over; after a truncate alone, its growth is what tells.
+        f.verify = vec![
+            "Re-scan after the restart: no digests lost, and no statement time left in the anonymous row. After a \
+             truncate alone, compare the lost count between two scans: it should stop growing."
+                .into(),
+        ];
         f.metrics.push(Metric::new("Digests lost", lost, Unit::Count));
         if untracked_share > 0.0 {
             f.metrics.push(Metric::new("Untracked time", untracked_share, Unit::Ratio));
@@ -548,6 +841,12 @@ pub(crate) fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             },
         );
         f.confidence = Confidence::Medium;
+        // The statements already cut off stay as they were recorded: only those recorded after the restart are whole.
+        f.verify = vec![
+            "Re-scan after the server has restarted with the change and the statements have run again: they are no \
+             longer cut off, and this finding is gone."
+                .into(),
+        ];
         out.push(f);
     }
     out

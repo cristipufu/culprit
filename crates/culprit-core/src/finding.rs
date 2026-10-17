@@ -142,7 +142,7 @@ pub struct Finding {
     /// When the affected queries last ran, for query findings.
     #[serde(default)]
     pub last_seen: Option<String>,
-    /// The affected queries stopped running well before the end of the window: likely fixed or replaced by a deploy.
+    /// The affected queries stopped running well before the end of the window: a deploy may have fixed or replaced them.
     #[serde(default)]
     pub inactive: bool,
 }

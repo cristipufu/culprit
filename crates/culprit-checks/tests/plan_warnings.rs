@@ -52,3 +52,52 @@ fn conversions_the_query_asks_for_are_not_a_mismatch() {
         Vec::<String>::new()
     );
 }
+
+#[test]
+fn a_mismatch_sql_server_says_stops_a_seek_is_titled_as_a_seek_not_any_use() {
+    // Query 7's plan still reads ix_customers_email, by scanning it: the conversion stops a seek, not every use.
+    let report = culprit_checks::analyze(snapshot());
+    let f = report
+        .findings
+        .iter()
+        .find(|f| f.id == "plan-warnings:implicit-conversion:customers.email")
+        .expect("the mismatch");
+    assert!(f.title.ends_with("from seeking an index"), "{}", f.title);
+    assert!(!f.title.contains("using an index"), "{}", f.title);
+}
+
+// SQL Server warned of no statistics on a column the plan seeks an index on: the index's statistics exist (they come
+// with the index), so the finding says they're out of date, and what the catalog holds of them, not that there are none.
+#[test]
+fn statistics_an_index_has_are_said_out_of_date_with_what_the_catalog_holds() {
+    fn seek_on_priority(n: &mut culprit_core::PlanNode) -> Option<&mut culprit_core::PlanNode> {
+        if n.index.as_deref() == Some("ix_support_tickets_priority") {
+            return Some(n);
+        }
+        n.children.iter_mut().find_map(seek_on_priority)
+    }
+    let mut s = snapshot();
+    let workload = s.workload.as_mut().expect("the demo has a workload");
+    let plan =
+        workload.queries.iter_mut().find(|q| q.id == "10").and_then(|q| q.plan.as_mut()).expect("query 10's plan");
+    let seek = seek_on_priority(&mut plan.root).expect("the seek on priority");
+    seek.warnings.push(culprit_core::PlanWarning::MissingStatistics);
+    seek.props.insert("ColumnsWithNoStatistics".into(), "priority".into());
+    let stats = s.statistics.iter_mut().find(|st| st.name == "ix_support_tickets_priority").expect("its statistics");
+    stats.last_updated = Some("2026-08-28T08:58:07Z".into());
+    stats.rows = Some(1.0);
+    stats.modifications = Some(95.0);
+
+    let report = culprit_checks::analyze(s);
+    let f = report.findings.iter().find(|f| f.id == "plan-warnings:10:missing-statistics").expect("the warning");
+    assert!(f.title.ends_with("is planned on out-of-date statistics on priority"), "{}", f.title);
+    assert!(
+        f.summary.contains(
+            "found nothing in them it could use. The statistics of ix_support_tickets_priority were last updated on Aug 28, when the table had 1 row, and have counted 95 changes since; the table held 300K rows when this plan was compiled, and holds 300K now."
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(!f.summary.contains("read like this"), "{}", f.summary);
+    assert_eq!(f.fix.as_ref().and_then(|x| x.sql.as_deref()), Some("UPDATE STATISTICS [shop].[support_tickets];"));
+}

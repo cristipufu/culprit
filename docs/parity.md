@@ -41,7 +41,7 @@ keeps nothing to read, and Culprit says so in the UI and CLI.
 
 | Feature | SQL Server | PostgreSQL | MySQL | MariaDB |
 |---|---|---|---|---|
-| Where time goes (history) | ✓ Query Store waits per query | ◐ per-statement IO/WAL time | ◐ performance_schema totals; lock time per digest | ◐ the same with performance_schema; without it, lock time per statement from the slow log |
+| Where time goes (history) | ✓ Query Store waits per query | ◐ per-statement IO time | ◐ performance_schema totals; lock time per digest | ◐ the same with performance_schema; without it, lock time per statement from the slow log |
 | Right now (sample) | ✓ wait-stat deltas | ✓ session sampling | ✓ performance_schema deltas, **process-list sampling** when the instruments record nothing | ✓ same; without performance_schema, process-list sampling (lock waits from INNODB_TRX) |
 | Pressure signals | ✓ | ✓ | ✓ | ✓ (SHOW GLOBAL STATUS fallback; was 1 signal without performance_schema) |
 | Settings / config checks | ✓ | ✓ | ✓ | ✓ information_schema/SHOW GLOBAL VARIABLES, MariaDB defaults (sort_buffer_size, performance_schema OFF, max_statement_time, userstat) |

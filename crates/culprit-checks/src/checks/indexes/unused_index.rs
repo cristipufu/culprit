@@ -49,6 +49,9 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             let table_name = format!("{schema}.{table}");
             let total_size: f64 = list.iter().filter_map(|i| i.size_bytes).sum();
             let writes = table_writes(snapshot, &schema, &table, &list);
+            // SQL Server counts the writes that maintained each index (user_updates), not the table's: the number is
+            // the index's own. MySQL's per-index count is the table's writes, and PostgreSQL keeps only the table's.
+            let index_counted = engine == Engine::Mssql && list.iter().any(|i| i.writes.is_some());
             // An index that may be younger than the counters has gone unread only since it may have been created.
             let youngest = list
                 .iter()
@@ -71,13 +74,22 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                 many => format!("{} indexes on {} are never read", many.len(), table),
             };
             let names = format::list(&list.iter().map(|i| i.name.clone()).collect::<Vec<_>>());
+            let written = |w: f64| match (index_counted, list.len()) {
+                (true, 1) => format!(", while writes had to update it {} times", format::count(w)),
+                (true, _) => format!(", while writes had to update the busiest of them {} times", format::count(w)),
+                (false, _) => format!(", while {} was written {} times", table_name, format::count(w)),
+            };
             f.summary = match writes {
                 // Nothing written either: the cost is the space, not the upkeep.
                 Some(0.0) => format!(
-                    "No query has read {} {}, and {} hasn't been written to either. {} {} of storage and buffer memory.",
+                    "No query has read {} {}, and {} either. {} {} of storage and buffer memory.",
                     names,
                     since,
-                    table_name,
+                    match (index_counted, list.len()) {
+                        (true, 1) => "no write has had to update it".to_string(),
+                        (true, _) => "no write has had to update them".to_string(),
+                        (false, _) => format!("{table_name} hasn't been written to"),
+                    },
                     if list.len() == 1 { "It takes" } else { "Together they take" },
                     format::bytes(total_size)
                 ),
@@ -85,7 +97,7 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
                     "No query has read {} {}{}. {} still has to be updated on every insert, and on updates that touch its columns, and it takes {} of storage and buffer memory.",
                     names,
                     since,
-                    writes.map(|w| format!(", while {} was written {} times", table_name, format::count(w))).unwrap_or_default(),
+                    writes.map(written).unwrap_or_default(),
                     if list.len() == 1 { "It" } else { "Each one" },
                     format::bytes(total_size)
                 ),
@@ -107,7 +119,8 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.metrics.push(Metric::new("Size", total_size, Unit::Bytes));
             if let Some(w) = writes {
-                f.metrics.push(Metric::new("Writes to the table", w, Unit::Count));
+                let label = if index_counted { "Writes that updated the index" } else { "Writes to the table" };
+                f.metrics.push(Metric::new(label, w, Unit::Count));
             }
             if let Some(d) = days {
                 f.metrics.push(Metric::new("Counting for", d, Unit::Days));

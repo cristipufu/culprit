@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use culprit_core::{Check, Finding, LockedCheck, Report, Snapshot};
+use culprit_core::{Check, CollectorNote, Engine, Finding, LockedCheck, Report, Snapshot, WaitStat};
 
 /// A step that corrects the snapshot before any check reads it. It changes what the data says only where the data
 /// contradicts itself or the database (a plan older than the table it describes), never to hide a problem.
@@ -70,7 +70,77 @@ fn preparation() -> Vec<Arc<dyn Prepare>> {
         step("MySQL's possible keys named with their columns", culprit_core::insights::mark_snapshot_keys),
         step("plan operators marked with their index's kind", culprit_core::insights::mark_snapshot_index_kinds),
         step("health counters graded only on the evidence", crate::pressure::grade_on_evidence),
+        step("PostgreSQL's WAL time kept out of statement time", statement_time_without_wal),
+        step("MariaDB's lock time unknown where it counts the whole run", lock_time_that_counts_the_run),
     ]
+}
+
+/// With the slow query log writing to a table, MariaDB reports a logged statement's whole run as its lock time
+/// ([`crate::signals::lock_time_counts_the_run`]): 49,963.3 ms of lock in a run of 49,963.9 ms. The real lock time isn't
+/// kept, so it is unknown (`None`, and no lock wait), never read as waiting by any check (what a heavy query waited
+/// on, how long reads waited on writes). The slow log's own total of lock time is made of such runs too. A note says so.
+fn lock_time_that_counts_the_run(snapshot: &mut Snapshot) {
+    let Some(workload) = snapshot.workload.as_ref() else { return };
+    let inflated: Vec<String> = workload
+        .queries
+        .iter()
+        .filter(|q| crate::signals::lock_time_counts_the_run(snapshot, q))
+        .filter(|q| q.spread.as_ref().is_some_and(|s| s.lock_ms.is_some()) || q.waits.iter().any(is_lock_time))
+        .map(|q| q.id.clone())
+        .collect();
+    if inflated.is_empty() {
+        return;
+    }
+    if let Some(workload) = snapshot.workload.as_mut() {
+        for q in workload.queries.iter_mut().filter(|q| inflated.contains(&q.id)) {
+            if let Some(spread) = q.spread.as_mut() {
+                spread.lock_ms = None;
+            }
+            q.waits.retain(|w| !is_lock_time(w));
+        }
+    }
+    snapshot.waits.retain(|w| w.wait_type.as_deref() != Some("lock time (slow query log)"));
+    let statements =
+        if inflated.len() == 1 { "1 statement".to_string() } else { format!("{} statements", inflated.len()) };
+    snapshot.notes.push(CollectorNote {
+        collector: "workload".into(),
+        message: format!(
+            "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the \
+             lock time of {statements} is left out as unknown rather than read as waiting."
+        ),
+    });
+}
+
+/// The lock time MySQL and MariaDB report for a statement (its digest's, or the slow log's), kept as a Lock wait.
+fn is_lock_time(w: &WaitStat) -> bool {
+    w.category == "Lock" && w.wait_type.as_deref().is_some_and(|t| t.starts_with("lock time"))
+}
+
+/// Scans by older versions split PostgreSQL's statement time into disk I/O, WAL write and sync, and the rest. WAL time is
+/// the whole server's, spent mostly by the WAL writer and by commits after a statement's timing ends: no share of
+/// statement time. It goes back to the rest, as a scan now reads it (`culprit_postgres` `history_waits`), and without
+/// disk I/O to set apart the rest is all there is, which says nothing.
+fn statement_time_without_wal(snapshot: &mut Snapshot) {
+    let wal = |w: &WaitStat| w.category == "Log" && w.wait_type.as_deref().is_some_and(|t| t.starts_with("WAL write"));
+    if snapshot.server.engine != Engine::Postgres || !snapshot.waits.iter().any(wal) {
+        return;
+    }
+    let ms: f64 = snapshot.waits.iter().filter(|w| wal(w)).map(|w| w.wait_ms).sum();
+    snapshot.waits.retain(|w| !wal(w));
+    if !snapshot.waits.iter().any(|w| w.category == "IO" && w.wait_ms > 0.0) {
+        snapshot.waits.clear();
+        return;
+    }
+    match snapshot.waits.iter_mut().find(|w| w.category == "Other") {
+        Some(other) => other.wait_ms += ms,
+        None => snapshot.waits.push(WaitStat {
+            category: "Other".into(),
+            wait_type: Some("CPU, locks and untimed waits".into()),
+            wait_ms: ms,
+            tasks: None,
+        }),
+    }
+    snapshot.waits.sort_by(|a, b| b.wait_ms.total_cmp(&a.wait_ms));
 }
 
 /// The stages and what runs in each.

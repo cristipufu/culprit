@@ -47,14 +47,21 @@ pub fn last_actual_plans(snapshot: &Snapshot) -> Vec<Finding> {
         f.confidence = Confidence::High;
         f.impact.score = base_score(Severity::Low) * 0.6;
         f.impact.label = "Diagnostics".into();
-        // Trace flag 2451 keeps them server-wide whatever this setting says; the scan reads no trace flags.
+        // Trace flag 2451 keeps them server-wide whatever this setting says; the scan reads no trace flags. Only a
+        // server you manage takes it: Azure SQL Database has no trace flags, and the other managed services allow only
+        // their own list, so there the sentence would point at something that can't be set.
+        let trace_flag = if snapshot.server.is_managed() {
+            ""
+        } else {
+            " (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)"
+        };
         f.title = "LAST_QUERY_PLAN_STATS is off for this database".into();
-        f.summary = "With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached \
-                     query's most recent run. Culprit then shows where a slow query actually spent its time, operator \
-                     by operator, without running it again. Without it only estimated plans are available, so a bad \
-                     estimate can only be guessed at. (Trace flag 2451 turns the same on for the whole server; if it \
-                     is set, actual plans are kept already.)"
-            .into();
+        f.summary = format!(
+            "With LAST_QUERY_PLAN_STATS on, SQL Server keeps the real row counts and timings of every cached query's \
+             most recent run. Culprit then shows where a slow query actually spent its time, operator by operator, \
+             without running it again. Without it only estimated plans are available, so a bad estimate can only be \
+             guessed at.{trace_flag}"
+        );
         f.fix = Some(Fix {
             summary: "Turn it on for this database.".into(),
             sql: Some("ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;".into()),
@@ -114,6 +121,17 @@ mod tests {
         assert_eq!(found.len(), 1, "the demo has LAST_QUERY_PLAN_STATS off and lightweight profiling on");
         assert_eq!(found[0].id, "last-actual-plans:last-query-plan-stats");
         assert!(found[0].fix.as_ref().unwrap().sql.as_deref().unwrap().contains("LAST_QUERY_PLAN_STATS = ON"));
+        assert!(found[0].summary.contains("Trace flag 2451"), "a server you manage can set it: {}", found[0].summary);
         assert!(last_actual_plans(&snapshot("postgres-demo.json")).is_empty());
+    }
+
+    // Azure SQL Database has no trace flags: the finding doesn't point at one.
+    #[test]
+    fn a_trace_flag_is_mentioned_only_where_one_can_be_set() {
+        let mut s = snapshot("mssql-demo.json");
+        s.server.platform = Some(culprit_core::Platform::AzureSqlDatabase);
+        let found = last_actual_plans(&s);
+        assert!(!found[0].summary.contains("Trace flag"), "{}", found[0].summary);
+        assert!(found[0].fix.as_ref().unwrap().sql.as_deref().unwrap().contains("LAST_QUERY_PLAN_STATS = ON"));
     }
 }

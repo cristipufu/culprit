@@ -15,6 +15,54 @@ pub fn big_result_info() -> CheckInfo {
 
 check!(BigResultCheck: big_result_info, big_result);
 
+/// What a statement's big result adds to the spill finding on it, which carries both (refine's "a spill carries the
+/// result it sorts"): one statement, one share, one finding. Its summary says the rows each run sends, its fix how to
+/// return fewer, and its verify what a later scan shows once it does (nothing for an export, whose rows are the point).
+pub(crate) struct ResultOfASpill {
+    pub summary: String,
+    pub fix: String,
+    pub verify: Option<String>,
+}
+
+/// [`ResultOfASpill`] for `q`, worded the way [`big_result`] words it; `None` when its runs return no rows count.
+pub(crate) fn result_of_a_spill(snapshot: &Snapshot, q: &QueryStat) -> Option<ResultOfASpill> {
+    let rows = per_run(q.rows?, q.executions);
+    let width = q.costs.as_ref().and_then(|c| c.row_bytes).or_else(|| q.plan.as_ref().and_then(plan_row_bytes));
+    let sends = format!(
+        "{} rows{}",
+        format::count(rows),
+        width.map(|w| format!(" (≈ {})", format::bytes(w * rows))).unwrap_or_default()
+    );
+    Some(if looks_like_export(snapshot, q) {
+        ResultOfASpill {
+            summary: format!(
+                " Each run also sends {sends} to the application, the whole table: an export, a dump or an ETL job looks like this, and for those the rows are the point."
+            ),
+            fix: " If it is an export or an ETL job, the memory is the fix; run it on a replica or off-peak if it competes with the application.".into(),
+            verify: None,
+        }
+    } else {
+        ResultOfASpill {
+            summary: format!(
+                " Each run also sends {sends} to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too."
+            ),
+            fix: format!(" Where the application doesn't use every row it receives, {}", lowercase_first(RETURN_WHAT_IS_USED)),
+            verify: Some(
+                "If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses."
+                    .into(),
+            ),
+        }
+    })
+}
+
+/// How to send the application only the rows it uses.
+const RETURN_WHAT_IS_USED: &str = "Return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database.";
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_lowercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+}
+
 pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = app_queries(snapshot)
         .filter(|q| returns_rows(q) && q.executions >= 20.0)
@@ -68,7 +116,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             if let Some(b) = bytes {
                 f.metrics.push(Metric::new("Bytes per run (estimated)", b, Unit::Bytes));
             }
-            let page = "Return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database.";
+            let page = RETURN_WHAT_IS_USED;
             f.fix = Some(Fix {
                 summary: if export {
                     format!("If it is an export or ETL job, leave it as it is, and run it on a replica or off-peak if it competes with the application. If the application runs it: {page}")

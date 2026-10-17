@@ -470,6 +470,51 @@ fn unused_index_upkeep_is_a_rate() {
     assert_eq!(unused("2026-10-01T12:00:00Z").severity, Severity::Medium);
 }
 
+// A staging SQL Server reading "job_runs was written 5.2K times": SQL Server counts the writes that had to update each index
+// (user_updates), so the number is the index's own, and said as such.
+#[test]
+fn sql_server_index_writes_are_said_as_the_indexs() {
+    let mut s = counted_for_ten_days(snapshot("mssql-demo.json"));
+    let report = analyze(s.clone());
+    let f = finding(&report, "unused-index:shop.order_items").expect("unused");
+    assert!(f.summary.contains("and no write has had to update it either"), "{}", f.summary);
+    assert!(!f.summary.contains("hasn't been written to"), "{}", f.summary);
+    s.indexes.iter_mut().find(|i| i.name == "ix_order_items_product_id").unwrap().writes = Some(5_198.0);
+    let report = analyze(s);
+    let f = finding(&report, "unused-index:shop.order_items").expect("unused");
+    assert!(f.summary.contains("while writes had to update it 5.2K times"), "{}", f.summary);
+    assert!(!f.summary.contains("was written"), "{}", f.summary);
+    assert!(
+        f.metrics.iter().any(|m| m.label == "Writes that updated the index" && m.value == 5_198.0),
+        "{:?}",
+        f.metrics
+    );
+}
+
+// The postgres-demo reading: Medium for order_items' key on its million rows alone, with no statement using the key
+// and no parent row deleted. Medium needs an amount: the parent's deletes, each a read of the whole child table.
+#[test]
+fn a_big_child_table_alone_is_not_medium() {
+    let id = "unindexed-fk:public.order_items(order_id)";
+    let key = |s: Snapshot| analyze(s).findings.into_iter().find(|f| f.id == id).expect("the key");
+    assert_eq!(key(snapshot("postgres-demo.json")).severity, Severity::Low);
+    // 50 deletes a day from orders are no amount yet.
+    let mut s = counted_for_ten_days(snapshot("postgres-demo.json"));
+    s.tables.iter_mut().find(|t| t.name == "orders").unwrap().deletes = Some(500.0);
+    assert_eq!(key(s.clone()).severity, Severity::Low);
+    // 4K a day, each reading a million rows, are, and the finding says so.
+    s.tables.iter_mut().find(|t| t.name == "orders").unwrap().deletes = Some(40_000.0);
+    let f = key(s);
+    assert_eq!(f.severity, Severity::Medium);
+    assert!(
+        f.summary.contains(
+            "Deletes from public.orders came to about 4.0K rows a day, each a read of the whole of public.order_items."
+        ),
+        "{}",
+        f.summary
+    );
+}
+
 // I12: a request SQL Server's optimizer last made before the window is history: no query in the window wanted it.
 #[test]
 fn a_request_last_made_before_the_window_is_history() {
@@ -482,6 +527,16 @@ fn a_request_last_made_before_the_window_is_history() {
     assert_eq!(f.severity, Severity::Low);
     assert!(f.caveats[0].starts_with("SQL Server's optimizer last asked for this index on Aug 1"), "{}", f.caveats[0]);
     assert!(!index_advice(&report).candidates.iter().any(|c| c.finding_id.as_deref() == Some(f.id.as_str())));
+    // CX-B: history gets no index of its own: no SQL, and nothing to check unless the statements come back.
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with("Nothing to create unless the statements that wanted it come back"),
+        "{}",
+        fix.summary
+    );
+    assert!(f.verify[0].starts_with("Nothing to check unless they come back"), "{:?}", f.verify);
+    assert!(f.title.contains(" was searched by "), "{}", f.title);
 
     // Without query history, a request nobody made in the last week is history too.
     s.workload = None;
@@ -589,4 +644,102 @@ fn a_secondary_index_is_not_redundant_to_the_clustered_primary_key() {
             .iter()
             .any(|c| c.index == "fk_orders_customer" && matches!(c.kind, CleanupKind::Prefix | CleanupKind::Duplicate))
     );
+}
+
+// MS-9: no writes over less than a week of counters is no claim that the table gets none.
+#[test]
+fn no_writes_is_said_over_the_time_counted() {
+    let cost = |hours: f64| {
+        let mut s = snapshot("postgres-demo.json");
+        s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(hours);
+        let t = s.tables.iter_mut().find(|t| t.name == "order_items").unwrap();
+        (t.inserts, t.updates, t.deletes) = (Some(0.0), Some(0.0), Some(0.0));
+        let report = analyze(s);
+        let f = finding(&report, "unindexed-fk:public.order_items(order_id)").expect("the key");
+        f.fix.as_ref().unwrap().cost.clone().unwrap_or_default()
+    };
+    assert_eq!(
+        cost(136.0),
+        "public.order_items had no writes in the 5.7 days its counters cover, too short to say it gets none (a weekly \
+         job may not have run yet); each write it gets will also update this index."
+    );
+    let week = cost(240.0);
+    assert!(week.starts_with("public.order_items received no writes in the 10"), "{week}");
+    assert!(week.ends_with("so this index would cost next to nothing to maintain."), "{week}");
+}
+
+// MS-8: a scan of a table the catalog no longer lists, by a statement that stopped running: the table was dropped or
+// renamed, so there is nothing to index and no SQL that would fail. A statement still running on a table the catalog
+// doesn't list (an indexed view) keeps its advice.
+#[test]
+fn a_table_that_is_gone_gets_no_index() {
+    let scan = |stopped: bool| {
+        let mut s = snapshot("postgres-demo.json");
+        let w = s.workload.as_mut().unwrap();
+        let end = w.window_end.clone().unwrap_or_else(|| s.taken_at.clone());
+        let q = w.queries.iter_mut().find(|q| q.id == "5308963031944094559").unwrap();
+        if stopped {
+            q.last_seen = Some("2026-01-01T00:00:00Z".into());
+        } else {
+            q.last_seen = Some(end);
+        }
+        // The plan says how many rows the table had when it ran; the catalog no longer lists it.
+        scan_node(q).expect("the scan").table_rows = Some(1_999_995.0);
+        s.tables.retain(|t| t.name != "orders");
+        let report = analyze(s);
+        report.findings.into_iter().find(|f| f.id == "filtered-scan:public.orders(customer_id)")
+    };
+    let gone = scan(true).expect("the scan's finding");
+    let fix = gone.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with("Nothing to create: public.orders isn't in the database's catalog any more"),
+        "{}",
+        fix.summary
+    );
+    assert!(gone.summary.contains("No index started with customer_id"), "{}", gone.summary);
+    assert!(gone.verify[0].starts_with("Nothing to check: public.orders is gone"), "{:?}", gone.verify);
+    let running = scan(false).expect("the scan's finding");
+    assert!(running.fix.as_ref().unwrap().sql.is_some(), "{:?}", running.fix);
+}
+
+// MY-10: rows returned under a LIMIT measure the filter where they are well under its count: 5 a run under LIMIT 50
+// means the runs returned every row they kept. At the LIMIT's count, or with a count nobody knows, they say nothing.
+#[test]
+fn rows_returned_well_under_a_limit_measure_the_filter() {
+    let plant = |text: &str, rows_per_run: f64, sample_limit: Option<&str>| {
+        let mut s = snapshot("mysql-demo.json");
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "c7b5ac9bb4bcecfe").unwrap();
+        q.text = text.into();
+        q.rows = Some(rows_per_run * q.executions);
+        q.logical_reads = Some(498_573.0 * q.executions);
+        let plan = q.plan.as_mut().unwrap();
+        if let Some(limit) = sample_limit {
+            plan.props.insert(culprit_core::insights::LIMIT_ROWS.into(), limit.into());
+        }
+        let node = &mut plan.root;
+        let node = if node.object.is_some() { node } else { &mut node.children[0] };
+        node.kind = NodeKind::Scan;
+        node.op = "Table scan".into();
+        node.index = None;
+        node.predicate = Some("(shop.orders.promo_code = 'SPRING0')".into());
+        node.rows_read = Some(498_573.0);
+        // MySQL's fixed 10% for an equality it has no statistics for: a guess, not an estimate.
+        node.props.insert("filtered".into(), "10.00".into());
+        node.est_rows = 49_857.0;
+        analyze(s)
+    };
+    let id = "filtered-scan:shop.orders(promo_code)";
+    let text = |limit: &str| {
+        format!("SELECT `id` , `total` FROM `orders` WHERE `promo_code` = ? ORDER BY `total` DESC LIMIT {limit}")
+    };
+    let report = plant(&text("50"), 5.0, None);
+    assert!(finding(&report, id).is_some(), "{:?}", ids(&report));
+    let report = plant(&text("5"), 5.0, None);
+    assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
+    let report = plant(&text("?"), 5.0, None);
+    assert!(finding(&report, id).is_none(), "{:?}", ids(&report));
+    // The digest's `LIMIT ?`, with the count the provider read from the sample it planned.
+    let report = plant(&text("?"), 5.0, Some("50"));
+    assert!(finding(&report, id).is_some(), "{:?}", ids(&report));
 }

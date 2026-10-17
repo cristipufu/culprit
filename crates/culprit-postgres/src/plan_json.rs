@@ -25,6 +25,23 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan
     Ok(plan)
 }
 
+/// A plan a scan saved, read again from its JSON with this parser, so a scan saved by an older Culprit reads the way
+/// one taken today would. What the scan added from the catalog (each scanned table's size, and the marks that follow
+/// from it) is worked out again from the sizes the saved plan carries; nothing is looked up. `entry` is the
+/// pg_stat_statements entry (its queryid) the plan was made for, whose generic plan says what it can't know; `None`
+/// for a plan of another source's statement (an application's log). `None` when the plan kept no JSON, or this parser
+/// can't read it.
+pub fn reparse(saved: &Plan, entry: Option<&str>) -> Option<Plan> {
+    let raw = saved.raw.as_deref()?;
+    let mut plan = parse(raw, saved.kind, saved.statement.as_deref()).ok()?;
+    crate::tables::refill(&mut plan, saved);
+    if let Some(entry) = entry.filter(|_| saved.kind == PlanKind::Generic) {
+        crate::collect::mark_generic(&mut plan);
+        crate::collect::mark_planned_text(&mut plan, entry);
+    }
+    Some(plan)
+}
+
 /// The same, from JSON already parsed (an imported plan, or text EXPLAIN rebuilt as JSON). `raw` is left empty.
 pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Result<Plan> {
     let top = match value {
@@ -209,6 +226,10 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
     if partial && !analyzed {
         props.insert("Plan Rows per process".into(), plan_rows.to_string());
     }
+    let total_cost = number(map, "Total Cost").unwrap_or(0.0);
+    if op == "Nested Loop" {
+        repeat_inner_side(&mut children, total_cost);
+    }
     let result = PlanNode {
         id,
         kind: kind_of(&op),
@@ -224,7 +245,7 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
         act_executions: loops,
         rows_read: act_rows.map(|r| r + removed.unwrap_or(0.0)).filter(|_| removed.is_some()),
         table_rows: None,
-        subtree_cost: number(map, "Total Cost").unwrap_or(0.0),
+        subtree_cost: total_cost,
         self_cost: 0.0,
         act_time_ms: number(map, "Actual Total Time").map(|t| t * (loops_or_one / parallelism).max(1.0)),
         runtime: runtime(map),
@@ -233,6 +254,44 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
         children,
     };
     (result, partial)
+}
+
+/// A Nested Loop runs its inner side once for each row its outer side returns, and PostgreSQL gives that side's `Plan
+/// Rows` and `Total Cost` for one run. Count the runs on the inner side's operators (an analyzed plan has them already,
+/// as loops) and its cost over all of them, so the loop's own cost is the joining, not its lookups run again and again,
+/// and a lookup run ten times isn't one run at a tenth of its cost. The cost is the planner's: over the runs it planned
+/// (per process below a Gather, like the costs themselves), and never more than the loop's total leaves after its outer
+/// side (a semi or unique join stops at the first match and is costed for less).
+fn repeat_inner_side(children: &mut [PlanNode], loop_cost: f64) {
+    // Its two inputs, outer first; its other children are InitPlans and SubPlans (text EXPLAIN names only those).
+    let mut inputs = children
+        .iter_mut()
+        .filter(|c| c.props.get("Parent Relationship").is_none_or(|r| matches!(r.as_str(), "Outer" | "Inner")));
+    let (Some(outer), Some(inner)) = (inputs.next(), inputs.next()) else { return };
+    let runs = outer.est_rows.max(1.0);
+    let planned =
+        outer.props.get("Plan Rows per process").and_then(|r| r.parse::<f64>().ok()).unwrap_or(outer.est_rows);
+    let left = loop_cost - outer.subtree_cost;
+    let cost_runs = if inner.subtree_cost > 0.0 { planned.min(left / inner.subtree_cost).max(1.0) } else { 1.0 };
+    repeat(inner, runs, cost_runs);
+}
+
+/// Run `node` and what it reads `runs` times, costed for `cost_runs`. A Materialize or a Memoize replays the rows its
+/// input returned: it runs each time, its input once (or once per new key, which the plan doesn't say), and replaying
+/// costs little. An InitPlan (a CTE among them) runs once for the whole statement.
+fn repeat(node: &mut PlanNode, runs: f64, cost_runs: f64) {
+    if node.act_executions.is_none() {
+        node.est_executions *= runs;
+    }
+    if matches!(node.op.as_str(), "Materialize" | "Memoize") {
+        return;
+    }
+    node.subtree_cost *= cost_runs;
+    for child in node.children.iter_mut() {
+        if child.props.get("Parent Relationship").is_none_or(|r| !matches!(r.as_str(), "InitPlan" | "CTE")) {
+            repeat(child, runs, cost_runs);
+        }
+    }
 }
 
 fn kind_of(op: &str) -> NodeKind {
@@ -428,9 +487,72 @@ mod tests {
         assert_eq!(seek.kind, NodeKind::Seek);
         assert_eq!(seek.index.as_deref(), Some("customers_pkey"));
         assert_eq!(seek.seek_predicate.as_deref(), Some("(c.id = $1)"));
-        assert!((plan.root.self_cost - 45.5).abs() < 1e-9);
+        // Self costs from cumulative ones: the loop's own is what's left after its scan and its 10 lookups at 5 each.
+        assert!((plan.root.self_cost - 0.5).abs() < 1e-9, "{}", plan.root.self_cost);
+        assert!((seek.self_cost - 50.0).abs() < 1e-9, "{}", seek.self_cost);
         assert_eq!(plan.hottest().unwrap().id, 1);
         assert!(plan.root.act_rows.is_none());
+    }
+
+    #[test]
+    fn a_nested_loops_inner_side_runs_once_per_outer_row() {
+        // A generic plan from a real scan: 10 apps, each looking up its owner by primary key. PostgreSQL costs the
+        // lookup for one run (7.90) and the loop for all ten: 149.54 = 70.54 + 10 × 7.90. The loop isn't the costliest
+        // step at 47% of the plan, and the lookup isn't one run at 5%.
+        let json = r#"[{"Plan": {"Node Type": "Nested Loop", "Join Type": "Inner", "Inner Unique": true,
+            "Total Cost": 149.54, "Plan Rows": 10, "Plans": [
+              {"Node Type": "Bitmap Heap Scan", "Parent Relationship": "Outer", "Relation Name": "apps", "Schema": "public",
+               "Total Cost": 70.54, "Plan Rows": 10, "Recheck Cond": "((a.id)::text = ANY ($1))", "Plans": [
+                 {"Node Type": "Bitmap Index Scan", "Parent Relationship": "Outer", "Index Name": "PK_apps",
+                  "Total Cost": 38.90, "Plan Rows": 10, "Index Cond": "((a.id)::text = ANY ($1))"}]},
+              {"Node Type": "Index Scan", "Parent Relationship": "Inner", "Index Name": "PK_users", "Relation Name": "users",
+               "Schema": "public", "Total Cost": 7.90, "Plan Rows": 1, "Index Cond": "((id)::text = (a.owner_id)::text)"}]}}]"#;
+        let plan = parse(json, PlanKind::Generic, None).unwrap();
+        let lookup = &plan.root.children[1];
+        assert_eq!((lookup.est_executions, lookup.est_rows, lookup.est_rows_total()), (10.0, 1.0, 10.0));
+        assert!((lookup.self_cost - 79.0).abs() < 1e-9, "{}", lookup.self_cost);
+        assert!(plan.root.self_cost < 1e-9, "the loop's own cost: {}", plan.root.self_cost);
+        assert_eq!(plan.hottest().map(|n| n.id), Some(lookup.id));
+        assert!((plan.cost_share(lookup) - 79.0 / 149.54).abs() < 1e-9);
+        // The outer side runs once.
+        assert_eq!(plan.root.children[0].est_executions, 1.0);
+
+        // A Materialize replays its input's rows: it runs per outer row, its input once, and its cost isn't repeated.
+        // A semi join stops at the first match: the inner side is costed for no more than the loop leaves for it.
+        let json = r#"[{"Plan": {"Node Type": "Nested Loop", "Join Type": "Semi", "Total Cost": 400.0, "Plan Rows": 100,
+            "Plans": [
+              {"Node Type": "Seq Scan", "Parent Relationship": "Outer", "Relation Name": "orders", "Total Cost": 100.0,
+               "Plan Rows": 100},
+              {"Node Type": "Nested Loop", "Parent Relationship": "Inner", "Total Cost": 20.0, "Plan Rows": 1, "Plans": [
+                {"Node Type": "Index Scan", "Parent Relationship": "Outer", "Relation Name": "items", "Total Cost": 8.0,
+                 "Plan Rows": 2},
+                {"Node Type": "Materialize", "Parent Relationship": "Inner", "Total Cost": 4.0, "Plan Rows": 5, "Plans": [
+                  {"Node Type": "Seq Scan", "Parent Relationship": "Outer", "Relation Name": "flags", "Total Cost": 3.0,
+                   "Plan Rows": 5}]}]}]}}]"#;
+        let plan = parse(json, PlanKind::Estimated, None).unwrap();
+        let inner = &plan.root.children[1];
+        let (items, materialize) = (&inner.children[0], &inner.children[1]);
+        let flags = &materialize.children[0];
+        assert_eq!(inner.est_executions, 100.0);
+        assert_eq!(items.est_executions, 100.0);
+        assert_eq!(materialize.est_executions, 200.0, "twice per run of the inner loop, 100 runs");
+        assert_eq!(flags.est_executions, 1.0, "read once, replayed after");
+        // 100 runs at 20 would be 2,000; the semi join is costed at 300 for its inner side.
+        assert!((inner.subtree_cost - 300.0).abs() < 1e-9, "{}", inner.subtree_cost);
+        assert!(plan.root.self_cost.abs() < 1e-9);
+        assert!(plan.nodes().iter().all(|n| n.self_cost >= 0.0));
+
+        // An analyzed plan counted its loops: they stay as measured, and the cost is still the planner's for its runs.
+        let json = r#"[{"Plan": {"Node Type": "Nested Loop", "Total Cost": 90.0, "Plan Rows": 10, "Actual Rows": 4,
+            "Actual Loops": 1, "Plans": [
+              {"Node Type": "Seq Scan", "Parent Relationship": "Outer", "Relation Name": "a", "Total Cost": 10.0,
+               "Plan Rows": 10, "Actual Rows": 4, "Actual Loops": 1},
+              {"Node Type": "Index Scan", "Parent Relationship": "Inner", "Relation Name": "b", "Total Cost": 8.0,
+               "Plan Rows": 1, "Actual Rows": 1, "Actual Loops": 4}]}}]"#;
+        let plan = parse(json, PlanKind::Actual, None).unwrap();
+        let lookup = &plan.root.children[1];
+        assert_eq!((lookup.est_executions, lookup.act_executions), (4.0, Some(4.0)));
+        assert!((lookup.subtree_cost - 80.0).abs() < 1e-9);
     }
 
     #[test]

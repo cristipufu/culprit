@@ -431,6 +431,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        evictions_before: None,
         sizes_before: None,
     };
     crate::signals::collect(connector, &probe, &mut snapshot).await;
@@ -945,12 +946,20 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
 /// The plan of a captured sample, kept without the sample's values. A sample is someone else's real statement (an
 /// email, a token, an id in a WHERE clause) and MySQL copies its literals into the plan's conditions and JSON; the
 /// report, the UI and coding agents get the digest's text and a plan whose literals are placeholders. LIKE patterns
-/// keep their wildcard shape (`'%?'`), so a leading wildcard is still visible.
+/// keep their wildcard shape (`'%?'`), so a leading wildcard is still visible. One number is kept: the row count of
+/// the sample's LIMIT where the digest writes `LIMIT ?` ([`culprit_core::insights::LIMIT_ROWS`]), the statement's
+/// shape rather than its data, so rows returned can be weighed against it.
 fn sample_plan(json: &str, sample: &str, database: &str, digest_text: &str) -> Result<Plan> {
     let plan = plan_json::parse(json, PlanKind::Estimated, Some(sample), Some(database))?;
     let mut clean = culprit_core::redact::redact_plan(&plan);
     clean.raw = plan.raw.as_deref().map(|raw| culprit_core::redact::redact_native(raw, Engine::Mysql));
     clean.statement = Some(digest_text.to_string());
+    if culprit_core::sql::has_limit(digest_text)
+        && culprit_core::sql::limit_count(digest_text).is_none()
+        && let Some(rows) = culprit_core::sql::limit_count(sample)
+    {
+        clean.props.insert(culprit_core::insights::LIMIT_ROWS.into(), rows.to_string());
+    }
     Ok(clean)
 }
 
@@ -1402,8 +1411,9 @@ async fn foreign_keys(conn: &mut Conn, db: &str) -> Result<Vec<ForeignKey>> {
 }
 
 /// Server variables the checks and the UI read, with their compiled-in defaults: MySQL 8.0/8.4, then MariaDB 10.11/11.x
-/// (`None` where that server has no such variable).
-const SETTINGS: [(&str, Option<&str>, Option<&str>); 21] = [
+/// (`None` where that server has no such variable, empty where its default isn't one value). MySQL 5.7 has no
+/// internal_tmp_mem_storage_engine or temptable_max_ram: a variable the server doesn't have isn't read.
+const SETTINGS: [(&str, Option<&str>, Option<&str>); 23] = [
     ("performance_schema_digests_size", Some("10000"), Some("-1")),
     ("performance_schema_max_digest_length", Some("1024"), Some("1024")),
     ("performance_schema_max_sql_text_length", Some("1024"), Some("1024")),
@@ -1412,6 +1422,10 @@ const SETTINGS: [(&str, Option<&str>, Option<&str>); 21] = [
     ("innodb_page_size", Some("16384"), Some("16384")),
     ("tmp_table_size", Some("16777216"), Some("16777216")),
     ("max_heap_table_size", Some("16777216"), Some("16777216")),
+    // Which engine keeps internal temporary tables in memory, and TempTable's memory for all of them together (1 GB
+    // on 8.0; 8.4 takes 3% of the host's memory, between 1 and 4 GB).
+    ("internal_tmp_mem_storage_engine", Some("TempTable"), None),
+    ("temptable_max_ram", Some(""), None),
     ("sort_buffer_size", Some("262144"), Some("2097152")),
     ("join_buffer_size", Some("262144"), Some("262144")),
     ("long_query_time", Some("10.000000"), Some("10.000000")),
@@ -1454,7 +1468,7 @@ async fn settings(conn: &mut Conn, flavor: Flavor) -> Result<Vec<Setting>> {
     Ok(rows
         .into_iter()
         .map(|(name, value)| {
-            let default = default_of(&name).map(str::to_string);
+            let default = default_of(&name).filter(|d| !d.is_empty()).map(str::to_string);
             Setting { name, value, default_value: default, scope: "server".into() }
         })
         .chain(statement_status(conn).await)
@@ -1625,6 +1639,23 @@ mod tests {
         assert!(!text.contains("vip"), "{text}");
         assert!(text.contains("'%?%'"), "the LIKE pattern keeps its shape: {text}");
         assert_eq!(plan.statement.as_deref(), Some("SELECT `id` FROM `customers` WHERE `email` = ? AND `note` LIKE ?"));
+        assert!(!plan.props.contains_key(culprit_core::insights::LIMIT_ROWS), "no LIMIT, no count");
+    }
+
+    #[test]
+    fn a_sample_keeps_the_count_its_digests_limit_hides() {
+        let json = r#"{"query_block":{"select_id":1,"cost_info":{"query_cost":"50000.20"},"table":{"table_name":"orders","access_type":"ALL","rows_examined_per_scan":500000,"rows_produced_per_join":50000,"filtered":"10.00","cost_info":{"read_cost":"45000.00","eval_cost":"5000.20","prefix_cost":"50000.20","data_read_per_join":"106M"},"used_columns":["id","promo_code"],"attached_condition":"(`shop`.`orders`.`promo_code` = 'SPRING-7')"}}}"#;
+        let sample = "SELECT id FROM orders WHERE promo_code = 'SPRING-7' LIMIT 50";
+        let digest = "SELECT `id` FROM `orders` WHERE `promo_code` = ? LIMIT ?";
+        let plan = sample_plan(json, sample, "shop", digest).unwrap();
+        assert_eq!(plan.props.get(culprit_core::insights::LIMIT_ROWS).map(String::as_str), Some("50"));
+        // Redacting the plan again (an export, a share) keeps it: it is a number, not a value from the data.
+        let again = culprit_core::redact::redact_plan(&plan);
+        assert_eq!(again.props.get(culprit_core::insights::LIMIT_ROWS).map(String::as_str), Some("50"));
+        assert!(!serde_json::to_string(&again).unwrap().contains("SPRING"));
+        // A re-read of the saved plan keeps it too.
+        let reread = plan_json::reparse(&plan, Some("shop")).unwrap();
+        assert_eq!(reread.props.get(culprit_core::insights::LIMIT_ROWS).map(String::as_str), Some("50"));
     }
 
     #[test]

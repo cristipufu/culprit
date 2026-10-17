@@ -8,6 +8,10 @@ use crate::finding::Finding;
 use crate::model::{Engine, Properties, Snapshot};
 use crate::plan::{Plan, PlanNode};
 
+/// Query hints whose number tunes the plan (`OPTION (MAXDOP 1)`, `FAST 10`), not data: what a plan's reading of the
+/// statement depends on, kept.
+const HINTS_WITH_A_NUMBER: &[&str] = &["MAXDOP", "FAST", "MAXRECURSION", "QUERYTRACEON"];
+
 /// Numbers inside these types' parentheses are sizes (`nvarchar(200)`, `decimal(12,2)`), not data.
 const SIZED_TYPES: &[&str] = &[
     "char",
@@ -289,7 +293,8 @@ fn redact(text: &str, engine: Engine, numbers: bool) -> String {
             }
             _ if c.is_ascii_digit() || (c == '.' && next.is_some_and(|n| n.is_ascii_digit())) => {
                 let end = number_end(&chars, i);
-                if numbers && !parens.last().copied().unwrap_or(false) {
+                let hint = HINTS_WITH_A_NUMBER.iter().any(|h| h.eq_ignore_ascii_case(&last_word));
+                if numbers && !parens.last().copied().unwrap_or(false) && !hint {
                     out.push('?');
                 } else {
                     out.extend(&chars[i..end]);
@@ -418,10 +423,21 @@ fn dollar_tag(chars: &[char], start: usize) -> Option<usize> {
     None
 }
 
-/// A value that is a measurement (cost, rows, a flag), not text that could hold data.
+/// Units a plan writes after a measured number: MySQL's `data_read_per_join` ("106M", "1G"), sizes ("8kB", "4MB"),
+/// times ("0.5ms") and shares ("10%").
+const MEASUREMENT_UNITS: &[&str] = &[
+    "K", "M", "G", "T", "P", "E", "B", "KB", "kB", "MB", "GB", "TB", "KiB", "MiB", "GiB", "TiB", "ms", "us", "s", "%",
+];
+
+/// A value that is a measurement (cost, rows, a size, a flag), not text that could hold data. A whole value that is a
+/// number with a unit is the plan's own figure: a literal from the statement is never only that.
 fn is_measurement(value: &str) -> bool {
     let v = value.trim();
-    v.parse::<f64>().is_ok() || matches!(v.to_ascii_lowercase().as_str(), "true" | "false" | "yes" | "no")
+    let unit_at = v.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(v.len());
+    let (number, unit) = v.split_at(unit_at);
+    v.parse::<f64>().is_ok()
+        || (number.parse::<f64>().is_ok() && MEASUREMENT_UNITS.contains(&unit.trim_start()))
+        || matches!(v.to_ascii_lowercase().as_str(), "true" | "false" | "yes" | "no")
 }
 
 fn redact_props(props: &Properties, engine: Engine) -> Properties {
@@ -831,5 +847,31 @@ mod tests {
         assert!(out.contains("\"query_cost\": \"1.25\""));
         assert!(out.contains("(`o`.`status` = '?')"));
         assert!(out.contains("\"table_name\": \"orders\""));
+    }
+
+    // A query hint's number tunes the plan: the parallelism insight reads `OPTION (MAXDOP 1)` in a redacted statement
+    // as it does in the original.
+    #[test]
+    fn query_hints_keep_their_numbers() {
+        assert_eq!(
+            redact_sql("SELECT * FROM t WHERE id = 5 OPTION (MAXDOP 1, FAST 10)", Engine::Mssql),
+            "SELECT * FROM t WHERE id = ? OPTION (MAXDOP 1, FAST 10)"
+        );
+        assert_eq!(redact_sql("SELECT TOP 5 x FROM t WHERE y > 3", Engine::Mssql), "SELECT TOP ? x FROM t WHERE y > ?");
+    }
+
+    // MySQL writes sizes with a unit ("106M" read per join): a measurement, not a literal to mask as "?M".
+    #[test]
+    fn a_number_with_a_unit_is_a_measurement() {
+        let raw = r#"{"query_block": {"table": {"table_name": "orders", "cost_info": {"data_read_per_join": "106M", "read_cost": "12.50"}, "attached_condition": "(`o`.`code` = '106M')"}}}"#;
+        let out = redact_native(raw, Engine::Mysql);
+        assert!(out.contains("\"data_read_per_join\": \"106M\""), "{out}");
+        assert!(out.contains("(`o`.`code` = '?')"), "{out}");
+        for kept in ["106M", "3.5K", "1G", "8kB", "0.5 ms", "10%", "1.25"] {
+            assert!(is_measurement(kept), "{kept}");
+        }
+        for masked in ["106 rows", "M106", "abc", "10M'", "'106M'"] {
+            assert!(!is_measurement(masked), "{masked}");
+        }
     }
 }

@@ -363,7 +363,7 @@ function CandidateRow({ c, rank, focused, onFocus, expanded, onToggle, onCopy, o
   const facts: string[] = [];
   if (c.lookups != null) facts.push(`${count(c.lookups)} lookups`);
   if (c.estimated_improvement != null) facts.push(`≈${percent(c.estimated_improvement)} cheaper`);
-  if (c.table_rows != null) facts.push(rowCount(c.table_rows));
+  if (c.table_rows != null) facts.push(`${rowCount(c.table_rows)} in table`);
   if (c.writes_per_day != null) facts.push(`${count(c.writes_per_day)} writes/day`);
   return (
     <div className={`ia-item ${focused ? "focus" : ""} ${expanded ? "expanded" : ""}`}>

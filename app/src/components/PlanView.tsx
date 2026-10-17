@@ -5,8 +5,8 @@ import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
 import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
-import { count, duration, percent } from "../lib/format";
-import { insightsByNode, rows as rowsText } from "../lib/plan-format";
+import { count, percent } from "../lib/format";
+import { estRows, estRowsForRuns, insightsByNode, misestimate, noShareReason, rows as rowsText } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
 import { ActualSummary } from "./ActualSummary";
@@ -64,22 +64,17 @@ function heatVar(share: number): string {
   return "var(--heat-0)";
 }
 
-function misestimate(node: PlanNode): number | null {
-  if (node.act_rows == null) return null;
-  const est = Math.max(1, node.est_rows * Math.max(1, node.est_executions));
-  const act = Math.max(1, node.act_rows);
-  return act >= est ? act / est : -(est / act);
-}
-
 export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) {
   const nodes = useMemo(() => walk(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
   // Measured plans rank operators by their own time; estimated plans by cost (under a PostgreSQL Limit, children's costs
   // assume they run to completion and add up to more than the root's, which planShares accounts for).
   const shares = useMemo(() => planShares(plan), [plan]);
-  const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
-  const hottest = useMemo(() => nodes.reduce((a, b) => (shareOf(b) > shareOf(a) ? b : a), plan.root), [nodes, plan.root, shares]);
-  const target = focus ?? hottest.id;
+  // The share a person reads: none where the plan can't state one (beside a step it puts no cost on, on a default guess).
+  const shareOf = (n: PlanNode) => shares.stated.get(n.id) ?? null;
+  // The core's hottest step (never an exchange), only in a plan that does real work and where its share can be stated.
+  const hottest = shares.hottest;
+  const target = focus ?? hottest?.id ?? plan.root.id;
   const hotPath = useMemo(() => new Set(pathTo(plan.root, target) ?? []), [plan.root, target]);
 
   const [expanded, setExpanded] = useState<Set<number>>(() => {
@@ -142,7 +137,8 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
       <div style={compact ? { maxHeight: 340, overflowY: "auto" } : undefined}>
         {rows.map(({ node, depth }) => {
           const share = shareOf(node);
-          const mis = misestimate(node);
+          // Shown as off only where the core flagged it (10× on 100+ rows, not an operator stopped early).
+          const mis = node.warnings.includes("misestimate") ? misestimate(node) : null;
           return (
             <button
               key={node.id}
@@ -169,7 +165,7 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
                     <span className="op-icon">
                       <OpIcon node={node} size={13} />
                     </span>
-                    {node.id === hottest.id && share >= 0.05 && <Flame size={13} color="var(--heat-4)" className="flame" />}
+                    {node.id === hottest?.id && (share ?? 0) >= 0.05 && <Flame size={13} color="var(--heat-4)" className="flame" />}
                     <span className="opname">{node.op}</span>
                     {flagged.get(node.id)?.[0] && (
                       <span className={`tree-flag ${flagged.get(node.id)![0]!.severity}`} title={flagged.get(node.id)!.map((i) => i.title).join("\n")}>
@@ -198,70 +194,49 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
               <span className="rows">
                 {node.act_rows != null ? (
                   <>
-                    {rowsText(node.est_rows * Math.max(1, node.est_executions))} <span className="arrow">→</span> {rowsText(node.act_rows)}
-                    {mis != null && Math.abs(mis) >= 10 && <span className="mis">×{count(Math.abs(mis))}{mis < 0 ? " over" : " under"}</span>}
+                    {rowsText(estRowsForRuns(node))} <span className="arrow">→</span> {rowsText(node.act_rows)}
+                    {mis != null && <span className="mis">×{count(Math.abs(mis))}{mis < 0 ? " over" : " under"}</span>}
                   </>
                 ) : (
-                  weighed && rowsText(node.est_rows * Math.max(1, node.est_executions))
+                  weighed && rowsText(estRows(node))
                 )}
               </span>
               <span className="cost">
-                {weighed && (
-                  <>
-                    <span className="num">{percent(share)}</span>
-                    <span className="heat">
-                      <span style={{ width: `${Math.max(2, Math.min(100, share * 100))}%`, background: heatVar(share) }} />
+                {weighed &&
+                  (share != null ? (
+                    <>
+                      <span className="num">{percent(share)}</span>
+                      <span className="heat">
+                        <span style={{ width: `${Math.max(2, Math.min(100, share * 100))}%`, background: heatVar(share) }} />
+                      </span>
+                    </>
+                  ) : (
+                    <span className="num muted" title={noShareReason(plan, node) ?? undefined}>
+                      —
                     </span>
-                  </>
-                )}
+                  ))}
               </span>
             </button>
           );
         })}
       </div>
+      {weighed && shares.note && <div className="muted" style={{ fontSize: 12, padding: "6px 10px" }}>— {shares.note}</div>}
       {selectedNode && (
-        <NodeDetails estimates={weighed} node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? 0} insights={flagged.get(selectedNode.id)} />
+        <NodeDetails
+          estimates={weighed}
+          actual={plan.kind === "actual"}
+          node={selectedNode}
+          share={shareOf(selectedNode)}
+          subtreeShare={shares.statedSubtree.get(selectedNode.id) ?? null}
+          noShare={shares.basis === "cost" ? noShareReason(plan, selectedNode) : null}
+          insights={flagged.get(selectedNode.id)}
+        />
       )}
     </div>
   );
 }
 
 /** The operator detail panel; kept under this name for existing callers. */
-export function NodeProps({ node, share, insights }: { node: PlanNode; share: number; insights?: PlanInsight[] }) {
+export function NodeProps({ node, share, insights }: { node: PlanNode; share: number | null; insights?: PlanInsight[] }) {
   return <NodeDetails node={node} share={share} insights={insights} />;
-}
-
-/** The raw property list, for places that want the old compact dump. */
-export function RawNodeProps({ node, share }: { node: PlanNode; share: number }) {
-  const entries: [string, string][] = [];
-  if (node.detail) entries.push(["Detail", node.detail]);
-  if (node.object) entries.push(["Object", node.object]);
-  if (node.index) entries.push(["Index", node.index]);
-  if (node.seek_predicate) entries.push(["Seek / index condition", shortPredicate(node.seek_predicate)]);
-  if (node.predicate) entries.push(["Filter", shortPredicate(node.predicate)]);
-  entries.push(["Estimated rows", count(node.est_rows)]);
-  if (node.est_executions > 1) entries.push(["Estimated executions", count(node.est_executions)]);
-  if (node.act_rows != null) entries.push(["Actual rows", count(node.act_rows)]);
-  if (node.act_executions != null) entries.push(["Actual executions", count(node.act_executions)]);
-  if (node.rows_read != null) entries.push(["Rows read", count(node.rows_read)]);
-  if (node.table_rows != null) entries.push(["Rows in table", count(node.table_rows)]);
-  if (node.act_time_ms != null) entries.push(["Actual time", duration(node.act_time_ms)]);
-  entries.push(["Self cost", `${percent(share)} (${node.self_cost.toFixed(4)})`]);
-  const noise = (v: string) => v === "0" || v === "false" || v === "False" || v === "";
-  Object.entries(node.props).forEach(([k, v]) => {
-    if (v != null && !noise(v) && !entries.some(([e]) => e === k)) entries.push([k, v]);
-  });
-  return (
-    <div className="node-props">
-      <div className="eyebrow">{node.op}</div>
-      <dl>
-        {entries.map(([k, v]) => (
-          <div key={k} style={{ display: "contents" }}>
-            <dt>{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  );
 }

@@ -1,5 +1,5 @@
 //! Pressure signals, waits from statement timing, and the "right now" sample. PostgreSQL keeps no wait history, so
-//! history comes from per-statement I/O timing and WAL timing, and "right now" samples sessions every second.
+//! history comes from per-statement I/O timing, and "right now" samples sessions every second.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -25,77 +25,32 @@ pub fn statements_io_column(version_num: u32) -> &'static str {
     }
 }
 
-/// Time spent writing and syncing WAL, in ms (zero unless track_wal_io_timing is on), and the hours since those
-/// counters were reset. It is the whole server's (every database, and the WAL writer and checkpointer too), with its
-/// own reset point.
-async fn wal_time(client: &Client, version_num: u32) -> Option<(f64, Option<f64>)> {
-    let sql = if version_num >= 180_000 {
-        "SELECT coalesce(sum(write_time + fsync_time), 0) AS ms,
-                extract(epoch FROM now() - min(stats_reset)) / 3600 AS hours
-           FROM pg_stat_io WHERE object = 'wal'"
-    } else if version_num >= 140_000 {
-        "SELECT wal_write_time + wal_sync_time AS ms, extract(epoch FROM now() - stats_reset) / 3600 AS hours
-           FROM pg_stat_wal"
-    } else {
-        return None;
-    };
-    let row = query_one(client, sql).await.ok().flatten()?;
-    Some((row.number("ms")?, row.number("hours").filter(|h| *h > 0.0)))
-}
-
-/// Hours since pg_stat_statements was reset (PostgreSQL 14+): the window statement time covers.
-async fn statements_hours(client: &Client, probe: &Probe) -> Option<f64> {
-    let crate::collect::StatementsAccess::Usable { relation, .. } = &probe.statements else { return None };
-    if probe.version_num < 140_000 {
-        return None;
-    }
-    let sql = format!("SELECT extract(epoch FROM now() - stats_reset) / 3600 AS hours FROM {relation}_info");
-    query_one(client, &sql).await.ok().flatten()?.number("hours").filter(|h| *h > 0.0)
-}
-
-/// Database time by category from statement timing: disk I/O and WAL where they are timed, the rest as "Other".
-pub async fn history_waits(client: &Client, probe: &Probe, statements_ms: f64, statements_io_ms: f64) -> Vec<WaitStat> {
-    let wal = wal_time(client, probe.version_num).await;
-    let hours = statements_hours(client, probe).await;
-    breakdown(statements_ms, statements_io_ms, wal, hours)
-}
-
-/// Statement time split into disk I/O, WAL and the rest. WAL time is the server's, counted from its own reset: it is
-/// scaled to the statements' window and never takes more than the time statements don't spend on I/O, so it is a
-/// share of this database's time, not a second total. When either window is unknown it can't be lined up with
-/// statement time, so it is left out rather than subtracted from it.
-fn breakdown(
+/// Database time by category from statement timing: disk I/O where it is timed, the rest as "Other". WAL write and
+/// sync time (pg_stat_wal, pg_stat_io) isn't in it: that is the whole server's, spent mostly by the WAL writer and by
+/// commits after a statement's timing ends, so it is no share of statement time. The scan shows it with the files'
+/// latency instead.
+pub async fn history_waits(
+    _client: &Client,
+    _probe: &Probe,
     statements_ms: f64,
     statements_io_ms: f64,
-    wal: Option<(f64, Option<f64>)>,
-    statements_hours: Option<f64>,
 ) -> Vec<WaitStat> {
-    let untimed = (statements_ms - statements_io_ms).max(0.0);
-    let wal = match (wal, statements_hours) {
-        (Some((ms, Some(wal_hours))), Some(hours)) => (ms * (hours / wal_hours).min(1.0)).min(untimed),
-        _ => 0.0,
-    };
-    if statements_io_ms <= 0.0 && wal <= 0.0 {
+    breakdown(statements_ms, statements_io_ms)
+}
+
+/// Statement time split into disk I/O and the rest. Nothing else PostgreSQL times is part of statement time per
+/// category: CPU, locks and untimed waits stay together, never guessed apart.
+fn breakdown(statements_ms: f64, statements_io_ms: f64) -> Vec<WaitStat> {
+    if statements_io_ms <= 0.0 {
         return Vec::new();
     }
-    let other = untimed - wal;
-    let mut out = Vec::new();
-    if statements_io_ms > 0.0 {
-        out.push(WaitStat {
-            category: "IO".into(),
-            wait_type: Some("data file reads and writes".into()),
-            wait_ms: statements_io_ms,
-            tasks: None,
-        });
-    }
-    if wal > 0.0 {
-        out.push(WaitStat {
-            category: "Log".into(),
-            wait_type: Some("WAL write and sync (the whole server's, over the same window)".into()),
-            wait_ms: wal,
-            tasks: None,
-        });
-    }
+    let other = (statements_ms - statements_io_ms).max(0.0);
+    let mut out = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("data file reads and writes".into()),
+        wait_ms: statements_io_ms,
+        tasks: None,
+    }];
     if other > 0.0 {
         out.push(WaitStat {
             category: "Other".into(),
@@ -487,22 +442,18 @@ mod tests {
         waits.iter().filter(|w| w.category == category).map(|w| w.wait_ms).sum()
     }
 
-    // WAL time is the whole server's since its own reset: scaled to the statements' window and kept within their
-    // untimed time, never subtracted whole from this database's statement time.
+    // The aptabase reading: pg_stat_wal's write and sync time (4,143 s) stood for 99.98% of statement time, because it
+    // was capped at the time statements didn't spend on I/O. It is the server's WAL writer and commits, outside
+    // statement time: never a share of it.
     #[test]
-    fn server_wide_wal_time_is_scaled_to_the_statement_window() {
-        // 100 s of statements over 10 hours, 20 s of it I/O; 400 s of WAL over 40 hours (the same 100 s over 10).
-        let waits = breakdown(100_000.0, 20_000.0, Some((400_000.0, Some(40.0))), Some(10.0));
-        assert_eq!(category_ms(&waits, "Log"), 80_000.0, "capped at the 80 s statements didn't spend on I/O");
-        assert_eq!(category_ms(&waits, "Other"), 0.0);
-        let waits = breakdown(100_000.0, 20_000.0, Some((40_000.0, Some(40.0))), Some(10.0));
-        assert_eq!((category_ms(&waits, "Log"), category_ms(&waits, "Other")), (10_000.0, 70_000.0));
-        // Without both windows, WAL can't be lined up with statement time: left out, not subtracted.
-        let waits = breakdown(100_000.0, 20_000.0, Some((400_000.0, None)), Some(10.0));
-        assert_eq!((category_ms(&waits, "Log"), category_ms(&waits, "Other")), (0.0, 80_000.0));
-        let waits = breakdown(100_000.0, 20_000.0, Some((400_000.0, Some(40.0))), None);
-        assert_eq!(category_ms(&waits, "Other"), 80_000.0);
-        assert!(breakdown(100_000.0, 0.0, None, None).is_empty(), "nothing timed, nothing to break down");
+    fn wal_time_is_no_share_of_statement_time() {
+        let waits = breakdown(4_143_706.0, 750.6);
+        assert_eq!(category_ms(&waits, "Log"), 0.0);
+        assert_eq!(category_ms(&waits, "IO"), 750.6);
+        assert!((category_ms(&waits, "Other") - 4_142_955.4).abs() < 0.01);
+        assert!(waits.iter().all(|w| !w.wait_type.as_deref().unwrap_or_default().contains("WAL")));
+        // Nothing timed per category: no breakdown, rather than all of it as "Other".
+        assert!(breakdown(100_000.0, 0.0).is_empty(), "nothing timed, nothing to break down");
     }
 
     #[test]

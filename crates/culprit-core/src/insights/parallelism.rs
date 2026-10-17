@@ -32,6 +32,8 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
         d.verify = "Run with an actual plan: no ExchangeSpillDetails on the Parallelism operator.".into();
         out.push(d);
     }
+    // Underestimates by the rule behind the Misestimate warning: 30 rows where 2 were expected sized no grant.
+    let misestimated: HashMap<u32, f64> = cx.plan.root.misestimates().into_iter().collect();
     for n in cx.nodes.iter().filter(|n| n.warnings.contains(&PlanWarning::Spill)) {
         let mut d = Draft::new("spill", InsightArea::Memory, cx.share(n), vec![n.id]);
         // The plan's costs were estimated before the spill happened; its size is the evidence of what it cost.
@@ -43,7 +45,7 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
         let underestimated = {
             let mut below = Vec::new();
             n.walk(&mut below);
-            below.iter().any(|b| b.misestimate().is_some_and(|m| m >= MISESTIMATE_FACTOR))
+            below.iter().any(|b| misestimated.get(&b.id).is_some_and(|m| *m > 0.0))
         };
         match cx.engine() {
             // EXPLAIN QUERY PLAN reports no spills.
@@ -131,17 +133,42 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
 }
 
 pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
-    // The plan doesn't carry the server's cost threshold for parallelism: below its default (5) no setting would make
-    // the plan parallel, and only above the 50 it's commonly raised to does running serially say much.
+    // The plan doesn't carry the server's cost threshold for parallelism; the snapshot's settings may
+    // ([`COST_THRESHOLD`]). Without them, below its default (5) no setting would make the plan parallel, and only above
+    // the 50 it's commonly raised to does running serially say much.
     const DEFAULT_THRESHOLD: f64 = 5.0;
     const COMMON_THRESHOLD: f64 = 50.0;
     let Some(reason) = cx.prop("NonParallelPlanReason") else { return Vec::new() };
     let cost = cx.plan.total_cost;
-    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < DEFAULT_THRESHOLD {
+    let threshold = cx.prop(COST_THRESHOLD).and_then(|t| t.parse::<f64>().ok());
+    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < threshold.unwrap_or(DEFAULT_THRESHOLD) {
         return Vec::new();
     }
+    // Which MAXDOP is 1: the statement's own hint, or the database's or the server's setting as the snapshot read them.
+    let maxdop = |key: &str| cx.prop(key).and_then(|v| v.trim().parse::<f64>().ok());
+    let statement = cx.statement();
+    let hinted = statement.match_indices("maxdop").any(|(at, _)| {
+        statement[at + 6..]
+            .trim_start()
+            .strip_prefix('1')
+            .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
+    });
+    let (database, server) = (maxdop(DATABASE_MAXDOP), maxdop(SERVER_MAXDOP));
+    let maxdop_one = if hinted {
+        "its statement says OPTION (MAXDOP 1)".to_string()
+    } else if database == Some(1.0) {
+        "the database's MAXDOP setting is 1".to_string()
+    } else if database.is_none_or(|d| d == 0.0) && server == Some(1.0) {
+        "the server's max degree of parallelism is 1".to_string()
+    } else if database.is_some() && server.is_some() {
+        "MAXDOP is 1, though neither its statement nor the database's or server's setting says so now (a Query Store \
+         hint, a Resource Governor workload group, or a setting changed since it was compiled)"
+            .to_string()
+    } else {
+        "MAXDOP is 1 (a query hint, or the database or server setting)".to_string()
+    };
     let plain = match reason {
-        "MaxDOPSetToOne" => "MAXDOP is 1 (a query hint, or the database or server setting)",
+        "MaxDOPSetToOne" => maxdop_one.as_str(),
         "EstimatedDOPIsOne" => "only one CPU is available to it",
         "NoParallelPlansInDesktopOrExpressEdition" => "this SQL Server edition doesn't run parallel plans",
         "CouldNotGenerateValidParallelPlan" => "SQL Server couldn't build a valid parallel plan for it",
@@ -163,15 +190,39 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
     } else {
         format!("This plan runs on one CPU because {plain}")
     };
-    d.detail = format!(
-        "Its estimated cost is {cost:.0}. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50){}; the whole run happens on a single core instead.",
-        if cost >= COMMON_THRESHOLD {
-            ", which this plan passes either way"
-        } else {
-            ", so whether it would split depends on that setting"
-        }
-    );
+    d.detail = match threshold {
+        Some(t) => format!(
+            "Its estimated cost is {cost:.0}, above this server's cost threshold for parallelism ({t:.0}), so SQL Server \
+             would consider a parallel plan for it; the whole run happens on a single core instead."
+        ),
+        None => format!(
+            "Its estimated cost is {cost:.0}. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50){}; the whole run happens on a single core instead.",
+            if cost >= COMMON_THRESHOLD {
+                ", which this plan passes either way"
+            } else {
+                ", so whether it would split depends on that setting"
+            }
+        ),
+    };
     d.fix = match reason {
+        "MaxDOPSetToOne" if hinted => {
+            "Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU.".into()
+        }
+        "MaxDOPSetToOne" if database == Some(1.0) => {
+            "Raise the database's MAXDOP (ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP), or give this statement \
+             OPTION (MAXDOP n) where it should run in parallel."
+                .into()
+        }
+        "MaxDOPSetToOne" if server == Some(1.0) => {
+            "Raise the server's max degree of parallelism, or set the database's MAXDOP (ALTER DATABASE SCOPED \
+             CONFIGURATION SET MAXDOP), which overrides it for this database."
+                .into()
+        }
+        "MaxDOPSetToOne" if database.is_some() && server.is_some() => {
+            "Look for what sets it: a Query Store hint on this query (sys.query_store_query_hints), or the workload \
+             group its session runs in (MAX_DOP)."
+                .into()
+        }
         "MaxDOPSetToOne" => "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server.".into(),
         _ => "Remove what prevents parallelism if the query allows it; otherwise make the single-threaded run cheaper (indexes, fewer rows).".into(),
     };

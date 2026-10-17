@@ -3,6 +3,7 @@ import type { CollectorNote } from "./CollectorNote";
 import type { ColumnHistogram } from "./ColumnHistogram";
 import type { ColumnInfo } from "./ColumnInfo";
 import type { ConstraintIssue } from "./ConstraintIssue";
+import type { CountBaseline } from "./CountBaseline";
 import type { DeadlockReport } from "./DeadlockReport";
 import type { Environment } from "./Environment";
 import type { EscalationBaseline } from "./EscalationBaseline";
@@ -61,6 +62,12 @@ histograms: Array<ColumnHistogram> | null,
  * digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
  */
 escalations_before: EscalationBaseline | null, 
+/**
+ * pg_stat_statements' eviction rounds an earlier scan counted, set from the scans Culprit keeps: what tells rounds
+ * since then from old ones, since the count outlives restarts and a higher limit. `None` without an earlier scan
+ * that read them.
+ */
+evictions_before: CountBaseline | null, 
 /**
  * How big each table's data was at an earlier scan of the same database, set from the scans Culprit keeps: what
  * tells how fast a table grows. `None` without an earlier scan.

@@ -50,7 +50,16 @@ pub(crate) fn setting_finding(key: &str, severity: Severity, title: String, summ
     f.title = title;
     f.summary = summary;
     f.fix = Some(fix);
+    // A setting's finding reads the setting: once the change is in effect, it no longer fires. A setting read only at
+    // startup says so ([`after_restart`]); a finding that reads a count or a share as well says its own way.
+    f.verify = vec!["Re-scan once the change has taken effect: this finding is gone.".into()];
     f
+}
+
+/// The way to verify a setting the server reads only when it starts: the next scan after the restart (a reboot, on a
+/// managed service) reads it.
+pub(crate) fn after_restart(f: &mut Finding) {
+    f.verify = vec!["Re-scan after the server has restarted with the change: this finding is gone.".into()];
 }
 
 /// Several settings changed together, worded the way [`setting_change`] words one: one sentence naming them all, and
@@ -59,7 +68,16 @@ pub(crate) fn settings_change(server: &ServerInfo, changes: &[(&str, &str)]) -> 
     let Some(((last, last_value), lead)) = changes.split_last() else {
         return SettingChange { how: String::new(), sql: None };
     };
-    let sql: Vec<String> = changes.iter().filter_map(|(n, v)| setting_change(server, n, v).sql).collect();
+    let each: Vec<SettingChange> = changes.iter().map(|(n, v)| setting_change(server, n, v)).collect();
+    let sql: Vec<String> = each.iter().filter_map(|c| c.sql.clone()).collect();
+    // On a managed service a setting kept per database is set with SQL, the others in the platform's control: one
+    // sentence can't say both, so each says its own.
+    let per_database = server.platform().is_some_and(|p| p.settings_control().is_some())
+        && changes.iter().any(|(n, v)| server.engine.spec().database_setting(server, n, v).is_some());
+    if per_database {
+        let how: Vec<String> = each.into_iter().map(|c| c.how).collect();
+        return SettingChange { how: how.join(" "), sql: (!sql.is_empty()).then(|| sql.join("\n")) };
+    }
     let name = match lead {
         [] => last.to_string(),
         _ => format!("{} and {last}", lead.iter().map(|(n, v)| format!("{n} to {v}")).collect::<Vec<_>>().join(", ")),
@@ -104,7 +122,7 @@ fn mssql(snapshot: &Snapshot) -> Vec<Finding> {
         _ => {}
     }
 
-    if value(snapshot, &["is_read_committed_snapshot_on"]).is_some_and(|v| !is_on(v)) {
+    if read_committed_snapshot_off(snapshot) {
         out.push(read_committed_snapshot(snapshot, &db));
     }
 
@@ -243,15 +261,34 @@ fn query_store_read_only(snapshot: &Snapshot, db: &str, reason: u64) -> Option<F
     ))
 }
 
-/// Time reads spent waiting on locks in the workload's window, and whether a deadlock in this database had a read in
-/// it: what row versioning for read committed would remove.
-fn readers_blocked(snapshot: &Snapshot) -> (f64, usize) {
-    let lock_ms: f64 = app_queries(snapshot)
-        .filter(|q| statement_handle(&q.text).starts_with("a read"))
-        .flat_map(|q| q.waits.iter())
-        .filter(|w| category_key(&w.category) == "lock")
-        .map(|w| w.wait_ms)
-        .sum();
+/// Whether READ_COMMITTED_SNAPSHOT is known to be off for this database (SQL Server): reads under read committed then
+/// wait for the locks writes hold on their rows.
+pub(crate) fn read_committed_snapshot_off(snapshot: &Snapshot) -> bool {
+    snapshot.server.engine == Engine::Mssql
+        && value(snapshot, &["is_read_committed_snapshot_on"]).is_some_and(|v| !is_on(v))
+}
+
+/// A read whose lock waits row versioning for read committed would remove: under READ_COMMITTED_SNAPSHOT it reads the
+/// last committed version of the rows instead of waiting for a write's locks. Not a read that locks what it reads
+/// (UPDLOCK, HOLDLOCK): it waits with row versioning on too.
+pub(crate) fn versioning_spares_read(q: &culprit_core::QueryStat) -> bool {
+    statement_handle(&q.text).starts_with("a read")
+        && crate::queries::kind_of(q) != crate::queries::StatementKind::Locking
+}
+
+/// Time reads spent waiting on locks in the workload's window, how many deadlocks in this database had a read in them,
+/// and the read that waited longest (with its wait): what row versioning for read committed would remove.
+fn readers_blocked(snapshot: &Snapshot) -> (f64, usize, Option<(String, f64)>) {
+    let waited: Vec<(String, f64)> = app_queries(snapshot)
+        .filter(|q| versioning_spares_read(q))
+        .map(|q| {
+            let ms = q.waits.iter().filter(|w| category_key(&w.category) == "lock").map(|w| w.wait_ms).sum::<f64>();
+            (query_handle(q), ms)
+        })
+        .filter(|(_, ms)| *ms > 0.0)
+        .collect();
+    let lock_ms: f64 = waited.iter().map(|(_, ms)| ms).sum();
+    let longest = waited.into_iter().max_by(|a, b| a.1.total_cmp(&b.1));
     let deadlocks = snapshot
         .deadlocks
         .as_ref()
@@ -262,11 +299,11 @@ fn readers_blocked(snapshot: &Snapshot) -> (f64, usize) {
                 .count()
         })
         .unwrap_or(0);
-    (lock_ms, deadlocks)
+    (lock_ms, deadlocks, longest)
 }
 
 fn read_committed_snapshot(snapshot: &Snapshot, db: &str) -> Finding {
-    let (lock_ms, deadlocks) = readers_blocked(snapshot);
+    let (lock_ms, deadlocks, longest) = readers_blocked(snapshot);
     let share = snapshot.workload.as_ref().map(|w| w.share(lock_ms)).unwrap_or(0.0);
     // Reads blocked for a real amount of time (a minute in the window, a few percent of it, and the amount rule every
     // time-based finding uses: about a minute a day), or a deadlock a read was part of: that's what the setting removes.
@@ -297,13 +334,46 @@ fn read_committed_snapshot(snapshot: &Snapshot, db: &str) -> Finding {
             format!(" {}", parts.join(" ")),
         )
     } else {
+        // Said by its share of database time as well as its amount: a minute that is a fifth of a quiet database's
+        // time is little in time, not little of what the database does.
+        // Statements' waits come from Query Store's wait capture: a history with none at all recorded can't say reads
+        // didn't wait.
+        let waits_recorded = app_queries(snapshot).any(|q| !q.waits.is_empty());
+        let cost = if lock_ms <= 0.0 && !waits_recorded {
+            " Whether reads wait on locks here isn't known: the query history records no waits.".to_string()
+        } else if lock_ms <= 0.0 {
+            format!(" In {window} no read waited on locks, so it costs nothing now.")
+        } else if share < 0.03 {
+            format!(
+                " In {window} reads waited {} on locks ({} of database time), so it costs little now.",
+                format::duration(lock_ms),
+                format::percent(share)
+            )
+        } else {
+            let amount = snapshot
+                .workload
+                .as_ref()
+                .and_then(|w| w.per_day_measured(lock_ms))
+                .map(|d| format!("only about {} a day", format::duration(d)))
+                .unwrap_or_else(|| "little time in all".into());
+            let which = match &longest {
+                Some((handle, ms)) if *ms >= lock_ms * 0.9 => format!(" (nearly all of it {handle})"),
+                Some((handle, ms)) if *ms >= lock_ms * 0.5 => {
+                    format!(" (most of it {handle}, {})", format::duration(*ms))
+                }
+                _ => String::new(),
+            };
+            format!(
+                " In {window} reads waited {} on locks held by writes{which}: {} of database time, but {amount}. With \
+                 row versioning on, those reads would read the last committed version of the rows instead of waiting.",
+                format::duration(lock_ms),
+                format::percent(share)
+            )
+        };
         (
             Severity::Low,
             "READ_COMMITTED_SNAPSHOT is off: reads would wait for writes on the same rows".to_string(),
-            format!(
-                " In {window} reads waited {} on locks, so it costs little now; it matters once reads and writes meet on the same rows.",
-                format::duration(lock_ms)
-            ),
+            format!("{cost} It matters more as reads and writes meet on the same rows more often."),
         )
     };
     let snapshot_isolation =
@@ -349,27 +419,35 @@ fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();
     let cloud = snapshot.server.is_managed();
     let rpc = value(snapshot, &["random_page_cost"]).and_then(|v| v.parse::<f64>().ok());
-    if let Some(rpc) = rpc.filter(|v| *v >= 4.0 && cloud) {
-        {
-            let mut f = setting_finding(
-                "random_page_cost",
-                Severity::Low,
-                "random_page_cost assumes spinning disks".into(),
-                format!(
-                    "random_page_cost is {rpc}, which tells the planner that random reads cost four times sequential ones. On SSD-backed cloud storage they cost about the same, so the planner picks sequential scans over index scans more often than it should."
-                ),
-                Fix {
-                    summary: "Lower it for this database.".into(),
-                    sql: Some(format!(
-                        "ALTER DATABASE {} SET random_page_cost = 1.1;",
-                        quote(Engine::Postgres, &snapshot.server.database)
-                    )),
-                    cost: None,
-                },
-            );
-            f.confidence = Confidence::Medium;
-            out.push(f);
-        }
+    // The cost of a random read against a sequential one, as this server has them: seq_page_cost need not be 1.
+    let seq = value(snapshot, &["seq_page_cost"]).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
+    if let Some(rpc) = rpc.filter(|v| *v / seq.unwrap_or(1.0) >= 4.0 && cloud) {
+        let ratio = rpc / seq.unwrap_or(1.0);
+        let change = setting_change(&snapshot.server, "random_page_cost", "1.1");
+        // Nothing in a scan's numbers shows the planner choosing a scan for this reason: what the setting can do, not
+        // what it did.
+        let mut f = setting_finding(
+            "random_page_cost",
+            Severity::Low,
+            "random_page_cost assumes spinning disks".into(),
+            format!(
+                "random_page_cost is {}{}, which tells the planner that a random read costs {} times a sequential one. On SSD-backed cloud storage they cost about the same, so the planner may choose a sequential scan where an index scan would be cheaper.",
+                format::count(rpc),
+                seq.filter(|s| (*s - 1.0).abs() > f64::EPSILON)
+                    .map(|s| format!(" and seq_page_cost {}", format::count(s)))
+                    .unwrap_or_default(),
+                format::count(ratio)
+            ),
+            Fix { summary: format!("Lower it. {}", change.how), sql: change.sql, cost: None },
+        );
+        f.confidence = Confidence::Medium;
+        // Culprit's next scan is a new session, so it reads the database's value as the application's new sessions do.
+        f.verify = vec![
+            "Re-scan: random_page_cost reads 1.1 in Culprit's new session, as it will in the application's new \
+             sessions, and this finding is gone."
+                .into(),
+        ];
+        out.push(f);
     }
     if value(snapshot, &["track_io_timing"]).is_some_and(|v| !is_on(v)) {
         let change = setting_change(&snapshot.server, "track_io_timing", "on");
@@ -488,6 +566,12 @@ fn buffer_pool(snapshot: &Snapshot) -> Option<Finding> {
             cost: Some("Uses that much RAM; a pool larger than the free memory makes the server swap or be killed.".into()),
         },
     );
+    // The hit ratio counts since the server started: a pool resized online still carries its misses from before.
+    f.verify = vec![format!(
+        "Re-scan after a day of normal load: reads served from memory should be at 99% or more ({} now). The share \
+         counts since {name} started, so after an online resize it rises slowly; after a restart it counts afresh.",
+        format::percent(hit / 100.0)
+    )];
     f.metrics.push(Metric::new("Reads served from memory", hit / 100.0, culprit_core::Unit::Ratio));
     if let Some(r) = reads {
         f.metrics.push(Metric::new("Pages read from disk per second", r, culprit_core::Unit::Count));
@@ -543,6 +627,36 @@ mod tests {
         set(&mut s, "snapshot_isolation_state_desc", "ON");
         let f = found(&mssql(&s), "config:read-committed-snapshot").cloned().unwrap();
         assert!(f.fix.unwrap().cost.unwrap().contains("ALLOW_SNAPSHOT_ISOLATION is already on"));
+    }
+
+    // Demos MS-12: a read blocked a minute in 6 days is little time but 21% of a quiet database's: said by its share
+    // as well as its amount, with the read named and what row versioning would do for it, never "costs little".
+    #[test]
+    fn rcsi_low_is_worded_by_its_share_as_well_as_its_time() {
+        let mut s = fixture("mssql-demo.json");
+        let w = s.workload.as_mut().unwrap();
+        w.window_hours = 146.66;
+        let read = w.queries.iter_mut().find(|q| q.text.starts_with("SELECT")).unwrap();
+        read.waits.push(WaitStat { category: "Lock".into(), wait_type: None, wait_ms: 71_692.0, tasks: None });
+        w.total_time_ms = 335_668.0;
+        let f = found(&mssql(&s), "config:read-committed-snapshot").cloned().unwrap();
+        assert_eq!(f.severity, Severity::Low, "about 12 s a day");
+        assert!(
+            f.summary.contains("reads waited 1 min on locks held by writes (nearly all of it a read from"),
+            "{}",
+            f.summary
+        );
+        assert!(f.summary.contains("21% of database time, but only about 11.7 s a day"), "{}", f.summary);
+        assert!(f.summary.contains("those reads would read the last committed version"), "{}", f.summary);
+        assert!(!f.summary.contains("costs little"), "{}", f.summary);
+        // No statement recorded any wait: nothing says the reads didn't wait.
+        let mut s = fixture("mssql-demo.json");
+        for q in &mut s.workload.as_mut().unwrap().queries {
+            q.waits.clear();
+        }
+        let f = found(&mssql(&s), "config:read-committed-snapshot").cloned().unwrap();
+        assert!(f.summary.contains("isn't known: the query history records no waits"), "{}", f.summary);
+        assert_eq!(f.verify, vec!["Re-scan once the change has taken effect: this finding is gone.".to_string()]);
     }
 
     // C6: the threshold is moot where nothing goes parallel; RDS words it as its parameter group.

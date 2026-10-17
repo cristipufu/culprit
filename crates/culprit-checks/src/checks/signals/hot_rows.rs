@@ -49,7 +49,7 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
             f.title = format!("Sessions wait {} each on row locks in {table}", format::duration(avg));
             let names: Vec<String> = indexes.iter().map(|(i, _)| i.name.clone()).collect();
             let on = match names.as_slice() {
-                [one] => format!("Since {one} was loaded into memory, sessions waited"),
+                [one] => format!("Since its index {one} was loaded into memory, sessions waited"),
                 _ => format!("Since its indexes were loaded into memory, sessions waited on {}", format::list(&names)),
             };
             let escalated = if escalations > 0.0 {
@@ -61,7 +61,7 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 "{on} {} times for locks on the rows and pages of {table}, {} in all, {} each on average.{escalated} \
                  Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change.",
                 format::count(waits),
-                format::duration(wait_ms),
+                total_wait(wait_ms),
                 format::duration(avg)
             );
             let touching = queries_touching(snapshot, &schema, &table);
@@ -78,7 +78,7 @@ pub fn hot_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 _ => Severity::Low,
             };
             severity_score(&mut f);
-            f.impact.label = format!("{} waiting on locks", format::duration(wait_ms));
+            f.impact.label = format!("{} waiting on locks", total_wait(wait_ms));
             f.confidence = Confidence::High;
             f.metrics = vec![
                 Metric::new("Lock waits", waits, Unit::Count),

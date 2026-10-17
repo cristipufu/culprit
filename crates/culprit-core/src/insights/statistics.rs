@@ -161,21 +161,124 @@ pub(super) fn misestimate(cx: &Cx) -> Vec<Draft> {
 pub(super) fn missing_statistics(cx: &Cx) -> Vec<Draft> {
     cx.nodes
         .iter()
-        // A table variable never has statistics; the table-variable rule says what to do about it.
-        .filter(|n| n.warnings.contains(&PlanWarning::MissingStatistics) && table_variable_of(n).is_none())
+        .filter(|n| warns_of_no_statistics(n))
         .take(1)
         .map(|n| {
             let cols = n.props.get("ColumnsWithNoStatistics").cloned();
+            let table = what(n);
             let mut d = Draft::new("missing-statistics", InsightArea::Statistics, cx.subtree(n), vec![n.id]);
             d.cap = Severity::Medium;
-            d.title = format!("No statistics on {}, so its row counts are guesses", cols.clone().unwrap_or_else(|| format!("some columns of {}", table_leaf(&what(n)))));
+            d.verify = "Explain again: the ColumnsWithNoStatistics warning is gone.".into();
+            // SQL Server creates an index's statistics with the index: on a column the plan seeks an index on, they
+            // exist, and creating statistics changes nothing. What they hold is what's missing.
+            if let Some(stale) = keys_without_statistics(cx, n) {
+                d.title = format!(
+                    "The statistics on {} are out of date, so {} row counts are guesses",
+                    format::list(&stale.columns),
+                    if stale.columns.len() == 1 { "its" } else { "their" }
+                );
+                d.detail = stale_index_statistics_detail(&stale, None);
+                d.fix = format!("Update the statistics on {}, so its index statistics describe the rows it holds.", table_leaf(&table));
+                d.fix_sql = Some(Engine::Mssql.dialect().refresh_statistics(&qualified(Engine::Mssql, &table)));
+                return d;
+            }
+            d.title = format!("No statistics on {}, so its row counts are guesses", cols.clone().unwrap_or_else(|| format!("some columns of {}", table_leaf(&table))));
             d.detail = "Without statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size. SQL Server creates them by itself unless AUTO_CREATE_STATISTICS is off for the database or it can't write to the database (read-only).".into();
             d.fix = "Check the database's settings: if automatic statistics creation is off, turn it back on (it's on by default); if the database is read-only, create the statistics while it is writable (or on the primary, for a readable secondary) so they come with it.".into();
             d.fix_sql = Some("SELECT name, is_auto_create_stats_on, is_read_only\n  FROM sys.databases\n WHERE database_id = DB_ID();\n-- If is_auto_create_stats_on is 0:\n-- ALTER DATABASE CURRENT SET AUTO_CREATE_STATISTICS ON;".into());
-            d.verify = "Explain again: the ColumnsWithNoStatistics warning is gone.".into();
             d
         })
         .collect()
+}
+
+/// An operator SQL Server warned has no statistics on some columns. A table variable never has statistics; the
+/// table-variable rule says what to do about it.
+fn warns_of_no_statistics(n: &PlanNode) -> bool {
+    n.warnings.contains(&PlanWarning::MissingStatistics) && table_variable_of(n).is_none()
+}
+
+/// Columns SQL Server warned have no statistics ("ColumnsWithNoStatistics") that are keys of an index the plan seeks on
+/// them. SQL Server creates an index's statistics with the index, so they exist, but held nothing it could use: they
+/// need updating, and creating statistics changes nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StaleIndexStatistics {
+    /// The table, as the plan names it (`app.support_escalations`).
+    pub table: String,
+    /// The columns SQL Server named.
+    pub columns: Vec<String>,
+    /// The indexes they are keys of.
+    pub indexes: Vec<String>,
+    /// The rows the table held when the plan was compiled (SQL Server's TableCardinality), where the plan says.
+    pub table_rows: Option<f64>,
+}
+
+/// The index keys a plan warns have no statistics, if every column it names is one (see [`StaleIndexStatistics`]).
+pub fn stale_index_statistics(plan: &Plan) -> Option<StaleIndexStatistics> {
+    let cx = Cx::new(plan);
+    let n = cx.nodes.iter().copied().find(|n| warns_of_no_statistics(n))?;
+    keys_without_statistics(&cx, n)
+}
+
+fn keys_without_statistics(cx: &Cx, n: &PlanNode) -> Option<StaleIndexStatistics> {
+    let table = n.object.clone()?;
+    let columns: Vec<String> = n
+        .props
+        .get("ColumnsWithNoStatistics")?
+        .split(", ")
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+        .collect();
+    if columns.is_empty() {
+        return None;
+    }
+    let mut indexes = columns.iter().map(|c| index_seeked_on(cx, &table, c)).collect::<Option<Vec<_>>>()?;
+    indexes.dedup();
+    let leaf = table_leaf(&table);
+    let table_rows = n.table_rows.or_else(|| {
+        cx.nodes
+            .iter()
+            .filter(|m| m.object.as_deref().is_some_and(|o| table_leaf(o).eq_ignore_ascii_case(&leaf)))
+            .find_map(|m| m.table_rows)
+    });
+    Some(StaleIndexStatistics { table, columns, indexes, table_rows })
+}
+
+/// What a warning of no statistics on an index's keys means. `catalog` is what the database's catalog says of those
+/// statistics now (when they were updated, from how many rows, the changes since), where a scan read it; without it,
+/// the plan says only what SQL Server found in them.
+pub fn stale_index_statistics_detail(s: &StaleIndexStatistics, catalog: Option<&str>) -> String {
+    let one = s.columns.len() == 1;
+    let why = match catalog {
+        Some(said) => said.trim_end_matches('.').to_string(),
+        None => format!(
+            "That happens to statistics built while the table was empty or nearly so, and not updated since{}",
+            s.table_rows
+                .map(|rows| format!("; the table held {} when this plan was compiled", plural(rows, "row", "rows")))
+                .unwrap_or_default()
+        ),
+    };
+    format!(
+        "{} {} {}, so {} statistics (SQL Server creates an index's statistics with the index), but SQL Server found nothing in them it could use. {why}. Without usable statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size.",
+        format::list(&s.columns),
+        if one { "is a key of" } else { "are keys of" },
+        format::list(&s.indexes),
+        if one { "it has" } else { "they have" },
+    )
+}
+
+/// The index of `table` the plan seeks on `column`, which makes the column that index's key. SQL Server writes each of a
+/// seek's conditions key first: `[id] = [db].[app].[orders].[id]`.
+fn index_seeked_on(cx: &Cx, table: &str, column: &str) -> Option<String> {
+    let leaf = table_leaf(table);
+    cx.nodes.iter().find_map(|n| {
+        let same_table = n.object.as_deref().is_some_and(|o| table_leaf(o).eq_ignore_ascii_case(&leaf));
+        let keyed = n.seek_predicate.as_deref().is_some_and(|seek| {
+            top_level_and(seek)
+                .into_iter()
+                .any(|part| identifiers(part).first().is_some_and(|k| k.eq_ignore_ascii_case(column)))
+        });
+        n.index.as_deref().filter(|_| same_table && keyed).map(table_leaf)
+    })
 }
 
 pub(super) fn index_ignored(cx: &Cx) -> Vec<Draft> {

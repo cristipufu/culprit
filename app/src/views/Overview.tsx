@@ -76,6 +76,9 @@ export function Overview({ report }: { report: Report }) {
   // Chips count what their filter would list: dismissed findings only while they're shown.
   const listed = showDismissed ? report.findings : report.findings.filter((f) => !dismissed[f.id]);
   const current = report.findings.find((f) => f.id === selected) ?? visible[0] ?? null;
+  // A source that keeps running totals (pg_stat_statements) is dated by Culprit's scans: the first one bounds when a
+  // statement that hasn't run since last ran.
+  const firstScan = report.snapshot.workload && !report.snapshot.workload.windowed ? (report.snapshot.workload.timeline?.starts[0] ?? null) : null;
 
   const move = (delta: number) => {
     if (visible.length === 0) return;
@@ -132,11 +135,11 @@ export function Overview({ report }: { report: Report }) {
           {visible.map((f, i) => (
             <div key={f.id}>
               {f.inactive && !visible[i - 1]?.inactive && (
-                <div className="group-label eyebrow" title="These queries stopped running before the scan's data ends, most likely changed by a deploy">
+                <div className="group-label eyebrow" title="These queries stopped running before the scan's data ends: a deploy may have changed or fixed them">
                   Stopped running
                 </div>
               )}
-              <FindingRow finding={f} selected={f.id === current?.id} dismissed={!!dismissed[f.id]} />
+              <FindingRow finding={f} selected={f.id === current?.id} dismissed={!!dismissed[f.id]} firstScan={firstScan} />
             </div>
           ))}
           {visible.length === 0 && (
@@ -282,7 +285,15 @@ function headlineTail(report: Report): string {
   return "Workload statistics are unavailable, so findings come from schema and index statistics.";
 }
 
-function FindingRow({ finding, selected, dismissed }: { finding: Finding; selected: boolean; dismissed: boolean }) {
+/** When an inactive finding's statements last ran. Unchanged since Culprit's first scan, that scan is only the latest
+ * they can have run: they may have stopped long before, so it isn't "last ran". */
+function lastRan(lastSeen: string, firstScan: string | null): string {
+  const first = firstScan != null ? Date.parse(firstScan) : NaN;
+  if (Math.abs(first - Date.parse(lastSeen)) < 1000) return `Not run since Culprit's first scan, ${ago(firstScan)}`;
+  return `Last ran ${ago(lastSeen)}`;
+}
+
+function FindingRow({ finding, selected, dismissed, firstScan }: { finding: Finding; selected: boolean; dismissed: boolean; firstScan: string | null }) {
   const share = finding.impact.db_time_share;
   const fill = share != null ? Math.sqrt(share) : finding.impact.score / 100;
   return (
@@ -299,7 +310,7 @@ function FindingRow({ finding, selected, dismissed }: { finding: Finding; select
         </span>
       </span>
       <span className="meta">
-        {finding.inactive && finding.last_seen ? `Last ran ${ago(finding.last_seen)} · ` : ""}
+        {finding.inactive && finding.last_seen ? `${lastRan(finding.last_seen, firstScan)} · ` : ""}
         {CATEGORY_LABEL[finding.category]} · {finding.impact.label}
         {finding.subject.kind !== "query" ? ` · ${finding.subject.name}` : ""}
       </span>

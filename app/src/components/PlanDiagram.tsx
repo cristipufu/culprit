@@ -6,7 +6,7 @@ import type { PlanNode } from "../gen/PlanNode";
 import { planShares } from "../lib/actual";
 import { duration, percent } from "../lib/format";
 import { can, serverName } from "../lib/engines";
-import { allNodes, costBasis as basis, cost, insightsByNode, isWrapper, rowError, rows, rowsOut } from "../lib/plan-format";
+import { allNodes, costBasis as basis, cost, estRowsForRuns, insightsByNode, isWrapper, misestimate, noShareReason, rows, rowsOut, uncostedSteps } from "../lib/plan-format";
 import { ActualSummary } from "./ActualSummary";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
@@ -40,7 +40,7 @@ export const costBasis = basis;
 
 /** A card on the canvas: an operator, with the pass-through operators above it folded into its edge label. */
 type Box = { node: PlanNode; x: number; y: number; via: string[] };
-type Fold = { id: string; parent: number; count: number; share: number; x: number; y: number };
+type Fold = { id: string; parent: number; count: number; share: number | null; x: number; y: number };
 
 function subtreeSize(n: PlanNode): number {
   return 1 + n.children.reduce((s, c) => s + subtreeSize(c), 0);
@@ -80,7 +80,7 @@ function drawn(n: PlanNode, total: number, keep: Set<number>): { node: PlanNode;
 /** Tidy top-down layout: leaves take consecutive slots, parents center over their children. Cheap subtrees fold into one
  * pill (only where the plan weighs its steps: without estimates nothing is cheap); wrappers that only pass rows on become
  * edge labels. */
-function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<number>, weighed: boolean) {
+function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<number>, weighed: boolean, subtreeShare: (n: PlanNode) => number | null) {
   const boxes: Box[] = [];
   const folds: Fold[] = [];
   const parentOf = new Map<number, number>();
@@ -95,11 +95,13 @@ function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<
     });
     if (hidden.length > 0) {
       const fx = slot++;
+      // Their share only where the plan can state each one's.
+      const shares = hidden.map((k) => subtreeShare(k.node));
       folds.push({
         id: `fold-${n.id}`,
         parent: n.id,
         count: hidden.reduce((s, k) => s + subtreeSize(k.node) + k.via.length, 0),
-        share: hidden.reduce((s, k) => s + k.node.subtree_cost, 0) / total,
+        share: shares.every((v) => v != null) ? shares.reduce((s: number, v) => s + (v ?? 0), 0) : null,
         x: fx,
         y: depth + 1,
       });
@@ -136,20 +138,29 @@ export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) =
       </div>
     );
   }
-  const own = (n: PlanNode) => shares.own.get(n.id) ?? 0;
+  // Only shares the plan can state: none beside a step it puts no cost on (MySQL's filesort), nor on a default guess.
+  const own = (n: PlanNode) => shares.stated.get(n.id) ?? 0;
   const top = allNodes(plan.root)
     .filter((n) => own(n) > 0)
     .sort((a, b) => own(b) - own(a))
     .slice(0, 4);
+  if (top.length === 0 && shares.note) {
+    return (
+      <div className="cost-strip">
+        <div className="eyebrow">Where the cost goes: {shares.note}</div>
+      </div>
+    );
+  }
   const rest = Math.max(0, 1 - top.reduce((s, n) => s + own(n), 0));
   return (
     <div className="cost-strip">
       <div className="eyebrow">{shares.basis === "time" ? `Where the ${duration(shares.total)} went` : "Where the cost goes"}</div>
       <div className="cost-bar">
-        {top.map((n, i) => (
+        {top.map((n) => (
           <button
             key={n.id}
-            className={i === 0 ? "hottest" : ""}
+            // Outlined only for the step where the work is (never an exchange), in a plan that does real work.
+            className={n.id === shares.hottest?.id ? "hottest" : ""}
             style={{ flex: own(n), background: heat(own(n)) === "transparent" ? "var(--sunken)" : heat(own(n)) }}
             title={`${n.op} ${percent(own(n))}`}
             onClick={() => onPick(n.id)}
@@ -163,9 +174,12 @@ export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) =
             <OpIcon node={n} size={12} />
             <b>{percent(own(n))}</b> {n.op}
             {n.object && <span className="mono muted"> {n.object.split(".").pop()}</span>}
+            {/* An exchange's cost is the charge for passing rows between threads: never the step where the work is. */}
+            {n.kind === "parallelism" && <span className="muted"> · passing rows between workers</span>}
           </button>
         ))}
       </div>
+      {shares.note && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{shares.note}</div>}
     </div>
   );
 }
@@ -199,15 +213,19 @@ export function PlanDiagram(props: {
   const total = basis(plan);
   // Measured plans rank operators by their own time; estimated plans by cost.
   const shares = useMemo(() => planShares(plan), [plan]);
-  const shareOf = (n: PlanNode) => shares.own.get(n.id) ?? 0;
+  // The share a person reads: none where the plan can't state one (beside a step it puts no cost on, on a default guess).
+  const shareOf = (n: PlanNode) => shares.stated.get(n.id) ?? null;
   const planCost = plan.total_cost || plan.root.subtree_cost;
   const estimates = can(plan.engine, "plan_estimates") || shares.basis === "time";
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
-  const hottest = useMemo(() => nodes.reduce((a, b) => (shareOf(b) > shareOf(a) ? b : a), plan.root), [nodes, plan.root, shares]);
-  const target = selectedId ?? focus ?? hottest.id;
-  // Operators that must stay visible: marked in a comparison, or named by an insight.
-  const keep = useMemo(() => new Set<number>([...(marks?.keys() ?? []), ...flagged.keys()]), [marks, flagged]);
+  // The core's hottest step (never an exchange such as Gather Merge), only in a plan that does real work and where its
+  // share can be stated: a point lookup's costliest step isn't where its time goes.
+  const hottest = shares.hottest;
+  const target = selectedId ?? focus ?? hottest?.id ?? plan.root.id;
+  // Operators that must stay visible: marked in a comparison, named by an insight, or doing work the plan puts no cost on
+  // (a filesort with no cost of its own isn't cheap).
+  const keep = useMemo(() => new Set<number>([...(marks?.keys() ?? []), ...flagged.keys(), ...uncostedSteps(plan).map((n) => n.id)]), [marks, flagged, plan]);
   const [expanded, setExpanded] = useState<Set<number>>(() => {
     const open = pathTo(plan.root, target);
     keep.forEach((id) => pathTo(plan.root, id).forEach((n) => open.add(n)));
@@ -224,7 +242,10 @@ export function PlanDiagram(props: {
   const [fitted, setFitted] = useState(initialZoom != null || props.zoom != null);
   const scroller = useRef<HTMLDivElement>(null);
   const hot = useMemo(() => pathTo(plan.root, target), [plan.root, target]);
-  const { boxes, folds, parentOf, rootVia, width, height } = useMemo(() => layout(plan.root, total, expanded, keep, estimates), [plan.root, total, expanded, keep, estimates]);
+  const { boxes, folds, parentOf, rootVia, width, height } = useMemo(
+    () => layout(plan.root, total, expanded, keep, estimates, (n) => shares.statedSubtree.get(n.id) ?? null),
+    [plan.root, total, expanded, keep, estimates, shares],
+  );
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
   const maxRows = Math.max(1, ...nodes.map(rowsOut));
   const stroke = (r: number) => 1.5 + 4.5 * (Math.log10(r + 1) / Math.log10(maxRows + 1));
@@ -369,7 +390,8 @@ export function PlanDiagram(props: {
                   x={px(b.x)}
                   y={py(b.y)}
                   hot={hot.has(b.node.id)}
-                  hottest={b.node.id === hottest.id && shareOf(b.node) >= 0.05}
+                  hottest={b.node.id === hottest?.id && (shareOf(b.node) ?? 0) >= 0.05}
+                  noShare={shares.basis === "cost" ? noShareReason(plan, b.node) : null}
                   selected={b.node.id === selected}
                   mark={marks?.get(b.node.id)}
                   tint={tints?.get(b.node.id)}
@@ -389,7 +411,8 @@ export function PlanDiagram(props: {
                     if (parent) setExpanded((prev) => new Set([...prev, ...parent.children.map((c) => drawn(c, total, keep).node.id)]));
                   }}
                 >
-                  +{f.count} cheap operator{f.count > 1 ? "s" : ""} · {percent(f.share)}
+                  +{f.count} cheap operator{f.count > 1 ? "s" : ""}
+                  {f.share != null && ` · ${percent(f.share)}`}
                 </button>
               ))}
             </div>
@@ -397,7 +420,15 @@ export function PlanDiagram(props: {
         </div>
       </div>
       {selectedNode && props.showProps !== false && (
-        <NodeDetails estimates={estimates} node={selectedNode} share={shareOf(selectedNode)} subtreeShare={shares.subtree.get(selectedNode.id) ?? selectedNode.subtree_cost / total} insights={flagged.get(selectedNode.id)} />
+        <NodeDetails
+          estimates={estimates}
+          actual={plan.kind === "actual"}
+          node={selectedNode}
+          share={shareOf(selectedNode)}
+          subtreeShare={shares.statedSubtree.get(selectedNode.id) ?? null}
+          noShare={shares.basis === "cost" ? noShareReason(plan, selectedNode) : null}
+          insights={flagged.get(selectedNode.id)}
+        />
       )}
     </div>
   );
@@ -425,7 +456,10 @@ function ZoomControls({ zoom, setZoom, fit }: { zoom: number; setZoom: (f: (z: n
 
 function PlanCard(props: {
   node: PlanNode;
-  share: number;
+  /** Its own share; null where the plan can't state one. */
+  share: number | null;
+  /** Why it has none. */
+  noShare?: string | null;
   x: number;
   y: number;
   hot: boolean;
@@ -440,13 +474,16 @@ function PlanCard(props: {
   estimates: boolean;
   onSelect: () => void;
 }) {
-  const { node, share, x, y, hot, hottest, selected, mark, insights, tint, ownMs, estimates, onSelect } = props;
-  const err = rowError(node);
+  const { node, x, y, hot, hottest, selected, mark, insights, tint, ownMs, estimates, onSelect, noShare } = props;
+  const share = props.share ?? 0;
+  // Shown as off only where the core flagged it (10× on 100+ rows, not an operator stopped early).
+  const mis = node.warnings.includes("misestimate") ? misestimate(node) : null;
   const table = node.object?.split(".").pop();
   const worst = insights?.[0];
   const tip = [
     node.op,
     node.predicate ? `filter ${shortPredicate(node.predicate)}` : node.seek_predicate ? `seek ${shortPredicate(node.seek_predicate)}` : "",
+    estimates && props.share == null ? noShare ?? "" : "",
     ...(insights ?? []).map((i) => `• ${i.title}`),
   ]
     .filter(Boolean)
@@ -459,7 +496,7 @@ function PlanCard(props: {
       style={{ left: x, top: y, width: CARD_W, height: CARD_H, ["--heat" as string]: heat(share), ["--share" as string]: `${Math.max(share > 0 ? 3 : 0, Math.min(100, share * 100))}%` }}
       onClick={onSelect}
       title={tip}
-      aria-label={`${node.op}${table ? ` on ${table}` : ""}, ${percent(share)} of the work${worst ? `, ${insights!.length} issue${insights!.length > 1 ? "s" : ""}` : ""}`}
+      aria-label={`${node.op}${table ? ` on ${table}` : ""}${estimates && props.share != null ? `, ${percent(share)} of the work` : ""}${worst ? `, ${insights!.length} issue${insights!.length > 1 ? "s" : ""}` : ""}`}
     >
       <span className="pc-top">
         <span className="pc-icon">
@@ -471,7 +508,7 @@ function PlanCard(props: {
         {estimates && (
           <span className="pc-share">
             {hottest && <Flame size={11} color="var(--heat-4)" />}
-            {percent(share)}
+            {props.share != null ? percent(share) : "—"}
           </span>
         )}
       </span>
@@ -479,8 +516,8 @@ function PlanCard(props: {
       <span className="pc-rows">
         {node.act_rows != null ? (
           <>
-            {rows(node.est_rows * Math.max(1, node.est_executions))} → <b>{rows(node.act_rows)}</b>
-            {err && err.factor >= 10 && <span className="mis">×{rows(err.factor)}</span>}
+            {rows(estRowsForRuns(node))} → <b>{rows(node.act_rows)}</b>
+            {mis != null && <span className="mis">×{rows(Math.abs(mis))}</span>}
           </>
         ) : estimates ? (
           <>{rows(node.est_rows * Math.max(1, node.est_executions))} est.</>

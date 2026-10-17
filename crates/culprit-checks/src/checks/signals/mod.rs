@@ -94,13 +94,14 @@ fn is_mariadb(snapshot: &Snapshot) -> bool {
     snapshot.server.is_mariadb()
 }
 
-/// "in the last 7 days" for windowed sources, "since its statistics began 3 days ago" otherwise.
+/// "in the last 7 days" for windowed sources, "since its statistics began 1277 days ago" otherwise: spans in the words
+/// every window is said in ([`culprit_core::span_words`]), never "1277.0 days".
 fn window_phrase(snapshot: &Snapshot) -> String {
     match snapshot.workload.as_ref() {
         Some(w) if w.log.is_some() => format!("over {}", w.window_phrase()),
-        Some(w) if w.windowed => format!("in the last {}", format::duration(w.window_hours * 3_600_000.0)),
+        Some(w) if w.windowed => format!("in the last {}", culprit_core::span_words(w.window_hours)),
         Some(w) if w.window_hours > 0.0 => {
-            format!("since its statistics began {} ago", format::duration(w.window_hours * 3_600_000.0))
+            format!("since its statistics began {} ago", culprit_core::span_words(w.window_hours))
         }
         _ => "since its statistics began".into(),
     }
@@ -190,6 +191,17 @@ fn is_write(q: &QueryStat) -> bool {
 
 fn lock_ms(q: &QueryStat) -> f64 {
     q.waits.iter().filter(|w| category_key(&w.category) == "lock").map(|w| w.wait_ms).sum()
+}
+
+/// A total wait to the second under an hour: "1 min 29 s", where `format::duration` would round 88,960 ms down to
+/// "1 min" next to an average that says otherwise, and 152 s up to "3 min".
+pub(crate) fn total_wait(ms: f64) -> String {
+    let seconds = (ms / 1_000.0).round();
+    if !(60.0..3_600.0).contains(&seconds) {
+        return format::duration(ms);
+    }
+    let (minutes, rest) = ((seconds / 60.0).floor(), seconds % 60.0);
+    if rest == 0.0 { format!("{minutes:.0} min") } else { format!("{minutes:.0} min {rest:.0} s") }
 }
 
 fn severity_score(f: &mut Finding) {

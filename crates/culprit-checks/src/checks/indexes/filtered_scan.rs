@@ -109,8 +109,9 @@ pub(crate) fn scan_rows(snapshot: &Snapshot, node: &culprit_core::PlanNode, sche
                 && i.filter.is_some()
         })
     });
+    // Per scan, as the table's size below is: callers count the scans. `rows_read` is already over all of them.
     if filtered {
-        return node.rows_read;
+        return node.rows_read.map(|read| read / node.runs());
     }
     node.table_rows.or_else(|| snapshot.table(schema, table).and_then(|t| t.rows))
 }
@@ -127,12 +128,31 @@ pub(super) fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows:
     }
     let examined = q.logical_reads.map(|r| r / q.executions).unwrap_or(0.0);
     let returned = q.rows.map(|r| r / q.executions)?;
+    // Under a LIMIT a run returns at most that many of the rows it keeps. Well under it on average, at most one run in
+    // ten can have stopped there: the rest returned every row they kept, and are judged as without one. A LIMIT whose
+    // count isn't known (the digest's `LIMIT ?`) leaves the runs unable to say.
+    if culprit_core::sql::has_limit(&q.text) && limit_rows(q).is_none_or(|limit| returned > limit * WELL_UNDER_LIMIT) {
+        return None;
+    }
     (examined >= table_rows * 0.5).then_some(returned <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
 }
 
+/// Rows returned a run, as a share of the LIMIT, under which at most one run in ten can have returned the LIMIT's count.
+const WELL_UNDER_LIMIT: f64 = 0.1;
+
+/// The row count a statement's LIMIT asks for: a literal in its text ([`culprit_core::sql::limit_count`]), or, where
+/// the engine keeps the text with a placeholder (MySQL's digest `LIMIT ?`), the count the provider read from the sample
+/// it planned ([`culprit_core::insights::LIMIT_ROWS`]).
+fn limit_rows(q: &QueryStat) -> Option<f64> {
+    culprit_core::sql::limit_count(&q.text)
+        .or_else(|| q.plan.as_ref()?.props.get(culprit_core::insights::LIMIT_ROWS)?.trim().parse::<f64>().ok())
+        .filter(|n| *n > 0.0)
+}
+
 /// Whether a statement returns every row its filter keeps, so that rows returned measure the filter: a SELECT from one
-/// table, without aggregates, GROUP BY, DISTINCT, LIMIT (or TOP, FETCH), HAVING, a set operation or a subquery. Any of
-/// those returns fewer rows than the filter keeps, and a join can return fewer or more.
+/// table, without aggregates, GROUP BY, DISTINCT, TOP or FETCH, HAVING, a set operation or a subquery. Any of those
+/// returns fewer rows than the filter keeps, and a join can return fewer or more. A LIMIT is judged by
+/// [`measured_keeps_few`], against its count.
 pub(super) fn returns_every_kept_row(text: &str) -> bool {
     const AGGREGATES: [&str; 14] = [
         "COUNT",
@@ -163,10 +183,7 @@ pub(super) fn returns_every_kept_row(text: &str) -> bool {
     words.first() == Some(&"SELECT")
         && words.iter().filter(|w| **w == "SELECT").count() == 1
         && !words.iter().any(|w| {
-            matches!(
-                *w,
-                "GROUP" | "DISTINCT" | "LIMIT" | "TOP" | "FETCH" | "HAVING" | "UNION" | "INTERSECT" | "EXCEPT" | "JOIN"
-            )
+            matches!(*w, "GROUP" | "DISTINCT" | "TOP" | "FETCH" | "HAVING" | "UNION" | "INTERSECT" | "EXCEPT" | "JOIN")
         })
         && !AGGREGATES.iter().any(|a| calls(a))
         && culprit_core::sql::tables_in(text, Engine::Mysql).len() == 1
@@ -267,20 +284,22 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
             && !fk.columns.is_empty()
             && fk.columns.iter().all(|c| g.keys.iter().any(|k| k.eq_ignore_ascii_case(c)))
     });
+    let one = queries.len() == 1;
+    // A table the catalog no longer lists: the plans read it before it was dropped or renamed.
+    let gone = table_gone(snapshot, &g.table, &queries);
     f.summary = format!(
-        "{} read every row of {} ({} rows) and keep only those matching `{}`. {}, so the database has no faster way in. Together they account for {} of database time.{}",
-        if queries.len() == 1 {
-            "One query plans to".to_string()
-        } else {
-            format!("{} queries plan to", queries.len())
-        },
+        "{} read every row of {} ({} rows) and keep only those matching `{}`. {}, so the database {} no faster way in. {} for {} of database time.{}",
+        if one { "One query plans to".to_string() } else { format!("{} queries plan to", queries.len()) },
         table_name,
         format::count(g.rows),
         g.predicate.trim(),
         match disabled {
             Some(i) => format!("Only {}, which is disabled, starts with {}", i.name, key_text),
+            None if gone => format!("No index started with {key_text}"),
             None => format!("No index starts with {key_text}"),
         },
+        if gone { "had" } else { "has" },
+        if one { "It accounts" } else { "Together they account" },
         format::percent(impact.share),
         fk.map(|fk| format!(
             " {} is also the foreign key to {}, so deletes there scan this table too.",
@@ -288,6 +307,9 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
         ))
         .unwrap_or_default()
     );
+    if gone {
+        f.summary.push_str(&format!(" {table_name} isn't in the database's catalog any more."));
+    }
     f.queries = g
         .queries
         .iter()
@@ -301,19 +323,37 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     f.metrics.push(Metric::new("Queries", queries.len() as f64, Unit::Count));
     f.fix = Some(match disabled {
         Some(i) => widen_fix(snapshot, i, &[]),
-        None => Fix {
-            summary: format!("Create an index on {} so these queries seek instead of scanning.", key_text),
-            sql: Some(create_index_sql(snapshot, &g.schema, &g.table, &g.keys, &[])),
-            cost: write_cost(snapshot, &g.schema, &g.table),
-        },
-    });
-    f.verify = vec![
-        format!(
-            "Explain one of the queries again: the scan of {} should become an index seek/scan on {}.",
-            g.table,
-            disabled.map_or("the new index".to_string(), |i| i.name.clone())
+        None => new_index_fix(
+            snapshot,
+            &g.schema,
+            &g.table,
+            &g.keys,
+            &[],
+            &queries,
+            format!(
+                "Create an index on {} so {} instead of scanning.",
+                key_text,
+                if one { "the query seeks" } else { "these queries seek" }
+            ),
         ),
-        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower.".into(),
-    ];
+    });
+    f.verify = if gone {
+        vec![format!(
+            "Nothing to check: {table_name} is gone, and this finding goes once no captured statement reads it."
+        )]
+    } else {
+        vec![
+            format!(
+                "Explain {} again: the scan of {} should become an index seek/scan on {}.",
+                if one { "the query" } else { "one of the queries" },
+                g.table,
+                disabled.map_or("the new index".to_string(), |i| i.name.clone())
+            ),
+            format!(
+                "Re-scan after the workload has run: this finding should be gone and {} share of database time lower.",
+                if one { "the query's" } else { "the queries'" }
+            ),
+        ]
+    };
     f
 }

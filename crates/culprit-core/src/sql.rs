@@ -877,6 +877,25 @@ pub fn mark_mssql_statements(text: &str, marker: &str) -> String {
 /// `COMMIT`, `SAVEPOINT x`, `END`), session settings (`SET`, `USE`, `RESET`, `DISCARD ALL`), `SHOW`, `PRAGMA`, and the
 /// keep-alive `SELECT 1` a pool checks a connection with. They count in the totals (a slow COMMIT is time the database
 /// spent), but they aren't queries to tune or to batch: a loop in the application doesn't send them.
+/// The statement past the parameter declarations Query Store keeps in front of a parameterized one
+/// (`(@P1 nvarchar(4000))UPDATE …` is an UPDATE); any other text as it is.
+pub fn without_parameter_list(text: &str) -> &str {
+    let text = text.trim_start();
+    let Some(inside) = text.strip_prefix('(').filter(|rest| rest.trim_start().starts_with('@')) else {
+        return text;
+    };
+    let mut depth = 1;
+    for (at, c) in inside.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 1 => return &inside[at + 1..],
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    text
+}
+
 pub fn is_session_statement(text: &str) -> bool {
     let mut rest = text.trim_start();
     // Leading comments: `/* ping */ SELECT 1`, a driver's `-- keep-alive`.
@@ -1018,8 +1037,42 @@ fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// What follows a statement's last LIMIT (`50`, `?`, `10, 50`, `50 OFFSET 10`), upper-cased; `None` without one.
+fn limit_clause(text: &str) -> Option<String> {
+    let upper = text.to_ascii_uppercase();
+    let at = upper.rmatch_indices("LIMIT").map(|(at, _)| at).find(|at| {
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '`';
+        !upper[..*at].chars().next_back().is_some_and(ident) && !upper[at + 5..].chars().next().is_some_and(ident)
+    })?;
+    Some(upper[at + 5..].trim().to_string())
+}
+
+/// Whether the statement has a LIMIT, whatever its count.
+pub fn has_limit(text: &str) -> bool {
+    limit_clause(text).is_some()
+}
+
+/// The row count a statement's last LIMIT asks for, where its text writes it (`LIMIT 50`, MySQL's `LIMIT 10, 50`,
+/// `LIMIT 50 OFFSET 10`); `None` without a LIMIT, or for a placeholder (`LIMIT ?`, `LIMIT $1`).
+pub fn limit_count(text: &str) -> Option<f64> {
+    let clause = limit_clause(text)?;
+    let count = clause.rsplit_once(',').map_or(clause.as_str(), |(_, n)| n).split_whitespace().next()?;
+    count.parse::<f64>().ok().filter(|n| *n > 0.0)
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_limit_says_its_count_where_the_text_writes_it() {
+        assert_eq!(limit_count("SELECT * FROM orders WHERE promo_code = 'X' LIMIT 50"), Some(50.0));
+        assert_eq!(limit_count("SELECT * FROM orders LIMIT 10, 50"), Some(50.0));
+        assert_eq!(limit_count("select * from orders limit 50 offset 10"), Some(50.0));
+        assert_eq!(limit_count("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?"), None);
+        assert!(has_limit("SELECT * FROM `orders` WHERE `promo_code` = ? LIMIT ?"));
+        assert_eq!(limit_count("SELECT rate_limit FROM plans"), None);
+        assert!(!has_limit("SELECT rate_limit, limit_x FROM plans"));
+    }
 
     #[test]
     fn session_statements_are_the_drivers_not_the_applications() {
@@ -1492,5 +1545,16 @@ mod tests {
         ] {
             assert_eq!(mark(sql), sql);
         }
+    }
+
+    #[test]
+    fn a_parameterized_statement_starts_after_its_parameter_list() {
+        assert_eq!(
+            without_parameter_list("(@par0 nvarchar(4000))update [app].[conversations] set n = n + 1"),
+            "update [app].[conversations] set n = n + 1"
+        );
+        assert_eq!(without_parameter_list("  (@P1 int,@P2 decimal(10, 2))SELECT 1"), "SELECT 1");
+        assert_eq!(without_parameter_list("(SELECT 1) UNION (SELECT 2)"), "(SELECT 1) UNION (SELECT 2)");
+        assert_eq!(without_parameter_list("(@P1 int"), "(@P1 int");
     }
 }

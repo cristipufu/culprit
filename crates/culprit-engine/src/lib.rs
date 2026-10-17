@@ -287,7 +287,15 @@ impl Workspace {
         let snapshot = value.get("snapshot").cloned().unwrap_or(value);
         let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
             .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
-        Ok(culprit_checks::analyze_with(snapshot, &self.extra_checks))
+        Ok(self.reread(snapshot))
+    }
+
+    /// A saved scan as this version of Culprit reads it: its plans parsed again from the text they were captured as
+    /// ([`plans::reparse_saved`]) and its checks run again, so a fix to a parser or a check reaches the scans saved
+    /// before it, and what a person reads in an old scan is what a scan taken now would say about the same data.
+    fn reread(&self, mut snapshot: culprit_core::Snapshot) -> Report {
+        plans::reparse_saved(&mut snapshot);
+        culprit_checks::analyze_with(snapshot, &self.extra_checks)
     }
 
     pub fn paths(&self) -> &Paths {
@@ -739,6 +747,11 @@ impl Workspace {
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
+        // pg_stat_statements' evictions are counted since its last reset: the previous scan's count tells new ones.
+        snapshot.evictions_before = previous
+            .as_ref()
+            .filter(|p| history::same_database(p, &snapshot))
+            .and_then(|p| culprit_core::CountBaseline::from_setting(p, &snapshot, trends::EVICTIONS_SETTING));
         // How big each table was a day or more ago tells how fast it grows.
         snapshot.sizes_before = history::growth_baseline(&dir, &snapshot);
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
@@ -747,9 +760,10 @@ impl Workspace {
         Ok(report)
     }
 
-    /// The newest saved report, or the newest one scanned with a window of `window_minutes` when given.
+    /// The newest saved report, or the newest one scanned with a window of `window_minutes` when given, read the way a
+    /// scan taken now would read the same data ([`Workspace::reread`]).
     pub fn latest_report(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<Report>> {
-        reports::latest(&self.paths.reports_dir(name), window_minutes)
+        Ok(reports::latest(&self.paths.reports_dir(name), window_minutes)?.map(|r| self.reread(r.snapshot)))
     }
 
     pub fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
@@ -772,7 +786,13 @@ impl Workspace {
         let recheck = |r: Report| {
             culprit_checks::analyze_with(culprit_core::redact::redact_snapshot(&r.snapshot), &self.extra_checks)
         };
-        let load = |name: &str, id: &str| reports::load(&self.paths.reports_dir(name).join(format!("{id}.json")));
+        // Plans are read again from their text before the redaction drops it.
+        let load = |name: &str, id: &str| {
+            reports::load(&self.paths.reports_dir(name).join(format!("{id}.json"))).map(|mut r| {
+                plans::reparse_saved(&mut r.snapshot);
+                r
+            })
+        };
         let mut current = match (report, name) {
             (Some(path), _) => self.analyze_file(path)?,
             (None, Some(name)) => {
@@ -819,6 +839,15 @@ impl Workspace {
             current.snapshot.escalations_before =
                 culprit_core::EscalationBaseline::from_scan(&previous.snapshot, &current.snapshot);
         }
+        if current.snapshot.evictions_before.is_none()
+            && let Some(previous) = &previous
+        {
+            current.snapshot.evictions_before = culprit_core::CountBaseline::from_setting(
+                &previous.snapshot,
+                &current.snapshot,
+                trends::EVICTIONS_SETTING,
+            );
+        }
         let current = recheck(current);
         Ok(with_details(&current, culprit_checks::digest(&current, previous.as_ref(), top, top_queries)))
     }
@@ -830,13 +859,12 @@ impl Workspace {
             Error::not_found(format!("No saved report for '{name}'"))
                 .with_hint(format!("Run `culprit scan {name}` first"))
         })?;
-        Ok(self.index_advice_for(report))
+        Ok(culprit_checks::index_advice(&report))
     }
 
     /// The index advisor's plan for a report already in hand (a saved file, a fixture).
     pub fn index_advice_for(&self, report: Report) -> culprit_core::IndexAdvice {
-        let fresh = culprit_checks::analyze_with(report.snapshot, &self.extra_checks);
-        culprit_checks::index_advice(&fresh)
+        culprit_checks::index_advice(&self.reread(report.snapshot))
     }
 
     /// The dashboard for a connection's latest report (the one scanned with a window of `window_minutes`, when given).
@@ -935,9 +963,12 @@ impl Workspace {
 
     pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
         let mut plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id).await)?;
-        // Query Store keeps a plan's first XML: check its conversions against the latest scan's catalog.
+        // Query Store keeps a plan's first XML: check its conversions against the latest scan's catalog, and word it
+        // with the same catalog marks as the report's own plans (the indexes on a table it scans, the parallelism
+        // settings).
         if let Ok(Some(report)) = self.latest_report(name, None) {
             culprit_core::insights::mark_changed_columns(&mut plan, &report.snapshot.columns);
+            culprit_core::insights::mark_plan(&mut plan, &report.snapshot);
             culprit_core::insights::mark_possible_keys(&mut plan, &report.snapshot.indexes);
         }
         culprit_core::insights::annotate(&mut plan);

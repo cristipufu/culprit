@@ -246,6 +246,7 @@ pub fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        evictions_before: None,
         sizes_before: None,
     })
 }

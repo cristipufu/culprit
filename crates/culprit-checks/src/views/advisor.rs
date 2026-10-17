@@ -87,6 +87,10 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         // An index the table has would serve these queries if they wrote its filter as a literal: only what it can't do
         // then is left to create, filtered like it.
         let parameterized = crate::indexes::parameterized_filter(s, &c, &asking);
+        // A table too small for an index to pay: the missing-index finding says there's nothing to create.
+        if parameterized.is_none() && crate::indexes::too_small_to_index(s, &c, &asking) {
+            continue;
+        }
         let share = query_impact(s, &asking).map(|i| i.share);
         let lookups = c.seeks + c.scans;
         let mut reason = format!(
@@ -166,9 +170,42 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 // The same fix the missing-index finding gives: widen or bring back the index with these keys, or
                 // create one.
                 let fix = candidate_fix(s, &c, &asking);
-                (keys.clone(), c.include.clone(), fix.fix.sql, fix.widens)
+                // A fix that rebuilds an existing index keeps that index's keys and adds the rest as included columns:
+                // the candidate shows what its statement builds.
+                let rebuilt = fix.fix.sql.as_ref().and(fix.widens.as_ref()).and_then(|name| {
+                    s.indexes.iter().find(|i| i.schema == c.schema && i.table == c.table && &i.name == name)
+                });
+                match rebuilt {
+                    Some(i) => {
+                        let held = |col: &String| {
+                            i.key_names()
+                                .into_iter()
+                                .chain(i.include.iter().map(String::as_str))
+                                .any(|h| h.eq_ignore_ascii_case(col))
+                        };
+                        let mut include = i.include.clone();
+                        for col in keys.iter().chain(&c.include) {
+                            if !held(col) && !include.iter().any(|h| h.eq_ignore_ascii_case(col)) {
+                                include.push(col.clone());
+                            }
+                        }
+                        (i.key_names().iter().map(|k| k.to_string()).collect(), include, fix.fix.sql, fix.widens)
+                    }
+                    None => (keys.clone(), c.include.clone(), fix.fix.sql, fix.widens),
+                }
             }
         };
+        // A widen rebuilds an existing index under its own name: the queries seek that one. With no query behind the
+        // request, there is no list to look at.
+        if parameterized.is_none() {
+            verify[1] = format!(
+                "The queries listed seek on {} and read far fewer pages per run.",
+                widens.as_deref().unwrap_or("the new index")
+            );
+        }
+        if asking.is_empty() {
+            verify.remove(1);
+        }
         let requests = c
             .requests
             .iter()
@@ -347,13 +384,13 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         }
         let through_key: Vec<&QueryStat> = queries_touching(s, &fk.schema, &fk.table)
             .into_iter()
-            .filter(|q| uses_foreign_key(&q.text, &fk.columns, &fk.ref_table))
+            .filter(|q| uses_foreign_key(engine, &q.text, fk))
             .collect();
         // Weight comes only from statements whose plan shows no index serving the key (see `plan_reads_whole`).
         let slowed: Vec<&QueryStat> = through_key
             .iter()
             .copied()
-            .filter(|q| crate::indexes::plan_reads_whole(q, &fk.table, &fk.columns))
+            .filter(|q| crate::indexes::plan_reads_whole(s, q, &fk.table, &fk.columns))
             .collect();
         // A candidate that already leads with the key serves it: its statements are this key's too, and so is its weight.
         // Not a filtered one (it can't serve a delete on the parent), nor one whose statements all stopped (it leaves
@@ -599,19 +636,16 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
 
     // Tables whose shape costs reads or writes.
     let mut tables: Vec<TableAdvice> = Vec::new();
-    let planned: Vec<(String, String)> =
-        scan_groups(s).into_iter().map(|g| (g.schema.to_ascii_lowercase(), g.table.to_ascii_lowercase())).collect();
     // A partition carries its parent's indexes and is read with it: the findings judge the parent, and so does this.
     for t in s.tables.iter().filter(|t| t.partition_of.is_none()) {
         let table_name = t.qualified();
-        if let Some((scans_total, read_total, days)) = crate::index_health::full_scans_measured(s, t)
-            && let (scans, rows_read) = (scans_total / days, read_total / days)
-            && scans >= 50.0
-            && rows_read >= 5_000_000.0
-            && !planned.contains(&(t.schema.to_ascii_lowercase(), t.name.to_ascii_lowercase()))
+        // Listed where the scan-heavy check found it worth a finding (its bars, and full reads that aren't all from
+        // statements that read every row on purpose), with the statements that finding lists, so the two agree.
+        if let Some(f) = report.findings.iter().find(|f| f.id == format!("scan-heavy:{table_name}"))
+            && let Some((scans_total, read_total, days)) = crate::index_health::full_scans_measured(s, t)
         {
-            // The statements that read it in full, as the scan-heavy finding lists them.
-            let touching = crate::index_health::scanning_queries(s, &t.schema, &t.name);
+            let (scans, rows_read) = (scans_total / days, read_total / days);
+            let listed: Vec<&QueryStat> = f.queries.iter().filter_map(|r| s.workload.as_ref()?.query(&r.id)).collect();
             tables.push(TableAdvice {
                 kind: TableAdviceKind::ScanHeavy,
                 schema: t.schema.clone(),
@@ -620,10 +654,12 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                     "Read in full {} ({} rows without an index). {}",
                     how_many(s, scans_total, days, "time", "times"),
                     format::count(read_total),
-                    if touching.is_empty() {
-                        "No captured statement names it.".to_string()
-                    } else {
-                        "Explain the statements below to see which filter has no index.".to_string()
+                    match listed.len() {
+                        0 => "None of the captured statements shows which filter has no index: the full reads come \
+                              from statements outside the top of the workload."
+                            .to_string(),
+                        1 => "Explain the statement listed with it to see which filter has no index.".to_string(),
+                        _ => "Explain the statements listed with it to see which filter has no index.".to_string(),
                     }
                 ),
                 rows: t.rows,
@@ -633,8 +669,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 rows_scanned_per_day: per_day_is_measured(days).then_some(rows_read),
                 forwarded_per_day: None,
                 sql: None,
-                queries: touching.iter().take(5).map(|q| advice_query(s, q)).collect(),
-                finding_id: link(format!("scan-heavy:{table_name}")),
+                queries: listed.iter().map(|q| advice_query(s, q)).collect(),
+                finding_id: Some(f.id.clone()),
             });
         }
         // Listed where the heap-table check found it worth a finding (its size and rate bars), so the two agree.
@@ -753,22 +789,59 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
 }
 
-/// Whether a statement on the child table goes through the foreign key: it names a key column or the parent table.
-/// Utility statements (DDL, EXPLAIN, maintenance) never count, even when they mention them.
-pub(crate) fn uses_foreign_key(text: &str, columns: &[String], parent: &str) -> bool {
+/// Whether a statement on the child table goes through the foreign key: it names a key column, deletes from or
+/// updates the parent (the database checks the key then), or joins the two tables (a column of one compared with a
+/// column of the other). Naming the parent alone isn't enough: `SELECT (SELECT count(*) FROM orders), (SELECT count(*)
+/// FROM order_items)` uses no key. Utility statements (DDL, EXPLAIN, maintenance) never count, even when they mention
+/// them.
+pub(crate) fn uses_foreign_key(engine: Engine, text: &str, fk: &culprit_core::ForeignKey) -> bool {
     let lower = text.to_lowercase();
     let first = lower.trim_start().split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
     if matches!(first, "create" | "alter" | "drop" | "explain" | "vacuum" | "analyze" | "copy" | "truncate" | "reindex")
     {
         return false;
     }
-    let parent = parent.rsplit('.').next().unwrap_or(parent).trim_matches(|c| matches!(c, '"' | '`' | '[' | ']'));
     // A read that only returns the key column doesn't search by it: look from FROM on (joins, filters, subqueries).
     let searched = match first {
         "select" | "with" => lower.find(" from ").map_or(lower.as_str(), |at| &lower[at..]),
         _ => lower.as_str(),
     };
-    columns.iter().map(String::as_str).chain([parent]).any(|name| has_word(searched, &name.to_lowercase()))
+    if fk.columns.iter().any(|c| has_word(searched, &c.to_lowercase())) {
+        return true;
+    }
+    let leaf = |name: &str| name.rsplit('.').next().unwrap_or(name).to_string();
+    let (parent, child) = (fk.ref_table.to_lowercase(), fk.table.to_lowercase());
+    let tables = culprit_core::sql::tables_in(text, engine);
+    // A delete or an update whose target is the parent.
+    let main = crate::support::main_statement(text).trim_start().to_lowercase();
+    if (main.starts_with("delete") || main.starts_with("update") || main.starts_with("merge"))
+        && tables.first().is_some_and(|t| leaf(t) == parent)
+    {
+        return true;
+    }
+    // A column of the parent compared with a column of the child (`i.order_id = o.id`), each qualified by its table or
+    // an alias the statement gives it.
+    let aliases = culprit_core::sql::table_aliases(text, engine);
+    let table_of = |column: &str| -> Option<String> {
+        let (qualifier, _) = column.rsplit_once('.')?;
+        let qualifier = leaf(qualifier);
+        Some(aliases.iter().find(|(alias, _)| *alias == qualifier).map_or(qualifier, |(_, name)| leaf(name)))
+    };
+    let plain: String = lower.chars().filter(|c| !matches!(c, '"' | '`' | '[' | ']')).collect();
+    let name = |c: char| c.is_alphanumeric() || matches!(c, '_' | '.' | '$');
+    plain.match_indices('=').any(|(at, _)| {
+        let before = plain[..at].trim_end();
+        if before.ends_with(['<', '>', '!']) {
+            return false;
+        }
+        let after = plain[at + 1..].trim_start();
+        let left = &before[before.rfind(|c: char| !name(c)).map_or(0, |p| p + 1)..];
+        let right = &after[..after.find(|c: char| !name(c)).unwrap_or(after.len())];
+        match (table_of(left), table_of(right)) {
+            (Some(a), Some(b)) => (a == parent && b == child) || (a == child && b == parent),
+            _ => false,
+        }
+    })
 }
 
 /// `word` appears in `text` as a whole identifier, not inside a longer one (`order_id` is not in `suborder_id`).
@@ -788,23 +861,31 @@ fn has_word(text: &str, word: &str) -> bool {
 mod tests {
     #[test]
     fn foreign_key_candidates_list_statements_that_use_the_key() {
-        let cols = vec!["order_id".to_string()];
-        assert!(super::uses_foreign_key("SELECT * FROM order_items WHERE order_id = $1", &cols, "shop.orders"));
-        assert!(super::uses_foreign_key("DELETE FROM orders o USING order_items i WHERE i.x = o.id", &cols, "orders"));
-        assert!(!super::uses_foreign_key("SELECT * FROM order_items WHERE product_id = $1", &cols, "shop.orders"));
-        assert!(!super::uses_foreign_key("SELECT suborder_id FROM order_items", &cols, "shop.orders_archive"));
-        assert!(!super::uses_foreign_key("SELECT id, order_id FROM order_items WHERE sku = $1", &cols, "shop.orders"));
-        assert!(super::uses_foreign_key(
-            "SELECT i.id FROM orders o JOIN order_items i ON i.order_id = o.id",
-            &cols,
-            "x"
+        let fk = culprit_core::ForeignKey {
+            name: "fk_items_order".into(),
+            schema: "shop".into(),
+            table: "order_items".into(),
+            columns: vec!["order_id".into()],
+            ref_schema: "shop".into(),
+            ref_table: "orders".into(),
+            ref_columns: vec!["id".into()],
+        };
+        let uses = |text: &str| super::uses_foreign_key(culprit_core::Engine::Postgres, text, &fk);
+        assert!(uses("SELECT * FROM order_items WHERE order_id = $1"));
+        assert!(uses("DELETE FROM orders o USING order_items i WHERE i.x = o.id"));
+        assert!(uses("DELETE FROM orders WHERE id = $1"));
+        assert!(!uses("SELECT * FROM order_items WHERE product_id = $1"));
+        assert!(!uses("SELECT suborder_id FROM order_items"));
+        assert!(!uses("SELECT id, order_id FROM order_items WHERE sku = $1"));
+        assert!(uses("SELECT i.id FROM orders o JOIN order_items i ON i.order_id = o.id"));
+        assert!(uses("SELECT i.id FROM orders o JOIN order_items i ON o.id = i.parent"));
+        assert!(!uses("CREATE INDEX culprit_tmp ON order_items (order_id)"));
+        assert!(!uses("EXPLAIN (ANALYZE) SELECT * FROM order_items WHERE order_id = 1"));
+        // MS-6: a statement that counts both tables, each on its own, goes through no key.
+        assert!(!uses(
+            "SELECT $1||(SELECT count(*) FROM orders)||$2||(SELECT count(*) FROM order_items)||$3||(SELECT count(*) FROM products)"
         ));
-        assert!(!super::uses_foreign_key("CREATE INDEX culprit_tmp ON order_items (order_id)", &cols, "orders"));
-        assert!(!super::uses_foreign_key(
-            "EXPLAIN (ANALYZE) SELECT * FROM order_items WHERE order_id = 1",
-            &cols,
-            "orders"
-        ));
+        assert!(!uses("SELECT count(*) FROM order_items i WHERE i.quantity = (SELECT max(o.total) FROM orders o)"));
     }
 
     use super::*;

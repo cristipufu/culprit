@@ -42,11 +42,24 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         ),
         (n, _, _) => format!("{} {}.", n, plural(n, "opportunity", "opportunities")),
     };
-    let fixed = findings.iter().filter(|f| f.inactive).count();
-    let headline = match fixed {
-        0 => headline,
-        1 => format!("{headline} 1 more stopped running, likely changed by a deploy."),
-        k => format!("{headline} {k} more stopped running, likely changed by a deploy."),
+    let stopped = Stopped::of(findings);
+    let headline = match (stopped.statements, stopped.unnamed) {
+        (0, 0) => headline,
+        (s, 0) => format!(
+            "{headline} {s} more {} stopped running: a deploy may have changed {}.",
+            plural(s, "statement", "statements"),
+            plural(s, "it", "them")
+        ),
+        (0, u) => format!(
+            "{headline} {u} more {} on statements that stopped running: a deploy may have changed them.",
+            plural(u, "finding rests", "findings rest")
+        ),
+        (s, u) => format!(
+            "{headline} {s} more {} stopped running, and {u} more {} on statements that did: a deploy may have \
+             changed them.",
+            plural(s, "statement", "statements"),
+            plural(u, "finding rests", "findings rest")
+        ),
     };
     Summary {
         opportunities: n as u32,
@@ -60,6 +73,26 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
+}
+
+/// The statements behind findings that stopped running, counted as statements: one statement with a heavy-query and an
+/// unstable-query finding is one. A finding that names none (an index the optimizer stopped asking for) is counted on
+/// its own.
+pub(crate) struct Stopped {
+    /// Distinct statements the inactive findings name.
+    pub statements: usize,
+    /// Inactive findings that name no statement.
+    pub unnamed: usize,
+}
+
+impl Stopped {
+    pub(crate) fn of(findings: &[Finding]) -> Stopped {
+        let inactive: Vec<&Finding> = findings.iter().filter(|f| f.inactive).collect();
+        let mut ids: Vec<&str> = inactive.iter().flat_map(|f| f.queries.iter().map(|r| r.id.as_str())).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Stopped { statements: ids.len(), unnamed: inactive.iter().filter(|f| f.queries.is_empty()).count() }
+    }
 }
 
 #[cfg(test)]

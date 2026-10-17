@@ -132,3 +132,45 @@ fn shared_text_is_checked_from_a_redacted_snapshot() {
     let ids = |r: &Report| r.findings.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
     assert_eq!(ids(&shared), ids(&report));
 }
+
+#[test]
+fn a_step_the_plan_puts_no_cost_on_gets_no_share_in_an_export() {
+    // MySQL costs the scan and nothing above it: no "100%" for the scan beside an uncosted filesort, and no "0%" for
+    // the steps it doesn't cost. The export says why there is no share instead.
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/mysql-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let report = culprit_checks::analyze(serde_json::from_str(&text).expect("snapshot"));
+    let finding = report.findings.iter().find(|f| f.id == "heavy-query:19bd4ff468839ea3").expect("the scan's finding");
+    let options = ExportOptions { redact: false, ..Default::default() };
+    let markdown = finding_markdown(&report, finding, &options);
+    let line = markdown.lines().find(|l| l.starts_with("Plan:")).expect("its step");
+    assert!(!line.contains("of the plan's cost"), "{line}");
+    assert!(line.contains("has no cost of its own in the plan, so no share is given"), "{line}");
+    let html = finding_html(&report, finding, &options);
+    assert!(!html.contains("100% of the plan's cost") && html.contains("no share is given"), "{html}");
+    let plan =
+        report.snapshot.workload.as_ref().and_then(|w| w.query("19bd4ff468839ea3")?.plan.as_ref()).expect("plan");
+    let table = plan_markdown(plan, "plan", &options);
+    assert!(!table.contains("| 100% |") && !table.contains("| 0% |"), "{table}");
+    assert!(table.contains("no share is given"), "{table}");
+}
+
+#[test]
+fn a_total_wait_reads_to_the_second_as_its_title_says_it() {
+    // 152 s waiting: "2 min 32 s", as the finding's title says it, not a rounded "3 min" under it.
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let report = culprit_checks::analyze(serde_json::from_str(&text).expect("snapshot"));
+    let mut finding = report.findings[0].clone();
+    finding.id = "row-lock-waits:test".into();
+    finding.metrics = vec![
+        culprit_core::Metric::new("Time waiting since start", 152_000.0, culprit_core::Unit::Ms),
+        culprit_core::Metric::new("Average wait", 2_500.0, culprit_core::Unit::Ms),
+    ];
+    let options = ExportOptions { redact: false, ..Default::default() };
+    let markdown = finding_markdown(&report, &finding, &options);
+    assert!(markdown.contains("2 min 32 s") && !markdown.contains("3 min"), "{markdown}");
+    assert!(markdown.contains("2.5 s"), "{markdown}");
+    let html = finding_html(&report, &finding, &options);
+    assert!(html.contains("2 min 32 s"), "{html}");
+}

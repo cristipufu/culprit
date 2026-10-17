@@ -103,21 +103,31 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
             .filter(|id| snapshot.workload.as_ref().is_some_and(|w| w.query(id).is_some()))
             .map(|id| QueryRef { id: id.clone(), plan_node: None, note: None })
             .collect();
+        // The change is in the code that sends the statement: the caveats quote one copy of it, as recorded.
+        let in_the_code = |change: &str| {
+            if family.sample.is_empty() {
+                capitalize(change)
+            } else {
+                format!("In the code that sends this statement (one copy is quoted below, as recorded), {change}")
+            }
+        };
         f.fix = Some(match (&split, engine) {
             (FamilySplit::Declarations(_), _) => Fix {
-                summary: "Declare each string parameter with a fixed size, the column's length, instead of letting the \
+                summary: in_the_code(
+                    "declare each string parameter with a fixed size, the column's length, instead of letting the \
                     driver size it from the value (in ADO.NET, set SqlParameter.Size or use Add with a SqlDbType and \
                     size rather than AddWithValue; other drivers have a similar setting). Then one plan serves every \
-                    value. Forced parameterization can't help: these statements are already parameterized."
-                    .into(),
+                    value. Forced parameterization can't help: these statements are already parameterized.",
+                ),
                 sql: None,
                 cost: None,
             },
             (_, Engine::Mssql) => Fix {
-                summary: "Send values as parameters (sp_executesql, or your driver's parameterized queries) so one plan \
+                summary: in_the_code(
+                    "send values as parameters (sp_executesql, or your driver's parameterized queries) so one plan \
                     serves every value. If you can't change the app, forced parameterization does it for the whole \
-                    database."
-                    .into(),
+                    database.",
+                ),
                 sql: Some(format!(
                     "-- Prefer fixing the app. As a database-wide fallback:\nALTER DATABASE {} SET PARAMETERIZATION FORCED;",
                     quote(engine, &snapshot.server.database)
@@ -125,9 +135,10 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
                 cost: Some("Forced parameterization can make some queries pick a plan that suits one value badly (parameter sensitivity); watch the regression findings after switching.".into()),
             },
             _ => Fix {
-                summary: "Pass value lists as one array parameter (`= ANY($1)` in Postgres) instead of a growing IN list, \
-                    and batch multi-row inserts with UNNEST or COPY."
-                    .into(),
+                summary: in_the_code(
+                    "pass value lists as one array parameter (`= ANY($1)` in Postgres) instead of a growing IN list, \
+                    and batch multi-row inserts with UNNEST or COPY.",
+                ),
                 sql: None,
                 cost: None,
             },

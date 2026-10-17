@@ -9,9 +9,18 @@ pub(super) fn index_sql(engine: Engine, table: &str, keys: &[String], include: &
     if keys.is_empty() {
         return None;
     }
-    let name = format!("ix_{}_{}", table_leaf(table), keys.join("_")).to_ascii_lowercase();
-    let name: String =
-        name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).take(60).collect();
+    // Named as the findings name the same index (`support::index_name` in culprit-checks), so a plan's insight and the
+    // finding about it never spell one index two ways: `IX_`, the table and the keys, lower case where the engine folds
+    // names.
+    let name: String = std::iter::once(format!("IX_{}", table_leaf(table)))
+        .chain(keys.iter().map(|k| k.replace(' ', "")))
+        .collect::<Vec<_>>()
+        .join("_")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .take(60)
+        .collect();
+    let name = if engine == Engine::Mssql { name } else { name.to_ascii_lowercase() };
     let target = qualified(engine, table);
     Some(engine.dialect().create_index(&crate::dialect::NewIndex {
         target: &target,
@@ -32,13 +41,20 @@ pub(super) fn output_columns(n: &PlanNode) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Rows a lookup step fetches one at a time: its executions, or the rows it returns when that's more.
+fn lookups(n: &PlanNode) -> f64 {
+    n.act_executions.unwrap_or(n.est_executions).max(rows_out(n))
+}
+
+/// Whether a key or RID lookup fetches enough rows one at a time to be worth covering: the `key-lookups` rule's bar.
+fn many_lookups(n: &PlanNode) -> bool {
+    n.kind == NodeKind::Lookup && n.op.contains("Lookup") && lookups(n) >= MANY_RUNS
+}
+
 pub(super) fn key_lookups(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| n.kind == NodeKind::Lookup && n.op.contains("Lookup")) {
-        let runs = n.act_executions.unwrap_or(n.est_executions).max(rows_out(n));
-        if runs < MANY_RUNS {
-            continue;
-        }
+    for n in cx.nodes.iter().filter(|n| many_lookups(n)) {
+        let runs = lookups(n);
         let table = what(n);
         let cols = output_columns(n);
         let seek = cx.parent(n).and_then(|p| p.children.first()).filter(|s| s.id != n.id && s.index.is_some());
@@ -47,7 +63,13 @@ pub(super) fn key_lookups(cx: &Cx) -> Vec<Draft> {
         let mut nodes = vec![n.id];
         nodes.extend(seek.map(|s| s.id));
         let mut d = Draft::new("key-lookups", InsightArea::Index, impact, nodes);
-        d.title = format!("Looks up {} in {table} one at a time", plural(runs, "row", "rows"));
+        // An estimated plan says how many lookups the optimizer expects, not how many a run made.
+        let measured = n.act_executions.is_some() || n.act_rows.is_some();
+        d.title = format!(
+            "{} {} in {table} one at a time",
+            if measured { "Looks up" } else { "Estimated to look up" },
+            plural(runs, "row", "rows")
+        );
         let heap = n.op.starts_with("RID");
         d.detail = match (&index, cols.is_empty()) {
             (Some(ix), false) => format!(
@@ -184,11 +206,49 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
             format::predicate(&filter),
             capitalize(&format::percent(impact))
         );
-        d.fix = format!(
-            "An index on {} lets the database go straight to the matching rows; if one already exists, the optimizer didn't use it, so refresh the table's statistics first.",
-            format::list(&cols)
-        );
-        d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
+        // What the catalog says the table has, where the snapshot marked it: an index that already starts with one of
+        // these columns, or none.
+        let leaf = table_leaf(&table);
+        let has = table_indexes(n).map(|list| {
+            list.into_iter()
+                .find(|(_, keys)| keys.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
+        });
+        // Equality columns go in any order: the filter's isn't the data's.
+        let (equality, _) = seekable_keys(&filter);
+        let order = if equality.len() >= 2 {
+            format!(
+                " {} can go in any order: put first the one with the most distinct values, or one another index or \
+                 finding on {leaf} already leads with, so one index serves both.",
+                format::list(&equality)
+            )
+        } else {
+            String::new()
+        };
+        match has {
+            Some(Some((index, keys))) => {
+                d.fix = format!(
+                    "{index} already starts with {}, yet this plan reads {leaf} instead: refresh {leaf}'s statistics \
+                     first, then check that the filter compares the column as it is (no function or conversion on it).",
+                    keys[0]
+                );
+                d.fix_sql = Some(cx.engine().dialect().refresh_statistics(&qualified(cx.engine(), &table)));
+            }
+            Some(None) => {
+                d.fix = format!(
+                    "No index on {leaf} starts with {}: one on {} lets the database go straight to the matching rows.{order}",
+                    format::list(&cols).replace(" and ", " or "),
+                    format::list(&cols)
+                );
+                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
+            }
+            None => {
+                d.fix = format!(
+                    "An index on {} lets the database go straight to the matching rows; if one already exists, the optimizer didn't use it, so refresh the table's statistics first.{order}",
+                    format::list(&cols)
+                );
+                d.fix_sql = index_sql(cx.engine(), &table, &cols, &[]);
+            }
+        }
         d.verify = format!("Explain again: {} reads about as many rows as it keeps.", table_leaf(&table));
         out.push(d);
     }
@@ -206,6 +266,13 @@ pub(super) fn big_sort(cx: &Cx) -> Vec<Draft> {
             || n.detail.as_deref().is_some_and(|d| d.contains("temporary table"))
         {
             continue; // spill and temp-table-sort say more
+        }
+        // Rows expected from a scan planned on a default guess (a parameter compared by range in a generic plan) are the
+        // guess, not the data: no row count to state, nor a share of the work built on it, until a run measures them.
+        let mut below = Vec::new();
+        n.walk(&mut below);
+        if n.act_rows.is_none() && below.iter().any(|b| b.props.contains_key(crate::plan::GUESSED_SELECTIVITY)) {
+            continue;
         }
         let rows = n.children.first().map_or(rows_out(n), rows_out).max(rows_out(n));
         let share = match &measured {
@@ -313,6 +380,11 @@ pub(super) fn join_buffer(cx: &Cx) -> Vec<Draft> {
     {
         let table = what(n);
         let how = n.props["using_join_buffer"].clone();
+        // One read of a small table into the buffer costs too little for an index to be worth having. Batched Key
+        // Access buffers the rows joined so far and looks each one up through an index: no full read to speak of.
+        if rows_read(n) < MANY_ROWS || how.contains("Batched Key Access") {
+            continue;
+        }
         let cond = n.predicate.clone().unwrap_or_default();
         let own = table_leaf(&table).to_ascii_lowercase();
         let alias = n.props.get("table_name").map(|a| a.to_ascii_lowercase());

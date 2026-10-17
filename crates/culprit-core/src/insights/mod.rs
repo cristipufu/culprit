@@ -31,6 +31,7 @@ use parallelism::*;
 use query::*;
 use server::*;
 use statistics::*;
+pub use statistics::{StaleIndexStatistics, stale_index_statistics, stale_index_statistics_detail};
 
 /// What kind of change fixes it, for grouping and icons.
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -144,8 +145,34 @@ pub fn annotate(plan: &mut Plan) {
     plan.insights = Some(PlanInsights { items: insights(plan), note: coverage_note(plan) });
 }
 
+/// Whether a plan builds or changes the schema rather than answering a query: a CREATE, ALTER or DROP (an index build
+/// reads and sorts the whole table because that is its work), or SQL Server's own statement for an index build, `insert
+/// [t] select * from [t]` into an Index Insert. No rule reads advice from it: an index for its sort, statistics on the
+/// column it indexes.
+pub fn changes_schema(plan: &Plan) -> bool {
+    let statement = plan.statement.as_deref().unwrap_or_default().trim_start().to_ascii_lowercase();
+    let first = statement.split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or_default();
+    if matches!(first, "create" | "alter" | "drop" | "truncate" | "reindex" | "cluster" | "vacuum" | "analyze") {
+        return true;
+    }
+    // `insert [s].[t] select * from [s].[t]`, as SQL Server writes it (lower case, bracketed): the same table into
+    // itself, through an index insert at the root.
+    let written = plan.statement.as_deref().unwrap_or_default().trim();
+    let words: Vec<&str> = written.split_whitespace().collect();
+    plan.root.op.contains("Index Insert")
+        && written == written.to_ascii_lowercase()
+        && matches!(words.as_slice(), ["insert", into, "select", "*", "from", from] if into == from && into.starts_with('['))
+}
+
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
+    if changes_schema(plan) {
+        return Some(
+            "This plan builds an index or changes the schema: reading and sorting the table is the work it's for, so \
+             no advice is read from it."
+                .into(),
+        );
+    }
     let actual = has_actuals(plan);
     let mariadb = is_mariadb(plan);
     match (plan.engine, actual) {
@@ -187,8 +214,11 @@ fn has_actuals(plan: &Plan) -> bool {
     plan.kind == PlanKind::Actual || plan.nodes().iter().any(|n| n.act_rows.is_some())
 }
 
-/// Every insight for this plan, most important first.
+/// Every insight for this plan, most important first. None for a plan that changes the schema ([`changes_schema`]).
 pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
+    if changes_schema(plan) {
+        return Vec::new();
+    }
     let cx = Cx::new(plan);
     let rules: &[fn(&Cx) -> Vec<Draft>] = &[
         key_lookups,
@@ -227,14 +257,73 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
     let mut out: Vec<PlanInsight> = Vec::new();
     for rule in rules {
         for d in rule(&cx) {
-            if out.iter().any(|o| o.rule == d.rule && o.nodes.first() == d.nodes.first()) {
+            if out.iter().any(|o| o.rule == d.rule && o.nodes.first() == d.nodes.first()) || on_system_objects(&cx, &d)
+            {
                 continue;
             }
-            out.push(d.finish(&cx));
+            let mut insight = d.finish(&cx);
+            // An index for a table that is gone: nothing to create, whatever the plan read.
+            if insight.area == InsightArea::Index
+                && let Some(table) = insight.nodes.iter().find_map(|id| cx.node(*id)?.props.get(TABLE_GONE))
+            {
+                insight.fix = format!(
+                    "Nothing to create: {} isn't in the database's catalog any more, so it was dropped or renamed \
+                     since this plan was captured.",
+                    table_leaf(table)
+                );
+                insight.fix_sql = None;
+                insight.verify = "Nothing to check while the table is gone.".into();
+            }
+            out.push(insight);
         }
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(b.impact.total_cmp(&a.impact)));
     out
+}
+
+/// Whether an insight advises an index, a rewrite or statistics for nothing but the engine's own objects: a monitoring
+/// query's plan reads the catalog, whose tables and views no one can index, rewrite or analyze. Its objects are those
+/// of the operators it is about, or of everything below one that reads none (a sort, a join, the whole plan).
+fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
+    if !matches!(d.area, InsightArea::Index | InsightArea::Query | InsightArea::Statistics) {
+        return false;
+    }
+    let mut objects: Vec<&str> = Vec::new();
+    for n in d.nodes.iter().filter_map(|id| cx.node(*id)) {
+        let mut involved = Vec::new();
+        if d.subtree || n.object.is_none() {
+            n.walk(&mut involved);
+        } else {
+            involved.push(n);
+        }
+        objects.extend(involved.into_iter().filter_map(|i| i.object.as_deref()));
+    }
+    let catalog_plan = reads_only_the_catalog(cx);
+    !objects.is_empty() && objects.into_iter().all(|o| is_system_object(o) || (catalog_plan && !o.contains('.')))
+}
+
+/// Whether a SQL Server plan names a schema only for the engine's own objects. Its internal table-valued functions
+/// (Query Store's `QUERY_STORE_RUNTIME_STATS_INTERVAL`, the in-memory halves of `sys.query_store_*`) and table
+/// variables carry no schema; in a plan whose every schema-qualified object is the catalog's, they are the catalog's
+/// too. Other engines name tables without a schema when the session has none, so only SQL Server, which always names
+/// the schema of an application's table, reads a missing one this way.
+fn reads_only_the_catalog(cx: &Cx) -> bool {
+    if cx.engine() != Engine::Mssql {
+        return false;
+    }
+    let mut qualified = cx.nodes.iter().filter_map(|n| n.object.as_deref()).filter(|o| o.contains('.')).peekable();
+    qualified.peek().is_some() && qualified.all(is_system_object)
+}
+
+/// Whether a plan's object is the engine's own, its catalog and statistics: SQL Server's `sys` schema (Query Store's
+/// `plan_persist_*` tables among them) and resource database, the standard `INFORMATION_SCHEMA`, PostgreSQL's
+/// `pg_catalog` and `pg_toast`, MySQL's `mysql` and `performance_schema` databases, and SQLite's `sqlite_*` tables.
+fn is_system_object(object: &str) -> bool {
+    let parts: Vec<String> = object.split('.').map(|p| clean_identifier(p).to_ascii_lowercase()).collect();
+    let schema = parts.len().checked_sub(2).and_then(|at| parts.get(at)).map(String::as_str);
+    matches!(schema, Some("sys" | "information_schema" | "pg_catalog" | "pg_toast" | "performance_schema" | "mysql"))
+        || parts.first().is_some_and(|db| db == "mssqlsystemresource")
+        || parts.last().is_some_and(|table| table.starts_with("sqlite_"))
 }
 
 // ── context ──────────────────────────────────────────────────────────────────────────────────────
@@ -260,12 +349,7 @@ impl<'a> Cx<'a> {
         // Under a Postgres Limit, children's costs assume they run to completion and add up to more than the root's.
         let own: f64 = nodes.iter().map(|n| n.self_cost).sum();
         let total = plan.total_cost.max(plan.root.subtree_cost).max(own);
-        // A measured run says what the plan costs; without one, the optimizer's estimate does.
-        let material = match elapsed_ms(plan) {
-            Some(ms) => ms >= MATERIAL_MS,
-            None => plan.total_cost.max(plan.root.subtree_cost) >= cheap_below(plan),
-        };
-        Cx { plan, nodes, parent, total: if total > 0.0 { total } else { 1.0 }, material }
+        Cx { plan, nodes, parent, total: if total > 0.0 { total } else { 1.0 }, material: does_real_work(plan) }
     }
 
     fn engine(&self) -> Engine {
@@ -389,6 +473,71 @@ impl Draft {
         }
         cx.material && involved.into_iter().map(handled).fold(0.0, f64::max) >= MANY_ROWS
     }
+}
+
+/// Whether the plan does real work: a measured run of at least `MATERIAL_MS`, or, unmeasured, an estimated cost of at
+/// least what reading about `MANY_ROWS` rows costs (`cheap_below`). A point lookup's plan doesn't: what a run of it
+/// costs is the call itself, not any of its steps. Every insight's severity and every surface that points at a plan's
+/// step as where its work is ask this.
+pub fn does_real_work(plan: &Plan) -> bool {
+    // A measured run says what the plan costs; without one, the optimizer's estimate does.
+    match elapsed_ms(plan) {
+        Some(ms) => ms >= MATERIAL_MS,
+        None => plan.total_cost.max(plan.root.subtree_cost) >= cheap_below(plan),
+    }
+}
+
+/// Pages a run may read for each row it returns or changes and still be finding its rows through indexes: a descent of
+/// a B-tree is three or four pages, and a run makes one or two per row it reads (a seek, then a lookup) or, for a
+/// write, one per index it maintains and per foreign key it checks. MySQL counts rows examined instead, about one per
+/// row for a lookup, so the bar is generous there.
+const LOOKUP_PAGES_PER_ROW: f64 = 32.0;
+
+/// Whether a statement's runs are cheap, as measured: its plan does no real work ([`does_real_work`]), its runs take
+/// under `MATERIAL_MS`, read no more than a lookup's pages for each row they return or change
+/// (`LOOKUP_PAGES_PER_ROW`), return or change not far more rows than the plan expected (`MISESTIMATE_FACTOR`), and no
+/// step reads a whole table. A cheap estimate alone isn't enough: with stale statistics or a generic plan's guess the
+/// runs do far more than the plan was costed at (750 pages a run where it expected to read one row), and a scan is
+/// cheap only while its table is small. Without the statement's reads and rows, nothing says its runs are cheap.
+pub fn runs_cheaply(plan: &Plan, q: &crate::model::QueryStat) -> bool {
+    let (Some(reads), Some(rows)) = (q.reads_per_execution(), q.rows_handled_per_execution()) else {
+        return false;
+    };
+    // What the plan expects a run to return or change: PostgreSQL estimates that a modification returns nothing, so
+    // what it feeds the modification.
+    let root = &plan.root;
+    let fed = root.children.first().filter(|_| root.kind == NodeKind::Modify).map_or(0.0, |c| c.est_rows);
+    let expected = root.est_rows.max(fed).max(1.0);
+    let more_than_expected = rows >= expected * MISESTIMATE_FACTOR && rows >= crate::plan::MISESTIMATE_MIN_ROWS;
+    let scans_a_table = plan.nodes().iter().any(|n| n.kind == NodeKind::Scan && n.object.is_some());
+    plan.weighed()
+        && !does_real_work(plan)
+        && q.mean_time_ms < MATERIAL_MS
+        && reads <= LOOKUP_PAGES_PER_ROW * rows.max(1.0)
+        && !more_than_expected
+        && !scans_a_table
+}
+
+/// Whether the plan's own rule `rule` (`key-lookups`, `big-sort`…) speaks about `node`: what a check asks before
+/// advising the same fix for that step, so the advice and the plan's insight never disagree.
+pub fn has_insight(plan: &Plan, rule: &str, node: &PlanNode) -> bool {
+    insights(plan).iter().any(|i| i.rule == rule && i.nodes.contains(&node.id))
+}
+
+/// Whether every spill the plan reports is too small to matter: each wrote less than `SPILL_MATERIAL_BYTES`, where the
+/// `spill` insight stops at Low. False when a spill's size isn't known.
+pub fn spills_are_minor(plan: &Plan) -> bool {
+    let spills: Vec<&PlanNode> =
+        plan.nodes().into_iter().filter(|n| n.warnings.contains(&PlanWarning::Spill)).collect();
+    !spills.is_empty()
+        && spills.iter().all(|n| parallelism::spilled_bytes(n).is_some_and(|bytes| bytes < SPILL_MATERIAL_BYTES))
+}
+
+/// The step where the plan's work is: its costliest, in a plan that does real work ([`does_real_work`]). None for a
+/// cheap plan: half of a point lookup's cost isn't where a statement's time goes, and naming it as such sends the
+/// reader after a step there's nothing to gain from.
+pub fn working_step(plan: &Plan) -> Option<&PlanNode> {
+    plan.hottest().filter(|_| does_real_work(plan))
 }
 
 /// The statement's measured run time, when the plan has one.
@@ -673,6 +822,16 @@ fn identifiers(text: &str) -> Vec<String> {
 /// column (`(price * 1.1) > 100`, `(created_at)::date = $1`), and SQL Server's bitmap probe of a hash join
 /// (`PROBE([Opt_Bitmap1005], …)`), which names no column at all.
 fn seekable_columns(text: &str) -> Vec<String> {
+    let (mut equality, range) = seekable_keys(text);
+    for c in range {
+        push_unique(&mut equality, &c);
+    }
+    equality.truncate(4);
+    equality
+}
+
+/// [`seekable_columns`] apart: the columns compared with a value by equality, and those compared by range.
+fn seekable_keys(text: &str) -> (Vec<String>, Vec<String>) {
     let mut equality: Vec<String> = Vec::new();
     let mut range: Vec<String> = Vec::new();
     for part in top_level_and(text) {
@@ -718,11 +877,7 @@ fn seekable_columns(text: &str) -> Vec<String> {
             && !lower.contains("<=");
         push_unique(if is_eq { &mut equality } else { &mut range }, column);
     }
-    for c in range {
-        push_unique(&mut equality, &c);
-    }
-    equality.truncate(4);
-    equality
+    (equality, range)
 }
 
 fn push_unique(list: &mut Vec<String>, column: &str) {
@@ -839,22 +994,14 @@ pub fn condition_count(filter: &str) -> usize {
 
 /// The share of the rows a scan reads that its filter keeps, from the plan's own numbers: measured counts when the
 /// plan has them (MySQL's EXPLAIN ANALYZE keeps the filter in a Filter node above the scan), else the optimizer's
-/// estimate. None when the plan can't say: no rows-read figure (a PostgreSQL estimate without the table's size), or
-/// one of MySQL's fixed guesses ([`mysql_guessed_filtered`]).
+/// estimate ([`PlanNode::kept_share`]). None when the plan can't say: no rows-read figure (a PostgreSQL estimate without
+/// the table's size), or one of MySQL's fixed guesses ([`mysql_guessed_filtered`]).
 fn filter_keeps(cx: &Cx, n: &PlanNode) -> Option<f64> {
     if let (Some(read), Some(filter)) = (n.act_rows, cx.parent(n).filter(|p| p.op == "Filter"))
         && n.rows_read.is_none()
     {
         let kept = filter.act_rows?;
         return (read > 0.0).then(|| (kept / read).min(1.0));
-    }
-    if cx.engine() == Engine::Mysql
-        && n.act_rows.is_none()
-        && let Some(filtered) = prop_f64(n, "filtered")
-    {
-        // Per scan: rows examined, and the share the condition is expected to keep.
-        let conditions = n.predicate.as_deref().map_or(1, condition_count);
-        return (!mysql_guessed_filtered(filtered, conditions)).then_some((filtered / 100.0).clamp(0.0, 1.0));
     }
     n.kept_share()
 }
@@ -865,10 +1012,13 @@ fn filter_keeps(cx: &Cx, n: &PlanNode) -> Option<f64> {
 /// at most `INDEX_KEEPS_AT_MOST` of them. When the plan can't tell how much the filter keeps, none of them speaks.
 ///
 /// A SQL Server scan whose filter probes a hash join's bitmap (`PROBE([Opt_Bitmap1005], …)`) keeps what the join lets
-/// through: the share it keeps is the join's doing, not a filter an index could serve.
+/// through: the share it keeps is the join's doing, not a filter an index could serve. So is a MySQL table joined
+/// through a join buffer: its condition holds the join's, and the share MySQL expects it to keep (`filtered`) counts
+/// the join in. The join-buffer rule speaks for it.
 fn index_could_pay(cx: &Cx, n: &PlanNode) -> bool {
     n.kind == NodeKind::Scan
         && !n.props.get("Storage").is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
+        && !n.props.contains_key("using_join_buffer")
         && rows_read(n) >= MANY_ROWS
         && !conditions(n).to_ascii_lowercase().contains("probe(")
         && filter_keeps(cx, n).is_some_and(|k| k <= INDEX_KEEPS_AT_MOST)
@@ -1069,14 +1219,150 @@ fn same_type(now: &str, converted_to: &str) -> bool {
     now == to || (matches!(base(&now).as_str(), "varchar" | "nvarchar" | "char" | "nchar") && base(&now) == base(&to))
 }
 
-/// `mark_changed_columns` on every plan of the snapshot's workload, against the snapshot's own catalog.
+/// `mark_changed_columns` on every plan of the snapshot's workload, against the snapshot's own catalog; the indexes on
+/// each table a plan scans ([`mark_table_indexes`]); and, on SQL Server, the settings that decide whether a plan can go
+/// parallel ([`mark_parallel_settings`]).
 pub fn mark_snapshot(snapshot: &mut Snapshot) {
+    let parallel = parallel_settings(snapshot);
+    let tables = scanned_table_indexes(snapshot);
     let columns = &snapshot.columns;
     if let Some(workload) = snapshot.workload.as_mut() {
-        for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
+        let end = workload.window_end.as_deref().and_then(format::epoch_seconds);
+        for q in workload.queries.iter_mut() {
+            // A table missing from the catalog is gone only for a statement that stopped: a dropped table stops the
+            // statements that read it, while one the catalog doesn't list (an indexed view) runs on.
+            let quiet = match (end, q.last_seen.as_deref().and_then(format::epoch_seconds)) {
+                (Some(end), Some(last)) => end - last >= 86_400.0,
+                _ => false,
+            };
+            let Some(plan) = q.plan.as_mut() else { continue };
             mark_changed_columns(plan, columns);
+            mark_table_indexes(&mut plan.root, &tables, quiet);
+            if plan.engine == Engine::Mssql {
+                mark_parallel_settings(plan, &parallel);
+            }
         }
     }
+}
+
+/// [`mark_snapshot`]'s catalog marks on one plan fetched apart from a scan (a stored plan opened from a report): the
+/// indexes on each table it scans, and on SQL Server the parallelism settings. Not [`TABLE_GONE`], which needs to know
+/// that the statement stopped running.
+pub fn mark_plan(plan: &mut Plan, snapshot: &Snapshot) {
+    mark_table_indexes(&mut plan.root, &scanned_table_indexes(snapshot), false);
+    if plan.engine == Engine::Mssql {
+        mark_parallel_settings(plan, &parallel_settings(snapshot));
+    }
+}
+
+/// The row count a statement's LIMIT asked for, on a plan whose statement text keeps a placeholder for it (MySQL's
+/// digest `LIMIT ?`): a provider that planned a sample with its values records the sample's count here, so rows
+/// returned under the LIMIT can be weighed against it.
+pub const LIMIT_ROWS: &str = "LIMIT rows (sample)";
+
+/// Where [`mark_table_indexes`] keeps the indexes the catalog lists on the table a scan reads: `name=col,col` per index,
+/// one per line, empty when it has none. Absent where the snapshot doesn't say (no catalog, or a name it can't place).
+pub const TABLE_INDEXES: &str = "Indexes on the table (catalog)";
+
+/// The SQL Server settings that decide whether a plan can go parallel, as the snapshot read them, stamped on each of
+/// its plans: the server's cost threshold for parallelism, and MAXDOP for the server and for the database (0: as many
+/// CPUs as there are).
+pub const COST_THRESHOLD: &str = "Cost threshold for parallelism (server, now)";
+pub const SERVER_MAXDOP: &str = "Max degree of parallelism (server, now)";
+pub const DATABASE_MAXDOP: &str = "MAXDOP (database, now)";
+
+fn parallel_settings(snapshot: &Snapshot) -> Vec<(&'static str, String)> {
+    let setting = |name: &str, scope: &str| {
+        snapshot
+            .settings
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(name) && s.scope.eq_ignore_ascii_case(scope))
+            .map(|s| s.value.trim().to_string())
+            .filter(|v| v.parse::<f64>().is_ok())
+    };
+    [
+        (COST_THRESHOLD, setting("cost threshold for parallelism", "server")),
+        (SERVER_MAXDOP, setting("max degree of parallelism", "server")),
+        (DATABASE_MAXDOP, setting("MAXDOP", "database")),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| Some((key, value?)))
+    .collect()
+}
+
+/// Stamps the server's parallelism settings ([`COST_THRESHOLD`], [`SERVER_MAXDOP`], [`DATABASE_MAXDOP`]) on a plan.
+pub fn mark_parallel_settings(plan: &mut Plan, settings: &[(&'static str, String)]) {
+    for (key, value) in settings {
+        plan.props.insert((*key).to_string(), value.clone());
+    }
+}
+
+/// Each table of the catalog (lower-cased `schema`, `name`) with its enabled indexes as [`TABLE_INDEXES`] writes them.
+/// Empty without a catalog of indexes, which would make every table look like it has none.
+fn scanned_table_indexes(snapshot: &Snapshot) -> Vec<(String, String, String)> {
+    if snapshot.indexes.is_empty() {
+        return Vec::new();
+    }
+    snapshot
+        .tables
+        .iter()
+        .map(|t| {
+            let lines: Vec<String> = snapshot
+                .indexes
+                .iter()
+                .filter(|i| {
+                    i.schema.eq_ignore_ascii_case(&t.schema) && i.table.eq_ignore_ascii_case(&t.name) && !i.is_disabled
+                })
+                .map(|i| format!("{}={}", i.name, i.key_names().join(",")))
+                .collect();
+            (t.schema.to_ascii_lowercase(), t.name.to_ascii_lowercase(), lines.join("\n"))
+        })
+        .collect()
+}
+
+/// Where [`mark_table_indexes`] marks an operator whose table the catalog no longer lists in any schema: it was dropped
+/// or renamed since the plan was captured, so there is nothing to index.
+pub const TABLE_GONE: &str = "Table not in the catalog";
+
+/// Marks every scan of a table with the indexes the catalog lists on it ([`TABLE_INDEXES`]), where the scan's object
+/// names one table of the catalog: by its schema when the plan says it, else by a name only one schema has. In the plan
+/// of a statement that stopped running (`stopped`), an operator on a table the catalog lists in no schema is marked
+/// [`TABLE_GONE`]; not one the plan names without a schema (SQLite names a table by its alias) or a derived table.
+fn mark_table_indexes(n: &mut PlanNode, tables: &[(String, String, String)], stopped: bool) {
+    if let Some(object) = n.object.as_deref().filter(|o| !o.starts_with(['@', '#']) && !tables.is_empty()) {
+        let parts: Vec<String> = object.split('.').map(|p| clean_identifier(p).to_ascii_lowercase()).collect();
+        let (schema, name) = match parts.as_slice() {
+            [.., schema, name] => (Some(schema.as_str()), name.as_str()),
+            [name] => (None, name.as_str()),
+            [] => (None, ""),
+        };
+        let gone = !tables.iter().any(|(_, t, _)| t == name);
+        if gone && stopped && schema.is_some() && !name.starts_with('<') && !is_system_object(object) {
+            n.props.insert(TABLE_GONE.into(), object.to_string());
+        } else if !gone && n.kind == NodeKind::Scan {
+            let mut found = tables.iter().filter(|(s, t, _)| t == name && schema.is_none_or(|schema| schema == s));
+            if let (Some((_, _, lines)), None) = (found.next(), found.next()) {
+                n.props.insert(TABLE_INDEXES.into(), lines.clone());
+            }
+        }
+    }
+    for c in &mut n.children {
+        mark_table_indexes(c, tables, stopped);
+    }
+}
+
+/// The indexes [`mark_table_indexes`] found on a scan's table, as (name, key columns); `None` where it found none to say.
+fn table_indexes(n: &PlanNode) -> Option<Vec<(String, Vec<String>)>> {
+    let lines = n.props.get(TABLE_INDEXES)?;
+    Some(
+        lines
+            .lines()
+            .filter_map(|line| {
+                let (name, keys) = line.split_once('=')?;
+                Some((name.to_string(), keys.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect()))
+            })
+            .collect(),
+    )
 }
 
 /// Where [`mark_possible_keys`] keeps each possible key's columns: `name=col,col` per key, one per line.

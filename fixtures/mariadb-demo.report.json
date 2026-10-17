@@ -1,70 +1,6 @@
 {
   "findings": [
     {
-      "category": "indexes",
-      "caveats": [
-        "Counters accumulate since statistics were last reset; one nightly report can make up much of them."
-      ],
-      "check": "scan-heavy",
-      "confidence": "medium",
-      "fix": {
-        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
-        "sql": null,
-        "summary": "Explain the statements below and index the columns in their WHERE clause; small lookup tables are fine to scan."
-      },
-      "id": "scan-heavy:shop.orders",
-      "impact": {
-        "db_time_share": 0.9255406753671112,
-        "label": "93% of DB time",
-        "score": 96.20502457601219,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T16:05:36Z",
-      "metrics": [
-        {
-          "label": "Full reads",
-          "text": null,
-          "unit": "count",
-          "value": 80.0
-        },
-        {
-          "label": "Rows read without an index",
-          "text": null,
-          "unit": "rows",
-          "value": 40000300.0
-        },
-        {
-          "label": "Rows in table",
-          "text": null,
-          "unit": "rows",
-          "value": 498573.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "375c64398248650e",
-          "note": null,
-          "plan_node": null
-        },
-        {
-          "id": "258e3c9b580f1ecc",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "table",
-        "name": "shop.orders"
-      },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 2 of the captured statements read it in full by their plans; explain them to see which filter has no index.",
-      "title": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
-      "verify": [
-        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
-      ]
-    },
-    {
       "category": "queries",
       "caveats": [],
       "check": "temp-spill",
@@ -101,7 +37,7 @@
         {
           "id": "375c64398248650e",
           "note": null,
-          "plan_node": null
+          "plan_node": 2
         }
       ],
       "severity": "low",
@@ -111,65 +47,8 @@
       },
       "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
-      "verify": []
-    },
-    {
-      "category": "queries",
-      "caveats": [
-        "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
-      ],
-      "check": "lock-time",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
-      },
-      "id": "lock-time:375c64398248650e",
-      "impact": {
-        "db_time_share": 0.8855883790586936,
-        "label": "50.0 s waiting on locks",
-        "score": 94.10514468567534,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T16:05:36Z",
-      "metrics": [
-        {
-          "label": "Lock wait",
-          "text": null,
-          "unit": "ms",
-          "value": 49963.346
-        },
-        {
-          "label": "Share of its time",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.9999880831459015
-        },
-        {
-          "label": "Per run",
-          "text": null,
-          "unit": "ms",
-          "value": 2498.1673
-        }
-      ],
-      "queries": [
-        {
-          "id": "375c64398248650e",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "375c64398248650e"
-      },
-      "summary": "Of its 50.0 s since its statistics began 1 min ago, 50.0 s went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will.",
-      "title": "A read from orders spends nearly all its time waiting on locks, 2.5 s per run",
       "verify": [
-        "Re-scan: lock waits should be a small part of its time."
+        "Once the change is live, scan again after the statement has run a while and compare its on-disk temporary tables with this scan's: 20 in 20 runs now. performance_schema keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset."
       ]
     },
     {
@@ -219,10 +98,10 @@
         "kind": "query",
         "name": "a92bb0be330ac53a"
       },
-      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (1% of database time), but each call costs a network round trip and a connection.",
+      "summary": "This statement is 75% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.",
       "title": "A read from products runs 30K times in 1 minute, one row at a time",
       "verify": [
-        "After the change, this statement's executions per day should drop by orders of magnitude."
+        "It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -233,7 +112,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Find this statement in the application (copy the brief for your coding agent) and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run."
+        "summary": "Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run."
       },
       "id": "heavy-query:decf59629e790076",
       "impact": {
@@ -260,7 +139,7 @@
         {
           "label": "Rows examined per run",
           "text": null,
-          "unit": "pages",
+          "unit": "rows",
           "value": 10715.355
         },
         {
@@ -282,10 +161,69 @@
         "kind": "query",
         "name": "decf59629e790076"
       },
-      "summary": "It ran 2.0K times in 1 minute at 2 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that reads 14K rows.",
+      "summary": "It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.",
       "title": "A read from orders takes 6% of database time",
       "verify": [
-        "After the change ships, re-scan and compare this query's share of database time and reads per run."
+        "performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time and its reads per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+      ]
+    },
+    {
+      "category": "indexes",
+      "caveats": [
+        "Counters accumulate since statistics were last reset; one nightly report can make up much of them."
+      ],
+      "check": "scan-heavy",
+      "confidence": "medium",
+      "fix": {
+        "cost": "shop.orders had no writes in the 1 h 9 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
+        "sql": null,
+        "summary": "Explain the statements listed with this finding and index the columns in their WHERE clause; small lookup tables are fine to scan."
+      },
+      "id": "scan-heavy:shop.orders",
+      "impact": {
+        "db_time_share": 0.03995229630841756,
+        "label": "4% of DB time",
+        "score": 19.98807051929164,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T16:04:49Z",
+      "metrics": [
+        {
+          "label": "Full reads",
+          "text": null,
+          "unit": "count",
+          "value": 80.0
+        },
+        {
+          "label": "Rows read without an index",
+          "text": null,
+          "unit": "rows",
+          "value": 40000300.0
+        },
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 498573.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "258e3c9b580f1ecc",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.orders"
+      },
+      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times in the hour since the server last restarted: 40.0M rows read without an index. 1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+      "title": "orders is read in full 80 times in the hour since the server last restarted (40.0M rows)",
+      "verify": [
+        "Re-scan after a day: full reads of orders per day drop, and its index scans rise."
       ]
     },
     {
@@ -336,7 +274,7 @@
         "name": "shop.customers"
       },
       "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.",
-      "title": "Two queries deadlocked once in the last day (opposite access order on shop.customers and shop.orders)",
+      "title": "Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)",
       "verify": [
         "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
@@ -369,12 +307,6 @@
           "text": null,
           "unit": "bytes",
           "value": 9977856.0
-        },
-        {
-          "label": "Reads of ix_orders_status",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -412,12 +344,6 @@
           "text": null,
           "unit": "bytes",
           "value": 442368.0
-        },
-        {
-          "label": "Reads of ix_products_sku",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -471,20 +397,14 @@
           "value": 7601.0
         }
       ],
-      "queries": [
-        {
-          "id": "375c64398248650e",
-          "note": null,
-          "plan_node": null
-        }
-      ],
+      "queries": [],
       "severity": "low",
       "subject": {
         "kind": "database",
         "name": "shop"
       },
-      "summary": "Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 3 min in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. In this database, a read from orders waited longest on locks (50.0 s in total). Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.",
-      "title": "Transactions on this server waited 3 min for row locks since MariaDB started 69 minutes ago, 7.6 s each on average",
+      "summary": "Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 2 min 32 s in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.",
+      "title": "Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average",
       "verify": [
         "Sample Waits → Right now during normal load: it counts row-lock waits over the sample, which should be rare and short."
       ]
@@ -838,6 +758,7 @@
     "duration_ms": 64.63325,
     "environment": "development",
     "escalations_before": null,
+    "evictions_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -1226,6 +1147,10 @@
       {
         "collector": "plans",
         "message": "Planned 5 queries; 1 had no recorded statement text."
+      },
+      {
+        "collector": "workload",
+        "message": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting."
       }
     ],
     "options": {
@@ -1987,6 +1912,7 @@
                           "op": "Table scan",
                           "predicate": null,
                           "props": {
+                            "Indexes on the table (catalog)": "PRIMARY=id\nfk_orders_customer=customer_id\nix_orders_status=status\nix_orders_status_created=status,created_at",
                             "cost": "83.0178672",
                             "filtered": "100",
                             "loops": "1",
@@ -2072,7 +1998,7 @@
           "rows_affected": null,
           "spread": {
             "histogram": [],
-            "lock_ms": 49963.346,
+            "lock_ms": null,
             "min_ms": 2106.280311,
             "p50_ms": null,
             "p95_ms": null,
@@ -2096,14 +2022,7 @@
               142911.23
             ]
           },
-          "waits": [
-            {
-              "category": "Lock",
-              "tasks": null,
-              "wait_ms": 49963.346,
-              "wait_type": "lock time"
-            }
-          ]
+          "waits": []
         },
         {
           "costs": null,
@@ -2144,7 +2063,7 @@
                   "kind": "seek",
                   "object": "shop.orders",
                   "op": "Index range scan",
-                  "predicate": "orders.status = 'shipped' and orders.created_at >= '2026-09-23'",
+                  "predicate": "orders.status = '?' and orders.created_at >= '?'",
                   "props": {
                     "Index Kind": "btree",
                     "cost": "2.15041973",
@@ -2274,8 +2193,9 @@
                       "kind": "scan",
                       "object": "shop.orders",
                       "op": "Table scan",
-                      "predicate": "o.promo_code = 'SPRING9'",
+                      "predicate": "o.promo_code = '?'",
                       "props": {
+                        "Indexes on the table (catalog)": "PRIMARY=id\nfk_orders_customer=customer_id\nix_orders_status=status\nix_orders_status_created=status,created_at",
                         "cost": "83.0178672",
                         "filtered": "100",
                         "loops": "1",
@@ -2342,7 +2262,7 @@
           "rows_affected": null,
           "spread": {
             "histogram": [],
-            "lock_ms": 2251.482,
+            "lock_ms": null,
             "min_ms": 32.453053,
             "p50_ms": null,
             "p95_ms": null,
@@ -2366,14 +2286,7 @@
               6810.19
             ]
           },
-          "waits": [
-            {
-              "category": "Lock",
-              "tasks": null,
-              "wait_ms": 2251.482,
-              "wait_type": "lock time"
-            }
-          ]
+          "waits": []
         },
         {
           "costs": null,
@@ -2473,7 +2386,7 @@
                       "kind": "seek",
                       "object": "shop.orders",
                       "op": "Index lookup",
-                      "predicate": "orders.customer_id <=> 11272",
+                      "predicate": "orders.customer_id <=> ?",
                       "props": {
                         "Index Kind": "btree",
                         "cost": "0.00708384",
@@ -2807,18 +2720,18 @@
       },
       {
         "category": "queries",
-        "count": 6
+        "count": 5
       }
     ],
     "by_severity": [
       {
-        "count": 9,
+        "count": 8,
         "severity": "low"
       }
     ],
-    "headline": "9 opportunities. The top ones touch 93% of database time over the 1 minute since statistics were reset.",
+    "headline": "8 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.",
     "no_workload": null,
-    "opportunities": 9,
-    "top_share": 0.9255406753671113
+    "opportunities": 8,
+    "top_share": 0.9521354362362537
   }
 }

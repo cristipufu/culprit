@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+# Its doc comments hold no Rust examples: rustdoc would have nothing to test.
+doctest = false
+
 [dependencies]
 culprit-core.workspace = true
 culprit-engine.workspace = true

@@ -26,7 +26,9 @@ use std::sync::Arc;
 use culprit_core::{Capability, Check, CheckInfo, LockedCheck, Report, ServerInfo, Snapshot};
 
 pub use advisor::index_advice;
-pub use brief::agent_brief;
+pub use brief::{
+    TOTAL_WAIT_METRICS, agent_brief, finding_step, finding_step_share, metric_text, no_share_reason, query_share,
+};
 pub use dashboard::dashboard;
 pub use digest::{digest, digest_since};
 pub use drift::drift;

@@ -93,6 +93,10 @@ pub const NOT_READ_IN_FULL: &str = "Partition Pruning";
 /// or pattern in a generic plan), so the share kept says nothing.
 pub const GUESSED_SELECTIVITY: &str = "Selectivity";
 
+/// Plan prop MySQL's and MariaDB's EXPLAIN carry on a table: the percentage of the rows read that its condition is
+/// expected to keep.
+const MYSQL_FILTERED: &str = "filtered";
+
 /// An index pays off for a filter that keeps at most this share of the rows a scan reads. Above it, reading through the
 /// index touches most of the table's pages anyway, so the scan is the right plan and the fix is to read less. Every
 /// rule that suggests an index from a scan uses this bar.
@@ -155,11 +159,20 @@ impl PlanNode {
     }
 
     /// The share of the rows this operator read that it kept, from actual counts when the plan has them, else from
-    /// estimates and the table's size. None when the plan doesn't say how many rows it read.
+    /// estimates: MySQL's and MariaDB's own share (`filtered`), or the rows estimated against the rows read. None when
+    /// the plan doesn't say how many rows it read, or when the share is the optimizer's default guess.
     pub fn kept_share(&self) -> Option<f64> {
         // A default guess for a parameter compared by range or pattern isn't a share anything can be judged on.
         if self.props.contains_key(GUESSED_SELECTIVITY) {
             return None;
+        }
+        // MySQL estimates the share its condition keeps of each scan; one of its fixed guesses says nothing.
+        if self.act_rows.is_none()
+            && let Some(filtered) = self.props.get(MYSQL_FILTERED).and_then(|f| f.trim().parse::<f64>().ok())
+        {
+            let conditions = self.predicate.as_deref().map_or(1, crate::insights::condition_count);
+            return (!crate::insights::mysql_guessed_filtered(filtered, conditions))
+                .then_some((filtered / 100.0).clamp(0.0, 1.0));
         }
         let kept = self.act_rows.unwrap_or_else(|| self.est_rows_total());
         let read = self.rows_read_total()?;
@@ -303,14 +316,61 @@ impl Plan {
         self.warnings.contains(&warning) || self.nodes().iter().any(|n| n.warnings.contains(&warning))
     }
 
-    /// The node with the highest self cost: where the plan spends most of its effort.
-    /// The step with the largest share of the plan's cost; `None` when no step carries a cost (SQLite's plans have
-    /// the access path only), so nothing is called the most expensive by accident.
+    /// The step with the largest share of the plan's cost: where the plan spends most of its effort. `None` when no
+    /// step carries a cost (SQLite's plans have the access path only), so nothing is called the most expensive by
+    /// accident. An exchange (PostgreSQL's Gather and Gather Merge, SQL Server's Parallelism) is never it: its cost is
+    /// mostly the charge for passing each row between threads, not work on the data.
     pub fn hottest(&self) -> Option<&PlanNode> {
         if !self.weighed() {
             return None;
         }
-        self.nodes().into_iter().max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
+        self.nodes()
+            .into_iter()
+            .filter(|n| n.kind != NodeKind::Parallelism)
+            .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
+    }
+
+    /// A step's share of the plan's cost, at most 1: its own cost over what the plan's costs add up to
+    /// ([`crate::plan_diff::plan_cost_basis`]), never over the root's alone, which under a PostgreSQL Limit is a
+    /// fraction of what its children are costed at.
+    pub fn cost_share(&self, node: &PlanNode) -> f64 {
+        (node.self_cost / crate::plan_diff::plan_cost_basis(self)).clamp(0.0, 1.0)
+    }
+
+    /// A step's share of the plan's cost where the plan can state one, which is what every "N% of the plan's cost" a
+    /// person reads comes from. `None` on a plan without costs, for a step with no cost of its own, beside a step doing
+    /// work the plan puts no cost on ([`Plan::uncosted_steps`]: next to MySQL's filesort a scan reads as "100%"), and
+    /// when the step's rows rest on a default guess for a parameter rather than on statistics
+    /// ([`crate::GUESSED_SELECTIVITY`] on it or anywhere below it). `culprit_checks::no_share_reason` says why there is
+    /// none, and the app's plan viewer mirrors this rule (`stepShare` in `app/src/lib/plan-format.ts`).
+    pub fn step_share(&self, node: &PlanNode) -> Option<f64> {
+        let mut below = Vec::new();
+        node.walk(&mut below);
+        let guessed = below.iter().any(|n| n.props.contains_key(crate::GUESSED_SELECTIVITY));
+        (self.weighed() && node.self_cost > 0.0 && !guessed && self.uncosted_steps().is_empty())
+            .then(|| self.cost_share(node))
+    }
+
+    /// Steps doing work that carry no cost of their own in a plan that weighs its steps: MySQL and MariaDB put none on a
+    /// filesort or an internal temporary table (nor on the grouping or de-duplication that uses one) unless they give a
+    /// sort's cost. Beside one, a step's share of what the plan costs isn't its share of the statement's work.
+    pub fn uncosted_steps(&self) -> Vec<&PlanNode> {
+        if !self.weighed() {
+            return Vec::new();
+        }
+        let temporary = |n: &PlanNode| {
+            [Some(n.op.as_str()), n.detail.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|t| t.to_ascii_lowercase().contains("temporary"))
+        };
+        self.nodes()
+            .into_iter()
+            .filter(|n| {
+                n.self_cost <= 0.0
+                    && (matches!(n.kind, NodeKind::Sort | NodeKind::Aggregate | NodeKind::Spool) || temporary(n))
+            })
+            .collect()
     }
 
     /// Whether the plan weighs its steps with costs: what "share of the cost" and estimated rows mean on it.

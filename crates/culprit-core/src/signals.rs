@@ -322,6 +322,37 @@ impl SizeBaseline {
     }
 }
 
+/// A count kept since its source last started over, as an earlier scan read it: what tells what was counted since then
+/// from what was counted before.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct CountBaseline {
+    /// When the earlier scan was taken (UTC, ISO 8601).
+    pub taken_at: String,
+    /// What it counted then; 0 when the count started over after it, so all of this scan's count came later.
+    pub count: f64,
+    /// The count started over between the earlier scan and this one.
+    pub restarted: bool,
+}
+
+impl CountBaseline {
+    /// The count a provider reports as setting `name` (`pg_stat_statements.dealloc`) that `previous`, an earlier scan
+    /// of the same database, read. `None` when either scan didn't read it. It started over when it shrank, or when the
+    /// workload's counting started again after `previous` (the statistics that keep it were reset).
+    pub fn from_setting(previous: &Snapshot, current: &Snapshot, name: &str) -> Option<CountBaseline> {
+        let read = |s: &Snapshot| s.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
+        let (then, now) = (read(previous)?, read(current)?);
+        let start = |s: &Snapshot| s.workload.as_ref().and_then(|w| w.window_start.clone());
+        let reset = start(previous).zip(start(current)).and_then(|(a, b)| restarted(&a, &b)).unwrap_or(false);
+        let restarted = reset || now < then;
+        Some(CountBaseline {
+            taken_at: previous.taken_at.clone(),
+            count: if restarted { 0.0 } else { then },
+            restarted,
+        })
+    }
+}
+
 /// Start times read a second or two apart are the same start.
 const SAME_START_SECONDS: f64 = 120.0;
 
@@ -470,6 +501,38 @@ impl TableStorage {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
+
+    #[test]
+    fn a_count_that_shrank_or_whose_statistics_were_reset_started_over() {
+        let demo: Snapshot = serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        let scan = |taken_at: &str, dealloc: &str, reset: &str| {
+            let mut s = demo.clone();
+            s.taken_at = taken_at.into();
+            s.settings.retain(|x| x.name != "pg_stat_statements.dealloc");
+            s.settings.push(crate::Setting {
+                name: "pg_stat_statements.dealloc".into(),
+                value: dealloc.into(),
+                default_value: None,
+                scope: "server".into(),
+            });
+            s.workload.as_mut().unwrap().window_start = Some(reset.into());
+            s
+        };
+        let name = "pg_stat_statements.dealloc";
+        let before = scan("2026-10-15T10:00:00Z", "40", "2023-04-17T10:00:21Z");
+        let grew =
+            CountBaseline::from_setting(&before, &scan("2026-10-17T10:00:00Z", "52", "2023-04-17T10:00:21Z"), name);
+        assert_eq!(grew, Some(CountBaseline { taken_at: before.taken_at.clone(), count: 40.0, restarted: false }));
+        let shrank =
+            CountBaseline::from_setting(&before, &scan("2026-10-17T10:00:00Z", "3", "2023-04-17T10:00:21Z"), name);
+        assert!(shrank.is_some_and(|b| b.restarted && b.count == 0.0));
+        let reset =
+            CountBaseline::from_setting(&before, &scan("2026-10-17T10:00:00Z", "52", "2026-10-16T08:00:00Z"), name);
+        assert!(reset.is_some_and(|b| b.restarted), "reset after the earlier scan, then more rounds than before");
+        let mut unread = scan("2026-10-17T10:00:00Z", "52", "2023-04-17T10:00:21Z");
+        unread.settings.clear();
+        assert_eq!(CountBaseline::from_setting(&before, &unread, name), None);
+    }
 
     fn file(name: &str, kind: FileKind, writes: f64, write_ms: f64) -> FileIo {
         FileIo {

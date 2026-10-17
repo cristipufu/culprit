@@ -60,13 +60,61 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
                 format::bytes(written),
                 format::count(q.executions)
             );
-            f.queries = query_refs(&[q]);
+            f.queries = vec![QueryRef { id: q.id.clone(), plan_node: spilling_step(q, false), note: None }];
             f.metrics.push(Metric::new("Temp written per run", per_run, Unit::Bytes));
             f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
             f.fix = Some(work_mem_fix(work_mem, work_mem_text.as_deref(), per_run));
+            f.verify = vec![spill_verify(
+                workload,
+                "Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change)",
+                "temp files",
+                format!("{} over {} runs", format::bytes(written), format::count(q.executions)),
+            )];
             Some(f)
         })
         .collect()
+}
+
+/// How a later scan shows the spill gone. A windowed source drops the runs from before the change once its window has
+/// passed them. A source of running totals keeps them: the statement's count staying as it is while its runs go on is
+/// what shows it, said with the numbers to compare (`now`), and the finding can stay until those totals are reset.
+fn spill_verify(workload: &culprit_core::Workload, live: &str, what: &str, now: String) -> String {
+    if workload.windowed {
+        return format!(
+            "{live}, scan again once the scan's window holds only runs from after it: this finding is gone."
+        );
+    }
+    format!(
+        "{live}, scan again after the statement has run a while and compare its {what} with this scan's: {now} now. {} \
+         keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this \
+         finding can stay until those totals are reset.",
+        workload.source
+    )
+}
+
+/// The plan's step that spills, to point at: the one the plan saw spill, else the only one that can. PostgreSQL's temp
+/// files come from a sort, a hash join's hash or a hash aggregate; MySQL's on-disk tables from an internal temporary
+/// table (`temp_tables`), which no plan marks as spilled (MariaDB's spill mark is a sort's, not the table's). None when
+/// the plan shows no such step, or several and nothing says which.
+fn spilling_step(q: &QueryStat, temp_tables: bool) -> Option<u32> {
+    let nodes = q.plan.as_ref()?.nodes();
+    if !temp_tables && let Some(n) = nodes.iter().find(|n| n.warnings.contains(&PlanWarning::Spill)) {
+        return Some(n.id);
+    }
+    let can_spill = |n: &&&PlanNode| {
+        if temp_tables {
+            n.op == "Temporary table" || n.detail.as_deref().is_some_and(|d| d.contains("temporary table"))
+        } else {
+            n.kind == NodeKind::Sort
+                || n.op == "Hash"
+                || n.props.get("Strategy").is_some_and(|s| s == "Hashed" || s == "Mixed")
+        }
+    };
+    let mut steps = nodes.iter().filter(can_spill);
+    match (steps.next(), steps.next()) {
+        (Some(only), None) => Some(only.id),
+        _ => None,
+    }
 }
 
 pub(super) const MB: f64 = 1024.0 * 1024.0;
@@ -179,7 +227,13 @@ pub(super) fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
                     format::count(q.executions)
                 )
             };
-            f.queries = query_refs(&[q]);
+            f.queries = vec![QueryRef { id: q.id.clone(), plan_node: spilling_step(q, true), note: None }];
+            f.verify = vec![spill_verify(
+                workload,
+                "Once the change is live",
+                "on-disk temporary tables",
+                format!("{} in {} runs", format::count(tables), format::count(q.executions)),
+            )];
             f.metrics.push(Metric::new("On-disk temporary tables per run", per_run, Unit::Count));
             f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
             f.fix = Some(if large.is_empty() {
@@ -203,10 +257,14 @@ pub(super) fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
 pub(super) struct TempLimits {
     /// The variables that cap one table in memory, with their values (bytes) where the scan read them.
     caps: Vec<(&'static str, Option<f64>)>,
-    /// MySQL 8.0's TempTable engine also stops at temptable_max_ram, for all its tables together.
-    shared_ram: Option<f64>,
+    /// MySQL 8.0's TempTable engine also stops at temptable_max_ram, for all its tables together: its value where the
+    /// scan read it.
+    shared_ram: Option<Option<f64>>,
     /// A TEXT or BLOB value sends the table to disk whatever its size (the MEMORY engine: MariaDB, MySQL 5.7).
     blob_bound: bool,
+    /// MySQL 8.0 keeps these tables in TempTable or MEMORY (`internal_tmp_mem_storage_engine`), and the scan didn't
+    /// read which: both variables of MEMORY's cap are raised, and nothing is said of TempTable's limit but its name.
+    engine_unknown: bool,
 }
 
 impl TempLimits {
@@ -214,11 +272,10 @@ impl TempLimits {
         let value = |name: &str| snapshot.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
         let version = &snapshot.server.version;
         let mysql8 = snapshot.server.name() == "MySQL" && culprit_core::version_at_least(version, [8, 0, 0]);
-        let temptable = mysql8
-            && snapshot
-                .setting("internal_tmp_mem_storage_engine")
-                .is_none_or(|s| s.value.trim().eq_ignore_ascii_case("TempTable"));
-        if temptable {
+        let engine = snapshot.setting("internal_tmp_mem_storage_engine").map(|s| s.value.trim().to_ascii_lowercase());
+        let both =
+            vec![("tmp_table_size", value("tmp_table_size")), ("max_heap_table_size", value("max_heap_table_size"))];
+        if mysql8 && engine.as_deref() == Some("temptable") {
             // TempTable ignores max_heap_table_size; tmp_table_size caps each table from 8.0.28.
             let caps = if culprit_core::version_at_least(version, [8, 0, 28]) {
                 vec![("tmp_table_size", value("tmp_table_size"))]
@@ -227,18 +284,20 @@ impl TempLimits {
             };
             return TempLimits {
                 caps,
-                shared_ram: Some(value("temptable_max_ram").unwrap_or(1024.0 * MB)),
+                shared_ram: Some(value("temptable_max_ram")),
                 blob_bound: false,
+                engine_unknown: false,
             };
         }
+        if mysql8 && engine.is_none() {
+            return TempLimits { caps: both, shared_ram: None, blob_bound: false, engine_unknown: true };
+        }
         TempLimits {
-            caps: vec![
-                ("tmp_table_size", value("tmp_table_size")),
-                ("max_heap_table_size", value("max_heap_table_size")),
-            ],
+            caps: both,
             shared_ram: None,
             // MySQL 8.0's MEMORY engine, MySQL 5.7 and MariaDB can't hold TEXT or BLOB values in memory.
             blob_bound: true,
+            engine_unknown: false,
         }
     }
 
@@ -246,15 +305,26 @@ impl TempLimits {
     fn describe(&self) -> String {
         let known: Vec<f64> = self.caps.iter().filter_map(|(_, v)| *v).collect();
         let smallest = known.iter().copied().reduce(f64::min);
-        match (self.caps.as_slice(), smallest, self.shared_ram) {
-            ([(name, Some(v))], _, Some(ram)) => format!(
-                "the in-memory limit ({name}, {}; and temptable_max_ram, {}, for all such tables together)",
+        let ram = |ram: &Option<f64>| match ram {
+            Some(v) => format!("temptable_max_ram, {}", format::bytes(*v)),
+            None => "temptable_max_ram".to_string(),
+        };
+        match (self.caps.as_slice(), smallest, &self.shared_ram) {
+            ([(name, Some(v))], _, Some(shared)) => format!(
+                "the in-memory limit ({name}, {}; and {}, for all such tables together)",
                 format::bytes(*v),
-                format::bytes(ram)
+                ram(shared)
             ),
-            ([], _, Some(ram)) => {
-                format!("temptable_max_ram ({}, for all temporary tables together)", format::bytes(ram))
+            ([], _, Some(Some(v))) => {
+                format!("temptable_max_ram ({}, for all temporary tables together)", format::bytes(*v))
             }
+            ([], _, Some(None)) => "temptable_max_ram (the memory for all temporary tables together)".to_string(),
+            (caps, Some(v), _) if caps.len() > 1 && self.engine_unknown => format!(
+                "the in-memory limit ({}, the smaller of {}, where these tables use the MEMORY engine; the TempTable \
+                 engine stops at tmp_table_size and temptable_max_ram instead)",
+                format::bytes(v),
+                format::list(&caps.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>())
+            ),
             (caps, Some(v), _) if caps.len() > 1 => format!(
                 "the in-memory limit ({}, the smaller of {})",
                 format::bytes(v),
@@ -268,7 +338,7 @@ impl TempLimits {
     fn fix(&self, snapshot: &Snapshot) -> Fix {
         let index = "Add an index that delivers rows already grouped or ordered so no temporary table is needed";
         let (names, current): (Vec<&str>, Option<f64>) = if self.caps.is_empty() {
-            (vec!["temptable_max_ram"], self.shared_ram)
+            (vec!["temptable_max_ram"], self.shared_ram.flatten())
         } else {
             (self.caps.iter().map(|(n, _)| *n).collect(), self.caps.iter().filter_map(|(_, v)| *v).reduce(f64::min))
         };
@@ -276,7 +346,7 @@ impl TempLimits {
         let proposed = current.map_or(floor, |c| (c * 2.0).max(floor));
         let now = |name: &str| {
             if self.caps.is_empty() {
-                self.shared_ram
+                self.shared_ram.flatten()
             } else {
                 self.caps.iter().find(|(n, _)| *n == name).and_then(|(_, v)| *v)
             }
@@ -307,7 +377,11 @@ impl TempLimits {
             summary: format!(
                 "{index}, or raise the in-memory limit to {}{}. {}",
                 format::bytes(proposed),
-                if self.caps.len() > 1 { " (both variables: the smaller one wins)" } else { "" },
+                match self.caps.len() {
+                    0 | 1 => "",
+                    _ if self.engine_unknown => " (both variables: with the MEMORY engine the smaller one wins)",
+                    _ => " (both variables: the smaller one wins)",
+                },
                 how.join(" ")
             ),
             sql: (!sql.is_empty()).then(|| sql.join("\n")),
@@ -369,8 +443,73 @@ pub(super) mod wording_tests {
             children: vec![],
             runtime: None,
         };
-        assert_eq!(describe_node(&n), "an index scan of orders");
+        let plan = |n: &PlanNode| Plan {
+            engine: Engine::Postgres,
+            kind: culprit_core::PlanKind::Estimated,
+            statement: None,
+            total_cost: 1.0,
+            root: n.clone(),
+            warnings: vec![],
+            index_hints: vec![],
+            props: Properties::new(),
+            raw: None,
+            insights: None,
+        };
+        assert_eq!(describe_node(&plan(&n), &n, None), "an index scan of orders");
         n.op = "Seq Scan".into();
-        assert_eq!(describe_node(&n), "a seq scan of orders");
+        assert_eq!(describe_node(&plan(&n), &n, None), "a seq scan of orders");
+    }
+
+    #[test]
+    fn rows_a_step_reads_are_said_as_measured_or_as_estimated() {
+        let mut n = PlanNode {
+            id: 1,
+            op: "Index range scan".into(),
+            kind: NodeKind::Seek,
+            detail: None,
+            object: Some("shop.orders".into()),
+            index: Some("ix_orders_status_created".into()),
+            seek_predicate: None,
+            predicate: None,
+            est_rows: 29_126.0,
+            est_executions: 1.0,
+            act_rows: None,
+            act_executions: None,
+            rows_read: Some(29_126.0),
+            table_rows: None,
+            subtree_cost: 1.0,
+            self_cost: 1.0,
+            act_time_ms: None,
+            warnings: vec![],
+            props: Properties::new(),
+            children: vec![],
+            runtime: None,
+        };
+        let plan = |n: &PlanNode| Plan {
+            engine: Engine::Mysql,
+            kind: culprit_core::PlanKind::Estimated,
+            statement: None,
+            total_cost: 1.0,
+            root: n.clone(),
+            warnings: vec![],
+            index_hints: vec![],
+            props: Properties::new(),
+            raw: None,
+            insights: None,
+        };
+        // An estimated plan's rows read are an estimate, not what the runs read.
+        assert_eq!(
+            describe_node(&plan(&n), &n, None),
+            "an index range scan of shop.orders, estimated to read 29K rows"
+        );
+        // MySQL's rows examined per run are this step's when it reads the plan's only table.
+        assert_eq!(
+            describe_node(&plan(&n), &n, Some(10_715.0)),
+            "an index range scan of shop.orders that examines 11K rows a run"
+        );
+        // Measured by the plan itself.
+        n.act_rows = Some(20_000.0);
+        n.rows_read = Some(20_000.0);
+        assert_eq!(describe_node(&plan(&n), &n, None), "an index range scan of shop.orders that reads 20K rows");
     }
 }

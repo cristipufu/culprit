@@ -6,6 +6,6 @@ export type DigestCounts = {
  */
 active: number, high: number, medium: number, low: number, 
 /**
- * Findings about queries that stopped running, most likely changed by a deploy.
+ * Findings about queries that stopped running: a deploy may have changed them.
  */
 stopped: number, };

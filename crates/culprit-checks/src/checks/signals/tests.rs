@@ -360,19 +360,31 @@ fn with_earlier_scan(mut s: Snapshot, counts: &[(&str, f64)], started_at: Option
 // it: two in the 12 hours since the start is High.
 #[test]
 fn escalations_without_an_earlier_scan_are_graded_on_their_rate_since_the_start() {
-    let s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
+    let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
     let f = &lock_escalations(&s)[0];
     assert_eq!(f.severity, Severity::High);
+    // Counted for 12 hours: none of them is older than that (the fresh SQL Server reading said "they may be old" three
+    // minutes after a restart).
     assert!(
         f.summary.starts_with(
-            "SQL Server replaced the row and page locks on orders with one lock on the whole table 2 times since it started, on Oct 11 at 00:13 UTC. \
-             It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old"
+            "SQL Server replaced the row and page locks on orders with one lock on the whole table 2 times since it started, on Oct 11 at 00:13 UTC, \
+             12 hours before this scan, so none is older than that."
         ),
         "{}",
         f.summary
     );
     assert!(f.summary.contains("once a day or more on average since then"), "{}", f.summary);
     assert_eq!(f.metrics.len(), 1);
+    // Counted for days, they may be old.
+    s.server.started_at = Some("2026-10-08T00:13:03Z".into());
+    let f = &lock_escalations(&s)[0];
+    assert!(
+        f.summary.contains(
+            "2 times since it started, on Oct 8 at 00:13 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old"
+        ),
+        "{}",
+        f.summary
+    );
 }
 
 // The false flag: one escalation since a start six months ago was High on a first scan. Without an earlier scan
@@ -543,9 +555,13 @@ fn histograms_for_guessed_filter_columns() {
         buckets: Some(3.0),
     }]);
     assert!(!missing_histogram(&s).iter().any(|f| f.title.contains("flavor")));
-    // MariaDB collects them with ANALYZE … PERSISTENT.
+    // MariaDB collects them with ANALYZE … PERSISTENT. Its guess is that the condition keeps every row: MySQL's 10%
+    // isn't one there.
     s.histograms = Some(vec![]);
     s.server.product = "MariaDB 11.8.9".into();
+    assert!(missing_histogram(&s).iter().all(|f| !f.title.contains("flavor")));
+    let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.plan.is_some()).unwrap();
+    q.plan.as_mut().unwrap().root.props.insert("filtered".into(), "100".into());
     let maria = missing_histogram(&s);
     let f = maria.iter().find(|f| f.title.contains("flavor")).unwrap();
     assert!(f.title.starts_with("MariaDB guesses"));

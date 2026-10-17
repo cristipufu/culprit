@@ -143,8 +143,9 @@ fn query_row(w: &Workload, q: &QueryStat) -> Value {
     json!({
         "id": q.id,
         "db_time_pct": pct(w.share(q.total_time_ms)),
-        // Per day only over 20 hours or more of data; otherwise null, with the measured runs and their window.
-        "runs_per_day": w.per_day_measured(q.executions).map(|v| round(v, 1)),
+        // Per day only where its runs came that way, over 20 hours or more; null for a burst or a few runs, with the
+        // measured runs and their window.
+        "runs_per_day": w.runs_per_day_of(q).map(|v| round(v, 1)),
         "runs": round(q.executions, 0),
         "window_hours": round(w.window_hours, 2),
         "avg_ms": round(q.mean_time_ms, 3),
@@ -225,7 +226,7 @@ pub fn query(report: &Report, id: &str) -> Result<Value> {
 }
 
 fn plan_summary(plan: &Plan) -> Value {
-    let hot = plan.hottest();
+    let hot = hottest(plan);
     json!({
         "kind": plan.kind,
         "hottest": hot.map(node_label),
@@ -246,13 +247,35 @@ fn warnings(plan: &Plan) -> Vec<&'static str> {
     all
 }
 
-/// Each operator's share of the time in actual plans that carry per-operator timing, of the estimated cost otherwise.
+/// Where the plan's work is, measured the way `share` measures it: the step with the most time of its own in an actual
+/// plan that carries per-operator timing, else the costliest. Never an exchange (its cost or time is passing rows
+/// between threads), none in a plan too cheap for any of its steps to matter, and none where the plan can't state the
+/// step's share (beside a step it puts no cost on, or on rows that rest on a default guess).
+fn hottest(plan: &Plan) -> Option<&PlanNode> {
+    if !culprit_core::insights::does_real_work(plan) {
+        return None;
+    }
+    let hot = match culprit_core::self_times(plan) {
+        Some(own) => {
+            let time = |n: &PlanNode| own.get(&n.id).copied().unwrap_or(0.0);
+            plan.nodes()
+                .into_iter()
+                .filter(|n| n.kind != culprit_core::NodeKind::Parallelism)
+                .max_by(|a, b| time(a).total_cmp(&time(b)))
+        }
+        None => plan.hottest(),
+    };
+    hot.filter(|hot| share(plan, hot).is_some())
+}
+
+/// Each operator's share of the time in actual plans that carry per-operator timing, of the estimated cost otherwise,
+/// where the plan can state one (`Plan::step_share`).
 fn share(plan: &Plan, node: &PlanNode) -> Option<f64> {
     if let Some(own) = culprit_core::self_times(plan) {
         let total: f64 = own.values().sum();
         return (total > 0.0).then(|| own.get(&node.id).copied().unwrap_or(0.0) / total);
     }
-    (plan.total_cost > 0.0).then(|| node.self_cost / plan.total_cost)
+    plan.step_share(node)
 }
 
 fn node_label(node: &PlanNode) -> String {
@@ -299,6 +322,12 @@ pub fn plan_tree(plan: &Plan) -> String {
         }
     }
     visit(plan, &plan.root, 0, &mut out);
+    // Shares of the estimated cost: say why a step has none ("-").
+    if culprit_core::self_times(plan).is_none()
+        && let Some(note) = culprit_engine::export::shares_note(plan)
+    {
+        out.push_str(&format!("   -  {note}\n"));
+    }
     out
 }
 
@@ -728,5 +757,20 @@ mod tests {
         assert_eq!(clip("abcdef", 3), "abc…");
         assert_eq!(bare("[dbo].[Orders]"), "dbo.orders");
         assert_eq!(bare("`shop`.`orders`"), "shop.orders");
+    }
+
+    #[test]
+    fn a_step_the_plan_puts_no_cost_on_gets_no_share() {
+        // MySQL costs the scan and not the filesort above it: the scan isn't "100%" of the work, nor the hottest step.
+        let text = std::fs::read_to_string(format!("{}/../../fixtures/mysql-demo.json", env!("CARGO_MANIFEST_DIR")))
+            .expect("fixture");
+        let snapshot: culprit_core::Snapshot = serde_json::from_str(&text).expect("snapshot");
+        let plan =
+            snapshot.workload.as_ref().and_then(|w| w.query("19bd4ff468839ea3")?.plan.clone()).expect("its plan");
+        let tree = plan_tree(&plan);
+        assert!(!tree.contains('%'), "{tree}");
+        assert!(tree.contains("has no cost of its own in the plan, so no share is given"), "{tree}");
+        let summary = plan_summary(&plan);
+        assert!(summary["hottest"].is_null() && summary["hottest_cost_pct"].is_null(), "{summary}");
     }
 }

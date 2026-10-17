@@ -139,7 +139,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             f.caveats.insert(
                 0,
                 format!(
-                    "Query {query_id} has not run since {} ({} before this scan's data ends). A deploy most likely \
+                    "Query {query_id} has not run since {} ({} before this scan's data ends). A deploy may have \
                      changed it; check that the current version of this code doesn't have the same problem.",
                     last.get(..16).unwrap_or(last).replace('T', " "),
                     format::duration(silence * 1000.0)
@@ -208,7 +208,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             f.caveats.insert(
                 0,
                 format!(
-                    "Query {} has not run since {} ({} before this scan's data ends). A deploy most likely \
+                    "Query {} has not run since {} ({} before this scan's data ends). A deploy may have \
                      changed it; check that the current version of this code doesn't have the same problem.",
                     p.query_id,
                     last.get(..16).unwrap_or(last).replace('T', " "),
@@ -368,8 +368,9 @@ pub(super) struct SeekableScan<'a> {
     lookups: Vec<String>,
 }
 
-/// Tables of this many rows or more: reading one in full where a seek would do costs something.
-pub(super) const SCAN_ROWS: f64 = 10_000.0;
+// Tables of `SCAN_ROWS` rows or more: reading one in full where a seek would do costs something (the bar every index
+// advice for a table's reads uses).
+use crate::indexes::SCAN_ROWS;
 /// An index that doesn't hold every column the query reads costs a lookup per row it finds: worth it over a scan only
 /// for a filter far narrower than an index's usual bar.
 const LOOKUPS_KEEP_AT_MOST: f64 = 0.01;
@@ -562,10 +563,33 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
             format!(" Automatic plan correction forced {a} of them after their queries got slower with a new plan.")
         }
     };
+    // Automatic plan correction keeps checking the plans it forced and unforces one that turns out slower, while it is
+    // on; a plan forced by hand (or once it's off) stays forced until someone unforces it.
+    let correcting = snapshot.tuning.as_ref().is_some_and(|t| {
+        t.automatic_tuning
+            .iter()
+            .any(|o| o.name.eq_ignore_ascii_case("FORCE_LAST_GOOD_PLAN") && o.actual.eq_ignore_ascii_case("ON"))
+    });
+    let checked = if correcting { automatic } else { 0 };
+    let unchecked = match (n - checked, checked) {
+        (0, _) => " It is still on, so it keeps checking the plans it forced and unforces one that turns out slower."
+            .to_string(),
+        (_, 0) => " Once the query or its indexes change, a forced plan can become the slower one without anything \
+                   saying so."
+            .to_string(),
+        (1, _) => " It is still on, so it keeps checking the plans it forced and unforces one that turns out slower. \
+                   The other plan stays forced until someone unforces it: once its query or indexes change, it can \
+                   become the slower one without anything saying so."
+            .to_string(),
+        (rest, _) => format!(
+            " It is still on, so it keeps checking the plans it forced and unforces one that turns out slower. The \
+             other {rest} stay forced until someone unforces them: once their queries or indexes change, one can \
+             become the slower one without anything saying so."
+        ),
+    };
     f.summary = format!(
         "SQL Server runs {} with the plan forced for {} instead of choosing one, even after an index is added or the \
-         data grows. That holds a query that once regressed to its good plan, but once the query or its indexes \
-         change, the forced plan can become the slower one without anything saying so.{automatic_sentence}",
+         data grows. That holds a query that once regressed to its good plan.{automatic_sentence}{unchecked}",
         if n == 1 { "this query" } else { "these queries" },
         if n == 1 { "it" } else { "each" },
     );
@@ -623,6 +647,12 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
     f
 }
 
+/// Azure's score below which it expects an index to save little next to what it costs every write.
+const LOW_SCORE: f64 = 10.0;
+
+/// Statements listed under a recommendation, the heaviest first; the rest are counted.
+const LISTED: usize = 5;
+
 pub(super) fn create_index_advice(
     snapshot: &Snapshot,
     r: &TuningRecommendation,
@@ -648,13 +678,28 @@ pub(super) fn create_index_advice(
         subject(SubjectKind::Table, &table_name),
     );
     f.title = format!("Azure SQL recommends an index on {} ({columns})", ix.table);
-    let include =
+    let including =
         if ix.include.is_empty() { String::new() } else { format!(", including {}", format::list(&ix.include)) };
+    // The statements behind it, where the scan captured them: those that compare every key with a value. One heavy
+    // enough, and measured reading pages for nothing, is evidence of its own that the index would pay.
+    let filtering = statements_filtering_on(snapshot, ix);
+    let keys = if ix.columns.len() == 1 { columns.clone() } else { format!("all of {columns}") };
+    let behind = match filtering.len() {
+        0 => format!(
+            "none of the statements this scan captured compares {keys} with a value: the ones it was recommended for \
+             may have changed, stopped running, or not be among them"
+        ),
+        1 => format!("{} (below) compares {keys} with a value", query_handle(filtering[0])),
+        n if n <= LISTED => format!("{n} statements this scan captured (below) compare {keys} with a value"),
+        n => format!(
+            "{n} statements this scan captured compare {keys} with a value; the {LISTED} that take the most time are \
+             below"
+        ),
+    };
     f.summary = format!(
-        "Azure SQL Database's automatic tuning recommends an index on {table_name} ({columns}{include}){}{}. It weighs \
+        "Azure SQL Database's automatic tuning recommends an index on {table_name} ({columns}{including}){}{}. It weighs \
          what the queries that read {} would save against what the index costs every write. The optimizer's own \
-         missing-index requests since the last restart don't include it, so check that those queries still run as \
-         they did.",
+         missing-index requests since the last restart don't include it; {behind}.",
         r.valid_since
             .as_deref()
             .map(|s| format!(", since {}", format::friendly_date(s, &snapshot.taken_at)))
@@ -662,21 +707,35 @@ pub(super) fn create_index_advice(
         r.score.map(|s| format!(", and scores it {s:.0} out of 100")).unwrap_or_default(),
         ix.table
     );
+    f.queries = query_refs(&filtering.iter().take(LISTED).copied().collect::<Vec<_>>());
     let rows = snapshot.table(&ix.schema, &ix.table).and_then(|t| t.rows);
+    // Large values stay out of INCLUDE, as in the optimizer's requests: copying them into an index costs more than the
+    // lookups back to the table it spares.
+    let mut include = ix.include.clone();
+    let large_note = crate::indexes::drop_large_includes(snapshot, &ix.schema, &ix.table, &mut include);
+    let large: Vec<String> = ix.include.iter().filter(|c| !include.contains(c)).cloned().collect();
     // An index that leads with the keys may hold the included columns too: then the recommendation predates it (a
-    // migration added it since), and it expires on its own. One that lacks them can be widened instead.
+    // migration added it since), and it expires on its own; the clustered index holds every column. One that lacks
+    // them can be widened instead.
     let same_keys = leading_index(snapshot, &ix.schema, &ix.table, &ix.columns, &ix.columns);
     let lacking: Vec<String> = match same_keys {
         Some(existing) => {
             let held: Vec<&str> =
                 existing.key_names().into_iter().chain(existing.include.iter().map(String::as_str)).collect();
-            ix.include.iter().filter(|c| !held.iter().any(|h| h.eq_ignore_ascii_case(c))).cloned().collect()
+            include.iter().filter(|c| !held.iter().any(|h| h.eq_ignore_ascii_case(c))).cloned().collect()
         }
         None => Vec::new(),
     };
-    if same_keys.is_some() && lacking.is_empty() {
+    if same_keys.is_some_and(|e| e.is_clustered) || (same_keys.is_some() && lacking.is_empty() && large.is_empty()) {
         return None;
     }
+    // Where an index with these keys exists, a statement reading for nothing isn't missing this one.
+    let heavy = heavy_reader(snapshot, &filtering).filter(|_| same_keys.is_none());
+    // Nor is one whose plan reads the table through another index while one that leads with keys it compares with a
+    // value is there: what it reads comes from the plan's choice (the heavy-query finding's to fix), so it is no
+    // evidence for creating this one.
+    let picked = heavy.as_ref().and_then(|h| picked_elsewhere(snapshot, ix, h));
+    let heavy = heavy.filter(|_| picked.is_none());
     f.severity = if r.score.is_some_and(|s| s >= 50.0) { Severity::Medium } else { Severity::Low };
     f.impact.score = base_score(f.severity) + r.score.unwrap_or(0.0) / 10.0;
     f.impact.label = "Recommended by Azure SQL".into();
@@ -687,48 +746,352 @@ pub(super) fn create_index_advice(
     if let Some(rows) = rows {
         f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
     }
-    if let Some(existing) = same_keys {
-        let them = if lacking.len() == 1 { "it" } else { "them" };
-        f.caveats.insert(
-            0,
-            format!(
-                "{} already leads with {columns}; the recommended index adds {}, which spares the queries that read \
-                 {them} the lookups back to the table. Including {them} in {} does the same with one index fewer to \
-                 maintain.",
-                existing.name,
-                format::list(&lacking),
-                existing.name
-            ),
-        );
-    }
+    // Azure's score weighs what it expects the index to save against its upkeep: a low one is its own word that the
+    // index is hardly worth having, unless a heavy statement the scan measured on exactly these keys says otherwise.
+    let low = r.score.filter(|s| *s < LOW_SCORE);
+    let rated = match (low, &heavy) {
+        (Some(s), Some(h)) => format!(
+            "Azure scores it {s:.0} out of 100, for what it expects the index to save next to what it costs every \
+             write, but {}, query {} below, filters on exactly these columns, takes {} of database time and reads {} \
+             pages a run to return {}: an index on them would find its rows directly. ",
+            query_handle(h.query),
+            h.query.id,
+            format::percent(h.share),
+            format::count(h.pages),
+            if h.rows <= 0.0 { "nothing" } else { "less than a row" }
+        ),
+        (Some(s), None) => format!(
+            "Azure scores it {s:.0} out of 100: it expects the index to save little next to what it costs every \
+             write, so it's usually not worth having. "
+        ),
+        (None, _) => String::new(),
+    };
+    // Low on Azure's word alone: the advice is conditional, and so is checking it.
+    let conditional = low.is_some() && heavy.is_none();
     let target = qualified(Engine::Mssql, &ix.schema, &ix.table);
     let name = ix.name.clone().unwrap_or_else(|| format!("ix_{}_{}", ix.table, ix.columns.join("_")));
-    f.fix = Some(Fix {
-        summary: "Create it online, outside the busiest hours. Azure SQL can also create recommended indexes itself \
-            (automatic tuning's CREATE_INDEX) and drops one that doesn't help."
-            .into(),
-        sql: Some(r.script.clone().unwrap_or_else(|| {
+    let create = |why: Option<String>| Fix {
+        summary: format!(
+            "{}{rated}{}",
+            why.map(|w| format!("{w} ")).unwrap_or_default(),
+            if conditional {
+                format!(
+                    "If the queries that read {} are slow all the same, create it online, outside the busiest hours.",
+                    ix.table
+                )
+            } else if low.is_some() {
+                "Create it online, outside the busiest hours.".to_string()
+            } else {
+                "Create it online, outside the busiest hours. Azure SQL can also create recommended indexes itself \
+                 (automatic tuning's CREATE_INDEX) and drops one that doesn't help."
+                    .to_string()
+            }
+        ),
+        // Azure's own script, unless it includes a column left out above.
+        sql: Some(r.script.clone().filter(|_| large.is_empty()).unwrap_or_else(|| {
             format!(
                 "CREATE NONCLUSTERED INDEX {} ON {target} ({}){} WITH (ONLINE = ON);",
                 quote(Engine::Mssql, &name),
                 ix.columns.iter().map(|c| quote(Engine::Mssql, c)).collect::<Vec<_>>().join(", "),
-                if ix.include.is_empty() {
+                if include.is_empty() {
                     String::new()
                 } else {
                     format!(
                         " INCLUDE ({})",
-                        ix.include.iter().map(|c| quote(Engine::Mssql, c)).collect::<Vec<_>>().join(", ")
+                        include.iter().map(|c| quote(Engine::Mssql, c)).collect::<Vec<_>>().join(", ")
                     )
                 }
             )
         })),
         cost: None,
-    });
-    f.verify = vec![format!(
-        "Re-scan a day later: the recommendation is gone, and the queries that read {} do fewer reads.",
-        ix.table
-    )];
+    };
+    let fix = match (same_keys, picked.as_ref().filter(|_| low.is_some())) {
+        (Some(existing), _) => {
+            // What the index really leads with: its own key order, which needn't be the recommendation's.
+            let leads = format::list(
+                &existing.key_names()[..ix.columns.len()].iter().map(|k| k.to_string()).collect::<Vec<_>>(),
+            );
+            if lacking.is_empty() {
+                f.caveats.push(format!(
+                    "{} already leads with {leads}; the recommended index differs from it only by including {}.",
+                    existing.name,
+                    format::list(&large)
+                ));
+                Fix {
+                    summary: format!(
+                        "{rated}Nothing to create: {} already finds these rows by {leads}, and the recommended index \
+                         would only copy {} into a second index. Let the recommendation expire.",
+                        existing.name,
+                        format::list(&large)
+                    ),
+                    sql: None,
+                    cost: None,
+                }
+            } else {
+                let them = if lacking.len() == 1 { "it" } else { "them" };
+                f.caveats.push(format!(
+                    "{} already leads with {leads}; the recommended index adds {}, which spares the queries that read \
+                     {them} the lookups back to the table. Including {them} in {} does the same with one index fewer to \
+                     maintain.",
+                    existing.name,
+                    format::list(&lacking),
+                    existing.name
+                ));
+                match crate::indexes::widen_index(snapshot, existing, &lacking) {
+                    crate::indexes::Widening::Sql(fix) => Fix { summary: format!("{rated}{}", fix.summary), ..fix },
+                    crate::indexes::Widening::Refused(why) => create(Some(why)),
+                }
+            }
+        }
+        // Azure's low score, and the one statement that would say otherwise reads past an index there is: nothing to
+        // create, and the heavy-query finding has the fix.
+        (None, Some(p)) => Fix {
+            summary: format!(
+                "{rated}Nothing to create: {} already leads with {}, which query {} compares with a value, but its \
+                 plan picks {} expecting {}, and its runs read {} pages each to return {}. That comes from the plan's \
+                 estimate, not from a missing index (see heavy-query:{}). Let the recommendation expire.",
+                p.other.name,
+                format::list(&p.keys),
+                p.query.id,
+                p.used,
+                rows_expected(p.estimate),
+                format::count(p.pages),
+                if p.rows <= 0.0 { "nothing" } else { "less than a row" },
+                p.query.id
+            ),
+            sql: None,
+            cost: None,
+        },
+        (None, None) => {
+            if let Some((other, keys)) = leading_with_some(snapshot, ix) {
+                // The heavy statement's plan says which index it reads the table through: the engine's own choice.
+                let instead = heavy.as_ref().and_then(|h| {
+                    let used = indexes_read_through(h.query, &ix.schema, &ix.table);
+                    (!used.is_empty() && !used.iter().any(|u| u.eq_ignore_ascii_case(&other.name)))
+                        .then(|| (h.query.id.clone(), format::list(&used)))
+                });
+                let check = match (instead, &picked) {
+                    (Some((id, used)), _) => format!(
+                        ", but query {id}'s plan reads {} through {used} instead, so that index isn't serving it.",
+                        ix.table
+                    ),
+                    (None, Some(p)) => format!(
+                        ", but query {}'s plan reads {} through {} instead, expecting {}: heavy-query:{} is about \
+                         that choice.",
+                        p.query.id,
+                        ix.table,
+                        p.used,
+                        rows_expected(p.estimate),
+                        p.query.id
+                    ),
+                    (None, None) => format!(
+                        ": check whether the queries that read {} use it before adding an index beside it.",
+                        ix.table
+                    ),
+                };
+                f.caveats.push(format!(
+                    "{} already leads with {}{}, {} of the {} recommended keys{check}",
+                    other.name,
+                    format::list(&keys),
+                    other
+                        .filter
+                        .as_deref()
+                        .map(|filter| format!(" for the rows where {}", crate::indexes::readable_filter(filter)))
+                        .unwrap_or_default(),
+                    keys.len(),
+                    ix.columns.len(),
+                ));
+            }
+            create(None)
+        }
+    };
+    // Columns left out of INCLUDE matter only for an index worth creating.
+    if let Some(note) = large_note.filter(|_| fix.sql.is_some()) {
+        f.caveats.push(note);
+    }
+    let nothing_to_create = fix.sql.is_none() && same_keys.is_some() && lacking.is_empty();
+    let picked_nothing = fix.sql.is_none() && same_keys.is_none();
+    f.fix = Some(fix);
+    let fewer_reads = match &heavy {
+        Some(h) => format!("query {} reads far fewer than {} pages a run", h.query.id, format::count(h.pages)),
+        None => format!("the queries that read {} do fewer reads", ix.table),
+    };
+    f.verify = vec![if nothing_to_create {
+        "Nothing to change: once Azure lets the recommendation expire, this finding goes with it.".to_string()
+    } else if let Some(p) = picked.as_ref().filter(|_| picked_nothing) {
+        format!(
+            "Nothing to change here: once heavy-query:{}'s fix is in, query {} reads a few pages a run, and when Azure \
+             lets the recommendation expire, this finding goes with it.",
+            p.query.id, p.query.id
+        )
+    } else if conditional {
+        format!("Only if you apply it: re-scan a day later; the recommendation is gone, and {fewer_reads}.")
+    } else {
+        format!("Re-scan a day later: the recommendation is gone, and {fewer_reads}.")
+    }];
     Some(f)
+}
+
+/// The heavy-query check's bar: a statement that takes this share of database time is one of the heaviest.
+const HEAVY_SHARE: f64 = 0.05;
+
+/// Pages a run from which a read that returns nothing is reading for nothing (the heavy-query check's own bar).
+const NOTHING_READS: f64 = 100.0;
+
+/// The statements the scan captured that compare every key of a recommended index with a value (`tenant_id = @p0 AND
+/// is_deleted = 0`): those the index would find rows for by its keys. Not monitoring or session statements.
+fn statements_filtering_on<'a>(snapshot: &'a Snapshot, ix: &RecommendedIndex) -> Vec<&'a QueryStat> {
+    let value = |v: &str| (v.len() > 1 && v.starts_with('@')) || crate::indexes::is_literal(v) || v.starts_with("n'");
+    let mut found: Vec<&QueryStat> = queries_touching(snapshot, &ix.schema, &ix.table)
+        .into_iter()
+        .filter(|q| !is_monitoring_query(q) && !culprit_core::sql::is_session_statement(&q.text))
+        .filter(|q| ix.columns.iter().all(|c| crate::indexes::compared_to(&q.text, &ix.table, c, value)))
+        .collect();
+    found.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
+    found
+}
+
+/// A statement behind a recommendation measured heavy and reading for nothing.
+struct HeavyReader<'a> {
+    query: &'a QueryStat,
+    share: f64,
+    pages: f64,
+    rows: f64,
+}
+
+/// Of the statements behind a recommendation, the heaviest that takes a heavy query's share of database time and
+/// reads at least [`NOTHING_READS`] pages a run to return less than a row: its filter keeps nothing of what it reads, so
+/// an index on its keys finds its rows directly (the share kept is far under `INDEX_KEEPS_AT_MOST`). What the runs
+/// measured outweighs Azure's estimate.
+fn heavy_reader<'a>(snapshot: &Snapshot, statements: &[&'a QueryStat]) -> Option<HeavyReader<'a>> {
+    let workload = snapshot.workload.as_ref()?;
+    statements.iter().find_map(|&q| {
+        let share = workload.share_of(q.total_time_ms, q);
+        let (pages, rows) = (q.reads_per_execution()?, q.rows_per_execution()?);
+        (!q.writes_rows() && share >= HEAVY_SHARE && pages >= NOTHING_READS && rows < 1.0).then_some(HeavyReader {
+            query: q,
+            share,
+            pages,
+            rows,
+        })
+    })
+}
+
+/// A heavy statement behind a recommendation whose plan reads the table through `used`, picked on an estimate of
+/// `estimate` rows, while `other` already leads with `keys`, columns it compares with a value.
+struct PickedElsewhere<'a> {
+    query: &'a QueryStat,
+    other: &'a IndexStat,
+    keys: Vec<String>,
+    used: String,
+    estimate: f64,
+    pages: f64,
+    rows: f64,
+}
+
+/// Whether the heavy statement behind a recommendation reads the table by a seek its plan costed for far fewer rows than
+/// its runs read (the heavy-query check's misestimate), while another index leads with a key it compares with a value
+/// and the seek doesn't seek on (one it can use: unfiltered, or its filter as the statement writes it). The plan chose
+/// its index on that estimate: the engine's own choice, shown in the plan, and the heavy-query finding's to fix, with
+/// statistics that let it find the rows by that key. `None` without a plan, or when it seeks no index on the table.
+fn picked_elsewhere<'a>(
+    snapshot: &'a Snapshot,
+    ix: &RecommendedIndex,
+    h: &HeavyReader<'a>,
+) -> Option<PickedElsewhere<'a>> {
+    let seek = first_seek(h.query, &ix.schema, &ix.table)?;
+    let used = seek.index.as_deref()?.trim_matches(['[', ']', '"']).to_string();
+    let estimate = seek.est_rows_total();
+    if estimate * culprit_core::MISESTIMATE_FACTOR > h.pages {
+        return None;
+    }
+    let sought = predicate_columns(seek.seek_predicate.as_deref().unwrap_or_default());
+    let is_sought = |c: &str| sought.equality.iter().chain(&sought.range).any(|s| s.eq_ignore_ascii_case(c));
+    let recommended = |c: &str| ix.columns.iter().any(|k| k.eq_ignore_ascii_case(c));
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| i.schema.eq_ignore_ascii_case(&ix.schema) && i.table.eq_ignore_ascii_case(&ix.table))
+        .filter(|i| !i.is_disabled && !i.name.eq_ignore_ascii_case(&used))
+        .filter(|i| i.filter.as_deref().is_none_or(|f| crate::indexes::fits_filter(&ix.table, f, &[h.query])))
+        .filter(|i| i.key_names().first().is_some_and(|k| recommended(k) && !is_sought(k)))
+        .map(|i| {
+            let keys: Vec<String> =
+                i.key_names().into_iter().take_while(|k| recommended(k)).map(str::to_string).collect();
+            (i, keys)
+        })
+        .max_by_key(|(i, keys)| (keys.len(), i.filter.is_none(), std::cmp::Reverse(i.columns.len())))
+        .map(|(other, keys)| PickedElsewhere {
+            query: h.query,
+            other,
+            keys,
+            used,
+            estimate,
+            pages: h.pages,
+            rows: h.rows,
+        })
+}
+
+/// "1 row", "12 rows": what a plan expects a read to find.
+fn rows_expected(rows: f64) -> String {
+    let rows = if rows >= 10.0 { rows.round() } else { (rows * 10.0).round() / 10.0 };
+    format!("{} {}", format::count(rows), if rows == 1.0 { "row" } else { "rows" })
+}
+
+/// The first step of a statement's captured plan on a table, when it seeks an index.
+fn first_seek<'a>(q: &'a QueryStat, schema: &str, table: &str) -> Option<&'a culprit_core::PlanNode> {
+    q.plan
+        .as_ref()?
+        .nodes()
+        .into_iter()
+        .find(|n| {
+            n.object
+                .as_deref()
+                .and_then(split_object)
+                .is_some_and(|(s, t)| s.eq_ignore_ascii_case(schema) && t.eq_ignore_ascii_case(table))
+                && matches!(n.kind, NodeKind::Seek | NodeKind::Scan)
+        })
+        .filter(|n| n.kind == NodeKind::Seek && n.index.is_some())
+}
+
+/// The indexes a statement's captured plan seeks or scans on a table, in plan order (not the lookups back to it): how
+/// the optimizer chose to read it. Empty without a plan.
+fn indexes_read_through(q: &QueryStat, schema: &str, table: &str) -> Vec<String> {
+    let mut used: Vec<String> = Vec::new();
+    for n in q.plan.as_ref().map(|p| p.nodes()).unwrap_or_default() {
+        let on_table = n
+            .object
+            .as_deref()
+            .and_then(split_object)
+            .is_some_and(|(s, t)| s.eq_ignore_ascii_case(schema) && t.eq_ignore_ascii_case(table));
+        if let (true, NodeKind::Seek | NodeKind::Scan, Some(index)) = (on_table, n.kind, n.index.as_deref())
+            && !used.iter().any(|u| u.eq_ignore_ascii_case(index))
+        {
+            used.push(index.to_string());
+        }
+    }
+    used
+}
+
+/// The enabled index on the recommendation's table that leads with the most of its keys, in any order, when one leads
+/// with any: the queries behind the recommendation may already use it. The unfiltered one first, then the narrowest.
+fn leading_with_some<'a>(snapshot: &'a Snapshot, ix: &RecommendedIndex) -> Option<(&'a IndexStat, Vec<String>)> {
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| {
+            i.schema.eq_ignore_ascii_case(&ix.schema) && i.table.eq_ignore_ascii_case(&ix.table) && !i.is_disabled
+        })
+        .filter_map(|i| {
+            let keys: Vec<String> = i
+                .key_names()
+                .into_iter()
+                .take_while(|k| ix.columns.iter().any(|c| c.eq_ignore_ascii_case(k)))
+                .map(str::to_string)
+                .collect();
+            (!keys.is_empty()).then_some((i, keys))
+        })
+        .max_by_key(|(i, keys)| (keys.len(), i.filter.is_none(), std::cmp::Reverse(i.columns.len())))
 }
 
 pub(super) fn drop_index_advice(

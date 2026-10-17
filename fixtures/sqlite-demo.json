@@ -174,7 +174,7 @@
   "connection": "sqlite-demo",
   "constraints": [],
   "deadlocks": null,
-  "duration_ms": 180.56449999999998,
+  "duration_ms": 214.635166,
   "environment": "development",
   "escalations_before": null,
   "foreign_keys": [
@@ -220,7 +220,7 @@
   ],
   "format": 1,
   "histograms": null,
-  "id": "20261015T225627.091Z",
+  "id": "20261016T210115.862Z",
   "indexes": [
     {
       "columns": [
@@ -579,7 +579,7 @@
       "xid_age": null
     }
   ],
-  "taken_at": "2026-10-15T22:56:27Z",
+  "taken_at": "2026-10-16T21:01:15Z",
   "tuning": null,
   "waits": [],
   "workload": {

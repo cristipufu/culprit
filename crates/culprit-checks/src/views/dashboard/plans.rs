@@ -4,7 +4,6 @@ use super::*;
 
 pub(super) fn plans(s: &Snapshot) -> Tile {
     let Some(w) = &s.workload else { return no_workload(TileKey::Plans, "there are no plans to read") };
-    let total = w.total_time_ms.max(1.0);
     // Plans of queries that stopped running (most likely changed by a deploy) would describe code that is gone, and a
     // statement that ran once isn't what the application runs.
     let with_plans: Vec<&QueryStat> =
@@ -36,10 +35,14 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
     let mut note = None;
     for q in &with_plans {
         let Some(plan) = &q.plan else { continue };
-        let found = match &plan.insights {
+        // What the plan-insights check reports: an insight capped at Low (a cheap plan, a small spill) isn't a fix.
+        let found: Vec<_> = match &plan.insights {
             Some(i) => i.items.clone(),
             None => insights(plan),
-        };
+        }
+        .into_iter()
+        .filter(|i| i.severity > Severity::Low)
+        .collect();
         if note.is_none() {
             note = plan.insights.as_ref().and_then(|i| i.note.clone()).or_else(|| coverage_note(plan));
         }
@@ -47,7 +50,7 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
             continue;
         }
         flagged += 1;
-        let share = q.total_time_ms / total;
+        let share = w.share_of(q.total_time_ms, q);
         let mut rules = HashSet::new();
         for i in &found {
             if !rules.insert(i.rule.clone()) {

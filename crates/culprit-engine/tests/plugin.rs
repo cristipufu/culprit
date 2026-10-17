@@ -89,6 +89,46 @@ impl Provider for Replay {
     }
 }
 
+/// [`Replay`], explaining each recorded statement the way an engine would explain it now: its recorded plan, without the
+/// marks a report's preparation puts on the plans of a scan from its catalog.
+struct Explains;
+
+#[async_trait]
+impl Provider for Explains {
+    fn engine(&self) -> Engine {
+        Engine::Postgres
+    }
+
+    async fn probe(&self) -> Result<ServerInfo> {
+        Replay.probe().await
+    }
+
+    async fn snapshot(&self, connection: &str, options: &SnapshotOptions) -> Result<Snapshot> {
+        Replay.snapshot(connection, options).await
+    }
+
+    async fn explain(&self, sql: &str, _: ExplainMode) -> Result<Plan> {
+        let queries = recorded().workload.map(|w| w.queries).unwrap_or_default();
+        queries
+            .into_iter()
+            .find(|q| q.text == sql)
+            .and_then(|q| q.plan)
+            .ok_or_else(|| Error::invalid("no plan recorded"))
+    }
+
+    async fn live(&self) -> Result<LiveState> {
+        Replay.live().await
+    }
+
+    async fn run(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        Replay.run(sql, limit).await
+    }
+
+    async fn execute(&self, sql: &str, limit: usize) -> Result<ResultSet> {
+        Replay.execute(sql, limit).await
+    }
+}
+
 fn recorded() -> Snapshot {
     serde_json::from_slice(&std::fs::read(fixture()).expect("fixture")).expect("snapshot")
 }
@@ -124,6 +164,35 @@ async fn a_plugged_in_provider_serves_a_full_scan() {
     assert!(report.findings.iter().any(|f| f.id == "acme.marker:demo"), "plugged-in checks ran too");
     let saved = ws.latest_report("replayed", None).expect("read back").expect("report was stored");
     assert_eq!(saved.snapshot.id, report.snapshot.id);
+    let _ = std::fs::remove_dir_all(home);
+}
+
+// A plan fetched apart from the scan (a stored plan, or one explained when it is opened) reads the way the report's own
+// plans do: marked with the latest scan's catalog, such as the indexes on a table it scans.
+#[tokio::test]
+async fn a_plan_opened_from_a_report_reads_with_the_reports_catalog() {
+    let home = temp_home("plan");
+    let ws = Workspace::open_in(&home)
+        .with_provider(Engine::Postgres, Arc::new(|_| Ok(Box::new(Explains) as Box<dyn Provider>)));
+    ws.add_connection(NewConnection {
+        name: "replayed".into(),
+        input: "postgres://reader@replay.invalid:5432/demo".into(),
+        auth: Some(AuthKind::None),
+        ..Default::default()
+    })
+    .expect("save connection");
+    let report = ws.scan("replayed", &SnapshotOptions::default()).await.expect("scan");
+    let marked = |plan: &Plan| plan.nodes().iter().any(|n| n.props.contains_key(culprit_core::insights::TABLE_INDEXES));
+    let q = report
+        .snapshot
+        .workload
+        .as_ref()
+        .and_then(|w| w.queries.iter().find(|q| q.plan.as_ref().is_some_and(marked)))
+        .expect("a scan the report's catalog marks");
+    let explained = Explains.explain(&q.text, ExplainMode::Estimated).await.expect("explained");
+    assert!(!marked(&explained), "the engine's plan has no catalog marks of its own");
+    let plan = ws.query_plan("replayed", &q.id, None).await.expect("plan");
+    assert!(marked(&plan), "{:?}", plan.nodes().iter().map(|n| &n.props).collect::<Vec<_>>());
     let _ = std::fs::remove_dir_all(home);
 }
 

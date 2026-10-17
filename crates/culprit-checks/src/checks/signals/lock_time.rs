@@ -27,6 +27,25 @@ pub(super) fn times_out_on_locks(q: &QueryStat) -> bool {
     })
 }
 
+/// Whether MariaDB counted this statement's whole run as its lock time. With the slow log writing to a table
+/// (`log_output` with TABLE), a statement slower than long_query_time reports a lock time of about its whole run: the
+/// demo's GROUP BY over a million rows a run showed 49,963.3 ms of lock in 49,963.9 ms, and 9.6 ms in a scan with the
+/// slow log off. Where long_query_time was lower for part of the window, the same shows as a statement that examines
+/// thousands of rows a run in almost no time besides its lock wait. Its lock time says nothing then.
+pub(crate) fn lock_time_counts_the_run(snapshot: &Snapshot, q: &QueryStat) -> bool {
+    let setting = |name: &str| snapshot.setting(name).map(|s| s.value.trim().to_ascii_uppercase());
+    let slow_log_to_table = setting("log_output").is_some_and(|v| v.contains("TABLE"))
+        && ["slow_query_log", "log_slow_query"].iter().any(|n| setting(n).is_some_and(|v| crate::config::is_on(&v)));
+    if !is_mariadb(snapshot) || !slow_log_to_table {
+        return false;
+    }
+    let logged = setting("long_query_time")
+        .and_then(|v| v.parse::<f64>().ok())
+        .is_some_and(|seconds| q.max_time_ms.unwrap_or(q.mean_time_ms) >= seconds * 1_000.0);
+    let examined = q.logical_reads.map(|r| per_run(r, q.executions)).unwrap_or(0.0);
+    logged || (lock_ms(q) >= 0.99 * q.total_time_ms && examined >= 10_000.0)
+}
+
 pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
     let total_db = snapshot.workload.as_ref().map(|w| w.total_time_ms).unwrap_or(0.0);
     let mut findings: Vec<Finding> = app_queries(snapshot)
@@ -34,6 +53,8 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|q| query_handle(q) != "a query")
         // Lock wait timeouts are already the failing-query finding, with the same fix.
         .filter(|q| !times_out_on_locks(q))
+        // A lock time MariaDB made of the statement's whole run isn't waiting.
+        .filter(|q| !lock_time_counts_the_run(snapshot, q))
         .filter_map(|q| {
             let lock = lock_ms(q);
             let share = per_run(lock, q.total_time_ms);
@@ -88,8 +109,18 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("Share of its time", share, Unit::Ratio),
                 Metric::new("Per run", each, Unit::Ms),
             ];
+            // A read that waits for writers' locks because reads don't use row versions here: that setting is the
+            // change that removes the wait, as config:read-committed-snapshot says.
+            let versioning = crate::config::read_committed_snapshot_off(snapshot) && crate::config::versioning_spares_read(q);
+            let holders = "the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere.";
             f.fix = Some(Fix {
-                summary: "Find the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere.".into(),
+                summary: if versioning {
+                    format!(
+                        "This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. Without it, find {holders}"
+                    )
+                } else {
+                    format!("Find {holders}")
+                },
                 sql: None,
                 cost: None,
             });

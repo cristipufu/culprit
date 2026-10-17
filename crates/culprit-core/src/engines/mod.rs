@@ -44,6 +44,14 @@ pub trait EngineSpec: Send + Sync {
     /// How to set `name` to `value` on a server Culprit reaches with SQL.
     fn change_setting(&self, server: &ServerInfo, name: &str, value: &str) -> SettingChange;
 
+    /// How to set `name` to `value` for the scanned database alone, where the engine keeps settings per database and
+    /// its owner may set this one without being a superuser (PostgreSQL's `ALTER DATABASE … SET` for a setting of
+    /// context `user`). It works on a managed service too, where the server's own settings are the platform's. `None`
+    /// where the setting is only the server's.
+    fn database_setting(&self, _server: &ServerInfo, _name: &str, _value: &str) -> Option<SettingChange> {
+        None
+    }
+
     /// The fix for a table whose optimizer statistics are stale: recompute them (`target` already qualified), and how
     /// to keep them fresh.
     fn refresh_statistics(&self, target: &str) -> Fix;

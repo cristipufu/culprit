@@ -8,7 +8,7 @@
       "fix": {
         "cost": "work_mem is per sort or hash, per connection: size it with your connection count in mind.",
         "sql": "-- For the role the application connects as (takes effect on its next connections):\nALTER ROLE <app_role> SET work_mem = '64MB';\n\n-- Or only for this statement, inside its transaction:\nSET LOCAL work_mem = '64MB';",
-        "summary": "Give this statement more sort memory (64MB instead of 4MB, if the application's role doesn't already set more), for the role the application connects as or only around this statement, rather than server-wide; or add an index that returns rows already in the order the sort needs, or sort fewer rows."
+        "summary": "Give this statement more sort memory (64MB instead of 4MB, if the application's role doesn't already set more), for the role the application connects as or only around this statement, rather than server-wide; or add an index that returns rows already in the order the sort needs, or sort fewer rows. Where the application doesn't use every row it receives, return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database."
       },
       "id": "temp-spill:9065391607317686058",
       "impact": {
@@ -31,55 +31,12 @@
           "text": null,
           "unit": "ms",
           "value": 331.8799853551402
-        }
-      ],
-      "queries": [
-        {
-          "id": "9065391607317686058",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "medium",
-      "subject": {
-        "kind": "query",
-        "name": "9065391607317686058"
-      },
-      "summary": "A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory.",
-      "title": "A read from orders writes about 19.9 MB of temp files per run",
-      "verify": []
-    },
-    {
-      "category": "queries",
-      "caveats": [],
-      "check": "big-result",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Return only what's used: page the results (keyset pagination, or LIMIT / OFFSET … FETCH), filter in SQL rather than in the application, select only the columns you need, and aggregate in the database."
-      },
-      "id": "big-result:9065391607317686058",
-      "impact": {
-        "db_time_share": 0.44029066258942773,
-        "label": "247K rows per run",
-        "score": 66.35440170700267,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
+        },
         {
           "label": "Rows per run",
           "text": null,
           "unit": "rows",
           "value": 246582.89719626168
-        },
-        {
-          "label": "Runs",
-          "text": null,
-          "unit": "count",
-          "value": 214.0
         },
         {
           "label": "Bytes per run (estimated)",
@@ -92,7 +49,7 @@
         {
           "id": "9065391607317686058",
           "note": null,
-          "plan_node": null
+          "plan_node": 1
         }
       ],
       "severity": "medium",
@@ -100,10 +57,11 @@
         "kind": "query",
         "name": "9065391607317686058"
       },
-      "summary": "Each run sends 247K rows to the application, about 17.4 MB at the plan's estimated 74 B per row; its 214 runs since its statistics began 4 h 53 min ago moved 52.8M rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
-      "title": "A read from orders returns 247K rows (≈ 17.4 MB) per run",
+      "summary": "A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.",
+      "title": "A read from orders writes about 19.9 MB of temp files per run",
       "verify": [
-        "Re-scan: rows per run should drop to what a page or a job actually uses."
+        "Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), scan again after the statement has run a while and compare its temp files with this scan's: 4.2 GB over 214 runs now. pg_stat_statements keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.",
+        "If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses."
       ]
     },
     {
@@ -112,9 +70,9 @@
       "check": "filtered-scan",
       "confidence": "high",
       "fix": {
-        "cost": "public.orders received no writes, so this index would cost nothing to keep up there.",
+        "cost": "public.orders had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
-        "summary": "Create an index on customer_id so these queries seek instead of scanning."
+        "summary": "Create an index on customer_id so the query seeks instead of scanning."
       },
       "id": "filtered-scan:public.orders(customer_id)",
       "impact": {
@@ -157,113 +115,11 @@
         "kind": "table",
         "name": "public.orders"
       },
-      "summary": "One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. Together they account for 23% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
+      "summary": "One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 23% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
       "title": "orders is read in full to find rows by customer_id",
       "verify": [
-        "Explain one of the queries again: the scan of orders should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
-      ]
-    },
-    {
-      "category": "maintenance",
-      "caveats": [
-        "PostgreSQL's statistics also estimate about 123 MB of wide (74%) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum."
-      ],
-      "check": "dead-rows",
-      "confidence": "high",
-      "fix": {
-        "cost": "VACUUM doesn't block reads or writes; it does add I/O while it runs.",
-        "sql": "VACUUM (ANALYZE) archive.wide;\nALTER TABLE archive.wide SET (autovacuum_vacuum_scale_factor = 0.02);",
-        "summary": "Vacuum it now, and make autovacuum visit this table sooner. If dead rows come back quickly, look for long-running transactions in Live: they stop vacuum from cleaning up."
-      },
-      "id": "dead-rows:archive.wide",
-      "impact": {
-        "db_time_share": null,
-        "label": "126K dead rows",
-        "score": 28.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Dead rows",
-          "text": null,
-          "unit": "rows",
-          "value": 126428.0
-        },
-        {
-          "label": "Live rows",
-          "text": null,
-          "unit": "rows",
-          "value": 45000.0
-        },
-        {
-          "label": "Dead share",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.7374991249970834
-        },
-        {
-          "label": "Autovacuum trigger",
-          "text": null,
-          "unit": "rows",
-          "value": 9050.0
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "table",
-        "name": "archive.wide"
-      },
-      "summary": "archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K rows changed since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.",
-      "title": "74% of wide is dead rows",
-      "verify": []
-    },
-    {
-      "category": "indexes",
-      "caveats": [],
-      "check": "unindexed-fk",
-      "confidence": "high",
-      "fix": {
-        "cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
-        "sql": "CREATE INDEX CONCURRENTLY ix_order_items_order_id\n    ON public.order_items (order_id);",
-        "summary": "Index the foreign key column on public.order_items."
-      },
-      "id": "unindexed-fk:public.order_items(order_id)",
-      "impact": {
-        "db_time_share": null,
-        "label": "1.0M rows unindexed",
-        "score": 26.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Rows in table",
-          "text": null,
-          "unit": "rows",
-          "value": 1000000.0
-        },
-        {
-          "label": "Foreign key",
-          "text": "order_items_order_id_fkey",
-          "unit": "text",
-          "value": 0.0
-        }
-      ],
-      "queries": [],
-      "severity": "medium",
-      "subject": {
-        "kind": "table",
-        "name": "public.order_items"
-      },
-      "summary": "Deleting a row from public.orders, or changing its key, makes the database look for matching rows in public.order_items (1.0M rows) without an index, which means reading the whole table. Queries that load order_items rows for one orders row can't seek either.",
-      "title": "order_items has no index on order_id, its foreign key to orders",
-      "verify": [
-        "Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone."
+        "Explain the query again: the scan of orders should become an index seek/scan on the new index.",
+        "Re-scan after the workload has run: this finding should be gone and the query's share of database time lower."
       ]
     },
     {
@@ -323,7 +179,7 @@
         "kind": "query",
         "name": "-967240904657798800"
       },
-      "summary": "Each plan takes 90 ms and the statement then runs for 0.05 ms: almost all of its time goes to planning, 27.0 s since its statistics began 4 h 53 min ago (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused.",
+      "summary": "Each plan takes 90 ms and the statement then runs for 0.05 ms: almost all of its time goes to planning, 27.0 s since its statistics began 5 hours ago (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused.",
       "title": "Planning takes almost all of the time of a read from orders",
       "verify": [
         "Re-scan: planning should be a small part of its time."
@@ -369,59 +225,6 @@
       ]
     },
     {
-      "category": "queries",
-      "caveats": [
-        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
-      ],
-      "check": "chatty-query",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": null,
-        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
-      },
-      "id": "chatty-query:3432126458605143571",
-      "impact": {
-        "db_time_share": 0.0008000892165181061,
-        "label": "68% of executions",
-        "score": 30.072744781156956,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [
-        {
-          "label": "Share of executions",
-          "text": null,
-          "unit": "ratio",
-          "value": 0.6811039986698811
-        },
-        {
-          "label": "Average duration",
-          "text": null,
-          "unit": "ms",
-          "value": 0.015752548394971234
-        }
-      ],
-      "queries": [
-        {
-          "id": "3432126458605143571",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "low",
-      "subject": {
-        "kind": "query",
-        "name": "3432126458605143571"
-      },
-      "summary": "This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (<1% of database time), but each call costs a network round trip and a connection.",
-      "title": "A read from customers runs 8.2K times in 5 hours, one row at a time",
-      "verify": [
-        "After the change, this statement's executions per day should drop by orders of magnitude."
-      ]
-    },
-    {
       "category": "maintenance",
       "caveats": [
         "The update behind most of these ran once in the 5 hours since statistics were reset: a backfill or a migration looks like this, and its share stays in the counts long after. It needs work only if updates like it keep coming.",
@@ -438,7 +241,7 @@
       "impact": {
         "db_time_share": 0.0020258282914707294,
         "label": "0% HOT",
-        "score": 22.0,
+        "score": 30.79564970255367,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -494,14 +297,67 @@
       ]
     },
     {
+      "category": "queries",
+      "caveats": [
+        "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
+      ],
+      "check": "chatty-query",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this."
+      },
+      "id": "chatty-query:3432126458605143571",
+      "impact": {
+        "db_time_share": 0.0008000892165181061,
+        "label": "68% of executions",
+        "score": 30.072744781156956,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Share of executions",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.6811039986698811
+        },
+        {
+          "label": "Average duration",
+          "text": null,
+          "unit": "ms",
+          "value": 0.015752548394971234
+        }
+      ],
+      "queries": [
+        {
+          "id": "3432126458605143571",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "query",
+        "name": "3432126458605143571"
+      },
+      "summary": "This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
+      "title": "A read from customers runs 8.2K times in 5 hours, one row at a time",
+      "verify": [
+        "It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+      ]
+    },
+    {
       "category": "indexes",
       "caveats": [],
       "check": "filtered-scan",
       "confidence": "high",
       "fix": {
-        "cost": "public.order_items received no writes, so this index would cost nothing to keep up there.",
+        "cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
-        "summary": "Create an index on product_id so these queries seek instead of scanning."
+        "summary": "Create an index on product_id so the query seeks instead of scanning."
       },
       "id": "filtered-scan:public.order_items(product_id)",
       "impact": {
@@ -544,11 +400,11 @@
         "kind": "table",
         "name": "public.order_items"
       },
-      "summary": "One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. Together they account for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.",
+      "summary": "One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.",
       "title": "order_items is read in full to find rows by product_id",
       "verify": [
-        "Explain one of the queries again: the scan of order_items should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone and the queries' share of database time lower."
+        "Explain the query again: the scan of order_items should become an index seek/scan on the new index.",
+        "Re-scan after the workload has run: this finding should be gone and the query's share of database time lower."
       ]
     },
     {
@@ -602,10 +458,112 @@
         "kind": "query",
         "name": "6425265648074738764"
       },
-      "summary": "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 4 h 53 min ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.",
+      "summary": "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost. That takes 31 ms of its 32 ms per run (3.7 s in all since its statistics began 5 hours ago). JIT pays off for long analytical queries; for a statement that runs in 32 ms the compiling costs more than it saves, usually because the planner overestimates its cost.",
       "title": "JIT compilation takes longer than running a read from products",
       "verify": [
         "Re-scan: JIT time per run should drop to zero or near it, and the average run time with it."
+      ]
+    },
+    {
+      "category": "maintenance",
+      "caveats": [
+        "PostgreSQL's statistics also estimate about 123 MB of wide (74%) as empty space: these dead rows. VACUUM makes it reusable; rewrite the table (pg_repack) only if the estimate stays high after a vacuum."
+      ],
+      "check": "dead-rows",
+      "confidence": "high",
+      "fix": {
+        "cost": "VACUUM doesn't block reads or writes; it does add I/O while it runs.",
+        "sql": "VACUUM (ANALYZE) archive.wide;\nALTER TABLE archive.wide SET (autovacuum_vacuum_scale_factor = 0.02);",
+        "summary": "Vacuum it now, and make autovacuum visit this table sooner. If dead rows come back quickly, look for long-running transactions in Live: they stop vacuum from cleaning up."
+      },
+      "id": "dead-rows:archive.wide",
+      "impact": {
+        "db_time_share": null,
+        "label": "126K dead rows",
+        "score": 15.374991249970833,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Dead rows",
+          "text": null,
+          "unit": "rows",
+          "value": 126428.0
+        },
+        {
+          "label": "Live rows",
+          "text": null,
+          "unit": "rows",
+          "value": 45000.0
+        },
+        {
+          "label": "Dead share",
+          "text": null,
+          "unit": "ratio",
+          "value": 0.7374991249970834
+        },
+        {
+          "label": "Autovacuum trigger",
+          "text": null,
+          "unit": "rows",
+          "value": 9050.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "archive.wide"
+      },
+      "summary": "archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K rows changed since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.",
+      "title": "74% of wide is dead rows",
+      "verify": []
+    },
+    {
+      "category": "indexes",
+      "caveats": [],
+      "check": "unindexed-fk",
+      "confidence": "high",
+      "fix": {
+        "cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
+        "sql": "CREATE INDEX CONCURRENTLY ix_order_items_order_id\n    ON public.order_items (order_id);",
+        "summary": "Index the foreign key column on public.order_items."
+      },
+      "id": "unindexed-fk:public.order_items(order_id)",
+      "impact": {
+        "db_time_share": null,
+        "label": "1.0M rows unindexed",
+        "score": 12.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [
+        {
+          "label": "Rows in table",
+          "text": null,
+          "unit": "rows",
+          "value": 1000000.0
+        },
+        {
+          "label": "Foreign key",
+          "text": "order_items_order_id_fkey",
+          "unit": "text",
+          "value": 0.0
+        }
+      ],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "public.order_items"
+      },
+      "summary": "Deleting a row from public.orders, or changing its key, makes the database look for matching rows in public.order_items (1.0M rows) without an index, which means reading the whole table. Queries that load order_items rows for one orders row can't seek either.",
+      "title": "order_items has no index on order_id, its foreign key to orders",
+      "verify": [
+        "Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone."
       ]
     },
     {
@@ -671,7 +629,7 @@
       "title": "An update of products takes 12% of database time, most likely waiting for locks",
       "verify": [
         "Re-scan later: if it hasn't run again, there is nothing to do.",
-        "Re-scan after the change: its average duration drops toward what its reads take."
+        "pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its average run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
@@ -701,12 +659,6 @@
           "text": null,
           "unit": "bytes",
           "value": 13975552.0
-        },
-        {
-          "label": "Reads of orders_status_idx",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -744,12 +696,6 @@
           "text": null,
           "unit": "bytes",
           "value": 335872.0
-        },
-        {
-          "label": "Reads of products_sku_idx",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -896,7 +842,7 @@
       "title": "A call to pg_sleep takes 12% of database time, sleeping",
       "verify": [
         "Re-scan later: if it hasn't run again, there is nothing to do.",
-        "Re-scan after the change: this statement's time drops or it stops running."
+        "pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     }
   ],
@@ -1176,6 +1122,7 @@
     "duration_ms": 132.211333,
     "environment": "local",
     "escalations_before": null,
+    "evictions_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -2214,8 +2161,9 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
               "JIT": "{\"Functions\":4,\"Options\":{\"Deforming\":true,\"Expressions\":true,\"Inlining\":false,\"Optimization\":false}}",
-              "Query Identifier": "-8094429823453666749"
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -8094429823453666749, not as this statement (9065391607317686058). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Gather Merge\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 85828.82,\n      \"Total Cost\": 163472.94,\n      \"Plan Rows\": 666665,\n      \"Plan Width\": 74,\n      \"Disabled\": false,\n      \"Output\": [\"id\", \"note\"],\n      \"Workers Planned\": 2,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 84828.79,\n          \"Total Cost\": 85523.24,\n          \"Plan Rows\": 277777,\n          \"Plan Width\": 74,\n          \"Disabled\": false,\n          \"Output\": [\"id\", \"note\"],\n          \"Sort Key\": [\"orders.note\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Seq Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": true,\n              \"Async Capable\": false,\n              \"Relation Name\": \"orders\",\n              \"Schema\": \"public\",\n              \"Alias\": \"orders\",\n              \"Startup Cost\": 0.00,\n              \"Total Cost\": 47368.30,\n              \"Plan Rows\": 277777,\n              \"Plan Width\": 74,\n              \"Disabled\": false,\n              \"Output\": [\"id\", \"note\"],\n              \"Filter\": \"(orders.created_at > (now() - $1))\"\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -8094429823453666749,\n    \"JIT\": {\n      \"Functions\": 4,\n      \"Options\": {\n        \"Inlining\": false,\n        \"Optimization\": false,\n        \"Expressions\": true,\n        \"Deforming\": true\n      }\n    }\n  }\n]",
             "root": {
@@ -2235,7 +2183,7 @@
                       "children": [],
                       "detail": "Parallel",
                       "est_executions": 1.0,
-                      "est_rows": 277777.0,
+                      "est_rows": 666664.7999999999,
                       "id": 2,
                       "index": null,
                       "kind": "scan",
@@ -2247,9 +2195,12 @@
                         "Async Capable": "false",
                         "Disabled": "false",
                         "Filter": "(orders.created_at > (now() - $1))",
+                        "Indexes on the table (catalog)": "orders_pkey=id\norders_status_idx=status\norders_status_created_idx=status,created_at",
                         "Parallel Aware": "true",
                         "Parent Relationship": "Outer",
+                        "Plan Rows per process": "277777",
                         "Plan Width": "74",
+                        "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
                         "Startup Cost": "0.0"
                       },
                       "rows_read": null,
@@ -2263,7 +2214,7 @@
                   ],
                   "detail": "sort key: orders.note",
                   "est_executions": 1.0,
-                  "est_rows": 277777.0,
+                  "est_rows": 666664.7999999999,
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -2275,6 +2226,7 @@
                     "Disabled": "false",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
+                    "Plan Rows per process": "277777",
                     "Plan Width": "74",
                     "Sort Key": "orders.note",
                     "Startup Cost": "84828.79"
@@ -2388,7 +2340,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-3115203753024809050"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -3115203753024809050, not as this statement (5308963031944094559). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Limit\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 44202.93,\n      \"Total Cost\": 44202.93,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 29,\n      \"Disabled\": false,\n      \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 44202.93,\n          \"Total Cost\": 44202.96,\n          \"Plan Rows\": 11,\n          \"Plan Width\": 29,\n          \"Disabled\": false,\n          \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n          \"Sort Key\": [\"orders.created_at DESC\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Gather\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 1000.00,\n              \"Total Cost\": 44202.74,\n              \"Plan Rows\": 11,\n              \"Plan Width\": 29,\n              \"Disabled\": false,\n              \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n              \"Workers Planned\": 2,\n              \"Single Copy\": false,\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Seq Scan\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": true,\n                  \"Async Capable\": false,\n                  \"Relation Name\": \"orders\",\n                  \"Schema\": \"public\",\n                  \"Alias\": \"orders\",\n                  \"Startup Cost\": 0.00,\n                  \"Total Cost\": 43201.64,\n                  \"Plan Rows\": 5,\n                  \"Plan Width\": 29,\n                  \"Disabled\": false,\n                  \"Output\": [\"id\", \"status\", \"total\", \"created_at\"],\n                  \"Filter\": \"(orders.customer_id = $1)\"\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -3115203753024809050\n  }\n]",
             "root": {
@@ -2413,7 +2366,7 @@
                           "children": [],
                           "detail": "Parallel",
                           "est_executions": 1.0,
-                          "est_rows": 5.0,
+                          "est_rows": 12.0,
                           "id": 3,
                           "index": null,
                           "kind": "scan",
@@ -2425,8 +2378,10 @@
                             "Async Capable": "false",
                             "Disabled": "false",
                             "Filter": "(orders.customer_id = $1)",
+                            "Indexes on the table (catalog)": "orders_pkey=id\norders_status_idx=status\norders_status_created_idx=status,created_at",
                             "Parallel Aware": "true",
                             "Parent Relationship": "Outer",
+                            "Plan Rows per process": "5",
                             "Plan Width": "29",
                             "Startup Cost": "0.0"
                           },
@@ -2461,7 +2416,7 @@
                       "rows_read": null,
                       "runtime": null,
                       "seek_predicate": null,
-                      "self_cost": 1001.0999999999984,
+                      "self_cost": 1001.0999999999985,
                       "subtree_cost": 44202.74,
                       "table_rows": null,
                       "warnings": []
@@ -2593,7 +2548,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "3411573856342672671"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query 3411573856342672671, not as this statement (-8886085649470066503). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 4,\n      \"Disabled\": false,\n      \"Output\": [\"pg_sleep($1)\"]\n    },\n    \"Query Identifier\": 3411573856342672671\n  }\n]",
             "root": {
@@ -2700,7 +2656,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-8336599228220240425"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -8336599228220240425, not as this statement (4911431806993420100). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"ModifyTable\",\n      \"Operation\": \"Update\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Relation Name\": \"products\",\n      \"Schema\": \"public\",\n      \"Alias\": \"products\",\n      \"Startup Cost\": 0.29,\n      \"Total Cost\": 8.30,\n      \"Plan Rows\": 0,\n      \"Plan Width\": 0,\n      \"Disabled\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Index Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Scan Direction\": \"Forward\",\n          \"Index Name\": \"products_pkey\",\n          \"Relation Name\": \"products\",\n          \"Schema\": \"public\",\n          \"Alias\": \"products\",\n          \"Startup Cost\": 0.29,\n          \"Total Cost\": 8.30,\n          \"Plan Rows\": 1,\n          \"Plan Width\": 18,\n          \"Disabled\": false,\n          \"Output\": [\"name\", \"ctid\"],\n          \"Index Cond\": \"(products.id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -8336599228220240425\n  }\n]",
             "root": {
@@ -2844,7 +2801,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-7653842676421569731"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -7653842676421569731, not as this statement (-3722457391793582113). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 13561.98,\n      \"Total Cost\": 13561.99,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 40,\n      \"Disabled\": false,\n      \"Output\": [\"count(*)\", \"sum(((quantity)::numeric * price))\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Gather\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 13561.76,\n          \"Total Cost\": 13561.97,\n          \"Plan Rows\": 2,\n          \"Plan Width\": 40,\n          \"Disabled\": false,\n          \"Output\": [\"(PARTIAL count(*))\", \"(PARTIAL sum(((quantity)::numeric * price)))\"],\n          \"Workers Planned\": 2,\n          \"Single Copy\": false,\n          \"Plans\": [\n            {\n              \"Node Type\": \"Aggregate\",\n              \"Strategy\": \"Plain\",\n              \"Partial Mode\": \"Partial\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 12561.76,\n              \"Total Cost\": 12561.77,\n              \"Plan Rows\": 1,\n              \"Plan Width\": 40,\n              \"Disabled\": false,\n              \"Output\": [\"PARTIAL count(*)\", \"PARTIAL sum(((quantity)::numeric * price))\"],\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Seq Scan\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": true,\n                  \"Async Capable\": false,\n                  \"Relation Name\": \"order_items\",\n                  \"Schema\": \"public\",\n                  \"Alias\": \"order_items\",\n                  \"Startup Cost\": 0.00,\n                  \"Total Cost\": 12561.33,\n                  \"Plan Rows\": 42,\n                  \"Plan Width\": 10,\n                  \"Disabled\": false,\n                  \"Output\": [\"id\", \"order_id\", \"product_id\", \"quantity\", \"price\"],\n                  \"Filter\": \"(order_items.product_id = $1)\"\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -7653842676421569731\n  }\n]",
             "root": {
@@ -2869,7 +2827,7 @@
                           "children": [],
                           "detail": "Parallel",
                           "est_executions": 1.0,
-                          "est_rows": 42.0,
+                          "est_rows": 100.8,
                           "id": 3,
                           "index": null,
                           "kind": "scan",
@@ -2881,8 +2839,10 @@
                             "Async Capable": "false",
                             "Disabled": "false",
                             "Filter": "(order_items.product_id = $1)",
+                            "Indexes on the table (catalog)": "order_items_pkey=id",
                             "Parallel Aware": "true",
                             "Parent Relationship": "Outer",
+                            "Plan Rows per process": "42",
                             "Plan Width": "10",
                             "Startup Cost": "0.0"
                           },
@@ -2897,7 +2857,7 @@
                       ],
                       "detail": null,
                       "est_executions": 1.0,
-                      "est_rows": 1.0,
+                      "est_rows": 2.4,
                       "id": 2,
                       "index": null,
                       "kind": "aggregate",
@@ -2910,6 +2870,7 @@
                         "Parallel Aware": "false",
                         "Parent Relationship": "Outer",
                         "Partial Mode": "Partial",
+                        "Plan Rows per process": "1",
                         "Plan Width": "40",
                         "Startup Cost": "12561.76",
                         "Strategy": "Plain"
@@ -2945,7 +2906,7 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 1000.1999999999988,
+                  "self_cost": 1000.1999999999989,
                   "subtree_cost": 13561.97,
                   "table_rows": null,
                   "warnings": []
@@ -3052,7 +3013,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "1758281497443122294"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query 1758281497443122294, not as this statement (2004611025554862962). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Sorted\",\n      \"Partial Mode\": \"Finalize\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 50451.77,\n      \"Total Cost\": 50453.35,\n      \"Plan Rows\": 5,\n      \"Plan Width\": 47,\n      \"Disabled\": false,\n      \"Output\": [\"status\", \"count(*)\", \"sum(total)\"],\n      \"Group Key\": [\"orders.status\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Gather Merge\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 50451.77,\n          \"Total Cost\": 50453.17,\n          \"Plan Rows\": 12,\n          \"Plan Width\": 47,\n          \"Disabled\": false,\n          \"Output\": [\"status\", \"(PARTIAL count(*))\", \"(PARTIAL sum(total))\"],\n          \"Workers Planned\": 2,\n          \"Plans\": [\n            {\n              \"Node Type\": \"Sort\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Startup Cost\": 49451.74,\n              \"Total Cost\": 49451.76,\n              \"Plan Rows\": 5,\n              \"Plan Width\": 47,\n              \"Disabled\": false,\n              \"Output\": [\"status\", \"(PARTIAL count(*))\", \"(PARTIAL sum(total))\"],\n              \"Sort Key\": [\"orders.status\"],\n              \"Plans\": [\n                {\n                  \"Node Type\": \"Aggregate\",\n                  \"Strategy\": \"Hashed\",\n                  \"Partial Mode\": \"Partial\",\n                  \"Parent Relationship\": \"Outer\",\n                  \"Parallel Aware\": false,\n                  \"Async Capable\": false,\n                  \"Startup Cost\": 49451.62,\n                  \"Total Cost\": 49451.69,\n                  \"Plan Rows\": 5,\n                  \"Plan Width\": 47,\n                  \"Disabled\": false,\n                  \"Output\": [\"status\", \"PARTIAL count(*)\", \"PARTIAL sum(total)\"],\n                  \"Group Key\": [\"orders.status\"],\n                  \"Planned Partitions\": 0,\n                  \"Plans\": [\n                    {\n                      \"Node Type\": \"Seq Scan\",\n                      \"Parent Relationship\": \"Outer\",\n                      \"Parallel Aware\": true,\n                      \"Async Capable\": false,\n                      \"Relation Name\": \"orders\",\n                      \"Schema\": \"public\",\n                      \"Alias\": \"orders\",\n                      \"Startup Cost\": 0.00,\n                      \"Total Cost\": 47368.30,\n                      \"Plan Rows\": 277777,\n                      \"Plan Width\": 13,\n                      \"Disabled\": false,\n                      \"Output\": [\"id\", \"customer_id\", \"status\", \"total\", \"note\", \"created_at\"],\n                      \"Filter\": \"(orders.created_at > (now() - $1))\"\n                    }\n                  ]\n                }\n              ]\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": 1758281497443122294\n  }\n]",
             "root": {
@@ -3082,7 +3044,7 @@
                               "children": [],
                               "detail": "Parallel",
                               "est_executions": 1.0,
-                              "est_rows": 277777.0,
+                              "est_rows": 666664.7999999999,
                               "id": 4,
                               "index": null,
                               "kind": "scan",
@@ -3094,9 +3056,12 @@
                                 "Async Capable": "false",
                                 "Disabled": "false",
                                 "Filter": "(orders.created_at > (now() - $1))",
+                                "Indexes on the table (catalog)": "orders_pkey=id\norders_status_idx=status\norders_status_created_idx=status,created_at",
                                 "Parallel Aware": "true",
                                 "Parent Relationship": "Outer",
+                                "Plan Rows per process": "277777",
                                 "Plan Width": "13",
+                                "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
                                 "Startup Cost": "0.0"
                               },
                               "rows_read": null,
@@ -3110,7 +3075,7 @@
                           ],
                           "detail": "Hashed · group key: orders.status",
                           "est_executions": 1.0,
-                          "est_rows": 5.0,
+                          "est_rows": 12.0,
                           "id": 3,
                           "index": null,
                           "kind": "aggregate",
@@ -3124,6 +3089,7 @@
                             "Parallel Aware": "false",
                             "Parent Relationship": "Outer",
                             "Partial Mode": "Partial",
+                            "Plan Rows per process": "5",
                             "Plan Width": "47",
                             "Planned Partitions": "0",
                             "Startup Cost": "49451.62",
@@ -3140,7 +3106,7 @@
                       ],
                       "detail": "sort key: orders.status",
                       "est_executions": 1.0,
-                      "est_rows": 5.0,
+                      "est_rows": 12.0,
                       "id": 2,
                       "index": null,
                       "kind": "sort",
@@ -3152,6 +3118,7 @@
                         "Disabled": "false",
                         "Parallel Aware": "false",
                         "Parent Relationship": "Outer",
+                        "Plan Rows per process": "5",
                         "Plan Width": "47",
                         "Sort Key": "orders.status",
                         "Startup Cost": "49451.74"
@@ -3294,7 +3261,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-8565942875766726703"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -8565942875766726703, not as this statement (2885972271926804069). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Sorted\",\n      \"Partial Mode\": \"Simple\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 12.33,\n      \"Total Cost\": 12.36,\n      \"Plan Rows\": 2,\n      \"Plan Width\": 14,\n      \"Disabled\": false,\n      \"Output\": [\"kind\", \"count(*)\"],\n      \"Group Key\": [\"events.kind\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Sort\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Startup Cost\": 12.33,\n          \"Total Cost\": 12.33,\n          \"Plan Rows\": 2,\n          \"Plan Width\": 6,\n          \"Disabled\": false,\n          \"Output\": [\"kind\"],\n          \"Sort Key\": [\"events.kind\"],\n          \"Plans\": [\n            {\n              \"Node Type\": \"Index Scan\",\n              \"Parent Relationship\": \"Outer\",\n              \"Parallel Aware\": false,\n              \"Async Capable\": false,\n              \"Scan Direction\": \"Forward\",\n              \"Index Name\": \"events_customer_idx\",\n              \"Relation Name\": \"events\",\n              \"Schema\": \"public\",\n              \"Alias\": \"events\",\n              \"Startup Cost\": 0.42,\n              \"Total Cost\": 12.32,\n              \"Plan Rows\": 2,\n              \"Plan Width\": 6,\n              \"Disabled\": false,\n              \"Output\": [\"kind\"],\n              \"Index Cond\": \"(events.customer_id = $1)\"\n            }\n          ]\n        }\n      ]\n    },\n    \"Query Identifier\": -8565942875766726703\n  }\n]",
             "root": {
@@ -3363,7 +3331,7 @@
                   "rows_read": null,
                   "runtime": null,
                   "seek_predicate": null,
-                  "self_cost": 0.009999999999999789,
+                  "self_cost": 0.009999999999999787,
                   "subtree_cost": 12.33,
                   "table_rows": null,
                   "warnings": []
@@ -3471,7 +3439,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "5459391128893703637"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query 5459391128893703637, not as this statement (3432126458605143571). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Index Scan\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Scan Direction\": \"Forward\",\n      \"Index Name\": \"customers_pkey\",\n      \"Relation Name\": \"customers\",\n      \"Schema\": \"public\",\n      \"Alias\": \"customers\",\n      \"Startup Cost\": 0.42,\n      \"Total Cost\": 8.44,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 37,\n      \"Disabled\": false,\n      \"Output\": [\"name\", \"email\"],\n      \"Index Cond\": \"(customers.id = $1)\"\n    },\n    \"Query Identifier\": 5459391128893703637\n  }\n]",
             "root": {
@@ -3635,7 +3604,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-796694400354061278"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -796694400354061278, not as this statement (8465053948014496855). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"ModifyTable\",\n      \"Operation\": \"Update\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Relation Name\": \"products\",\n      \"Schema\": \"public\",\n      \"Alias\": \"products\",\n      \"Startup Cost\": 0.29,\n      \"Total Cost\": 8.30,\n      \"Plan Rows\": 0,\n      \"Plan Width\": 0,\n      \"Disabled\": false,\n      \"Plans\": [\n        {\n          \"Node Type\": \"Index Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Scan Direction\": \"Forward\",\n          \"Index Name\": \"products_pkey\",\n          \"Relation Name\": \"products\",\n          \"Schema\": \"public\",\n          \"Alias\": \"products\",\n          \"Startup Cost\": 0.29,\n          \"Total Cost\": 8.30,\n          \"Plan Rows\": 1,\n          \"Plan Width\": 13,\n          \"Disabled\": false,\n          \"Output\": [\"price\", \"ctid\"],\n          \"Index Cond\": \"(products.id = $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -796694400354061278\n  }\n]",
             "root": {
@@ -3758,6 +3728,7 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
               "Query Identifier": "-6576252161252119529"
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 8,\n      \"Disabled\": false,\n      \"Output\": [\"pg_stat_statements_reset('0'::oid, '0'::oid, '0'::bigint, false)\"]\n    },\n    \"Query Identifier\": -6576252161252119529\n  }\n]",
@@ -3844,7 +3815,8 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
-              "Query Identifier": "-3224020964755723897"
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "Planned Text": "Planned from the text pg_stat_statements keeps, in which the application's constants are $n placeholders like its parameters, each typed as PostgreSQL infers it: PostgreSQL identifies what it planned as query -3224020964755723897, not as this statement (5306524445554315840). Constants the application wrote into the statement are unknown values here, so its own runs, which have them, can be planned differently."
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Aggregate\",\n      \"Strategy\": \"Plain\",\n      \"Partial Mode\": \"Simple\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 12.53,\n      \"Total Cost\": 12.54,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 40,\n      \"Disabled\": false,\n      \"Output\": [\"count(*)\", \"sum(pg_stat_statements.calls)\"],\n      \"Plans\": [\n        {\n          \"Node Type\": \"Function Scan\",\n          \"Parent Relationship\": \"Outer\",\n          \"Parallel Aware\": false,\n          \"Async Capable\": false,\n          \"Function Name\": \"pg_stat_statements\",\n          \"Schema\": \"public\",\n          \"Alias\": \"pg_stat_statements\",\n          \"Startup Cost\": 0.00,\n          \"Total Cost\": 12.50,\n          \"Plan Rows\": 5,\n          \"Plan Width\": 8,\n          \"Disabled\": false,\n          \"Output\": [\"pg_stat_statements.userid\", \"pg_stat_statements.dbid\", \"pg_stat_statements.toplevel\", \"pg_stat_statements.queryid\", \"pg_stat_statements.query\", \"pg_stat_statements.plans\", \"pg_stat_statements.total_plan_time\", \"pg_stat_statements.min_plan_time\", \"pg_stat_statements.max_plan_time\", \"pg_stat_statements.mean_plan_time\", \"pg_stat_statements.stddev_plan_time\", \"pg_stat_statements.calls\", \"pg_stat_statements.total_exec_time\", \"pg_stat_statements.min_exec_time\", \"pg_stat_statements.max_exec_time\", \"pg_stat_statements.mean_exec_time\", \"pg_stat_statements.stddev_exec_time\", \"pg_stat_statements.rows\", \"pg_stat_statements.shared_blks_hit\", \"pg_stat_statements.shared_blks_read\", \"pg_stat_statements.shared_blks_dirtied\", \"pg_stat_statements.shared_blks_written\", \"pg_stat_statements.local_blks_hit\", \"pg_stat_statements.local_blks_read\", \"pg_stat_statements.local_blks_dirtied\", \"pg_stat_statements.local_blks_written\", \"pg_stat_statements.temp_blks_read\", \"pg_stat_statements.temp_blks_written\", \"pg_stat_statements.shared_blk_read_time\", \"pg_stat_statements.shared_blk_write_time\", \"pg_stat_statements.local_blk_read_time\", \"pg_stat_statements.local_blk_write_time\", \"pg_stat_statements.temp_blk_read_time\", \"pg_stat_statements.temp_blk_write_time\", \"pg_stat_statements.wal_records\", \"pg_stat_statements.wal_fpi\", \"pg_stat_statements.wal_bytes\", \"pg_stat_statements.wal_buffers_full\", \"pg_stat_statements.jit_functions\", \"pg_stat_statements.jit_generation_time\", \"pg_stat_statements.jit_inlining_count\", \"pg_stat_statements.jit_inlining_time\", \"pg_stat_statements.jit_optimization_count\", \"pg_stat_statements.jit_optimization_time\", \"pg_stat_statements.jit_emission_count\", \"pg_stat_statements.jit_emission_time\", \"pg_stat_statements.jit_deform_count\", \"pg_stat_statements.jit_deform_time\", \"pg_stat_statements.parallel_workers_to_launch\", \"pg_stat_statements.parallel_workers_launched\", \"pg_stat_statements.stats_since\", \"pg_stat_statements.minmax_stats_since\"],\n          \"Function Call\": \"pg_stat_statements(true)\",\n          \"Filter\": \"(pg_stat_statements.query ~~ $1)\"\n        }\n      ]\n    },\n    \"Query Identifier\": -3224020964755723897\n  }\n]",
             "root": {
@@ -3876,6 +3848,7 @@
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "8",
+                    "Selectivity": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
                     "Startup Cost": "0.0"
                   },
                   "rows_read": null,
@@ -3967,6 +3940,7 @@
             "index_hints": [],
             "kind": "generic",
             "props": {
+              "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
               "Query Identifier": "2169115237613314459"
             },
             "raw": "[\n  {\n    \"Plan\": {\n      \"Node Type\": \"Result\",\n      \"Parallel Aware\": false,\n      \"Async Capable\": false,\n      \"Startup Cost\": 0.00,\n      \"Total Cost\": 0.01,\n      \"Plan Rows\": 1,\n      \"Plan Width\": 4,\n      \"Disabled\": false,\n      \"Output\": [\"pg_stat_reset()\"]\n    },\n    \"Query Identifier\": 2169115237613314459\n  }\n]",
@@ -4239,6 +4213,7 @@
                     "Async Capable": "false",
                     "Disabled": "false",
                     "Filter": "((wide.id % $2) = $3)",
+                    "Indexes on the table (catalog)": "wide_pkey=id\nwide_touched=touched",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "10",
@@ -5205,6 +5180,7 @@
                     "Async Capable": "false",
                     "Disabled": "false",
                     "Filter": "(products.price > $2)",
+                    "Indexes on the table (catalog)": "products_pkey=id\nproducts_sku_key=sku\nproducts_sku_idx=sku",
                     "Parallel Aware": "false",
                     "Parent Relationship": "Outer",
                     "Plan Width": "19",
@@ -5329,7 +5305,7 @@
       },
       {
         "category": "queries",
-        "count": 8
+        "count": 7
       },
       {
         "category": "maintenance",
@@ -5342,17 +5318,17 @@
     ],
     "by_severity": [
       {
-        "count": 7,
+        "count": 4,
         "severity": "medium"
       },
       {
-        "count": 10,
+        "count": 12,
         "severity": "low"
       }
     ],
-    "headline": "17 opportunities. The top ones touch 67% of database time over the 5 hours since statistics were reset.",
+    "headline": "16 opportunities. The top ones touch 67% of database time over the 5 hours since statistics were reset.",
     "no_workload": null,
-    "opportunities": 17,
-    "top_share": 0.6738719635890433
+    "opportunities": 16,
+    "top_share": 0.6739716209849598
   }
 }

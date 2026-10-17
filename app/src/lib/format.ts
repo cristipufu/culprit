@@ -58,6 +58,25 @@ export function percent(ratio: number | null | undefined): string {
   return `${Math.round(p)}%`;
 }
 
+/** A total wait to the second under an hour: "1 min 29 s", where `duration` would round 88,960 ms down to "1 min" next to
+ * a title that says otherwise, and 152 s up to "3 min". Mirrors culprit_checks::signals::total_wait. */
+export function totalWait(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60 || seconds >= 3600) return duration(ms);
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes} min` : `${minutes} min ${rest} s`;
+}
+
+/** Metrics that total a wait, said to the second as their findings' titles say them. Mirrors
+ * culprit_checks::TOTAL_WAIT_METRICS. */
+const TOTAL_WAIT_METRICS = new Set(["Time waiting", "Time waiting since start"]);
+
+/** A finding's metric as its Evidence says it. Mirrors culprit_checks::metric_text. */
+export function findingMetric(m: { label: string; value: number; unit: Unit; text?: string | null }): string {
+  return m.unit === "ms" && TOTAL_WAIT_METRICS.has(m.label) ? totalWait(m.value) : metric(m.value, m.unit, m.text);
+}
+
 export function metric(value: number, unit: Unit, text?: string | null): string {
   switch (unit) {
     case "ms":

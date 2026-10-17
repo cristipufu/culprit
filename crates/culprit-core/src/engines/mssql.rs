@@ -44,7 +44,8 @@ impl EngineSpec for Mssql {
 
     fn refresh_statistics(&self, target: &str) -> Fix {
         Fix {
-            summary: "Update the statistics now; if this table changes fast, schedule it or enable AUTO_UPDATE_STATISTICS_ASYNC.".into(),
+            summary: "Update the statistics now; if this table changes fast, schedule the update in a maintenance job."
+                .into(),
             sql: Some(self.dialect().refresh_statistics(target)),
             cost: Some("Reads a sample of the table; run it outside peak hours on very large tables.".into()),
         }

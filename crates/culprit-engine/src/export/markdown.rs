@@ -3,13 +3,11 @@
 
 use std::fmt::Write;
 
-use culprit_core::{
-    ChangeKind, Finding, Metric, Plan, PlanDiff, PlanNode, Report, Unit, Verification, VerifyStatus, format,
-};
+use culprit_core::{ChangeKind, Finding, Metric, Plan, PlanDiff, PlanNode, Report, Verification, VerifyStatus, format};
 
 use super::{
     ExportNote, ExportOptions, exported_at, kind_label, plan_engine_label, prepared, rows_phrase, rows_text,
-    server_line, share, sql_text, top_costs, where_,
+    server_line, share, shares_note, sql_text, top_costs, where_,
 };
 
 const MAX_STEPS: usize = 40;
@@ -100,15 +98,20 @@ fn plan_body(out: &mut String, plan: &Plan, notes: &[ExportNote]) {
         let indent: String = std::iter::repeat_n(NBSP, depth * 3).collect();
         let arrow = if *depth > 0 { "↳ " } else { "" };
         let mut notes_cell: Vec<String> = node.warnings.iter().map(|w| w.label().to_string()).collect();
-        if Some(node.id) == hot && share(plan, node) >= 0.05 {
+        if Some(node.id) == hot && share(plan, node).is_some_and(|s| s >= 0.05) {
             notes_cell.insert(0, "most expensive".into());
+        }
+        // An exchange's cost is the charge for passing rows between threads: never the step where the work is.
+        if node.kind == culprit_core::NodeKind::Parallelism && share(plan, node).is_some_and(|s| s >= 0.05) {
+            notes_cell.insert(0, "passing rows between workers".into());
         }
         let _ = writeln!(
             out,
             "| {indent}{arrow}{} | {} | {} | {} | {} |",
             cell(&node.op),
             cell(&where_(node)),
-            format::percent(share(plan, node)),
+            // No share where the plan can't state one (no costs, a step it doesn't cost, a default guess).
+            share(plan, node).map(format::percent).unwrap_or_else(|| "—".into()),
             rows_text(node),
             cell(&notes_cell.join(", "))
         );
@@ -117,9 +120,12 @@ fn plan_body(out: &mut String, plan: &Plan, notes: &[ExportNote]) {
         let _ = writeln!(out, "\n_…and {} more operators._", rows.len() - MAX_STEPS);
     }
     let _ = writeln!(out);
+    if let Some(note) = shares_note(plan) {
+        let _ = writeln!(out, "_{}_\n", text(&note.replace('`', "")));
+    }
     let predicates: Vec<String> = rows
         .iter()
-        .filter(|(n, _)| share(plan, n) >= 0.05)
+        .filter(|(n, _)| share(plan, n).is_some_and(|s| s >= 0.05))
         .flat_map(|(n, _)| {
             let mut lines = Vec::new();
             if let Some(p) = &n.seek_predicate {
@@ -270,15 +276,9 @@ fn change_word(kind: ChangeKind) -> &'static str {
     }
 }
 
+/// A finding's metric as the brief says it (`culprit_checks::metric_text`): a total wait to the second, as its title.
 pub(crate) fn metric_text(m: &Metric) -> String {
-    match m.unit {
-        Unit::Ms => format::duration(m.value),
-        Unit::Bytes => format::bytes(m.value),
-        Unit::Ratio => format::percent(m.value),
-        Unit::Days => format!("{:.0} days", m.value),
-        Unit::Text => m.text.clone().unwrap_or_default(),
-        Unit::Count | Unit::Rows | Unit::Pages => format::count(m.value),
-    }
+    culprit_checks::metric_text(m)
 }
 
 /// One finding in full for a digest (a chat thread, a ticket): the same pieces as [`finding_markdown`], always
@@ -298,20 +298,19 @@ pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::Diges
                 .map(|(r, q)| {
                     let plan = q.plan.as_ref().and_then(|plan| {
                         let plan = culprit_core::redact::redact_plan(plan);
-                        let node = r
-                            .plan_node
-                            .and_then(|id| plan.nodes().into_iter().find(|n| n.id == id))
-                            .or_else(|| plan.hottest())?;
-                        // A plan without costs (SQLite) names the step, and no share or estimate it doesn't have.
-                        let mut line = if plan.weighed() {
-                            format!(
+                        // The step the finding names, else its plan's working step where the finding is about one.
+                        let node = culprit_checks::finding_step(&f, r, &plan)?;
+                        // A plan without costs (SQLite) names the step, and no share or estimate it doesn't have; a
+                        // share only where the plan can state one.
+                        let mut line = match (plan.weighed(), culprit_checks::finding_step_share(&plan, node)) {
+                            (true, Some(s)) => format!(
                                 "{}: {} of the plan's cost, {}",
                                 label(node),
-                                format::percent(share(&plan, node)),
+                                format::percent(s),
                                 rows_phrase(node)
-                            )
-                        } else {
-                            label(node)
+                            ),
+                            (true, None) => format!("{}: {}", label(node), rows_phrase(node)),
+                            (false, _) => label(node),
                         };
                         if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
                             let _ = write!(line, ", on `{}`", format::predicate(p));
@@ -321,8 +320,8 @@ pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::Diges
                     culprit_core::DigestQuery {
                         stats: format!(
                             "{} of database time · {} · {} on average",
-                            format::percent(w.share(q.total_time_ms)),
-                            w.how_often(q.executions),
+                            format::percent(culprit_checks::query_share(w, &f, q)),
+                            w.how_often_of(q),
                             format::duration(q.mean_time_ms)
                         ),
                         sql: culprit_core::redact::redact_sql(q.text.trim(), engine),
@@ -401,19 +400,20 @@ fn finding_section(
             out,
             "**Query {}** · {} of database time · {} · {} on average\n",
             code(&q.id),
-            format::percent(w.share(q.total_time_ms)),
-            w.how_often(q.executions),
+            format::percent(culprit_checks::query_share(w, finding, q)),
+            w.how_often_of(q),
             format::duration(q.mean_time_ms)
         );
         fence(out, "sql", &sql_text(&q.text, engine, options));
         if let Some(plan) = &q.plan {
             let plan = prepared(plan, options);
-            let node =
-                r.plan_node.and_then(|id| plan.nodes().into_iter().find(|n| n.id == id)).or_else(|| plan.hottest());
-            if let Some(node) = node {
+            // The step the finding names, else its plan's working step where the finding is about one.
+            if let Some(node) = culprit_checks::finding_step(finding, r, &plan) {
                 let mut details = Vec::new();
                 if plan.weighed() {
-                    details.push(format!("{} of the plan's cost", format::percent(share(&plan, node))));
+                    if let Some(s) = culprit_checks::finding_step_share(&plan, node) {
+                        details.push(format!("{} of the plan's cost", format::percent(s)));
+                    }
                     details.push(rows_phrase(node));
                 }
                 if let Some(p) = node.predicate.as_deref().or(node.seek_predicate.as_deref()) {
@@ -424,6 +424,10 @@ fn finding_section(
                     let _ = write!(line, " ({})", details.join(", "));
                 }
                 line.push('.');
+                // Where the plan can't state the step's share, why.
+                if let Some(why) = culprit_checks::no_share_reason(&plan, node) {
+                    let _ = write!(line, " {}", text(&why.replace('`', "")));
+                }
                 let _ = writeln!(out, "{line}\n");
             }
         }

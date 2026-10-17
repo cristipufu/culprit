@@ -287,8 +287,17 @@ fn estimate_scenarios(
     let mut found: Vec<(f64, Scenario)> = Vec::new();
     // Between the plans: the same step expecting very different row counts.
     for (x, y) in pairs {
-        let (ea, eb) = (x.est_rows_total(), y.est_rows_total());
-        if ea.max(eb) < ESTIMATE_MIN_ROWS || ratio(ea, eb) < ESTIMATE_FACTOR || x.object.is_none() {
+        let (ta, tb) = (x.est_rows_total(), y.est_rows_total());
+        // A step run once per outer row (a nested loop's inner side) is estimated per execution: two seeks that each
+        // expect one row differ only in how often they run, which their outer sides' own estimates say. And a seek
+        // per row against one scan of the table expects as many rows overall: a different plan, not another estimate.
+        let repeats = x.est_executions > 1.0 || y.est_executions > 1.0;
+        let (ea, eb) = if repeats { (x.est_rows, y.est_rows) } else { (ta, tb) };
+        if ta.max(tb) < ESTIMATE_MIN_ROWS
+            || ratio(ta, tb) < ESTIMATE_FACTOR
+            || ratio(ea, eb) < ESTIMATE_FACTOR
+            || x.object.is_none()
+        {
             continue;
         }
         let why = if parameters_differ {
@@ -308,25 +317,29 @@ fn estimate_scenarios(
             ratio(ea, eb),
             Scenario {
                 kind: ScenarioKind::Estimates,
-                title: format!("On {}, {name_a} expects {} and {name_b} expects {}.", table(y), rows(ea), rows(eb)),
+                title: format!(
+                    "On {}, {name_a} expects {} and {name_b} expects {}{}.",
+                    table(y),
+                    rows(ea),
+                    rows(eb),
+                    if repeats { " per execution" } else { "" }
+                ),
                 detail: why,
                 a: Some(x.id),
                 b: Some(y.id),
             },
         ));
     }
-    // Within an executed plan: estimated vs actual.
+    // Within an executed plan: estimated vs actual, by the rule behind the Misestimate warning
+    // (`PlanNode::misestimates`): the estimate for the runs that happened, and an operator a Limit, a semi join or a
+    // merge join stopped early isn't blamed for the rows it never had to read.
     for (plan, name, side_a) in [(a, name_a, true), (b, name_b, false)] {
-        for node in plan.nodes() {
-            let Some(actual) = node.act_rows else { continue };
+        let nodes: HashMap<u32, &PlanNode> = plan.nodes().into_iter().map(|n| (n.id, n)).collect();
+        for (id, factor) in plan.root.misestimates() {
+            let Some(node) = nodes.get(&id) else { continue };
             // Data access only: the operators above repeat the same misestimate.
-            if node.object.is_none() {
-                continue;
-            }
-            let estimated = node.est_rows_total();
-            if actual.max(estimated) < ESTIMATE_MIN_ROWS || ratio(actual, estimated) < ESTIMATE_FACTOR {
-                continue;
-            }
+            let (Some(actual), Some(_)) = (node.act_rows, &node.object) else { continue };
+            let estimated = node.est_rows_for_runs();
             let title = format!(
                 "{}: estimated {} from {}, got {}.",
                 cap(name),
@@ -338,10 +351,7 @@ fn estimate_scenarios(
                 Some("Estimates this far off lead to the wrong join type, too little memory or a needless scan.".into())
             });
             let (ia, ib) = if side_a { (Some(node.id), None) } else { (None, Some(node.id)) };
-            found.push((
-                ratio(actual, estimated),
-                Scenario { kind: ScenarioKind::Estimates, title, detail, a: ia, b: ib },
-            ));
+            found.push((factor.abs(), Scenario { kind: ScenarioKind::Estimates, title, detail, a: ia, b: ib }));
         }
     }
     found.sort_by(|x, y| y.0.total_cmp(&x.0));
@@ -627,5 +637,69 @@ mod tests {
         );
         let e = diff.scenarios.iter().find(|s| s.kind == ScenarioKind::Estimates).unwrap();
         assert!(e.detail.as_deref().unwrap().contains("parameter values"));
+    }
+
+    fn estimate_titles(a: &Plan, b: &Plan) -> Vec<String> {
+        let diff = plan_diff_in(a, "plan A", b, "plan B", &CompareContext::default());
+        diff.scenarios.into_iter().filter(|s| s.kind == ScenarioKind::Estimates).map(|s| s.title).collect()
+    }
+
+    #[test]
+    fn inner_sides_compare_their_estimate_per_execution() {
+        // Plan A expects one order and plan B 140K; each seeks one customer per order. The customers seek expects one
+        // row per execution in both: only how often it runs differs, and the orders estimates say that.
+        let join = |orders: f64, per_order: f64| {
+            let mut customers =
+                node("Clustered Index Seek", NodeKind::Seek, Some("dbo.customers"), Some("pk"), per_order, vec![]);
+            customers.est_executions = orders;
+            let outer = node("Index Seek", NodeKind::Seek, Some("dbo.orders"), Some("ix_status"), orders, vec![]);
+            plan(node("Nested Loops", NodeKind::Join, None, None, orders * per_order, vec![outer, customers]), &[])
+        };
+        assert_eq!(
+            estimate_titles(&join(1.0, 1.0), &join(140_000.0, 1.0)),
+            vec!["On orders, plan A expects 1 row and plan B expects 140K rows."]
+        );
+        // Another estimate per execution is a difference in the customers estimate itself.
+        let titles = estimate_titles(&join(100.0, 1.0), &join(100.0, 1_000.0));
+        assert_eq!(titles.len(), 1, "{titles:?}");
+        assert!(titles[0].starts_with("On customers, plan A expects 1 row and plan B expects"), "{titles:?}");
+        assert!(titles[0].ends_with(" per execution."), "{titles:?}");
+    }
+
+    #[test]
+    fn actual_rows_are_held_to_the_estimate_for_the_runs_that_happened() {
+        let ran = |mut n: PlanNode, rows: f64, runs: f64| {
+            n.act_rows = Some(rows);
+            n.act_executions = Some(runs);
+            n
+        };
+        let actual = |root: PlanNode| {
+            let mut p = plan(root, &[]);
+            p.kind = PlanKind::Actual;
+            p
+        };
+        // SQL Server: the orders seek expected 100 rows and got 10K, so the customers seek ran 10K times where 100 were
+        // planned, and found the one row per run it expected. Only orders is misestimated.
+        let mut customers =
+            node("Clustered Index Seek", NodeKind::Seek, Some("dbo.customers"), Some("pk_customers"), 1.0, vec![]);
+        customers.est_executions = 100.0;
+        let orders = node("Index Seek", NodeKind::Seek, Some("dbo.orders"), Some("ix_status"), 100.0, vec![]);
+        let join = node(
+            "Nested Loops",
+            NodeKind::Join,
+            None,
+            None,
+            100.0,
+            vec![ran(orders, 10_000.0, 1.0), ran(customers, 10_000.0, 10_000.0)],
+        );
+        let nested = actual(ran(join, 10_000.0, 1.0));
+        let titles = estimate_titles(&nested, &nested);
+        assert!(!titles.is_empty() && titles.iter().all(|t| t.contains("from orders")), "{titles:?}");
+
+        // PostgreSQL: a scan's estimate is for a full run, and the Limit above stopped it after 10 rows.
+        let scan = node("Seq Scan", NodeKind::Scan, Some("public.orders"), None, 5_000_000.0, vec![]);
+        let limited =
+            actual(ran(node("Limit", NodeKind::Other, None, None, 10.0, vec![ran(scan, 10.0, 1.0)]), 10.0, 1.0));
+        assert_eq!(estimate_titles(&limited, &limited), Vec::<String>::new());
     }
 }

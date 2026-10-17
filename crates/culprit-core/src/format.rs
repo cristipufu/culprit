@@ -12,6 +12,12 @@ pub fn duration(ms: f64) -> String {
     if ms < 1.0 {
         return format!("{:.2} ms", ms);
     }
+    // A tenth under 10 ms: rounding 2.59 ms to "3 ms" is off by 16%. A whole number reads without its ".0", and one
+    // that rounds up to 10 reads as 10 ms.
+    if ms < 9.95 {
+        let tenths = format!("{ms:.1}");
+        return format!("{} ms", tenths.strip_suffix(".0").unwrap_or(&tenths));
+    }
     if ms < 1_000.0 {
         return format!("{:.0} ms", ms);
     }
@@ -256,6 +262,19 @@ mod tests {
         assert_eq!(duration(250.0), "250 ms");
         assert_eq!(duration(12_300.0), "12.3 s");
         assert_eq!(duration(5.0 * 3_600_000.0 + 20.0 * 60_000.0), "5 h 20 min");
+    }
+
+    // The aptabase readings: 2.59 ms read "3 ms" and 1.44 ms "1 ms". Under 10 ms a whole number is off by up to a
+    // third, so a tenth stays; a whole value reads without ".0", and from 10 ms whole numbers are close enough.
+    #[test]
+    fn durations_under_ten_ms_keep_a_tenth() {
+        assert_eq!(duration(2.59), "2.6 ms");
+        assert_eq!(duration(1.44), "1.4 ms");
+        assert_eq!(duration(5.0), "5 ms");
+        assert_eq!(duration(1.0), "1 ms");
+        assert_eq!(duration(9.97), "10 ms");
+        assert_eq!(duration(12.4), "12 ms");
+        assert_eq!(duration(0.99), "0.99 ms");
     }
 
     #[test]

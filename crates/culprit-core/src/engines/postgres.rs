@@ -5,6 +5,39 @@ use crate::dialect::{NewIndex, included, keys, unique};
 
 pub(super) struct Postgres;
 
+/// Settings of context `user` in pg_settings: a database's owner sets them for that database (`ALTER DATABASE … SET`),
+/// no superuser needed, so they work on a managed service too. Settings of context `superuser` (track_io_timing,
+/// pg_stat_statements.track, wal_compression) are left out: a managed service's admin role isn't a superuser.
+const USER_SETTINGS: &[&str] = &[
+    "random_page_cost",
+    "seq_page_cost",
+    "cpu_tuple_cost",
+    "cpu_index_tuple_cost",
+    "cpu_operator_cost",
+    "parallel_setup_cost",
+    "parallel_tuple_cost",
+    "min_parallel_table_scan_size",
+    "min_parallel_index_scan_size",
+    "effective_cache_size",
+    "effective_io_concurrency",
+    "work_mem",
+    "maintenance_work_mem",
+    "hash_mem_multiplier",
+    "temp_buffers",
+    "max_parallel_workers_per_gather",
+    "jit",
+    "jit_above_cost",
+    "jit_inline_above_cost",
+    "jit_optimize_above_cost",
+    "default_statistics_target",
+    "from_collapse_limit",
+    "join_collapse_limit",
+    "plan_cache_mode",
+    "statement_timeout",
+    "lock_timeout",
+    "idle_in_transaction_session_timeout",
+];
+
 impl EngineSpec for Postgres {
     fn label(&self) -> &'static str {
         "PostgreSQL"
@@ -54,6 +87,23 @@ impl EngineSpec for Postgres {
             ),
             sql: Some(format!("ALTER SYSTEM SET {name} = {};\nSELECT pg_reload_conf();", literal(value))),
         }
+    }
+
+    fn database_setting(&self, server: &ServerInfo, name: &str, value: &str) -> Option<SettingChange> {
+        if !USER_SETTINGS.iter().any(|s| s.eq_ignore_ascii_case(name)) {
+            return None;
+        }
+        Some(SettingChange {
+            how: format!(
+                "Set {name} to {value} for this database only, as its owner: sessions that connect after the change use \
+                 it, and other databases on the server keep theirs."
+            ),
+            sql: Some(format!(
+                "ALTER DATABASE {} SET {name} = {};",
+                Dialect::quote(self, &server.database),
+                literal(value)
+            )),
+        })
     }
 
     fn refresh_statistics(&self, target: &str) -> Fix {

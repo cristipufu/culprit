@@ -4,8 +4,8 @@
 
 use culprit_checks::analyze;
 use culprit_core::{
-    Finding, ForcedPlan, PlanVariant, PlanWarning, QueryFamily, QueryStat, Setting, Severity, Snapshot, Spread,
-    TuningAdvice, TuningRecommendation, WaitStat,
+    Finding, ForcedPlan, NodeKind, Plan, PlanVariant, PlanWarning, QueryFamily, QueryStat, Setting, Severity, Snapshot,
+    Spread, TuningAdvice, TuningRecommendation, Unit, WaitStat,
 };
 
 fn snapshot(name: &str) -> Snapshot {
@@ -127,6 +127,55 @@ fn a_plan_change_on_a_sliver_of_the_workload_is_no_finding() {
     assert!(find(&analyze(s).findings, "plan-regression:8").is_none());
 }
 
+/// [`with_plans`] over six days of Query Store rather than the demo's four and a half hours.
+fn six_days_with_plans(plans: Vec<PlanVariant>) -> Snapshot {
+    let mut s = with_plans(plans);
+    let w = s.workload.as_mut().unwrap();
+    (w.window_start, w.window_hours) = (Some("2026-10-05T12:13:47Z".into()), 144.0);
+    s
+}
+
+// The fresh SQL Server demo: a statement that ran its slow plan for three minutes and stopped got "Extra time per day:
+// 665 ms", a rate it never ran at, and "Force the fast plan" for a plan that read a table no longer in the catalog.
+#[test]
+fn a_plan_regression_says_a_day_only_of_a_day_of_slow_runs_and_forces_nothing_onto_a_table_that_is_gone() {
+    let burst = || {
+        six_days_with_plans(vec![
+            plan("8", 450.0, 0.5, "2026-10-11T07:44:00Z", "2026-10-11T07:47:00Z"),
+            plan("47", 300.0, 60.0, "2026-10-11T07:48:00Z", "2026-10-11T07:51:00Z"),
+        ])
+    };
+    let report = analyze(burst());
+    let f = find(&report.findings, "plan-regression:8").expect("plan 47 replaced plan 8");
+    assert!(!f.metrics.iter().any(|m| m.label == "Extra time per day"), "{:?}", f.metrics);
+    assert!(
+        f.metrics.iter().any(|m| m.label == "Extra time" && (m.value - 300.0 * 59.5).abs() < 1.0),
+        "{:?}",
+        f.metrics
+    );
+    assert_eq!(f.impact.time_ms_per_day, None);
+    // Two days of the slow plan, still running: its extra time a day over them.
+    let s = six_days_with_plans(vec![
+        plan("8", 450.0, 0.5, "2026-10-08T07:44:00Z", "2026-10-09T07:47:00Z"),
+        plan("47", 300.0, 60.0, "2026-10-09T12:13:47Z", "2026-10-11T12:13:00Z"),
+    ]);
+    let f = find(&analyze(s).findings, "plan-regression:8").cloned().expect("plan 47 replaced plan 8");
+    let a_day = f.metrics.iter().find(|m| m.label == "Extra time per day").expect("a day of slow runs").value;
+    assert!((a_day - 300.0 * 59.5 / 2.0).abs() < 1.0, "{a_day}");
+
+    // The table the statement read is gone: nothing to force.
+    let mut s = burst();
+    s.tables.retain(|t| t.name != "orders");
+    let f = find(&analyze(s).findings, "plan-regression:8").cloned().expect("plan 47 replaced plan 8");
+    let fix = f.fix.unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(
+        fix.summary.starts_with("shop.orders is no longer in the catalog") && !fix.summary.contains("Force"),
+        "{}",
+        fix.summary
+    );
+}
+
 // ── one plan story per query ─────────────────────────────────────────────────────────────────────
 
 fn recommend(query: &str, good: &str, bad: &str) -> TuningAdvice {
@@ -236,6 +285,273 @@ fn many_slow_runs_are_an_unstable_query_rated_by_their_time() {
     assert!((extra - 100.0 * (5000.0 - mean)).abs() / extra < 0.1, "{extra}");
 }
 
+/// A PostgreSQL plan of an INSERT of the values it is given: a ModifyTable over a Result, no table or index read.
+fn insert_values_plan() -> Plan {
+    serde_json::from_value(serde_json::json!({
+        "engine": "postgres", "kind": "generic", "total_cost": 0.01, "warnings": [], "index_hints": [], "props": {},
+        "root": {
+            "id": 0, "op": "ModifyTable", "kind": "modify", "object": "public.app_salts", "detail": "Insert",
+            "est_rows": 0.0, "est_executions": 1.0, "subtree_cost": 0.01, "self_cost": 0.0,
+            "warnings": [], "props": {"Conflict Resolution": "NOTHING"},
+            "children": [{
+                "id": 1, "op": "Result", "kind": "compute", "est_rows": 1.0, "est_executions": 1.0,
+                "subtree_cost": 0.01, "self_cost": 0.01, "warnings": [], "props": {}, "children": []
+            }]
+        }
+    }))
+    .expect("plan")
+}
+
+#[test]
+fn an_insert_of_its_values_whose_runs_swing_waited() {
+    // `INSERT … VALUES … ON CONFLICT DO NOTHING` reads no table: its values can't make a run do more, so no parameter
+    // sensitivity, generic plan or statistics target explains its slow runs.
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let mut s = unstable(mean, sd, max, n);
+    let q = query(&mut s, "3432126458605143571");
+    q.text = "INSERT INTO app_salts (app_id, date, salt) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING".into();
+    q.plan = Some(insert_values_plan());
+    let report = analyze(s);
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable insert");
+    assert!(f.summary.contains("Its plan reads no table"), "{}", f.summary);
+    assert!(f.summary.contains("inserting the same key"), "{}", f.summary);
+    assert!(!f.summary.contains("parameter"), "{}", f.summary);
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert!(!fix.summary.contains("plan_cache_mode") && fix.summary.contains("wait"), "{}", fix.summary);
+}
+
+#[test]
+fn an_unstable_querys_share_is_its_slow_runs_time() {
+    // The share and the time a day beside the finding (its row's bar, the dashboard, the digest, an agent's
+    // db_time_pct) are what its label says: the slow runs', not the statement's 25% that the label calls "<1%".
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let mut s = unstable(mean, sd, max, n);
+    s.workload.as_mut().unwrap().window_hours = 48.0;
+    let report = analyze(s);
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable query");
+    let share = f.impact.db_time_share.expect("the slow runs' share");
+    assert_eq!(f.impact.label, format!("{} of DB time in slow runs", culprit_core::format::percent(share)));
+    let extra = f.metrics.iter().find(|m| m.label.starts_with("Slow runs' extra time")).unwrap().value;
+    let w = report.snapshot.workload.as_ref().unwrap();
+    let q = w.query("3432126458605143571").unwrap();
+    assert!((share - w.share_of(extra, q)).abs() < 1e-12, "{share}");
+    assert!(share < w.share_of(q.total_time_ms, q), "below the statement's own share");
+    let a_day = f.impact.time_ms_per_day.expect("48 hours of data");
+    assert!((a_day - extra / 2.0).abs() < 1e-6, "{a_day} vs {extra} over two days");
+}
+
+// The aptabase reading: an insert taking a quarter of database time lost its heavy-query finding to the unstable-query
+// one, whose slow runs were under 1% of it, so nothing said what the statement costs every day. A finding explains a
+// heavy query away only when it accounts for its time.
+#[test]
+fn slow_runs_that_are_a_part_of_a_heavy_insert_leave_its_heavy_query() {
+    let (mean, sd, max, n) = spread_of(&[(20.0, 19_940.0), (5000.0, 20.0)]);
+    let mut s = unstable(mean, sd, max, n);
+    let q = query(&mut s, "3432126458605143571");
+    q.text = "INSERT INTO app_salts (app_id, date, salt) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING".into();
+    q.plan = Some(insert_values_plan());
+    let report = analyze(s);
+    let unstable = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable insert");
+    let heavy = find(&report.findings, "heavy-query:3432126458605143571").expect("its everyday cost, still said");
+    assert!(
+        unstable.impact.db_time_share.unwrap() < heavy.impact.db_time_share.unwrap() * 0.5,
+        "{:?} vs {:?}",
+        unstable.impact,
+        heavy.impact
+    );
+    // A finding that accounts for a statement's time still stands for it: the demo's sort that spills.
+    let report = analyze(snapshot("postgres-demo.json"));
+    assert!(find(&report.findings, "temp-spill:9065391607317686058").is_some());
+    assert!(find(&report.findings, "heavy-query:9065391607317686058").is_none());
+}
+
+/// [`insert_values_plan`] writing `object`.
+fn insert_plan_into(object: &str) -> Plan {
+    let mut plan = insert_values_plan();
+    plan.root.object = Some(object.into());
+    plan
+}
+
+// The aptabase reading: "its plan reads no table, so different values don't make a run do more work" for an insert
+// whose foreign key checks every new row against apps, a read and a row lock its plan doesn't show; "the log at
+// commit" for PostgreSQL, whose statement time ends before the commit; a guess said as fact ("the slow runs were
+// waiting, for…"); "Culprit can't tell which values were slow" right after saying values don't matter; and "another
+// transaction inserting the same key" whatever the table's unique keys, even one the database generates.
+#[test]
+fn an_unstable_insert_says_what_its_foreign_keys_lock() {
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let mut s = unstable(mean, sd, max, n);
+    let q = query(&mut s, "3432126458605143571");
+    q.text = "INSERT INTO order_items (order_id, product_id, quantity) VALUES ($1, $2, $3)".into();
+    q.plan = Some(insert_plan_into("public.order_items"));
+    let report = analyze(s.clone());
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable insert");
+    assert!(
+        f.summary.contains(
+            "Its plan reads no table (it writes the values it is given), but its foreign keys on product_id and order_id check each row it inserts against products and orders: the referenced row is looked up and share-locked (FOR KEY SHARE)."
+        ),
+        "{}",
+        f.summary
+    );
+    // Its only unique key is the id the sequence gives it: no other transaction inserts the same one.
+    assert!(
+        f.summary.contains("The slow runs may have been waiting for a transaction that locks (SELECT … FOR UPDATE), deletes or changes the key of the referenced row of products and orders, for a lock on the table"),
+        "{}",
+        f.summary
+    );
+    for wrong in ["different values don't", "at commit", "were waiting, for", "same key"] {
+        assert!(!f.summary.contains(wrong), "{wrong}: {}", f.summary);
+    }
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.summary.starts_with("Find what the slow runs wait for while they happen"), "{}", fix.summary);
+    assert!(
+        fix.summary.contains(
+            "A transaction that locks (SELECT … FOR UPDATE), deletes or changes the key of the referenced row of products and orders holds this one until it commits or rolls back"
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(!fix.summary.contains("same key"), "{}", fix.summary);
+    let caveat = f.caveats.iter().find(|c| c.contains("could be from any time")).unwrap();
+    assert!(!caveat.contains("which values") && caveat.ends_with("how many calls were slow."), "{caveat}");
+
+    // A unique key on the columns it sets: another transaction inserting the same order and product holds it.
+    let pkey = s.indexes.iter().find(|i| i.name == "order_items_pkey").cloned().expect("demo index");
+    s.indexes.push(culprit_core::IndexStat {
+        name: "order_items_order_product_key".into(),
+        columns: vec!["order_id".into(), "product_id".into()],
+        is_primary_key: false,
+        ..pkey
+    });
+    let report = analyze(s);
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable insert");
+    assert!(
+        f.summary.contains(
+            "referenced row of products and orders, for another transaction inserting the same key, for a lock"
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(
+        f.fix.as_ref().unwrap().summary.contains(
+            "Another transaction inserting the same key holds this one until it commits or rolls back, and so does one that locks (SELECT … FOR UPDATE), deletes or changes the key of the referenced row of products and orders"
+        ),
+        "{}",
+        f.fix.as_ref().unwrap().summary
+    );
+}
+
+// The aptabase-us reading: a stopped insert was told to "find what the slow runs wait for while they happen", and
+// storage was a cause though its data-file reads and writes took 86 ms against 19 s of slow runs.
+#[test]
+fn a_stopped_unstable_insert_points_at_what_runs_now() {
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let mut s = unstable(mean, sd, max, n);
+    let q = query(&mut s, "3432126458605143571");
+    q.text = "INSERT INTO events (customer_id, kind) VALUES ($1, $2)".into();
+    q.plan = Some(insert_plan_into("public.events"));
+    // Quiet for the last four hours of the window.
+    q.last_seen = Some("2026-10-11T08:00:00Z".into());
+    q.waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("data file reads and writes".into()),
+        wait_ms: 86.0,
+        tasks: None,
+    }];
+    let next = query(&mut s, "2885972271926804069");
+    next.text = "INSERT INTO events (customer_id, kind, payload) VALUES ($1, $2, $3)".into();
+    next.plan = None;
+    let report = analyze(s.clone());
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("an unstable insert");
+    assert!(f.inactive, "it stopped");
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(
+        fix.starts_with("This statement no longer runs. Query 2885972271926804069, an insert into events too, still does: if it replaced this one, its runs can wait the same way"),
+        "{fix}"
+    );
+    assert!(!fix.contains("Find what the slow runs wait for") && !fix.contains("on storage"), "{fix}");
+    assert!(f.summary.contains("Its data-file reads and writes took 86 ms in all"), "{}", f.summary);
+    assert!(f.summary.contains("storage reads weren't it"), "{}", f.summary);
+    assert!(f.summary.contains(", or on writing WAL"), "{}", f.summary);
+    // Nothing else writes the table: it no longer runs, and that's what it says.
+    query(&mut s, "2885972271926804069").text =
+        "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind".into();
+    let report = analyze(s);
+    let fix = report.findings.iter().find(|f| f.check == "unstable-query").unwrap().fix.clone().unwrap().summary;
+    assert!(fix.starts_with("This statement no longer runs, so there is nothing to watch now"), "{fix}");
+}
+
+// SQL Server's Query Store times an autocommit statement's commit with it: its log flush stays among the waits.
+#[test]
+fn an_unstable_insert_on_sql_server_can_wait_on_its_commit() {
+    let mut s = snapshot("mssql-demo.json");
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let q = query(&mut s, "6");
+    (q.executions, q.mean_time_ms, q.total_time_ms, q.stddev_time_ms, q.max_time_ms) =
+        (n, mean, mean * n, Some(sd), Some(max));
+    q.text = "INSERT INTO [shop].[products] ([name]) VALUES (@P1)".into();
+    q.plan = Some(
+        serde_json::from_value(serde_json::json!({
+            "engine": "mssql", "kind": "estimated", "total_cost": 0.01, "warnings": [], "index_hints": [], "props": {},
+            "root": {
+                "id": 0, "op": "Clustered Index Insert", "kind": "modify", "object": "[shop].[products]",
+                "est_rows": 1.0, "est_executions": 1.0, "subtree_cost": 0.01, "self_cost": 0.01,
+                "warnings": [], "props": {},
+                "children": [{
+                    "id": 1, "op": "Constant Scan", "kind": "compute", "est_rows": 1.0, "est_executions": 1.0,
+                    "subtree_cost": 0.0, "self_cost": 0.0, "warnings": [], "props": {}, "children": []
+                }]
+            }
+        }))
+        .expect("plan"),
+    );
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let report = analyze(s);
+    let f = find(&report.findings, "unstable-query:6").expect("an unstable insert");
+    assert!(f.summary.contains("the log flush at commit"), "{}", f.summary);
+    assert!(!f.summary.contains("FOR KEY SHARE"), "{}", f.summary);
+}
+
+// ── stopped running ──────────────────────────────────────────────────────────────────────────────
+
+// The aptabase-us reading: pg_stat_statements keeps no last run, so Culprit dates one by its own scans, and a
+// statement that hasn't grown since the first of them last ran by then at the latest. "Has not run since" that scan
+// said it stopped then, and "a deploy most likely changed it" sent the reader to that day's deploy.
+#[test]
+fn a_statement_quiet_since_the_first_scan_may_have_stopped_earlier() {
+    let mut s = snapshot("postgres-demo.json");
+    s.workload.as_mut().unwrap().timeline = Some(
+        serde_json::from_value(serde_json::json!({
+            "source": "scans",
+            "starts": ["2026-10-11T08:00:00Z", "2026-10-11T09:00:00Z", "2026-10-11T10:00:00Z", "2026-10-11T11:00:00Z"],
+            "end": "2026-10-11T11:54:21Z",
+            "time_ms": [1000.0, 1000.0, 1000.0, 1000.0],
+            "executions": [100.0, 100.0, 100.0, 100.0]
+        }))
+        .expect("timeline"),
+    );
+    let q = query(&mut s, ORDERS_SORT);
+    q.trend = None;
+    q.last_seen = Some("2026-10-11T08:00:00Z".into());
+    let report = analyze(s.clone());
+    let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).expect("the spill");
+    assert!(f.inactive);
+    assert!(
+        f.caveats[0].starts_with("This query hasn't run in the ")
+            && f.caveats[0].contains(" since Culprit's first scan (Oct 11, 08:00 UTC); it may have stopped earlier."),
+        "{}",
+        f.caveats[0]
+    );
+    assert!(!f.caveats[0].contains("most likely"), "{}", f.caveats[0]);
+    // Seen growing at a later scan: it ran until about then, and a deploy most likely changed it.
+    query(&mut s, ORDERS_SORT).last_seen = Some("2026-10-11T09:00:00Z".into());
+    let report = analyze(s);
+    let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).expect("the spill");
+    assert!(f.caveats[0].starts_with("This query has not run since 2026-10-11 09:00"), "{}", f.caveats[0]);
+}
+
 // ── temp-spill ───────────────────────────────────────────────────────────────────────────────────
 
 const ORDERS_SORT: &str = "9065391607317686058";
@@ -271,16 +587,46 @@ fn work_mem_advice_is_for_the_applications_role_and_never_lower() {
     assert!(fix.sql.is_none() && fix.summary.starts_with("work_mem is already 1GB"), "{}", fix.summary);
 }
 
+#[test]
+fn a_spill_points_at_the_step_that_spills() {
+    // PostgreSQL: the plan's one sort (under a Gather Merge).
+    let report = analyze(snapshot("postgres-demo.json"));
+    let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).unwrap();
+    assert_eq!(f.queries[0].plan_node, Some(1), "{:?}", f.queries);
+    // MySQL: the grouping step's internal temporary table, not the filesort above it.
+    let report = analyze(snapshot("mysql-demo.json"));
+    let f = find(&report.findings, &format!("temp-spill:{GROUP_BY}")).unwrap();
+    assert_eq!(f.queries[0].plan_node, Some(2), "{:?}", f.queries);
+}
+
+#[test]
+fn an_exchange_is_never_a_plans_costliest_step() {
+    // The demo's Gather Merge is costed above the scan for passing 667K rows between processes: not work on the data.
+    let s = snapshot("postgres-demo.json");
+    let plan = s.workload.as_ref().unwrap().query(ORDERS_SORT).and_then(|q| q.plan.as_ref()).expect("plan");
+    assert_eq!(plan.root.op, "Gather Merge");
+    assert!(plan.root.self_cost > plan.nodes().iter().filter(|n| n.id != 0).map(|n| n.self_cost).fold(0.0, f64::max));
+    assert_eq!(plan.hottest().map(|n| n.op.as_str()), Some("Seq Scan"));
+}
+
 const GROUP_BY: &str = "04cd7be9c366fadc";
 
 #[test]
 fn mysql_temp_table_advice_raises_only_what_limits_and_never_lowers() {
-    // MySQL 8.4 runs internal temporary tables on TempTable: max_heap_table_size doesn't limit them.
-    let report = analyze(snapshot("mysql-demo.json"));
+    // MySQL 8.4 running internal temporary tables on TempTable: max_heap_table_size doesn't limit them.
+    let mut s = snapshot("mysql-demo.json");
+    set(&mut s, "internal_tmp_mem_storage_engine", "TempTable");
+    let report = analyze(s);
     let f = find(&report.findings, &format!("temp-spill:{GROUP_BY}")).unwrap();
     let sql = f.fix.as_ref().unwrap().sql.clone().unwrap();
     assert_eq!(sql, "SET PERSIST tmp_table_size = 67108864;");
     assert!(f.title.ends_with("builds an on-disk temporary table about once per run"), "{}", f.title);
+    // Which engine it uses unread (the demo's saved scan): MEMORY's cap is both variables, so both are raised.
+    let f = find(&analyze(snapshot("mysql-demo.json")).findings, &format!("temp-spill:{GROUP_BY}")).cloned().unwrap();
+    assert_eq!(
+        f.fix.unwrap().sql.as_deref(),
+        Some("SET PERSIST tmp_table_size = 67108864;\nSET PERSIST max_heap_table_size = 67108864;")
+    );
 
     // MariaDB (MEMORY engine): the smaller of the two limits wins; the larger one is left alone.
     let mut s = snapshot("mysql-demo.json");
@@ -359,12 +705,584 @@ fn query_store_waits_name_what_a_statement_waited_for() {
     assert!(f.summary.contains("of Buffer Latch waits"), "{}", f.summary);
 }
 
+// The fresh SQL Server demo: 750 runs in three minutes, then none, read as "about 123 runs a day"; the fresh PostgreSQL
+// demo's three runs in six days as "about 0.5 times a day".
+#[test]
+fn a_heavy_query_says_when_a_burst_ran_and_counts_a_few_runs() {
+    let mut s = point_lookup(1.0, 0.0066);
+    let w = s.workload.as_mut().unwrap();
+    (w.window_start, w.window_hours) = (Some("2026-10-05T12:13:47Z".into()), 144.0);
+    let q = query(&mut s, "7");
+    (q.first_seen, q.last_seen) = (Some("2026-10-11T07:44:33Z".into()), Some("2026-10-11T07:47:52Z".into()));
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(
+        f.summary.starts_with("It ran 3.0K times at 1 ms on average, on Oct 11, 07:44–07:47 UTC: "),
+        "{}",
+        f.summary
+    );
+    assert!(!f.summary.contains("a day"), "{}", f.summary);
+    assert!(!f.metrics.iter().any(|m| m.label == "Runs per day"), "{:?}", f.metrics);
+    assert!(f.metrics.iter().any(|m| m.label == "Runs" && m.value == 3_000.0), "{:?}", f.metrics);
+
+    let mut s = snapshot("postgres-demo.json");
+    let w = s.workload.as_mut().unwrap();
+    (w.window_start, w.window_hours) = (Some("2026-10-05T11:54:21Z".into()), 144.0);
+    let q = query(&mut s, "4911431806993420100");
+    (q.executions, q.total_time_ms) = (3.0, 3.0 * q.mean_time_ms);
+    let f = find(&analyze(s).findings, "heavy-query:4911431806993420100").cloned().expect("heavy");
+    assert!(f.summary.starts_with("It ran 3 times at 19.0 s on average: "), "{}", f.summary);
+}
+
+/// The PostgreSQL demo as if pg_stat_statements had counted for 40 days, with 36 hours of Culprit's own scans in three
+/// steps of 10 s of database time each, in which statement `id` ran `runs` times in `time_ms` a step.
+fn with_scans(id: &str, runs: f64, time_ms: f64) -> Snapshot {
+    let mut s = snapshot("postgres-demo.json");
+    let w = s.workload.as_mut().unwrap();
+    (w.window_start, w.window_hours) = (Some("2026-09-01T11:54:21Z".into()), 40.0 * 24.0);
+    w.timeline = Some(
+        serde_json::from_value(serde_json::json!({
+            "source": "scans",
+            "starts": ["2026-10-10T00:00:00Z", "2026-10-10T12:00:00Z", "2026-10-11T00:00:00Z"],
+            "end": "2026-10-11T12:00:00Z",
+            "time_ms": [10000.0, 10000.0, 10000.0],
+            "executions": [5000.0, 5000.0, 5000.0]
+        }))
+        .expect("timeline"),
+    );
+    query(&mut s, id).trend =
+        Some(culprit_core::QueryTrend { time_ms: vec![Some(time_ms); 3], executions: vec![Some(runs); 3] });
+    s
+}
+
+// The aptabase readings: "about 388 times a day" and 31% averaged over three and a half years, where Culprit's own scans
+// measured 1,670 a day and 43%; and "re-scan and compare this query's share", which a week moves by a hair and which a
+// rewritten statement (a new id) freezes.
+#[test]
+fn a_heavy_query_on_running_totals_says_what_culprits_scans_measured() {
+    // Forty runs in 40 days, 15 of them in the 36 hours of scans: 10 a day, most of the time there.
+    let mut s = with_scans("4911431806993420100", 5.0, 9_500.0);
+    let q = query(&mut s, "4911431806993420100");
+    (q.executions, q.total_time_ms, q.logical_reads) = (40.0, 40.0 * q.mean_time_ms, Some(40.0 * 15.0));
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:4911431806993420100").expect("heavy");
+    assert!(
+        f.summary.contains("It ran about once a day at 19.0 s on average: ")
+            && f.summary
+                .contains("Over 36 hours of Culprit's own scans it ran about 10 times a day, 95% of database time."),
+        "{}",
+        f.summary
+    );
+    assert!(f.metrics.iter().any(|m| m.label == "Runs per day over Culprit's scans"), "{:?}", f.metrics);
+    let verify = &f.verify[0];
+    assert!(
+        verify.starts_with("pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change.")
+            && verify.contains("open What changed from the change on")
+            && verify.ends_with("A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."),
+        "{verify}"
+    );
+}
+
+// The aptabase-us reading: the insert that replaced a stopped one took 12% of database time over Culprit's scans, but
+// its entry was days old, so its share since 2023 was 0.13% and it had no finding while the stopped one had two.
+#[test]
+fn a_recent_entry_is_judged_by_culprits_scans() {
+    // 6K of its 8.2K runs came in the scans, 1 s of every 10 s step.
+    let report = analyze(with_scans("3432126458605143571", 2_000.0, 1_000.0));
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("heavy now");
+    assert!(f.title.ends_with("takes 10% of database time"), "{}", f.title);
+    assert!(
+        f.summary.starts_with(
+            "Its entry in pg_stat_statements is recent: 6.0K of its 8.2K runs came during 36 hours of Culprit's own scans, where it ran about 4.0K times a day at 0.50 ms on average and took 10% of database time."
+        ),
+        "{}",
+        f.summary
+    );
+    assert!((f.impact.db_time_share.unwrap() - 0.1).abs() < 1e-9, "{:?}", f.impact);
+    // Under a day of scans, its share of the totals decides, and it isn't heavy.
+    let mut s = with_scans("3432126458605143571", 2_000.0, 1_000.0);
+    let w = s.workload.as_mut().unwrap();
+    let t = w.timeline.as_mut().unwrap();
+    t.starts = vec!["2026-10-11T00:00:00Z".into(), "2026-10-11T04:00:00Z".into(), "2026-10-11T08:00:00Z".into()];
+    assert!(find(&analyze(s).findings, "heavy-query:3432126458605143571").is_none());
+    // An old entry whose runs mostly came before the scans keeps its share of the totals.
+    let report = analyze(with_scans("3432126458605143571", 100.0, 1_000.0));
+    assert!(find(&report.findings, "heavy-query:3432126458605143571").is_none());
+}
+
 #[test]
 fn an_aggregate_is_not_titled_by_rows_read_per_row_returned() {
     // `SELECT COUNT(*) FROM orders WHERE status = ? AND created_at >= ?` returns one row whatever it counts.
     let report = analyze(snapshot("mysql-demo.json"));
     let f = find(&report.findings, "heavy-query:c7b5ac9bb4bcecfe").unwrap();
     assert!(!f.title.contains("for every row it returns"), "{}", f.title);
+}
+
+// ── the costliest step of a cheap plan ───────────────────────────────────────────────────────────
+
+/// Query 7 as a lookup on a unique index, run thousands of times at a millisecond and returning its row each time (not
+/// so often that it's a chatty query): a seek and a key lookup of `looked_up` rows each in a table of 247K rows (SQL
+/// Server's TableCardinality), at `cost` in all.
+fn point_lookup(looked_up: f64, cost: f64) -> Snapshot {
+    let mut s = snapshot("mssql-demo.json");
+    let q = query(&mut s, "7");
+    (q.executions, q.mean_time_ms, q.total_time_ms, q.rows) = (3_000.0, 1.0, 3_000.0, Some(3_000.0));
+    q.logical_reads = Some(6.2 * 3_000.0);
+    let plan = q.plan.as_mut().expect("plan");
+    // The demo's query compares a converted column; this one is the plain seek it stands in for.
+    plan.warnings.clear();
+    plan.props.remove("PlanAffectingConvert");
+    plan.total_cost = cost;
+    plan.root.subtree_cost = cost;
+    plan.root.self_cost = 0.0;
+    let (seek, lookup) = plan.root.children.split_at_mut(1);
+    let (seek, lookup) = (&mut seek[0], &mut lookup[0]);
+    (seek.op, seek.kind, seek.predicate) = ("Index Seek".into(), NodeKind::Seek, None);
+    (seek.est_rows, seek.rows_read, seek.table_rows) = (looked_up, Some(looked_up), Some(247_435.0));
+    (seek.self_cost, seek.subtree_cost) = (cost * 0.4, cost * 0.4);
+    (lookup.op, lookup.kind, lookup.object) = ("Key Lookup".into(), NodeKind::Lookup, Some("shop.customers".into()));
+    (lookup.est_rows, lookup.est_executions, lookup.rows_read) = (1.0, looked_up, None);
+    lookup.table_rows = Some(247_435.0);
+    (lookup.self_cost, lookup.subtree_cost) = (cost * 0.6, cost * 0.6);
+    for n in [seek, lookup] {
+        n.warnings.clear();
+    }
+    s
+}
+
+#[test]
+fn a_point_lookups_costliest_step_is_not_where_its_time_goes() {
+    // Half of a plan costing 0.0066 is a lookup of one row: not "a key lookup that reads 247K rows", and no covering
+    // index to add. The time is in how often it runs.
+    let report = analyze(point_lookup(1.0, 0.0066));
+    let f = find(&report.findings, "heavy-query:7").expect("still the heaviest query");
+    assert!(!f.summary.contains("247"), "{}", f.summary);
+    assert!(!f.summary.contains("key lookup"), "{}", f.summary);
+    assert!(f.summary.contains("Its plan is cheap"), "{}", f.summary);
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(!fix.contains("covering index"), "{fix}");
+    assert!(fix.contains("how often it runs"), "{fix}");
+    assert_eq!(f.queries[0].plan_node, None, "no step to point at");
+    let brief = culprit_checks::agent_brief(&report, f);
+    assert!(!brief.contains("most expensive step"), "{brief}");
+}
+
+#[test]
+fn a_plan_costed_cheap_whose_runs_are_slow_is_not_called_cheap() {
+    // Stale statistics: costed as a point lookup, measured at over a second a run. The estimate is what's wrong.
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    (q.executions, q.mean_time_ms, q.total_time_ms) = (1_000.0, 1_200.0, 1_200_000.0);
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:7").expect("heavy");
+    assert!(!f.summary.contains("Its plan is cheap"), "{}", f.summary);
+    assert!(!f.fix.as_ref().unwrap().summary.contains("already cheap"));
+}
+
+#[test]
+fn many_key_lookups_in_a_plan_that_does_real_work_are_still_covered() {
+    // 20K lookups in a plan costing 40: covering them is the fix, said once, by the plan's key-lookups finding that
+    // explains the query's time. The rows it reads are the plan's, never the table's size.
+    let report = analyze(point_lookup(20_000.0, 40.0));
+    let f = report.findings.iter().find(|f| f.queries.iter().any(|q| q.id == "7")).expect("query 7");
+    assert_eq!(f.id, "plan-insights:key-lookups:shop.customers");
+    assert!(f.fix.as_ref().unwrap().summary.contains("as included columns"), "{:?}", f.fix);
+    assert!(!f.summary.contains("247"), "{}", f.summary);
+}
+
+#[test]
+fn a_plan_is_called_cheap_only_where_its_runs_measure_cheap() {
+    // Each costed as a point lookup and run at a millisecond: what the runs read and return decides, and the summary
+    // and the fix say it on the same condition.
+    let cheap = |s: Snapshot| {
+        let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+        let fix = f.fix.as_ref().unwrap().summary.clone();
+        assert_eq!(f.summary.contains("Its plan is cheap"), fix.contains("already cheap"), "{} | {fix}", f.summary);
+        f.summary.contains("Its plan is cheap")
+    };
+    assert!(cheap(point_lookup(1.0, 0.0066)));
+    // 750 pages a run where the plan expected to read one row (stale statistics).
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    (q.logical_reads, q.rows) = (Some(750.0 * 3_000.0), Some(0.0));
+    assert!(!cheap(s));
+    // 201 rows a run where the plan expected one (a generic plan's guess).
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    (q.logical_reads, q.rows) = (Some(67.0 * 3_000.0), Some(201.0 * 3_000.0));
+    assert!(!cheap(s));
+    // 6 ms a run is under the 10 ms the summary asks of a cheap run: the fix says so too.
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    (q.mean_time_ms, q.total_time_ms) = (6.0, 18_000.0);
+    assert!(cheap(s));
+}
+
+#[test]
+fn a_read_that_returns_nothing_is_titled_by_its_reads_per_run() {
+    // Per row its reads would be counted against a row it never returns; per run they're 750 pages for nothing.
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    (q.logical_reads, q.rows) = (Some(750.0 * 3_000.0), Some(0.0));
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(f.title.ends_with("reads 750 pages a run to return nothing"), "{}", f.title);
+    // A lookup that finds nothing reads a few pages: no title about its reads.
+    let mut s = point_lookup(1.0, 0.0066);
+    query(&mut s, "7").rows = Some(0.0);
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(!f.title.contains("pages"), "{}", f.title);
+}
+
+#[test]
+fn a_cheap_write_is_told_to_write_more_per_statement_not_to_cache() {
+    let mut s = point_lookup(1.0, 0.0066);
+    query(&mut s, "7").text = "INSERT INTO [shop].[customers] ([name], [email]) VALUES (@P1, @P2)".into();
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    // A write's plan costs next to nothing whatever its runs cost: not "cheap", the write itself.
+    assert!(!f.summary.contains("Its plan is cheap"), "{}", f.summary);
+    assert!(f.summary.contains("what a run costs is the write itself") && f.summary.contains("Each run inserts 1 row"));
+    let fix = f.fix.unwrap().summary;
+    // SQL Server's words for many rows at once; its only unique key is the id it doesn't set, so one transaction
+    // makes no other insert wait; and no index to drop where none goes unread.
+    assert!(
+        fix.contains(
+            "Insert several rows per statement where the application has them together (a multi-row VALUES, a table-valued parameter, or a bulk insert), in one transaction."
+        ),
+        "{fix}"
+    );
+    assert!(!fix.contains("cache") && !fix.contains("skip") && !fix.contains("index"), "{fix}");
+}
+
+/// The PostgreSQL demo's lookup of customers turned into `text`, an insert of the values it is given into products
+/// (2,000 runs at 5 ms, 15 pages each, `rows` rows changed in all, 1.7 KB of WAL a run), counted for 40 days.
+fn heavy_insert(text: &str, rows: f64) -> Snapshot {
+    let mut s = snapshot("postgres-demo.json");
+    s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(24.0 * 40.0);
+    let q = query(&mut s, "3432126458605143571");
+    q.text = text.into();
+    q.plan = Some(insert_plan_into("public.products"));
+    (q.executions, q.mean_time_ms, q.total_time_ms) = (2_000.0, 5.0, 10_000.0);
+    (q.rows, q.logical_reads) = (Some(rows), Some(15.0 * 2_000.0));
+    q.costs = Some(culprit_core::QueryCosts {
+        log_bytes: Some(2_000.0 * 1_700.0),
+        log_share: Some(0.99),
+        log_full_pages: Some(1_350.0),
+        ..Default::default()
+    });
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    s
+}
+
+// The aptabase readings: `INSERT … ON CONFLICT DO NOTHING` took a quarter of database time at 0.56 ms a run, with 3 of
+// 4 runs inserting nothing and 99% of the WAL. "Its plan is cheap, so the share comes from how often it runs", and a
+// fix to batch "inside one transaction" (unstable-query on the same insert says keep those short), with a table-valued
+// parameter (SQL Server's) and indexes to drop where none goes unread.
+#[test]
+fn a_write_whose_runs_mostly_change_nothing_is_told_to_skip_them() {
+    let text = "INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING";
+    let report = analyze(heavy_insert(text, 500.0));
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
+    assert!(!f.summary.contains("cheap") && !f.summary.contains("how often it runs"), "{}", f.summary);
+    assert!(
+        f.summary.contains(
+            "Each run inserts 0.25 rows on average (75% of its runs insert nothing) and writes 1.7 KB of WAL, 99% of all the WAL the statements wrote: 6.6 KB and 2.7 full-page images"
+        ),
+        "{}",
+        f.summary
+    );
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(
+        fix.contains(
+            "75% of its runs insert nothing: skip the statement where the application already knows the row exists"
+        ),
+        "{fix}"
+    );
+    for wrong in ["table-valued", "transaction", "Insert several rows"] {
+        assert!(!fix.contains(wrong), "{wrong}: {fix}");
+    }
+
+    // A row a run: more rows per statement, in PostgreSQL's words. products_sku_key is unique on the sku it sets, so
+    // another transaction inserting the same sku waits for this one: not "in one transaction". products_sku_idx has
+    // had no reads in 40 days: the one index worth dropping.
+    let f = analyze(heavy_insert("INSERT INTO products (sku, name) VALUES ($1, $2)", 2_000.0))
+        .findings
+        .into_iter()
+        .find(|f| f.id == "heavy-query:3432126458605143571")
+        .expect("a heavy insert");
+    let fix = f.fix.unwrap().summary;
+    assert!(
+        fix.contains(
+            "Insert several rows per statement where the application has them together (a multi-row VALUES, arrays unnested into rows, or COPY)."
+        ),
+        "{fix}"
+    );
+    assert!(!fix.contains("transaction") && !fix.contains("table-valued"), "{fix}");
+    assert!(fix.contains("products_sku_idx has had no reads in the 40 days"), "{fix}");
+    assert!(f.summary.contains("Each run inserts 1 row on average and writes 1.7 KB of WAL"), "{}", f.summary);
+}
+
+// The aptabase-us reading: "An insert into app_salts takes 30% of database time" for an insert silent since Culprit's
+// first scan.
+#[test]
+fn a_statement_that_stopped_is_titled_in_the_past() {
+    let mut s = heavy_insert("INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", 500.0);
+    query(&mut s, "3432126458605143571").last_seen = Some("2026-10-11T08:00:00Z".into());
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
+    assert!(f.inactive);
+    assert!(
+        f.title.starts_with("An insert into products took ") && f.title.ends_with(" until it stopped"),
+        "{}",
+        f.title
+    );
+}
+
+#[test]
+fn a_wait_that_takes_most_of_a_statements_time_is_said() {
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    q.waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("Buffer IO".into()),
+        wait_ms: q.total_time_ms * 0.85,
+        tasks: None,
+    }];
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(
+        f.summary.contains(
+            "85% of its time is spent waiting for data to come from storage because it wasn't in memory (Query Store: Buffer IO)."
+        ),
+        "{}",
+        f.summary
+    );
+    // Under half of its time, the wait isn't what its runs are about.
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    q.waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("Buffer IO".into()),
+        wait_ms: q.total_time_ms * 0.3,
+        tasks: None,
+    }];
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(!f.summary.contains("Buffer IO"), "{}", f.summary);
+}
+
+// The fresh PostgreSQL demo: `SELECT … FOR UPDATE` ran 3 times at 38 s, reading 9 pages a run, and was told to "check
+// whether it reads more rows or columns than it needs" while the UPDATE beside it was read as waiting for a lock.
+#[test]
+fn a_read_that_locks_its_rows_and_waited_is_waiting_for_locks() {
+    let mut s = snapshot("postgres-demo.json");
+    let q = query(&mut s, "4911431806993420100");
+    q.text = "SELECT id FROM orders WHERE id = $1 FOR UPDATE".into();
+    (q.executions, q.mean_time_ms, q.total_time_ms) = (3.0, 38_412.0, 115_236.0);
+    (q.rows, q.logical_reads, q.plan) = (Some(3.0), Some(27.0), None);
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:4911431806993420100").expect("the locking read");
+    assert!(f.title.ends_with("most likely waiting for locks"), "{}", f.title);
+    assert!(
+        f.summary.contains(
+            "most likely for the lock its FOR UPDATE takes on the rows it finds, which another transaction held"
+        ),
+        "{}",
+        f.summary
+    );
+    let fix = &f.fix.as_ref().unwrap().summary;
+    assert!(!fix.contains("reads more rows") && fix.contains("won't shorten the wait"), "{fix}");
+    assert!(f.metrics.iter().any(|m| m.label == "Rows returned per run"), "{:?}", f.metrics);
+}
+
+// A staging SQL Server reading: "with a unique index on those columns, an insert that handles the duplicate-key error… needs
+// no read first" for an idempotency check whose plan seeks that very unique index: it reads as one to create.
+#[test]
+fn a_check_for_a_row_names_the_unique_index_its_plan_seeks() {
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    q.rows = Some(1.0);
+    q.waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("Buffer IO".into()),
+        wait_ms: q.total_time_ms * 0.86,
+        tasks: None,
+    }];
+    s.indexes.iter_mut().find(|i| i.name == "ix_customers_email").unwrap().is_unique = true;
+    let fix = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap().summary;
+    assert!(
+        fix.contains("this plan seeks ix_customers_email on shop.customers, a unique index that exists already, so an insert that handles its duplicate-key error (or an upsert) needs no read first"),
+        "{fix}"
+    );
+    assert!(!fix.contains("with a unique index on those columns"), "{fix}");
+}
+
+/// Query 7 as a seek of ix_customers_email costed for one row whose key lookups check `segment` and keep none: 750
+/// pages a run (about 250 lookups into a clustered index three levels deep), and no row returned.
+fn lookups_for_nothing() -> Snapshot {
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    q.text = "SELECT [id], [name] FROM [shop].[customers] WHERE [email] = @P1 AND [segment] = @P2".into();
+    (q.logical_reads, q.rows) = (Some(750.0 * 3_000.0), Some(0.0));
+    let plan = q.plan.as_mut().expect("plan");
+    plan.root.children[0].seek_predicate = Some("[email] = [@P1]".into());
+    plan.root.children[1].predicate = Some("[culprit_demo].[shop].[customers].[segment]=[@P2]".into());
+    s
+}
+
+#[test]
+fn lookups_that_find_nothing_are_the_plans_estimate_not_the_applications_code() {
+    let f = find(&analyze(lookups_for_nothing()).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(f.title.ends_with("reads 750 pages a run to return nothing"), "{}", f.title);
+    assert!(
+        f.summary.contains(
+            "Its plan expects 1 row from ix_customers_email (on email), then looks up each row it finds in the table to check segment: its runs read 750 pages each, about 250 lookups at 3 pages each, and return nothing."
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(f.summary.ends_with("The plan was costed for far fewer rows than its runs find."), "{}", f.summary);
+    assert_eq!(f.queries[0].plan_node, Some(4), "the lookup that checks segment");
+    // No index leads with segment: one that does, and the statistics the plan was costed with.
+    let fix = f.fix.clone().unwrap();
+    assert!(!fix.summary.contains("Find this statement in the application"), "{}", fix.summary);
+    assert!(fix.summary.contains("The plan was costed for 1 row from ix_customers_email, but its runs look up about 250 rows each and keep none"), "{}", fix.summary);
+    assert!(fix.summary.contains("an index that leads with segment finds the rows directly"), "{}", fix.summary);
+    let sql = fix.sql.unwrap();
+    assert!(
+        sql.contains("CREATE NONCLUSTERED INDEX [IX_customers_segment]")
+            && sql.ends_with("UPDATE STATISTICS [shop].[customers];"),
+        "{sql}"
+    );
+    assert_eq!(f.verify, vec!["After the change, re-scan: its pages read per run should drop from 750 to a handful."]);
+
+    // An index already leads with segment: the statistics are the fix, and the index is named, the one that holds
+    // every row before a filtered one.
+    let mut s = lookups_for_nothing();
+    let email = s.indexes.iter().find(|i| i.name == "ix_customers_email").cloned().unwrap();
+    let mut filtered = email.clone();
+    (filtered.name, filtered.columns, filtered.filter) =
+        ("ix_customers_segment_active".into(), vec!["segment".into()], Some("([is_active]=(1))".into()));
+    let mut segment = email;
+    (segment.name, segment.columns) = ("ix_customers_segment".into(), vec!["segment".into()]);
+    s.indexes.extend([filtered, segment]);
+    let fix = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
+    assert!(
+        fix.summary.contains("find the rows by segment instead: ix_customers_segment already leads with it."),
+        "{}",
+        fix.summary
+    );
+    assert_eq!(fix.sql.as_deref(), Some("UPDATE STATISTICS [shop].[customers];"));
+}
+
+// A staging SQL Server reading: heavy-query:36649 told to update statistics the catalog shows updated with a full scan two
+// days after the plan was compiled, the runs since still reading 750 pages, and with no way on if they keep doing so.
+#[test]
+fn statistics_updated_since_the_plan_was_compiled_are_said_with_a_way_on() {
+    let mut s = lookups_for_nothing();
+    let email = s.indexes.iter().find(|i| i.name == "ix_customers_email").cloned().unwrap();
+    let mut segment = email;
+    (segment.name, segment.columns) = ("ix_customers_segment".into(), vec!["segment".into()]);
+    s.indexes.push(segment);
+    // The plan was compiled with the statistics of Oct 1; the catalog has them updated from every row on Oct 5, and
+    // every run measured came after.
+    query(&mut s, "7").plan.as_mut().unwrap().raw = Some(
+        r#"<ShowPlanXML><StatisticsInfo LastUpdate="2026-10-01T10:00:00.00" ModificationCount="12" SamplingPercent="100" Statistics="[ix_customers_email]" Table="[customers]" Schema="[shop]" Database="[culprit_demo]" /></ShowPlanXML>"#
+            .into(),
+    );
+    let stat = s.statistics.iter_mut().find(|st| st.name == "ix_customers_email").unwrap();
+    (stat.last_updated, stat.rows, stat.rows_sampled) = (Some("2026-10-05T10:00:00Z".into()), Some(2e5), Some(2e5));
+    let fix = find(&analyze(s.clone()).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
+    assert!(
+        fix.summary.contains(
+            "The statistics on ix_customers_email were last updated on Oct 5 from every row, after this plan was compiled with those of Oct 1, and the runs measured since still look up as many rows: fresh statistics may not change the estimate."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(
+        fix.summary.ends_with(
+            "have the statement read shop.customers through ix_customers_segment with a table hint (`WITH (INDEX(ix_customers_segment))`, or FORCESEEK)."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert_eq!(fix.sql.as_deref(), Some("UPDATE STATISTICS [shop].[customers];"));
+    // Statistics as old as the plan's: the update is the fix, as before.
+    s.statistics.iter_mut().find(|st| st.name == "ix_customers_email").unwrap().last_updated =
+        Some("2026-10-01T10:00:00Z".into());
+    let fix = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy").fix.unwrap();
+    assert!(!fix.summary.contains("last updated") && !fix.summary.contains("table hint"), "{}", fix.summary);
+}
+
+#[test]
+fn a_cheap_read_waiting_for_storage_is_told_its_pages_dont_stay_in_memory_not_to_cache() {
+    // An idempotency check: 1 row in 3K runs of a few pages each, 86% of the time waiting for storage.
+    let mut s = point_lookup(1.0, 0.0066);
+    let q = query(&mut s, "7");
+    q.rows = Some(1.0);
+    q.waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("Buffer IO".into()),
+        wait_ms: q.total_time_ms * 0.86,
+        tasks: None,
+    }];
+    let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
+    assert!(!f.summary.contains("the share comes from how often it runs"), "{}", f.summary);
+    assert!(f.summary.contains("Its plan is cheap: each run reads about 6 pages"), "{}", f.summary);
+    // What the change shortens is the wait, not the six pages a run reads.
+    assert_eq!(
+        f.verify,
+        vec![
+            "After the change ships, re-scan: this query's share of database time should drop, with less of its time spent waiting for storage (86% now)."
+        ]
+    );
+    let fix = f.fix.unwrap().summary;
+    assert!(fix.contains("they don't stay in memory between runs") && fix.contains("more memory"), "{fix}");
+    assert!(!fix.contains("cache the result") && !fix.contains("result cached"), "{fix}");
+    assert!(fix.contains("a duplicate or idempotency check"), "{fix}");
+    // One row in 3K runs reads as what it is, not as "0.0" rows a run.
+    let rows = f.metrics.iter().find(|m| m.label.starts_with("Rows returned")).expect("rows");
+    assert_eq!((rows.label.as_str(), rows.text.as_deref()), ("Rows returned", Some("1 row in 3.0K runs")));
+}
+
+#[test]
+fn a_step_beside_one_the_plan_puts_no_cost_on_is_given_no_share() {
+    // MySQL's filesort carries no cost: beside it, the scan reads as 100% of the plan's. Said plainly (MY-8), not as
+    // "the step its plan costs highest… so no share is given" for a share the summary never mentioned.
+    let report = analyze(snapshot("mysql-demo.json"));
+    let f = find(&report.findings, "heavy-query:19bd4ff468839ea3").expect("the promo-code read");
+    assert!(!f.summary.contains("of its estimated cost") && !f.summary.contains("share"), "{}", f.summary);
+    assert!(
+        f.summary.ends_with(
+            "Its only step with a cost is a table scan of shop.orders that examines 500K rows a run (MySQL puts no cost on the sort)."
+        ),
+        "{}",
+        f.summary
+    );
+}
+
+#[test]
+fn no_fix_tells_its_reader_to_copy_the_brief_it_is_in() {
+    for name in ["mssql-demo.json", "postgres-demo.json", "mysql-demo.json"] {
+        for f in analyze(snapshot(name)).findings {
+            let fix = f.fix.map(|x| x.summary).unwrap_or_default();
+            assert!(!fix.contains("copy the brief"), "{}: {fix}", f.id);
+        }
+    }
+}
+
+#[test]
+fn mysqls_rows_examined_are_rows_and_measured_where_the_plan_reads_one_table() {
+    // `SELECT COUNT(*) FROM orders WHERE status = ? AND created_at >= ?`: the plan estimates 29K rows read, the runs
+    // examined 11K each.
+    let report = analyze(snapshot("mysql-demo.json"));
+    let f = find(&report.findings, "heavy-query:c7b5ac9bb4bcecfe").unwrap();
+    assert!(f.summary.contains("an index range scan of shop.orders that examines 11K rows a run"), "{}", f.summary);
+    assert!(!f.summary.contains("29K"), "{}", f.summary);
+    let examined = f.metrics.iter().find(|m| m.label == "Rows examined per run").expect("rows examined");
+    assert_eq!(examined.unit, Unit::Rows);
 }
 
 // ── the slow query log ───────────────────────────────────────────────────────────────────────────

@@ -96,7 +96,7 @@ Clicking either opens one panel with three tabs (`1`/`2`/`3`, `←`/`→`, `Esc`
 - **Right now:** a 10/30/60-second sample. SQL Server and MySQL difference two readings of their wait counters; PostgreSQL samples busy sessions every second. It runs in the background (close the panel; it keeps going) and is compared with the scan's usual mix ("+64 pts vs history").
 - **Health:** pressure signals as tiles, each with when it was measured (now / since start) and what healthy looks like in words, the oldest open transaction, and on Azure SQL Database the last hour of CPU, data IO, log writes and workers against the tier's limit (gridlines, dashed limit, peak, cursor readout).
 
-Per engine: SQL Server attributes every Query Store wait category to queries; MySQL attributes lock time (table, metadata and InnoDB row locks) and reports the rest server-wide since startup; PostgreSQL keeps no wait history, so history is per-statement disk-read time plus WAL time when they're timed, and "right now" is session sampling. Short windows are never stretched into per-day or per-hour rates.
+Per engine: SQL Server attributes every Query Store wait category to queries; MySQL attributes lock time (table, metadata and InnoDB row locks) and reports the rest server-wide since startup; PostgreSQL keeps no wait history, so history is per-statement disk-read time when it's timed (WAL write and sync time is mostly the WAL writer's and commits', outside statement time, so it isn't counted as a share of it), and "right now" is session sampling. Short windows are never stretched into per-day or per-hour rates.
 
 ### Finding detail (the heart of the product)
 

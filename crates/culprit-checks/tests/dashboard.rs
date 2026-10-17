@@ -415,3 +415,32 @@ fn healthy_signals_are_shown_before_ungraded_ones() {
     assert_eq!(&shown[..3], &["healthy-0", "healthy-1", "healthy-2"], "{shown:?}");
     assert_eq!(health.status, TileStatus::Good);
 }
+
+#[test]
+fn the_headline_counts_statements_that_stopped_not_findings() {
+    // Two findings on one statement that stopped running are one statement: "1 more statement … it".
+    let report = report("pg-demo");
+    let mut findings = report.findings.clone();
+    let id = findings[0].queries.first().expect("a statement").id.clone();
+    let mut second = findings[0].clone();
+    second.id = format!("{}:second", second.id);
+    findings.push(second);
+    for f in findings.iter_mut().filter(|f| f.queries.first().is_some_and(|r| r.id == id)) {
+        f.inactive = true;
+    }
+    let headline = culprit_checks::summarize(&report.snapshot, &findings).headline;
+    assert!(headline.ends_with(" 1 more statement stopped running: a deploy may have changed it."), "{headline}");
+
+    // A finding that names no statement (an index the optimizer stopped asking for) is counted on its own.
+    let mut unnamed = findings[0].clone();
+    (unnamed.id, unnamed.queries) = ("missing-index:unnamed".into(), Vec::new());
+    findings.push(unnamed);
+    let headline = culprit_checks::summarize(&report.snapshot, &findings).headline;
+    assert!(
+        headline.ends_with(
+            " 1 more statement stopped running, and 1 more finding rests on statements that did: a deploy may have \
+             changed them."
+        ),
+        "{headline}"
+    );
+}

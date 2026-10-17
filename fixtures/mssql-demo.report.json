@@ -15,7 +15,7 @@
       "id": "hot-rows:shop.orders",
       "impact": {
         "db_time_share": 0.34120252699679854,
-        "label": "3 min waiting on locks",
+        "label": "3 min 7 s waiting on locks",
         "score": 58.41101195528443,
         "time_ms_per_day": null
       },
@@ -63,7 +63,7 @@
         "kind": "index",
         "name": "shop.orders.pk_orders"
       },
-      "summary": "Since pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
+      "summary": "Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
       "title": "Sessions wait 37.3 s each on row locks in orders",
       "verify": [
         "Re-scan a day later: lock waits on orders should stop growing."
@@ -126,7 +126,7 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "None of its 6 runs in the last 4 h 35 min finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
+      "summary": "None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
       "title": "A read from order_items times out on every run, at about 15 s",
       "verify": [
         "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
@@ -183,7 +183,7 @@
         "kind": "query",
         "name": "246"
       },
-      "summary": "50 of its 200 runs in the last 4 h 35 min didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
+      "summary": "50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
       "title": "A read from orders fails 25% of the time",
       "verify": [
         "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
@@ -198,8 +198,8 @@
       "confidence": "high",
       "fix": {
         "cost": null,
-        "sql": "-- One statement over every matching row escalates; 1,000 at a time doesn't\nWHILE 1 = 1\nBEGIN\n    DELETE TOP (1000) FROM [shop].[support_tickets] WHERE /* the same filter */;\n    IF @@ROWCOUNT = 0 BREAK;\nEND;\n\n-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\nCREATE EVENT SESSION culprit_lock_escalation ON SERVER\nADD EVENT sqlserver.lock_escalation (\n    SET collect_statement = 1\n    ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n    WHERE sqlserver.database_name = N'culprit_demo')\nADD TARGET package0.ring_buffer\nWITH (STARTUP_STATE = ON);\nALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);",
-        "summary": "Change the statement that touches thousands of rows of support_tickets into a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, but other sessions then wait only for those rows, not for the whole table. To learn which statement it is, start the event session below (culprit_lock_escalation): it keeps each escalation with its statement, in memory, at almost no cost."
+        "sql": "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\nCREATE EVENT SESSION culprit_lock_escalation ON SERVER\nADD EVENT sqlserver.lock_escalation (\n    SET collect_statement = 1\n    ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n    WHERE sqlserver.database_name = N'culprit_demo')\nADD TARGET package0.ring_buffer\nWITH (STARTUP_STATE = ON);\nALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);",
+        "summary": "Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement."
       },
       "id": "lock-escalations:shop.support_tickets",
       "impact": {
@@ -209,7 +209,7 @@
         "time_ms_per_day": null
       },
       "inactive": false,
-      "last_seen": null,
+      "last_seen": "2026-10-11T12:13:47Z",
       "metrics": [
         {
           "label": "Escalations since SQL Server started",
@@ -218,13 +218,19 @@
           "value": 5.0
         }
       ],
-      "queries": [],
+      "queries": [
+        {
+          "id": "10",
+          "note": "Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
+          "plan_node": null
+        }
+      ],
       "severity": "high",
       "subject": {
         "kind": "table",
         "name": "shop.support_tickets"
       },
-      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC. It keeps no time for each, and Culprit has no earlier scan to compare with, so they may be old: the next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to it: look at jobs, migrations and maintenance that change many rows at once.",
+      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: under read committed it gives each row lock up as it moves on, but it keeps them until the statement ends when its plan prefetches its key lookups, under a locking hint (HOLDLOCK, UPDLOCK), or in a REPEATABLE READ or SERIALIZABLE transaction, and one that reads thousands of rows that way takes enough to escalate. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
       "title": "Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)",
       "verify": [
         "Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed."
@@ -351,7 +357,7 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Remove OPTION (MAXDOP 1) if the query has it; otherwise check MAXDOP for the database (ALTER DATABASE SCOPED CONFIGURATION) and the server."
+        "summary": "Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU."
       },
       "id": "plan-insights:parallelism-blocked:query-263",
       "impact": {
@@ -380,7 +386,7 @@
         {
           "id": "263",
           "note": "An expensive plan that can't go parallel",
-          "plan_node": 0
+          "plan_node": null
         }
       ],
       "severity": "medium",
@@ -388,8 +394,8 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "Its estimated cost is 7152. SQL Server considers a parallel plan above the server's cost threshold for parallelism (5 by default, often raised to 50), which this plan passes either way; the whole run happens on a single core instead. Seen in a read from order_items.",
-      "title": "This plan runs on one CPU because MAXDOP is 1 (a query hint, or the database or server setting)",
+      "summary": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5), so SQL Server would consider a parallel plan for it; the whole run happens on a single core instead. Seen in a read from order_items.",
+      "title": "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)",
       "verify": [
         "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
         "Re-scan: this finding is gone."
@@ -442,10 +448,10 @@
         "kind": "query",
         "name": "6"
       },
-      "summary": "This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. The time is small (<1% of database time), but each call costs a network round trip and a connection.",
+      "summary": "This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
       "title": "A read from products runs 60K times in 5 hours, one row at a time",
       "verify": [
-        "After the change, this statement's executions per day should drop by orders of magnitude."
+        "It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times."
       ]
     },
     {
@@ -500,7 +506,7 @@
         "name": "customers.email"
       },
       "summary": "The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.",
-      "title": "A type mismatch on customers.email stops a read from customers from using an index",
+      "title": "A type mismatch on customers.email stops a read from customers from seeking an index",
       "verify": [
         "Re-scan after the change; the warning should be gone from this query's plan."
       ]
@@ -513,9 +519,9 @@
       "check": "missing-index",
       "confidence": "high",
       "fix": {
-        "cost": "shop.order_items received no writes, so this index would cost nothing to keep up there.",
+        "cost": "shop.order_items had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
-        "summary": "Create an index on order_id. Equality columns come first; put the most selective one at the front if you know it."
+        "summary": "Create an index on order_id."
       },
       "id": "missing-index:shop.order_items(order_id)",
       "impact": {
@@ -613,7 +619,9 @@
       },
       "summary": "With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
       "title": "Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)",
-      "verify": []
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
     },
     {
       "category": "queries",
@@ -678,10 +686,10 @@
         "kind": "query",
         "name": "8"
       },
-      "summary": "Until Oct 11, 10:45 UTC it averaged 10 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 10 ms.",
+      "summary": "Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.",
       "title": "A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed",
       "verify": [
-        "Re-scan after the fix: this query's trend in Queries should drop back to about 10 ms per run."
+        "Re-scan after the fix: this query's trend in Queries should drop back to about 9.5 ms per run."
       ]
     },
     {
@@ -743,7 +751,7 @@
         "kind": "query",
         "name": "249"
       },
-      "summary": "Each compile takes 23 ms and the statement then runs for 45 ms: 34% of its time goes to compiling, 6.9 s in the last 4 h 35 min (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused.",
+      "summary": "Each compile takes 23 ms and the statement then runs for 45 ms: 34% of its time goes to compiling, 6.9 s in the last 5 hours (a new plan for every run). Planning gets expensive with many joins, partitions or large statistics targets, and it repeats when the plan isn't reused.",
       "title": "Compiling takes 34% of the time of a read from orders",
       "verify": [
         "Re-scan: planning should be a small part of its time."
@@ -755,7 +763,7 @@
       "check": "unindexed-fk",
       "confidence": "high",
       "fix": {
-        "cost": "shop.ticket_events received no writes, so this index would cost nothing to keep up there.",
+        "cost": "shop.ticket_events had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]\n    ON [shop].[ticket_events] ([ticket_id])\n    WITH (ONLINE = ON);",
         "summary": "Index the foreign key column on shop.ticket_events."
       },
@@ -802,9 +810,9 @@
       "check": "missing-index",
       "confidence": "high",
       "fix": {
-        "cost": "shop.orders received no writes, so this index would cost nothing to keep up there.",
+        "cost": "shop.orders had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
-        "summary": "Create an index on shipped_at, including total. Equality columns come first; put the most selective one at the front if you know it."
+        "summary": "Create an index on shipped_at, including total."
       },
       "id": "missing-index:shop.orders(shipped_at)",
       "impact": {
@@ -991,12 +999,6 @@
           "text": null,
           "unit": "bytes",
           "value": 27795456.0
-        },
-        {
-          "label": "Reads of ix_orders_status",
-          "text": null,
-          "unit": "count",
-          "value": 0.0
         }
       ],
       "queries": [],
@@ -1034,12 +1036,6 @@
           "text": null,
           "unit": "bytes",
           "value": 663552.0
-        },
-        {
-          "label": "Reads of ix_products_sku",
-          "text": null,
-          "unit": "count",
-          "value": 1.0
         }
       ],
       "queries": [],
@@ -1097,7 +1093,7 @@
         "kind": "query",
         "name": "264"
       },
-      "summary": "Each run sends 20K rows to the application; its 25 runs in the last 4 h 35 min moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
+      "summary": "Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
       "title": "A read from order_items returns 20K rows per run",
       "verify": [
         "Re-scan: rows per run should drop to what a page or a job actually uses."
@@ -1143,66 +1139,6 @@
       ]
     },
     {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
-        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
-      },
-      "id": "config:cost-threshold-for-parallelism",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "cost-threshold-for-parallelism"
-      },
-      "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
-      "title": "Cost threshold for parallelism is still the 1990s default of 5",
-      "verify": []
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
-        "summary": "Switch to automatic capture."
-      },
-      "id": "config:query-store-capture",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "query-store-capture"
-      },
-      "summary": "Capture mode ALL keeps statements that ran once or cost nothing (it tracks 16 statements now). They crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
-      "title": "Query Store records every statement, including one-off ones",
-      "verify": []
-    },
-    {
       "category": "queries",
       "caveats": [
         "This statement ran once in the last 5 hours. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running."
@@ -1212,13 +1148,13 @@
       "fix": {
         "cost": null,
         "sql": null,
-        "summary": "Log per row this high usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, update only the columns that change, and drop indexes nobody reads (see Indexes)."
+        "summary": "Log this heavy usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, and update only the columns that change."
       },
       "id": "log-volume:255",
       "impact": {
         "db_time_share": 0.0015681536081671112,
         "label": "232 MB of transaction log",
-        "score": 5.5,
+        "score": 7.812955808649348,
         "time_ms_per_day": null
       },
       "inactive": false,
@@ -1255,11 +1191,75 @@
         "kind": "query",
         "name": "255"
       },
-      "summary": "It wrote 232 MB of transaction log in the last 4 h 35 min: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
+      "summary": "It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
       "title": "An update of wide writes 7.9 KB of transaction log per row it changes",
       "verify": [
         "Re-scan later: if it hasn't run again, there is nothing to do.",
         "Re-scan: its share of the transaction log and the bytes per row should drop."
+      ]
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
+        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
+      },
+      "id": "config:cost-threshold-for-parallelism",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "cost-threshold-for-parallelism"
+      },
+      "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
+      "title": "Cost threshold for parallelism is still the 1990s default of 5",
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
+    },
+    {
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
+        "summary": "Switch to automatic capture."
+      },
+      "id": "config:query-store-capture",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "query-store-capture"
+      },
+      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.",
+      "title": "Query Store records every statement, including one-off ones",
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
       ]
     },
     {
@@ -1889,6 +1889,7 @@
     "duration_ms": 456.244667,
     "environment": "local",
     "escalations_before": null,
+    "evictions_before": null,
     "foreign_keys": [
       {
         "columns": [
@@ -3985,6 +3986,9 @@
               "CompileCPU": "37",
               "CompileMemory": "264",
               "CompileTime": "80",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -4030,6 +4034,7 @@
                     "ForceSeek": "0",
                     "ForcedIndex": "0",
                     "Index Kind": "nonclustered",
+                    "Indexes on the table (catalog)": "pk_customers=id\nix_customers_email=email",
                     "LogicalOp": "Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -4266,6 +4271,9 @@
               "CompileCPU": "32",
               "CompileMemory": "192",
               "CompileTime": "193",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -4309,6 +4317,7 @@
                     "ForceScan": "0",
                     "ForcedIndex": "0",
                     "Index Kind": "clustered",
+                    "Indexes on the table (catalog)": "pk_order_items=id\nix_order_items_product_id=product_id",
                     "LogicalOp": "Clustered Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -4506,6 +4515,9 @@
               "CompileCPU": "31",
               "CompileMemory": "200",
               "CompileTime": "123",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -4791,6 +4803,9 @@
               "CompileCPU": "24",
               "CompileMemory": "216",
               "CompileTime": "73",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -4834,6 +4849,7 @@
                     "ForceScan": "0",
                     "ForcedIndex": "0",
                     "Index Kind": "clustered",
+                    "Indexes on the table (catalog)": "pk_orders=id\nix_orders_customer_id=customer_id,created_at\nix_orders_status=status\nix_orders_status_created=status,created_at\nix_orders_channel=channel",
                     "LogicalOp": "Clustered Index Scan",
                     "NoExpandHint": "0",
                     "Ordered": "0",
@@ -5047,6 +5063,9 @@
               "CompileCPU": "1",
               "CompileMemory": "120",
               "CompileTime": "1",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -5225,6 +5244,9 @@
               "CompileCPU": "57",
               "CompileMemory": "232",
               "CompileTime": "375",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -5516,6 +5538,9 @@
               "CompileCPU": "11",
               "CompileMemory": "96",
               "CompileTime": "11",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -5772,6 +5797,9 @@
               "CompileCPU": "2",
               "CompileMemory": "232",
               "CompileTime": "2",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -6062,6 +6090,9 @@
               "CompileCPU": "1",
               "CompileMemory": "120",
               "CompileTime": "1",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -6204,6 +6235,9 @@
               "CompileCPU": "2",
               "CompileMemory": "224",
               "CompileTime": "2",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -6422,6 +6456,9 @@
               "CompileCPU": "42",
               "CompileMemory": "2288",
               "CompileTime": "43",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "1600",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -6587,6 +6624,7 @@
                                                     "ForceScan": "0",
                                                     "ForcedIndex": "0",
                                                     "Index Kind": "clustered",
+                                                    "Indexes on the table (catalog)": "pk_order_items=id\nix_order_items_product_id=product_id",
                                                     "LogicalOp": "Clustered Index Scan",
                                                     "NoExpandHint": "0",
                                                     "Ordered": "0",
@@ -6852,6 +6890,7 @@
                                     "ForceSeek": "0",
                                     "ForcedIndex": "0",
                                     "Index Kind": "clustered",
+                                    "Indexes on the table (catalog)": "pk_order_items=id\nix_order_items_product_id=product_id",
                                     "LogicalOp": "Clustered Index Scan",
                                     "NoExpandHint": "0",
                                     "Ordered": "0",
@@ -7177,6 +7216,9 @@
               "CompileCPU": "1",
               "CompileMemory": "240",
               "CompileTime": "1",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "0",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -7394,6 +7436,9 @@
               "CompileCPU": "3",
               "CompileMemory": "416",
               "CompileTime": "3",
+              "Cost threshold for parallelism (server, now)": "5",
+              "MAXDOP (database, now)": "0",
+              "Max degree of parallelism (server, now)": "0",
               "MemoryDesiredKB": "4304",
               "MemoryGrantedKB": "0",
               "MemoryMaxUsedKB": "0",
@@ -7448,6 +7493,7 @@
                             "ForceSeek": "0",
                             "ForcedIndex": "0",
                             "Index Kind": "nonclustered",
+                            "Indexes on the table (catalog)": "pk_order_items=id\nix_order_items_product_id=product_id",
                             "LogicalOp": "Index Scan",
                             "NoExpandHint": "0",
                             "Ordered": "0",
@@ -7540,6 +7586,7 @@
                                     "ForceSeek": "0",
                                     "ForcedIndex": "0",
                                     "Index Kind": "nonclustered",
+                                    "Indexes on the table (catalog)": "pk_order_items=id\nix_order_items_product_id=product_id",
                                     "LogicalOp": "Index Scan",
                                     "NoExpandHint": "0",
                                     "Ordered": "0",

@@ -41,15 +41,22 @@ pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
         subject(SubjectKind::Database, snapshot.server.database.clone()),
     );
     let name = snapshot.server.name();
+    let total = crate::signals::total_wait(total_ms);
     f.title = format!(
-        "Transactions on this server waited {} for row locks {}, {} each on average",
-        format::duration(total_ms),
+        "Transactions on this server waited {total} for row locks {}, {} each on average",
         uptime_phrase(snapshot),
         format::duration(avg_ms)
     );
+    // InnoDB reads a plain SELECT from a snapshot, taking no row locks (except under SERIALIZABLE, which makes it a
+    // locking read): its lock time is table and metadata locks, never these waits.
+    let serializable = ["transaction_isolation", "tx_isolation"]
+        .iter()
+        .any(|n| snapshot.setting(n).is_some_and(|s| s.value.to_ascii_uppercase().contains("SERIALIZABLE")));
+    let takes_row_locks = |q: &QueryStat| serializable || !culprit_core::sql::reads_only(&q.text, Engine::Mysql);
     // A statement whose own time is mostly lock waits is where they show; one with a little lock time isn't named
-    // as their cause.
+    // as their cause, nor one whose lock time MariaDB made of its whole run.
     let top = app_queries(snapshot)
+        .filter(|q| takes_row_locks(q) && !crate::signals::lock_time_counts_the_run(snapshot, q))
         .filter_map(|q| {
             let lock: f64 = q.waits.iter().filter(|w| category_key(&w.category) == "lock").map(|w| w.wait_ms).sum();
             (lock > 0.0).then_some((q, lock))
@@ -61,7 +68,7 @@ pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
          Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.",
         capitalize(&uptime_phrase(snapshot)),
         format::count(count),
-        format::duration(total_ms),
+        total,
         format::duration(avg_ms),
         format::duration(per_hour_ms),
         share

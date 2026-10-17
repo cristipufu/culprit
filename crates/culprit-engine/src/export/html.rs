@@ -10,7 +10,7 @@ use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
 use super::{
     ExportNote, ExportOptions, environment_label, exported_at, kind_label, node_label, plan_engine_label, prepared,
-    report_engine_label, rows_phrase, rows_text, share, sql_text, top_costs, where_,
+    report_engine_label, rows_phrase, rows_text, share, shares_note, sql_text, top_costs, where_,
 };
 
 const STYLE: &str = r#"
@@ -144,6 +144,16 @@ fn page(title: &str, chips: &[String], body: &str, options: &ExportOptions) -> S
 
 fn strip(plan: &Plan) -> String {
     let costs = top_costs(plan, 6);
+    // A plan that states no share for any step (no costs, or a step it doesn't cost) has no strip, only why.
+    let note = shares_note(plan)
+        .or_else(|| {
+            (!plan.weighed()).then(|| "The plan has the access path only: no costs to weigh its steps by.".into())
+        })
+        .map(|n| format!(r#"<p class="note">{}</p>"#, escape(&n.replace('`', ""))))
+        .unwrap_or_default();
+    if costs.is_empty() {
+        return note;
+    }
     let mut bar = String::from(r#"<div class="strip" role="img" aria-label="Share of the plan's cost per operator">"#);
     let mut legend = String::from(r#"<ul class="legend">"#);
     for (n, s) in &costs {
@@ -168,7 +178,7 @@ fn strip(plan: &Plan) -> String {
     }
     bar.push_str("</div>");
     legend.push_str("</ul>");
-    format!("{bar}{legend}")
+    format!("{bar}{legend}{note}")
 }
 
 fn steps(plan: &Plan) -> String {
@@ -185,7 +195,9 @@ fn steps(plan: &Plan) -> String {
         if actual { "Rows (est. → actual)" } else { "Rows (est.)" }
     );
     for (n, depth) in rows {
-        let s = share(plan, n);
+        // No share where the plan can't state one (no costs, a step it doesn't cost, a default guess).
+        let stated = share(plan, n);
+        let s = stated.unwrap_or(0.0);
         let warnings: Vec<&str> = n.warnings.iter().map(|w| w.label()).collect();
         let _ = write!(
             out,
@@ -196,7 +208,7 @@ fn steps(plan: &Plan) -> String {
             escape(&where_(n)),
             heat_class(s),
             (s * 100.0).clamp(0.0, 100.0),
-            format::percent(s),
+            stated.map(format::percent).unwrap_or_else(|| "—".into()),
             escape(&rows_text(n)),
             escape(&warnings.join(", "))
         );
@@ -253,11 +265,11 @@ fn plan_figures(plan: &Plan) -> String {
             format::duration(t)
         );
     }
-    if let Some(hot) = plan.hottest() {
+    if let Some((hot, s)) = plan.hottest().and_then(|hot| Some((hot, share(plan, hot)?))) {
         let _ = write!(
             out,
             r#"<div class="fig"><div class="v">{}</div><div class="l">{}</div></div>"#,
-            format::percent(share(plan, hot)),
+            format::percent(s),
             escape(&format!("in {}", node_label(hot)))
         );
     }
@@ -519,14 +531,15 @@ fn finding_body(
             out,
             r#"<h2>Query {}</h2><p class="qmeta">{} of database time · {} · {} on average</p><pre>{}</pre>"#,
             escape(&q.id),
-            format::percent(w.share(q.total_time_ms)),
-            escape(&w.how_often(q.executions)),
+            format::percent(culprit_checks::query_share(w, finding, q)),
+            escape(&w.how_often_of(q)),
             format::duration(q.mean_time_ms),
             escape(&sql_text(&q.text, engine, options))
         );
         if let Some(plan) = &q.plan {
             let plan = prepared(plan, options);
-            let focus = r.plan_node.or(plan.hottest().map(|n| n.id));
+            // The step the finding names, else its plan's working step where the finding is about one.
+            let focus = culprit_checks::finding_step(finding, r, &plan).map(|n| n.id);
             let _ = write!(
                 out,
                 r#"<div class="wrap" style="margin-top:12px">{}</div>"#,
@@ -534,13 +547,25 @@ fn finding_body(
             );
             if let Some(node) = focus.and_then(|id| plan.nodes().into_iter().find(|n| n.id == id)) {
                 let pred = node.predicate.as_deref().or(node.seek_predicate.as_deref());
+                // A share only where the plan can state one, and rows only where it estimates them.
+                let mut details = Vec::new();
+                if plan.weighed() {
+                    if let Some(s) = culprit_checks::finding_step_share(&plan, node) {
+                        details.push(format!("{} of the plan's cost", format::percent(s)));
+                    }
+                    details.push(escape(&rows_phrase(node)));
+                }
+                if let Some(p) = pred {
+                    details.push(format!("on <code>{}</code>", escape(&format::predicate(p))));
+                }
+                let why = culprit_checks::no_share_reason(&plan, node)
+                    .map(|w| format!(" {}", escape(&w.replace('`', ""))))
+                    .unwrap_or_default();
                 let _ = write!(
                     out,
-                    r#"<p class="note" style="margin-top:8px">The outlined step: <b>{}</b>, {} of the plan's cost, {}{}.</p>"#,
+                    r#"<p class="note" style="margin-top:8px">The outlined step: <b>{}</b>{}.{why}</p>"#,
                     escape(&node_label(node)),
-                    format::percent(share(&plan, node)),
-                    escape(&rows_phrase(node)),
-                    pred.map(|p| format!(", on <code>{}</code>", escape(&format::predicate(p)))).unwrap_or_default()
+                    details.iter().map(|d| format!(", {d}")).collect::<String>()
                 );
             }
         }

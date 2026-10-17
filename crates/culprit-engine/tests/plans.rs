@@ -246,3 +246,88 @@ fn compares_postgres_index_and_sequential_plans() {
     assert!(!cross.comparable && cross.cost_ratio.is_none());
     assert!(cross.headlines[0].contains("different engines"));
 }
+
+fn saved_snapshot(name: &str) -> culprit_core::Snapshot {
+    let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn saved_plan<'a>(snapshot: &'a culprit_core::Snapshot, id: &str) -> &'a Plan {
+    let q = snapshot.workload.as_ref().unwrap().queries.iter().find(|q| q.id == id).expect("the statement");
+    q.plan.as_ref().expect("its plan")
+}
+
+// Demos P1-6, MySQL P1#6, Aptabase EU 7: a report opened or re-analyzed later kept the plan nodes an older parser made.
+// Read again from the text each plan was captured as, a saved scan shows what a scan taken now would.
+#[test]
+fn saved_plans_are_read_again_by_todays_parsers() {
+    use culprit_engine::plans::reparse_saved;
+
+    // PostgreSQL: the parallel sort's rows were one process's (277,777), and the scan under it rests on a default
+    // guess for its parameter, which the scan never marked.
+    let mut pg = saved_snapshot("postgres-demo.json");
+    let before = saved_plan(&pg, "9065391607317686058").clone();
+    assert_eq!(find(&before, "Sort").est_rows, 277_777.0);
+    reparse_saved(&mut pg);
+    let plan = saved_plan(&pg, "9065391607317686058");
+    assert!((find(plan, "Sort").est_rows - 666_665.0).abs() < 1.0, "{}", find(plan, "Sort").est_rows);
+    assert!(find(plan, "Seq Scan").props.contains_key(culprit_core::GUESSED_SELECTIVITY));
+    assert_eq!(plan.kind, before.kind);
+    assert_eq!(plan.statement, before.statement);
+    assert!(plan.props.contains_key("Generic Plan") && plan.insights.is_none());
+    assert_eq!(find(plan, "Seq Scan").table_rows, find(&before, "Seq Scan").table_rows, "the size the scan looked up");
+
+    // MySQL: the products lookup on a nested loop's inner side runs once per outer row (2), a row each.
+    let mut my = saved_snapshot("mysql-demo.json");
+    let lookup = |s: &culprit_core::Snapshot| {
+        let n = find(saved_plan(s, "b4c0f3861e32013e"), "Unique index lookup").clone();
+        (n.est_rows, n.est_executions, n.rows_read)
+    };
+    assert_eq!(lookup(&my), (2.0, 1.0, Some(1.0)));
+    let props = saved_plan(&my, "b4c0f3861e32013e").props.clone();
+    reparse_saved(&mut my);
+    assert_eq!(lookup(&my), (1.0, 2.0, Some(2.0)));
+    // What the scan said of the plan stays: the server that made it, where its sample came from.
+    for key in ["server_version", "Sample"] {
+        assert_eq!(saved_plan(&my, "b4c0f3861e32013e").props.get(key), props.get(key), "{key}");
+    }
+
+    // SQL Server: the same statement of the document, parsed the same.
+    let mut ms = saved_snapshot("mssql-demo.json");
+    let ids: Vec<String> = ms.workload.as_ref().unwrap().queries.iter().map(|q| q.id.clone()).collect();
+    let before = ms.clone();
+    reparse_saved(&mut ms);
+    for id in ids
+        .iter()
+        .filter(|id| before.workload.as_ref().unwrap().queries.iter().any(|q| &q.id == *id && q.plan.is_some()))
+    {
+        let (a, b) = (saved_plan(&before, id), saved_plan(&ms, id));
+        assert_eq!((a.statement.clone(), ops(a)), (b.statement.clone(), ops(b)), "{id}");
+    }
+
+    // A plan without its text, or one this build can't read, stays as it was saved.
+    let mut kept = saved_snapshot("postgres-demo.json");
+    for q in kept.workload.as_mut().unwrap().queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
+        q.raw = None;
+    }
+    reparse_saved(&mut kept);
+    assert_eq!(find(saved_plan(&kept, "9065391607317686058"), "Sort").est_rows, 277_777.0);
+}
+
+// The paths that read a saved scan: `culprit analyze <file>` and a connection's latest report (the app, the CLI, MCP).
+#[test]
+fn a_saved_scan_is_analyzed_with_its_plans_read_again() {
+    let home = std::env::temp_dir().join(format!("culprit-reparse-{}", std::process::id()));
+    let ws = culprit_engine::Workspace::open_in(&home);
+    let path = std::path::PathBuf::from(format!("{}/../../fixtures/postgres-demo.json", env!("CARGO_MANIFEST_DIR")));
+    let report = ws.analyze_file(&path).expect("analyze");
+    let plan = saved_plan(&report.snapshot, "9065391607317686058");
+    assert!((find(plan, "Sort").est_rows - 666_665.0).abs() < 1.0);
+    // The big-sort insight rested on the guess: once the scan says so, no plan finding states a share of it.
+    assert!(
+        !report.findings.iter().any(|f| f.id.starts_with("plan-insights:big-sort")),
+        "{:?}",
+        report.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_dir_all(home);
+}

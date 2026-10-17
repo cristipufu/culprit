@@ -31,7 +31,31 @@ pub(super) fn node_table(object: &str) -> String {
 }
 
 /// Per table: the columns the optimizer guesses about, the guessed share EXPLAIN showed, and the queries.
-pub(super) type Guessed<'a> = (Vec<String>, Option<f64>, Vec<&'a QueryStat>);
+pub(super) type Guessed<'a> = (Vec<String>, f64, Vec<&'a QueryStat>);
+
+/// Whether the optimizer has nothing to choose with an estimate for this step: one table read in full, with no index
+/// it could use for the filter (no possible key) or for the order (none leads with a column it sorts or groups by).
+/// A histogram changes a plan through a choice, a join order or an index; here the scan is the only way in, and a
+/// better estimate leaves it as it is.
+fn no_choice(snapshot: &Snapshot, q: &QueryStat, plan: &culprit_core::Plan, node: &culprit_core::PlanNode) -> bool {
+    let mut tables: Vec<String> =
+        plan.nodes().iter().filter_map(|n| n.object.as_deref()).map(|o| node_table(o).to_ascii_lowercase()).collect();
+    tables.sort();
+    tables.dedup();
+    let possible_keys = node.props.get("possible_keys").is_some_and(|k| !k.trim().is_empty());
+    let table = node.object.as_deref().map(node_table).unwrap_or_default();
+    let lower = q.text.to_ascii_lowercase().replace('`', "");
+    let ordered =
+        ["order by", "group by"].iter().filter_map(|clause| lower.rfind(clause).map(|at| &lower[at..])).any(|rest| {
+            snapshot
+                .indexes
+                .iter()
+                .filter(|i| i.table.eq_ignore_ascii_case(&table))
+                .filter_map(|i| i.key_names().first().cloned())
+                .any(|column| mentions_word(rest, &column.to_ascii_lowercase()))
+        });
+    tables.len() == 1 && node.kind == culprit_core::NodeKind::Scan && !possible_keys && !ordered
+}
 
 pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(histograms) = snapshot.histograms.as_ref() else { return Vec::new() };
@@ -59,14 +83,37 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             // MySQL prints typed literals as TIMESTAMP'…' and DATE'…'; they are values like any quoted one.
             let predicate = predicate.replace('`', "").replace("TIMESTAMP'", "'").replace("DATE'", "'");
             let columns = predicate_columns(&predicate);
+            // The key parts of the index the step reads are counted from the index itself (MySQL dives into it for a
+            // range), not guessed.
+            let key_parts: Vec<String> = node
+                .props
+                .get("used_key_parts")
+                .map(|k| k.split(',').map(|c| c.trim().to_string()).collect())
+                .unwrap_or_default();
             let guessed: Vec<String> = columns
                 .equality
                 .iter()
                 .chain(columns.range.iter())
                 .filter(|c| !leads_index(&table, c) && !has_histogram(&table, c))
+                .filter(|c| !key_parts.iter().any(|k| k.eq_ignore_ascii_case(c)))
                 .cloned()
                 .collect();
             if guessed.is_empty() {
+                continue;
+            }
+            // Only a step whose estimate is the optimizer's fixed guess: MySQL's 10% for =, a third for ranges, a ninth
+            // for BETWEEN (and their products for several conditions); MariaDB without statistics for the column counts
+            // the condition as keeping every row, 100%. Anything else came from somewhere other than a guess.
+            let Some(filtered) = node.props.get("filtered").and_then(|v| v.parse::<f64>().ok()) else { continue };
+            let guess = if mariadb {
+                (filtered - 100.0).abs() < 0.01
+            } else {
+                culprit_core::insights::mysql_guessed_filtered(
+                    filtered,
+                    culprit_core::insights::condition_count(&predicate),
+                )
+            };
+            if !guess || no_choice(snapshot, q, plan, node) {
                 continue;
             }
             let entry = by_table.entry((stat.schema.clone(), stat.name.clone())).or_default();
@@ -75,14 +122,7 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
                     entry.0.push(c);
                 }
             }
-            // MySQL's fixed guesses: 10% for =, 33.33% for ranges, 11.11% for BETWEEN. MariaDB without statistics for
-            // the column assumes the condition filters nothing: 100%.
-            let guesses: &[f64] = if mariadb { &[100.0] } else { &[10.0, 33.33, 11.11] };
-            if let Some(filtered) = node.props.get("filtered").and_then(|v| v.parse::<f64>().ok())
-                && guesses.iter().any(|g| (filtered - g).abs() < 0.01)
-            {
-                entry.1 = Some(filtered);
-            }
+            entry.1 = filtered;
             if !entry.2.iter().any(|e| e.id == q.id) {
                 entry.2.push(q);
             }
@@ -107,13 +147,11 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
                 // MariaDB doesn't guess a share: without statistics for a column it counts the condition as keeping
                 // every row.
                 format!(
-                    "{who} {table} on {list}, which no index starts with and no statistics describe, so {engine} assumes the condition keeps every row{}. When it actually keeps few, common for status flags and skewed values, it picks the wrong join order or access path. Column statistics cost nothing at query time and change only when you run ANALYZE again.",
-                    guess.map(|g| format!(" (EXPLAIN shows filtered = {g:.0}%)")).unwrap_or_default()
+                    "{who} {table} on {list}, which no index starts with and no statistics describe, so {engine} assumes the condition keeps every row (EXPLAIN shows filtered = {guess:.0}%). When it actually keeps few, common for status flags and skewed values, it picks the wrong join order or access path. Column statistics cost nothing at query time and change only when you run ANALYZE again."
                 )
             } else {
                 format!(
-                    "{who} {table} on {list}, which no index starts with and no histogram describes, so {engine} assumes a fixed share of rows match (10% for =, a third for ranges){}. When the real share is far off, common for status flags and skewed values, it picks the wrong join order or access path. A histogram costs nothing at query time and changes only when you run ANALYZE again.",
-                    guess.map(|g| format!("; EXPLAIN shows filtered = {g:.2}%, one of those guesses")).unwrap_or_default()
+                    "{who} {table} on {list}, which no index starts with and no histogram describes, so {engine} assumes a fixed share of rows match (10% for =, a third for ranges); EXPLAIN shows filtered = {guess:.2}%, from those guesses. When the real share is far off, common for status flags and skewed values, it picks the wrong join order or access path. A histogram costs nothing at query time and changes only when you run ANALYZE again."
                 )
             };
             f.queries = query_refs(&queries);
@@ -124,17 +162,15 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             }
             // A fixed guess the plan shows, behind a real amount of time (the rule every time-based finding follows).
             let time: f64 = queries.iter().map(|q| q.total_time_ms).sum();
-            f.severity = if guess.is_some() && share >= 0.05 && severity_for_time(snapshot, time, share) >= Severity::Medium {
+            f.severity = if share >= 0.05 && severity_for_time(snapshot, time, share) >= Severity::Medium {
                 Severity::Medium
             } else {
                 Severity::Low
             };
             severity_score(&mut f);
-            f.confidence = if guess.is_some() { Confidence::High } else { Confidence::Medium };
-            f.metrics = vec![Metric::text("Columns", columns.join(", "))];
-            if let Some(g) = guess {
-                f.metrics.push(Metric::new("EXPLAIN filtered", g / 100.0, Unit::Ratio));
-            }
+            f.confidence = Confidence::High;
+            f.metrics =
+                vec![Metric::text("Columns", columns.join(", ")), Metric::new("EXPLAIN filtered", guess / 100.0, Unit::Ratio)];
             let target = qualified(Engine::Mysql, &schema, &table);
             let quoted = columns.iter().map(|c| quote(Engine::Mysql, c)).collect::<Vec<_>>().join(", ");
             f.fix = Some(if mariadb {

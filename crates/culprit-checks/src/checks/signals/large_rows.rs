@@ -90,25 +90,62 @@ pub(super) fn whole_row_statements<'a>(
     found
 }
 
+/// The sentence about the statements a large-rows finding lists, with a space in front ("The 3 statements below read
+/// or write them 696 times in 2 hours, going through about 294 pages (2.3 MB) a run."), or nothing without one. The
+/// pages a run are said only when every statement counted its reads. Refine says it again once a writer joins them.
+pub(crate) fn statements_below(snapshot: &Snapshot, statements: &[&QueryStat]) -> String {
+    if statements.is_empty() {
+        return String::new();
+    }
+    let runs: f64 = statements.iter().map(|q| q.executions).sum();
+    let reads: Vec<f64> = statements.iter().filter_map(|q| q.logical_reads).collect();
+    let writes = statements.iter().filter(|q| writes_rows(&q.text)).count();
+    let one = statements.len() == 1;
+    let verb = match (writes, one) {
+        (0, true) => "reads them",
+        (0, false) => "read them",
+        (1, true) => "writes them",
+        (w, false) if w == statements.len() => "write them",
+        _ => "read or write them",
+    };
+    let pages = (reads.len() == statements.len()).then(|| (reads.iter().sum::<f64>() / runs.max(1.0)).round());
+    format!(
+        " {} below {verb} {}{}",
+        if one { "The statement".to_string() } else { format!("The {} statements", statements.len()) },
+        runs_phrase(snapshot, runs),
+        match pages {
+            Some(p) =>
+                format!(", going through about {} pages ({}) a run.", format::count(p), format::bytes(p * 8192.0)),
+            None => ".".into(),
+        }
+    )
+}
+
 /// Whether a statement writes rows rather than reads them: its first statement keyword, past any parameter
 /// declarations and comments the engine kept with the text.
 pub(super) fn writes_rows(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let first = ["select", "insert", "update", "delete", "merge"]
-        .into_iter()
-        .filter_map(|k| {
-            lower
-                .match_indices(k)
-                .find(|(at, _)| {
-                    let before = lower[..*at].chars().next_back();
-                    let after = lower[at + k.len()..].chars().next();
-                    !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                        && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
-                })
-                .map(|(at, _)| (at, k))
-        })
-        .min_by_key(|(at, _)| *at);
-    first.is_some_and(|(_, k)| k != "select")
+    first_verb(text).is_some_and(|(_, k)| k != "select")
+}
+
+/// A table's average row and the share of its data in large-value pages, when its rows are mostly large values (the
+/// bar large-rows holds them to, whatever the table's size): an insert or an update that sets them logs them in full.
+pub(super) fn large_values(t: &TableStat) -> Option<(f64, f64)> {
+    let rows = table_rows(t)?;
+    let (size, large) = split_bytes(t)?;
+    let versions = rows + t.dead_rows.unwrap_or(0.0).max(0.0);
+    (size / versions >= LARGE_ROW_BYTES && large / size >= LARGE_VALUE_SHARE).then(|| (size / rows, large / size))
+}
+
+/// What shrinks large values that must stay: large-rows' fix, which log-volume points to for the log they make.
+pub(super) fn compress_advice(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Postgres => {
+            "LZ4 compresses them faster than the default (ALTER TABLE … ALTER COLUMN … SET COMPRESSION lz4, PostgreSQL 14+), or keep them in object storage and store a reference"
+        }
+        _ => {
+            "COMPRESS() them as they're written (GZip; DECOMPRESS() reads them back), or keep them in object storage and store a reference"
+        }
+    }
 }
 
 /// The rows a table holds, as far as its size per row goes. PostgreSQL's live-row counter starts again from zero after
@@ -199,28 +236,9 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
     // Statements reading whole rows: what makes the size cost on every run, not just on disk.
     let statements = whole_row_statements(snapshot, t, size, large);
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
-    let reads: f64 = statements.iter().filter_map(|q| q.logical_reads).sum();
     let hot = window_at_least(snapshot, runs, WHOLE_ROW_RUNS_PER_DAY);
     let runs_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(runs));
-    if !statements.is_empty() {
-        let pages = (reads / runs.max(1.0)).round();
-        let writes = statements.iter().filter(|q| writes_rows(&q.text)).count();
-        let one = statements.len() == 1;
-        let verb = match (writes, one) {
-            (0, true) => "reads them",
-            (0, false) => "read them",
-            (1, true) => "writes them",
-            (w, false) if w == statements.len() => "write them",
-            _ => "read or write them",
-        };
-        summary.push_str(&format!(
-            " {} below {verb} {}, going through about {} pages ({}) a run.",
-            if one { "The statement".to_string() } else { format!("The {} statements", statements.len()) },
-            runs_phrase(snapshot, runs),
-            format::count(pages),
-            format::bytes(pages * 8192.0)
-        ));
-    }
+    summary.push_str(&statements_below(snapshot, &statements));
 
     // Growth since the previous scan, when there is one.
     let growth = snapshot.sizes_before.as_ref().and_then(|b| {
@@ -284,14 +302,7 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
     f.queries = query_refs(&statements);
     f.last_seen = statements.iter().filter_map(|q| q.last_seen.clone()).max();
 
-    let compress = match engine {
-        Engine::Postgres => {
-            "LZ4 compresses them faster than the default (ALTER TABLE … ALTER COLUMN … SET COMPRESSION lz4, PostgreSQL 14+), or keep them in object storage and store a reference"
-        }
-        _ => {
-            "COMPRESS() them as they're written (GZip; DECOMPRESS() reads them back), or keep them in object storage and store a reference"
-        }
-    };
+    let compress = compress_advice(engine);
     f.fix = Some(Fix {
         summary: format!(
             "Read only the columns a statement needs: a SELECT * or an ORM loading whole rows pulls every large value. Keep a value that many rows repeat in one place and point to it. Clear values a row no longer needs once its work is done. Check how long deleted rows are kept before they're purged: until then they keep their values. For values that must stay, {compress}."
@@ -299,8 +310,12 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
         sql: None,
         cost: None,
     });
+    let statements_read_less =
+        if statements.is_empty() { "" } else { ", and the statements below should read fewer pages a run" };
     f.verify = vec![
-        "Re-scan after the change: the table's average row and its share of large values should drop, and the statements below should read fewer pages a run.".into(),
+        format!(
+            "Re-scan after the change: the table's average row and its share of large values should drop{statements_read_less}."
+        ),
         "A later scan says whether it still grows: it compares the table's size with this scan's.".into(),
     ];
     f.caveats = vec!["Sizes are the pages the table has reserved, from the catalog: they include space allocated but not yet filled.".into()];

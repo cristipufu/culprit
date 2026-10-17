@@ -10,7 +10,7 @@ mod svg;
 use std::borrow::Cow;
 
 use culprit_core::redact::{redact_native, redact_plan, redact_sql};
-use culprit_core::{Engine, Environment, Finding, Plan, PlanKind, PlanNode, Report, plan_cost_basis};
+use culprit_core::{Engine, Environment, Finding, Plan, PlanKind, PlanNode, Report};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -164,8 +164,26 @@ pub(crate) fn kind_label(kind: PlanKind) -> &'static str {
     }
 }
 
-pub(crate) fn share(plan: &Plan, node: &PlanNode) -> f64 {
-    node.self_cost / plan_cost_basis(plan)
+/// A step's share of the plan's cost where the plan can state one (`Plan::step_share`): none on a plan without costs,
+/// beside a step the plan puts no cost on (MySQL's filesort), or for a step whose rows rest on a default guess.
+pub(crate) fn share(plan: &Plan, node: &PlanNode) -> Option<f64> {
+    plan.step_share(node)
+}
+
+/// Why steps of a plan that weighs them show no share of its cost, for under its steps (every surface that lists a
+/// plan's steps says it the same); `None` when each costed step shows one.
+pub fn shares_note(plan: &Plan) -> Option<String> {
+    if !plan.weighed() {
+        return None;
+    }
+    if !plan.uncosted_steps().is_empty() {
+        return culprit_checks::no_share_reason(plan, &plan.root);
+    }
+    plan.nodes().iter().any(|n| n.props.contains_key(culprit_core::GUESSED_SELECTIVITY)).then(|| {
+        "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the \
+         steps above it."
+            .to_string()
+    })
 }
 
 /// Rows flowing out of an operator: actual when the plan ran, else the estimate across executions.
@@ -203,7 +221,7 @@ pub(crate) fn rows_phrase(node: &PlanNode) -> String {
 
 /// The plan's statement and the highest-cost operators, for the one-line "where the cost goes" summary.
 pub(crate) fn top_costs(plan: &Plan, limit: usize) -> Vec<(&'_ PlanNode, f64)> {
-    let mut list: Vec<(&PlanNode, f64)> = plan.nodes().into_iter().map(|n| (n, share(plan, n))).collect();
+    let mut list: Vec<(&PlanNode, f64)> = plan.nodes().into_iter().filter_map(|n| Some((n, share(plan, n)?))).collect();
     list.sort_by(|a, b| b.1.total_cmp(&a.1));
     list.into_iter().filter(|(_, s)| *s >= 0.01).take(limit).collect()
 }
