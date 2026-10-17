@@ -2,7 +2,9 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
-## Unreleased
+## 0.3.3
+
+Health reflects measured database activity and the selected period, with historical and shared counters clearly identified.
 
 ### Fixes
 
