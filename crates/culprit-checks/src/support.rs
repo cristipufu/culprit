@@ -56,9 +56,19 @@ pub const HIGH_MS_A_DAY: f64 = 600_000.0;
 /// Where the source left time unattributed (MySQL's catch-all digest row once its table is full), shares are of the time
 /// it could attribute: the grade takes the share of everything there may be, the lower bound.
 pub fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Severity {
+    severity_on_amount(snapshot, rate_per_day(snapshot, time_ms), time_ms, share)
+}
+
+/// [`severity_for_time`] for time spent by statements (`time_ms` of `queries`' time: theirs, their spills, their
+/// waits), graded at the pace their runs came ([`rate_per_day_of`]): a burst on its total, never extrapolated to a day.
+pub fn severity_for_time_of(snapshot: &Snapshot, queries: &[&QueryStat], time_ms: f64, share: f64) -> Severity {
+    severity_on_amount(snapshot, rate_per_day_of(snapshot, queries, time_ms), time_ms, share)
+}
+
+fn severity_on_amount(snapshot: &Snapshot, a_day: Option<f64>, time_ms: f64, share: f64) -> Severity {
     let by_amount = match snapshot.workload.as_ref() {
         Some(w) if w.window_unknown() => Severity::Medium,
-        Some(w) => severity_for_amount(w.rate_per_day(time_ms).unwrap_or(time_ms)),
+        Some(_) => severity_for_amount(a_day.unwrap_or(time_ms)),
         None => Severity::Low,
     };
     let share = match snapshot.workload.as_ref().and_then(|w| Some((w, w.untracked_time_ms?))) {
@@ -68,10 +78,56 @@ pub fn severity_for_time(snapshot: &Snapshot, time_ms: f64, share: f64) -> Sever
     severity_for_share(share).min(by_amount)
 }
 
-/// [`severity_for_time`] for a share of all the workload's database time.
-pub fn severity_for_workload_share(snapshot: &Snapshot, share: f64) -> Severity {
+/// [`severity_for_time_of`] for a share of all the workload's database time spent by `queries`.
+pub fn severity_for_share_of(snapshot: &Snapshot, queries: &[&QueryStat], share: f64) -> Severity {
     let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
-    severity_for_time(snapshot, share * total, share)
+    severity_for_time_of(snapshot, queries, share * total, share)
+}
+
+/// The grade of `queries`' whole impact ([`query_impact`]): over Culprit's scans where they measured them, the share
+/// and the amount a day it is of what the database ran in those scans ([`severity_over_scans`]); otherwise their share
+/// of the workload at the pace their runs came ([`severity_for_share_of`]).
+pub fn severity_for_impact(snapshot: &Snapshot, queries: &[&QueryStat], impact: &QueryImpact) -> Severity {
+    severity_for_statement_share(snapshot, queries, impact.share)
+}
+
+/// The grade of `share` of database time spent by `queries` (their share as [`query_impact`] states it, or a fraction
+/// of it: what an index would save of their time), on one basis: over Culprit's scans where they measured them, the
+/// share and the amount a day it is of what the database ran in those scans ([`severity_over_scans`]); otherwise at the
+/// pace their runs came ([`severity_for_share_of`]). Never the scans' share with the time their totals hold.
+pub fn severity_for_statement_share(snapshot: &Snapshot, queries: &[&QueryStat], share: f64) -> Severity {
+    severity_over_scans(snapshot, queries, share).unwrap_or_else(|| severity_for_share_of(snapshot, queries, share))
+}
+
+/// The amount alone of [`severity_for_statement_share`]: what `share` of database time spent by `queries` comes to a
+/// day, on the basis their share is on (Culprit's scans where they measured them, the workload's window otherwise),
+/// graded as `severity_for_time` grades an amount. For a check that grades the share its own way.
+pub fn amount_severity_of(snapshot: &Snapshot, queries: &[&QueryStat], share: f64) -> Severity {
+    match scans_time_per_day(snapshot, queries) {
+        Some(a_day) => severity_for_amount(a_day * share),
+        None => {
+            let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
+            severity_for_time_of(snapshot, queries, share * total, 1.0)
+        }
+    }
+}
+
+/// What a figure kept only in a statement's totals is over, where it sits beside the statement's figures over Culprit's
+/// scans (its share, runs and average, [`culprit_core::Workload::scans_of`]): "the 1277 days since statistics were
+/// reset". A part of its time (its slow runs' excess, a spill, its waits), the rows or temp files a run handles: the
+/// source keeps them only in its totals, so each figure's basis is named and the two aren't read as one period. `None`
+/// where the statement's figures are the totals' (no scans measured it), or for a recent entry, whose totals are mostly
+/// those scans' runs.
+pub fn totals_basis(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
+    let w = snapshot.workload.as_ref()?;
+    w.scans_of(q).filter(|s| !s.is_recent(q))?;
+    Some(w.window_phrase())
+}
+
+/// The hours [`severity_for_recent_time`] rates statement `q`'s recent time over: `hours`, or for runs that came in
+/// bursts at least a day, so their total is never extrapolated to a day it didn't run.
+pub fn burst_hours(snapshot: &Snapshot, q: &QueryStat, hours: f64) -> f64 {
+    if ran_in_bursts(snapshot, q) { hours.max(24.0) } else { hours }
 }
 
 /// [`severity_for_time`] for time spent over the last `hours` of the window (since a plan took over, since a change):
@@ -112,14 +168,33 @@ pub fn query_impact(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<Query
         return None;
     }
     let total_ms: f64 = queries.iter().map(|q| q.total_time_ms).sum();
-    // Each statement's share weighed as the source allows (`Workload::share_of`: a plan cached for a month against
-    // one compiled an hour ago).
-    let share: f64 = queries.iter().map(|q| workload.share_of(q.total_time_ms, q)).sum();
-    // A day's worth only of runs that came that way: a burst's or a single run's time spread over the window is a
-    // rate it never ran at.
-    let per_day_ms =
-        workload.per_day_measured(total_ms).filter(|_| queries.iter().any(|q| workload.runs_per_day_of(q).is_some()));
+    // Each statement's share as every surface states it (`Workload::statement_share`): over Culprit's scans where they
+    // measured it, otherwise weighed as the source allows (a plan cached for a month against one compiled an hour ago).
+    let share: f64 = queries.iter().map(|q| workload.statement_share(q)).sum();
+    let per_day_ms = if queries.iter().any(|q| workload.scans_of(q).is_some()) {
+        // What the scans measured a day, beside the others' a day over the window.
+        let days: Vec<f64> = queries.iter().filter_map(|q| workload.statement_time_per_day(q)).collect();
+        (!days.is_empty()).then(|| days.iter().sum())
+    } else {
+        // A day's worth only of runs that came that way: a burst's or a single run's time spread over the window is a
+        // rate it never ran at.
+        workload.per_day_measured(total_ms).filter(|_| queries.iter().any(|q| workload.runs_per_day_of(q).is_some()))
+    };
     Some(QueryImpact { share: share.min(1.0), per_day_ms })
+}
+
+/// The database's time a day over Culprit's scans, where they measured one of `queries` ([`culprit_core::Workload::scans_of`]): what
+/// a share of database time over them is a share of. `None` where none of them is read by the scans.
+pub fn scans_time_per_day(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<f64> {
+    let w = snapshot.workload.as_ref()?;
+    queries.iter().find_map(|q| w.scans_of(q)).map(|s| s.per_day(s.workload_time_ms))
+}
+
+/// The grade of a share of database time over Culprit's scans ([`scans_time_per_day`]): the share, and the amount a
+/// day it is of what the database ran in them. `None` where none of `queries` is read by the scans.
+pub fn severity_over_scans(snapshot: &Snapshot, queries: &[&QueryStat], share: f64) -> Option<Severity> {
+    let a_day = scans_time_per_day(snapshot, queries)? * share;
+    Some(severity_for_share(share).min(severity_for_amount(a_day)))
 }
 
 pub fn apply_query_impact(f: &mut Finding, impact: &QueryImpact) {
@@ -421,12 +496,51 @@ pub fn per_day_is_measured(days: f64) -> bool {
 /// "about 1.2K times a day" over 20 hours or more of counters, otherwise what was counted and over how long: "340 times
 /// in the 5 hours since the server last restarted".
 pub fn how_many(snapshot: &Snapshot, total: f64, days: f64, one: &str, many: &str) -> String {
-    if per_day_is_measured(days) {
+    // Counters that may have started long after the server did have no length to divide by: said as counted.
+    if per_day_is_measured(days) && !counters_may_be_reset(snapshot) {
         let per_day = total / days;
         format!("about {} {} a day", format::count(per_day), if per_day.round() == 1.0 { one } else { many })
     } else {
         format!("{} {} {}", format::count(total), if total == 1.0 { one } else { many }, since_phrase(snapshot))
     }
+}
+
+/// [`per_day_is_measured`] for counters of this snapshot: also never on counters that may have been reset since the
+/// server started ([`counters_may_be_reset`]), whose length is unknown.
+pub fn counters_measure_a_day(snapshot: &Snapshot, days: f64) -> bool {
+    per_day_is_measured(days) && !counters_may_be_reset(snapshot)
+}
+
+/// Minutes performance_schema's statement digests may begin after the server started before its counters count as
+/// possibly reset: the application's first statements come within moments of a start.
+const PS_RESET_MINUTES: f64 = 10.0;
+
+/// Whether MySQL's or MariaDB's performance_schema counters (table and index I/O, as well as statements) may have
+/// started after the server did: its statement digests begin well after the start. They were truncated then (setup
+/// scripts and `sys.ps_truncate_all_tables()` truncate the table and index counters with them), or no statement ran
+/// before; either way the counters' length is unknown, so they are named "since the server started or its
+/// performance_schema counters were last reset", with no span and no rate a day.
+pub fn counters_may_be_reset(snapshot: &Snapshot) -> bool {
+    let Some(w) =
+        snapshot.workload.as_ref().filter(|w| w.kind() == Some(culprit_core::WorkloadKind::PerformanceSchema))
+    else {
+        return false;
+    };
+    let started = snapshot.server.started_at.as_deref().and_then(parse_epoch_seconds);
+    let digests = w.window_start.as_deref().and_then(parse_epoch_seconds);
+    snapshot.server.engine == Engine::Mysql
+        && started.zip(digests).is_some_and(|(started, digests)| digests - started > PS_RESET_MINUTES * 60.0)
+}
+
+/// Days the usage counters have surely counted, for a claim of absence (an index never read, a table never deleted
+/// from): their age ([`counter_days`]), or, where performance_schema's may have been reset since the server started
+/// ([`counters_may_be_reset`]), the days its statement digests have counted: they start over together, so the server's
+/// uptime, which a reset leaves as it was, says nothing about how long the counters have watched.
+pub fn watched_days(snapshot: &Snapshot) -> Option<f64> {
+    if counters_may_be_reset(snapshot) {
+        return snapshot.workload.as_ref().map(|w| (w.window_hours / 24.0).max(0.0));
+    }
+    counter_days(snapshot)
 }
 
 /// Whether the counters started at a statistics reset rather than at the last restart (PostgreSQL keeps statistics
@@ -461,6 +575,11 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
     {
         return "since userstat was turned on or its statistics last flushed".to_string();
     }
+    // Truncated with the statements (`sys.ps_truncate_all_tables`), the table and index counters' start is unknown:
+    // named for what it may be, with no span.
+    if counters_may_be_reset(snapshot) {
+        return "since the server started or its performance_schema counters were last reset".to_string();
+    }
     let since = if counters_since_reset(snapshot) {
         "since its statistics were last reset"
     } else {
@@ -478,17 +597,9 @@ pub fn since_phrase(snapshot: &Snapshot) -> String {
     }
 }
 
-/// Days counted, never more than were: a tenth under 10 (9.51 days are "9.5", not "10"), whole days from 10 on.
-pub fn days_counted(days: f64) -> String {
-    // A hair under a whole number from adding hours is that number.
-    let days = days + 1e-9;
-    if days < 10.0 {
-        let tenths = format!("{:.1}", (days * 10.0).floor() / 10.0);
-        tenths.strip_suffix(".0").unwrap_or(&tenths).to_string()
-    } else {
-        format!("{}", days.floor())
-    }
-}
+/// Days counted, never more than were: a tenth under 10 (9.51 days are "9.5", not "10"), whole days from 10 on. One
+/// implementation for prose, metrics (`format::days`) and the app's `format.ts`.
+pub use culprit_core::format::days_counted;
 
 /// "a read from Orders", "an UPDATE of Users" — a short handle for a query in titles.
 pub fn query_handle(q: &QueryStat) -> String {
@@ -695,38 +806,128 @@ pub fn statement_runs(snapshot: &Snapshot, q: &QueryStat) -> (String, String) {
     (count, when)
 }
 
-/// What Culprit's own scans measured of `q` on a source of running totals, as a sentence, when they cover a day
-/// ([`culprit_core::Workload::over_scans`]): what runs now, beside the totals since the source began counting. "Over 72
-/// hours of Culprit's own scans it ran about 1.7K times a day, 43% of database time."
-pub fn scans_sentence(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
+/// How often statement `q` ran, said whole for a title or a sentence that names no window after it: "30K times on Oct
+/// 17 at 10:17 UTC" for a burst, "120K times on Oct 11 and Oct 17" for runs on a few days, "about 4.2K times a day"
+/// where its runs came that way, otherwise [`runs_phrase`]'s count and window ("4.0K times in 2 hours").
+pub fn runs_of(snapshot: &Snapshot, q: &QueryStat) -> String {
+    let Some(w) = snapshot.workload.as_ref() else { return times(q.executions) };
+    let cadence = w.cadence(q);
+    // On a source of running totals, what Culprit's scans measured where they did: "about 31K times a day over 89
+    // hours of Culprit's scans".
+    if let Some(s) = w.scans_of(q).filter(|_| !matches!(cadence, culprit_core::Cadence::Burst { .. })) {
+        let per_day = s.per_day(s.runs);
+        let runs = if per_day >= 1.0 { format!("about {} a day", times(per_day)) } else { times(s.runs) };
+        return format!("{runs} over {}", s.phrase());
+    }
+    match (&cadence, cadence.when()) {
+        (culprit_core::Cadence::Burst { runs, .. }, Some(when)) => format!("{} {when}", times(*runs)),
+        (culprit_core::Cadence::Daily(per_day) | culprit_core::Cadence::DailyWithin { per_day, .. }, when) => {
+            format!("about {} a day{}", times(*per_day), when.map(|w| format!(" {w}")).unwrap_or_default())
+        }
+        _ => runs_phrase(snapshot, q.executions),
+    }
+}
+
+/// How often statements ran together, said whole: [`runs_of`] for one; for several a rate a day only where every one
+/// of them ran that way ([`culprit_core::Workload::runs_per_day_of`]), otherwise what was counted and over how long.
+pub fn runs_of_all(snapshot: &Snapshot, queries: &[&QueryStat]) -> String {
+    let runs: f64 = queries.iter().map(|q| q.executions).sum();
+    match (queries, snapshot.workload.as_ref()) {
+        ([q], _) => runs_of(snapshot, q),
+        (_, Some(w))
+            if w.window_hours >= culprit_core::PER_DAY_MIN_HOURS
+                && queries.iter().any(|q| w.runs_per_day_of(q).is_none()) =>
+        {
+            format!("{} in {}", times(runs), w.window_phrase())
+        }
+        _ => runs_phrase(snapshot, runs),
+    }
+}
+
+/// Whether statement `q`'s runs came in bursts ([`culprit_core::Cadence::Burst`]): said by when they came, graded on
+/// their total.
+pub fn ran_in_bursts(snapshot: &Snapshot, q: &QueryStat) -> bool {
+    snapshot.workload.as_ref().is_some_and(|w| w.cadence(q).is_burst())
+}
+
+/// What Culprit's own scans measured of `q` on a source of running totals, as the sentence that says what it costs,
+/// where they measured it ([`culprit_core::Workload::scans_of`]): what runs now, with the totals since the source began
+/// counting beside it where those differ twofold ([`culprit_core::Workload::totals_beside`]). `of` names what the share
+/// is of ("of all database time"). "It ran about 1.7K times a day at 4.0 ms on average over 74 hours of Culprit's own
+/// scans: 43% of all database time in them (about 388 runs a day and 2.6 ms on average over the 1277 days since
+/// statistics were reset)."
+pub fn scans_sentence(snapshot: &Snapshot, q: &QueryStat, of: &str) -> Option<String> {
     let w = snapshot.workload.as_ref()?;
-    let s = w.over_scans(q).filter(|s| s.runs > 0.0)?;
+    let s = w.scans_of(q)?;
+    // Runs that came in bursts within the scans are said by when they came, never a rate a day: "It ran 750 times at
+    // 5.4 ms on average, on Oct 11, 15:51–15:55 UTC: 3% of all database time in 37 hours of Culprit's own scans".
+    if let Some(when) = Some(w.cadence(q)).filter(|c| c.is_burst()).and_then(|c| c.when()) {
+        return Some(format!(
+            "It ran {} at {}{}, {when}: {} {of} in {} of Culprit's own scans{}.",
+            times(q.executions),
+            format::duration(s.mean_ms().unwrap_or(q.mean_time_ms)),
+            if q.executions > 1.0 { " on average" } else { "" },
+            format::percent(s.share()),
+            s.length(),
+            w.totals_beside(q, &s).map(|t| format!(" ({t})")).unwrap_or_default()
+        ));
+    }
+    let per_day = s.per_day(s.runs);
+    let runs = if per_day >= 1.0 { format!("about {} a day", times(per_day)) } else { times(s.runs) };
     Some(format!(
-        "Over {} of Culprit's own scans it ran about {} a day, {} of database time.",
+        "It ran {runs} at {}{} over {} of Culprit's own scans: {} {of} in them{}.",
+        format::duration(s.mean_ms().unwrap_or(q.mean_time_ms)),
+        if s.runs > 1.0 { " on average" } else { "" },
         s.length(),
-        times(s.per_day(s.runs)),
-        format::percent(s.share())
+        format::percent(s.share()),
+        w.totals_beside(q, &s).map(|t| format!(" ({t})")).unwrap_or_default()
     ))
 }
 
-/// Share of database time behind the top three active findings: their distinct queries, each counted once, so
-/// two findings about the same query don't double it. The one number both the summary and the dashboard state.
-pub fn top_findings_share<'a>(
-    snapshot: &Snapshot,
+/// The distinct statements behind the top three active findings.
+fn top_queries<'a>(
+    snapshot: &'a Snapshot,
     findings: impl IntoIterator<Item = &'a culprit_core::Finding>,
-) -> Option<f64> {
-    let w = snapshot.workload.as_ref()?;
+) -> Vec<&'a QueryStat> {
+    let Some(w) = snapshot.workload.as_ref() else { return Vec::new() };
     let ids: std::collections::BTreeSet<&str> = findings
         .into_iter()
         .filter(|f| !f.inactive)
         .take(3)
         .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
         .collect();
-    if ids.is_empty() {
+    w.queries.iter().filter(|q| ids.contains(q.id.as_str())).collect()
+}
+
+/// Share of database time behind the top three active findings: their distinct queries, each counted once, so
+/// two findings about the same query don't double it. The one number both the summary and the dashboard state. A
+/// statement Culprit's scans measured counts at its share over them ([`culprit_core::Workload::statement_share`]).
+pub fn top_findings_share<'a>(
+    snapshot: &'a Snapshot,
+    findings: impl IntoIterator<Item = &'a culprit_core::Finding>,
+) -> Option<f64> {
+    let w = snapshot.workload.as_ref()?;
+    let queries = top_queries(snapshot, findings);
+    if queries.is_empty() {
         return None;
     }
-    let time: f64 = w.queries.iter().filter(|q| ids.contains(q.id.as_str())).map(|q| q.total_time_ms).sum();
-    Some(w.share(time).min(1.0))
+    let share: f64 = queries
+        .iter()
+        .map(|q| if w.scans_of(q).is_some() { w.statement_share(q) } else { w.share(q.total_time_ms) })
+        .sum();
+    Some(share.min(1.0))
+}
+
+/// What the share behind the top three active findings ([`top_findings_share`]) is over, when Culprit's scans measured
+/// every statement behind them: "89 hours of Culprit's scans". `None` otherwise: it is over the workload's window.
+pub fn top_findings_scans<'a>(
+    snapshot: &'a Snapshot,
+    findings: impl IntoIterator<Item = &'a culprit_core::Finding>,
+) -> Option<String> {
+    let w = snapshot.workload.as_ref()?;
+    let spans: Option<Vec<culprit_core::ScanSpan>> =
+        top_queries(snapshot, findings).iter().map(|q| w.scans_of(q)).collect();
+    spans?.into_iter().max_by(|a, b| a.hours.total_cmp(&b.hours)).map(|s| s.phrase())
 }
 
 /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters.
@@ -764,24 +965,49 @@ pub fn rate_per_day(snapshot: &Snapshot, value: f64) -> Option<f64> {
     snapshot.workload.as_ref()?.rate_per_day(value)
 }
 
+/// [`rate_per_day`] for a part of statements' counts (`value` of `queries`' runs, time, rows or log), at the pace their
+/// runs came ([`culprit_core::Workload::rate_per_day_of`]): a burst's total, never extrapolated to a day; runs on a few
+/// days over those days. With several statements, each one's part in proportion to its time (its runs where none has
+/// any). Every statement-level threshold a day (a "busy" bar, an amount behind a severity) is judged on it.
+pub fn rate_per_day_of(snapshot: &Snapshot, queries: &[&QueryStat], value: f64) -> Option<f64> {
+    let w = snapshot.workload.as_ref()?;
+    let (time, runs): (f64, f64) = queries.iter().fold((0.0, 0.0), |(t, r), q| (t + q.total_time_ms, r + q.executions));
+    if queries.is_empty() {
+        return w.rate_per_day(value);
+    }
+    queries
+        .iter()
+        .map(|q| {
+            let part = match (time > 0.0, runs > 0.0) {
+                (true, _) => q.total_time_ms / time,
+                (false, true) => q.executions / runs,
+                _ => 1.0 / queries.len() as f64,
+            };
+            w.rate_per_day_of(q, value * part)
+        })
+        .sum()
+}
+
+/// Whether statement `q`'s `total` (its runs, rows, log…), counted over the workload window, comes to at least `per_day`
+/// a day, judged at the rate it ran while it ran ([`rate_per_day_of`], over at least an hour of data), or, in a window
+/// shorter than a day, a total that is already that many (the day that window sits in held at least as many). Nothing
+/// is extrapolated: a burst passes a "busy" bar only with as many in its own day, and runs on a few days with as many a
+/// day of them. 120K runs in four 2-hour stretches on two days are busy; 4,000 in six seconds aren't "57.8K a day", and
+/// 14 runs in a minute aren't "20K a day". False when the window is unknown.
+pub fn at_least_per_day_of(snapshot: &Snapshot, q: &QueryStat, total: f64, per_day: f64) -> bool {
+    let Some(w) = snapshot.workload.as_ref() else { return false };
+    if w.window_unknown() {
+        return false;
+    }
+    rate_per_day_of(snapshot, &[q], total).is_some_and(|r| r >= per_day)
+        || (w.window_hours > 0.0 && w.window_hours <= 24.0 && total >= per_day)
+}
+
 /// Days of cumulative counters (see [`counter_days`]) when they cover at least an hour
 /// ([`culprit_core::RATE_MIN_HOURS`]): enough to compare a rate with a threshold. Sentences that say "a day" also need
 /// [`per_day_is_measured`], or say what was counted with [`how_many`].
 pub fn counter_days_for_rate(snapshot: &Snapshot) -> Option<f64> {
     counter_days(snapshot).filter(|d| d * 24.0 >= culprit_core::RATE_MIN_HOURS)
-}
-
-/// Whether `total`, counted over the workload window, comes to at least `per_day` a day: a rate over at least an hour of
-/// data, or, in a window shorter than a day, a total that is already that many (the day that window sits in held at
-/// least as many, so nothing is extrapolated). False when the window is unknown. 30K runs in a minute are a busy
-/// statement; 14 runs in a minute are not "20K a day".
-pub fn at_least_per_day(snapshot: &Snapshot, total: f64, per_day: f64) -> bool {
-    let Some(w) = snapshot.workload.as_ref() else { return false };
-    if w.window_unknown() {
-        return false;
-    }
-    w.rate_per_day(total).is_some_and(|r| r >= per_day)
-        || (w.window_hours > 0.0 && w.window_hours <= 24.0 && total >= per_day)
 }
 
 /// A cumulative counter's `total` (since the server started or statistics were reset) as a daily rate for comparing
@@ -861,6 +1087,71 @@ pub(crate) mod tests {
         mysql.cloud = Some("Amazon RDS".into());
         let change = setting_change(&mysql, "sort_buffer_size", "4194304");
         assert!(change.sql.is_none() && change.how.contains("DB parameter group"), "{}", change.how);
+    }
+
+    // Theme A's note on missing-index: a request's grade took the statements' share over Culprit's scans with the time
+    // their totals hold. A share is graded on the basis it is on: over the scans, the amount a day it is of what the
+    // database ran in them.
+    #[test]
+    fn a_share_over_the_scans_is_graded_on_their_amount_not_the_totals() {
+        let path = format!("{}/../../fixtures/postgres-demo.json", env!("CARGO_MANIFEST_DIR"));
+        let mut s: Snapshot = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("snapshot");
+        let w = s.workload.as_mut().expect("workload");
+        // 40 days of totals; 36 hours of scans, in which the database ran 10 s a 12-hour step and the statement 3 s.
+        (w.window_start, w.window_hours) = (Some("2026-09-01T11:54:21Z".into()), 960.0);
+        w.timeline = Some(
+            serde_json::from_value(serde_json::json!({
+                "source": "scans",
+                "starts": ["2026-10-10T00:00:00Z", "2026-10-10T12:00:00Z", "2026-10-11T00:00:00Z"],
+                "end": "2026-10-11T12:00:00Z",
+                "time_ms": [10000.0, 10000.0, 10000.0],
+                "executions": [5000.0, 5000.0, 5000.0]
+            }))
+            .expect("timeline"),
+        );
+        let q = &mut w.queries[0];
+        q.trend = Some(culprit_core::QueryTrend { time_ms: vec![Some(3_000.0); 3], executions: vec![Some(10.0); 3] });
+        // Its totals: 1,000 runs of a minute since the reset, 25 minutes a day and 30% of the database's.
+        (q.executions, q.mean_time_ms, q.total_time_ms) = (1_000.0, 60_000.0, 60_000_000.0);
+        w.total_time_ms = 200_000_000.0;
+        let q = s.workload.as_ref().unwrap().queries[0].clone();
+        assert!(s.workload.as_ref().unwrap().scans_of(&q).is_some_and(|s| !s.is_recent(&q)));
+        // 30% of the scans' time is 6 s a day of a database that ran 20 s a day in them: Low, however much time the
+        // totals hold; the totals' time beside the scans' share made it High.
+        assert_eq!(severity_for_statement_share(&s, &[&q], 0.3), Severity::Low);
+        assert_eq!(amount_severity_of(&s, &[&q], 0.3), Severity::Low);
+        assert_eq!(severity_for_time_of(&s, &[&q], q.total_time_ms, 0.3), Severity::High, "the old mix");
+        // Without the scans, the totals are the basis of both.
+        let mut totals = s.clone();
+        totals.workload.as_mut().unwrap().timeline = None;
+        assert_eq!(severity_for_statement_share(&totals, &[&q], 0.3), Severity::High);
+    }
+
+    // D's open gap (MY-5): performance_schema's table counters start over with its statements, so "no writes" waits a
+    // week of the digests' own counting, however long the server has been up; then it is said as counted.
+    #[test]
+    fn no_writes_on_counters_that_may_be_reset_waits_a_week_of_their_own() {
+        let path = format!("{}/../../fixtures/mysql-demo.json", env!("CARGO_MANIFEST_DIR"));
+        let mut s: Snapshot = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("snapshot");
+        let taken = parse_epoch_seconds(&s.taken_at).expect("taken_at");
+        s.server.started_at = Some(culprit_core::format::iso_from_epoch(taken - 10.0 * 86_400.0));
+        s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(240.0);
+        let digests = |s: &mut Snapshot, days: f64| {
+            let w = s.workload.as_mut().expect("workload");
+            w.window_start = Some(culprit_core::format::iso_from_epoch(taken - days * 86_400.0));
+            w.window_hours = days * 24.0;
+        };
+        digests(&mut s, 2.0);
+        assert!(counters_may_be_reset(&s) && watched_days(&s) == Some(2.0));
+        let cost = crate::indexes::write_cost(&s, "shop", "orders").expect("a cost");
+        assert!(cost.contains("in what its counters cover, which may be short"), "{cost}");
+        digests(&mut s, 8.0);
+        let cost = crate::indexes::write_cost(&s, "shop", "orders").expect("a cost");
+        assert_eq!(
+            cost,
+            "shop.orders received no writes since the server started or its performance_schema counters were last \
+             reset, so this index would cost next to nothing to maintain."
+        );
     }
 
     #[test]
@@ -1238,6 +1529,100 @@ fn is_value(side: &str) -> bool {
         || upper.starts_with("CURRENT_")
         || upper.starts_with("GETDATE")
         || upper.starts_with("SYSUTCDATETIME")
+        || is_value_call(s)
+}
+
+/// A function of values alone is a value: `dateadd(day,@P1,'2026-01-01')` (or the same with its parentheses gone, as a
+/// condition is read), `coalesce($1, 0)`, `date_sub(?, INTERVAL ? DAY)`. Every argument is a parameter, a literal, a
+/// date part (`day`) or such a call, and at least one is a parameter or a literal. A function of a column
+/// (`upper(name)`, `dateadd(day, 1, created_at)`) isn't.
+fn is_value_call(s: &str) -> bool {
+    let s = s.trim();
+    let name_len = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.')).unwrap_or(s.len());
+    if name_len == 0 || name_len == s.len() || !s.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        return false;
+    }
+    // A call's name is followed by its parenthesis (or the space left where it was): a name that goes on with other
+    // characters is a name, such as a column qualified by a database called `app-db-01` (not `app` minus a value).
+    if !s[name_len..].starts_with(['(', ' ']) {
+        return false;
+    }
+    let rest = s[name_len..].trim();
+    let inner = rest.strip_prefix('(').and_then(|r| r.strip_suffix(')')).unwrap_or(rest);
+    let mut any_value = false;
+    for arg in top_level_args(inner) {
+        let arg = arg.trim();
+        let upper = arg.to_ascii_uppercase();
+        let interval = upper.strip_prefix("INTERVAL ").and_then(|r| r.split_whitespace().next()).is_some_and(is_value);
+        if is_value(arg) || interval {
+            any_value = true;
+        } else if !DATE_PARTS.contains(&upper.as_str()) {
+            return false;
+        }
+    }
+    any_value
+}
+
+/// The date parts SQL Server's date functions take as a bare word (`dateadd(day, …)`), and the units of an interval.
+const DATE_PARTS: [&str; 38] = [
+    "YEAR",
+    "YY",
+    "YYYY",
+    "QUARTER",
+    "QQ",
+    "Q",
+    "MONTH",
+    "MM",
+    "M",
+    "DAYOFYEAR",
+    "DY",
+    "Y",
+    "DAY",
+    "DD",
+    "D",
+    "WEEK",
+    "WK",
+    "WW",
+    "WEEKDAY",
+    "DW",
+    "W",
+    "HOUR",
+    "HH",
+    "MINUTE",
+    "MI",
+    "N",
+    "SECOND",
+    "SS",
+    "S",
+    "MILLISECOND",
+    "MS",
+    "MICROSECOND",
+    "MCS",
+    "NANOSECOND",
+    "NS",
+    "ISO_WEEK",
+    "ISOWK",
+    "ISOWW",
+];
+
+/// `text` split at its commas outside quotes and parentheses: a call's arguments.
+fn top_level_args(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0i32, false, 0);
+    for (i, c) in text.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 #[cfg(test)]
@@ -1299,6 +1684,21 @@ mod predicate_tests {
         assert_eq!(p.equality, vec!["TenantId"]);
     }
 
+    // A function of parameters and constants is a value (the planted shipped_at range on SQL Server), and a function of
+    // a column isn't.
+    #[test]
+    fn a_function_of_values_is_a_value() {
+        let p = predicate_columns(
+            "[culprit_demo].[shop].[orders].[shipped_at]>=dateadd(day,[@P1],'2026-01-01 00:00:00.000') AND \
+             [culprit_demo].[shop].[orders].[shipped_at]<dateadd(day,[@P2],'2026-01-01 00:00:00.000')",
+        );
+        assert_eq!(p.range, vec!["shipped_at"]);
+        assert_eq!(predicate_columns("(total > COALESCE($1, 0))").range, vec!["total"]);
+        assert_eq!(predicate_columns("(`o`.`created_at` > DATE_SUB(?, INTERVAL ? DAY))").range, vec!["created_at"]);
+        assert_eq!(predicate_columns("([o].[due]>dateadd(day,(1),[o].[created_at]))"), PredicateColumns::default());
+        assert_eq!(predicate_columns("(name = upper(other_name))"), PredicateColumns::default());
+    }
+
     // An index on one branch of an OR can't find the other branch's rows, and a default b-tree can't seek not-equal,
     // NOT, a pattern starting with a wildcard, or PostgreSQL's LIKE.
     #[test]
@@ -1344,6 +1744,18 @@ mod predicate_tests {
         let p = predicate_columns("(note = 'a OR b') AND (kind = 'x <> y')");
         assert_eq!(p.equality, vec!["note", "kind"]);
     }
+
+    // A staging SQL Server reading: a Key Lookup's residual on a column qualified by a database whose name has hyphens
+    // read as a call of values (`app` minus …), so the lookups that found nothing lost their reading and their fix.
+    #[test]
+    fn a_column_qualified_by_a_hyphenated_database_is_a_column() {
+        let p = predicate_columns(
+            "[app-db-01].[app].[call_sessions].[conversation_id]=CONVERT_IMPLICIT(uniqueidentifier,[@par2],0)",
+        );
+        assert_eq!(p.equality, vec!["conversation_id"]);
+        // A call of values stays a value, with or without its parentheses.
+        assert!(is_value("dateadd(day,@P1,'2026-01-01')") && is_value("dateadd day,@P1,'2026-01-01'"));
+    }
 }
 
 pub use culprit_core::SettingChange;
@@ -1366,4 +1778,200 @@ pub fn setting_change(server: &culprit_core::ServerInfo, name: &str, value: &str
         return SettingChange { how: format!("Set {name} to {value} in {control}."), sql: None };
     }
     server.engine.spec().change_setting(server, name, value)
+}
+
+/// Live shows who holds a lock only while someone waits for it: waits that come less than once an hour over the data's
+/// window (`waits` of them, at least) are too few to count on catching one. A window that can't be dated says nothing
+/// of how often, and isn't too rare.
+pub fn too_rare_to_catch(snapshot: &Snapshot, waits: f64) -> bool {
+    snapshot
+        .workload
+        .as_ref()
+        .filter(|w| !w.window_unknown() && w.window_hours > 0.0)
+        .is_some_and(|w| waits.ceil() / w.window_hours < 1.0)
+}
+
+/// What to find a lock wait's holder with ([`find_lock_holder`]), and the SQL that sets it up where that is SQL.
+pub struct LockHolder {
+    pub lead: String,
+    pub sql: Option<String>,
+}
+
+/// How to see the next lock waits too rare to catch live ([`too_rare_to_catch`]), and, with `slower_than` (ms), the
+/// next runs slower than that, whatever they waited for: the engine's own log, set the way settings are set on this
+/// server, or what the engine already keeps. "Have the next ones logged instead. …", and its SQL where it has one.
+pub fn log_next_waits(snapshot: &Snapshot, slower_than: Option<f64>) -> LockHolder {
+    let server = &snapshot.server;
+    let on = |name: &str| snapshot.setting(name).is_some_and(|s| crate::config::is_on(&s.value));
+    match server.engine {
+        Engine::Postgres => {
+            let deadlock = match snapshot.setting("deadlock_timeout").map(|s| s.value.trim().to_string()) {
+                Some(v) if v.parse::<f64>().is_ok() => format!("{v} ms"),
+                Some(v) => v,
+                None => "1 s by default".into(),
+            };
+            let threshold = slower_than.map(|ms| if ms >= 1_000.0 { format!("{}s", ms / 1_000.0) } else { format!("{ms}ms") });
+            let mut changes: Vec<(&str, &str)> = Vec::new();
+            if !on("log_lock_waits") {
+                changes.push(("log_lock_waits", "on"));
+            }
+            if let Some(t) = threshold.as_deref() {
+                changes.push(("log_min_duration_statement", t));
+            }
+            let locks = format!(
+                "log_lock_waits {} each lock wait longer than deadlock_timeout ({deadlock}) with the process holding the lock",
+                if on("log_lock_waits") { "is on already, and logs" } else { "then logs" }
+            );
+            let slow = threshold
+                .as_deref()
+                .map(|t| format!(", and log_min_duration_statement each statement slower than {t} (any statement, not only this one) with its duration"))
+                .unwrap_or_default();
+            if changes.is_empty() {
+                return LockHolder {
+                    lead: format!("{}: the server log has the next ones, with the process holding the lock.", capitalize_first(&locks)),
+                    sql: None,
+                };
+            }
+            let change = crate::config::settings_change(server, &changes);
+            LockHolder { lead: format!("Have the next ones logged instead. {} {locks}{slow}.", change.how), sql: change.sql }
+        }
+        Engine::Mysql => {
+            // A run worth logging: the bar asked for, else the second the slow-log finding suggests; never a raise.
+            let seconds = slower_than.map_or(1.0, |ms| ms / 1_000.0);
+            let current = snapshot.setting("long_query_time").and_then(|s| s.value.trim().parse::<f64>().ok());
+            let logging = on("slow_query_log") || on("log_slow_query");
+            let mut changes: Vec<(&str, String)> = Vec::new();
+            if !logging {
+                changes.push(("slow_query_log", "ON".into()));
+            }
+            if current.is_none_or(|c| c > seconds) {
+                changes.push(("long_query_time", format!("{seconds}")));
+            }
+            let bar = format!("{}", current.filter(|c| *c <= seconds).unwrap_or(seconds));
+            let mariadb = if server.is_mariadb() { format!(" {}", crate::config::MARIADB_TABLE_LOCK_TIME) } else { String::new() };
+            let keeps = |verb: &str| {
+                format!(
+                    "The slow query log {verb} each statement slower than {bar} s with its lock time and when it ran; {} keeps no record of who held the lock, so match those times with what the application ran then.{mariadb}",
+                    server.name()
+                )
+            };
+            if changes.is_empty() {
+                return LockHolder {
+                    lead: format!("Look for the next ones in the slow query log. {}", keeps("already keeps")),
+                    sql: None,
+                };
+            }
+            let pairs: Vec<(&str, &str)> = changes.iter().map(|(n, v)| (*n, v.as_str())).collect();
+            let change = crate::config::settings_change(server, &pairs);
+            LockHolder {
+                lead: format!("Have the next ones logged instead. {} {}", change.how, keeps("then keeps")),
+                sql: change.sql,
+            }
+        }
+        // Query Store keeps when a query waited, interval by interval, not who held the lock. On a server whose options
+        // can be set, the blocked process report names the holder.
+        Engine::Mssql if server.platform().is_some_and(|p| p.is_azure_sql_database()) => LockHolder {
+            lead: "Query Store keeps when it waited, interval by interval (sys.query_store_wait_stats), not who held the lock: match the intervals of its waits with what the application ran then.".into(),
+            sql: None,
+        },
+        Engine::Mssql => LockHolder {
+            lead: "Have the next ones reported instead: SQL Server's blocked process report names the session holding the lock, with its statement, for each wait longer than the server's blocked process threshold (s) (0, off, by default; sp_configure sets it). Capture sqlserver.blocked_process_report in an event session to keep them.".into(),
+            sql: None,
+        },
+        Engine::Sqlite => LockHolder {
+            lead: "SQLite keeps no record of what held the file's write lock: the application's own logs of its writes at those times say which one it was.".into(),
+            sql: None,
+        },
+    }
+}
+
+/// How to find what holds the locks statement `q` waits for, in the words every check that names a lock wait uses: Live
+/// while it waits, where its waits come at least once an hour (`waits`, at least; every run without it); otherwise the
+/// next ones logged ([`log_next_waits`]); and for a statement that no longer runs, nothing to catch until it comes back.
+pub fn find_lock_holder(snapshot: &Snapshot, q: &QueryStat, waits: Option<f64>) -> LockHolder {
+    let live = "Find what holds the locks while it waits (Live shows the blocking chain).";
+    let rare = too_rare_to_catch(snapshot, waits.unwrap_or(q.executions));
+    // What logs the next ones, by name: no settings are given for a statement that ran once or no longer runs.
+    let log = match snapshot.server.engine {
+        Engine::Postgres => "log_lock_waits",
+        Engine::Mysql => "the slow query log, with its lock time",
+        Engine::Mssql if snapshot.server.platform().is_some_and(|p| p.is_azure_sql_database()) => {
+            "Query Store's waits for each interval date them"
+        }
+        Engine::Mssql => "SQL Server's blocked process report names the holder",
+        Engine::Sqlite => "the application's own log of its writes",
+    };
+    // A statement that ran once is history (`ran_once`): nothing is set up for it unless it runs again.
+    if crate::ran_once(q) {
+        let window = snapshot.workload.as_ref().map(|w| w.window_phrase()).unwrap_or_else(|| "the window".into());
+        return LockHolder {
+            lead: format!(
+                "It ran once in {window}, so there is no wait to catch now; if it runs again, have its lock waits logged ({log}) to see what holds them."
+            ),
+            sql: None,
+        };
+    }
+    if crate::query_stopped(snapshot, q).is_some() {
+        return LockHolder {
+            lead: if rare {
+                format!(
+                    "It no longer runs, so there is no wait to catch now; if it comes back, have its lock waits logged ({log}): its runs are too few to catch one while it waits."
+                )
+            } else {
+                "It no longer runs, so there is no wait to catch now; if it comes back, find what holds the locks while it waits (Live shows the blocking chain).".into()
+            },
+            sql: None,
+        };
+    }
+    if !rare {
+        return LockHolder { lead: live.into(), sql: None };
+    }
+    let logged = log_next_waits(snapshot, None);
+    let window = snapshot.workload.as_ref().map(|w| w.window_phrase()).unwrap_or_default();
+    let few = match waits {
+        Some(n) => format!(
+            "Its waits can come from as few as {} runs in {window}, too few to count on catching one while it happens.",
+            format::count(n.ceil())
+        ),
+        None => format!("It ran {}, too seldom to count on catching it while it waits.", runs_of(snapshot, q)),
+    };
+    LockHolder { lead: format!("{few} {}", logged.lead), sql: logged.sql }
+}
+
+/// A statistic a plan was compiled with, as SQL Server's plan XML names it (its `StatisticsInfo`, kept in the plan's raw
+/// XML; the parser keeps nothing else of it): unquoted names, and when it was last updated, in the server's local time.
+pub struct PlanStatistic {
+    pub schema: String,
+    pub table: String,
+    pub name: String,
+    pub last_update: Option<String>,
+}
+
+/// The statistics `plan` was compiled with ([`PlanStatistic`]): none for a plan without raw XML, or another engine's.
+pub fn plan_statistics(plan: &culprit_core::Plan) -> Vec<PlanStatistic> {
+    let Some(raw) = plan.raw.as_deref() else { return Vec::new() };
+    let attr = |tag: &str, key: &str| -> Option<String> {
+        let at = tag.find(&format!(" {key}=\""))? + key.len() + 3;
+        Some(tag[at..].split('"').next()?.trim_matches(['[', ']']).to_string())
+    };
+    raw.split("<StatisticsInfo ")
+        .skip(1)
+        .filter_map(|rest| {
+            let tag = format!(" {}", rest.split('>').next()?);
+            Some(PlanStatistic {
+                schema: attr(&tag, "Schema")?,
+                table: attr(&tag, "Table")?,
+                name: attr(&tag, "Statistics")?,
+                last_update: attr(&tag, "LastUpdate"),
+            })
+        })
+        .collect()
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
+        None => String::new(),
+    }
 }

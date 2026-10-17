@@ -282,7 +282,11 @@ impl Workspace {
 
     /// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
     pub fn analyze_file(&self, path: &std::path::Path) -> Result<Report> {
-        Ok(self.reread(reports::load_snapshot(path)?))
+        let mut snapshot = reports::load_snapshot(path)?;
+        if let Some(dir) = path.parent() {
+            reports::rebase_on_scans(dir, &mut snapshot);
+        }
+        Ok(self.reread(snapshot))
     }
 
     /// A saved scan as this version of Culprit reads it: its plans parsed again from the text they were captured as
@@ -742,11 +746,14 @@ impl Workspace {
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
-        // pg_stat_statements' evictions are counted since its last reset: the previous scan's count tells new ones.
-        snapshot.evictions_before = previous
-            .as_ref()
-            .filter(|p| history::same_database(p, &snapshot))
-            .and_then(|p| culprit_core::CountBaseline::from_setting(p, &snapshot, trends::EVICTIONS_SETTING));
+        // pg_stat_statements' evictions are counted since its last reset: the oldest of Culprit's scans a day or more
+        // back tells the rate they go at now, else the previous scan's count tells new ones.
+        snapshot.evictions_before = reports::evictions_baseline(&dir, &snapshot).or_else(|| {
+            previous
+                .as_ref()
+                .filter(|p| history::same_database(p, &snapshot))
+                .and_then(|p| culprit_core::CountBaseline::from_setting(p, &snapshot, trends::EVICTIONS_SETTING))
+        });
         // How big each table was a day or more ago tells how fast it grows.
         snapshot.sizes_before = history::growth_baseline(&dir, &snapshot);
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
@@ -758,7 +765,12 @@ impl Workspace {
     /// The newest saved report, or the newest one scanned with a window of `window_minutes` when given, read the way a
     /// scan taken now would read the same data ([`Workspace::reread`]).
     pub fn latest_report(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<Report>> {
-        Ok(reports::latest(&self.paths.reports_dir(name), window_minutes)?.map(|r| self.reread(r.snapshot)))
+        let dir = self.paths.reports_dir(name);
+        Ok(reports::latest(&dir, window_minutes)?.map(|r| {
+            let mut snapshot = r.snapshot;
+            reports::rebase_on_scans(&dir, &mut snapshot);
+            self.reread(snapshot)
+        }))
     }
 
     pub fn report_history(&self, name: &str) -> Result<Vec<ReportSummary>> {
@@ -783,8 +795,10 @@ impl Workspace {
         };
         // Plans are read again from their text before the redaction drops it.
         let load = |name: &str, id: &str| {
-            reports::load(&self.paths.reports_dir(name).join(format!("{id}.json"))).map(|mut r| {
+            let dir = self.paths.reports_dir(name);
+            reports::load(&dir.join(format!("{id}.json"))).map(|mut r| {
                 plans::reparse_saved(&mut r.snapshot);
+                reports::rebase_on_scans(&dir, &mut r.snapshot);
                 r
             })
         };

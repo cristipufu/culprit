@@ -61,8 +61,8 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             // finding (its row, the dashboard, the digest, an agent's view) are what its label says, and so are the
             // grade and the rank. The statement's own share is on the statement (a brief's "Queries involved").
             f.impact.db_time_share = Some(slow_share);
-            f.impact.time_ms_per_day = workload.per_day_measured(excess);
-            f.severity = severity_for_time(snapshot, excess, slow_share);
+            f.impact.time_ms_per_day = workload.per_day_measured(excess).filter(|_| workload.runs_per_day_of(q).is_some());
+            f.severity = severity_for_time_of(snapshot, &[q], excess, slow_share);
             f.impact.score = score_for_share(slow_share);
             f.impact.label = format!("{} of {} in slow runs", format::percent(slow_share), time_label(snapshot));
             f.confidence = Confidence::Medium;
@@ -70,14 +70,20 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             // values: its slow runs most likely waited, and nothing about parameters or statistics applies.
             let waited = (snapshot.server.engine.has_server() && q.plan.as_ref().is_some_and(writes_without_reading))
                 .then(|| WriteWaits::read(snapshot, q, excess));
+            // A statement that stopped running is told in the past.
+            let (averages, take) = if crate::all_stopped(snapshot, &[q]) { ("averaged", "took") } else { ("averages", "take") };
+            // Its average as every surface states it (over Culprit's scans where they measured it); the spread below is
+            // the source's own, over its totals.
             f.title = format!(
-                "{} averages {} per run, but some runs take far longer (up to {})",
+                "{} {averages} {} per run, but some runs {take} far longer (up to {})",
                 capitalize(&query_handle(q)),
-                format::duration(q.mean_time_ms),
+                format::duration(workload.statement_mean_ms(q)),
                 format::duration(max)
             );
             // One plan in Query Store backs "same plan"; elsewhere the engine keeps no plan identity per run.
             let same = if q.plans.len() == 1 { "Same query, same plan" } else { "Same statement" };
+            // What the engine recorded of its waits says which of the two causes it is, where it recorded any.
+            let recorded = RecordedWaits::read(snapshot, q, excess);
             f.summary = if let Some(w) = &waited {
                 format!(
                     "{same}, very different run times: the slow runs took at least {} more than the average, together. {}",
@@ -86,8 +92,9 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 )
             } else if snapshot.server.engine.has_server() {
                 format!(
-                    "{same}, very different run times: the slow runs took at least {} more than the average, together. Either some parameter values match far more rows than the plan was built for (parameter sensitivity), or some runs wait on locks. Check the waits for this query, then the parameter values of the slow runs.",
-                    format::duration(excess)
+                    "{same}, very different run times: the slow runs took at least {} more than the average, together. {}",
+                    format::duration(excess),
+                    recorded.sentence
                 )
             } else {
                 // SQLite: no server to record waits; a run that waits is waiting for the file's write lock.
@@ -96,20 +103,71 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                     format::duration(excess)
                 )
             };
+            // The spread is the source's, over its totals: where the title's average (Culprit's scans') is twice or half
+            // theirs, the one the slow runs are measured against is named.
+            if let Some(s) = workload.scans_of(q).filter(|s| s.mean_differs(q)) {
+                f.summary = f.summary.replacen(
+                    "more than the average, together.",
+                    &format!(
+                        "more than its average over {}, together ({} a run, against {} over {}).",
+                        workload.window_phrase(),
+                        format::duration(q.mean_time_ms),
+                        format::duration(s.mean_ms().unwrap_or(q.mean_time_ms)),
+                        s.phrase()
+                    ),
+                    1,
+                );
+            } else if let Some(basis) = crate::support::totals_basis(snapshot, q) {
+                // The title's average is the scans', the slow runs' excess the totals': each said over what it is.
+                f.summary = f.summary.replacen(
+                    "more than the average, together.",
+                    &format!("more than the average, together over {basis}."),
+                    1,
+                );
+            }
             f.queries = query_refs(&[q]);
-            f.metrics.push(Metric::new("Average", q.mean_time_ms, Unit::Ms));
+            // As the title states it, named over Culprit's scans where they measured it; where those measured one twice
+            // or half the spread's own (since the totals began), that one beside it.
+            match workload.scans_of(q) {
+                Some(s) => {
+                    f.metrics.push(Metric::new("Average over Culprit's scans", workload.statement_mean_ms(q), Unit::Ms));
+                    if s.mean_differs(q) {
+                        let since = format!("Average over {}", workload.window_phrase());
+                        f.metrics.push(Metric::new(since, q.mean_time_ms, Unit::Ms));
+                    }
+                }
+                None => f.metrics.push(Metric::new("Average", workload.statement_mean_ms(q), Unit::Ms)),
+            }
             f.metrics.push(Metric::new("Slowest", max, Unit::Ms));
             f.metrics.push(Metric::new("Std deviation", stddev, Unit::Ms));
-            f.metrics.push(Metric::new("Slow runs' extra time (at least)", excess, Unit::Ms));
+            // A part of its time the source keeps only in its totals: over those, where the average beside it is the
+            // scans'.
+            let extra = match crate::support::totals_basis(snapshot, q) {
+                Some(basis) => format!("Slow runs' extra time over {basis} (at least)"),
+                None => "Slow runs' extra time (at least)".to_string(),
+            };
+            f.metrics.push(Metric::new(extra, excess, Unit::Ms));
             if let Some(io) = waited.as_ref().and_then(|w| w.io_ms) {
                 f.metrics.push(Metric::new("Data-file reads and writes", io, Unit::Ms));
             }
             // The same ladders as `parameter-sensitive`: the cause is usually the same, only the evidence is coarser.
+            let fewest = (excess / (max - q.mean_time_ms).max(1.0)).ceil();
             f.fix = Some(match (&waited, snapshot.server.engine) {
                 (Some(w), _) => w.fix(snapshot),
-                (None, Engine::Mssql) => crate::queries::mssql_fix(snapshot, q, None),
+                // Lock waits the engine recorded explain the slow runs: what holds the locks is the fix, not a plan.
+                (None, Engine::Mssql) if recorded.locks_explain => {
+                    let LockHolder { lead, sql } = find_lock_holder(snapshot, q, Some(fewest));
+                    Fix {
+                        summary: format!(
+                            "{lead} Keep the transactions that hold those rows short: commit sooner, and don't wait for a user or another service inside a transaction. Neither a different plan nor finer statistics changes it."
+                        ),
+                        sql,
+                        cost: None,
+                    }
+                }
+                (None, Engine::Mssql) => crate::queries::mssql_fix(snapshot, q, None, excess),
                 (None, Engine::Postgres) => crate::queries::postgres_fix(),
-                (None, Engine::Mysql) => crate::queries::mysql_fix(0.0, snapshot.server.is_mariadb()),
+                (None, Engine::Mysql) => crate::queries::mysql_fix(snapshot, q, recorded.lock_share, Some(fewest)),
                 (None, Engine::Sqlite) => Fix {
                     summary: "Compare a slow and a fast value with EXPLAIN QUERY PLAN. If some values match far more rows, an index that narrows them, or ANALYZE, lets SQLite choose better.".into(),
                     sql: Some("ANALYZE;".into()),
@@ -322,60 +380,31 @@ impl<'a> WriteWaits<'a> {
     /// Where the slow runs are too few to catch while they happen: the fewest that add up to the extra time come less
     /// than once an hour over the data's window. Their count, and the window as a sentence names it.
     fn too_rare_to_watch(&self, snapshot: &Snapshot) -> Option<(f64, String)> {
-        let w = snapshot.workload.as_ref().filter(|w| !w.window_unknown() && w.window_hours > 0.0)?;
+        let w = snapshot.workload.as_ref()?;
         let fewest = self.fewest_slow?.ceil();
-        (fewest / w.window_hours < 1.0).then(|| (fewest, w.window_phrase()))
+        too_rare_to_catch(snapshot, fewest).then(|| (fewest, w.window_phrase()))
     }
 
     /// How to see the slow runs Live is unlikely to catch: the engine's log of slow statements and lock waits, set the
-    /// way settings are set on this server (with its SQL, where it runs), or what Query Store already keeps.
-    fn record_slow_runs(&self, snapshot: &Snapshot) -> Option<(String, Option<String>)> {
-        let server = &snapshot.server;
+    /// way settings are set on this server (with its SQL, where it runs), or what Query Store already keeps; the one
+    /// way every check that names a wait too rare to catch says it ([`log_next_waits`]).
+    fn record_slow_runs(&self, snapshot: &Snapshot, mean_ms: f64) -> Option<(String, Option<String>)> {
         // A run well past the average, and no lower than a tenth of a second: what the log keeps.
         let bar = [100.0, 200.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0]
             .into_iter()
-            .find(|b| *b >= self.mean_ms * 20.0)
+            .find(|b| *b >= mean_ms * 20.0)
             .unwrap_or(10_000.0);
-        match server.engine {
-            Engine::Postgres => {
-                let threshold = if bar >= 1_000.0 { format!("{}s", bar / 1_000.0) } else { format!("{bar}ms") };
-                let change = crate::config::settings_change(
-                    server,
-                    &[("log_lock_waits", "on"), ("log_min_duration_statement", &threshold)],
-                );
-                let deadlock = match snapshot.setting("deadlock_timeout").map(|s| s.value.trim().to_string()) {
-                    Some(v) if v.parse::<f64>().is_ok() => format!("{v} ms"),
-                    Some(v) => v,
-                    None => "1 s by default".into(),
-                };
-                Some((
-                    format!(
-                        "Have the next ones logged instead. {} log_lock_waits then logs each lock wait longer than deadlock_timeout ({deadlock}) with the process holding the lock, and log_min_duration_statement each statement slower than {threshold} (any statement, not only this one) with its duration.",
-                        change.how
-                    ),
-                    change.sql,
-                ))
-            }
-            Engine::Mysql => {
-                let seconds = format!("{}", bar / 1000.0);
-                let change = crate::config::settings_change(
-                    server,
-                    &[("slow_query_log", "ON"), ("long_query_time", &seconds)],
-                );
-                Some((
-                    format!(
-                        "Have the next ones logged instead. {} The slow query log then keeps each statement slower than {seconds} s with its lock time.",
-                        change.how
-                    ),
-                    change.sql,
-                ))
-            }
+        match snapshot.server.engine {
             Engine::Mssql => Some((
                 "Query Store keeps this query's waits for each interval (sys.query_store_wait_stats): the intervals of its slowest runs say what they waited on."
                     .into(),
                 None,
             )),
             Engine::Sqlite => None,
+            _ => {
+                let LockHolder { lead, sql } = log_next_waits(snapshot, Some(bar));
+                Some((lead, sql))
+            }
         }
     }
 
@@ -387,7 +416,7 @@ impl<'a> WriteWaits<'a> {
         let rare = self
             .too_rare_to_watch(snapshot)
             .filter(|_| !self.stopped)
-            .and_then(|(fewest, window)| Some((fewest, window, self.record_slow_runs(snapshot)?)));
+            .and_then(|(fewest, window)| Some((fewest, window, self.record_slow_runs(snapshot, self.mean_ms)?)));
         let mut sql = None;
         let lead = match (self.stopped, self.successor, rare) {
             (false, _, Some((fewest, window, (record, record_sql)))) => {
@@ -398,11 +427,28 @@ impl<'a> WriteWaits<'a> {
                 )
             }
             (false, _, None) => format!("Find what the slow runs wait for while they happen ({watch})."),
-            (true, Some(next), _) => format!(
-                "This statement no longer runs. Query {}, {} too, still does: if it replaced this one, its runs can wait the same way, so watch them ({watch}).",
-                next.id,
-                query_handle(next)
-            ),
+            // The statement that took its place has runs of its own to catch: Live only where its slow ones are there
+            // to be seen, which a slowest run near its average says they aren't.
+            (true, Some(next), _) => {
+                // A slow run is a second or more (`unstable_excess_ms`): none of its runs has been one.
+                let slowest = next.max_time_ms.filter(|max| *max < 1_000.0);
+                let replaced = format!(
+                    "This statement no longer runs. Query {}, {} too, still does: if it replaced this one, its runs can wait the same way",
+                    next.id,
+                    query_handle(next)
+                );
+                match (slowest, self.record_slow_runs(snapshot, next.mean_time_ms)) {
+                    // The settings are said, not given as this finding's SQL: a finding on a statement that stopped
+                    // runs nothing for it (refine's `stopped_statements_get_nothing_created`).
+                    (Some(max), Some((record, _))) => {
+                        format!(
+                            "{replaced}, though its slowest run so far took {}, so there is no slow run of it to catch while it happens. {record}",
+                            format::duration(max)
+                        )
+                    }
+                    _ => format!("{replaced}, so watch them ({watch})."),
+                }
+            }
             (true, None, _) => format!(
                 "This statement no longer runs, so there is nothing to watch now; if it comes back, find what its slow runs wait for while they happen ({watch})."
             ),
@@ -428,6 +474,92 @@ impl<'a> WriteWaits<'a> {
             ),
             sql,
             cost: None,
+        }
+    }
+}
+
+/// What the engine recorded of a statement's waits, said against its slow runs' extra time: Query Store's waits per
+/// query, MySQL's and MariaDB's lock time. Lock waits that make up half the extra time or more explain the slow runs; a
+/// record with none or few of them rules locks out, and its largest other wait says what the slow runs spent their time
+/// on. PostgreSQL keeps no waits per statement, and a Query Store without wait statistics recorded none: then both
+/// causes stay open, and the sentence says why.
+struct RecordedWaits {
+    /// The sentence for the summary, after the extra time.
+    sentence: String,
+    /// Lock waits recorded for it make up half the slow runs' extra time or more.
+    locks_explain: bool,
+    /// The lock share `mysql_fix` reads: all of it where locks explain the slow runs, none otherwise.
+    lock_share: f64,
+}
+
+impl RecordedWaits {
+    fn read(snapshot: &Snapshot, q: &QueryStat, excess: f64) -> Self {
+        let both = "Either some parameter values match far more rows than the plan was built for (parameter sensitivity), or some runs wait on locks";
+        let values = "Compare the parameter values of the slow runs with those of the fast ones.";
+        let open = |why: &str| RecordedWaits {
+            sentence: format!("{both}{why}. {values}"),
+            locks_explain: false,
+            lock_share: 0.0,
+        };
+        let engine = snapshot.server.engine;
+        let lock_waits = q.waits.iter().filter(|w| w.category == "Lock").map(|w| w.wait_ms).reduce(|a, b| a + b);
+        let (source, lock) = match engine {
+            Engine::Mssql if !q.waits.is_empty() => ("Query Store".to_string(), lock_waits.unwrap_or(0.0)),
+            Engine::Mssql => return open(": Query Store recorded no waits for it to tell which"),
+            Engine::Mysql => match q.spread.as_ref().and_then(|s| s.lock_ms).or(lock_waits) {
+                Some(lock) => (snapshot.server.name().to_string(), lock),
+                None => {
+                    return open(&format!(": {} recorded no lock time for it to tell which", snapshot.server.name()));
+                }
+            },
+            Engine::Postgres => return open(" (pg_stat_statements doesn't record what a statement waited for)"),
+            Engine::Sqlite => return open(""),
+        };
+        let extra = format::duration(excess);
+        if lock >= excess * 0.5 {
+            return RecordedWaits {
+                sentence: format!(
+                    "{source} recorded {} of lock waits for it, against at least {extra} of extra time in the slow runs: they waited for locks other transactions held, not on a plan built for other values.",
+                    format::duration(lock)
+                ),
+                locks_explain: true,
+                lock_share: 1.0,
+            };
+        }
+        let locks = if lock <= 0.0 {
+            format!("{source} recorded no lock waits for it")
+        } else {
+            format!(
+                "{source} recorded only {} of lock waits for it, against at least {extra} of extra time",
+                format::duration(lock)
+            )
+        };
+        // The largest other wait, where it has a plain meaning: what the slow runs spent their time on.
+        let other = q
+            .waits
+            .iter()
+            .filter(|w| !matches!(w.category.as_str(), "Lock" | "CPU"))
+            .max_by(|a, b| a.wait_ms.total_cmp(&b.wait_ms))
+            .and_then(|w| {
+                let meaning = match culprit_core::waits::category_key(&w.category) {
+                    "network" => "the application reading the results, which takes longer the more rows a run returns",
+                    "io" => "reading pages from storage that weren't in memory, which grows with the rows a run reads",
+                    "memory" => "waiting for a memory grant, which grows with the rows a run sorts or hashes",
+                    _ => return None,
+                };
+                Some(format!(
+                    "; its largest wait is {} ({}): {meaning}",
+                    w.wait_type.as_deref().unwrap_or(&w.category),
+                    format::duration(w.wait_ms)
+                ))
+            })
+            .unwrap_or_default();
+        RecordedWaits {
+            sentence: format!(
+                "{locks}, so locks weren't what made them slow{other}. Most likely some parameter values match far more rows than the plan was built for (parameter sensitivity). {values}"
+            ),
+            locks_explain: false,
+            lock_share: 0.0,
         }
     }
 }
@@ -593,6 +725,78 @@ mod tests {
         let fix = rare(Some("Amazon RDS"));
         assert!(fix.summary.contains("DB parameter group"), "{}", fix.summary);
         assert_eq!(fix.sql, None);
+    }
+
+    // The aptabase-us reading: "watch them (Live shows each session's wait…)" for the statement that replaced a stopped
+    // insert, whose slowest run so far took 88 ms: there is nothing to catch live, and its next slow runs are logged,
+    // the way unstable-query logs any too rare to watch.
+    #[test]
+    fn the_statement_that_replaced_a_stopped_one_has_its_slow_runs_logged() {
+        let mut s = unstable_insert(SKIPS_EXISTING);
+        let w = s.workload.as_mut().unwrap();
+        w.window_hours = 48.0;
+        let q = w.queries.iter_mut().find(|q| q.id == "3432126458605143571").unwrap();
+        (q.first_seen, q.last_seen) = (Some("2026-10-09T12:00:00Z".into()), Some("2026-10-10T08:00:00Z".into()));
+        let next = w.queries.iter_mut().find(|q| q.id == "2885972271926804069").unwrap();
+        next.text = "INSERT INTO order_items (order_id, product_id, quantity, note) VALUES ($1, $2, $3, $4)".into();
+        (next.first_seen, next.last_seen) = (Some("2026-10-10T08:05:00Z".into()), Some("2026-10-11T11:50:00Z".into()));
+        (next.executions, next.mean_time_ms, next.total_time_ms, next.max_time_ms) =
+            (5_000.0, 0.5, 2_500.0, Some(88.0));
+        next.plan = None;
+        let f = unstable(s);
+        assert!(f.inactive, "it stopped");
+        let fix = f.fix.unwrap();
+        assert!(
+            fix.summary.starts_with(
+                "This statement no longer runs. Query 2885972271926804069, an insert into order_items too, still does: if it replaced this one, its runs can wait the same way, though its slowest run so far took 88 ms, so there is no slow run of it to catch while it happens. Have the next ones logged instead. Set log_lock_waits to on and log_min_duration_statement to 100ms"
+            ),
+            "{}",
+            fix.summary
+        );
+        assert!(!fix.summary.contains("Live shows"), "{}", fix.summary);
+        assert_eq!(fix.sql, None, "a finding on a statement that stopped runs nothing for it");
+    }
+
+    // The SQL Server demo's fresh reading: "or some runs wait on locks. Check the waits for this query" where Query Store
+    // recorded 3.4 s of Network IO, 43 ms of memory, 11 ms of CPU and no lock waits for it.
+    #[test]
+    fn the_summary_reads_the_waits_the_engine_recorded() {
+        let mut s = crate::waits::snapshot_with(Engine::Mssql);
+        let w = s.workload.as_mut().unwrap();
+        let q = w.queries.iter_mut().find(|q| q.id == "10").expect("the demo's read of support_tickets");
+        let (runs, slow) = (8_000.0, 10.0);
+        let mean = (1.2 * (runs - slow) + 1_100.0 * slow) / runs;
+        let variance = ((1.2f64 - mean).powi(2) * (runs - slow) + (1_100.0f64 - mean).powi(2) * slow) / runs;
+        (q.executions, q.mean_time_ms, q.total_time_ms) = (runs, mean, mean * runs);
+        (q.stddev_time_ms, q.max_time_ms) = (Some(variance.sqrt()), Some(1_100.0));
+        q.plans.truncate(1);
+        let wait = |category: &str, wait_type: &str, ms: f64| culprit_core::WaitStat {
+            category: category.into(),
+            wait_type: Some(wait_type.into()),
+            wait_ms: ms,
+            tasks: None,
+        };
+        q.waits =
+            vec![wait("Network", "Network IO", 3_406.0), wait("Memory", "Memory", 43.0), wait("CPU", "CPU", 11.0)];
+        let total: f64 = w.queries.iter().map(|q| q.total_time_ms).sum();
+        w.total_time_ms = total;
+        let found =
+            |s: Snapshot| unstable_query(&s).into_iter().find(|f| f.id == "unstable-query:10").expect("unstable");
+        let f = found(s.clone());
+        assert!(
+            f.summary.contains("Query Store recorded no lock waits for it, so locks weren't what made them slow; its largest wait is Network IO (3.4 s): the application reading the results, which takes longer the more rows a run returns. Most likely some parameter values match far more rows than the plan was built for"),
+            "{}",
+            f.summary
+        );
+        assert!(!f.summary.contains("Check the waits"), "{}", f.summary);
+        // Lock waits that make up the slow runs' time are the cause: the fix is what holds them, not a plan.
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "10").unwrap();
+        q.waits = vec![wait("Lock", "Lock", 10_000.0)];
+        let f = found(s);
+        assert!(f.summary.contains("Query Store recorded 10.0 s of lock waits for it"), "{}", f.summary);
+        let fix = f.fix.unwrap();
+        assert!(!fix.summary.contains("Pick the lightest option"), "{}", fix.summary);
+        assert!(fix.summary.contains("Keep the transactions that hold those rows short"), "{}", fix.summary);
     }
 
     #[test]

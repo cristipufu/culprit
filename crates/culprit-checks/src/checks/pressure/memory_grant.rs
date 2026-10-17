@@ -37,8 +37,13 @@ pub fn memory_grant(snapshot: &Snapshot) -> Vec<Finding> {
             let key = q.map(|q| q.id.clone()).unwrap_or_else(|| g.query_hash.clone());
             let mut f = finding("memory-grant", &key, Category::Queries, subject(SubjectKind::Query, &key));
             let handle = q.map(query_handle).unwrap_or_else(|| "a query".into());
+            let (reserves, uses) = if q.is_some_and(|q| crate::all_stopped(snapshot, &[q])) {
+                ("reserved", "used")
+            } else {
+                ("reserves", "uses")
+            };
             f.title = format!(
-                "{} reserves {} of memory per run and uses {}",
+                "{} {reserves} {} of memory per run and {uses} {}",
                 capitalize(&handle),
                 kb(g.avg_granted_kb),
                 kb(g.avg_used_kb)
@@ -60,7 +65,9 @@ pub fn memory_grant(snapshot: &Snapshot) -> Vec<Finding> {
                 let waited: f64 =
                     q.waits.iter().filter(|w| category_key(&w.category) == "memory").map(|w| w.wait_ms).sum();
                 if let Some(w) = snapshot.workload.as_ref().filter(|_| waited > 0.0) {
-                    let impact = QueryImpact { share: w.share_of(waited, q), per_day_ms: w.per_day_measured(waited) };
+                    // A day's worth only of runs that came that way, never a burst's spread over the window.
+                    let per_day_ms = w.per_day_measured(waited).filter(|_| w.runs_per_day_of(q).is_some());
+                    let impact = QueryImpact { share: w.share_of(waited, q), per_day_ms };
                     apply_query_impact(&mut f, &impact);
                 }
             }

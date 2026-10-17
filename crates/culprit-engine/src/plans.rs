@@ -121,31 +121,48 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
 /// collector marks) reaches the scans saved before it, so an old report shows the plan a scan taken now would. What
 /// the scan added that the text doesn't hold stays as it was: the statement it was planned for and the kind of plan
 /// here, the notes a collector puts on a plan (the server's version, where its sample came from) and what it looked up
-/// for it (table sizes) in the provider's own `reparse`. The marks a report's preparation adds (changed columns, index
-/// kinds) and the plan's insights are worked out again when it is analyzed. A plan with no text, or text this build
-/// can't read, stays as saved; so does SQLite's, whose text keeps the steps but not their tree.
+/// for it (table sizes) in the provider's own `reparse`, which takes from the scan's own catalog what a plan saved
+/// without it lacks. The marks a report's preparation adds (changed columns, index kinds) and the plan's insights are
+/// worked out again when it is analyzed. A plan with no text, or text this build can't read, stays as saved; so does
+/// SQLite's, whose text keeps the steps but not their tree.
 pub fn reparse_saved(snapshot: &mut culprit_core::Snapshot) {
     let database = snapshot.server.database.clone();
     let Some(workload) = snapshot.workload.as_mut() else { return };
+    let catalog = Catalog { database: &database, tables: &snapshot.tables, indexes: &snapshot.indexes };
     // A pg_stat_statements entry's plan is planned from the text it keeps; a log's statement is the application's.
     let statement_stats = workload.kind() == Some(culprit_core::WorkloadKind::StatementStats);
     for q in workload.queries.iter_mut() {
         let Some(saved) = q.plan.as_ref() else { continue };
         let entry = statement_stats.then_some(q.id.as_str());
-        if let Some(fresh) = reparse(saved, entry, &database) {
+        if let Some(fresh) = reparse(saved, entry, &catalog) {
             q.plan = Some(fresh);
         }
     }
 }
 
+/// What a saved scan knows about its database, for its plans read again.
+struct Catalog<'a> {
+    database: &'a str,
+    tables: &'a [culprit_core::TableStat],
+    indexes: &'a [culprit_core::IndexStat],
+}
+
 /// `saved` read again by its engine's parser; `entry` is the pg_stat_statements entry it was planned for.
-fn reparse(saved: &Plan, entry: Option<&str>, database: &str) -> Option<Plan> {
-    let _ = (entry, database);
+fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<Plan> {
+    let _ = (entry, catalog.tables, catalog.indexes);
+    let database = catalog.database;
     let mut plan = match saved.engine {
         #[cfg(feature = "mssql")]
         culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved),
         #[cfg(feature = "postgres")]
-        culprit_core::Engine::Postgres => culprit_postgres::plan_json::reparse(saved, entry),
+        // A plan saved without its JSON still takes the table sizes it lacks from the scan's catalog.
+        culprit_core::Engine::Postgres => {
+            culprit_postgres::plan_json::reparse(saved, entry, catalog.tables, catalog.indexes).or_else(|| {
+                let mut plan = saved.clone();
+                culprit_postgres::plan_json::refill_from_catalog(&mut plan, catalog.tables, catalog.indexes);
+                Some(plan)
+            })
+        }
         #[cfg(feature = "mysql")]
         culprit_core::Engine::Mysql => {
             culprit_mysql::plan_json::reparse(saved, Some(database).filter(|d| !d.is_empty()))

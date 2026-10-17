@@ -112,7 +112,7 @@ pub(crate) fn statements_below(snapshot: &Snapshot, statements: &[&QueryStat]) -
     format!(
         " {} below {verb} {}{}",
         if one { "The statement".to_string() } else { format!("The {} statements", statements.len()) },
-        runs_phrase(snapshot, runs),
+        runs_of_all(snapshot, statements),
         match pages {
             Some(p) =>
                 format!(", going through about {} pages ({}) a run.", format::count(p), format::bytes(p * 8192.0)),
@@ -236,11 +236,17 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
     // Statements reading whole rows: what makes the size cost on every run, not just on disk.
     let statements = whole_row_statements(snapshot, t, size, large);
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
-    let hot = window_at_least(snapshot, runs, WHOLE_ROW_RUNS_PER_DAY);
-    let runs_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(runs));
+    let hot = runs_at_least(snapshot, &statements, WHOLE_ROW_RUNS_PER_DAY);
+    // A day's worth only where every statement's runs came that way.
+    let runs_a_day = snapshot
+        .workload
+        .as_ref()
+        .filter(|w| statements.iter().all(|q| w.runs_per_day_of(q).is_some()))
+        .and_then(|w| w.per_day_measured(runs));
     summary.push_str(&statements_below(snapshot, &statements));
 
-    // Growth since the previous scan, when there is one.
+    // Growth since the newest scan at least 20 hours back, when there is one: named by its time, since it is not
+    // always the scan just before.
     let growth = snapshot.sizes_before.as_ref().and_then(|b| {
         let then = b.bytes(&name)?;
         let days = days_between(&b.taken_at, &snapshot.taken_at).filter(|d| *d >= 1.0 / 24.0)?;
@@ -253,21 +259,17 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
         fast = a_day >= FAST_GROWTH_BYTES && a_day >= FAST_GROWTH_SHARE * size;
         summary.push(' ');
         summary.push_str(&if delta >= MB && days >= 20.0 / 24.0 {
-            format!(
-                "It grew by {} since the previous scan {when}, about {} a day.",
-                format::bytes(delta),
-                format::bytes(a_day)
-            )
+            format!("It grew by {} since the scan {when}, about {} a day.", format::bytes(delta), format::bytes(a_day))
         } else if delta >= MB {
             format!(
-                "It grew by {} in the {} since the previous scan {when}.",
+                "It grew by {} in the {} since the scan {when}.",
                 format::bytes(delta),
                 culprit_core::span_words(days * 24.0)
             )
         } else if delta <= -MB {
-            format!("It's {} smaller than at the previous scan {when}.", format::bytes(-delta))
+            format!("It's {} smaller than at the scan {when}.", format::bytes(-delta))
         } else {
-            format!("It hasn't grown since the previous scan {when}.")
+            format!("It hasn't grown since the scan {when}.")
         });
         if delta >= MB && days >= 20.0 / 24.0 {
             f.metrics.push(Metric::new("Growth a day", a_day, Unit::Bytes));
@@ -310,8 +312,16 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
         sql: None,
         cost: None,
     });
-    let statements_read_less =
-        if statements.is_empty() { "" } else { ", and the statements below should read fewer pages a run" };
+    // On running totals a statement's pages a run hold every run from before the change; What changed shows its time
+    // a run between two scans, never its reads.
+    let statements_read_less = match &snapshot.workload {
+        _ if statements.is_empty() => String::new(),
+        Some(w) if !w.windowed => format!(
+            ", and the statements below should take less time a run between a scan taken when it ships and one a day or more later (What changed, `{}`)",
+            crate::queries::WHAT_CHANGED_COMMAND
+        ),
+        _ => ", and the statements below should read fewer pages a run".to_string(),
+    };
     f.verify = vec![
         format!(
             "Re-scan after the change: the table's average row and its share of large values should drop{statements_read_less}."

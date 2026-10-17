@@ -102,12 +102,12 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
             format!("{func}() around {col} keeps the database from using an index on {}", table_leaf(&table))
         };
         d.detail = format!(
-            "Each row's {col} is computed before it can be compared (`{}`), so an index on {col} can't narrow the search: {} reads {} rows to keep {}. {} of this plan's work.",
+            "Each row's {col} is computed before it can be compared (`{}`), so an index on {col} can't narrow the search: {} reads {} rows to keep {}.{}",
             format::predicate(filter),
             n.op,
             format::count(rows_read(n)),
             format::percent(filter_keeps(cx, n).unwrap_or(1.0)),
-            capitalize(&format::percent(impact))
+            cx.work_sentence(impact, &[n.id])
         );
         let lower = func.to_ascii_lowercase();
         d.fix = if matches!(
@@ -432,6 +432,11 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
         }
         let outer = &n.children[0];
         let inner = &n.children[n.children.len() - 1];
+        // How often an estimated loop repeats its inner side, where its outer side was planned on a default guess for a
+        // parameter, is that guess, not the data.
+        if inner.act_executions.is_none() && cx.guessed.contains(&inner.id) {
+            continue;
+        }
         // Said better elsewhere: key lookups, NOT IN's row count spool, a cross join. A join buffer, MySQL's or
         // MariaDB's (`block-nl-join`), is no repeat: the table is read once per buffer fill, not once per row.
         let mut inner_nodes = Vec::new();
@@ -527,21 +532,21 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
             )
         } else if repeated {
             format!(
-                "Each run reads about {} rows of {inner_name}{}, so the loop reads it {} times over. {} of this plan's work.",
+                "Each run reads about {} rows of {inner_name}{}, so the loop reads it {} times over.{}",
                 format::count(per_read.unwrap_or(0.0)),
                 table
                     .map(|t| format!(" ({} of the table)", format::percent((per_read.unwrap_or(0.0) / t).min(1.0))))
                     .unwrap_or_default(),
                 format::count(reads),
-                capitalize(&format::percent(impact))
+                cx.work_sentence(impact, &[n.id, inner.id])
             )
         } else {
             format!(
-                "The {} reads {inner_name} once and replays its {} rows for each row of {outer_name}; the join then checks `{}` on every pair. {} of this plan's work.{}",
+                "The {} reads {inner_name} once and replays its {} rows for each row of {outer_name}; the join then checks `{}` on every pair.{}{}",
                 inner.op,
                 format::count(per_replay),
                 format::predicate(n.predicate.as_deref().unwrap_or_default()),
-                capitalize(&format::percent(impact)),
+                cx.work_sentence(impact, &[n.id, inner.id]),
                 if hinted { format!(" {forced}") } else { String::new() }
             )
         };

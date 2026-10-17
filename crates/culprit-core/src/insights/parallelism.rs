@@ -141,7 +141,15 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
     let Some(reason) = cx.prop("NonParallelPlanReason") else { return Vec::new() };
     let cost = cx.plan.total_cost;
     let threshold = cx.prop(COST_THRESHOLD).and_then(|t| t.parse::<f64>().ok());
-    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < threshold.unwrap_or(DEFAULT_THRESHOLD) {
+    // A threshold still at its default is one Culprit's own advice raises to the common 50
+    // (config:cost-threshold-for-parallelism): a plan under that would stay on one CPU once it is raised, so removing
+    // what keeps it serial now is no advice to give beside it. One answer for both findings.
+    let bar = match threshold {
+        Some(t) if t <= DEFAULT_THRESHOLD => COMMON_THRESHOLD,
+        Some(t) => t,
+        None => DEFAULT_THRESHOLD,
+    };
+    if reason == "TSQLUserDefinedFunctionsNotParallelizable" || cost < bar {
         return Vec::new();
     }
     // Which MAXDOP is 1: the statement's own hint, or the database's or the server's setting as the snapshot read them.
@@ -191,6 +199,11 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
         format!("This plan runs on one CPU because {plain}")
     };
     d.detail = match threshold {
+        Some(t) if t <= DEFAULT_THRESHOLD => format!(
+            "Its estimated cost is {cost:.0}, above this server's cost threshold for parallelism ({t:.0}) and the \
+             {COMMON_THRESHOLD:.0} it's commonly raised to, so SQL Server would consider a parallel plan for it either \
+             way; the whole run happens on a single core instead."
+        ),
         Some(t) => format!(
             "Its estimated cost is {cost:.0}, above this server's cost threshold for parallelism ({t:.0}), so SQL Server \
              would consider a parallel plan for it; the whole run happens on a single core instead."

@@ -275,7 +275,11 @@ fn saved_plans_are_read_again_by_todays_parsers() {
     assert_eq!(plan.kind, before.kind);
     assert_eq!(plan.statement, before.statement);
     assert!(plan.props.contains_key("Generic Plan") && plan.insights.is_none());
-    assert_eq!(find(plan, "Seq Scan").table_rows, find(&before, "Seq Scan").table_rows, "the size the scan looked up");
+    // The size the scan looked up, else the one its own catalog has (MS-7: a scan saved before its collector looked
+    // sizes up, whose whole-table reads would otherwise read as reading nothing).
+    let orders = pg.table("public", "orders").and_then(|t| t.rows);
+    assert!(orders.is_some());
+    assert_eq!(find(plan, "Seq Scan").table_rows, find(&before, "Seq Scan").table_rows.or(orders), "the table's size");
 
     // MySQL: the products lookup on a nested loop's inner side runs once per outer row (2), a row each.
     let mut my = saved_snapshot("mysql-demo.json");

@@ -6,8 +6,8 @@ findings: 25
 === finding hot-rows:shop.orders
 high severity · high confidence · indexes
 title: Sessions wait 37.3 s each on row locks in orders
-summary: Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
-impact: 3 min 7 s waiting on locks · 34.1% of database time
+summary: Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time.
+impact: 3 min 7 s waiting on locks · 56.1% of database time
 metrics:
   - Lock waits: 5
   - Time waiting: 3 min 7 s
@@ -24,7 +24,7 @@ queries:
   - 138: 34% of database time
     note: Waited 2 min on locks, nearly all of its time in the last 5 hours.
   - 143: 21% of database time
-    note: Waited 1 min on locks, nearly all of its time in the last 5 hours.
+    note: Waited 2 min on locks, nearly all of its time in the last 5 hours.
   - 161: <1% of database time
 brief:
     # Sessions wait 37.3 s each on row locks in orders
@@ -33,7 +33,7 @@ brief:
 
     ## What's happening
 
-    Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
+    Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time.
 
     ## Evidence
 
@@ -144,14 +144,16 @@ metrics:
   - Errors: 50
 fix: Query Store counts the errors but doesn't keep them. Capture them for a while with an Extended Events session on error_reported for this database, read the ring buffer, then drop the session.
   sql:
-      -- Capture errors raised in this database; drop the session when you're done
-      CREATE EVENT SESSION culprit_errors ON SERVER
-      ADD EVENT sqlserver.error_reported (
-        ACTION (sqlserver.client_app_name, sqlserver.sql_text)
-        WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')
-      ADD TARGET package0.ring_buffer;
-      ALTER EVENT SESSION culprit_errors ON SERVER STATE = START;
-      -- Later: DROP EVENT SESSION culprit_errors ON SERVER;
+      -- Capture errors raised in this database (one session for every failing statement: once is enough)
+      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_errors')
+          CREATE EVENT SESSION culprit_errors ON SERVER
+          ADD EVENT sqlserver.error_reported (
+            ACTION (sqlserver.client_app_name, sqlserver.sql_text)
+            WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')
+          ADD TARGET package0.ring_buffer;
+      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_errors')
+          ALTER EVENT SESSION culprit_errors ON SERVER STATE = START;
+      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_errors ON SERVER;
 verify:
   1. Re-scan after the change: runs that fail or are cancelled should drop to near zero.
 queries:
@@ -184,14 +186,16 @@ brief:
     Query Store counts the errors but doesn't keep them. Capture them for a while with an Extended Events session on error_reported for this database, read the ring buffer, then drop the session.
 
     ```sql
-    -- Capture errors raised in this database; drop the session when you're done
-    CREATE EVENT SESSION culprit_errors ON SERVER
-    ADD EVENT sqlserver.error_reported (
-      ACTION (sqlserver.client_app_name, sqlserver.sql_text)
-      WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')
-    ADD TARGET package0.ring_buffer;
-    ALTER EVENT SESSION culprit_errors ON SERVER STATE = START;
-    -- Later: DROP EVENT SESSION culprit_errors ON SERVER;
+    -- Capture errors raised in this database (one session for every failing statement: once is enough)
+    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_errors')
+        CREATE EVENT SESSION culprit_errors ON SERVER
+        ADD EVENT sqlserver.error_reported (
+          ACTION (sqlserver.client_app_name, sqlserver.sql_text)
+          WHERE severity >= 11 AND sqlserver.database_name = N'culprit_demo')
+        ADD TARGET package0.ring_buffer;
+    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_errors')
+        ALTER EVENT SESSION culprit_errors ON SERVER STATE = START;
+    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_errors ON SERVER;
     ```
 
     ## How to verify
@@ -200,7 +204,7 @@ brief:
 
     ## What to do in the codebase
 
-    The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the application's code; it changes nothing by itself. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `failing-query:246` the way *How to verify* says.
+    The fix's SQL starts an event session on the database: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `failing-query:246` the way *How to verify* says.
 
 === finding lock-escalations:shop.support_tickets
 high severity · high confidence · indexes
@@ -211,15 +215,18 @@ metrics:
   - Escalations since SQL Server started: 5
 fix: Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement.
   sql:
-      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement
-      CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-      ADD EVENT sqlserver.lock_escalation (
-          SET collect_statement = 1
-          ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-          WHERE sqlserver.database_name = N'culprit_demo')
-      ADD TARGET package0.ring_buffer
-      WITH (STARTUP_STATE = ON);
-      ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+      -- It catches them on every table, so another table's finding starts this same session: once is enough.
+      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+          CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+          ADD EVENT sqlserver.lock_escalation (
+              SET collect_statement = 1
+              ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+              WHERE sqlserver.database_name = N'culprit_demo')
+          ADD TARGET package0.ring_buffer
+          WITH (STARTUP_STATE = ON);
+      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+          ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
 
       -- Then read what it caught
       SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
@@ -232,6 +239,8 @@ fix: Start the event session below (culprit_lock_escalation) to learn which stat
                 JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
                WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
        CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
 verify:
   1. Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed.
 caveats:
@@ -265,15 +274,18 @@ brief:
     Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement.
 
     ```sql
-    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement
-    CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-    ADD EVENT sqlserver.lock_escalation (
-        SET collect_statement = 1
-        ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-        WHERE sqlserver.database_name = N'culprit_demo')
-    ADD TARGET package0.ring_buffer
-    WITH (STARTUP_STATE = ON);
-    ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+    -- It catches them on every table, so another table's finding starts this same session: once is enough.
+    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+        CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+        ADD EVENT sqlserver.lock_escalation (
+            SET collect_statement = 1
+            ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+            WHERE sqlserver.database_name = N'culprit_demo')
+        ADD TARGET package0.ring_buffer
+        WITH (STARTUP_STATE = ON);
+    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+        ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
 
     -- Then read what it caught
     SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
@@ -286,6 +298,8 @@ brief:
               JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
              WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
      CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
     ```
 
     ## How to verify
@@ -298,7 +312,7 @@ brief:
 
     ## What to do in the codebase
 
-    The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the application's code; it changes nothing by itself. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `lock-escalations:shop.support_tickets` the way *How to verify* says.
+    The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `lock-escalations:shop.support_tickets` the way *How to verify* says.
 
 === finding last-page-insert:archive.hot.pk_hot
 high severity · medium confidence · indexes
@@ -408,7 +422,7 @@ brief:
 === finding plan-insights:parallelism-blocked:query-263
 medium severity · medium confidence · queries
 title: This plan runs on one CPU because its statement says OPTION (MAXDOP 1)
-summary: Its estimated cost is 7152, above this server's cost threshold for parallelism (5), so SQL Server would consider a parallel plan for it; the whole run happens on a single core instead. Seen in a read from order_items.
+summary: Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
 impact: 27% of DB time · 26.7% of database time
 metrics:
   - Share of DB time: 27%
@@ -429,7 +443,7 @@ brief:
 
     ## What's happening
 
-    Its estimated cost is 7152, above this server's cost threshold for parallelism (5), so SQL Server would consider a parallel plan for it; the whole run happens on a single core instead. Seen in a read from order_items.
+    Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
 
     ## Evidence
 
@@ -463,8 +477,8 @@ brief:
 
 === finding chatty-query:6
 medium severity · medium confidence · queries
-title: A read from products runs 60K times in 5 hours, one row at a time
-summary: This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+title: A read from products runs 60K times in 5 hours, one key at a time
+summary: Its runs are 84% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 84% of executions · 0.2% of database time
 metrics:
   - Share of executions: 84%
@@ -477,13 +491,13 @@ caveats:
 queries:
   - 6: <1% of database time
 brief:
-    # A read from products runs 60K times in 5 hours, one row at a time
+    # A read from products runs 60K times in 5 hours, one key at a time
 
     Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `chatty-query:6`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    This statement is 84% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 84% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -622,7 +636,7 @@ brief:
     SELECT COUNT(*) FROM shop.orders o1 JOIN shop.customers c1 ON c1.id = o1.customer_id JOIN shop.order_items i1 ON i1.order_id = o1.id JOIN shop.products p1 ON p1.id = i1.product_id JOIN shop.orders o2 ON o2.customer_id = c1.id JOIN shop.order_items i2 ON i2.order_id = o2.id JOIN shop.products p2 ON p2.id = i2.product_id JOIN shop.customers c2 ON c2.id = o2.customer_id WHERE o1.id = @id AND p1.price > 0 AND p2.price > 0 AND c2.segment IS NOT NULL OPTION (RECOMPILE)
     ```
 
-    Plan: the step this finding is about is `Clustered Index Scan` on `shop.order_items` filtering `order_id as order_id = (1)`. `Stream Aggregate` (Aggregate) has no cost of its own in the plan, so no share is given.
+    Plan: the most expensive step (49% of estimated cost) is `Clustered Index Scan` on `shop.order_items` filtering `order_id as order_id = (1)`.
 
     ## Suggested fix
 
@@ -840,7 +854,7 @@ fix: Index the foreign key column on shop.ticket_events.
           WITH (ONLINE = ON);
   cost: shop.ticket_events had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
 verify:
-  1. Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+  1. Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table.
 brief:
     # ticket_events has no index on ticket_id, its foreign key to support_tickets
 
@@ -869,7 +883,7 @@ brief:
 
     ## How to verify
 
-    - Deletes from shop.support_tickets should no longer scan shop.ticket_events; re-scan to confirm the finding is gone.
+    - Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table.
 
     ## What to do in the codebase
 
@@ -898,7 +912,7 @@ verify:
 caveats:
   - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
 queries:
-  - 8: 1% of database time
+  - 8: 1% of database time · plan step 1
 brief:
     # orders is searched by shipped_at without a supporting index
 
@@ -959,12 +973,12 @@ impact: 1 deadlock
 metrics:
   - Deadlocks: 1
   - Pattern: key-lookup deadlock
-  - Rolled back: orders-api
+  - Rolled back: session 61 (orders-api)
 fix: Make the read skip the lookup: Add the columns the read needs to ix_customers_email (as INCLUDE columns) so it never touches the main index the write locks. The query's plan in Queries shows the Key Lookup and its output columns. Or let reads stop taking shared locks: With READ_COMMITTED_SNAPSHOT on, reads use row versions instead of shared locks, so a read can't be part of this cycle. It costs some tempdb space for the versions.
   sql:
       ALTER DATABASE [culprit_demo] SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
 verify:
-  1. Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.
+  1. Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.
   2. Live › Deadlocks shows the graph of each one, with both statements.
 brief:
     # Two queries deadlocked once in the last day (key-lookup deadlock on shop.customers)
@@ -979,7 +993,7 @@ brief:
 
     - Deadlocks: 1
     - Pattern: key-lookup deadlock
-    - Rolled back: orders-api
+    - Rolled back: session 61 (orders-api)
 
     ## Suggested fix
 
@@ -991,7 +1005,7 @@ brief:
 
     ## How to verify
 
-    - Re-scan tomorrow: no new key-lookup deadlock deadlocks on shop.customers.
+    - Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.
     - Live › Deadlocks shows the graph of each one, with both statements.
 
     ## What to do in the codebase
@@ -1006,7 +1020,7 @@ impact: 1 deadlock
 metrics:
   - Deadlocks: 1
   - Pattern: opposite access order
-  - Rolled back: SQLCMD
+  - Rolled back: session 75 (SQLCMD)
 fix: Touch tables and rows in the same order everywhere: Make every code path that changes shop.customers and shop.orders do it in one order (for example, always the parent row first, and rows sorted by key). Then the second transaction waits instead of deadlocking.
 verify:
   1. Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.
@@ -1024,7 +1038,7 @@ brief:
 
     - Deadlocks: 1
     - Pattern: opposite access order
-    - Rolled back: SQLCMD
+    - Rolled back: session 75 (SQLCMD)
 
     ## Suggested fix
 
@@ -1037,7 +1051,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes how the application reads or writes `shop.customers`, search the code for the statements that touch it. After any change is live, run `culprit scan mssql-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
+    Where the fix changes how the application reads or writes `shop.customers` and `shop.orders`, search the code for the statements that touch them. After any change is live, run `culprit scan mssql-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
 low severity · medium confidence · indexes
@@ -1248,7 +1262,7 @@ brief:
 
     ## Queries involved
 
-    Query `255` — <1% of DB time, 1 run over the last 5 hours, 528 ms average:
+    Query `255` — <1% of DB time, 1 run over the last 5 hours, which took 528 ms:
 
     ```sql
     UPDATE archive.wide SET pad = REPLICATE('y', 4000)
@@ -1310,7 +1324,7 @@ brief:
 
     ## What to do in the codebase
 
-    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan mssql-demo` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
 
 === finding config:query-store-capture
 low severity · medium confidence · configuration
@@ -1425,26 +1439,32 @@ note: Estimated plan: misestimates, spills, unused memory grants and uneven thre
 === plan 6
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 5
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 35
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 138
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan is estimated to be cheap, yet its runs take 28.7 s on average: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 143
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan is estimated to be cheap, yet its runs take 23.9 s on average: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 161
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: The plan is estimated to be cheap, yet its runs take 601 ms on average: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 249
 insight missing-index-hint · high severity · impact 49%
@@ -1457,11 +1477,11 @@ insight missing-index-hint · high severity · impact 49%
       -- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.
   verify: Explain again: the suggestion is gone and the read of order_items becomes a seek.
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
-shares: `Stream Aggregate` (Aggregate) has no cost of its own in the plan, so no share is given.
 
 === plan 255
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
+shares: Its costs rest on an estimate of 1 row a run, and its runs change far more (30K rows a run), so no share of them is put on one step.
 
 === plan 263
 insight nested-loops · medium severity · impact 100%
@@ -1471,7 +1491,7 @@ insight nested-loops · medium severity · impact 100%
   verify: Explain again without the hint: a hash or merge join instead of the loop.
 insight parallelism-blocked · medium severity · impact a fixed weight
   title: This plan runs on one CPU because its statement says OPTION (MAXDOP 1)
-  detail: Its estimated cost is 7152, above this server's cost threshold for parallelism (5), so SQL Server would consider a parallel plan for it; the whole run happens on a single core instead.
+  detail: Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead.
   fix: Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU.
   verify: Explain again: no NonParallelPlanReason, and Parallelism operators appear.
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.

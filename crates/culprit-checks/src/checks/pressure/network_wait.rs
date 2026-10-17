@@ -28,23 +28,31 @@ pub fn network_wait(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("network-wait", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             // Its weight is the time spent waiting on the application, not the query's whole time.
             let w = snapshot.workload.as_ref()?;
-            let impact = QueryImpact { share: w.share_of(network, q), per_day_ms: w.per_day_measured(network) };
+            // A day's worth only of runs that came that way, never a burst's spread over the window.
+            let per_day_ms = w.per_day_measured(network).filter(|_| w.runs_per_day_of(q).is_some());
+            let impact = QueryImpact { share: w.share_of(network, q), per_day_ms };
             apply_query_impact(&mut f, &impact);
+            // A statement that stopped running is told in the past.
+            let waits = if crate::all_stopped(snapshot, &[q]) { "waited" } else { "waits" };
             f.title = match rows {
                 Some(r) if r >= 1_000.0 => format!(
-                    "{} waits on the application {} of its time while sending {} rows per call",
+                    "{} {waits} on the application {} of its time while sending {} rows per call",
                     capitalize(&query_handle(q)),
                     format::percent(share),
                     format::count(r)
                 ),
-                _ => format!("{} waits on the application {} of its time", capitalize(&query_handle(q)), format::percent(share)),
+                _ => format!(
+                    "{} {waits} on the application {} of its time",
+                    capitalize(&query_handle(q)),
+                    format::percent(share)
+                ),
             };
             f.summary = format!(
                 "SQL Server had its results ready but the application took them slowly (ASYNC_NETWORK_IO), so each run holds its locks and memory longer. \
                  That is {} of this query's time. Usually the result set is bigger than needed, or the application does work for each row before reading the next.",
                 format::percent(share)
             );
-            f.severity = severity_for_workload_share(snapshot, impact.share);
+            f.severity = severity_for_share_of(snapshot, &[q], impact.share);
             f.confidence = Confidence::High;
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Waiting on the app", share, Unit::Ratio));

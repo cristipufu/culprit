@@ -16,10 +16,14 @@ use culprit_core::{Finding, Plan, Report, Result, format};
 use crate::{plans, reports};
 
 /// A saved report or snapshot, read the way the app opens one: its plans parsed again from their text
-/// ([`plans::reparse_saved`]), its checks run again, and each plan marked against the catalog and given its insights.
+/// ([`plans::reparse_saved`]), read against the scans saved beside it ([`reports::rebase_on_scans`]), its checks run
+/// again, and each plan marked against the catalog and given its insights.
 pub fn open(path: &Path) -> Result<Report> {
     let mut snapshot = reports::load_snapshot(path)?;
     plans::reparse_saved(&mut snapshot);
+    if let Some(dir) = path.parent() {
+        reports::rebase_on_scans(dir, &mut snapshot);
+    }
     Ok(for_reading(culprit_checks::analyze(snapshot)))
 }
 
@@ -55,7 +59,7 @@ pub fn text(report: &Report) -> String {
         for q in &w.queries {
             if let Some(plan) = &q.plan {
                 let _ = writeln!(out, "\n=== plan {}", q.id);
-                plan_section(&mut out, plan);
+                plan_section(&mut out, plan, Some(q));
             }
         }
     }
@@ -127,14 +131,19 @@ fn finding(out: &mut String, report: &Report, f: &Finding) {
     block(out, "", "brief", &culprit_checks::agent_brief(report, f));
 }
 
-fn plan_section(out: &mut String, plan: &Plan) {
+fn plan_section(out: &mut String, plan: &Plan, q: Option<&culprit_core::QueryStat>) {
     let insights = plan.insights.as_ref();
     let items = insights.map(|i| i.items.as_slice()).unwrap_or_default();
     if items.is_empty() {
         let _ = writeln!(out, "no insights");
     }
     for i in items {
-        let impact = if i.fixed_weight { "a fixed weight".to_string() } else { format::percent(i.impact) };
+        // The share of the work the plan viewer states, where it states one (`insights::stated_share`).
+        let impact = match culprit_core::insights::stated_share(plan, i) {
+            Some(share) => format::percent(share),
+            None if i.fixed_weight => "a fixed weight".to_string(),
+            None => "no share stated".to_string(),
+        };
         let _ = writeln!(
             out,
             "insight {} · {} severity · impact {impact}",
@@ -152,7 +161,7 @@ fn plan_section(out: &mut String, plan: &Plan) {
     if let Some(note) = insights.and_then(|i| i.note.as_deref()) {
         line(out, "", "note", note);
     }
-    if let Some(note) = crate::export::shares_note(plan) {
+    if let Some(note) = crate::export::shares_note(plan, q) {
         line(out, "", "shares", &note);
     }
 }

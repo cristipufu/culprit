@@ -110,7 +110,7 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
         match q.and_then(|q| query_impact(snapshot, &[q])) {
             Some(impact) => {
                 apply_query_impact(&mut f, &impact);
-                f.severity = severity_for_workload_share(snapshot, impact.share);
+                f.severity = severity_for_impact(snapshot, q.as_slice(), &impact);
             }
             // SQL Server recommends from about ten seconds of estimated CPU saved: with no time in the window behind
             // it (the query is outside the top statements, or newer), it is Low until the workload shows the time.
@@ -146,11 +146,16 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
                 ),
             );
         }
+        // Turning automatic plan correction on is advice only where it is off: on, it applies its own
+        // recommendations, and forcing by hand is what the note says it is.
+        let automatic = match crate::tuning::hand_forcing_note(snapshot) {
+            Some(note) => format!(" {note}"),
+            None => " To let SQL Server do this on its own, turn on automatic plan correction.".to_string(),
+        };
         f.fix = Some(Fix {
-            summary:
-                "Force the recommended plan (copy and run it yourself; Culprit never runs it). To let SQL Server do \
-                this on its own, turn on automatic plan correction."
-                    .into(),
+            summary: format!(
+                "Force the recommended plan (copy and run it yourself; Culprit never runs it).{automatic}"
+            ),
             sql: Some(r.script.clone().unwrap_or_else(|| {
                 format!("EXEC sp_query_store_force_plan @query_id = {query_id}, @plan_id = {plan_id};")
             })),
@@ -495,7 +500,7 @@ pub(super) fn forced_scan_finding(
     match query_impact(snapshot, &[q]) {
         Some(impact) => {
             apply_query_impact(&mut f, &impact);
-            f.severity = severity_for_workload_share(snapshot, impact.share);
+            f.severity = severity_for_impact(snapshot, &[q], &impact);
         }
         None => {
             f.severity = Severity::Medium;
@@ -565,11 +570,7 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
     };
     // Automatic plan correction keeps checking the plans it forced and unforces one that turns out slower, while it is
     // on; a plan forced by hand (or once it's off) stays forced until someone unforces it.
-    let correcting = snapshot.tuning.as_ref().is_some_and(|t| {
-        t.automatic_tuning
-            .iter()
-            .any(|o| o.name.eq_ignore_ascii_case("FORCE_LAST_GOOD_PLAN") && o.actual.eq_ignore_ascii_case("ON"))
-    });
+    let correcting = crate::tuning::automatic_plan_correction(snapshot) == Some(true);
     let checked = if correcting { automatic } else { 0 };
     let unchecked = match (n - checked, checked) {
         (0, _) => " It is still on, so it keeps checking the plans it forced and unforces one that turns out slower."
@@ -589,7 +590,8 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
     };
     f.summary = format!(
         "SQL Server runs {} with the plan forced for {} instead of choosing one, even after an index is added or the \
-         data grows. That holds a query that once regressed to its good plan.{automatic_sentence}{unchecked}",
+         data grows. A forced plan keeps a query on the plan it ran fast with, so a new plan can't slow it \
+         down.{automatic_sentence}{unchecked}",
         if n == 1 { "this query" } else { "these queries" },
         if n == 1 { "it" } else { "each" },
     );
@@ -649,6 +651,10 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
 
 /// Azure's score below which it expects an index to save little next to what it costs every write.
 const LOW_SCORE: f64 = 10.0;
+
+/// An average run under this is fast: no slow read for an index to speed up (the bar from which a plan does real work,
+/// `culprit_core::insights`' ten milliseconds).
+const SLOW_RUN_MS: f64 = 10.0;
 
 /// Statements listed under a recommendation, the heaviest first; the rest are counted.
 const LISTED: usize = 5;
@@ -805,18 +811,75 @@ pub(super) fn create_index_advice(
         })),
         cost: None,
     };
+    // The condition a low score leaves ("if the queries are slow all the same") is one the scan can answer: where every
+    // statement behind the recommendation runs fast on average, nothing is slow for the index to speed up.
+    let fast = (conditional && same_keys.is_none() && picked.is_none() && !filtering.is_empty())
+        .then(|| {
+            filtering.iter().map(|q| q.mean_time_ms).fold((f64::MAX, 0.0f64), |(lo, hi), t| (lo.min(t), hi.max(t)))
+        })
+        .filter(|(_, slowest)| *slowest < SLOW_RUN_MS);
     let fix = match (same_keys, picked.as_ref().filter(|_| low.is_some())) {
+        (None, None) if let Some((fastest, slowest)) = fast => {
+            let average = if format::duration(fastest) == format::duration(slowest) {
+                format::duration(slowest)
+            } else {
+                format!("{}–{}", format::duration(fastest), format::duration(slowest))
+            };
+            let statements = match filtering.len() {
+                1 => format!(
+                    "the statement this scan captured that compares {keys} with a value averages {average} a run"
+                ),
+                n => format!(
+                    "the {n} statements this scan captured that compare {keys} with a value average {average} a run"
+                ),
+            };
+            // A key of two values (a bit, a boolean) splits the table in two at most: it narrows little.
+            let bits = ix.columns.iter().all(|c| {
+                snapshot.columns.iter().any(|col| {
+                    col.schema.eq_ignore_ascii_case(&ix.schema)
+                        && col.table.eq_ignore_ascii_case(&ix.table)
+                        && col.name.eq_ignore_ascii_case(c)
+                        && matches!(col.data_type.to_ascii_lowercase().as_str(), "bit" | "boolean" | "bool")
+                })
+            });
+            let narrows = if bits {
+                format!(
+                    ", and {}, {}: {} at most two values, so an index on {} narrows the rows little",
+                    if ix.columns.len() == 1 { "its key" } else { "its keys" },
+                    if ix.columns.len() == 1 {
+                        format!("{columns}, is a bit column")
+                    } else {
+                        format!("{columns}, are bit columns")
+                    },
+                    if ix.columns.len() == 1 { "it holds" } else { "each holds" },
+                    if ix.columns.len() == 1 { "it" } else { "them" }
+                )
+            } else {
+                String::new()
+            };
+            let copies = if ix.include.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; every write that changes one of the {} columns it includes would update it too",
+                    ix.include.len()
+                )
+            };
+            Fix {
+                summary: format!(
+                    "{rated}Nothing to create: {statements}, so there is no slow read for it to speed up{narrows}{copies}. Let the recommendation expire."
+                ),
+                sql: None,
+                cost: None,
+            }
+        }
         (Some(existing), _) => {
             // What the index really leads with: its own key order, which needn't be the recommendation's.
             let leads = format::list(
                 &existing.key_names()[..ix.columns.len()].iter().map(|k| k.to_string()).collect::<Vec<_>>(),
             );
+            // The fix says what the existing index has and what the recommendation would add: no caveat repeats it.
             if lacking.is_empty() {
-                f.caveats.push(format!(
-                    "{} already leads with {leads}; the recommended index differs from it only by including {}.",
-                    existing.name,
-                    format::list(&large)
-                ));
                 Fix {
                     summary: format!(
                         "{rated}Nothing to create: {} already finds these rows by {leads}, and the recommended index \
@@ -909,7 +972,7 @@ pub(super) fn create_index_advice(
     if let Some(note) = large_note.filter(|_| fix.sql.is_some()) {
         f.caveats.push(note);
     }
-    let nothing_to_create = fix.sql.is_none() && same_keys.is_some() && lacking.is_empty();
+    let nothing_to_create = fix.sql.is_none() && ((same_keys.is_some() && lacking.is_empty()) || fast.is_some());
     let picked_nothing = fix.sql.is_none() && same_keys.is_none();
     f.fix = Some(fix);
     let fewer_reads = match &heavy {
@@ -966,7 +1029,8 @@ struct HeavyReader<'a> {
 fn heavy_reader<'a>(snapshot: &Snapshot, statements: &[&'a QueryStat]) -> Option<HeavyReader<'a>> {
     let workload = snapshot.workload.as_ref()?;
     statements.iter().find_map(|&q| {
-        let share = workload.share_of(q.total_time_ms, q);
+        // A heavy query's share as every surface states it (`Workload::statement_share`).
+        let share = workload.statement_share(q);
         let (pages, rows) = (q.reads_per_execution()?, q.rows_per_execution()?);
         (!q.writes_rows() && share >= HEAVY_SHARE && pages >= NOTHING_READS && rows < 1.0).then_some(HeavyReader {
             query: q,

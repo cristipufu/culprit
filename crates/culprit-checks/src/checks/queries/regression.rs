@@ -106,7 +106,13 @@ pub fn regression(snapshot: &Snapshot) -> Vec<Finding> {
     }
     let mut findings: Vec<Finding> = app_queries(snapshot)
         .filter_map(|q| {
-            let s = shift(q.trend.as_ref()?, timeline.len())?;
+            // Only the buckets that account for the statement (`Timeline::statement_bucket`): never one the source
+            // can't account for in full, nor one where it ran more than the whole database did.
+            let trend = q.trend.as_ref()?;
+            let (time_ms, executions) = (0..timeline.len())
+                .map(|i| timeline.statement_bucket(trend, i).map_or((None, None), |(t, r)| (Some(t), Some(r))))
+                .unzip();
+            let s = shift(&QueryTrend { time_ms, executions }, timeline.len())?;
             regression_finding(snapshot, timeline, q, &s)
         })
         .collect();
@@ -143,7 +149,8 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
     f.impact.time_ms_per_day = (after_hours >= culprit_core::PER_DAY_MIN_HOURS).then_some(extra_per_day);
     f.impact.score = score_for_share(share_after.max(extra_share));
     f.impact.label = format!("{} slower", times(factor));
-    let amount = severity_for_recent_time(after_hours, s.after_time_ms, 1.0);
+    // Runs that came in bursts are graded on their total, never extrapolated to a day.
+    let amount = severity_for_recent_time(burst_hours(snapshot, q, after_hours), s.after_time_ms, 1.0);
     f.severity = severity_for_share(share_after).min(amount);
     if factor >= 3.0 && extra_share >= 0.05 {
         f.severity = f.severity.max(Severity::Medium.min(amount));
@@ -213,8 +220,9 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
     f.fix = Some(match (&plan, snapshot.server.engine) {
         (Some(change), Engine::Mssql) if numeric(&q.id) && numeric(&change.old.id) => Fix {
             summary: format!(
-                "Force plan {} to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed.",
-                change.old.id
+                "Force plan {} to stop the bleeding, then find out why the optimizer switched (statistics, parameter values, schema). Unforce once the cause is fixed.{}",
+                change.old.id,
+                crate::tuning::hand_forcing_note(snapshot).map(|n| format!(" {n}")).unwrap_or_default()
             ),
             sql: Some(format!("EXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};", q.id, change.old.id)),
             cost: None,

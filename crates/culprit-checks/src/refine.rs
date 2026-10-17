@@ -17,6 +17,7 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
     vec![
         // One cause, one finding.
         rule("a missing-index request absorbs the scan behind it", missing_index_absorbs_scan),
+        rule("a plan's index request is the finding for its table and key", plan_request_is_the_index_finding),
         rule("a rewrite, not an index, fixes a scan behind a function or wildcard", rewrite_replaces_index),
         rule("a spill explains the big sort", spill_explains_sort),
         rule("a spill carries the result it sorts", spill_carries_its_result),
@@ -29,6 +30,7 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("dead rows are the table's empty space", dead_rows_explain_bloat),
         rule("updates that aren't HOT explain their WAL", cold_updates_explain_log),
         rule("large values explain the log their writes make", large_values_explain_log),
+        rule("one lock episode on a table", one_lock_episode),
         rule("one blocking chain on a table", one_blocking_chain),
         rule("the plan cache finding carries the compile load", plan_cache_carries_compiles),
         rule("dead rows absorb the table's stale statistics", dead_rows_absorb_stale_stats),
@@ -37,9 +39,12 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("a heavy query another finding explains", explained_heavy_query),
         // Statements whose cost is behind them.
         rule("statements that stopped running", stopped_running),
+        rule("nothing is created for statements that stopped", stopped_statements_get_nothing_created),
         rule("statements that ran once", ran_once_only),
+        rule("a finding whose statements stopped has nothing to check", nothing_to_check_once_stopped),
         // Wording.
         rule("names without the database", names_without_database),
+        rule("a caveat repeats nothing the summary or the fix says", caveats_repeat_nothing),
     ]
 }
 
@@ -47,6 +52,58 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
 /// carries the optimizer's own estimate, and give it the plan evidence.
 fn missing_index_absorbs_scan(_: &Snapshot, findings: &mut Vec<Finding>) {
     merge_scans_into_missing_indexes(findings);
+}
+
+/// SQL Server's plan asks for an index itself (`plan-insights:missing-index-hint:<table>`). Where a `missing-index`
+/// finding (the server's list of requests) or a `filtered-scan` finding (the scan behind it) is about the same table and
+/// leads with the same key, that finding is the one to act on, and it takes the statements; where none is (a restart
+/// emptied the server's list, or its request fell under the bar), the plan's request stays a finding of its own, so a
+/// request the plan makes is never hidden.
+fn plan_request_is_the_index_finding(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = snapshot.workload.as_ref() else { return };
+    let normal = |name: &str| name.replace(['[', ']', '"', '`'], "").to_ascii_lowercase();
+    let same_table = |a: &str, b: &str| {
+        let (a, b) = (normal(a), normal(b));
+        a == b || ((!a.contains('.') || !b.contains('.')) && table_leaf(&a) == table_leaf(&b))
+    };
+    let mut covered: Vec<(usize, usize)> = Vec::new();
+    for (i, f) in findings.iter().enumerate().filter(|(_, f)| f.id.starts_with("plan-insights:missing-index-hint:")) {
+        // The key each statement's plan asks for on this table: its first equality column, else its first range one.
+        let leads: Vec<Option<String>> = f
+            .queries
+            .iter()
+            .map(|r| {
+                let plan = workload.query(&r.id)?.plan.as_ref()?;
+                let hint = plan.index_hints.iter().find(|h| same_table(&h.table, &f.subject.name))?;
+                hint.equality.iter().chain(&hint.inequality).next().map(|k| normal(k))
+            })
+            .collect();
+        let target = findings.iter().position(|m| {
+            matches!(m.check.as_str(), "missing-index" | "filtered-scan")
+                && same_table(&m.subject.name, &f.subject.name)
+                && !leads.is_empty()
+                && leads.iter().all(|lead| lead.is_some() && keys_of(&m.id).first() == lead.as_ref())
+        });
+        if let Some(t) = target {
+            covered.push((i, t));
+        }
+    }
+    for &(from, into) in &covered {
+        let refs = findings[from].queries.clone();
+        let target = &mut findings[into];
+        for r in refs {
+            if !target.queries.iter().any(|q| q.id == r.id) {
+                target.queries.push(r);
+            }
+        }
+    }
+    let drop: BTreeSet<usize> = covered.iter().map(|(from, _)| *from).collect();
+    let mut index = 0;
+    findings.retain(|_| {
+        let keep = !drop.contains(&index);
+        index += 1;
+        keep
+    });
 }
 
 /// A function or leading wildcard around the filtered column is why the scan happens; an index on the column
@@ -211,8 +268,9 @@ fn explained_heavy_query(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     /// The share of a heavy query's time another finding must weigh to explain it.
     const ACCOUNTS_FOR: f64 = 0.5;
     let workload = snapshot.workload.as_ref();
-    // A statement's own share of database time, weighed the way every check weighs it.
-    let own_share = |id: &str| workload.and_then(|w| w.query(id).map(|q| w.share_of(q.total_time_ms, q)));
+    // A statement's own share of database time, weighed the way every check weighs it (over Culprit's scans where
+    // they measured it).
+    let own_share = |id: &str| workload.and_then(|w| w.query(id).map(|q| w.statement_share(q)));
     // Per statement: the grade of each finding that names a cause for it, and the share it accounts for there.
     let mut causes: BTreeMap<String, Vec<(Severity, f64)>> = BTreeMap::new();
     for f in findings.iter().filter(|f| {
@@ -284,6 +342,66 @@ pub(crate) fn without_database(text: &str, database: &str) -> String {
     }
     let prefix = format!("[{}].[", database.replace(']', "]]"));
     text.replace(&prefix, "[")
+}
+
+/// A caveat adds to what a finding says. A sentence of it that the summary or the fix already says (the same words,
+/// whatever the case and the final stop) is dropped from it, and a caveat left with nothing is dropped. A caveat that
+/// quotes a statement (it has a line break) is kept as it is.
+#[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
+fn caveats_repeat_nothing(_: &Snapshot, findings: &mut Vec<Finding>) {
+    for f in findings.iter_mut() {
+        let said: BTreeSet<String> = sentences(&f.summary)
+            .into_iter()
+            .chain(f.fix.iter().flat_map(|fix| sentences(&fix.summary)))
+            .map(sentence_key)
+            .collect();
+        f.caveats = std::mem::take(&mut f.caveats)
+            .into_iter()
+            .filter_map(|caveat| {
+                if caveat.contains('\n') {
+                    return Some(caveat);
+                }
+                let all = sentences(&caveat);
+                let kept: Vec<&str> = all.iter().copied().filter(|s| !said.contains(&sentence_key(s))).collect();
+                match kept.len() {
+                    0 => None,
+                    n if n == all.len() => Some(caveat),
+                    _ => Some(kept.join(" ")),
+                }
+            })
+            .collect();
+    }
+}
+
+/// The sentences of a text: split after a full stop, a question or an exclamation mark that a space and a capital
+/// letter, a digit or a quote follow ("e.g. the" and "1.5 s" stay whole).
+pub(crate) fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for w in chars.windows(3) {
+        let [(at, end), (_, space), (_, next)] = [w[0], w[1], w[2]];
+        if matches!(end, '.' | '?' | '!')
+            && space == ' '
+            && (next.is_uppercase() || next.is_ascii_digit() || matches!(next, '`' | '"' | '“'))
+        {
+            let sentence = text[start..at + 1].trim();
+            if !sentence.is_empty() {
+                out.push(sentence);
+            }
+            start = at + 1;
+        }
+    }
+    let last = text[start..].trim();
+    if !last.is_empty() {
+        out.push(last);
+    }
+    out
+}
+
+/// A sentence as [`caveats_repeat_nothing`] compares it: lower case, spaces collapsed, no final stop.
+fn sentence_key(sentence: &str) -> String {
+    sentence.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(['.', '!', '?', ':', ';']).to_lowercase()
 }
 
 fn without_database_prose(f: &mut Finding, database: &str) {
@@ -425,9 +543,33 @@ fn keys_of(id: &str) -> Vec<String> {
 
 /// A query that stopped running long before the window ended was most likely changed or fixed by a deploy. Its history still
 /// dominates a multi-day window, so without this the top of the list would be yesterday's problem. "Long" is relative to how
-/// often the query ran: silence of 20 typical intervals (at least an hour), so a daily job is not mistaken for a fixed one.
-/// Returns how long it has been quiet (seconds) and when it last ran.
+/// often the query ran ([`query_quiet`]: silence of 20 typical intervals, so a daily job is not mistaken for a fixed one),
+/// and "stopped" is said only once that silence covers [`STOPPED_MIN_HOURS`]: a request every two hours, or a batch that
+/// ran an hour ago, comes back. Returns how long it has been quiet (seconds) and when it last ran.
 pub(crate) fn query_stopped(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
+    query_quiet(snapshot, q).filter(|(silence, _)| silent_long_enough(*silence))
+}
+
+/// Whether a finding on `queries` is told in the past: every one stopped running ([`query_stopped`]), the test
+/// [`stopped_running`] marks the finding inactive by. Checks pick their title's verb by it ("spent", "was read").
+pub(crate) fn all_stopped(snapshot: &Snapshot, queries: &[&QueryStat]) -> bool {
+    !queries.is_empty() && queries.iter().all(|q| query_stopped(snapshot, q).is_some())
+}
+
+/// Hours of silence before "stopped" is said, of a statement or of the requests a statement made (a missing index):
+/// the same 20 hours a sentence needs to say "a day" ([`culprit_core::PER_DAY_MIN_HOURS`]). Under that, a finding says
+/// how long it has been quiet and stays active.
+pub(crate) const STOPPED_MIN_HOURS: f64 = culprit_core::PER_DAY_MIN_HOURS;
+
+/// Whether a silence of `seconds` before the scan's data ends is long enough to say "stopped" ([`STOPPED_MIN_HOURS`]).
+pub(crate) fn silent_long_enough(seconds: f64) -> bool {
+    seconds >= STOPPED_MIN_HOURS * 3600.0
+}
+
+/// Silence of 20 typical intervals (at least an hour) before the window ends, out of the query's own rhythm (a burst
+/// that began inside the window, a gap it already came back from); how long ([`query_stopped`]) decides what it means.
+/// Under [`STOPPED_MIN_HOURS`], a finding stays active and says how long it has been quiet ([`stopped_running`]).
+fn query_quiet(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
     const QUIET_INTERVALS: f64 = 20.0;
     const MIN_QUIET_SECONDS: f64 = 3600.0;
     // A day and a bit: long enough that a nightly job would have come back.
@@ -575,11 +717,17 @@ fn ran_once_only(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     }
 }
 
-/// Findings about queries that all stopped running (see `query_stopped`) are kept, ranked low and labelled: a deploy
-/// most likely changed or fixed them. A finding about one statement names what may have replaced it
+/// Findings about queries that all stopped running (see `query_stopped`) are kept, Low, ranked low and labelled, as a
+/// single run is (`ran_once_only`): a deploy most likely changed or fixed them. Every finding marked history (inactive)
+/// is Low, whichever check marked it. A finding about one statement names what may have replaced it
 /// ([`query_successor`]): the version of the code to check is that one.
 #[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
 fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    // A check that marked its own finding history (an index request no statement made since, advice for a statement
+    // that stopped) grades it as this rule does.
+    for f in findings.iter_mut().filter(|f| f.inactive) {
+        f.severity = Severity::Low;
+    }
     let Some(workload) = &snapshot.workload else { return };
     for f in findings.iter_mut().filter(|f| about_queries(f)) {
         let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
@@ -588,14 +736,23 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
                 .partial_cmp(&support::parse_epoch_seconds(b))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let one = queries.len() == 1;
         let silences: Vec<(f64, String)> = queries.iter().filter_map(|q| query_stopped(snapshot, q)).collect();
-        if queries.is_empty() || silences.len() < queries.len() {
+        if queries.is_empty() {
+            continue;
+        }
+        if silences.len() < queries.len() {
+            // Quiet for less than a day: what the data shows, and the finding stays active.
+            if let Some(caveat) = quiet_lately_caveat(snapshot, workload, &queries) {
+                f.caveats.insert(0, caveat);
+            }
             continue;
         }
         let (silence, last) = silences.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).expect("non-empty");
         f.inactive = true;
+        // History, graded as a single run is: what it cost is behind it.
+        f.severity = Severity::Low;
         f.impact.score *= 0.25;
-        let one = queries.len() == 1;
         let successor = queries
             .first()
             .filter(|_| one)
@@ -619,8 +776,8 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             )
         } else {
             format!(
-                "{} not run since {} ({} before this scan's data ends). A deploy may have changed or fixed {}; check that the current version of this code doesn't have the same problem.",
-                if one { "This query has" } else { "None of these queries has" },
+                "{} run since {} ({} before this scan's data ends). A deploy may have changed or fixed {}; check that the current version of this code doesn't have the same problem.",
+                if one { "This query has not" } else { "None of these queries has" },
                 last.get(..16).unwrap_or(&last).replace('T', " "),
                 format::duration(silence * 1000.0),
                 if one { "it" } else { "them" }
@@ -628,6 +785,108 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         };
         f.caveats.insert(0, caveat + &successor);
     }
+}
+
+/// The verify step of every finding whose statements stopped running (`stopped_running`, or a check that saw them stop:
+/// a recommendation for a query Query Store last ran days ago), for every check, in place of its own, which is for
+/// statements that run and promises a change no later scan shows: nothing to check unless they run again. One that
+/// already says there is nothing to check (a table that is gone, index requests that stopped) keeps its own.
+#[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
+fn nothing_to_check_once_stopped(_: &Snapshot, findings: &mut Vec<Finding>) {
+    for f in findings.iter_mut().filter(|f| f.inactive) {
+        if f.verify.first().is_some_and(|v| v.starts_with("Nothing to check")) {
+            continue;
+        }
+        f.verify = vec![if f.queries.len() <= 1 {
+            "Nothing to check unless it runs again: a later scan that sees it run lists this finding as current again."
+        } else {
+            "Nothing to check unless they run again: a later scan that sees one of them run lists this finding as current again."
+        }
+        .to_string()];
+    }
+}
+
+/// A finding on statements that stopped running (see [`stopped_running`]) offers nothing to create for them: an index
+/// or statistics made for code that no longer runs serve nothing and cost every write. Its fix says so and names what
+/// may have replaced the statement. SQL that creates nothing (a setting that has the next runs logged, an event session
+/// that catches what runs in its place, unforcing a plan) stays. One rule for every check; missing-index says it in its
+/// own words already.
+#[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
+fn stopped_statements_get_nothing_created(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    for f in findings.iter_mut().filter(|f| f.inactive) {
+        if !f.fix.as_ref().and_then(|fix| fix.sql.as_deref()).is_some_and(creates_something) {
+            continue;
+        }
+        let queries: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
+        let one = queries.len() <= 1;
+        let successor = queries
+            .first()
+            .filter(|_| queries.len() == 1)
+            .and_then(|q| query_successor(snapshot, q))
+            .map(|next| {
+                format!(" If query {}, {} too, took its place, look at that one.", next.id, support::query_handle(next))
+            })
+            .unwrap_or_default();
+        f.fix = Some(culprit_core::Fix {
+            summary: format!(
+                "Nothing to create: {} stopped running, so an index or statistics made for {} now would serve code \
+                 that no longer runs. If {} again, a scan shows this finding again with the SQL for {}.{successor}",
+                if one { "the statement behind this finding" } else { "the statements behind this finding" },
+                if one { "it" } else { "them" },
+                if one { "it runs" } else { "they run" },
+                if one { "it" } else { "them" },
+            ),
+            sql: None,
+            cost: None,
+        });
+    }
+}
+
+/// Whether fix SQL creates something in the database: an index or statistics (`CREATE …`, `ALTER TABLE … ADD`, an
+/// index rebuilt with more columns). An event session (`CREATE EVENT SESSION`) only watches, and a setting or a plan
+/// forced creates no object. Comments don't count.
+pub(crate) fn creates_something(sql: &str) -> bool {
+    let text: Vec<&str> = sql.lines().map(|line| line.split("--").next().unwrap_or("")).collect();
+    let words: Vec<String> = text.join(" ").split_whitespace().map(|w| w.to_ascii_lowercase()).collect();
+    words.windows(2).any(|w| match (w[0].as_str(), w[1].as_str()) {
+        ("create", next) => next != "event",
+        ("alter", "table") | ("alter", "index") => {
+            words.iter().any(|w| w == "add" || w == "rebuild" || w.starts_with("include"))
+        }
+        _ => false,
+    })
+}
+
+/// For a finding whose statements are all quiet out of their rhythm, at least one for less than [`STOPPED_MIN_HOURS`]:
+/// how long the data has been without them, and that it is too soon to say they stopped. None when one still runs.
+fn quiet_lately_caveat(
+    snapshot: &Snapshot,
+    workload: &culprit_core::Workload,
+    queries: &[&QueryStat],
+) -> Option<String> {
+    let quiet: Vec<(f64, String)> = queries.iter().filter_map(|q| query_quiet(snapshot, q)).collect();
+    if quiet.len() < queries.len() {
+        return None;
+    }
+    let (silence, last) = quiet.into_iter().min_by(|a, b| a.0.total_cmp(&b.0))?;
+    let one = queries.len() == 1;
+    let span = format::duration(silence * 1000.0);
+    Some(if last_ran_by_first_scan(workload, &last) {
+        format!(
+            "{} run in the {span} since Culprit's first scan ({}): too short a time to say {} stopped.",
+            if one { "This query hasn't" } else { "None of these queries has" },
+            crate::queries::short_when(&last),
+            if one { "it" } else { "they" },
+        )
+    } else {
+        format!(
+            "{} run in the last {span} of this scan's data (since {}): too short a time to say {} stopped.",
+            if one { "This query hasn't" } else { "None of these queries has" },
+            crate::queries::short_when(&last),
+            if one { "it" } else { "they" },
+        )
+    })
 }
 
 /// Whether a statement's last run is only the oldest of Culprit's scans that tracked it. A source that keeps no last
@@ -724,9 +983,9 @@ fn one_plan_story(_: &Snapshot, findings: &mut Vec<Finding>) {
 
 /// A statement whose plan changed for the worse, and whose current plan reads a table for want of an index: the
 /// regression (plan-regression, or a regression a new plan started with) and the scan's finding (filtered-scan, or
-/// the missing-index request that absorbed it) are one cause, with two fixes (force the old plan, add the index). The
-/// scan's finding stays, with the index; the regression's timeline joins it as its first sentence, with what each plan
-/// read where Query Store counted it.
+/// the missing-index request that absorbed it) are one cause, with two fixes (force the old plan, add the index), where
+/// what each plan read says the scan came with the change. The scan's finding stays, with the index; the regression's
+/// timeline joins it as its first sentence, with what each plan read.
 fn scan_carries_its_regression(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     let Some(workload) = &snapshot.workload else { return };
     let mut i = 0;
@@ -743,7 +1002,11 @@ fn scan_carries_its_regression(snapshot: &Snapshot, findings: &mut Vec<Finding>)
             matches!(s.check.as_str(), "filtered-scan" | "missing-index")
                 && s.queries.iter().any(|r| r.id == q.id && r.plan_node.is_some())
         });
-        let Some(target) = target else {
+        // One cause only where the reads say the scan came with the plan change (the plan before read far less): a
+        // statement whose plans both read its table whole (no index was ever there) got slower for another reason,
+        // which its regression's own finding tells.
+        let came = plans_read(q, query_is_history(snapshot, q));
+        let Some(target) = target.filter(|_| !came.is_empty()) else {
             i += 1;
             continue;
         };
@@ -760,7 +1023,7 @@ fn scan_carries_its_regression(snapshot: &Snapshot, findings: &mut Vec<Finding>)
             Some(rest) => format!("Query Store's timeline: until {rest}."),
             None => format!("{first}."),
         };
-        s.summary = format!("{} {sentence}{}", s.summary.trim_end(), plans_read(q));
+        s.summary = format!("{} {sentence}{came}", s.summary.trim_end());
         for m in source.metrics {
             if !s.metrics.iter().any(|x| x.label == m.label) {
                 s.metrics.push(m);
@@ -771,8 +1034,9 @@ fn scan_carries_its_regression(snapshot: &Snapshot, findings: &mut Vec<Finding>)
 }
 
 /// What the plan a statement ran fast with read a run, against the plan it runs now, where the source counted reads
-/// per plan: " The scan came with the plan change: plan 276 read about 3 pages a run, plan 282 reads about 5.7K."
-fn plans_read(q: &QueryStat) -> String {
+/// per plan: " The scan came with the plan change: plan 276 read about 3 pages a run, plan 282 reads about 5.7K." For a
+/// statement that no longer runs (`history`), its last plan "read" too.
+fn plans_read(q: &QueryStat, history: bool) -> String {
     let per_run =
         |p: &culprit_core::PlanVariant| p.logical_reads.filter(|_| p.executions > 0.0).map(|r| r / p.executions);
     let now = q
@@ -784,10 +1048,11 @@ fn plans_read(q: &QueryStat) -> String {
     let fast = q.plans.iter().filter(|p| p.id != now.id).min_by(|a, b| a.mean_time_ms.total_cmp(&b.mean_time_ms));
     match (fast.and_then(|p| Some((p, per_run(p)?))), per_run(now)) {
         (Some((fast, before)), Some(after)) if after > before * 2.0 => format!(
-            " The scan came with the plan change: plan {} read about {} pages a run, plan {} reads about {}.",
+            " The scan came with the plan change: plan {} read about {} pages a run, plan {} {} about {}.",
             fast.id,
             format::count(before),
             now.id,
+            if history { "read" } else { "reads" },
             format::count(after)
         ),
         _ => String::new(),
@@ -849,6 +1114,19 @@ fn absorb(snapshot: &Snapshot, findings: &mut Vec<Finding>, into: usize, from: u
             .workload
             .as_ref()
             .is_some_and(|w| gone.queries.iter().filter_map(|r| w.query(&r.id)).any(|q| query_is_history(snapshot, q)));
+    // A finding's share counts every statement it lists: where each finding's share is its own statements' (or it has
+    // none), the one left is the share of all the statements it lists, not the larger of the two.
+    let of_listed = |f: &Finding| f.impact.db_time_share.is_none() || share_of_listed(snapshot, f).is_some();
+    let some_share = findings[into].impact.db_time_share.is_some() || gone.impact.db_time_share.is_some();
+    let listed_share = (some_share && of_listed(&findings[into]) && of_listed(&gone))
+        .then(|| {
+            let workload = snapshot.workload.as_ref()?;
+            let ids: BTreeSet<&str> =
+                findings[into].queries.iter().chain(&gone.queries).map(|r| r.id.as_str()).collect();
+            let all: Vec<&QueryStat> = ids.iter().filter_map(|id| workload.query(id)).collect();
+            support::query_impact(snapshot, &all).map(|i| i.share)
+        })
+        .flatten();
     let target = &mut findings[into];
     for q in &gone.queries {
         match target.queries.iter_mut().find(|r| r.id == q.id) {
@@ -865,16 +1143,36 @@ fn absorb(snapshot: &Snapshot, findings: &mut Vec<Finding>, into: usize, from: u
         }
     }
     target.impact.score = target.impact.score.max(gone.impact.score);
+    let before = target.impact.db_time_share;
     target.impact.db_time_share = match (target.impact.db_time_share, gone.impact.db_time_share) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (a, b) => a.or(b),
+        (Some(a), Some(b)) => Some(listed_share.unwrap_or(a.max(b))),
+        (None, None) => None,
+        (a, b) => listed_share.or(a).or(b),
     };
+    if let Some(share) = listed_share {
+        target.impact.score = target.impact.score.max(support::score_for_share(share));
+        // A label that said the old share says the new one.
+        if before.is_some_and(|b| target.impact.label == support::share_label(b)) {
+            target.impact.label = support::share_label(share);
+        }
+    }
     target.impact.time_ms_per_day = target.impact.time_ms_per_day.or(gone.impact.time_ms_per_day);
     target.last_seen = target.last_seen.clone().max(gone.last_seen.clone());
     if !history {
         target.severity = target.severity.max(gone.severity);
     }
     findings.remove(from);
+}
+
+/// A finding's share of database time when it is the share of the statements it lists, as the check gave it (its
+/// statements' own `query_impact`): `None` for a share of something else (a scan's part of a plan, a capped or
+/// recomputed figure) or a finding without one.
+fn share_of_listed(snapshot: &Snapshot, f: &Finding) -> Option<f64> {
+    let workload = snapshot.workload.as_ref()?;
+    let share = f.impact.db_time_share?;
+    let listed: Vec<&QueryStat> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
+    let theirs = support::query_impact(snapshot, &listed)?.share;
+    ((theirs - share).abs() <= 0.0005).then_some(share)
 }
 
 /// The position of the first finding of `check` about `table` (`schema.table`, lowercased).
@@ -1182,6 +1480,100 @@ fn one_blocking_chain(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
     }
 }
 
+/// Statements that waited on locks on the same table in the same hours (their runs' first to last overlap) waited in one
+/// episode of blocking, behind the same holder or each other, and the fix is the same: one finding, the one that waited
+/// longest, lists them all and says what each waited.
+fn one_lock_episode(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = snapshot.workload.as_ref() else { return };
+    let statement = |f: &Finding| workload.query(&f.queries.first()?.id);
+    let span = |q: &QueryStat| {
+        Some((
+            support::parse_epoch_seconds(q.first_seen.as_deref()?)?,
+            support::parse_epoch_seconds(q.last_seen.as_deref()?)?,
+        ))
+    };
+    // The table both statements touch, as the catalog names it.
+    let shared_table = |a: &QueryStat, b: &QueryStat| {
+        snapshot.tables.iter().find_map(|t| {
+            let touching = support::queries_touching(snapshot, &t.schema, &t.name);
+            (touching.iter().any(|q| q.id == a.id) && touching.iter().any(|q| q.id == b.id))
+                .then(|| format!("{}.{}", t.schema, t.name))
+        })
+    };
+    let mut i = 0;
+    while i < findings.len() {
+        if findings[i].check != "lock-time" {
+            i += 1;
+            continue;
+        }
+        let Some((a, (first, last))) = statement(&findings[i]).and_then(|q| Some((q, span(q)?))) else {
+            i += 1;
+            continue;
+        };
+        let episode = findings.iter().enumerate().find_map(|(j, g)| {
+            if j == i || g.check != "lock-time" {
+                return None;
+            }
+            let b = statement(g)?;
+            let (b_first, b_last) = span(b)?;
+            (b_first <= last && first <= b_last).then_some(())?;
+            Some((j, b, shared_table(a, b)?))
+        });
+        let Some((j, b, table)) = episode else {
+            i += 1;
+            continue;
+        };
+        // The one that waited longest keeps the finding.
+        let (into, from, gone) =
+            if metric(&findings[i], "Lock wait") >= metric(&findings[j], "Lock wait") { (i, j, b) } else { (j, i, a) };
+        let lock = metric(&findings[from], "Lock wait").unwrap_or(0.0);
+        let share = metric(&findings[from], "Share of its time").map(|s| {
+            if s >= 0.97 { "nearly all of its time".to_string() } else { format!("{} of its time", format::percent(s)) }
+        });
+        let waited =
+            format!("{} {}", format::duration(lock), share.as_ref().map(|s| format!("({s})")).unwrap_or_default());
+        // When it waited, where its runs' span lies inside the data's window; a span that reaches back before it (a
+        // digest first seen before its counters began) is said as the window's.
+        let window_start = workload
+            .window_end
+            .as_deref()
+            .and_then(support::parse_epoch_seconds)
+            .map(|end| end - workload.window_hours * 3600.0);
+        let when = match (gone.first_seen.as_deref(), gone.last_seen.as_deref(), span(gone), window_start) {
+            (Some(first), Some(last), Some((from, _)), Some(start)) if from >= start => {
+                culprit_core::span_when(first, last)
+            }
+            _ => "in the same window".to_string(),
+        };
+        findings[into].summary.push_str(&format!(
+            " {} (query {}) waited on locks on {table} {when} too, {}: the same episode of blocking, behind the same holder.",
+            capitalize(&support::query_handle(gone)),
+            gone.id,
+            waited.trim_end()
+        ));
+        // What the absorbed one's fix adds for its own statement (a read that row versioning would spare) stays said.
+        let versioning = findings[from]
+            .fix
+            .as_ref()
+            .is_some_and(|f| f.summary.starts_with("This is a read, and READ_COMMITTED_SNAPSHOT is off"));
+        let stopped = query_stopped(snapshot, gone).is_some();
+        if versioning && let Some(fix) = findings[into].fix.as_mut() {
+            fix.summary.push_str(&format!(
+                " Query {}, a read, {} for these writes only because READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it {} the last committed version of the rows instead.",
+                gone.id,
+                if stopped { "waited" } else { "waits" },
+                if stopped { "would have read" } else { "reads" }
+            ));
+        }
+        // The metrics stay the first statement's, as its title says them; the other's are in the sentence and its note.
+        let note = format!("Waited {} on locks on {table}, in the same episode.", waited.trim_end());
+        absorb(snapshot, findings, into, from, Some(note));
+        if from < i {
+            i -= 1;
+        }
+    }
+}
+
 fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
@@ -1225,10 +1617,11 @@ fn dead_rows_absorb_stale_stats(_: &Snapshot, findings: &mut Vec<Finding>) {
         else {
             continue;
         };
-        let changed = stale.metrics.iter().find(|m| m.label == "Rows changed since update").map(|m| m.value);
+        let changed =
+            stale.metrics.iter().find(|m| m.label == crate::checks::maintenance::CHANGES_SINCE_UPDATE).map(|m| m.value);
         f.summary.push_str(&format!(
             " Its statistics are behind too{}: VACUUM (ANALYZE) refreshes them in the same pass.",
-            changed.map(|c| format!(" ({} rows changed since the last analyze)", format::count(c))).unwrap_or_default()
+            changed.map(|c| format!(" ({} changes since the last analyze)", format::count(c))).unwrap_or_default()
         ));
         f.severity = f.severity.max(stale.severity);
         f.impact.score = f.impact.score.max(stale.impact.score);
@@ -1354,7 +1747,13 @@ mod tests {
             ),
             "{fix}"
         );
-        assert!(spill.verify.iter().any(|v| v.contains("rows per run should drop")), "{:?}", spill.verify);
+        // The spill's step names the two scans to compare; the rows' step reads its rows between them.
+        assert!(
+            spill.verify.iter().any(|v| v
+                == "If it now returns fewer rows, the rows it returns per run between those two scans should drop to what a page or a job actually uses."),
+            "{:?}",
+            spill.verify
+        );
         assert!(spill.metrics.iter().any(|m| m.label == "Rows per run"));
         assert_eq!(report.findings.iter().filter(|f| f.queries.iter().any(|q| q.id == id)).count(), 1);
     }
@@ -1397,12 +1796,23 @@ mod tests {
         let gone = query(&mut s, "3432126458605143571");
         gone.text = "INSERT INTO events (customer_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING".into();
         gone.plan = None;
-        // Quiet for the last four hours of the window.
+        // Quiet for the last four hours of the window: too soon to say it stopped. It stays active and says so.
         gone.last_seen = Some("2026-10-11T08:00:00Z".into());
         let next = query(&mut s, "2885972271926804069");
         next.text =
             "INSERT INTO events (customer_id, kind) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET kind = $2".into();
         next.plan = None;
+        let mut findings = vec![about("heavy-query", "3432126458605143571", &["3432126458605143571"], 0.2)];
+        stopped_running(&s, &mut findings);
+        assert!(!findings[0].inactive);
+        assert!(
+            findings[0].caveats[0].starts_with("This query hasn't run in the last ")
+                && findings[0].caveats[0].ends_with("too short a time to say it stopped."),
+            "{:?}",
+            findings[0].caveats
+        );
+        // Quiet since the morning before: a day of silence, so it stopped.
+        query(&mut s, "3432126458605143571").last_seen = Some("2026-10-10T08:00:00Z".into());
         let mut findings = vec![about("heavy-query", "3432126458605143571", &["3432126458605143571"], 0.2)];
         stopped_running(&s, &mut findings);
         assert!(findings[0].inactive);
@@ -1418,6 +1828,80 @@ mod tests {
         let mut findings = vec![about("heavy-query", "3432126458605143571", &["3432126458605143571"], 0.2)];
         stopped_running(&s, &mut findings);
         assert!(!findings[0].caveats[0].contains("replaced"), "{:?}", findings[0].caveats);
+    }
+}
+
+#[cfg(test)]
+mod tables_tests {
+    use super::*;
+    use crate::support::{finding, subject};
+    use culprit_core::{Category, Fix, QueryRef};
+
+    fn fixture(name: &str) -> Snapshot {
+        let text =
+            std::fs::read_to_string(format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).expect("fixture");
+        serde_json::from_str(&text).expect("snapshot")
+    }
+
+    // CX-10d: a caveat repeated the fix ("… already leads with …; the recommended index differs from it only by …").
+    // Whatever check wrote it, a caveat sentence the summary or the fix already says goes; the rest of it stays.
+    #[test]
+    fn a_caveat_repeats_nothing_the_summary_or_the_fix_says() {
+        let s = fixture("postgres-demo.json");
+        let mut f = finding("tuning-advice", "x", Category::Indexes, subject(SubjectKind::Table, "app.job_runs"));
+        f.summary = "The index helps. It costs every write.".into();
+        f.fix = Some(Fix { summary: "Nothing to create: ix_a already leads with a.".into(), sql: None, cost: None });
+        f.caveats = vec![
+            "Nothing to create: ix_a already leads with a".into(),
+            "It costs every write. Measure it first.".into(),
+            "Quoted, as recorded:\nIt costs every write.".into(),
+            "Something new.".into(),
+        ];
+        let mut findings = vec![f];
+        caveats_repeat_nothing(&s, &mut findings);
+        assert_eq!(
+            findings[0].caveats,
+            vec!["Measure it first.", "Quoted, as recorded:\nIt costs every write.", "Something new."]
+        );
+        // "e.g. the" and "1.5 s" are inside one sentence.
+        assert_eq!(
+            sentences("Use one, e.g. the first. It takes 1.5 s. Done"),
+            vec!["Use one, e.g. the first.", "It takes 1.5 s.", "Done"]
+        );
+    }
+
+    // CX-11: large-rows listed four statements and claimed the share of three: folding log-volume's statement in kept
+    // the larger of the two shares. A finding's share counts every statement it lists.
+    #[test]
+    fn a_finding_that_absorbs_another_counts_every_statement_it_lists() {
+        let s = fixture("postgres-demo.json");
+        let w = s.workload.as_ref().unwrap();
+        let ids: Vec<String> = w.queries.iter().take(3).map(|q| q.id.clone()).collect();
+        let share = |of: &[String]| {
+            let qs: Vec<&QueryStat> = of.iter().filter_map(|id| w.query(id)).collect();
+            support::query_impact(&s, &qs).unwrap().share
+        };
+        let about = |check: &str, of: &[String], share: Option<f64>| {
+            let mut f = finding(check, &of.join("+"), Category::Queries, subject(SubjectKind::Table, "public.x"));
+            f.impact.db_time_share = share;
+            f.queries = of.iter().map(|id| QueryRef { id: id.clone(), plan_node: None, note: None }).collect();
+            f
+        };
+        let (two, one) = (ids[..2].to_vec(), ids[2..].to_vec());
+        let mut findings =
+            vec![about("large-rows", &two, Some(share(&two))), about("log-volume", &one, Some(share(&one)))];
+        absorb(&s, &mut findings, 0, 1, None);
+        assert_eq!(findings.len(), 1);
+        assert!((findings[0].impact.db_time_share.unwrap() - share(&ids)).abs() < 1e-9, "{:?}", findings[0].impact);
+        // A finding with no share of its own counts its statements too once it takes one in.
+        let mut findings = vec![about("hot-rows", &two, None), about("lock-time", &one, Some(share(&one)))];
+        absorb(&s, &mut findings, 0, 1, None);
+        assert!((findings[0].impact.db_time_share.unwrap() - share(&ids)).abs() < 1e-9, "{:?}", findings[0].impact);
+        // A share that isn't its statements' (a scan's part of a plan) is kept as the larger of the two.
+        let mut findings =
+            vec![about("filtered-scan", &two, Some(0.001)), about("log-volume", &one, Some(share(&one)))];
+        absorb(&s, &mut findings, 0, 1, None);
+        assert_eq!(findings[0].impact.db_time_share, Some(0.001f64.max(share(&one))));
     }
 }
 

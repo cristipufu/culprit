@@ -19,6 +19,10 @@ export type Bucket = {
   covered?: number;
   /** The data starts (or stops) during this bucket, so its value isn't comparable with the rest. */
   partial?: boolean;
+  /** The source can't account for this bucket in full (entries left it between two scans and took their totals with
+   * them, or a counter was misread): its value is no measurement, drawn as such and never the chart's peak. Mirrors
+   * culprit_core::model::Timeline::unknown. */
+  unknown?: boolean;
 };
 export type Flag = { at: number; label: string; tone?: "plan" | "anchor"; color?: string; onClick?: () => void };
 /** Something that changed around the database: a point in time, a window between two scans, or an episode. */
@@ -36,7 +40,7 @@ export type ChartEvent = {
 export type Range = { from: number; to: number };
 
 export function isPartial(b: Bucket): boolean {
-  return b.partial === true || (b.covered != null && b.covered < 0.95);
+  return b.partial === true || b.unknown === true || (b.covered != null && b.covered < 0.95);
 }
 
 /** "Nice" round values for gridlines: 1, 2 or 5 times a power of ten. */
@@ -232,7 +236,13 @@ export function TimeChart({ buckets, max, format, height, children, readout, pea
               key={`p${i}`}
               className="tc-partial"
               style={{ left: pct(b.start), width: `calc(${pct(b.end)} - ${pct(b.start)})` }}
-              title={b.covered != null ? `Partial: the data covers ${Math.round(b.covered * 100)}% of this period` : "Partial: the data starts during this period"}
+              title={
+                b.unknown
+                  ? "Not known in full: the source can't account for everything that ran in this period (entries left it between two scans and took their totals with them)"
+                  : b.covered != null
+                    ? `Partial: the data covers ${Math.round(b.covered * 100)}% of this period`
+                    : "Partial: the data starts during this period"
+              }
             />
           ) : null,
         )}

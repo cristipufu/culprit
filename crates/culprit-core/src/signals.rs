@@ -343,13 +343,28 @@ impl CountBaseline {
         let read = |s: &Snapshot| s.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
         let (then, now) = (read(previous)?, read(current)?);
         let start = |s: &Snapshot| s.workload.as_ref().and_then(|w| w.window_start.clone());
-        let reset = start(previous).zip(start(current)).and_then(|(a, b)| restarted(&a, &b)).unwrap_or(false);
+        Some(CountBaseline::between(
+            &previous.taken_at,
+            then,
+            now,
+            start(previous).as_deref(),
+            start(current).as_deref(),
+        ))
+    }
+
+    /// The count `then` an earlier scan taken at `taken_at` read, against `now`: it started over when it shrank, or
+    /// when the statistics that keep it were reset after that scan (`start_then` and `start_now`, when each scan says
+    /// they last started).
+    pub fn between(
+        taken_at: &str,
+        then: f64,
+        now: f64,
+        start_then: Option<&str>,
+        start_now: Option<&str>,
+    ) -> CountBaseline {
+        let reset = start_then.zip(start_now).and_then(|(a, b)| restarted(a, b)).unwrap_or(false);
         let restarted = reset || now < then;
-        Some(CountBaseline {
-            taken_at: previous.taken_at.clone(),
-            count: if restarted { 0.0 } else { then },
-            restarted,
-        })
+        CountBaseline { taken_at: taken_at.to_string(), count: if restarted { 0.0 } else { then }, restarted }
     }
 }
 

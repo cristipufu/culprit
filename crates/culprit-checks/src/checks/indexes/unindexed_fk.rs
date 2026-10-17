@@ -223,11 +223,8 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     );
     // Queries that go through the key, still running: a plain insert into the child only validates the key against the
     // parent's primary key, which needs no index here.
-    let touching: Vec<&QueryStat> = queries_touching(snapshot, &fk.schema, &fk.table)
-        .into_iter()
-        .filter(|q| crate::advisor::uses_foreign_key(snapshot.server.engine, &q.text, fk))
-        .filter(|q| !crate::query_is_history(snapshot, q))
-        .collect();
+    let touching: Vec<&QueryStat> =
+        through_foreign_key(snapshot, fk).into_iter().filter(|q| !crate::query_is_history(snapshot, q)).collect();
     let quiet_parent = parent_never_deletes(snapshot, fk);
     // SQLite checks foreign keys only on connections that turn PRAGMA foreign_keys on, which Culprit can't see.
     let sqlite = snapshot.server.engine == Engine::Sqlite;
@@ -260,7 +257,7 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
         let by_rows = f.impact.score;
         apply_query_impact(&mut f, &impact);
         f.impact.score = f.impact.score.max(by_rows);
-        f.severity = f.severity.max(severity_for_workload_share(snapshot, impact.share));
+        f.severity = f.severity.max(severity_for_impact(snapshot, &slowed, &impact));
         f.summary.push_str(&format!(
             " The statements that go through it take {} of database time.",
             format::percent(impact.share)
@@ -277,7 +274,7 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
     f.metrics.push(Metric::new("Rows in table", rows, Unit::Rows));
     f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
     // The statements it claims: those the plans show slowed when there are any (the share and the headline count these),
-    // otherwise the ones that name the key, as evidence of the relation in use.
+    // otherwise the ones that name the key with no captured plan to say otherwise, as evidence of the relation in use.
     let listed = if slowed.is_empty() { &touching } else { &slowed };
     f.queries = query_refs(&listed.iter().copied().take(5).collect::<Vec<_>>());
     f.fix = Some(Fix {
@@ -285,12 +282,67 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
         sql: Some(create_index_sql(snapshot, &fk.schema, &fk.table, &fk.columns, &[])),
         cost: write_cost(snapshot, &fk.schema, &fk.table),
     });
-    f.verify =
-        vec![format!("Deletes from {parent} should no longer scan {child}; re-scan to confirm the finding is gone.")];
+    f.verify = fk_verify(snapshot, fk, &slowed);
     if let Some(i) = filtered_fk_index(snapshot, fk) {
         f.caveats.push(filtered_caveat(i, &parent));
     }
     f
+}
+
+/// The statements that go through a foreign key, as its finding and the index advisor list them: those that use the
+/// key (`advisor::uses_foreign_key`: a key column searched, a delete on the parent, a join of the two tables), except
+/// one whose captured plan shows the index wouldn't serve it: a plan that reads the child some other way (the build
+/// side of a hash join, a filter on another column) or never reads it at all. A plan that reads the child by the key
+/// without an index ([`plan_reads_whole`]) is one it serves; a statement with no captured plan may be, and stays.
+pub(crate) fn through_foreign_key<'a>(snapshot: &'a Snapshot, fk: &culprit_core::ForeignKey) -> Vec<&'a QueryStat> {
+    queries_touching(snapshot, &fk.schema, &fk.table)
+        .into_iter()
+        .filter(|q| crate::advisor::uses_foreign_key(snapshot.server.engine, &q.text, fk))
+        .filter(|q| q.plan.is_none() || plan_reads_whole(snapshot, q, &fk.table, &fk.columns))
+        .collect()
+}
+
+/// How to check an unindexed foreign key's fix: where plans show statements reading the child by the key without an
+/// index (the share the finding claims), explaining one of them again shows the new index in use, as the engine says
+/// it; the next scan's catalog has the key indexed, so the finding is gone (a parent delete then finds the child's
+/// rows through it, which no scan shows by itself); and those statements' time a run drops, between two scans on a
+/// source of running totals ([`crate::queries::what_changed_between_scans`]).
+pub(crate) fn fk_verify(snapshot: &Snapshot, fk: &culprit_core::ForeignKey, slowed: &[&QueryStat]) -> Vec<String> {
+    let child = format!("{}.{}", fk.schema, fk.table);
+    let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
+    let engine = snapshot.server.engine;
+    let name = index_name(&fk.table, &fk.columns);
+    let name = if engine == Engine::Mssql { name } else { name.to_ascii_lowercase() };
+    let mut out = Vec::new();
+    if let Some(first) = slowed.first() {
+        // SQLite's EXPLAIN QUERY PLAN says it in its own words (after the table's name or its alias).
+        let shown =
+            if engine == Engine::Sqlite { format!(" (`SEARCH … USING INDEX {name}`)") } else { String::new() };
+        out.push(format!(
+            "Explain {} again: {} {child} through {name}{shown} instead of reading all of it.",
+            if slowed.len() == 1 { format!("query {}", first.id) } else { "the queries listed".to_string() },
+            if slowed.len() == 1 { "it reads" } else { "each reads" }
+        ));
+    }
+    out.push(format!(
+        "Re-scan once the index exists: this finding should be gone, and a delete from {parent} then finds the rows of \
+         {child} it checks through the index, not by scanning the table."
+    ));
+    // What the statements behind the share show: their time a run, which on running totals only two scans show.
+    if !slowed.is_empty() {
+        let one = slowed.len() == 1;
+        let (queries, their) = if one { ("the query", "its") } else { ("the queries listed", "their") };
+        out.push(
+            crate::queries::what_changed_between_scans(snapshot, queries, &format!("{their} time per run should drop"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "Re-scan after the workload has run: {} time per run should drop.",
+                        if one { "the query's" } else { "the queries'" }
+                    )
+                }),
+        );
+    }
+    out
 }
 
 /// The sentence that says a key's parent table has deleted nothing, when PostgreSQL or MySQL counted its deletes for

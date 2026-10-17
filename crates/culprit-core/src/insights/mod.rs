@@ -298,7 +298,7 @@ fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
         }
         objects.extend(involved.into_iter().filter_map(|i| i.object.as_deref()));
     }
-    let catalog_plan = reads_only_the_catalog(cx);
+    let catalog_plan = reads_only_the_catalog(cx.plan);
     !objects.is_empty() && objects.into_iter().all(|o| is_system_object(o) || (catalog_plan && !o.contains('.')))
 }
 
@@ -307,12 +307,30 @@ fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
 /// variables carry no schema; in a plan whose every schema-qualified object is the catalog's, they are the catalog's
 /// too. Other engines name tables without a schema when the session has none, so only SQL Server, which always names
 /// the schema of an application's table, reads a missing one this way.
-fn reads_only_the_catalog(cx: &Cx) -> bool {
-    if cx.engine() != Engine::Mssql {
+fn reads_only_the_catalog(plan: &Plan) -> bool {
+    if plan.engine != Engine::Mssql {
         return false;
     }
-    let mut qualified = cx.nodes.iter().filter_map(|n| n.object.as_deref()).filter(|o| o.contains('.')).peekable();
+    let nodes = plan.nodes();
+    let mut qualified = nodes.iter().filter_map(|n| n.object.as_deref()).filter(|o| o.contains('.')).peekable();
     qualified.peek().is_some() && qualified.all(is_system_object)
+}
+
+/// Whether step `n` of `plan` reads a whole table in a way that can weigh on a run: it reads its table whole on every
+/// run ([`PlanNode::reads_table_whole`]), the table has [`SCAN_ROWS`](crate::plan::SCAN_ROWS) rows or more or the step
+/// reads that many over its runs, and the table isn't the engine's own (its catalog, [`is_system_object`], or an
+/// unqualified object in a plan that reads only SQL Server's catalog). Reading all 2 rows of `pg_database` on every
+/// run, or a table of a few hundred rows, is no reason a plan's runs cost what they do, and no surface says it as one.
+pub fn whole_read_matters(plan: &Plan, n: &PlanNode) -> bool {
+    if !n.reads_table_whole() {
+        return false;
+    }
+    let object = n.object.as_deref().unwrap_or_default();
+    if is_system_object(object) || (!object.contains('.') && reads_only_the_catalog(plan)) {
+        return false;
+    }
+    let bar = crate::plan::SCAN_ROWS;
+    n.table_rows.is_some_and(|rows| rows >= bar) || n.rows_read_total().is_some_and(|rows| rows >= bar)
 }
 
 /// Whether a plan's object is the engine's own, its catalog and statistics: SQL Server's `sys` schema (Query Store's
@@ -335,6 +353,8 @@ struct Cx<'a> {
     total: f64,
     /// Whether the plan does real work (see `MATERIAL_MS`).
     material: bool,
+    /// Steps whose cost rests on a default guess for a parameter ([`Plan::guesses`]).
+    guessed: Vec<u32>,
 }
 
 impl<'a> Cx<'a> {
@@ -349,7 +369,30 @@ impl<'a> Cx<'a> {
         // Under a Postgres Limit, children's costs assume they run to completion and add up to more than the root's.
         let own: f64 = nodes.iter().map(|n| n.self_cost).sum();
         let total = plan.total_cost.max(plan.root.subtree_cost).max(own);
-        Cx { plan, nodes, parent, total: if total > 0.0 { total } else { 1.0 }, material: does_real_work(plan) }
+        let guessed = plan.guesses().into_iter().map(|(id, _)| id).collect();
+        Cx {
+            plan,
+            nodes,
+            parent,
+            total: if total > 0.0 { total } else { 1.0 },
+            material: does_real_work(plan),
+            guessed,
+        }
+    }
+
+    /// " 45% of this plan's work." where the plan states the share of these steps ([`stated_share`]), else nothing: a
+    /// cheap plan's or a guessed step's share of the cost isn't where the statement's work is.
+    fn work_sentence(&self, impact: f64, nodes: &[u32]) -> String {
+        if self.states_share(nodes) {
+            format!(" {} of this plan's work.", capitalize(&format::percent(impact)))
+        } else {
+            String::new()
+        }
+    }
+
+    /// Whether the plan states a share of its work for these steps: the one rule of [`stated_share`].
+    fn states_share(&self, nodes: &[u32]) -> bool {
+        self.plan.states_shares() && !nodes.iter().any(|id| self.guessed.contains(id))
     }
 
     fn engine(&self) -> Engine {
@@ -475,6 +518,83 @@ impl Draft {
     }
 }
 
+/// The share of the plan's work an insight states, on every surface that shows one (the plan viewer, the CLI, MCP, a
+/// finding's metric, the readings): its `impact` where that is a share at all (not a rule's own weight,
+/// [`PlanInsight::fixed_weight`]), the plan states shares ([`Plan::states_shares`]: it weighs its steps, does real work
+/// and costs every step doing work), and none of the insight's steps has a cost that rests on a guess
+/// ([`Plan::guess`]). The same rule as [`Plan::step_share`], and the one the insight's own text follows.
+pub fn stated_share(plan: &Plan, insight: &PlanInsight) -> Option<f64> {
+    let guessed = plan.guesses();
+    let rests_on_guess = insight.nodes.iter().any(|id| guessed.iter().any(|(g, _)| g == id));
+    (!insight.fixed_weight && plan.states_shares() && !rests_on_guess).then_some(insight.impact)
+}
+
+/// What a statement's runs measured against a plan that does no real work ([`does_real_work`]): whether they run as
+/// cheaply as it is costed, or why not. The one reading behind [`runs_cheaply`] and every sentence that says why no
+/// step of such a plan is given a share of its cost: a misestimate isn't "cheap", and nor is a scan of a whole table
+/// big enough to matter ([`whole_read_matters`]; all 2 rows of `pg_database` are no reason).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CheapPlanRuns {
+    /// The plan does real work, or weighs no steps: nothing to say here.
+    NotCheap,
+    /// Its runs are as cheap as its plan: the time is the call itself.
+    Cheap,
+    /// Without the statement's reads and rows, nothing says how its runs compare.
+    Unmeasured,
+    /// Its runs return or change far more rows than the plan expected (`expected` a run, as `rows` a run).
+    MoreRows { expected: f64, rows: f64 },
+    /// Its runs read far more pages (rows examined, MySQL) for each row than a lookup does: the plan was costed for far
+    /// less reading than they do.
+    MoreReads { expected: f64, reads: f64, rows: f64 },
+    /// A step reads a whole table that can weigh on a run on every run (the costliest such scan's id,
+    /// [`whole_read_matters`]): cheap only while the table is small.
+    ScansTable(u32),
+    /// Its runs take `MATERIAL_MS` or longer on average (`ms`), which the plan's cost doesn't account for.
+    Slow(f64),
+}
+
+/// How a statement's runs compare with a plan that does no real work ([`CheapPlanRuns`]). Without the statement, only
+/// what the plan itself shows: a whole table read.
+pub fn cheap_plan_runs(plan: &Plan, q: Option<&crate::model::QueryStat>) -> CheapPlanRuns {
+    if !plan.weighed() || does_real_work(plan) {
+        return CheapPlanRuns::NotCheap;
+    }
+    // A whole read of a small table or of the catalog is no reason the runs cost what they do: the runs are then read as
+    // if it weren't there (cheap, or slow).
+    let scan = plan
+        .nodes()
+        .into_iter()
+        .filter(|n| whole_read_matters(plan, n))
+        .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
+        .map(|n| n.id);
+    let measured = q.and_then(|q| Some((q, q.reads_per_execution()?, q.rows_handled_per_execution()?)));
+    let Some((q, reads, rows)) = measured else {
+        return match scan {
+            Some(id) => CheapPlanRuns::ScansTable(id),
+            None if q.is_some() => CheapPlanRuns::Unmeasured,
+            None => CheapPlanRuns::Cheap,
+        };
+    };
+    // What the plan expects a run to return or change: PostgreSQL estimates that a modification returns nothing, so
+    // what it feeds the modification.
+    let root = &plan.root;
+    let fed = root.children.first().filter(|_| root.kind == NodeKind::Modify).map_or(0.0, |c| c.est_rows);
+    let expected = root.est_rows.max(fed).max(1.0);
+    if rows >= expected * MISESTIMATE_FACTOR && rows >= crate::plan::MISESTIMATE_MIN_ROWS {
+        return CheapPlanRuns::MoreRows { expected, rows };
+    }
+    if reads > LOOKUP_PAGES_PER_ROW * rows.max(1.0) {
+        return CheapPlanRuns::MoreReads { expected, reads, rows };
+    }
+    if let Some(id) = scan {
+        return CheapPlanRuns::ScansTable(id);
+    }
+    if q.mean_time_ms >= MATERIAL_MS {
+        return CheapPlanRuns::Slow(q.mean_time_ms);
+    }
+    CheapPlanRuns::Cheap
+}
+
 /// Whether the plan does real work: a measured run of at least `MATERIAL_MS`, or, unmeasured, an estimated cost of at
 /// least what reading about `MANY_ROWS` rows costs (`cheap_below`). A point lookup's plan doesn't: what a run of it
 /// costs is the call itself, not any of its steps. Every insight's severity and every surface that points at a plan's
@@ -499,23 +619,12 @@ const LOOKUP_PAGES_PER_ROW: f64 = 32.0;
 /// step reads a whole table. A cheap estimate alone isn't enough: with stale statistics or a generic plan's guess the
 /// runs do far more than the plan was costed at (750 pages a run where it expected to read one row), and a scan is
 /// cheap only while its table is small. Without the statement's reads and rows, nothing says its runs are cheap.
+///
+/// Any whole-table read keeps the runs from being called cheap here, a small table's too: what it reads grows with the
+/// table, so heavy-query weighs the scan as the step to fix. Only the note on a plan's shares
+/// ([`cheap_plan_runs`]) leaves out one that can't matter yet ([`whole_read_matters`]).
 pub fn runs_cheaply(plan: &Plan, q: &crate::model::QueryStat) -> bool {
-    let (Some(reads), Some(rows)) = (q.reads_per_execution(), q.rows_handled_per_execution()) else {
-        return false;
-    };
-    // What the plan expects a run to return or change: PostgreSQL estimates that a modification returns nothing, so
-    // what it feeds the modification.
-    let root = &plan.root;
-    let fed = root.children.first().filter(|_| root.kind == NodeKind::Modify).map_or(0.0, |c| c.est_rows);
-    let expected = root.est_rows.max(fed).max(1.0);
-    let more_than_expected = rows >= expected * MISESTIMATE_FACTOR && rows >= crate::plan::MISESTIMATE_MIN_ROWS;
-    let scans_a_table = plan.nodes().iter().any(|n| n.kind == NodeKind::Scan && n.object.is_some());
-    plan.weighed()
-        && !does_real_work(plan)
-        && q.mean_time_ms < MATERIAL_MS
-        && reads <= LOOKUP_PAGES_PER_ROW * rows.max(1.0)
-        && !more_than_expected
-        && !scans_a_table
+    cheap_plan_runs(plan, Some(q)) == CheapPlanRuns::Cheap && !plan.nodes().iter().any(|n| n.reads_table_whole())
 }
 
 /// Whether the plan's own rule `rule` (`key-lookups`, `big-sort`…) speaks about `node`: what a check asks before

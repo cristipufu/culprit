@@ -27,19 +27,32 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>) -> Result<Plan
 
 /// A plan a scan saved, read again from its JSON with this parser, so a scan saved by an older Culprit reads the way
 /// one taken today would. What the scan added from the catalog (each scanned table's size, and the marks that follow
-/// from it) is worked out again from the sizes the saved plan carries; nothing is looked up. `entry` is the
+/// from it) is worked out again from the sizes the saved plan carries, else from the scan's own catalog (`tables`,
+/// `indexes`: a scan saved before its collector looked sizes up); nothing is looked up. `entry` is the
 /// pg_stat_statements entry (its queryid) the plan was made for, whose generic plan says what it can't know; `None`
 /// for a plan of another source's statement (an application's log). `None` when the plan kept no JSON, or this parser
 /// can't read it.
-pub fn reparse(saved: &Plan, entry: Option<&str>) -> Option<Plan> {
+pub fn reparse(
+    saved: &Plan,
+    entry: Option<&str>,
+    tables: &[culprit_core::TableStat],
+    indexes: &[culprit_core::IndexStat],
+) -> Option<Plan> {
     let raw = saved.raw.as_deref()?;
     let mut plan = parse(raw, saved.kind, saved.statement.as_deref()).ok()?;
-    crate::tables::refill(&mut plan, saved);
+    crate::tables::refill(&mut plan, saved, tables, indexes);
     if let Some(entry) = entry.filter(|_| saved.kind == PlanKind::Generic) {
         crate::collect::mark_generic(&mut plan);
         crate::collect::mark_planned_text(&mut plan, entry);
     }
     Some(plan)
+}
+
+/// A saved plan that kept no JSON to read again: the table sizes it lacks from the scan's own catalog (`tables`,
+/// `indexes`), with the marks that follow from them, as [`reparse`] gives a plan it reads again.
+pub fn refill_from_catalog(plan: &mut Plan, tables: &[culprit_core::TableStat], indexes: &[culprit_core::IndexStat]) {
+    let saved = plan.clone();
+    crate::tables::refill(plan, &saved, tables, indexes);
 }
 
 /// The same, from JSON already parsed (an imported plan, or text EXPLAIN rebuilt as JSON). `raw` is left empty.

@@ -62,6 +62,12 @@ pub(super) fn key_lookups(cx: &Cx) -> Vec<Draft> {
         let impact = cx.share(n) + cx.parent(n).filter(|p| p.kind == NodeKind::Join).map_or(0.0, |p| cx.share(p));
         let mut nodes = vec![n.id];
         nodes.extend(seek.map(|s| s.id));
+        // The share only where the plan states one (`stated_share`).
+        let together = if cx.states_share(&nodes) {
+            format!(" Together that's {} of this plan's work.", format::percent(impact))
+        } else {
+            String::new()
+        };
         let mut d = Draft::new("key-lookups", InsightArea::Index, impact, nodes);
         // An estimated plan says how many lookups the optimizer expects, not how many a run made.
         let measured = n.act_executions.is_some() || n.act_rows.is_some();
@@ -73,16 +79,11 @@ pub(super) fn key_lookups(cx: &Cx) -> Vec<Draft> {
         let heap = n.op.starts_with("RID");
         d.detail = match (&index, cols.is_empty()) {
             (Some(ix), false) => format!(
-                "{ix} finds the rows but doesn't hold {}, so SQL Server goes back to {table} for each one ({}). Together that's {} of this plan's work.",
+                "{ix} finds the rows but doesn't hold {}, so SQL Server goes back to {table} for each one ({}).{together}",
                 format::list(&cols),
                 n.op,
-                format::percent(impact)
             ),
-            _ => format!(
-                "Each row found by the index needs a second read from {table} ({}). Together that's {} of this plan's work.",
-                n.op,
-                format::percent(impact)
-            ),
+            _ => format!("Each row found by the index needs a second read from {table} ({}).{together}", n.op),
         };
         // Said in words only: rebuilding the index needs its whole definition (key order, existing included columns,
         // uniqueness, filter, compression), which the plan doesn't carry.
@@ -199,12 +200,20 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
         let mut d = Draft::new("scan-filter", InsightArea::Index, impact, vec![n.id]);
         d.title = format!("Reads {} of {table} to keep {}", plural(read, "row", "rows"), rows_text(kept));
         let estimated = n.act_rows.is_none();
+        // What the statement's runs measured of the filter, where the analysis put it on the scan.
+        let measured = estimated && n.props.contains_key(crate::plan::MEASURED_KEPT);
         d.detail = format!(
-            "{} {} reads the rows and checks `{}` on each one, so most of the reading is thrown away. {} of this plan's work.",
-            if estimated { "As planned, the" } else { "The" },
+            "{} {} reads the rows and checks `{}` on each one, so most of the reading is thrown away.{}",
+            if measured {
+                "As the statement's runs measured, the"
+            } else if estimated {
+                "As planned, the"
+            } else {
+                "The"
+            },
             n.op,
             format::predicate(&filter),
-            capitalize(&format::percent(impact))
+            cx.work_sentence(impact, &[n.id])
         );
         // What the catalog says the table has, where the snapshot marked it: an index that already starts with one of
         // these columns, or none.
@@ -213,13 +222,17 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
             list.into_iter()
                 .find(|(_, keys)| keys.first().is_some_and(|k| cols.iter().any(|c| c.eq_ignore_ascii_case(k))))
         });
-        // Equality columns go in any order: the filter's isn't the data's.
+        // Equality columns go in any order: the filter's isn't the data's. The SQL below takes the filter's order, and
+        // the note says so rather than advise an order the SQL doesn't have.
         let (equality, _) = seekable_keys(&filter);
         let order = if equality.len() >= 2 {
             format!(
-                " {} can go in any order: put first the one with the most distinct values, or one another index or \
-                 finding on {leaf} already leads with, so one index serves both.",
-                format::list(&equality)
+                " {} can go in any order, and the SQL below takes the filter's ({} first). Put {} first instead if it \
+                 has more distinct values, or if another index you add on {leaf} leads with it: then that one index \
+                 serves this query too.",
+                format::list(&equality),
+                equality[0],
+                if equality.len() == 2 { equality[1].as_str() } else { "another one" }
             )
         } else {
             String::new()
@@ -267,11 +280,10 @@ pub(super) fn big_sort(cx: &Cx) -> Vec<Draft> {
         {
             continue; // spill and temp-table-sort say more
         }
-        // Rows expected from a scan planned on a default guess (a parameter compared by range in a generic plan) are the
-        // guess, not the data: no row count to state, nor a share of the work built on it, until a run measures them.
-        let mut below = Vec::new();
-        n.walk(&mut below);
-        if n.act_rows.is_none() && below.iter().any(|b| b.props.contains_key(crate::plan::GUESSED_SELECTIVITY)) {
+        // Rows expected from a scan planned on a default guess (a parameter compared by range in a generic plan), or a
+        // sort run once per row of one, are the guess, not the data: no row count to state, nor a share of the work
+        // built on it, until a run measures them.
+        if n.act_rows.is_none() && cx.guessed.contains(&n.id) {
             continue;
         }
         let rows = n.children.first().map_or(rows_out(n), rows_out).max(rows_out(n));
@@ -283,7 +295,11 @@ pub(super) fn big_sort(cx: &Cx) -> Vec<Draft> {
             continue;
         }
         let mut d = Draft::new("big-sort", InsightArea::Index, share, vec![n.id]);
-        d.title = format!("Sorting {} rows is {} of this plan's work", format::count(rows), format::percent(share));
+        d.title = if cx.states_share(&[n.id]) {
+            format!("Sorting {} rows is {} of this plan's work", format::count(rows), format::percent(share))
+        } else {
+            format!("Sorts {} rows", format::count(rows))
+        };
         let key =
             n.detail.as_deref().and_then(|d| d.split(" · ").find(|p| p.starts_with("sort key")).map(str::to_string));
         d.detail = format!(

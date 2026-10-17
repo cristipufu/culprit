@@ -222,10 +222,15 @@ fn finding_exports_never_name_the_connection_and_redact_query_text() {
                     .replace('"', "&quot;")
                     .replace('\'', "&#39;");
                 assert!(rendered.contains(&escaped) || rendered.contains(&finding.title), "{file}: {}", finding.title);
-                assert!(
-                    out.contains(&format!("culprit verify &lt;connection&gt; {}", finding.id))
-                        || out.contains(&format!("`culprit verify <connection> {}`", finding.id))
-                        || finding.verify.is_empty()
+                // A re-scan shows it gone, except for statements that stopped or one counted in running totals (its
+                // own steps compare two scans): no `culprit verify` step promises it then.
+                let verify_step = out.contains(&format!("culprit verify &lt;connection&gt; {}", finding.id))
+                    || out.contains(&format!("`culprit verify <connection> {}`", finding.id));
+                assert_eq!(
+                    verify_step,
+                    !finding.verify.is_empty() && culprit_checks::gone_after_rescan(&report, finding),
+                    "{file}: {}",
+                    finding.id
                 );
             }
         }
@@ -269,4 +274,44 @@ fn verification_reads_fixed_still_present_and_new_for_every_engine() {
         let md = export::verification_markdown(&v);
         assert!(md.contains("✅ Fixed") && md.contains("🆕 New"), "{file}");
     }
+}
+
+// The browser demo replays `fixtures/share.sample.json` instead of running Rust: what it shows of a finding's export is
+// what the export makes of the demo report now, every finding of it and nothing else (it said "Rows changed since
+// update" long after the metric became "Changes since update"). Regenerate it with
+// `cargo run -p culprit-engine --example share_sample`.
+#[test]
+fn the_browser_demos_finding_exports_are_the_exports_of_the_demo_reports() {
+    let path = format!("{}/../../fixtures/share.sample.json", env!("CARGO_MANIFEST_DIR"));
+    let sample: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let saved = sample["findings"].as_object().expect("findings");
+    let options = ExportOptions::default();
+    // An export is stamped with the minute it was made: the rest of it is what has to match.
+    let unstamped = |md: &str| match md.find("Exported from Culprit on ") {
+        Some(at) => {
+            let rest = &md[at..];
+            format!("{}{}", &md[..at], rest.find(" UTC").map_or(rest, |end| &rest[end..]))
+        }
+        None => md.to_string(),
+    };
+    let mut expected = HashSet::new();
+    for file in [
+        "mssql-demo.report.json",
+        "mssql-demo-staging.report.json",
+        "pg-demo.report.json",
+        "mysql-demo.report.json",
+        "mariadb-demo.report.json",
+    ] {
+        let r = report(file);
+        for f in &r.findings {
+            let key = format!("{}|{}", r.snapshot.connection, f.id);
+            let entry = saved.get(&key).unwrap_or_else(|| panic!("{key} is missing: regenerate the share sample"));
+            let markdown = unstamped(&export::finding_markdown(&r, f, &options));
+            let saved = entry["markdown"].as_str().map(unstamped);
+            assert_eq!(saved.as_deref(), Some(markdown.as_str()), "{key}: regenerate the share sample");
+            expected.insert(key);
+        }
+    }
+    let stale: Vec<&String> = saved.keys().filter(|k| !expected.contains(*k)).collect();
+    assert!(stale.is_empty(), "findings the demo reports no longer have: {stale:?}");
 }

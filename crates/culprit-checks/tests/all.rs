@@ -3,6 +3,7 @@
 //! listed here, or `every_test_file_is_listed` fails.
 
 mod brief;
+mod bursts;
 mod chatty;
 mod counter_age;
 mod dashboard;

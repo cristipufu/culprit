@@ -20,6 +20,7 @@ fn ten_days(mut s: Snapshot) -> Snapshot {
     if s.server.engine == culprit_core::Engine::Postgres {
         s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(240.0);
     }
+    crate::counter_age::digests_counted_since_the_start(&mut s);
     s
 }
 
@@ -185,6 +186,48 @@ fn overlapping_and_over_indexed_tables_on_every_engine() {
     }
 }
 
+// CX-13: a staging SQL Server reading forced a plan by hand with FORCE_LAST_GOOD_PLAN on and said nothing of it, and
+// SQL Server's own recommendation asked to turn automatic plan correction on while it was on. Every fix that forces a
+// plan says what automatic correction does where it is on, and asks for it only where it is off.
+#[test]
+fn a_plan_forced_by_hand_says_what_automatic_plan_correction_does() {
+    let fix = |actual: &str| {
+        let mut s = snapshot("mssql-demo.json");
+        let query = s.workload.as_ref().unwrap().queries[0].id.clone();
+        s.tuning = Some(TuningAdvice {
+            automatic_tuning: vec![AutomaticTuningOption {
+                name: "FORCE_LAST_GOOD_PLAN".into(),
+                desired: actual.into(),
+                actual: actual.into(),
+                reason: None,
+            }],
+            recommendations: vec![TuningRecommendation {
+                name: "PR_1".into(),
+                kind: "FORCE_LAST_GOOD_PLAN".into(),
+                state: Some("Active".into()),
+                query_id: Some(query.clone()),
+                regressed_plan_id: Some("685".into()),
+                recommended_plan_id: Some("815".into()),
+                estimated_gain: Some(0.73),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let id = format!("tuning-advice:force:{query}");
+        analyze(s).findings.into_iter().find(|f| f.id == id).expect("the recommendation").fix.unwrap().summary
+    };
+    let on = fix("ON");
+    assert!(
+        on.contains("Automatic plan correction (FORCE_LAST_GOOD_PLAN) is on for this database: SQL Server forces the last good plan itself"),
+        "{on}"
+    );
+    assert!(on.contains("A plan forced by hand stays forced until someone unforces it"), "{on}");
+    assert!(!on.contains("turn on automatic plan correction"), "{on}");
+    let off = fix("OFF");
+    assert!(off.ends_with("To let SQL Server do this on its own, turn on automatic plan correction."), "{off}");
+    assert!(!off.contains("is on for this database"), "{off}");
+}
+
 #[test]
 fn sql_server_tuning_advice_and_forced_plan_failures() {
     let mut s = snapshot("mssql-demo.json");
@@ -269,6 +312,16 @@ fn forced_plans_are_listed_and_one_that_scans_past_a_newer_index_stands_out() {
     let listed = findings.iter().find(|f| f.id == "tuning-advice:forced-plans").expect("the forced plans");
     assert_eq!(listed.title, "2 plans are forced in Query Store, 1 by automatic tuning");
     assert_eq!(listed.severity, Severity::Low);
+    // CX-10a: what forcing is for, in a sentence that parses.
+    assert!(
+        listed.summary.starts_with(
+            "SQL Server runs these queries with the plan forced for each instead of choosing one, even after an index \
+             is added or the data grows. A forced plan keeps a query on the plan it ran fast with, so a new plan can't \
+             slow it down."
+        ),
+        "{}",
+        listed.summary
+    );
     let list = &listed.caveats[0];
     assert!(list.contains(": plan 9, forced by automatic tuning on Oct 3."), "{list}");
     assert!(list.contains("Query 90001: plan 4, forced by hand; not run since Oct 2."), "{list}");
@@ -1105,12 +1158,13 @@ fn azure_index_recommendations_are_weighed_against_the_indexes_there() {
             .unwrap_or_else(|| panic!("{keys}: {:?}", found.iter().map(|f| &f.id).collect::<Vec<_>>()))
     };
 
-    // The index there differs only by the large column: nothing to create, said in the index's own key order.
+    // The index there differs only by the large column: nothing to create, said in the index's own key order, by the
+    // fix alone (CX-10d: no caveat repeats it).
     let only_large = advice("priority,customer_id");
-    assert_eq!(
-        only_large.caveats[0],
-        "ix_support_tickets_customer_priority already leads with customer_id and priority; the recommended index \
-         differs from it only by including subject."
+    assert!(
+        !only_large.caveats.iter().any(|c| c.contains("already leads with")),
+        "the fix says it: {:?}",
+        only_large.caveats
     );
     // CX-K: nothing to create, so nothing was left out of an index either.
     assert!(
@@ -1128,6 +1182,7 @@ fn azure_index_recommendations_are_weighed_against_the_indexes_there() {
         "{}",
         fix.summary
     );
+    assert!(fix.summary.contains("rows by customer_id and priority"), "{}", fix.summary);
 
     // A column worth including: the index there is widened with it, and never with the large one.
     let widen = advice("customer_id,priority");
@@ -1188,6 +1243,43 @@ fn recommended(s: &mut Snapshot, table: &str, columns: &[&str], include: &[&str]
     });
 }
 
+// CX-9, a staging SQL Server reading: "If the queries that read job_runs are slow all the same, create it" for an
+// index on a bit column, including columns every claim rewrites, beside statements that average under a millisecond.
+// The condition is one the scan answers: nothing to create.
+#[test]
+fn a_low_score_on_a_bit_key_beside_fast_statements_is_nothing_to_create() {
+    let mut s = snapshot("mssql-demo.json");
+    recommended(&mut s, "support_tickets", &["is_deleted"], &["status", "claimed_by"], 3.0);
+    s.columns.push(
+        serde_json::from_value(serde_json::json!({
+            "schema": "shop", "table": "support_tickets", "name": "is_deleted", "data_type": "bit",
+            "nullable": false, "default": null, "generated": false, "ordinal": 40
+        }))
+        .unwrap(),
+    );
+    let w = s.workload.as_mut().expect("workload");
+    let mut q = w.queries.iter().find(|q| q.id == "10").expect("query 10").clone();
+    (q.id, q.query_hash, q.plan, q.plans) = ("777".into(), None, None, Vec::new());
+    q.text = "SELECT [id], [status] FROM [shop].[support_tickets] WHERE [is_deleted] = 0 AND [id] = @P1".into();
+    (q.executions, q.total_time_ms, q.mean_time_ms) = (2000.0, 600.0, 0.3);
+    w.queries.push(q);
+    let f = analyze(s)
+        .findings
+        .into_iter()
+        .find(|f| f.id == "tuning-advice:create-index:shop.support_tickets(is_deleted)")
+        .expect("the recommendation");
+    let fix = f.fix.unwrap();
+    assert_eq!(fix.sql, None);
+    assert!(
+        fix.summary.contains(
+            "Nothing to create: the statement this scan captured that compares is_deleted with a value averages 0.30 ms a run, so there is no slow read for it to speed up, and its key, is_deleted, is a bit column: it holds at most two values, so an index on it narrows the rows little; every write that changes one of the 2 columns it includes would update it too. Let the recommendation expire."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(f.verify[0].starts_with("Nothing to change"), "{:?}", f.verify);
+}
+
 // Azure scores an index low, but a heavy statement the scan measured filters on exactly its keys and reads 750 pages a
 // run to return nothing: the finding cites it and doesn't call the index not worth having. Without such a statement it
 // says the ones it was recommended for may be gone, and checking it is conditional, as the advice is.
@@ -1238,10 +1330,23 @@ fn a_low_azure_score_gives_way_to_a_heavy_statement_on_its_keys() {
         ]
     );
 
-    // A statement on the keys that takes little time doesn't outweigh Azure's score.
+    // A statement on the keys that takes little time doesn't outweigh Azure's score; and its runs, measured fast,
+    // answer the condition the low score leaves ("if the queries are slow all the same"): nothing to create.
     let light = with_statement(false);
-    assert!(light.fix.as_ref().unwrap().summary.contains("usually not worth having"));
-    assert!(light.verify[0].starts_with("Only if you apply it: re-scan a day later"), "{:?}", light.verify);
+    let fix = light.fix.as_ref().unwrap();
+    assert!(fix.summary.contains("usually not worth having"), "{}", fix.summary);
+    assert!(
+        fix.summary.contains(
+            "Nothing to create: the statement this scan captured that compares all of customer_id and status with a value averages 0.02 ms a run, so there is no slow read for it to speed up. Let the recommendation expire."
+        ),
+        "{}",
+        fix.summary
+    );
+    assert!(fix.sql.is_none(), "{:?}", fix.sql);
+    assert_eq!(
+        light.verify,
+        vec!["Nothing to change: once Azure lets the recommendation expire, this finding goes with it."]
+    );
 
     // No statement on the keys: say so, rather than "check that those queries still run as they did".
     let mut s = snapshot("mssql-demo.json");

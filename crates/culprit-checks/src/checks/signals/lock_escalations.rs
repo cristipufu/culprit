@@ -40,25 +40,32 @@ pub(crate) const ESCALATION_SESSION: &str = "culprit_lock_escalation";
 /// The SQL that starts [`ESCALATION_SESSION`] and reads what it caught: per database on Azure SQL Database, where a
 /// session can't see other databases, per server (filtered to `database`) elsewhere.
 pub(super) fn escalation_session_sql(database: &str, azure_sql_database: bool) -> String {
-    let (scope, sessions, targets, filter, startup) = if azure_sql_database {
-        ("DATABASE", "sys.dm_xe_database_sessions", "sys.dm_xe_database_session_targets", String::new(), "")
+    let (sessions, targets, filter, startup) = if azure_sql_database {
+        ("sys.dm_xe_database_sessions", "sys.dm_xe_database_session_targets", String::new(), "")
     } else {
         (
-            "SERVER",
             "sys.dm_xe_sessions",
             "sys.dm_xe_session_targets",
             format!("\n    WHERE sqlserver.database_name = N'{}'", database.replace('\'', "''")),
             "\nWITH (STARTUP_STATE = ON)",
         )
     };
+    // One session catches the escalations on every table: each table's finding starts the same one, once.
+    let start = super::event_session_sql(
+        ESCALATION_SESSION,
+        azure_sql_database,
+        &format!(
+            "ADD EVENT sqlserver.lock_escalation (\n    \
+                 SET collect_statement = 1\n    \
+                 ACTION (sqlserver.sql_text, sqlserver.client_app_name){filter})\n\
+             ADD TARGET package0.ring_buffer{startup}"
+        ),
+    );
+    let stop = super::event_session_drop(ESCALATION_SESSION, azure_sql_database);
     format!(
-        "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement\n\
-         CREATE EVENT SESSION {ESCALATION_SESSION} ON {scope}\n\
-         ADD EVENT sqlserver.lock_escalation (\n    \
-             SET collect_statement = 1\n    \
-             ACTION (sqlserver.sql_text, sqlserver.client_app_name){filter})\n\
-         ADD TARGET package0.ring_buffer{startup};\n\
-         ALTER EVENT SESSION {ESCALATION_SESSION} ON {scope} STATE = START;\n\
+        "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.\n\
+         -- It catches them on every table, so another table's finding starts this same session: once is enough.\n\
+         {start}\n\
          \n\
          -- Then read what it caught\n\
          SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       \
@@ -70,7 +77,9 @@ pub(super) fn escalation_session_sql(database: &str, azure_sql_database: bool) -
                    FROM {targets} t\n          \
                    JOIN {sessions} s ON s.address = t.event_session_address\n         \
                   WHERE s.name = N'{ESCALATION_SESSION}' AND t.target_name = N'ring_buffer') r\n \
-          CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);"
+          CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);\n\
+         \n\
+         {stop}"
     )
 }
 
@@ -326,7 +335,10 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             let bulk = writes.first().filter(|q| rows_per_run(q).is_some_and(|r| r >= ESCALATION_THRESHOLD / 5.0));
             let (lead, find) = match (historical, bulk) {
                 (true, _) => (
-                    format!("None happened since the previous scan. If a statement still changes thousands of rows of {table} at once, change it into"),
+                    format!(
+                        "None happened since the previous scan{}. If a statement still changes thousands of rows of {table} at once, change it into",
+                        new.map(|(b, _)| format!(", {}", crate::queries::when_phrase(&b.taken_at))).unwrap_or_default()
+                    ),
                     "To learn which statement it is, start the event session below",
                 ),
                 (false, Some(_)) => (

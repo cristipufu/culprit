@@ -25,9 +25,18 @@ tables: Array<string>,
  */
 object: string | null, 
 /**
- * Share of database time over the window, 0–1.
+ * Share of database time, 0–1, as every surface states it: over Culprit's scans where they measured it (a source
+ * of running totals), otherwise over the window ([`crate::Workload::statement_share`]).
  */
-db_time_share: number | null, total_ms: number, runs: number, mean_ms: number, 
+db_time_share: number | null, 
+/**
+ * Its time and runs in the source's totals, over the window.
+ */
+total_ms: number, runs: number, 
+/**
+ * Its average run, the same way as its share ([`crate::Workload::statement_mean_ms`]).
+ */
+mean_ms: number, 
 /**
  * It stopped running before the window ended: a deploy may have changed it.
  */

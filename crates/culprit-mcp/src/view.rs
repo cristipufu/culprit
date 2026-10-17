@@ -140,15 +140,24 @@ pub fn finding(report: &Report, f: &Finding) -> Value {
 }
 
 fn query_row(w: &Workload, q: &QueryStat) -> Value {
+    // Share, runs a day and average as every surface states them (`Workload::cost_of`): over Culprit's scans where they
+    // measured it (`measured_over`), with the source's totals beside them where those differ twofold (`totals`).
+    let cost = w.cost_of(q);
+    let scans = w.scans_of(q).filter(|_| w.statement_time_per_day(q).is_some());
     json!({
         "id": q.id,
-        "db_time_pct": pct(w.share(q.total_time_ms)),
+        "db_time_pct": pct(cost.share),
         // Per day only where its runs came that way, over 20 hours or more; null for a burst or a few runs, with the
         // measured runs and their window.
-        "runs_per_day": w.runs_per_day_of(q).map(|v| round(v, 1)),
+        "runs_per_day": scans.map(|s| s.per_day(s.runs)).or_else(|| w.runs_per_day_of(q)).map(|v| round(v, 1)),
         "runs": round(q.executions, 0),
+        // How often it ran in words, as the brief says it: a burst by when it ran ("750 runs on Oct 11, 15:51–15:55
+        // UTC"), never a rate a day.
+        "how_often": cost.runs,
         "window_hours": round(w.window_hours, 2),
-        "avg_ms": round(q.mean_time_ms, 3),
+        "measured_over": scans.map(|s| s.phrase()),
+        "totals": cost.totals,
+        "avg_ms": round(cost.mean_ms, 3),
         "max_ms": q.max_time_ms.map(|v| round(v, 3)),
         "cpu_ms_per_run": q.cpu_time_ms.filter(|_| q.executions > 0.0).map(|c| round(c / q.executions, 3)),
         "rows_per_run": q.rows_per_execution().map(|v| round(v, 1)),
@@ -165,7 +174,8 @@ pub fn top_queries(report: &Report, by: TopBy, limit: usize) -> Value {
         return json!({ "scan": scan_header(report), "queries": [], "note": note });
     };
     let key = |q: &QueryStat| match by {
-        TopBy::Time => q.total_time_ms,
+        // Its share as every surface states it: over Culprit's scans where they measured it.
+        TopBy::Time => w.statement_share(q),
         TopBy::Cpu => q.cpu_time_ms.unwrap_or(0.0),
         TopBy::Reads => q.logical_reads.unwrap_or(0.0),
         TopBy::Executions => q.executions,
@@ -324,7 +334,7 @@ pub fn plan_tree(plan: &Plan) -> String {
     visit(plan, &plan.root, 0, &mut out);
     // Shares of the estimated cost: say why a step has none ("-").
     if culprit_core::self_times(plan).is_none()
-        && let Some(note) = culprit_engine::export::shares_note(plan)
+        && let Some(note) = culprit_engine::export::shares_note(plan, None)
     {
         out.push_str(&format!("   -  {note}\n"));
     }
@@ -347,8 +357,9 @@ pub fn plan_insights(plan: &Plan) -> Value {
         "insights": found.items.iter().map(|i| json!({
             "rule": i.rule,
             "severity": i.severity,
-            // The share of the plan's work; null where the rule ranks by its own weight or the plan has no costs.
-            "impact": (!i.fixed_weight && plan.weighed()).then(|| round(i.impact, 3)),
+            // The share of the plan's work where the plan states one (`insights::stated_share`): null where the rule
+            // ranks by its own weight, the plan has no costs or is cheap, or the step's cost rests on a guess.
+            "impact": culprit_core::insights::stated_share(plan, i).map(|s| round(s, 3)),
             "operators": i.nodes,
             "title": i.title,
             "detail": i.detail,
@@ -590,7 +601,7 @@ fn index_usage(report: &Report, schema: &str, table: &str) -> BTreeMap<String, V
         for (index, ops) in seen {
             out.entry(index).or_default().push(json!({
                 "query_id": q.id,
-                "db_time_pct": pct(w.share(q.total_time_ms)),
+                "db_time_pct": pct(w.statement_share(q)),
                 "operators": ops,
             }));
         }

@@ -1,8 +1,9 @@
 import type { Plan } from "../gen/Plan";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
+import type { QueryStat } from "../gen/QueryStat";
 import type { Severity } from "../gen/Severity";
-import { count } from "./format";
+import { count, duration } from "./format";
 
 /** Every operator in tree order. */
 export function allNodes(n: PlanNode, out: PlanNode[] = []): PlanNode[] {
@@ -28,34 +29,93 @@ export function weighed(plan: Plan): boolean {
  * or pattern in a generic plan). Mirrors culprit_core::plan::GUESSED_SELECTIVITY. */
 const GUESSED_SELECTIVITY = "Selectivity";
 
-/** Whether a step's rows rest on the planner's default guess for a parameter: its own, or any of its inputs'. */
-export function restsOnGuess(n: PlanNode): boolean {
-  return n.props[GUESSED_SELECTIVITY] != null || n.children.some(restsOnGuess);
+/** How a step's cost rests on the planner's default guess for a parameter: "rows" where it or a step below it was planned
+ * on the guess, "runs" where a loop runs it once for each row of an input planned on one (the inner side of a nested loop
+ * over `= ANY($1)`). Mirrors culprit_core::plan::Plan::guesses. */
+export type Guess = "rows" | "runs";
+
+const guessCache = new WeakMap<Plan, Map<number, Guess>>();
+
+/** Every step whose cost rests on a guess, by node id (worked out once per plan). Mirrors
+ * culprit_core::plan::Plan::guesses. */
+export function guesses(plan: Plan): Map<number, Guess> {
+  const cached = guessCache.get(plan);
+  if (cached) return cached;
+  // Planned on the guess: the step itself or any step below it.
+  const planned = new Set<number>();
+  const mark = (n: PlanNode): boolean => {
+    let any = n.props[GUESSED_SELECTIVITY] != null;
+    for (const c of n.children) any = mark(c) || any;
+    if (any) planned.add(n.id);
+    return any;
+  };
+  mark(plan.root);
+  const out = new Map<number, Guess>();
+  const visit = (n: PlanNode, repeated: boolean) => {
+    if (planned.has(n.id)) out.set(n.id, "rows");
+    else if (repeated) out.set(n.id, "runs");
+    const nestedLoop = n.op.toLowerCase().startsWith("nested loop");
+    let earlier = false;
+    n.children.forEach((c, i) => {
+      const relation = c.props["Parent Relationship"];
+      const once = relation === "InitPlan" || relation === "CTE";
+      const perRow = !once && i > 0 && (nestedLoop || c.est_executions > Math.max(n.est_executions, 1));
+      visit(c, repeated || (perRow && earlier));
+      earlier = earlier || planned.has(c.id);
+    });
+  };
+  visit(plan.root, false);
+  guessCache.set(plan, out);
+  return out;
+}
+
+/** Whether any step was planned on a default guess for a parameter: then the plan's total, and whether it is cheap, rest
+ * on it too. Mirrors culprit_core::plan::Plan::has_guess. */
+export function hasGuess(plan: Plan): boolean {
+  return allNodes(plan.root).some((n) => n.props[GUESSED_SELECTIVITY] != null);
+}
+
+/** Whether the plan states any step's share of its cost: it weighs its steps, does real work (half of a point lookup's
+ * cost isn't where its statement's time goes) and costs every step doing work. Mirrors
+ * culprit_core::plan::Plan::states_shares. */
+export function statesShares(plan: Plan, uncosted: PlanNode[] = uncostedSteps(plan)): boolean {
+  return weighed(plan) && doesRealWork(plan) && uncosted.length === 0;
 }
 
 /** Steps doing work that carry no cost of their own in a plan that weighs its steps: MySQL and MariaDB put none on a
  * filesort or an internal temporary table (nor on the grouping that uses one). Beside one, a step's share of what the
- * plan costs isn't its share of the statement's work. Mirrors culprit_core::plan::Plan::uncosted_steps. */
+ * plan costs isn't its share of the statement's work. Only theirs: SQL Server and PostgreSQL cost every step, so a step
+ * whose own cost works out at nothing there costs too little to matter. Mirrors
+ * culprit_core::plan::Plan::uncosted_steps. */
 export function uncostedSteps(plan: Plan): PlanNode[] {
-  if (!weighed(plan)) return [];
+  if (!weighed(plan) || plan.engine !== "mysql") return [];
   const temporary = (n: PlanNode) => [n.op, n.detail ?? ""].some((t) => t.toLowerCase().includes("temporary"));
   return allNodes(plan.root).filter((n) => n.self_cost <= 0 && (n.kind === "sort" || n.kind === "aggregate" || n.kind === "spool" || temporary(n)));
 }
 
-/** A step's share of the plan's cost where the plan can state one, at most 1; null on a plan without costs, for a step
- * with no cost of its own, beside a step doing work the plan puts no cost on (next to MySQL's filesort a scan reads as
- * "100%"), and for a step whose rows rest on a default guess. The one rule behind every share of the cost a person reads,
- * so the plan viewer never shows one the brief withholds. Mirrors culprit_core::plan::Plan::step_share. */
+/** A step's share of the plan's cost where the plan can state one, at most 1; null where the plan states no shares (no
+ * costs, a cheap plan, a step doing work it puts no cost on: next to MySQL's filesort a scan reads as "100%"), for a step
+ * with no cost of its own, and for a step whose cost rests on a default guess. The one rule behind every share of the
+ * cost a person reads, so the plan viewer never shows one the brief withholds. Mirrors
+ * culprit_core::plan::Plan::step_share. */
 export function stepShare(plan: Plan, n: PlanNode, uncosted: PlanNode[] = uncostedSteps(plan)): number | null {
-  if (!weighed(plan) || n.self_cost <= 0 || uncosted.length > 0 || restsOnGuess(n)) return null;
+  if (!statesShares(plan, uncosted) || n.self_cost <= 0 || guesses(plan).has(n.id)) return null;
   return Math.min(1, Math.max(0, n.self_cost / costBasis(plan)));
 }
 
 /** A step's share of the plan's cost with everything below it, under the same rule as `stepShare` (a subtree without
  * a cost of its own still has its inputs'). */
 export function subtreeShare(plan: Plan, n: PlanNode, uncosted: PlanNode[] = uncostedSteps(plan)): number | null {
-  if (!weighed(plan) || uncosted.length > 0 || restsOnGuess(n)) return null;
+  if (!statesShares(plan, uncosted) || guesses(plan).has(n.id)) return null;
   return Math.min(1, Math.max(0, n.subtree_cost / costBasis(plan)));
+}
+
+/** The share of the plan's work an insight states: its impact where that is a share (not a rule's own weight), the plan
+ * states shares and none of its steps' cost rests on a guess. Mirrors culprit_core::insights::stated_share. */
+export function statedInsightShare(plan: Plan, i: PlanInsight): number | null {
+  const guessed = guesses(plan);
+  if (i.fixed_weight || !statesShares(plan) || i.nodes.some((id) => guessed.has(id))) return null;
+  return i.impact;
 }
 
 /** "Sort (using filesort)": a step and what it does. */
@@ -68,44 +128,200 @@ function list(items: string[]): string {
   return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
+const GUESSED_ROWS = "The rows it works on rest on the planner's default guess for a parameter, not on the table's statistics, so no share is given.";
+const GUESSED_RUNS = "It runs once for each row of a step whose rows rest on the planner's default guess for a parameter, so how often it runs is that guess, and no share is given.";
+
 /** Why a plan that weighs its steps states no share of its cost for `n`, as a sentence; null where it states one or on a
- * plan without costs. Mirrors culprit_checks::no_share_reason, so the viewer says what the brief says. */
-export function noShareReason(plan: Plan, n: PlanNode): string | null {
+ * plan without costs. The true reason, with what the statement `query`'s runs measured where it is given: a misestimate
+ * isn't "cheap", and nor is a scan of a whole table big enough to matter (`wholeReadMatters`). Mirrors
+ * culprit_checks::no_share_reason, so the viewer says what the
+ * brief says. */
+export function noShareReason(plan: Plan, n: PlanNode, query?: QueryStat | null): string | null {
   const uncosted = uncostedSteps(plan);
   if (!weighed(plan) || stepShare(plan, n, uncosted) != null) return null;
   if (uncosted.length > 0) {
     const one = uncosted.length === 1;
     return `${list(uncosted.map(stepName))} ${one ? "has" : "have"} no cost of ${one ? "its" : "their"} own in the plan, so no share is given.`;
   }
-  if (restsOnGuess(n)) return "The rows it works on rest on the planner's default guess for a parameter, not on the table's statistics, so no share is given.";
+  const guess = guesses(plan).get(n.id);
+  if (guess === "rows") return GUESSED_ROWS;
+  if (guess === "runs") return GUESSED_RUNS;
+  if (!doesRealWork(plan)) return cheapPlanReason(plan, query);
   return `${stepName(n)} has no cost of its own in the plan, so no share is given.`;
 }
 
-/** The share of its plan's cost a finding's step is said to have: `stepShare`, only in a plan that does real work, as
- * heavy-query says it (a cheap plan's costliest step isn't where its statement's time goes). Mirrors
- * culprit_checks::finding_step_share. */
+/** The share of its plan's cost a finding's step is said to have: `stepShare`, which states one only in a plan that
+ * does real work, as heavy-query says it. Mirrors culprit_checks::finding_step_share. */
 export function findingStepShare(plan: Plan, n: PlanNode): number | null {
-  return doesRealWork(plan) ? stepShare(plan, n) : null;
+  return stepShare(plan, n);
 }
 
-/** Why a finding's step states no share (`findingStepShare`), as a sentence; null where it states one or on a plan
- * without costs. Mirrors culprit_checks::no_share_reason; the plan viewer, which shows every step's share of a cheap
- * plan too, uses `noShareReason`. */
-export function findingNoShareReason(plan: Plan, n: PlanNode): string | null {
-  if (weighed(plan) && stepShare(plan, n) != null && !doesRealWork(plan)) {
-    return "The plan as a whole is cheap, so no share of its cost is put on one step.";
+/** Why a finding's step states no share (`findingStepShare`), with what its statement's runs measured: `noShareReason`,
+ * except that a step the finding is about which reads its table whole on a cheap plan is said as that read, whatever
+ * the table's size (the finding shows it matters), unless its runs measured a misestimate. Mirrors
+ * culprit_checks::finding_no_share_reason. */
+export function findingNoShareReason(plan: Plan, n: PlanNode, query?: QueryStat | null): string | null {
+  const why = noShareReason(plan, n, query);
+  if (why == null) return null;
+  const cheap = uncostedSteps(plan).length === 0 && !hasGuess(plan) && !doesRealWork(plan);
+  return cheap && !misestimateReason(plan, query) && readsTableWhole(n) ? wholeReadReason(plan, n) : why;
+}
+
+/** "…too small for a share…, but `Seq Scan` reads all 3.9K rows of public.apps on every run." */
+function wholeReadReason(plan: Plan, s: PlanNode): string {
+  const what = s.object ?? "its table";
+  const all = s.table_rows != null && s.table_rows > 0 ? `all ${rowCount(s.table_rows)} of ${what}` : `all of ${what}`;
+  return `Its estimated cost (${costText(Math.max(plan.total_cost, plan.root.subtree_cost))}) is too small for a share of it to say where the time goes, but \`${s.op}\` reads ${all} on every run.`;
+}
+
+/** The misestimate a statement's runs measured against a cheap plan, as the sentence that says it; null where they
+ * measured none (or weren't measured). Mirrors the MoreRows/MoreReads arms of culprit_core::insights::cheap_plan_runs. */
+function misestimateReason(plan: Plan, query?: QueryStat | null): string | null {
+  const runs = query && query.executions > 0 ? query.executions : null;
+  const writes = query ? /^[\s(]*(insert|update|delete|merge|replace)/i.test(withoutParameterList(query.text)) : false;
+  const handled = query && runs ? (writes ? (query.rows_affected ?? query.rows) : query.rows) : null;
+  const reads = query?.logical_reads != null && runs ? query.logical_reads / runs : null;
+  const rows = handled != null && runs ? handled / runs : null;
+  if (reads == null || rows == null) return null;
+  const root = plan.root;
+  const fed = root.kind === "modify" ? (root.children[0]?.est_rows ?? 0) : 0;
+  const expected = Math.max(root.est_rows, fed, 1);
+  if (rows >= expected * 10 && rows >= 100) {
+    return `Its costs rest on an estimate of ${rowCount(expected)} a run, and its runs ${writes ? "change" : "return"} far more (${rowCount(rows)} a run), so no share of them is put on one step.`;
   }
-  return noShareReason(plan, n);
+  if (reads > LOOKUP_PAGES_PER_ROW * Math.max(rows, 1)) {
+    const unit = plan.engine === "mysql" ? "rows examined" : "pages";
+    return `Its costs rest on an estimate of ${rowCount(expected)} a run, and its runs read far more than that needs (${count(Math.round(reads))} ${unit} a run), so no share of them is put on one step.`;
+  }
+  return null;
 }
 
 /** Why steps of a plan that weighs them show no share of its cost, for under its steps; null when each costed step shows
- * one. Mirrors culprit_engine::export::shares_note. */
-export function sharesNote(plan: Plan): string | null {
+ * one. Mirrors culprit_checks::plan_shares_note (without the statement: what the plan itself shows). */
+export function sharesNote(plan: Plan, query?: QueryStat | null): string | null {
   if (!weighed(plan)) return null;
-  if (uncostedSteps(plan).length > 0) return noShareReason(plan, plan.root);
-  return allNodes(plan.root).some((n) => n.props[GUESSED_SELECTIVITY] != null)
-    ? "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it."
-    : null;
+  if (uncostedSteps(plan).length > 0) return noShareReason(plan, plan.root, query);
+  if (!doesRealWork(plan)) return cheapPlanReason(plan, query);
+  const found = [...guesses(plan).values()];
+  if (found.length === 0) return null;
+  return found.includes("runs")
+    ? "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it or run once for each of its rows."
+    : "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it.";
+}
+
+/** Pages a run may read for each row it handles and still be finding rows through indexes. Mirrors
+ * culprit_core::insights::LOOKUP_PAGES_PER_ROW. */
+const LOOKUP_PAGES_PER_ROW = 32;
+
+/** Whether a step reads its whole table on each run: a scan of a table, unless it may never be read (a partition a run
+ * prunes) or the plan's own estimate of its rows read is under half the table's (a scan under a TOP that stops early).
+ * Mirrors culprit_core::plan::PlanNode::reads_table_whole. */
+function readsTableWhole(n: PlanNode): boolean {
+  if (n.kind !== "scan" || !n.object || n.props["Partition Pruning"] != null) return false;
+  if (n.rows_read != null && n.table_rows != null && n.table_rows > 0) return n.rows_read >= 0.5 * n.table_rows * runs(n);
+  return true;
+}
+
+/** Tables of this many rows or more: reading one in full costs something. Mirrors culprit_core::plan::SCAN_ROWS. */
+const SCAN_ROWS = 10_000;
+
+/** A name part without its quotes or brackets (`[sys]`, `"pg_catalog"`). Mirrors culprit_core::insights'
+ * clean_identifier. */
+function cleanIdentifier(raw: string): string {
+  const t = raw.trim();
+  const pairs: [string, string][] = [["[", "]"], ["`", "`"], ['"', '"']];
+  for (const [open, close] of pairs) {
+    if (t.length >= 2 && t.startsWith(open) && t.endsWith(close)) return t.slice(1, -1).split(close + close).join(close);
+  }
+  return t.replace(/^[[\]`"]+|[[\]`"]+$/g, "");
+}
+
+const SYSTEM_SCHEMAS = new Set(["sys", "information_schema", "pg_catalog", "pg_toast", "performance_schema", "mysql"]);
+
+/** Whether a plan's object is the engine's own, its catalog and statistics. Mirrors
+ * culprit_core::insights::is_system_object. */
+function isSystemObject(object: string): boolean {
+  const parts = object.split(".").map((p) => cleanIdentifier(p).toLowerCase());
+  const schema = parts.length >= 2 ? parts[parts.length - 2] : null;
+  return (schema != null && SYSTEM_SCHEMAS.has(schema)) || parts[0] === "mssqlsystemresource" || (parts[parts.length - 1] ?? "").startsWith("sqlite_");
+}
+
+/** Whether a SQL Server plan names a schema only for the engine's own objects (its internal functions carry none).
+ * Mirrors culprit_core::insights' reads_only_the_catalog. */
+function readsOnlyTheCatalog(plan: Plan): boolean {
+  if (plan.engine !== "mssql") return false;
+  const qualified = allNodes(plan.root).flatMap((n) => (n.object && n.object.includes(".") ? [n.object] : []));
+  return qualified.length > 0 && qualified.every(isSystemObject);
+}
+
+/** Whether a step reads a whole table in a way that can weigh on a run: it reads it whole, the table has SCAN_ROWS rows
+ * or more or the step reads that many over its runs, and it isn't the engine's own. All 2 rows of pg_database are no
+ * reason a plan's runs cost what they do. Mirrors culprit_core::insights::whole_read_matters. */
+function wholeReadMatters(plan: Plan, n: PlanNode): boolean {
+  if (!readsTableWhole(n)) return false;
+  const object = n.object ?? "";
+  if (isSystemObject(object) || (!object.includes(".") && readsOnlyTheCatalog(plan))) return false;
+  const read = rowsRead(n);
+  return (n.table_rows != null && n.table_rows >= SCAN_ROWS) || (read != null && read >= SCAN_ROWS);
+}
+
+/** A statement without SQL Server's parameter declarations in front (`(@P1 int)UPDATE …`). Mirrors
+ * culprit_core::sql::without_parameter_list. */
+function withoutParameterList(text: string): string {
+  const t = text.trimStart();
+  if (!t.startsWith("(") || !t.slice(1).trimStart().startsWith("@")) return t;
+  let depth = 1;
+  for (let i = 1; i < t.length; i++) {
+    if (t[i] === "(") depth++;
+    else if (t[i] === ")" && --depth === 0) return t.slice(i + 1);
+  }
+  return t;
+}
+
+/** "1 row", "3.9K rows". */
+function rowCount(n: number): string {
+  const c = count(n);
+  return `${c} row${c === "1" ? "" : "s"}`;
+}
+
+/** A plan's estimated cost as the engine writes it: whole units from 10, else three significant digits. Mirrors
+ * culprit_checks' cost_text. */
+function costText(cost: number): string {
+  if (cost >= 10) return cost.toFixed(0);
+  const digits = Math.min(6, Math.max(0, 2 - Math.floor(Math.log10(Math.max(cost, 1e-9)))));
+  return cost.toFixed(digits);
+}
+
+/** Why a plan that does no real work puts a share of its cost on no step, as its statement's runs measured it. Mirrors
+ * culprit_checks' cheap_plan_reason over culprit_core::insights::cheap_plan_runs. */
+function cheapPlanReason(plan: Plan, query?: QueryStat | null): string {
+  if (hasGuess(plan)) return "The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on one step.";
+  const cheap = "The plan as a whole is cheap, so no share of its cost is put on one step.";
+  let scan: PlanNode | null = null;
+  // A whole read of a small table or of the catalog is no reason: the runs are read as if it weren't there.
+  // `>=` keeps the last of equal costs, as the core's max_by does.
+  for (const n of allNodes(plan.root)) if (wholeReadMatters(plan, n) && (!scan || n.self_cost >= scan.self_cost)) scan = n;
+  const runs = query && query.executions > 0 ? query.executions : null;
+  const writes = query ? /^[\s(]*(insert|update|delete|merge|replace)/i.test(withoutParameterList(query.text)) : false;
+  const handled = query && runs ? (writes ? (query.rows_affected ?? query.rows) : query.rows) : null;
+  const reads = query?.logical_reads != null && runs ? query.logical_reads / runs : null;
+  const rows = handled != null && runs ? handled / runs : null;
+  if (!query || reads == null || rows == null) return scan ? wholeReadReason(plan, scan) : cheap;
+  const misestimate = misestimateReason(plan, query);
+  if (misestimate) return misestimate;
+  if (scan) return wholeReadReason(plan, scan);
+  if (query.mean_time_ms >= 10) {
+    // What a run or two took, where an average would hide it (culprit_core::model::QueryStat::few_runs).
+    const longest = query.max_time_ms != null ? Math.min(Math.max(query.max_time_ms, 0), query.total_time_ms) : null;
+    const few =
+      query.executions === 1
+        ? `its one run took ${duration(query.total_time_ms)}`
+        : query.executions === 2 && longest != null && query.total_time_ms > 0 && longest >= (query.total_time_ms - longest) * 2
+          ? `its runs took ${duration(longest)} and ${duration(query.total_time_ms - longest)}`
+          : `its runs take ${duration(query.mean_time_ms)} on average`;
+    return `The plan is estimated to be cheap, yet ${few}: the time isn't in what it costs, so no share of its cost is put on one step.`;
+  }
+  return cheap;
 }
 
 /** The step with the largest cost of its own: where the plan spends most of its effort. Null on a plan without costs. An

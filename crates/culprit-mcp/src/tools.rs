@@ -467,7 +467,10 @@ pub fn definitions() -> Vec<Tool> {
                 "After a fix ships, re-scan the connection and compare with its previous scan: each finding is \
                  `fixed`, `still-present` or `unknown` (its check couldn't run), plus `new` findings the change may \
                  have caused. Reads statistics views only. Findings measured over a workload window can stay until \
-                 that window moves past the change; the result says so.{DATA_NOTE}"
+                 that window moves past the change, and a statement's findings on running totals (pg_stat_statements, \
+                 performance_schema) stay while those totals hold the runs from before it: `what_changed` with \
+                 `since` set to the ship time compares the runs since then with the ones before (a scan taken when \
+                 it ships starts that period). The result says so.{DATA_NOTE}"
             ),
         ),
         tool::<ExportFindingArgs>(

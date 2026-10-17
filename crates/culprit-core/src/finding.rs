@@ -178,6 +178,28 @@ pub struct Summary {
     /// sentence every surface shows instead of deciding for itself which capability explains it.
     #[serde(default)]
     pub no_workload: Option<String>,
+    /// How the runs of the statements a rate a day would misstate are said ([`crate::Workload::cadence`]): those that
+    /// came in bursts, and in a window of a day or more those that ran fewer times than it has days. Every surface
+    /// that lists statements says these instead of a rate a day ("750 runs on Oct 11, 15:51–15:55 UTC"); the others'
+    /// runs came a day at a time, or are counted in a window under a day.
+    #[serde(default)]
+    pub runs_said: Vec<RunsSaid>,
+    /// What Culprit's own scans measured of the statements they did, on a source of running totals with a day or more
+    /// of them ([`crate::Workload::scans_of`]): their share, runs a day and average as every surface states them
+    /// ([`crate::Workload::cost_of`]). A surface that lists statements (the app) says these; the others' figures are
+    /// their totals over the window.
+    #[serde(default)]
+    pub over_scans: Vec<crate::model::StatementCost>,
+}
+
+/// How one statement's runs are said where a rate a day would misstate them ([`Summary::runs_said`]).
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct RunsSaid {
+    /// The statement's id in the workload.
+    pub query: String,
+    /// "750 runs on Oct 11, 15:51–15:55 UTC", "120K runs on Oct 11 and Oct 17", "3 runs in the last 6 days".
+    pub runs: String,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]

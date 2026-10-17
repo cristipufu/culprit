@@ -302,20 +302,74 @@ fn readers_blocked(snapshot: &Snapshot) -> (f64, usize, Option<(String, f64)>) {
     (lock_ms, deadlocks, longest)
 }
 
+/// The reads that waited on locks (see [`readers_blocked`]), as their runs came: whether any ran steadily enough for a
+/// rate a day, when they ran where they came in bursts ("on Oct 11, 13:56–14:19 UTC", for one read or several in one
+/// stretch), and whether all of them stopped running (history: their waits are behind them).
+struct WaitingReads<'a> {
+    reads: Vec<&'a culprit_core::QueryStat>,
+    steady: bool,
+    when: Option<String>,
+    stopped: bool,
+}
+
+fn waiting_reads(snapshot: &Snapshot) -> WaitingReads<'_> {
+    let reads: Vec<&culprit_core::QueryStat> = app_queries(snapshot)
+        .filter(|q| versioning_spares_read(q))
+        .filter(|q| q.waits.iter().any(|w| category_key(&w.category) == "lock" && w.wait_ms > 0.0))
+        .collect();
+    let w = snapshot.workload.as_ref();
+    let steady = reads.iter().any(|q| w.is_some_and(|w| w.runs_per_day_of(q).is_some()));
+    // One stretch for all of them: the earliest first run to the latest last, where every read came in one burst.
+    let bursts: Vec<(String, String)> = reads
+        .iter()
+        .filter_map(|q| match w?.cadence(q) {
+            culprit_core::Cadence::Burst { from, to, days, .. } if days.is_empty() => Some((from, to)),
+            _ => None,
+        })
+        .collect();
+    let when = (!reads.is_empty() && !steady && bursts.len() == reads.len())
+        .then(|| {
+            let at = |s: &String| crate::support::parse_epoch_seconds(s);
+            let from =
+                bursts.iter().min_by(|a, b| at(&a.0).partial_cmp(&at(&b.0)).unwrap_or(std::cmp::Ordering::Equal))?;
+            let to =
+                bursts.iter().max_by(|a, b| at(&a.1).partial_cmp(&at(&b.1)).unwrap_or(std::cmp::Ordering::Equal))?;
+            let span = at(&to.1)? - at(&from.0)?;
+            (span < 86_400.0).then(|| culprit_core::span_when(&from.0, &to.1))
+        })
+        .flatten()
+        .or_else(|| match reads.as_slice() {
+            [q] if !steady => w.and_then(|w| w.cadence(q).when()),
+            _ => None,
+        });
+    let stopped = !reads.is_empty() && reads.iter().all(|q| crate::query_is_history(snapshot, q));
+    WaitingReads { reads, steady, when, stopped }
+}
+
 fn read_committed_snapshot(snapshot: &Snapshot, db: &str) -> Finding {
     let (lock_ms, deadlocks, longest) = readers_blocked(snapshot);
     let share = snapshot.workload.as_ref().map(|w| w.share(lock_ms)).unwrap_or(0.0);
+    let waiting = waiting_reads(snapshot);
     // Reads blocked for a real amount of time (a minute in the window, a few percent of it, and the amount rule every
-    // time-based finding uses: about a minute a day), or a deadlock a read was part of: that's what the setting removes.
+    // time-based finding uses: about a minute a day, a burst's on its own total), or a deadlock a read was part of:
+    // that's what the setting removes. Waits of reads that all stopped running are history, as any finding on them is.
     // Without either it is advice for later.
-    let real_amount = severity_for_time(snapshot, lock_ms, share) >= Severity::Medium;
-    let blocking = (lock_ms >= 60_000.0 && share >= 0.03 && real_amount) || deadlocks > 0;
+    let real_amount = severity_for_time_of(snapshot, &waiting.reads, lock_ms, share) >= Severity::Medium;
+    let blocking = (lock_ms >= 60_000.0 && share >= 0.03 && real_amount && !waiting.stopped) || deadlocks > 0;
+    // When the waits came, where the reads came in bursts, and that they're over where the reads stopped.
+    let reads_now = if waiting.reads.len() == 1 { "that read hasn't" } else { "those reads haven't" };
+    let came = match (&waiting.when, waiting.stopped) {
+        (Some(when), true) => format!(", all of it {when}, and {reads_now} run since"),
+        (Some(when), false) => format!(", all of it {when}"),
+        (None, true) => format!(", and {reads_now} run since"),
+        (None, false) => String::new(),
+    };
     let window = snapshot.workload.as_ref().map(|w| w.window_phrase()).unwrap_or_else(|| "this scan".into());
     let (severity, title, evidence) = if blocking {
         let mut parts = Vec::new();
         if lock_ms > 0.0 {
             parts.push(format!(
-                "In {window}, reads waited {} on locks held by writes ({} of database time).",
+                "In {window}, reads waited {} on locks held by writes ({} of database time){came}.",
                 format::duration(lock_ms),
                 format::percent(share)
             ));
@@ -345,16 +399,19 @@ fn read_committed_snapshot(snapshot: &Snapshot, db: &str) -> Finding {
             format!(" In {window} no read waited on locks, so it costs nothing now.")
         } else if share < 0.03 {
             format!(
-                " In {window} reads waited {} on locks ({} of database time), so it costs little now.",
+                " In {window} reads waited {} on locks ({} of database time){came}, so it costs little now.",
                 format::duration(lock_ms),
                 format::percent(share)
             )
         } else {
+            // A rate a day only where the reads ran that way; reads that came in bursts are said by when they did.
             let amount = snapshot
                 .workload
                 .as_ref()
+                .filter(|_| waiting.steady)
                 .and_then(|w| w.per_day_measured(lock_ms))
                 .map(|d| format!("only about {} a day", format::duration(d)))
+                .or_else(|| (!came.is_empty()).then(|| came.trim_start_matches(", ").to_string()))
                 .unwrap_or_else(|| "little time in all".into());
             let which = match &longest {
                 Some((handle, ms)) if *ms >= lock_ms * 0.9 => format!(" (nearly all of it {handle})"),
@@ -513,7 +570,12 @@ fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
             Fix {
                 summary: format!("Turn it on with a threshold that matches your latency budget. {}", change.how),
                 sql: change.sql,
-                cost: None,
+                // What the table costs the lock time every check reads: the reason Culprit asks for it said beside it.
+                cost: snapshot.server.is_mariadb().then(|| {
+                    format!(
+                        "{MARIADB_TABLE_LOCK_TIME} Leave TABLE out to keep their lock time, at the cost of the logged statements Culprit plans digests with."
+                    )
+                }),
             },
         );
         f.impact.score = 4.0;
@@ -521,6 +583,10 @@ fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
     }
     out
 }
+
+/// What MariaDB's slow query log written to a table does to lock time (`signals::lock_time_counts_the_run`), said
+/// wherever a fix turns that log on.
+pub(crate) const MARIADB_TABLE_LOCK_TIME: &str = "Written to a table (TABLE in log_output), MariaDB counts the whole run of each statement it logs as that statement's lock time, so their lock time says nothing (Culprit reads it as unknown); written to a file (FILE), it is the real wait.";
 
 /// A buffer pool smaller than the data is a problem only when reads miss it: a large, mostly cold schema served
 /// from memory 99.9% of the time needs nothing. Graded on the hit rate and how much it reads from disk, since the
@@ -638,6 +704,9 @@ mod tests {
         w.window_hours = 146.66;
         let read = w.queries.iter_mut().find(|q| q.text.starts_with("SELECT")).unwrap();
         read.waits.push(WaitStat { category: "Lock".into(), wait_type: None, wait_ms: 71_692.0, tasks: None });
+        // A read that runs over the whole window (the fixture's four hours in six days would be a burst, said by when
+        // it ran: tests/bursts.rs).
+        (read.first_seen, read.last_seen, read.trend) = (None, None, None);
         w.total_time_ms = 335_668.0;
         let f = found(&mssql(&s), "config:read-committed-snapshot").cloned().unwrap();
         assert_eq!(f.severity, Severity::Low, "about 12 s a day");
@@ -741,6 +810,17 @@ mod tests {
             "{}",
             fix.summary
         );
+        // MY-10: MySQL's lock time is the same either way; MariaDB's, written to a table, is the whole logged run.
+        assert_eq!(fix.cost, None);
+        my.server.cloud = None;
+        my.server.product = "MariaDB".into();
+        let fix = found(&mysql(&my), "config:slow_query_log").cloned().unwrap().fix.unwrap();
+        let cost = fix.cost.unwrap_or_default();
+        assert!(
+            cost.starts_with("Written to a table (TABLE in log_output), MariaDB counts the whole run of each statement it logs as that statement's lock time"),
+            "{cost}"
+        );
+        assert!(cost.contains("Leave TABLE out to keep their lock time"), "{cost}");
     }
 
     fn buffer_pool_snapshot(hit: f64, reads: f64) -> Snapshot {

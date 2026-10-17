@@ -62,8 +62,15 @@ fn advice_query(snapshot: &Snapshot, q: &QueryStat) -> AdviceQuery {
     AdviceQuery {
         id: q.id.clone(),
         text,
-        share: snapshot.workload.as_ref().map(|w| w.share(q.total_time_ms)),
-        runs_per_day: snapshot.workload.as_ref().filter(|w| w.window_hours >= 20.0).map(|w| w.per_day(q.executions)),
+        // As every surface states them: over Culprit's scans where they measured it.
+        share: snapshot.workload.as_ref().map(|w| w.statement_share(q)),
+        // A day's worth only where its runs came that way: none for a burst or fewer runs than days.
+        runs_per_day: snapshot.workload.as_ref().and_then(|w| {
+            match w.scans_of(q).filter(|_| !w.cadence(q).is_burst()) {
+                Some(s) => Some(s.per_day(s.runs)),
+                None => w.runs_per_day_of(q),
+            }
+        }),
     }
 }
 
@@ -206,6 +213,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         if asking.is_empty() {
             verify.remove(1);
         }
+        // What "this index" costs the table's writes, said only beside the SQL that creates it.
+        let cost = sql.as_ref().and_then(|_| write_cost(s, &c.schema, &c.table));
         let requests = c
             .requests
             .iter()
@@ -233,7 +242,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             estimated_improvement: Some(c.impact_pct / 100.0),
             table_rows: s.table(&c.schema, &c.table).and_then(|t| t.rows),
             writes_per_day: writes_per_day(s, &c.schema, &c.table),
-            write_cost: write_cost(s, &c.schema, &c.table),
+            write_cost: cost,
             verify,
             finding_id: link(format!("missing-index:{table_name}({})", keys.join(","))),
         });
@@ -382,10 +391,8 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         if crate::indexes::fk_is_indexed(s, fk) {
             continue;
         }
-        let through_key: Vec<&QueryStat> = queries_touching(s, &fk.schema, &fk.table)
-            .into_iter()
-            .filter(|q| uses_foreign_key(engine, &q.text, fk))
-            .collect();
+        // The finding's own list: a statement whose plan shows the index wouldn't serve it isn't listed (MS-5).
+        let through_key: Vec<&QueryStat> = crate::indexes::through_foreign_key(s, fk);
         // Weight comes only from statements whose plan shows no index serving the key (see `plan_reads_whole`).
         let slowed: Vec<&QueryStat> = through_key
             .iter()
@@ -737,10 +744,22 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     if !s.server.has(Capability::IndexUsage) {
         notes.push("Index usage counters aren't readable, so unused and overlapping indexes can't be judged.".into());
     } else if !crate::indexes::watched_long_enough(s) {
-        notes.push(format!(
-            "Index usage counters have counted {}; an index has to go unread for a week before it's listed to clean up.",
-            counter_days(s).map_or_else(|| "for an unknown time".to_string(), |d| format!("for {}", format::duration(d * 86_400_000.0)))
-        ));
+        let counted = crate::support::watched_days(s).map_or_else(
+            || "for an unknown time".to_string(),
+            |d| format!("for {}", format::duration(d * 86_400_000.0)),
+        );
+        notes.push(if crate::support::counters_may_be_reset(s) {
+            // Reset with the statements, the counters are as old as the statement digests, whatever the uptime.
+            format!(
+                "Index usage counters may have started over with performance_schema's statements, which have counted \
+                 {counted}; an index has to go unread for a week of them before it's listed to clean up."
+            )
+        } else {
+            format!(
+                "Index usage counters have counted {counted}; an index has to go unread for a week before it's listed \
+                 to clean up."
+            )
+        });
     }
     if !s.server.has(Capability::QueryPlans) {
         notes.push("No plans were captured, so plan-based candidates are missing.".into());

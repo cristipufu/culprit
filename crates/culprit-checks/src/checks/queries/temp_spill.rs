@@ -44,28 +44,42 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
             let spill_share = workload.share_of(spill_ms * q.executions, q);
             let mut f = finding("temp-spill", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             apply_impact(snapshot, &mut f, &impact);
-            f.severity = severity_for_time(snapshot, spill_ms * q.executions, spill_share);
+            f.severity = severity_for_time_of(snapshot, &[q], spill_ms * q.executions, spill_share);
             f.impact.score = score_for_share(spill_share);
             f.confidence = Confidence::High;
             f.title = format!(
-                "{} writes about {} of temp files per run",
+                "{} {} about {} of temp files per run",
                 capitalize(&query_handle(q)),
+                if crate::all_stopped(snapshot, &[q]) { "wrote" } else { "writes" },
                 format::bytes(per_run)
             );
             // work_mem as Culprit's session has it: a role or database setting (ALTER ROLE … SET) gives the
             // application's sessions their own, which the scan doesn't read.
+            let (needs, writes, spills) = if crate::all_stopped(snapshot, &[q]) {
+                ("needed", "wrote", "spilled")
+            } else {
+                ("needs", "writes", "spills")
+            };
+            // The spill is kept only in the totals: where the statement's share and average are Culprit's scans', what
+            // it wrote is said over what it is counted over.
+            let basis = crate::support::totals_basis(snapshot, q);
             f.summary = format!(
-                "A sort or hash in this statement needs more memory than work_mem ({} in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: {} over {} runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory.",
+                "A sort or hash in this statement {needs} more memory than work_mem ({} in Culprit's session; a setting on the application's role or database can differ) and {writes} the overflow to temporary files: {} over {} runs{}. pg_stat_statements counts the total, so whether every run {spills} or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory.",
                 work_mem_text.as_deref().unwrap_or("4MB, the default"),
                 format::bytes(written),
-                format::count(q.executions)
+                format::count(q.executions),
+                basis.as_ref().map(|b| format!(" in {b}")).unwrap_or_default()
             );
             f.queries = vec![QueryRef { id: q.id.clone(), plan_node: spilling_step(q, false), note: None }];
-            f.metrics.push(Metric::new("Temp written per run", per_run, Unit::Bytes));
-            f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
+            let label = match &basis {
+                Some(b) => format!("Temp written per run over {b}"),
+                None => "Temp written per run".to_string(),
+            };
+            f.metrics.push(Metric::new(label, per_run, Unit::Bytes));
+            f.metrics.extend(crate::queries::average_metrics(snapshot, q));
             f.fix = Some(work_mem_fix(work_mem, work_mem_text.as_deref(), per_run));
             f.verify = vec![spill_verify(
-                workload,
+                snapshot,
                 "Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change)",
                 "temp files",
                 format!("{} over {} runs", format::bytes(written), format::count(q.executions)),
@@ -76,20 +90,16 @@ pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
 }
 
 /// How a later scan shows the spill gone. A windowed source drops the runs from before the change once its window has
-/// passed them. A source of running totals keeps them: the statement's count staying as it is while its runs go on is
-/// what shows it, said with the numbers to compare (`now`), and the finding can stay until those totals are reset.
-fn spill_verify(workload: &culprit_core::Workload, live: &str, what: &str, now: String) -> String {
-    if workload.windowed {
-        return format!(
-            "{live}, scan again once the scan's window holds only runs from after it: this finding is gone."
-        );
+/// passed them. A source of running totals keeps them, and this finding with them: what shows it is the statement's
+/// count staying as it is while its runs go on, between a scan taken when the change is live and a later one, said
+/// with this scan's numbers (`now`) ([`verify_counts_between_scans`]).
+fn spill_verify(snapshot: &Snapshot, live: &str, what: &str, now: String) -> String {
+    match verify_counts_between_scans(snapshot, &format!("{what} and runs"), &now) {
+        Some(compare) => format!("{live}, its {what} should stop growing while its runs go on: {compare}."),
+        None => {
+            format!("{live}, scan again once the scan's window holds only runs from after it: this finding is gone.")
+        }
     }
-    format!(
-        "{live}, scan again after the statement has run a while and compare its {what} with this scan's: {now} now. {} \
-         keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this \
-         finding can stay until those totals are reset.",
-        workload.source
-    )
 }
 
 /// The plan's step that spills, to point at: the one the plan saw spill, else the only one that can. PostgreSQL's temp
@@ -197,31 +207,39 @@ pub(super) fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
             // rows, cheap where the file stays in the operating system's cache: nothing says it is what the run
             // spends its time on, so it is Low.
             f.severity = if large.is_empty() {
-                severity_for_time(snapshot, q.total_time_ms * runs_share, spilled_share)
+                severity_for_time_of(snapshot, &[q], q.total_time_ms * runs_share, spilled_share)
             } else {
                 Severity::Low
             };
             f.impact.score = score_for_share(if large.is_empty() { spilled_share } else { spilled_share * 0.25 });
             f.confidence = Confidence::High;
             let handle = capitalize(&query_handle(q));
+            // A statement that stopped running is told in the past.
+            let stopped = crate::all_stopped(snapshot, &[q]);
+            let builds = if stopped { "built" } else { "builds" };
+            let (outgrows, moves, holds) =
+                if stopped { ("outgrew", "moved", "held") } else { ("outgrows", "moves", "holds") };
             f.title = if per_run >= 0.95 && per_run.round() <= 1.0 {
-                format!("{handle} builds an on-disk temporary table about once per run")
+                format!("{handle} {builds} an on-disk temporary table about once per run")
             } else if per_run >= 0.95 {
-                format!("{handle} builds about {} on-disk temporary tables per run", format::count(per_run.round()))
+                format!("{handle} {builds} about {} on-disk temporary tables per run", format::count(per_run.round()))
             } else {
-                format!("{handle} builds on-disk temporary tables in up to {} of its runs", format::percent(runs_share))
+                format!("{handle} {builds} on-disk temporary tables in up to {} of its runs", format::percent(runs_share))
             };
             let name = snapshot.server.name();
+            // Counted only in the totals: said over what they are counted over where the share is Culprit's scans'.
+            let basis = crate::support::totals_basis(snapshot, q);
+            let over = basis.as_ref().map(|b| format!(" over {b}")).unwrap_or_default();
             f.summary = if large.is_empty() {
                 format!(
-                    "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows {} and moves to disk, which is many times slower: {} on-disk tables in {} runs.",
+                    "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement {outgrows} {} and {moves} to disk, which is many times slower: {} on-disk tables in {} runs{over}.",
                     limits.describe(),
                     format::count(tables),
                     format::count(q.executions)
                 )
             } else {
                 format!(
-                    "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement holds {}, and {name} keeps a temporary table with TEXT or BLOB values on disk whatever its size: {} on-disk tables in {} runs. Raising the memory limit won't change that.",
+                    "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement {holds} {}, and {name} keeps a temporary table with TEXT or BLOB values on disk whatever its size: {} on-disk tables in {} runs{over}. Raising the memory limit won't change that.",
                     format::list(&large),
                     format::count(tables),
                     format::count(q.executions)
@@ -229,13 +247,17 @@ pub(super) fn mysql_disk_temp_tables(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.queries = vec![QueryRef { id: q.id.clone(), plan_node: spilling_step(q, true), note: None }];
             f.verify = vec![spill_verify(
-                workload,
+                snapshot,
                 "Once the change is live",
                 "on-disk temporary tables",
                 format!("{} in {} runs", format::count(tables), format::count(q.executions)),
             )];
-            f.metrics.push(Metric::new("On-disk temporary tables per run", per_run, Unit::Count));
-            f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
+            let label = match &basis {
+                Some(b) => format!("On-disk temporary tables per run over {b}"),
+                None => "On-disk temporary tables per run".to_string(),
+            };
+            f.metrics.push(Metric::new(label, per_run, Unit::Count));
+            f.metrics.extend(crate::queries::average_metrics(snapshot, q));
             f.fix = Some(if large.is_empty() {
                 limits.fix(snapshot)
             } else {

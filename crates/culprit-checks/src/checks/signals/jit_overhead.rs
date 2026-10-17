@@ -26,10 +26,12 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
         .map(|(q, jit, share)| {
             let mut f = finding("jit-overhead", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             let handle = query_handle(q);
+            // A statement that stopped running is told in the past.
+            let takes = if crate::all_stopped(snapshot, &[q]) { "took" } else { "takes" };
             f.title = if share >= 0.5 {
-                format!("JIT compilation takes longer than running {handle}")
+                format!("JIT compilation {takes} longer than running {handle}")
             } else {
-                format!("JIT compilation takes {} of the time of {handle}", format::percent(share))
+                format!("JIT compilation {takes} {} of the time of {handle}", format::percent(share))
             };
             f.summary = format!(
                 "PostgreSQL compiles parts of this statement to machine code before running it, because the planner estimates its cost above jit_above_cost{}. \
@@ -38,11 +40,11 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 format::duration(per_run(jit, q.executions)),
                 format::duration(q.mean_time_ms),
                 format::duration(jit),
-                window_phrase(snapshot),
+                ran_phrase(snapshot, q),
                 format::duration(q.mean_time_ms)
             );
             // Medium needs both, as planning time does: most of the statement's time, and a minute a day of it.
-            f.severity = if share >= 0.5 && window_at_least(snapshot, jit, 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 && window_at_least(snapshot, q, jit, 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} JIT", format::percent(share));
@@ -53,7 +55,12 @@ pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
                 Metric::new("Run time", q.mean_time_ms, Unit::Ms),
             ];
             f.fix = Some(jit_fix(snapshot, threshold.as_deref()));
-            f.verify = vec!["Re-scan: JIT time per run should drop to zero or near it, and the average run time with it.".into()];
+            // On running totals the JIT time holds every run from before the change: two scans show it.
+            let now = format!("{} over {} runs", format::duration(jit), format::count(q.executions));
+            f.verify = vec![match crate::queries::verify_counts_between_scans(snapshot, "JIT time and runs", &now) {
+                Some(compare) => format!("Between two scans, its JIT time per run should drop to zero or near it: {compare}."),
+                None => "Re-scan: JIT time per run should drop to zero or near it, and the average run time with it.".into(),
+            }];
             f
         })
         .collect();

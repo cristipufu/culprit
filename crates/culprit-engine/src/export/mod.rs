@@ -164,26 +164,17 @@ pub(crate) fn kind_label(kind: PlanKind) -> &'static str {
     }
 }
 
-/// A step's share of the plan's cost where the plan can state one (`Plan::step_share`): none on a plan without costs,
-/// beside a step the plan puts no cost on (MySQL's filesort), or for a step whose rows rest on a default guess.
+/// A step's share of the plan's cost where the plan can state one (`Plan::step_share`): none on a plan without costs, a
+/// cheap plan, beside a step the plan puts no cost on (MySQL's filesort), or for a step whose cost rests on a guess.
 pub(crate) fn share(plan: &Plan, node: &PlanNode) -> Option<f64> {
     plan.step_share(node)
 }
 
 /// Why steps of a plan that weighs them show no share of its cost, for under its steps (every surface that lists a
-/// plan's steps says it the same); `None` when each costed step shows one.
-pub fn shares_note(plan: &Plan) -> Option<String> {
-    if !plan.weighed() {
-        return None;
-    }
-    if !plan.uncosted_steps().is_empty() {
-        return culprit_checks::no_share_reason(plan, &plan.root);
-    }
-    plan.nodes().iter().any(|n| n.props.contains_key(culprit_core::GUESSED_SELECTIVITY)).then(|| {
-        "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the \
-         steps above it."
-            .to_string()
-    })
+/// plan's steps says it the same, `culprit_checks::plan_shares_note`); `None` when each costed step shows one. `q` is
+/// the statement it was planned for, where known.
+pub fn shares_note(plan: &Plan, q: Option<&culprit_core::QueryStat>) -> Option<String> {
+    culprit_checks::plan_shares_note(plan, q)
 }
 
 /// Rows flowing out of an operator: actual when the plan ran, else the estimate across executions.
@@ -231,6 +222,24 @@ pub(crate) fn node_label(node: &PlanNode) -> String {
         Some(t) => format!("{} on {t}", node.op),
         None => node.op.clone(),
     }
+}
+
+/// What a finding's statement costs, as the brief says it ([`culprit_core::Workload::cost_of`]): "33% of database time ·
+/// about 642 runs a day over 89 hours of Culprit's scans · 2.5 ms on average (19% of database time … over the 1295 days
+/// since statistics were reset)", the totals beside only where they differ twofold.
+pub(crate) fn stats_line(workload: &culprit_core::Workload, q: &culprit_core::QueryStat) -> String {
+    let cost = workload.cost_of(q);
+    // One run or two far apart: what they took, never an average that hides it (`QueryStat::few_runs`).
+    let took = q.few_runs_took().map_or_else(
+        || format!("{} on average", culprit_core::format::duration(cost.mean_ms)),
+        |t| format!("took {t}"),
+    );
+    format!(
+        "{} of database time · {} · {took}{}",
+        culprit_core::format::percent(cost.share),
+        cost.runs,
+        cost.totals.map(|t| format!(" ({t})")).unwrap_or_default()
+    )
 }
 
 /// When the export was made, for the footer.

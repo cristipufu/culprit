@@ -73,7 +73,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
             continue;
         }
         let (one, many) = w.unit();
-        let measured = per_day_is_measured(days);
+        let measured = counters_measure_a_day(snapshot, days);
         let idle: Vec<&IndexStat> = secondary
             .iter()
             .copied()

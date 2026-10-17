@@ -80,6 +80,34 @@ fn capitalize(s: &str) -> String {
     chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
 }
 
+/// The SQL that starts the Extended Events session `name`, written the same way by every fix that asks for one: one
+/// session catches what every finding of its kind needs, so the fix creates it only where it isn't defined yet and
+/// starts it only where it isn't running, and a second finding's fix runs as well as the first. `definition` is what
+/// follows `CREATE EVENT SESSION <name> ON <scope>` (its events and target), one clause a line. Per database on Azure
+/// SQL Database, where a session can't see other databases; per server elsewhere. [`event_session_drop`] is the line
+/// that stops it.
+pub(crate) fn event_session_sql(name: &str, azure_sql_database: bool, definition: &str) -> String {
+    let (scope, defined, running) = if azure_sql_database {
+        ("DATABASE", "sys.database_event_sessions", "sys.dm_xe_database_sessions")
+    } else {
+        ("SERVER", "sys.server_event_sessions", "sys.dm_xe_sessions")
+    };
+    let body: String = definition.lines().map(|l| format!("\n    {l}")).collect();
+    format!(
+        "IF NOT EXISTS (SELECT 1 FROM {defined} WHERE name = N'{name}')\n    \
+         CREATE EVENT SESSION {name} ON {scope}{body};\n\
+         IF NOT EXISTS (SELECT 1 FROM {running} WHERE name = N'{name}')\n    \
+         ALTER EVENT SESSION {name} ON {scope} STATE = START;"
+    )
+}
+
+/// The comment that ends a fix's SQL starting [`event_session_sql`]'s session: how to stop and remove it once it has
+/// caught what was needed. A comment, so running the fix's SQL never drops what it just started.
+pub(crate) fn event_session_drop(name: &str, azure_sql_database: bool) -> String {
+    let scope = if azure_sql_database { "DATABASE" } else { "SERVER" };
+    format!("-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION {name} ON {scope};")
+}
+
 fn engine_name(snapshot: &Snapshot) -> &'static str {
     match snapshot.server.engine {
         Engine::Mysql if snapshot.server.product.to_ascii_lowercase().contains("mariadb") => "MariaDB",
@@ -105,6 +133,18 @@ fn window_phrase(snapshot: &Snapshot) -> String {
         }
         _ => "since its statistics began".into(),
     }
+}
+
+/// When statement `q`'s counts were made: "on Oct 11, 13:56–14:19 UTC" for runs that came in bursts
+/// ([`culprit_core::Cadence`]), otherwise the window ([`window_phrase`]).
+fn ran_phrase(snapshot: &Snapshot, q: &QueryStat) -> String {
+    snapshot
+        .workload
+        .as_ref()
+        .map(|w| w.cadence(q))
+        .filter(|c| c.is_burst())
+        .and_then(|c| c.when())
+        .unwrap_or_else(|| window_phrase(snapshot))
 }
 
 /// "since SQL Server started 3 days ago", for server counters.
@@ -181,7 +221,13 @@ fn looks_like_export(snapshot: &Snapshot, q: &QueryStat) -> bool {
         return true;
     }
     let unfiltered = !lower.contains(" where ") && !lower.contains(" limit ") && !lower.contains(" top ");
-    let few_a_day = snapshot.workload.as_ref().and_then(|w| w.per_day_measured(q.executions)).is_some_and(|d| d <= 4.0);
+    // A few a day at the pace it ran: a burst's own total, never spread over the window.
+    let few_a_day = snapshot
+        .workload
+        .as_ref()
+        .filter(|w| w.window_hours >= culprit_core::PER_DAY_MIN_HOURS)
+        .and_then(|w| w.rate_per_day_of(q, q.executions))
+        .is_some_and(|d| d <= 4.0);
     unfiltered && few_a_day
 }
 
@@ -234,18 +280,32 @@ fn window_start_unknown(snapshot: &Snapshot) -> bool {
         && snapshot.workload.as_ref().is_some_and(|w| !w.windowed)
 }
 
-/// [`at_least_per_day`], false where the window's start is unknown (see [`window_start_unknown`]).
-fn window_at_least(snapshot: &Snapshot, total: f64, per_day: f64) -> bool {
-    !window_start_unknown(snapshot) && at_least_per_day(snapshot, total, per_day)
+/// [`at_least_per_day_of`] for statement `q`'s `total` (at the rate it ran while it ran: a burst on its own total),
+/// false where the window's start is unknown (see [`window_start_unknown`]).
+fn window_at_least(snapshot: &Snapshot, q: &QueryStat, total: f64, per_day: f64) -> bool {
+    !window_start_unknown(snapshot) && at_least_per_day_of(snapshot, q, total, per_day)
 }
 
-/// [`rate_per_day`] for a threshold, `None` where the window's start is unknown (see [`window_start_unknown`]): a
-/// window that may be days too short would make the rate days too high.
-fn window_rate_per_day(snapshot: &Snapshot, value: f64) -> Option<f64> {
+/// [`window_at_least`] for the runs of several statements together, each at the pace it ran
+/// ([`culprit_core::Workload::rate_per_day_of`]): a burst on its own total.
+fn runs_at_least(snapshot: &Snapshot, queries: &[&QueryStat], per_day: f64) -> bool {
+    let Some(w) = snapshot.workload.as_ref() else { return false };
+    if window_start_unknown(snapshot) || w.window_unknown() {
+        return false;
+    }
+    let runs: f64 = queries.iter().map(|q| q.executions).sum();
+    let rate: Option<f64> = queries.iter().map(|q| w.rate_per_day_of(q, q.executions)).sum();
+    rate.is_some_and(|r| r >= per_day) || (w.window_hours > 0.0 && w.window_hours <= 24.0 && runs >= per_day)
+}
+
+/// [`rate_per_day_of`] statement `q`'s `value` for a threshold (a burst's own total, never extrapolated to a day),
+/// `None` where the window's start is unknown (see [`window_start_unknown`]): a window that may be days too short
+/// would make the rate days too high.
+fn window_rate_per_day(snapshot: &Snapshot, q: &QueryStat, value: f64) -> Option<f64> {
     if window_start_unknown(snapshot) {
         return None;
     }
-    rate_per_day(snapshot, value)
+    rate_per_day_of(snapshot, &[q], value)
 }
 
 /// The grade of a count kept since the server started (or its statistics were reset), the one way every check here

@@ -56,7 +56,7 @@ pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
         // have counted for a week, with how long.
         if let Some(r) = a.reads.filter(|_| watched_long_enough(snapshot)) {
             f.metrics.push(Metric::new(format!("Reads of {}", a.name), r, Unit::Count));
-            if let Some(d) = counter_days(snapshot) {
+            if let Some(d) = crate::support::watched_days(snapshot) {
                 f.metrics.push(Metric::new("Counting for", d, Unit::Days));
             }
         }

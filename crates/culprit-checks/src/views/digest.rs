@@ -91,15 +91,21 @@ fn one_line(text: &str) -> String {
     format!("{}…", cut.trim_end())
 }
 
-/// The `n` application queries that used the most database time over the window, as the dashboard ranks them, each
-/// with the findings about it.
+/// The `n` application queries that use the most database time, as the dashboard ranks them (over Culprit's scans where
+/// they measured them, those that run first), each with the findings about it.
 fn heaviest_queries(report: &Report, active: &[&Finding], n: usize) -> Vec<DigestTopQuery> {
     let s = &report.snapshot;
     let Some(w) = &s.workload else { return Vec::new() };
-    let mut queries: Vec<_> = crate::support::app_queries(s).filter(|q| q.total_time_ms > 0.0).collect();
-    queries.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
+    // Each one's share as every surface states it (over Culprit's scans where they measured it), and one whose cost is
+    // behind it (stopped, or ran once) never takes the place of one that runs.
+    let mut queries: Vec<_> = crate::support::app_queries(s)
+        .filter(|q| q.total_time_ms > 0.0)
+        .map(|q| (q, crate::query_is_history(s, q), w.statement_share(q)))
+        .collect();
+    queries.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.total_cmp(&a.2)));
     queries
         .into_iter()
+        .map(|(q, _, _)| q)
         .take(n)
         .map(|q| DigestTopQuery {
             id: q.id.clone(),
@@ -107,10 +113,10 @@ fn heaviest_queries(report: &Report, active: &[&Finding], n: usize) -> Vec<Diges
             statement: one_line(&q.text),
             tables: culprit_core::sql::tables_in(&q.text, s.server.engine),
             object: q.object_name.clone(),
-            db_time_share: (w.total_time_ms > 0.0).then(|| (q.total_time_ms / w.total_time_ms).min(1.0)),
+            db_time_share: (w.total_time_ms > 0.0).then(|| w.statement_share(q).min(1.0)),
             total_ms: q.total_time_ms,
             runs: q.executions,
-            mean_ms: q.mean_time_ms,
+            mean_ms: w.statement_mean_ms(q),
             stopped: crate::query_stopped(s, q).is_some(),
             findings: active
                 .iter()

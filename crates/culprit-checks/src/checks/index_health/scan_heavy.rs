@@ -60,6 +60,23 @@ fn reading_in_full<'a>(snapshot: &'a Snapshot, schema: &str, table: &str) -> Vec
         .collect()
 }
 
+/// What a statement's runs say about reading a table of `table_rows` rows in full, where the engine counts the rows
+/// each statement examined (MySQL and MariaDB): under a tenth of the table a run, it reaches the rows through an index
+/// (`Some(false)`); half of it or more a run, from a statement that names no other table, it reads it in full
+/// (`Some(true)`). `None` where the counts can't say: another engine, no count, a join (its rows examined are every
+/// table's), or anything in between.
+fn examined_reads_whole(snapshot: &Snapshot, q: &QueryStat, table_rows: f64) -> Option<bool> {
+    if snapshot.server.engine != Engine::Mysql || table_rows <= 0.0 {
+        return None;
+    }
+    let examined = q.reads_per_execution()?;
+    if examined < table_rows * 0.1 {
+        return Some(false);
+    }
+    let one_table = culprit_core::sql::tables_in(&q.text, Engine::Mysql).len() == 1;
+    (examined >= table_rows * 0.5 && one_table).then_some(true)
+}
+
 /// The sentence for statements with no WHERE that read the table in full: on purpose, and nothing an index on a
 /// filter changes. They aren't listed with the finding (its fix is about filters), so it names them.
 fn on_purpose(whole: &[&QueryStat]) -> String {
@@ -95,7 +112,7 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         let Some((scans_total, read_total, days)) = full_scans_measured(snapshot, t) else { continue };
         // Judged per day; said per day only over 20 hours of counters, otherwise as counted.
         let (scans, rows_read) = (scans_total / days, read_total / days);
-        let measured = per_day_is_measured(days);
+        let measured = counters_measure_a_day(snapshot, days);
         if scans < 50.0 || rows_read < 5_000_000.0 {
             continue;
         }
@@ -108,9 +125,27 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             queries_touching(snapshot, &t.schema, &t.name).into_iter().filter(|q| !is_monitoring_query(q)).collect();
         let (whole, scanning): (Vec<&QueryStat>, Vec<&QueryStat>) =
             reading_in_full(snapshot, &t.schema, &t.name).into_iter().partition(|q| reads_every_row(q));
-        // A plan that scans it shows the full read; a statement without one may as well seek it (most reads by key
-        // do): listed to explain, but its time isn't counted as the scans' cost.
-        let (proven, unplanned): (Vec<&QueryStat>, Vec<&QueryStat>) = scanning.iter().partition(|q| q.plan.is_some());
+        // A plan that scans it shows the full read, and so do the rows a statement examined on MySQL when they are about
+        // the whole table. A statement without either may as well seek it (most reads by key do): listed to explain,
+        // but its time isn't counted as the scans' cost; and one whose rows examined are a sliver of the table reaches
+        // them through an index, so it isn't listed at all.
+        let table_rows = t.rows.unwrap_or(0.0);
+        let (by_plan, rest): (Vec<&QueryStat>, Vec<&QueryStat>) = scanning.iter().partition(|q| q.plan.is_some());
+        let (by_rows, unplanned): (Vec<&QueryStat>, Vec<&QueryStat>) = rest
+            .into_iter()
+            .filter(|q| examined_reads_whole(snapshot, q, table_rows) != Some(false))
+            .partition(|q| examined_reads_whole(snapshot, q, table_rows) == Some(true));
+        let proven: Vec<&QueryStat> = by_plan.iter().chain(&by_rows).copied().collect();
+        // How the proven ones show it: their plans, the rows they examine, or both.
+        let shown = match (by_plan.is_empty(), by_rows.as_slice()) {
+            (false, []) => if proven.len() == 1 { "its plan scans it" } else { "their plans scan it" }.to_string(),
+            (true, [q]) => format!(
+                "it examines {} rows a run, about the whole table",
+                format::count(q.reads_per_execution().unwrap_or(0.0))
+            ),
+            (true, _) => "each examines half its rows or more a run".to_string(),
+            (false, _) => "by their plans, or by the rows they examine a run".to_string(),
+        };
         // Statements with no WHERE are behind full reads too, but on purpose. When the query history has nothing else
         // that reads it in full and their plans read it whole as often as it was read in full, the reads are theirs, and
         // no index on a filter has anything to remove.
@@ -124,9 +159,12 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         } else {
             format!("{} rows", format::count(read_total))
         };
+        // Read in full by statements that all stopped running: told in the past, as the finding then is.
+        let listed: Vec<&QueryStat> = proven.iter().chain(&unplanned).copied().take(5).collect();
         f.title = format!(
-            "{} is read in full {} ({rows_text})",
+            "{} {} read in full {} ({rows_text})",
             t.name,
+            if crate::all_stopped(snapshot, &listed) { "was" } else { "is" },
             how_many(snapshot, scans_total, days, "time", "times")
         );
         f.summary = format!(
@@ -137,10 +175,9 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
             if measured { format!(" {}", since_phrase(snapshot)) } else { String::new() },
             if !proven.is_empty() {
                 format!(
-                    "{} of the captured statements {} it in full by {}{}; explain {} to see which filter has no index.{}",
+                    "{} of the captured statements {} it in full ({shown}){}; explain {} to see which filter has no index.{}",
                     proven.len(),
                     if proven.len() == 1 { "reads" } else { "read" },
-                    if proven.len() == 1 { "its plan" } else { "their plans" },
                     if unplanned.is_empty() {
                         String::new()
                     } else {
@@ -178,8 +215,8 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
         match &impact {
             Some(i) if i.share >= 0.005 => {
                 apply_query_impact(&mut f, i);
-                let time_ms: f64 = proven.iter().map(|q| q.total_time_ms).sum();
-                f.severity = severity_for_time(snapshot, time_ms, i.share);
+                // Their share and the amount it comes to, on one basis (Culprit's scans where they measured them).
+                f.severity = severity_for_statement_share(snapshot, &proven, i.share);
             }
             _ => {
                 f.severity = if rows_read >= 1e9 { Severity::Medium } else { Severity::Low };
@@ -214,10 +251,17 @@ pub fn scan_heavy(snapshot: &Snapshot) -> Vec<Finding> {
                 if snapshot.server.engine == Engine::Postgres { " (Culprit can show a generic plan)" } else { "" }
             ),
             sql: None,
-            cost: crate::indexes::write_cost(snapshot, &t.schema, &t.name),
+            // No SQL creates an index here: the cost line names the one the reader would add.
+            cost: crate::indexes::write_cost_of(snapshot, &t.schema, &t.name, "any index you add"),
         });
-        f.verify =
-            vec![format!("Re-scan after a day: full reads of {} per day drop, and its index scans rise.", t.name)];
+        // The counters keep totals since they started, so a day moves a rate over weeks by a hair: what shows the
+        // change is what they grow by between two scans.
+        f.verify = vec![format!(
+            "The scan counters of {} keep totals since they started, so compare them in a scan taken once the change is live and one a day or more later ({} full reads{} in this scan): between the two, its full reads should grow far slower, and its index scans faster.",
+            t.name,
+            format::count(scans_total),
+            t.index_scans.map(|n| format!(" and {} index scans", format::count(n))).unwrap_or_default()
+        )];
         f.caveats.push(
             "Counters accumulate since statistics were last reset; one nightly report can make up much of them.".into(),
         );

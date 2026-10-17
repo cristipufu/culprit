@@ -1397,8 +1397,9 @@ fn a_serial_plan_says_which_setting_keeps_it_on_one_cpu() {
     assert_eq!(hinted.title, "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)");
     assert_eq!(
         hinted.detail,
-        "Its estimated cost is 542, above this server's cost threshold for parallelism (5), so SQL Server would \
-         consider a parallel plan for it; the whole run happens on a single core instead."
+        "Its estimated cost is 542, above this server's cost threshold for parallelism (5) and the 50 it's commonly \
+         raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single \
+         core instead."
     );
     assert!(hinted.fix.starts_with("Remove OPTION (MAXDOP 1) from the statement"), "{}", hinted.fix);
     let database = blocked("SELECT 1 FROM shop.orders", &[(COST_THRESHOLD, "50"), (DATABASE_MAXDOP, "1")]);
@@ -1410,6 +1411,21 @@ fn a_serial_plan_says_which_setting_keeps_it_on_one_cpu() {
         neither.title
     );
     assert!(neither.fix.contains("Query Store hint"), "{}", neither.fix);
+    // The SQL Server demo's fresh reading: "Remove OPTION (MAXDOP 1)" on plans costed 16–23 beside
+    // config:cost-threshold-for-parallelism's "raise it to 50", at which they stay serial anyway. With the threshold at
+    // its default, a plan is judged against the 50 that advice raises it to; above a threshold already raised, against it.
+    let cheap = |threshold: &str| {
+        let mut root = node(0, "Hash Match", NodeKind::Join);
+        root.est_rows = 500_000.0;
+        root.self_cost = 23.0;
+        let mut p = plan(Engine::Mssql, root);
+        p.statement = Some("SELECT COUNT(*) FROM shop.order_items OPTION (MAXDOP 1)".into());
+        p.props.insert("NonParallelPlanReason".into(), "MaxDOPSetToOne".into());
+        mark_parallel_settings(&mut p, &[(COST_THRESHOLD, threshold.to_string())]);
+        insights(&p).into_iter().find(|i| i.rule == "parallelism-blocked")
+    };
+    assert!(cheap("5").is_none(), "under the 50 the threshold is raised to, it stays serial either way");
+    assert!(cheap("20").is_some(), "above a threshold already raised, MAXDOP 1 keeps it serial");
     // Without the settings, the plan alone says what it can.
     let unknown = blocked("SELECT 1 FROM shop.orders", &[]);
     assert!(unknown.title.ends_with("(a query hint, or the database or server setting)"), "{}", unknown.title);
@@ -1437,11 +1453,13 @@ fn scan_filter_advice_says_what_the_catalog_has() {
     assert_eq!(
         none.fix,
         "No index on order_items starts with quantity or product_id: one on quantity and product_id lets the \
-         database go straight to the matching rows. quantity and product_id can go in any order: put first the one \
-         with the most distinct values, or one another index or finding on order_items already leads with, so one \
-         index serves both."
+         database go straight to the matching rows. quantity and product_id can go in any order, and the SQL below \
+         takes the filter's (quantity first). Put product_id first instead if it has more distinct values, or if \
+         another index you add on order_items leads with it: then that one index serves this query too."
     );
+    // MS-8: the note says the order the SQL has, never one it doesn't.
     assert!(none.fix_sql.as_deref().unwrap().contains("CREATE INDEX"), "{:?}", none.fix_sql);
+    assert!(none.fix_sql.as_deref().unwrap().contains("(quantity, product_id)"), "{:?}", none.fix_sql);
     let has = scan("(order_items.product_id = $1)", Some("order_items_pkey=id\nix_items_product=product_id,quantity"));
     assert!(
         has.fix.starts_with("ix_items_product already starts with product_id, yet this plan reads order_items"),
@@ -1474,4 +1492,175 @@ fn scans_are_marked_with_their_tables_indexes() {
     assert_eq!(marked("public.items").as_deref(), Some(""));
     assert_eq!(marked("items"), None);
     assert_eq!(marked("public.gone"), None);
+}
+
+/// Aptabase EU's plan over `= ANY($1)`: a nested loop whose outer side was planned on PostgreSQL's 10-value guess for an
+/// array parameter, and an inner side it repeats once per outer row.
+fn loop_over_a_guess(scale: f64) -> Plan {
+    let mut index = node(5, "Bitmap Index Scan", NodeKind::Seek);
+    index.self_cost = 38.9 * scale;
+    index.props.insert(crate::plan::GUESSED_SELECTIVITY.into(), "10 values for ANY".into());
+    let mut heap = node(4, "Bitmap Heap Scan", NodeKind::Lookup);
+    heap.self_cost = 31.6 * scale;
+    heap.props.insert(crate::plan::GUESSED_SELECTIVITY.into(), "10 values for ANY".into());
+    heap.children = vec![index];
+    let mut users = node(6, "Index Scan", NodeKind::Seek);
+    users.object = Some("public.users".into());
+    users.est_executions = 10.0;
+    users.self_cost = 79.0 * scale;
+    let mut inner = node(3, "Nested Loop", NodeKind::Join);
+    inner.self_cost = 0.0;
+    inner.children = vec![heap, users];
+    let mut subscriptions = node(7, "Index Scan", NodeKind::Seek);
+    subscriptions.object = Some("public.subscriptions".into());
+    subscriptions.est_executions = 10.0;
+    subscriptions.self_cost = 1.7 * scale;
+    let mut outer = node(2, "Nested Loop", NodeKind::Join);
+    outer.self_cost = 0.06;
+    outer.children = vec![inner, subscriptions];
+    plan(Engine::Postgres, outer)
+}
+
+// EU-4: a step a loop repeats once per row of a step planned on a guess rests on that guess too (how often it runs is
+// the guess), and so does every step above one: none of them gets a share, whatever the plan costs.
+#[test]
+fn a_loop_over_a_guess_repeats_the_guess() {
+    let p = loop_over_a_guess(100.0);
+    assert!(does_real_work(&p), "costed as real work, so only the guess withholds the shares");
+    let guess = |id: u32| p.guess(p.nodes().into_iter().find(|n| n.id == id).unwrap());
+    assert_eq!(guess(5), Some(crate::plan::Guess::Rows));
+    assert_eq!(guess(4), Some(crate::plan::Guess::Rows));
+    assert_eq!(guess(3), Some(crate::plan::Guess::Rows), "above the guess");
+    assert_eq!(guess(6), Some(crate::plan::Guess::Runs), "the inner side of a loop over the guess");
+    assert_eq!(guess(7), Some(crate::plan::Guess::Runs), "repeated per row of a side above the guess");
+    assert!(p.nodes().iter().all(|n| p.step_share(n).is_none()));
+    // Without the guess, the same plan states its steps' shares.
+    let mut clean = loop_over_a_guess(100.0);
+    fn unmark(n: &mut PlanNode) {
+        n.props.clear();
+        n.children.iter_mut().for_each(unmark);
+    }
+    unmark(&mut clean.root);
+    let users = clean.nodes().into_iter().find(|n| n.id == 6).unwrap();
+    assert!(clean.step_share(users).is_some_and(|s| s > 0.5));
+}
+
+// A share of a cheap plan's cost isn't where its statement's time goes: no step of it states one, nor does an insight
+// about it (CX-7: "15% of the plan's work" on a point lookup).
+#[test]
+fn a_cheap_plan_states_no_share() {
+    let mut seek = node(1, "Index Seek", NodeKind::Seek);
+    seek.object = Some("app.escalations".into());
+    seek.self_cost = 0.0033;
+    let p = plan(Engine::Mssql, seek);
+    assert!(!does_real_work(&p));
+    assert!(!p.states_shares());
+    assert_eq!(p.step_share(&p.root), None);
+    let insight = PlanInsight {
+        rule: "missing-statistics".into(),
+        area: InsightArea::Statistics,
+        severity: Severity::Low,
+        impact: 0.15,
+        fixed_weight: false,
+        nodes: vec![1],
+        title: String::new(),
+        detail: String::new(),
+        fix: String::new(),
+        fix_sql: None,
+        verify: String::new(),
+    };
+    assert_eq!(stated_share(&p, &insight), None);
+    let mut big = p.clone();
+    big.root.self_cost = 5.0;
+    big.total_cost = 5.0;
+    assert_eq!(stated_share(&big, &insight), Some(0.15));
+    // A step whose own cost works out at nothing on SQL Server (subtree costs rounded) is no uncosted step: the shares
+    // beside it stand.
+    let mut aggregate = node(0, "Stream Aggregate", NodeKind::Aggregate);
+    aggregate.self_cost = 0.0;
+    let mut scan = node(1, "Clustered Index Scan", NodeKind::Scan);
+    scan.self_cost = 6.0;
+    aggregate.children = vec![scan];
+    let p = plan(Engine::Mssql, aggregate);
+    assert!(p.uncosted_steps().is_empty());
+    assert!(p.step_share(&p.root.children[0]).is_some());
+}
+
+// Why a cheap plan's runs aren't cheap, as measured: an estimate its runs far exceed is no cheap plan, nor is a scan of
+// a whole table; a scan under a TOP that stops at its first row reads no table whole.
+#[test]
+fn a_cheap_plans_runs_say_why_they_are_not_cheap() {
+    let mut seek = node(1, "Index Seek", NodeKind::Seek);
+    seek.self_cost = 0.0033;
+    let p = plan(Engine::Mssql, seek);
+    let mut q: crate::model::QueryStat = serde_json::from_value(serde_json::json!({
+        "id": "36649", "query_hash": null, "text": "SELECT id FROM app.call_sessions WHERE tenant_id = @p0",
+        "parameters": null, "object_name": null, "executions": 2026.0, "total_time_ms": 2026.0, "mean_time_ms": 1.0,
+        "max_time_ms": null, "stddev_time_ms": null, "cpu_time_ms": null, "rows": 2026.0,
+        "logical_reads": 2026.0 * 750.0, "physical_reads": null, "temp_writes": null, "first_seen": null,
+        "last_seen": null, "plans": [], "plan": null, "waits": []
+    }))
+    .unwrap();
+    assert!(matches!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::MoreReads { .. }));
+    q.logical_reads = Some(2026.0 * 4.0);
+    assert_eq!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::Cheap);
+    let mut scan = node(1, "Index Scan", NodeKind::Scan);
+    scan.object = Some("app.call_dispatch_intents".into());
+    scan.table_rows = Some(12_621.0);
+    scan.rows_read = Some(1.0);
+    scan.self_cost = 0.0033;
+    assert!(!scan.reads_table_whole(), "a scan under a TOP that stops at its first row");
+    scan.rows_read = Some(12_621.0);
+    assert!(scan.reads_table_whole());
+    let p = plan(Engine::Mssql, scan.clone());
+    assert_eq!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::ScansTable(1));
+    assert!(!runs_cheaply(&p, &q));
+    // A whole read that can't weigh on a run is no reason: all 13 rows of a small table, or the catalog's rows, are
+    // read as if the scan weren't there (cheap runs are cheap, slow ones slow). The runs aren't "cheap" to heavy-query
+    // all the same: what the scan reads grows with its table.
+    let mut small = scan.clone();
+    small.table_rows = Some(13.0);
+    small.rows_read = Some(13.0);
+    let p = plan(Engine::Mssql, small.clone());
+    assert!(!whole_read_matters(&p, &p.root));
+    assert_eq!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::Cheap);
+    assert!(!runs_cheaply(&p, &q));
+    let mut slow = q.clone();
+    slow.total_time_ms = 2026.0 * 25.0;
+    slow.mean_time_ms = 25.0;
+    assert_eq!(cheap_plan_runs(&p, Some(&slow)), CheapPlanRuns::Slow(25.0));
+    for catalog in ["sys.filetable_updates_2105058535", "pg_catalog.pg_database", "[sys].[objects]"] {
+        let mut read = scan.clone();
+        read.object = Some(catalog.into());
+        read.table_rows = Some(50_000.0);
+        read.rows_read = Some(50_000.0);
+        let p = plan(Engine::Postgres, read);
+        assert!(!whole_read_matters(&p, &p.root), "{catalog}");
+        assert_eq!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::Cheap, "{catalog}");
+    }
+    // A small table read whole once for each of a loop's rows reads many rows on a run: that can matter.
+    small.est_executions = 1_000.0;
+    small.rows_read = Some(13_000.0);
+    let p = plan(Engine::Mssql, small);
+    assert!(whole_read_matters(&p, &p.root));
+    // Of unknown size, a whole read isn't said to matter either.
+    let mut unknown = scan;
+    (unknown.table_rows, unknown.rows_read) = (None, None);
+    let p = plan(Engine::Mssql, unknown);
+    assert!(!whole_read_matters(&p, &p.root));
+    assert_eq!(cheap_plan_runs(&p, None), CheapPlanRuns::Cheap);
+}
+
+// MY-11: what a statement's runs measured of a scan's filter is what the plan's rules judge it by, where the analysis
+// put it on the scan: MySQL's fixed guess says nothing, the runs do.
+#[test]
+fn a_measured_share_kept_outweighs_a_fixed_guess() {
+    let mut scan = node(1, "Table scan", NodeKind::Scan);
+    scan.object = Some("shop.orders".into());
+    scan.predicate = Some("(shop.o.promo_code = '?')".into());
+    scan.rows_read = Some(499_000.0);
+    scan.props.insert("filtered".into(), "10.00".into());
+    assert_eq!(scan.kept_share(), None, "MySQL's fixed guess");
+    scan.props.insert(crate::plan::MEASURED_KEPT.into(), "0.00001".into());
+    assert_eq!(scan.kept_share(), Some(0.00001));
 }

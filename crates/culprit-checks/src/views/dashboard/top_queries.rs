@@ -5,8 +5,13 @@ use super::*;
 pub(super) fn top_queries(s: &Snapshot) -> Tile {
     let Some(w) = &s.workload else { return no_workload(TileKey::TopQueries, "there is no query list") };
     let total = w.total_time_ms;
-    let mut queries: Vec<&QueryStat> = app_queries(s).filter(|q| q.total_time_ms > 0.0).collect();
-    queries.sort_by(|a, b| b.total_time_ms.total_cmp(&a.total_time_ms));
+    // Each one's share as every surface states it (over Culprit's scans where they measured it), and one whose cost is
+    // behind it (stopped, or ran once) never takes the place of one that runs.
+    let share = |q: &QueryStat| w.statement_share(q).min(1.0);
+    let mut queries: Vec<(&QueryStat, bool)> =
+        app_queries(s).filter(|q| q.total_time_ms > 0.0).map(|q| (q, crate::query_is_history(s, q))).collect();
+    queries.sort_by(|(a, a_history), (b, b_history)| a_history.cmp(b_history).then(share(b).total_cmp(&share(a))));
+    let queries: Vec<&QueryStat> = queries.into_iter().map(|(q, _)| q).collect();
     if queries.is_empty() || total <= 0.0 {
         let mut t = Tile::new(
             TileKey::TopQueries,
@@ -16,7 +21,6 @@ pub(super) fn top_queries(s: &Snapshot) -> Tile {
         t.detail = Some(format!("{} recorded {} statements in all.", w.source, format::count(w.query_count)));
         return t;
     }
-    let share = |q: &QueryStat| (q.total_time_ms / total).min(1.0);
     let top = &queries[..queries.len().min(5)];
     let first = share(top[0]);
     let three: f64 = top.iter().take(3).map(|q| share(q)).sum();
@@ -36,8 +40,14 @@ pub(super) fn top_queries(s: &Snapshot) -> Tile {
     };
     let mut tile = Tile::new(TileKey::TopQueries, TileStatus::Info, takeaway);
     let stopped = top.iter().filter(|q| crate::query_stopped(s, q).is_some()).count();
+    // What the shares are over, where Culprit's scans measured every one of them.
+    let scans: Option<Vec<culprit_core::ScanSpan>> = top.iter().map(|q| w.scans_of(q)).collect();
+    let over = scans
+        .and_then(|spans| spans.into_iter().max_by(|a, b| a.hours.total_cmp(&b.hours)))
+        .map(|s| format!("; their shares are over {}", s.phrase()))
+        .unwrap_or_default();
     tile.detail = Some(format!(
-        "{} tracked over {}.{}",
+        "{} tracked over {}{over}.{}",
         capitalized(&plural(w.query_count as usize, "query", "queries")),
         window_phrase(w),
         match stopped {

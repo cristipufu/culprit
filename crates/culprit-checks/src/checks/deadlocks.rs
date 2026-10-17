@@ -142,16 +142,22 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
         f.summary = format!("{} {}", latest.headline, latest.explanation);
         let all = list.len();
         f.impact.score = base_score(f.severity) + (n as f64).min(20.0);
-        f.impact.label = if all == 1 { "1 deadlock".into() } else { format!("{all} deadlocks") };
+        // What InnoDB keeps is the latest one: a floor, as the title says ("at least once"), never a count.
+        let at_least = if latest_only { "at least " } else { "" };
+        f.impact.label = if all == 1 { format!("{at_least}1 deadlock") } else { format!("{at_least}{all} deadlocks") };
         if n == 0 {
             f.caveats.push("When it happened is unknown, so it may be from long ago: InnoDB keeps its most recent deadlock until the next one, however old. Check the error log (innodb_print_all_deadlocks) before acting on it.".into());
         }
         f.metrics = vec![
-            Metric { label: "Deadlocks".into(), value: all as f64, unit: Unit::Count, text: None },
+            Metric {
+                label: if latest_only { "Deadlocks (at least)" } else { "Deadlocks" }.into(),
+                value: all as f64,
+                unit: Unit::Count,
+                text: None,
+            },
             Metric { label: "Pattern".into(), value: 0.0, unit: Unit::Text, text: Some(pattern.label().into()) },
         ];
-        if let Some(victim) = latest.victim() {
-            let who = victim.application.clone().or(victim.login.clone()).unwrap_or_else(|| "the application".into());
+        if let Some(who) = latest.victim().and_then(victim_text) {
             f.metrics.push(Metric { label: "Rolled back".into(), value: 0.0, unit: Unit::Text, text: Some(who) });
         }
         // Lead with the primary fix; when it has no SQL, offer the first alternative that does.
@@ -167,7 +173,15 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
             f.fix = Some(Fix { summary, sql, cost: None });
         }
         f.verify = vec![
-            format!("Re-scan tomorrow: no new {} deadlocks on {}.", pattern.label(), tables(&objects)),
+            // "key-lookup deadlock" is a deadlock already: not "key-lookup deadlock deadlocks".
+            format!(
+                "Re-scan tomorrow: no new {} on {}.",
+                match pattern.label() {
+                    label if label.ends_with("deadlock") => format!("{label}s"),
+                    label => format!("{label} deadlocks"),
+                },
+                tables(&objects)
+            ),
             "Live › Deadlocks shows the graph of each one, with both statements.".into(),
         ];
         f.last_seen = latest.at.clone();
@@ -216,6 +230,31 @@ pub fn deadlocks(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
     out
+}
+
+/// The tables a deadlock finding is about, read back from the id [`deadlocks`] gives it (`deadlocks:<pattern>:<table>+
+/// <table>`): every one, where the subject names only the first. Empty for any other finding, and for a deadlock
+/// whose tables weren't named.
+pub(crate) fn deadlock_tables(f: &Finding) -> Vec<String> {
+    let Some(rest) = f.id.strip_prefix("deadlocks:").filter(|_| f.check == "deadlocks") else { return Vec::new() };
+    match rest.split_once(':') {
+        Some((_, objects)) if objects != "unknown" => objects.split('+').map(str::to_string).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whose transaction was rolled back, said as what each name is: "session 202 (login root)", "session 55
+/// (orders-api)". A login or an application alone is a session of it, never a bare name a reader takes for a table or
+/// a person. `None` when the report names nothing.
+pub(crate) fn victim_text(victim: &culprit_core::DeadlockProcess) -> Option<String> {
+    let session = victim.session.as_deref().map(|s| format!("session {s}"));
+    let by = victim.application.clone().or_else(|| victim.login.as_deref().map(|l| format!("login {l}")));
+    match (session, by) {
+        (Some(session), Some(by)) => Some(format!("{session} ({by})")),
+        (Some(session), None) => Some(session),
+        (None, Some(by)) => Some(format!("a session of {by}")),
+        (None, None) => None,
+    }
 }
 
 fn lowercase_first(text: &str) -> String {

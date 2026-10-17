@@ -153,6 +153,86 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
     out
 }
 
+/// A saved scan read again with what the scans saved beside it in `dir` say: pg_stat_statements' evictions against the
+/// oldest scan a day or more back ([`evictions_baseline`]), the baseline a scan taken now would use. Nothing changes
+/// without one, nor in a directory of no saved scans. Writes nothing.
+pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
+    if let Some(baseline) = evictions_baseline(dir, snapshot) {
+        snapshot.evictions_before = Some(baseline);
+    }
+    rebuild_timeline(dir, snapshot);
+}
+
+/// A saved scan's timeline from Culprit's scans built again from the counters the scans before it saved beside it in
+/// `dir`, with this version's reading of each step (`trends::from_scans`): a step a saved scan misread (a statement
+/// that outran the whole database, everything since a reset in one bucket) reads as the counters say, and a step they
+/// can't account for in full stays marked so. The saved timeline stays where no earlier counters are kept, and only
+/// counters files already saved are read: nothing is written.
+pub fn rebuild_timeline(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
+    let evictions = trends::evictions(snapshot);
+    let (database, taken_at) = (snapshot.server.database.clone(), snapshot.taken_at.clone());
+    let Some(workload) = snapshot.workload.as_mut().filter(|w| {
+        !w.windowed && w.timeline.as_ref().is_some_and(|t| t.source == culprit_core::TimelineSource::Scans)
+    }) else {
+        return;
+    };
+    let Some(now) = trends::epoch(&taken_at) else { return };
+    let oldest = now - trends::HISTORY_DAYS * 86_400.0;
+    let history: Vec<Counters> = report_ids(dir)
+        .into_iter()
+        .filter(|id| id_epoch(id).is_some_and(|t| t >= oldest - 1.0 && t < now))
+        .filter_map(|id| fs::read(counters_path(dir, &id)).ok())
+        .filter_map(|bytes| serde_json::from_slice::<Counters>(&bytes).ok())
+        .collect();
+    if history.is_empty() {
+        return;
+    }
+    let saved = workload.timeline.take();
+    let trends: Vec<Option<culprit_core::QueryTrend>> = workload.queries.iter_mut().map(|q| q.trend.take()).collect();
+    trends::from_scans(workload, &database, &taken_at, evictions, &history);
+    if workload.timeline.is_none() {
+        workload.timeline = saved;
+        for (q, trend) in workload.queries.iter_mut().zip(trends) {
+            q.trend = trend;
+        }
+    }
+}
+
+/// Saved reports read for their eviction count where their counters file was written before it kept one, at most.
+const MAX_EVICTION_READS: usize = 10;
+
+/// [`trends::evictions_baseline`] over the scans saved in `dir` (the last [`trends::HISTORY_DAYS`] days, a day or more
+/// before `snapshot`), oldest first, stopping at the first the count continues: the oldest. A counters file written
+/// before counters kept pg_stat_statements' eviction count gets it from its report, a few at most. Writes nothing.
+pub fn evictions_baseline(dir: &Path, snapshot: &culprit_core::Snapshot) -> Option<culprit_core::CountBaseline> {
+    trends::evictions(snapshot)?;
+    let at = trends::epoch(&snapshot.taken_at)?;
+    let newest = at - culprit_core::PER_DAY_MIN_HOURS * 3600.0;
+    let oldest = at - trends::HISTORY_DAYS * 86_400.0;
+    let mut history = Vec::new();
+    let mut reads = 0;
+    for id in report_ids(dir) {
+        // Ids are UTC timestamps to the millisecond, so a scan within a second of the cut is read and judged by its own.
+        if id_epoch(&id).is_none_or(|t| t < oldest - 1.0 || t > newest + 1.0) {
+            continue;
+        }
+        // A report without a counters file has none to give: every scan writes one for those that do
+        // ([`counters_history`]).
+        let saved = fs::read(counters_path(dir, &id)).ok().and_then(|b| serde_json::from_slice::<Counters>(&b).ok());
+        let Some(mut counters) = saved else { continue };
+        if counters.evictions.is_none() && reads < MAX_EVICTION_READS {
+            reads += 1;
+            counters.evictions =
+                load(&dir.join(format!("{id}.json"))).ok().and_then(|r| trends::evictions(&r.snapshot));
+        }
+        history.push(counters);
+        if let Some(baseline) = trends::evictions_baseline(&history, snapshot) {
+            return Some(baseline);
+        }
+    }
+    None
+}
+
 pub(crate) fn id_epoch(id: &str) -> Option<f64> {
     let t = chrono::NaiveDateTime::parse_from_str(id.get(..15)?, "%Y%m%dT%H%M%S").ok()?;
     Some(t.and_utc().timestamp() as f64)

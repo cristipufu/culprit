@@ -61,6 +61,17 @@ fn an_index_sqlite_builds_on_every_run_is_advice() {
     );
     let share = fk.impact.db_time_share.unwrap_or(0.0);
     assert!(share > 0.95, "{share}");
+    // MY-9d: its grade rests on these reads, not on deletes alone: the verify shows the index serving them, in the
+    // words SQLite's plan uses.
+    assert_eq!(
+        fk.verify.first().map(String::as_str),
+        Some(
+            "Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING \
+             INDEX ix_orders_customer_id`) instead of reading all of it."
+        ),
+        "{:?}",
+        fk.verify
+    );
     assert_eq!(report.summary.top_share.map(|s| (s * 100.0).round()), Some((share * 100.0).round()));
 }
 

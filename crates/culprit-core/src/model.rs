@@ -465,45 +465,64 @@ impl Workload {
 
     /// [`Workload::how_often`] for one statement, from when it ran as well as how many times ([`Workload::cadence`]):
     /// "750 runs on Oct 11, 15:51–15:55 UTC" for a burst, never a rate a day it never ran at. On a source of running
-    /// totals, with a day or more of Culprit's own scans ([`Workload::over_scans`]), the rate is theirs, what happens
-    /// now: "about 1.6K runs a day over 72 hours of Culprit's scans", and the average since the totals began beside it
-    /// when the two differ twofold ("about 388 runs a day over the 1277 days since statistics were reset (about 1.7K a
-    /// day over 72 hours of Culprit's scans)").
+    /// totals, with a day or more of Culprit's own scans in which it ran ([`Workload::scans_of`]), the rate is theirs,
+    /// what happens now, higher or lower than the totals': "about 1.7K runs a day over 72 hours of Culprit's scans",
+    /// with the average since the totals began beside it when the two differ twofold ("about 1.7K runs a day over 72
+    /// hours of Culprit's scans (about 388 a day over the 1277 days since statistics were reset)"), except for a recent
+    /// entry, whose totals are mostly those runs, diluted by the time before it began ([`ScanSpan::is_recent`]).
     pub fn how_often_of(&self, q: &QueryStat) -> String {
-        match self.cadence(q) {
+        let cadence = self.cadence(q);
+        if let Some(s) = self.scans_of(q).filter(|_| !matches!(cadence, Cadence::Burst { .. })) {
+            let now = s.runs_phrase();
+            return match self.totals_runs(q, false).filter(|_| !s.is_recent(q) && s.runs_differ(self, q)) {
+                Some(all) => format!("{now} ({all} over {})", self.window_phrase()),
+                None => now,
+            };
+        }
+        match cadence {
             Cadence::Counted(runs) => self.how_often(runs),
-            Cadence::Burst { runs, from, to } => {
+            burst @ Cadence::Burst { runs, .. } => {
                 let comma = if runs == 1.0 { "," } else { "" };
-                format!("{} {}{comma} {}", crate::format::count(runs), runs_noun(runs), span_when(&from, &to))
+                format!(
+                    "{} {}{comma} {}",
+                    crate::format::count(runs),
+                    runs_noun(runs),
+                    burst.when().unwrap_or_default()
+                )
             }
             Cadence::DailyWithin { per_day, from, to } => {
                 format!("about {} runs a day {}", crate::format::count(per_day), days_when(&from, to.as_deref()))
             }
-            Cadence::Daily(per_day) => {
-                let all = format!("about {} runs a day", crate::format::count(per_day));
-                match self.over_scans(q).filter(|s| s.runs > 0.0) {
-                    Some(s) if s.differs_from(self, q) => format!(
-                        "{all} over {} (about {} a day over {})",
-                        self.window_phrase(),
-                        crate::format::count(s.per_day(s.runs)),
-                        s.phrase()
-                    ),
-                    Some(s) => {
-                        format!("about {} runs a day over {}", crate::format::count(s.per_day(s.runs)), s.phrase())
-                    }
-                    None => all,
-                }
-            }
+            Cadence::Daily(per_day) => format!("about {} runs a day", crate::format::count(per_day)),
         }
     }
 
+    /// Runs since the source began counting, said beside the scans' rate: "about 388 a day" ("about 388 runs a day"
+    /// with `noun`), or the count where it is under one a day. `None` under a day of window, or one nobody can date.
+    fn totals_runs(&self, q: &QueryStat, noun: bool) -> Option<String> {
+        let per_day = self.per_day_measured(q.executions).filter(|_| !self.window_unknown())?;
+        Some(if per_day >= 1.0 {
+            let n = crate::format::count(per_day);
+            let runs = match (noun, n == "1") {
+                (false, _) => "",
+                (true, true) => " run",
+                (true, false) => " runs",
+            };
+            format!("about {n}{runs} a day")
+        } else {
+            format!("{} {}", crate::format::count(q.executions), runs_noun(q.executions))
+        })
+    }
+
     /// How a statement's runs spread over the window, so a rate a day is said only for runs that came that way: a
-    /// burst (runs from a first to a last under a day apart, well inside the window: a job, an export) is when it came;
-    /// fewer runs than the window has days are a count; runs over a stretch of a day or more that the window holds three
-    /// times over are a rate over that stretch (an entry that began counting days ago, a statement that stopped). Under
-    /// a day of window, or one nobody can date, it is the count. A statement's first and last runs are the engine's own:
-    /// pg_stat_statements keeps no last run (Culprit dates one from its scans, the latest it can have been), so there it
-    /// is taken to run to the window's end.
+    /// burst (runs from a first to a last under a day apart, well inside the window: a job, an export, a test run) is
+    /// when it came, in any window of an hour or more ([`RATE_MIN_HOURS`]); so are runs on a few of a longer window's
+    /// days, at most half of them (an eval run on two afternoons), told by the timeline's buckets; fewer runs than the
+    /// window has days are a count; runs over a stretch of a day or more that the window holds three times over are a
+    /// rate over that stretch (an entry that began counting days ago, a statement that stopped). Otherwise, under a day
+    /// of window or in one nobody can date, it is the count. A statement's first and last runs are the engine's own, or
+    /// the buckets it ran in where those hold all its runs: pg_stat_statements keeps no last run (Culprit dates one
+    /// from its scans, the latest it can have been), so without them it is taken to run to the window's end.
     pub fn cadence(&self, q: &QueryStat) -> Cadence {
         let runs = q.executions;
         let Some(end) = self.window_end.as_deref().and_then(crate::format::epoch_seconds) else {
@@ -512,15 +531,31 @@ impl Workload {
                 _ => Cadence::Counted(runs),
             };
         };
-        if self.window_unknown() || self.window_hours < PER_DAY_MIN_HOURS {
+        if self.window_unknown() || self.window_hours < RATE_MIN_HOURS {
             return Cadence::Counted(runs);
         }
         let window = self.window_hours * 3600.0;
         let start = end - window;
-        let first = q.first_seen.as_deref().and_then(crate::format::epoch_seconds).map(|f| f.clamp(start, end));
+        let first = q.first_seen.as_deref().and_then(crate::format::epoch_seconds);
         let last = match self.kind() {
             Some(WorkloadKind::StatementStats) => None,
-            _ => q.last_seen.as_deref().and_then(crate::format::epoch_seconds).map(|l| l.clamp(start, end)),
+            _ => q.last_seen.as_deref().and_then(crate::format::epoch_seconds),
+        };
+        // Times that can't belong to this window's runs (after its end, or a last run an hour before its start: a
+        // statement's times from another scan) say nothing of when they came.
+        let consistent =
+            first.is_none_or(|f| f <= end + 60.0) && last.is_none_or(|l| l <= end + 60.0 && l >= start - 3600.0);
+        let (first, last) = if consistent {
+            (first.map(|f| f.clamp(start, end)), last.map(|l| l.clamp(start, end)))
+        } else {
+            (None, None)
+        };
+        // The buckets it ran in narrow its first and last runs to them (and give pg_stat_statements a last one).
+        let ran = self.ran_in(q, start, end);
+        let within = |t: Option<f64>, (from, to): (f64, f64), edge: f64| Some(t.map_or(edge, |t| t.clamp(from, to)));
+        let (first, last) = match &ran {
+            Some(ran) => (within(first, ran[0], ran[0].0), within(last, ran[ran.len() - 1], ran[ran.len() - 1].1)),
+            None => (first, last),
         };
         let iso = crate::format::iso_from_epoch;
         if let (Some(first), Some(last)) = (first, last)
@@ -528,7 +563,19 @@ impl Workload {
             && last - first < window * 0.5
             && last - first < PER_DAY_MIN_HOURS * 3600.0
         {
-            return Cadence::Burst { runs, from: iso(first), to: iso(last) };
+            return Cadence::Burst { runs, from: iso(first), to: iso(last), days: Vec::new() };
+        }
+        if self.window_hours < PER_DAY_MIN_HOURS {
+            return Cadence::Counted(runs);
+        }
+        // Runs on a few days with silence between them: the buckets it ran in cover under half the time from its first
+        // run to its last (a statement that began two days ago and runs on is a rate since then, not bursts).
+        if let (Some(ran), Some(first), Some(last)) = (&ran, first, last) {
+            let days = days_in(ran, first, last);
+            let active: f64 = ran.iter().map(|(from, to)| to.min(last) - from.max(first)).filter(|s| *s > 0.0).sum();
+            if days.len() >= 2 && days.len() as f64 * 2.0 <= self.window_hours / 24.0 && active < (last - first) * 0.5 {
+                return Cadence::Burst { runs, from: iso(first), to: iso(last), days };
+            }
         }
         let per_day = self.per_day(runs);
         if per_day < 1.0 {
@@ -548,12 +595,61 @@ impl Workload {
         Cadence::Daily(per_day)
     }
 
-    /// Runs a day for a statement, where its runs came that way ([`Workload::cadence`]): over the window, or over the
-    /// stretch it ran in. `None` for a burst, for fewer runs than days, and under a day of window.
+    /// The stretches of the timeline statement `q` ran in (each bucket with runs of it, within `start`..`end`), oldest
+    /// first, where the timeline holds all its runs: every bucket known for it, and its runs there adding up to its
+    /// count. `None` otherwise (no timeline or trend, one that began after the statement did, a bucket it can't
+    /// account for).
+    fn ran_in(&self, q: &QueryStat, start: f64, end: f64) -> Option<Vec<(f64, f64)>> {
+        let timeline = self.timeline.as_ref()?;
+        let trend = q.trend.as_ref()?;
+        let (mut counted, mut ran) = (0.0, Vec::new());
+        for i in 0..timeline.len() {
+            let runs = (*trend.executions.get(i)?)?;
+            if runs <= 0.0 {
+                continue;
+            }
+            let (from, to) = timeline.bounds(i);
+            let (from, to) = (crate::format::epoch_seconds(from)?, crate::format::epoch_seconds(to)?);
+            counted += runs;
+            ran.push((from.clamp(start, end), to.clamp(start, end).max(from.clamp(start, end))));
+        }
+        (!ran.is_empty() && (counted - q.executions).abs() <= (q.executions * 0.01).max(0.5)).then_some(ran)
+    }
+
+    /// Runs a day for a statement, where its runs came that way ([`Workload::cadence`]): over Culprit's scans where
+    /// they measured it on a source of running totals ([`Workload::scans_of`]), over the window, or over the stretch
+    /// it ran in. `None` for a burst, for fewer runs than days, and under a day of window.
     pub fn runs_per_day_of(&self, q: &QueryStat) -> Option<f64> {
-        match self.cadence(q) {
+        let cadence = self.cadence(q);
+        if !matches!(cadence, Cadence::Burst { .. })
+            && let Some(s) = self.scans_of(q)
+        {
+            return Some(s.per_day(s.runs)).filter(|per_day| *per_day >= 1.0);
+        }
+        match cadence {
             Cadence::Daily(per_day) | Cadence::DailyWithin { per_day, .. } => Some(per_day),
             Cadence::Burst { .. } | Cadence::Counted(_) => None,
+        }
+    }
+
+    /// `value`, counted over the window for statement `q` (its runs, its time, a part of either), as a rate a day for
+    /// comparing with a threshold, at the pace its runs came ([`Workload::cadence`]), never extrapolated from a burst: a
+    /// burst's total is what the day it ran held, and runs on a few days are their total over those days. On a source of
+    /// running totals, at the pace Culprit's scans measured its runs where they did ([`Workload::scans_of`]). Runs over
+    /// a stretch of the window are rated over that stretch, and steady runs over the window ([`Workload::rate_per_day`]).
+    /// `None` under an hour of window ([`RATE_MIN_HOURS`]), where the total is all there is.
+    pub fn rate_per_day_of(&self, q: &QueryStat, value: f64) -> Option<f64> {
+        let cadence = self.cadence(q);
+        if !matches!(cadence, Cadence::Burst { .. })
+            && q.executions > 0.0
+            && let Some(s) = self.scans_of(q)
+        {
+            return Some(value * s.per_day(s.runs) / q.executions);
+        }
+        match cadence {
+            Cadence::Burst { days, .. } => Some(value / days.len().max(1) as f64),
+            Cadence::DailyWithin { per_day, .. } if q.executions > 0.0 => Some(value * per_day / q.executions),
+            _ => self.rate_per_day(value),
         }
     }
 
@@ -565,25 +661,107 @@ impl Workload {
         let timeline = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && !self.windowed)?;
         let trend = q.trend.as_ref()?;
         let at = |s: &str| crate::format::epoch_seconds(s);
-        let mut span = ScanSpan { hours: 0.0, runs: 0.0, time_ms: 0.0, workload_time_ms: 0.0 };
+        let mut span = ScanSpan { hours: 0.0, runs: 0.0, time_ms: 0.0, workload_time_ms: 0.0, workload_runs: 0.0 };
         for i in 0..timeline.len() {
             let (from, to) = timeline.bounds(i);
             let (Some(from), Some(to)) = (at(from), at(to)) else { continue };
-            let (Some(Some(time)), Some(Some(runs))) = (trend.time_ms.get(i), trend.executions.get(i)) else {
-                continue;
-            };
-            let (Some(&all_time), Some(&all_runs)) = (timeline.time_ms.get(i), timeline.executions.get(i)) else {
-                continue;
-            };
-            if timeline.is_unknown(i) || to <= from || *time > all_time + 0.5 || *runs > all_runs + 0.5 {
-                continue;
-            }
+            let Some((time, runs)) = timeline.statement_bucket(trend, i).filter(|_| to > from) else { continue };
+            let all_time = timeline.time_ms[i];
             span.hours += (to - from) / 3600.0;
             span.runs += runs;
             span.time_ms += time;
             span.workload_time_ms += all_time;
+            span.workload_runs += timeline.executions.get(i).copied().unwrap_or(0.0);
         }
         (span.hours >= PER_DAY_MIN_HOURS).then_some(span)
+    }
+
+    /// What Culprit's own scans measured of statement `q` where that is what a person reads of it and what grades it:
+    /// a day or more of them ([`Workload::over_scans`]) in which it ran, whether its totals since the source began
+    /// counting say more or less. A statement that didn't run in them at all is read by its totals: what it took until
+    /// it stopped, or a weekly job's average.
+    pub fn scans_of(&self, q: &QueryStat) -> Option<ScanSpan> {
+        self.over_scans(q).filter(|s| s.runs > 0.0)
+    }
+
+    /// The share of database time statement `q` is stated and graded at, on every surface (titles, impact, rank, the
+    /// lists of statements): over Culprit's scans where they measured it ([`Workload::scans_of`]), otherwise its share
+    /// of the window's totals, weighed as the source allows ([`Workload::share_of`]).
+    pub fn statement_share(&self, q: &QueryStat) -> f64 {
+        self.scans_of(q).map_or_else(|| self.share_of(q.total_time_ms, q), |s| s.share())
+    }
+
+    /// Statement `q`'s average run, the same way ([`Workload::statement_share`]).
+    pub fn statement_mean_ms(&self, q: &QueryStat) -> f64 {
+        self.scans_of(q).and_then(|s| s.mean_ms()).unwrap_or(q.mean_time_ms)
+    }
+
+    /// Statement `q`'s share of all statement runs, the same way ([`Workload::statement_share`]).
+    pub fn statement_runs_share(&self, q: &QueryStat) -> f64 {
+        match self.scans_of(q) {
+            Some(s) => s.runs_share(),
+            None if self.total_executions > 0.0 => (q.executions / self.total_executions).min(1.0),
+            None => 0.0,
+        }
+    }
+
+    /// Statement `q`'s database time a day, the same way ([`Workload::statement_share`]): over the scans, or over a
+    /// window of a day or more where its runs came a day at a time ([`Workload::runs_per_day_of`]). `None` for a burst
+    /// and under a day of either.
+    pub fn statement_time_per_day(&self, q: &QueryStat) -> Option<f64> {
+        if matches!(self.cadence(q), Cadence::Burst { .. }) {
+            return None;
+        }
+        match self.scans_of(q) {
+            Some(s) => Some(s.per_day(s.time_ms)),
+            None => self.runs_per_day_of(q).and(self.per_day_measured(q.total_time_ms)),
+        }
+    }
+
+    /// What statement `q` costs, as every list of statements says it (a brief's, an export's, the app's): its share, how
+    /// often it ran and its average run, over Culprit's scans where they measured it ([`Workload::scans_of`]), with the
+    /// totals since the source began counting beside them where those differ twofold.
+    pub fn cost_of(&self, q: &QueryStat) -> StatementCost {
+        let scans = self.scans_of(q);
+        let (runs, counted) = match &scans {
+            Some(s) if !matches!(self.cadence(q), Cadence::Burst { .. }) => (s.runs_phrase(), s.runs),
+            _ => (self.how_often_of(q), q.executions),
+        };
+        StatementCost {
+            query: q.id.clone(),
+            share: self.statement_share(q),
+            runs,
+            runs_per_day: self.runs_per_day_of(q),
+            counted,
+            mean_ms: self.statement_mean_ms(q),
+            over: scans.map(|s| s.phrase()),
+            totals: scans.and_then(|s| self.totals_beside(q, &s)),
+        }
+    }
+
+    /// The totals since the source began counting, where they say something else than Culprit's scans `s` (twice or
+    /// half as much): "19% of database time, about 214 runs a day and 1.4 ms on average over the 1295 days since
+    /// statistics were reset", each figure only where it differs. `None` for a recent entry ([`ScanSpan::is_recent`]),
+    /// whose totals are those runs diluted by the time before it began, and where nothing differs.
+    pub fn totals_beside(&self, q: &QueryStat, s: &ScanSpan) -> Option<String> {
+        if s.is_recent(q) {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if s.share_differs(self, q) {
+            parts.push(format!("{} of database time", crate::format::percent(self.share_of(q.total_time_ms, q))));
+        }
+        // A burst's runs are when it ran, never a rate a day, on either side.
+        if s.runs_differ(self, q)
+            && !self.cadence(q).is_burst()
+            && let Some(runs) = self.totals_runs(q, true)
+        {
+            parts.push(runs);
+        }
+        if s.mean_differs(q) {
+            parts.push(format!("{} on average", crate::format::duration(q.mean_time_ms)));
+        }
+        (!parts.is_empty()).then(|| format!("{} over {}", crate::format::list(&parts), self.window_phrase()))
     }
 
     /// The source's running totals started at a time nobody can say (pg_stat_statements before PostgreSQL 14 keeps no
@@ -618,21 +796,64 @@ pub enum Cadence {
     Daily(f64),
     /// Runs a day over the stretch it ran in, from `from` to `to` (`None`: to the window's end).
     DailyWithin { per_day: f64, from: String, to: Option<String> },
-    /// Runs that came from `from` to `to`, under a day apart, well inside the window.
-    Burst { runs: f64, from: String, to: String },
+    /// Runs that came in bursts well inside the window, never a rate a day: from `from` to `to` (its first run and its
+    /// last), under a day apart; or, where `days` names them (UTC dates, `YYYY-MM-DD`), on those few of the window's
+    /// days (an eval run on two afternoons, a batch on three nights).
+    Burst { runs: f64, from: String, to: String, days: Vec<String> },
     /// Runs counted over the window: fewer than it has days, or a window too short (or undated) for a rate.
     Counted(f64),
 }
 
 impl Cadence {
-    /// When the runs came, where that is part of how often they ran: "on Oct 11, 15:51–15:55 UTC" for a burst, "since
-    /// Oct 13" or "from Oct 11 to Oct 13" for a rate over a stretch of the window.
+    /// When the runs came, where that is part of how often they ran: "on Oct 11, 15:51–15:55 UTC" for a burst, "on Oct
+    /// 11 and Oct 17" for runs on a few days, "since Oct 13" or "from Oct 11 to Oct 13" for a rate over a stretch of the
+    /// window.
     pub fn when(&self) -> Option<String> {
         match self {
-            Cadence::Burst { from, to, .. } => Some(span_when(from, to)),
+            // One run between two times is a point somewhere in them, not a run that lasted that long.
+            Cadence::Burst { runs, from, to, days } if days.is_empty() && *runs <= 1.0 => Some(one_run_when(from, to)),
+            Cadence::Burst { from, to, days, .. } if days.is_empty() => Some(span_when(from, to)),
+            Cadence::Burst { days, .. } => Some(on_days(days)),
             Cadence::DailyWithin { from, to, .. } => Some(days_when(from, to.as_deref())),
             Cadence::Daily(_) | Cadence::Counted(_) => None,
         }
+    }
+
+    /// Whether the runs came in bursts ([`Cadence::Burst`]): said by when they came, graded on their total.
+    pub fn is_burst(&self) -> bool {
+        matches!(self, Cadence::Burst { .. })
+    }
+}
+
+/// The UTC dates (`YYYY-MM-DD`) the stretches `ran` touch (epoch seconds, oldest first), the first narrowed to start at
+/// `first` and the last to end at `last`: the days a statement ran on.
+fn days_in(ran: &[(f64, f64)], first: f64, last: f64) -> Vec<String> {
+    let mut days = std::collections::BTreeSet::new();
+    for (i, &(from, to)) in ran.iter().enumerate() {
+        let from = if i == 0 { first.max(from).min(to) } else { from };
+        let to = if i + 1 == ran.len() { last.min(to).max(from) } else { to };
+        // A stretch ends where the next begins: one ending at midnight ran on the day before.
+        let to = if to > from { to - 1.0 } else { to };
+        let mut day = (from / 86_400.0).floor();
+        while day <= (to / 86_400.0).floor() {
+            days.insert(crate::format::iso_from_epoch(day * 86_400.0)[..10].to_string());
+            day += 1.0;
+        }
+    }
+    days.into_iter().collect()
+}
+
+/// The days runs came on (UTC dates, `YYYY-MM-DD`): "on Oct 11 and Oct 17", "on Oct 11, Oct 13 and Oct 17", and past
+/// three "on 4 days between Oct 11 and Oct 17".
+fn on_days(days: &[String]) -> String {
+    let day = |iso: &str| crate::format::friendly_date(iso, iso);
+    match days {
+        [] => String::new(),
+        [one] => format!("on {}", day(one)),
+        [first @ .., last] if days.len() <= 3 => {
+            format!("on {} and {}", first.iter().map(|d| day(d)).collect::<Vec<_>>().join(", "), day(last))
+        }
+        [first, .., last] => format!("on {} days between {} and {}", days.len(), day(first), day(last)),
     }
 }
 
@@ -645,9 +866,16 @@ pub struct ScanSpan {
     pub time_ms: f64,
     /// The whole database's time in the same steps.
     pub workload_time_ms: f64,
+    /// The whole database's runs in the same steps.
+    pub workload_runs: f64,
 }
 
 impl ScanSpan {
+    /// The statement's share of the database's runs in these steps.
+    pub fn runs_share(&self) -> f64 {
+        if self.workload_runs <= 0.0 { 0.0 } else { (self.runs / self.workload_runs).clamp(0.0, 1.0) }
+    }
+
     /// `value`, counted over these steps, a day.
     pub fn per_day(&self, value: f64) -> f64 {
         value * 24.0 / self.hours
@@ -672,13 +900,79 @@ impl ScanSpan {
         format!("{} days", tenths.strip_suffix(".0").unwrap_or(&tenths))
     }
 
-    /// Whether these steps say something else than the totals since the source began counting: runs a day, or the
-    /// share of database time, twice or half as much.
-    pub fn differs_from(&self, workload: &Workload, q: &QueryStat) -> bool {
-        let apart = |now: f64, all: f64| now >= all * 2.0 || now * 2.0 <= all;
-        apart(self.per_day(self.runs), workload.per_day(q.executions))
-            || apart(self.share(), workload.share(q.total_time_ms))
+    /// The statement's average run in these steps. `None` without a run.
+    pub fn mean_ms(&self) -> Option<f64> {
+        (self.runs > 0.0).then(|| self.time_ms / self.runs)
     }
+
+    /// "about 1.7K runs a day over 72 hours of Culprit's scans", or the count under one a day ("3 runs over 72 hours
+    /// of Culprit's scans").
+    pub fn runs_phrase(&self) -> String {
+        let per_day = self.per_day(self.runs);
+        if per_day >= 1.0 {
+            format!("about {} runs a day over {}", crate::format::count(per_day), self.phrase())
+        } else {
+            format!("{} {} over {}", crate::format::count(self.runs), runs_noun(self.runs), self.phrase())
+        }
+    }
+
+    /// Whether statement `q`'s entry is recent: at least half of the runs its totals hold came in these steps, so the
+    /// rest of the window before it began counting dilutes every average of them (an entry the application started
+    /// sending days ago, or one evicted and created again).
+    pub fn is_recent(&self, q: &QueryStat) -> bool {
+        self.runs >= q.executions * 0.5
+    }
+
+    /// Whether these steps' runs a day are twice or half statement `q`'s since the source began counting. False when
+    /// those can't be said a day (under a day of window, or one nobody can date).
+    pub fn runs_differ(&self, workload: &Workload, q: &QueryStat) -> bool {
+        let all = workload.per_day_measured(q.executions).filter(|_| !workload.window_unknown());
+        all.is_some_and(|all| apart(self.per_day(self.runs), all))
+    }
+
+    /// Whether the statement's share of database time in these steps is twice or half its share of the totals.
+    pub fn share_differs(&self, workload: &Workload, q: &QueryStat) -> bool {
+        apart(self.share(), workload.share_of(q.total_time_ms, q))
+    }
+
+    /// Whether its average run in these steps is twice or half its average since the source began counting.
+    pub fn mean_differs(&self, q: &QueryStat) -> bool {
+        self.mean_ms().is_some_and(|now| apart(now, q.mean_time_ms))
+    }
+
+    /// Whether the statement's share of the database's runs in these steps is twice or half its share of the totals'.
+    pub fn runs_share_differs(&self, workload: &Workload, q: &QueryStat) -> bool {
+        workload.total_executions > 0.0 && apart(self.runs_share(), q.executions / workload.total_executions)
+    }
+}
+
+/// Two figures twice or half as much as each other: what a sentence gives both of.
+fn apart(now: f64, all: f64) -> bool {
+    now >= all * 2.0 || now * 2.0 <= all
+}
+
+/// What a statement costs, as the lists of statements say it ([`Workload::cost_of`]).
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct StatementCost {
+    /// The statement's id in the workload.
+    pub query: String,
+    /// Its share of database time ([`Workload::statement_share`]).
+    pub share: f64,
+    /// How often it ran: "about 1.7K runs a day over 72 hours of Culprit's scans", or [`Workload::how_often_of`].
+    pub runs: String,
+    /// Its runs a day where its runs came that way ([`Workload::runs_per_day_of`]).
+    pub runs_per_day: Option<f64>,
+    /// The runs `runs` counts where it says no rate a day (a burst, a few runs): over Culprit's scans where they
+    /// measured it, otherwise over the window.
+    pub counted: f64,
+    /// Its average run ([`Workload::statement_mean_ms`]).
+    pub mean_ms: f64,
+    /// What these figures are over where Culprit's scans measured them: "72 hours of Culprit's scans". `None`: the
+    /// workload's window.
+    pub over: Option<String>,
+    /// The totals since the source began counting, where they differ twofold ([`Workload::totals_beside`]).
+    pub totals: Option<String>,
 }
 
 /// When runs came, from `from` to `to` (ISO 8601): "on Oct 11 at 13:58 UTC" for one moment, "on Oct 11, 15:51–15:55
@@ -696,6 +990,24 @@ pub fn span_when(from: &str, to: &str) -> String {
         format!("on {}, {}–{} UTC", day(&a), time(&a), time(&b))
     } else {
         format!("between {}, {} and {}, {} UTC", day(&a), time(&a), day(&b), time(&b))
+    }
+}
+
+/// When one run came, from the bounds that hold it: "on Oct 11 at 13:58 UTC" where they meet, else "sometime between
+/// 08:41 and 09:28 UTC on Oct 11" ("sometime between Oct 11, 23:10 and Oct 12, 00:40 UTC" across midnight).
+fn one_run_when(from: &str, to: &str) -> String {
+    let (Some(a), Some(b)) = (crate::format::epoch_seconds(from), crate::format::epoch_seconds(to)) else {
+        return format!("sometime between {from} and {to}");
+    };
+    let (a, b) = (crate::format::iso_from_epoch(a), crate::format::iso_from_epoch(b));
+    let day = |iso: &str| crate::format::friendly_date(iso, iso);
+    let time = |iso: &str| iso.get(11..16).unwrap_or_default().to_string();
+    if time(&a) == time(&b) && day(&a) == day(&b) {
+        format!("on {} at {} UTC", day(&a), time(&a))
+    } else if day(&a) == day(&b) {
+        format!("sometime between {} and {} UTC on {}", time(&a), time(&b), day(&a))
+    } else {
+        format!("sometime between {}, {} and {}, {} UTC", day(&a), time(&a), day(&b), time(&b))
     }
 }
 
@@ -831,6 +1143,18 @@ impl Timeline {
     pub fn is_unknown(&self, i: usize) -> bool {
         self.unknown.as_ref().and_then(|u| u.get(i).copied()).unwrap_or(false)
     }
+
+    /// What a statement ran in bucket `i`, as `(time ms, runs)`, where the bucket accounts for it: `None` where the
+    /// statement wasn't tracked, in a bucket the source can't account for in full ([`Timeline::unknown`]), and where
+    /// the statement ran more than the whole database did (a counter misread in a saved scan, not a run). Every reading
+    /// of a statement's trend (its rate over Culprit's scans, a regression, the app's charts) takes its buckets from
+    /// here; the app mirrors it (`statementBucket` in `app/src/components/Trends.tsx`).
+    pub fn statement_bucket(&self, trend: &QueryTrend, i: usize) -> Option<(f64, f64)> {
+        let time = (*trend.time_ms.get(i)?)?;
+        let runs = (*trend.executions.get(i)?)?;
+        let (all_time, all_runs) = (*self.time_ms.get(i)?, *self.executions.get(i)?);
+        (!self.is_unknown(i) && time <= all_time + 0.5 && runs <= all_runs + 0.5).then_some((time, runs))
+    }
 }
 
 /// One query's database time and executions in each bucket of the workload timeline. `None` marks a bucket the
@@ -852,6 +1176,28 @@ impl QueryTrend {
 }
 
 impl QueryStat {
+    /// What its runs took, where an average would hide it: its one run's time, or two runs' times, the longest first,
+    /// where one took twice the other or more (an average of 5.2 s for runs of 10.5 s and 0.3 ms). `None` for more
+    /// runs, for two alike, and where the engine keeps no longest run.
+    pub fn few_runs(&self) -> Option<Vec<f64>> {
+        if self.executions == 1.0 {
+            return Some(vec![self.total_time_ms]);
+        }
+        if self.executions != 2.0 || self.total_time_ms <= 0.0 {
+            return None;
+        }
+        let longest = self.max_time_ms?.clamp(0.0, self.total_time_ms);
+        let other = self.total_time_ms - longest;
+        (longest >= other * 2.0).then(|| vec![longest, other])
+    }
+
+    /// [`QueryStat::few_runs`] in words, for a sentence that says what its runs took in place of their average: "24.3
+    /// s" for one run, "10.5 s and 0.3 ms" for two.
+    pub fn few_runs_took(&self) -> Option<String> {
+        let runs = self.few_runs()?;
+        Some(runs.iter().map(|ms| crate::format::duration(*ms)).collect::<Vec<_>>().join(" and "))
+    }
+
     pub fn rows_per_execution(&self) -> Option<f64> {
         let rows = self.rows?;
         (self.executions > 0.0).then(|| rows / self.executions)
@@ -1433,6 +1779,9 @@ mod tests {
         assert_eq!(w.runs_per_day_of(&burst), None);
         let once = statement(1.0, Some("2026-10-11T13:58:49Z"), Some("2026-10-11T13:58:49Z"));
         assert_eq!(w.how_often_of(&once), "1 run, on Oct 11 at 13:58 UTC");
+        // One run known only to the trend buckets that hold it is a point between their bounds, not a 47-minute run.
+        let bucketed = statement(1.0, Some("2026-10-11T08:41:00Z"), Some("2026-10-11T09:28:00Z"));
+        assert_eq!(w.how_often_of(&bucketed), "1 run, sometime between 08:41 and 09:28 UTC on Oct 11");
         let night = statement(40.0, Some("2026-10-11T22:10:00Z"), Some("2026-10-12T03:10:00Z"));
         assert_eq!(w.how_often_of(&night), "40 runs between Oct 11, 22:10 and Oct 12, 03:10 UTC");
         // Three runs over the window, dates unknown: a count.
@@ -1447,6 +1796,114 @@ mod tests {
         let steady = statement(6000.0, Some("2026-10-11T06:01:00Z"), Some("2026-10-17T05:59:00Z"));
         assert_eq!(w.how_often_of(&steady), "about 1.0K runs a day");
         assert_eq!(w.runs_per_day_of(&steady), Some(1000.0));
+    }
+
+    /// The fresh MySQL demo: performance_schema reset 1.66 hours before the scan, every statement run in the first
+    /// minute (a temp-table spill of 35.8 s, 30K lookups in six seconds) and none since.
+    fn two_hours_of_counters() -> Workload {
+        serde_json::from_value(serde_json::json!({
+            "source": "performance_schema", "kind": "performance-schema", "windowed": false,
+            "window_start": "2026-10-17T10:17:02Z", "window_end": "2026-10-17T11:56:43Z", "window_hours": 1.66,
+            "total_time_ms": 45784.0, "total_cpu_ms": null, "total_executions": 40080.0, "query_count": 6.0,
+            "queries": []
+        }))
+        .unwrap()
+    }
+
+    // MY-1: a 40-second burst in a window under a day was read as runs a day ("433K a day" from 30K in six seconds)
+    // and graded High on 623 s "a day" of spill.
+    #[test]
+    fn a_burst_in_a_window_under_a_day_is_when_it_ran_and_its_total() {
+        let w = two_hours_of_counters();
+        let burst = statement(30_000.0, Some("2026-10-17T10:17:02Z"), Some("2026-10-17T10:17:08Z"));
+        assert_eq!(w.how_often_of(&burst), "30K runs on Oct 17 at 10:17 UTC");
+        assert!(w.cadence(&burst).is_burst());
+        // Graded on its total, whatever the window around it.
+        assert_eq!(w.rate_per_day_of(&burst, 30_000.0), Some(30_000.0));
+        assert_eq!(w.rate_per_day_of(&burst, 35_824.0), Some(35_824.0));
+        // Runs from the window's start to its end are the window's: a rate over it.
+        let steady = statement(30_000.0, Some("2026-10-17T10:17:02Z"), Some("2026-10-17T11:56:00Z"));
+        assert!(!w.cadence(&steady).is_burst());
+        assert_eq!(w.rate_per_day_of(&steady, 1.66), Some(24.0));
+        // Under an hour of window there is no rate to judge: the total is all there is.
+        let mut minutes = w.clone();
+        minutes.window_hours = 0.03;
+        assert_eq!(minutes.cadence(&burst), Cadence::Counted(30_000.0));
+        assert_eq!(minutes.rate_per_day_of(&burst, 30_000.0), None);
+    }
+
+    /// Six days of Query Store in 2-hour buckets, Oct 11 06:00 to Oct 17 06:00.
+    fn six_days_in_buckets() -> Workload {
+        let mut w = six_days();
+        let start = crate::format::epoch_seconds("2026-10-11T06:00:00Z").unwrap();
+        let starts: Vec<String> = (0..72).map(|i| crate::format::iso_from_epoch(start + i as f64 * 7200.0)).collect();
+        w.timeline = Some(Timeline {
+            source: TimelineSource::QueryStore,
+            time_ms: vec![1000.0; starts.len()],
+            executions: vec![1000.0; starts.len()],
+            starts,
+            end: "2026-10-17T06:00:00Z".into(),
+            unknown: None,
+        });
+        w
+    }
+
+    /// A statement whose runs fell in the buckets `ran` (index, runs) of [`six_days_in_buckets`].
+    fn in_buckets(ran: &[(usize, f64)], first: &str, last: &str) -> QueryStat {
+        let runs: f64 = ran.iter().map(|(_, r)| r).sum();
+        let mut q = statement(runs, Some(first), Some(last));
+        let mut executions = vec![Some(0.0); 72];
+        for &(i, r) in ran {
+            executions[i] = Some(r);
+        }
+        q.trend = Some(QueryTrend { time_ms: executions.clone(), executions });
+        q
+    }
+
+    // MS-2 and MS-3: the planted N+1 ran 120K times in four 2-hour bursts on two of six days, from a first run on day
+    // one to a last on day six: read as "about 19.4K runs a day", under chatty's bar, and its neighbours as "about 388
+    // runs a day".
+    #[test]
+    fn runs_on_a_few_days_are_those_days_from_the_timelines_buckets() {
+        let w = six_days_in_buckets();
+        // Oct 11 06–08, 12–14, 14–16 and Oct 16 10–12.
+        let n1 = in_buckets(
+            &[(0, 30_000.0), (3, 30_000.0), (4, 30_000.0), (62, 30_000.0)],
+            "2026-10-11T07:44:28Z",
+            "2026-10-16T10:18:42Z",
+        );
+        assert_eq!(w.how_often_of(&n1), "120K runs on Oct 11 and Oct 16");
+        assert_eq!(w.runs_per_day_of(&n1), None);
+        // Busy at the pace it ran: 60K a day on the two days it ran, never 20K a day over six.
+        assert_eq!(w.rate_per_day_of(&n1, 120_000.0), Some(60_000.0));
+        // A few more days: named while they are three, counted past that.
+        let three = in_buckets(&[(0, 10.0), (24, 10.0), (60, 10.0)], "2026-10-11T06:10:00Z", "2026-10-16T07:00:00Z");
+        assert_eq!(w.how_often_of(&three), "30 runs on Oct 11, Oct 13 and Oct 16");
+        // Every day of the window: a daily job, a rate a day.
+        let nightly: Vec<(usize, f64)> = (0..6).map(|d| (d * 12, 100.0)).collect();
+        let daily = in_buckets(&nightly, "2026-10-11T06:10:00Z", "2026-10-16T06:50:00Z");
+        assert!(!w.cadence(&daily).is_burst(), "{:?}", w.cadence(&daily));
+        // Buckets that don't hold all its runs (a timeline that began after it did) say nothing of when it ran.
+        let mut partial = n1.clone();
+        partial.executions = 200_000.0;
+        assert!(!w.cadence(&partial).is_burst());
+    }
+
+    // MS-12c: "5.2 s per run" for one run of 10.5 s and one of 0.23 ms.
+    #[test]
+    fn one_run_or_two_far_apart_are_what_they_took() {
+        let mut q = statement(2.0, None, None);
+        q.total_time_ms = 10_490.35;
+        q.max_time_ms = Some(10_490.125);
+        assert_eq!(q.few_runs_took().as_deref(), Some("10.5 s and 0.23 ms"));
+        q.max_time_ms = Some(5_300.0);
+        assert_eq!(q.few_runs(), None, "two alike: the average says it");
+        q.max_time_ms = None;
+        assert_eq!(q.few_runs(), None, "no longest run kept: nothing to say apart");
+        let mut once = statement(1.0, None, None);
+        once.total_time_ms = 24_288.7;
+        assert_eq!(once.few_runs_took().as_deref(), Some("24.3 s"));
+        assert_eq!(statement(3.0, None, None).few_runs(), None);
     }
 
     /// pg_stat_statements counting since Jan 1, with 36 hours of Culprit's scans in three steps: the database ran
@@ -1484,7 +1941,7 @@ mod tests {
         assert_eq!(s.length(), "36 hours");
         assert_eq!(
             w.how_often_of(&q),
-            "about 388 runs a day over the 284 days since statistics were reset (about 1.6K a day over 36 hours of Culprit's scans)"
+            "about 1.6K runs a day over 36 hours of Culprit's scans (about 388 a day over the 284 days since statistics were reset)"
         );
         // About the same pace and share as since the reset: the scans' rate alone.
         let (w, q) = running_totals(200.0, 4000.0);
@@ -1500,6 +1957,41 @@ mod tests {
         let (mut w, q) = running_totals(800.0, 3000.0);
         w.windowed = true;
         assert_eq!(w.over_scans(&q), None);
+    }
+
+    // The aptabase readings again: a read titled "19% of database time" and ranked below DISCARD ALL took 33% over
+    // Culprit's scans, and a read titled 6% took 3.1%. Over a day of scans, share, runs, average and time a day are the
+    // scans', in both directions; the totals since the reset are said beside them where they differ twofold.
+    #[test]
+    fn a_statement_on_running_totals_is_read_by_culprits_scans_both_ways() {
+        // 9 s of the database's 30 s in the scans (30%) at 3.75 ms a run, about the totals' third at 5 ms, but four
+        // times as many runs a day.
+        let (w, q) = running_totals(800.0, 3000.0);
+        assert!((w.statement_share(&q) - 0.3).abs() < 1e-9);
+        assert_eq!(w.statement_mean_ms(&q), 3.75);
+        assert_eq!(w.statement_time_per_day(&q), Some(6000.0));
+        let cost = w.cost_of(&q);
+        assert_eq!(cost.runs, "about 1.6K runs a day over 36 hours of Culprit's scans");
+        // The share (30% against 33%) is within twice: only the runs a day differ.
+        assert_eq!(cost.totals.as_deref(), Some("about 388 runs a day over the 284 days since statistics were reset"));
+        // Lower now: 2.4 s of 30 s (8%), against a third of the totals.
+        let (w, q) = running_totals(200.0, 800.0);
+        assert!((w.statement_share(&q) - 0.08).abs() < 1e-9);
+        assert_eq!(
+            w.cost_of(&q).totals.as_deref(),
+            Some("33% of database time over the 284 days since statistics were reset")
+        );
+        // A statement that didn't run in the scans is read by its totals: what it took until it stopped.
+        let (w, q) = running_totals(0.0, 0.0);
+        assert_eq!(w.scans_of(&q), None);
+        assert!((w.statement_share(&q) - w.share_of(q.total_time_ms, &q)).abs() < 1e-9);
+        assert_eq!(w.statement_mean_ms(&q), q.mean_time_ms);
+        // A recent entry: most of its runs came in the scans, so its totals say nothing beside them.
+        let (w, mut q) = running_totals(800.0, 3000.0);
+        q.executions = 3000.0;
+        assert!(w.scans_of(&q).unwrap().is_recent(&q));
+        assert_eq!(w.cost_of(&q).totals, None);
+        assert_eq!(w.how_often_of(&q), "about 1.6K runs a day over 36 hours of Culprit's scans");
     }
 
     use super::*;

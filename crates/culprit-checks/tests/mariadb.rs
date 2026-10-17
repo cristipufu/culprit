@@ -27,6 +27,7 @@ fn findings_use_mariadb_words_and_syntax() {
     if let Some(p) = s.pressure.as_mut() {
         p.uptime_hours = Some(240.0);
     }
+    crate::counter_age::digests_counted_since_the_start(&mut s);
     // MariaDB estimates that a filter on an unindexed column keeps every row. The demo's statement ends in `LIMIT ?`,
     // so the rows it returns say nothing about how many the filter kept: no evidence, no index.
     let scan = "filtered-scan:shop.orders(promo_code)";
@@ -42,6 +43,26 @@ fn findings_use_mariadb_words_and_syntax() {
     assert!(sql.contains("IGNORED") && !sql.contains("INVISIBLE"), "{sql}");
     let advice = index_advice(&report);
     assert!(advice.notes.iter().any(|n| n.starts_with("MariaDB doesn't record missing-index requests")));
+}
+
+// The saved MariaDB demo: "80 times in the hour since the server last restarted" and "no writes in the 1 h 9 min its
+// counters cover", where the setup truncated performance_schema's table counters with its statements 68 minutes after
+// the start. Counters that may have started over are named for what they are, with no length and no rate a day.
+#[test]
+fn performance_schema_counters_reset_with_the_statements_are_named_so() {
+    let report = analyze(snapshot());
+    let f = find(&report, "scan-heavy:shop.orders").expect("scan-heavy");
+    let since = "80 times since the server started or its performance_schema counters were last reset";
+    assert!(f.title.contains(since) && f.summary.contains(since), "{}\n{}", f.title, f.summary);
+    assert!(!f.summary.contains("restarted") && !f.summary.contains("a day"), "{}", f.summary);
+    let cost = f.fix.as_ref().and_then(|x| x.cost.as_deref()).unwrap_or_default();
+    assert!(cost.contains("in what its counters cover, which may be short") && !cost.contains(" min "), "{cost}");
+    // A server whose statements' counters began with it is dated by its start.
+    let mut s = snapshot();
+    s.server.started_at = s.workload.as_ref().and_then(|w| w.window_start.clone());
+    let report = analyze(s);
+    let f = find(&report, "scan-heavy:shop.orders").expect("scan-heavy");
+    assert!(f.title.contains("since the server last restarted"), "{}", f.title);
 }
 
 #[test]
@@ -159,9 +180,9 @@ fn a_statement_with_no_where_is_not_told_to_index_its_filter() {
     assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), vec!["258e3c9b580f1ecc"]);
     assert!(
         f.summary.ends_with(
-            "1 of the captured statements reads it in full by its plan; explain it to see which filter has no index. \
-             A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no \
-             index on a filter changes that."
+            "1 of the captured statements reads it in full (its plan scans it); explain it to see which filter has no \
+             index. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE \
+             clause, so no index on a filter changes that."
         ),
         "{}",
         f.summary
@@ -177,6 +198,35 @@ fn a_statement_with_no_where_is_not_told_to_index_its_filter() {
     assert!(find(&analyze(s), "scan-heavy:shop.orders").is_none());
 }
 
+// MY-3: a scan with no captured plans (MariaDB's fresh demo) counted every SELECT that names the table as maybe reading
+// it in full, and told the reader to index columns indexes already lead with. MySQL counts the rows each statement
+// examined: about the whole table a run reads it in full (and counts in the share); a sliver of it is an index's work.
+#[test]
+fn rows_examined_say_which_statements_read_the_table_in_full() {
+    let mut s = snapshot();
+    for q in s.workload.as_mut().unwrap().queries.iter_mut() {
+        q.plan = None;
+    }
+    let report = analyze(s);
+    let f = find(&report, "scan-heavy:shop.orders").expect("finding");
+    // 258e examines 500K of 499K rows a run; decf 11K (2%) and 46db 5: through an index.
+    assert_eq!(f.queries.iter().map(|q| q.id.as_str()).collect::<Vec<_>>(), vec!["258e3c9b580f1ecc"]);
+    assert!(
+        f.summary.contains(
+            "1 of the captured statements reads it in full (it examines 500K rows a run, about the whole table); \
+             explain it to see which filter has no index."
+        ),
+        "{}",
+        f.summary
+    );
+    assert!(!f.summary.contains("without a captured plan"), "{}", f.summary);
+    // Its time is the scans' cost.
+    assert!(f.impact.db_time_share.is_some_and(|s| s > 0.0), "{:?}", f.impact.db_time_share);
+    // No SQL creates an index: the cost line names the one the reader would add (MY-6).
+    let cost = f.fix.as_ref().and_then(|x| x.cost.as_deref()).unwrap_or_default();
+    assert!(!cost.contains("this index") && cost.contains("any index you add"), "{cost}");
+}
+
 // InnoDB keeps only its most recent deadlock: "deadlocked once in the last day" counted what it doesn't count.
 #[test]
 fn innodbs_latest_deadlock_is_at_least_one() {
@@ -185,5 +235,24 @@ fn innodbs_latest_deadlock_is_at_least_one() {
     assert_eq!(
         f.title,
         "Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)"
+    );
+}
+
+// MY-8: the deadlock's brief pointed at one of its two tables, and "Rolled back: root" named a login as if it were the
+// victim itself.
+#[test]
+fn a_deadlocks_brief_names_both_tables_and_its_victim_is_a_session() {
+    let report = analyze(snapshot());
+    let f = report.findings.iter().find(|f| f.check == "deadlocks").expect("finding");
+    let victim = f.metrics.iter().find(|m| m.label == "Rolled back").and_then(|m| m.text.as_deref());
+    assert_eq!(victim, Some("session 202 (login root)"));
+    let brief = culprit_checks::agent_brief(&report, f);
+    let code = brief.split("## What to do in the codebase").nth(1).expect("codebase section");
+    assert!(
+        code.contains(
+            "The statements to look for are quoted under *What's happening*: find the code that sends them (search \
+             for `shop.customers` and `shop.orders`) and make the change the fix describes there."
+        ),
+        "{code}"
     );
 }

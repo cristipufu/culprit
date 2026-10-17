@@ -24,6 +24,8 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         .collect();
 
     let top_share = support::top_findings_share(snapshot, findings.iter());
+    // Over Culprit's scans where they measured every statement behind it, as the findings say it.
+    let scans = support::top_findings_scans(snapshot, findings.iter());
 
     let n = findings.iter().filter(|f| !f.inactive).count();
     let window = support::summary_window(snapshot);
@@ -35,10 +37,11 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         }
         (0, _, None) => "Nothing stands out.".to_string(),
         (n, Some(share), Some(window)) if share >= 0.05 => format!(
-            "{} {}. The top ones touch {} of database time over {window}.",
+            "{} {}. The top ones touch {} of database time over {}.",
             n,
             plural(n, "opportunity", "opportunities"),
-            format::percent(share)
+            format::percent(share),
+            scans.as_deref().unwrap_or(window)
         ),
         (n, _, _) => format!("{} {}.", n, plural(n, "opportunity", "opportunities")),
     };
@@ -68,7 +71,29 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         top_share,
         headline,
         no_workload: snapshot.no_workload_reason(),
+        runs_said: runs_said(snapshot),
+        over_scans: over_scans(snapshot),
     }
+}
+
+/// What Culprit's scans measured of the statements they did (`Summary::over_scans`), as every surface states it.
+fn over_scans(snapshot: &Snapshot) -> Vec<culprit_core::StatementCost> {
+    let Some(w) = snapshot.workload.as_ref() else { return Vec::new() };
+    w.queries.iter().filter(|q| w.scans_of(q).is_some()).map(|q| w.cost_of(q)).collect()
+}
+
+/// The statements whose runs a rate a day would misstate (`Summary::runs_said`), said as the brief says them: a burst
+/// by when it ran, fewer runs than the window has days as a count.
+fn runs_said(snapshot: &Snapshot) -> Vec<culprit_core::RunsSaid> {
+    let Some(w) = snapshot.workload.as_ref() else { return Vec::new() };
+    w.queries
+        .iter()
+        .filter(|q| {
+            w.cadence(q).is_burst()
+                || (w.window_hours >= culprit_core::PER_DAY_MIN_HOURS && w.runs_per_day_of(q).is_none())
+        })
+        .map(|q| culprit_core::RunsSaid { query: q.id.clone(), runs: w.cost_of(q).runs })
+        .collect()
 }
 
 fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {

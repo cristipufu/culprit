@@ -71,11 +71,15 @@ pub(super) fn merge_same_cause(snapshot: &Snapshot, findings: Vec<Finding>) -> V
         let Some(impact) = query_impact(snapshot, &queries) else { continue };
         apply_query_impact(m, &impact);
         let column = m.subject.name.clone();
+        // Queries that all stopped running are told in the past.
+        let stopped = crate::all_stopped(snapshot, &queries);
         if m.confidence == Confidence::High {
-            m.severity = m.severity.max(severity_for_workload_share(snapshot, impact.share));
-            m.title = format!("A type mismatch on {column} stops {} queries from seeking an index", queries.len());
+            m.severity = m.severity.max(severity_for_impact(snapshot, &queries, &impact));
+            let stops = if stopped { "stopped" } else { "stops" };
+            m.title = format!("A type mismatch on {column} {stops} {} queries from seeking an index", queries.len());
         } else {
-            m.title = format!("A type mismatch on {column} slows down {} queries", queries.len());
+            let slows = if stopped { "slowed" } else { "slows" };
+            m.title = format!("A type mismatch on {column} {slows} down {} queries", queries.len());
         }
         m.summary.push_str(&format!(
             " The same mismatch appears in {} queries that together take {} of database time.",
@@ -106,6 +110,9 @@ pub(super) fn plan_warning_finding(
     f.metrics.push(Metric::new(share_metric_label(snapshot), impact.share, Unit::Ratio));
     f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
     let handle = query_handle(q);
+    // A statement that stopped running is told in the past: `tense(present, past)`.
+    let stopped = crate::all_stopped(snapshot, &[q]);
+    let tense = |present: &'static str, past: &'static str| if stopped { past } else { present };
     match warning {
         PlanWarning::ImplicitConversion => {
             let node_props = node.into_iter().flat_map(|n| n.props.values());
@@ -132,9 +139,11 @@ pub(super) fn plan_warning_finding(
             // it the plan may still seek (a range through the conversion), and the warning is about its estimates. With it,
             // the plan may still scan the index, so the index isn't unused: it can't be searched.
             f.title = match &column {
-                Some(c) if blocks_seek => format!("A type mismatch on {c} stops {handle} from seeking an index"),
-                Some(c) => format!("A type mismatch on {c} slows down {handle}"),
-                None => format!("A type mismatch slows down {handle}"),
+                Some(c) if blocks_seek => {
+                    format!("A type mismatch on {c} {} {handle} from seeking an index", tense("stops", "stopped"))
+                }
+                Some(c) => format!("A type mismatch on {c} {} down {handle}", tense("slows", "slowed")),
+                None => format!("A type mismatch {} down {handle}", tense("slows", "slowed")),
             };
             f.summary = format!(
                 "The database has to convert {} before comparing it with a parameter of a different type{}. {}{}",
@@ -152,7 +161,7 @@ pub(super) fn plan_warning_finding(
                     None => String::new(),
                 }
             );
-            f.severity = if blocks_seek { severity_for_workload_share(snapshot, impact.share) } else { Severity::Low };
+            f.severity = if blocks_seek { severity_for_impact(snapshot, &[q], impact) } else { Severity::Low };
             f.confidence = if blocks_seek { Confidence::High } else { Confidence::Medium };
             f.fix = Some(Fix { summary: mismatch_fix(column.as_deref(), target.as_deref()), sql: None, cost: None });
             if let Some(c) = &column {
@@ -162,13 +171,17 @@ pub(super) fn plan_warning_finding(
             }
         }
         PlanWarning::Spill => {
-            f.title = format!("{} runs out of memory and spills to disk", capitalize(&handle));
+            f.title = format!(
+                "{} {} to disk",
+                capitalize(&handle),
+                tense("runs out of memory and spills", "ran out of memory and spilled")
+            );
             f.summary = "A sort or hash in this plan needed more memory than it was granted and wrote the overflow to disk (tempdb or temp files). Spills usually come from a row estimate that was far too low, or a sort the index could have avoided.".into();
             // A spill too small to matter stays Low, as the plan's own `spill` insight rates it.
             f.severity = if q.plan.as_ref().is_some_and(culprit_core::insights::spills_are_minor) {
                 Severity::Low
             } else {
-                severity_for_workload_share(snapshot, impact.share)
+                severity_for_impact(snapshot, &[q], impact)
             };
             f.confidence = Confidence::High;
             f.fix = Some(Fix {
@@ -186,9 +199,10 @@ pub(super) fn plan_warning_finding(
             let engine = snapshot.server.name();
             match join_condition(&q.text) {
                 JoinCondition::Missing => {
-                    f.title = format!("{} joins tables without a join condition", capitalize(&handle));
+                    f.title =
+                        format!("{} {} tables without a join condition", capitalize(&handle), tense("joins", "joined"));
                     f.summary = "Part of this plan combines every row of one input with every row of another (a cross join), and the statement has no condition joining them: no ON clause and no comparison of one table's column with another's. A missing join condition multiplies the rows the query reads and returns.".into();
-                    f.severity = severity_for_workload_share(snapshot, impact.share);
+                    f.severity = severity_for_impact(snapshot, &[q], impact);
                     f.confidence = Confidence::Medium;
                     f.fix = Some(Fix {
                         summary: "Check the query's joins and add the missing condition.".into(),
@@ -197,7 +211,11 @@ pub(super) fn plan_warning_finding(
                     });
                 }
                 JoinCondition::Present => {
-                    f.title = format!("{}'s plan joins two inputs without a join condition", capitalize(&handle));
+                    f.title = format!(
+                        "{}'s plan {} two inputs without a join condition",
+                        capitalize(&handle),
+                        tense("joins", "joined")
+                    );
                     f.summary = format!(
                         "Part of this plan combines every row of one input with every row of another, though the statement does join them. {engine} does this when both join columns are compared with the same value (a.x = @v AND a.x = b.x): it filters each side by the value and drops the join condition as redundant. That is harmless while both sides keep few rows."
                     );
@@ -210,7 +228,7 @@ pub(super) fn plan_warning_finding(
                     });
                 }
                 JoinCondition::CrossJoin => {
-                    f.title = format!("{} asks for a cross join", capitalize(&handle));
+                    f.title = format!("{} {} for a cross join", capitalize(&handle), tense("asks", "asked"));
                     f.summary = "Part of this plan combines every row of one input with every row of another, and the statement asks for it (CROSS JOIN or CROSS APPLY). That multiplies rows: fine for a small list of values, costly for two large tables.".into();
                     f.severity = Severity::Low;
                     f.confidence = Confidence::Medium;
@@ -223,7 +241,8 @@ pub(super) fn plan_warning_finding(
             }
         }
         PlanWarning::MissingStatistics => {
-            f.title = format!("{} is planned without statistics on some columns", capitalize(&handle));
+            f.title =
+                format!("{} {} planned without statistics on some columns", capitalize(&handle), tense("is", "was"));
             f.summary = "The optimizer had to guess how many rows match because some columns have no statistics. Guesses lead to the wrong join type or memory grant.".into();
             f.severity = Severity::Low;
             f.confidence = Confidence::Medium;
@@ -240,8 +259,9 @@ pub(super) fn plan_warning_finding(
                     // An index's keys have statistics: say they're out of date, and what the catalog says of them.
                     if let Some(stale) = &stale {
                         f.title = format!(
-                            "{} is planned on out-of-date statistics on {}",
+                            "{} {} planned on out-of-date statistics on {}",
                             capitalize(&handle),
+                            tense("is", "was"),
                             format::list(&stale.columns)
                         );
                         if let Some(said) = statistics_now(snapshot, stale) {

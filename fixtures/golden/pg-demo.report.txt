@@ -22,8 +22,8 @@ fix: Give this statement more sort memory (64MB instead of 4MB, if the applicati
       SET LOCAL work_mem = '64MB';
   cost: work_mem is per sort or hash, per connection: size it with your connection count in mind.
 verify:
-  1. Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), scan again after the statement has run a while and compare its temp files with this scan's: 4.2 GB over 214 runs now. pg_stat_statements keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
-  2. If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses.
+  1. Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), its temp files should stop growing while its runs go on: pg_stat_statements keeps running totals, so compare its temp files and runs in a scan taken once the change is live and one a day or more later (4.2 GB over 214 runs in this scan).
+  2. If it now returns fewer rows, the rows it returns per run between those two scans should drop to what a page or a job actually uses.
 queries:
   - 9065391607317686058: 44% of database time · plan step 1
 brief:
@@ -68,12 +68,12 @@ brief:
 
     ## How to verify
 
-    - Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), scan again after the statement has run a while and compare its temp files with this scan's: 4.2 GB over 214 runs now. pg_stat_statements keeps totals since its last reset, so with the spill gone that total stays as it is while the runs go on; this finding can stay until those totals are reset.
-    - If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses.
+    - Once the application's connections use the new setting (a role's setting reaches the connections it opens after the change), its temp files should stop growing while its runs go on: pg_stat_statements keeps running totals, so compare its temp files and runs in a scan taken once the change is live and one a day or more later (4.2 GB over 214 runs in this scan).
+    - If it now returns fewer rows, the rows it returns per run between those two scans should drop to what a page or a job actually uses.
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
 
 === finding filtered-scan:public.orders(customer_id)
 medium severity · high confidence · indexes
@@ -91,7 +91,7 @@ fix: Create an index on customer_id so the query seeks instead of scanning.
   cost: public.orders had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
 verify:
   1. Explain the query again: the scan of orders should become an index seek/scan on the new index.
-  2. Re-scan after the workload has run: this finding should be gone and the query's share of database time lower.
+  2. Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
 queries:
   - 5308963031944094559: 23% of database time · plan step 3
 brief:
@@ -133,11 +133,11 @@ brief:
     ## How to verify
 
     - Explain the query again: the scan of orders should become an index seek/scan on the new index.
-    - Re-scan after the workload has run: this finding should be gone and the query's share of database time lower.
+    - Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.orders(customer_id)` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.orders(customer_id)` the way *How to verify* says.
 
 === finding planning-time:-967240904657798800
 medium severity · high confidence · queries
@@ -151,7 +151,7 @@ metrics:
   - Runs: 300
 fix: Prepare it once and reuse it: most drivers do when you bind parameters (pgjdbc prepareThreshold, Npgsql Max Auto Prepare, psycopg prepare=True). Behind PgBouncer in transaction mode, prepared statements need 1.21+ with max_prepared_statements set. If planning stays slow when reused, look at the number of joins and partitions it touches.
 verify:
-  1. Re-scan: planning should be a small part of its time.
+  1. Between two scans, its planning time per run should drop: pg_stat_statements keeps running totals, so compare its planning time and runs in a scan taken once the change is live and one a day or more later (27.0 s over 300 runs in this scan).
 queries:
   - -967240904657798800: <1% of database time
 brief:
@@ -184,11 +184,11 @@ brief:
 
     ## How to verify
 
-    - Re-scan: planning should be a small part of its time.
+    - Between two scans, its planning time per run should drop: pg_stat_statements keeps running totals, so compare its planning time and runs in a scan taken once the change is live and one a day or more later (27.0 s over 300 runs in this scan).
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `planning-time:-967240904657798800` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `planning-time:-967240904657798800` the way *How to verify* says.
 
 === finding replica-lag:analytics_slot
 medium severity · high confidence · configuration
@@ -235,7 +235,7 @@ brief:
 
     ## What to do in the codebase
 
-    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan pg-demo` and check `replica-lag:analytics_slot` the way *How to verify* says.
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan pg-demo` and check `replica-lag:analytics_slot` the way *How to verify* says.
 
 === finding hot-updates:archive.wide
 low severity · high confidence · maintenance
@@ -278,7 +278,7 @@ brief:
 
     ## Queries involved
 
-    Query `-463560455567765064` — <1% of DB time, 1 run over the 5 hours since statistics were reset, 327 ms average:
+    Query `-463560455567765064` — <1% of DB time, 1 run over the 5 hours since statistics were reset, which took 327 ms:
 
     ```sql
     UPDATE archive.wide SET touched = touched + $1 WHERE id % $2 = $3
@@ -303,31 +303,31 @@ brief:
 
     ## What to do in the codebase
 
-    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `hot-updates:archive.wide` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so its first run stays in them and their numbers move only as new runs add up.
+    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `hot-updates:archive.wide` the way *How to verify* says: pg_stat_statements keeps running totals, so its first run stays in them and their numbers move only as new runs add up.
 
 === finding chatty-query:3432126458605143571
 low severity · medium confidence · queries
-title: A read from customers runs 8.2K times in 5 hours, one row at a time
-summary: This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+title: A read from customers runs 8.2K times in 5 hours, one key at a time
+summary: Its runs are 68% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 68% of executions · 0.1% of database time
 metrics:
   - Share of executions: 68%
   - Average duration: 0.02 ms
 fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
   - 3432126458605143571: <1% of database time
 brief:
-    # A read from customers runs 8.2K times in 5 hours, one row at a time
+    # A read from customers runs 8.2K times in 5 hours, one key at a time
 
     Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `chatty-query:3432126458605143571`: low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    This statement is 68% of every statement the database executes, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 68% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -348,7 +348,7 @@ brief:
 
     ## How to verify
 
-    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -356,7 +356,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
 
 === finding filtered-scan:public.order_items(product_id)
 low severity · high confidence · indexes
@@ -374,7 +374,7 @@ fix: Create an index on product_id so the query seeks instead of scanning.
   cost: public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
 verify:
   1. Explain the query again: the scan of order_items should become an index seek/scan on the new index.
-  2. Re-scan after the workload has run: this finding should be gone and the query's share of database time lower.
+  2. Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
 queries:
   - -3722457391793582113: 4% of database time · plan step 3
 brief:
@@ -416,11 +416,11 @@ brief:
     ## How to verify
 
     - Explain the query again: the scan of order_items should become an index seek/scan on the new index.
-    - Re-scan after the workload has run: this finding should be gone and the query's share of database time lower.
+    - Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop.
 
     ## What to do in the codebase
 
-    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.order_items(product_id)` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.order_items(product_id)` the way *How to verify* says.
 
 === finding jit-overhead:6425265648074738764
 low severity · high confidence · queries
@@ -439,7 +439,7 @@ fix: Raise the cost threshold so JIT only starts for plans ten times as expensiv
       -- Or for the application's role only:
       -- ALTER ROLE app_user SET jit = off;
 verify:
-  1. Re-scan: JIT time per run should drop to zero or near it, and the average run time with it.
+  1. Between two scans, its JIT time per run should drop to zero or near it: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
 queries:
   - 6425265648074738764: 2% of database time
 brief:
@@ -479,16 +479,16 @@ brief:
 
     ## How to verify
 
-    - Re-scan: JIT time per run should drop to zero or near it, and the average run time with it.
+    - Between two scans, its JIT time per run should drop to zero or near it: pg_stat_statements keeps running totals, so compare its JIT time and runs in a scan taken once the change is live and one a day or more later (3.7 s over 120 runs in this scan).
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file), if it does. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says.
 
 === finding dead-rows:archive.wide
 low severity · high confidence · maintenance
 title: 74% of wide is dead rows
-summary: archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K rows changed since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.
+summary: archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K changes since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.
 impact: 126K dead rows
 metrics:
   - Dead rows: 126K
@@ -509,7 +509,7 @@ brief:
 
     ## What's happening
 
-    archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K rows changed since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.
+    archive.wide holds 126K dead rows next to 45K live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. Autovacuum should visit it at about 9.1K dead rows; it has 14.0 times that, so it is behind. It has never been vacuumed since statistics were reset. Its statistics are behind too (105K changes since the last analyze): VACUUM (ANALYZE) refreshes them in the same pass.
 
     ## Evidence
 
@@ -551,7 +551,7 @@ fix: Index the foreign key column on public.order_items.
           ON public.order_items (order_id);
   cost: public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.
 verify:
-  1. Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone.
+  1. Re-scan once the index exists: this finding should be gone, and a delete from public.orders then finds the rows of public.order_items it checks through the index, not by scanning the table.
 brief:
     # order_items has no index on order_id, its foreign key to orders
 
@@ -579,7 +579,7 @@ brief:
 
     ## How to verify
 
-    - Deletes from public.orders should no longer scan public.order_items; re-scan to confirm the finding is gone.
+    - Re-scan once the index exists: this finding should be gone, and a delete from public.orders then finds the rows of public.order_items it checks through the index, not by scanning the table.
 
     ## What to do in the codebase
 
@@ -588,17 +588,17 @@ brief:
 === finding heavy-query:4911431806993420100
 low severity · medium confidence · queries
 title: An update of products takes 12% of database time, most likely waiting for locks
-summary: It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
+summary: It ran once at 19.0 s, sometime between 08:41 and 09:28 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
 impact: 12% of DB time · 11.8% of database time
 metrics:
   - Share of DB time: 12%
   - Average duration: 19.0 s
   - Pages read per run: 15
   - Rows changed per run: 1
-fix: Find what holds the locks while it waits (Live shows the blocking chain) and keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
+fix: It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
 verify:
   1. Re-scan later: if it hasn't run again, there is nothing to do.
-  2. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its average run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
 queries:
@@ -610,7 +610,7 @@ brief:
 
     ## What's happening
 
-    It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
+    It ran once at 19.0 s, sometime between 08:41 and 09:28 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
 
     ## Evidence
 
@@ -621,7 +621,7 @@ brief:
 
     ## Queries involved
 
-    Query `4911431806993420100` — 12% of DB time, 1 run over the 5 hours since statistics were reset, 19.0 s average:
+    Query `4911431806993420100` — 12% of DB time, 1 run, sometime between 08:41 and 09:28 UTC on Oct 11, which took 19.0 s:
 
     ```sql
     UPDATE products SET name = name WHERE id = $1
@@ -629,12 +629,12 @@ brief:
 
     ## Suggested fix
 
-    Find what holds the locks while it waits (Live shows the blocking chain) and keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
+    It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
 
     ## How to verify
 
     - Re-scan later: if it hasn't run again, there is nothing to do.
-    - pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its average run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -642,7 +642,7 @@ brief:
 
     ## What to do in the codebase
 
-    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:4911431806993420100` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so its first run stays in them and their numbers move only as new runs add up.
+    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:4911431806993420100` the way *How to verify* says.
 
 === finding duplicate-index:public.orders.orders_status_idx
 low severity · medium confidence · indexes
@@ -802,7 +802,7 @@ brief:
 === finding heavy-query:-8886085649470066503
 low severity · high confidence · queries
 title: A call to pg_sleep takes 12% of database time, sleeping
-summary: It ran once in 5 hours at 20.0 s: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
+summary: It ran once at 20.0 s, sometime between 10:12 and 10:57 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
 impact: 12% of DB time · 12.4% of database time
 metrics:
   - Share of DB time: 12%
@@ -812,7 +812,7 @@ metrics:
 fix: Find who sends it (a health check, a test, a retry loop with a back-off) and whether the pause belongs in the database at all: while it sleeps it holds a connection, and any locks its transaction took.
 verify:
   1. Re-scan later: if it hasn't run again, there is nothing to do.
-  2. pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
 queries:
@@ -824,7 +824,7 @@ brief:
 
     ## What's happening
 
-    It ran once in 5 hours at 20.0 s: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
+    It ran once at 20.0 s, sometime between 10:12 and 10:57 UTC on Oct 11: 12% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
 
     ## Evidence
 
@@ -835,7 +835,7 @@ brief:
 
     ## Queries involved
 
-    Query `-8886085649470066503` — 12% of DB time, 1 run over the 5 hours since statistics were reset, 20.0 s average:
+    Query `-8886085649470066503` — 12% of DB time, 1 run, sometime between 10:12 and 10:57 UTC on Oct 11, which took 20.0 s:
 
     ```sql
     SELECT pg_sleep($1)
@@ -848,7 +848,7 @@ brief:
     ## How to verify
 
     - Re-scan later: if it hasn't run again, there is nothing to do.
-    - pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time should drop, or it should stop running. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -856,7 +856,7 @@ brief:
 
     ## What to do in the codebase
 
-    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:-8886085649470066503` the way *How to verify* says: pg_stat_statements keeps the statements' totals since its last reset, so its first run stays in them and their numbers move only as new runs add up.
+    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:-8886085649470066503` the way *How to verify* says.
 
 === plan 9065391607317686058
 no insights
@@ -864,19 +864,35 @@ note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to che
 shares: No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it.
 
 === plan 5308963031944094559
-no insights
+insight scan-filter · high severity · impact 98%
+  title: Reads 2.0M rows of public.orders to keep 12
+  detail: As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away. 98% of this plan's work.
+  fix: No index on orders starts with customer_id: one on customer_id lets the database go straight to the matching rows.
+  sql:
+      CREATE INDEX CONCURRENTLY ix_orders_customer_id
+          ON public.orders (customer_id);
+  verify: Explain again: orders reads about as many rows as it keeps.
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
 
 === plan -8886085649470066503
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan is estimated to be cheap, yet its one run took 20.0 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 4911431806993420100
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan is estimated to be cheap, yet its one run took 19.0 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan -3722457391793582113
-no insights
+insight scan-filter · high severity · impact 93%
+  title: Reads 1.0M rows of public.order_items to keep 101
+  detail: As planned, the Seq Scan reads the rows and checks `(order_items.product_id = $1)` on each one, so most of the reading is thrown away. 93% of this plan's work.
+  fix: No index on order_items starts with product_id: one on product_id lets the database go straight to the matching rows.
+  sql:
+      CREATE INDEX CONCURRENTLY ix_order_items_product_id
+          ON public.order_items (product_id);
+  verify: Explain again: order_items reads about as many rows as it keeps.
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
 
 === plan 2004611025554862962
@@ -887,27 +903,32 @@ shares: No share is given for a step whose rows rest on the planner's default gu
 === plan 2885972271926804069
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 3432126458605143571
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 8465053948014496855
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan -6576252161252119529
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 5306524445554315840
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
-shares: No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it.
+shares: The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on one step.
 
 === plan 2169115237613314459
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan -463560455567765064
 no insights
@@ -916,7 +937,9 @@ note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to che
 === plan -967240904657798800
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: Its costs rest on an estimate of 1 row a run, and its runs read far more than that needs (48 pages a run), so no share of them is put on one step.
 
 === plan 6425265648074738764
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+shares: No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps above it.

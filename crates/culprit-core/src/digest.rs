@@ -66,10 +66,13 @@ pub struct DigestTopQuery {
     pub tables: Vec<String>,
     /// The stored procedure or function it ran in.
     pub object: Option<String>,
-    /// Share of database time over the window, 0–1.
+    /// Share of database time, 0–1, as every surface states it: over Culprit's scans where they measured it (a source
+    /// of running totals), otherwise over the window ([`crate::Workload::statement_share`]).
     pub db_time_share: Option<f64>,
+    /// Its time and runs in the source's totals, over the window.
     pub total_ms: f64,
     pub runs: f64,
+    /// Its average run, the same way as its share ([`crate::Workload::statement_mean_ms`]).
     pub mean_ms: f64,
     /// It stopped running before the window ended: a deploy may have changed it.
     pub stopped: bool,

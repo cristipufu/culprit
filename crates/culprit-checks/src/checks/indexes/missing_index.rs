@@ -328,8 +328,13 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
     let table = snapshot.table(&c.schema, &c.table);
     let rows = table.and_then(|t| t.rows);
     let lookups = c.seeks + c.scans;
+    // Asked for only before the window: history once that is a day back, otherwise said and kept active.
+    let asked = wanted_before_window(snapshot, &c);
+    let lately = asked.as_ref().filter(|a| !a.stopped());
 
-    f.title = format!("{} is searched by {} without a supporting index", c.table, key_text);
+    // Asked for by statements that all stopped running: told in the past, as refine then marks it.
+    let is = if crate::all_stopped(snapshot, &linked) { "was" } else { "is" };
+    f.title = format!("{} {is} searched by {} without a supporting index", c.table, key_text);
     let mut summary = format!(
         "SQL Server's optimizer asked for an index on {} ({}) {} times {}. Without it, each of those lookups reads more of {}{} than it needs to. It estimates the index would make them about {:.0}% cheaper.",
         table_name,
@@ -366,9 +371,10 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
             };
         }
         None if linked.is_empty() && snapshot.workload.is_some() => {
-            summary.push_str(
-                " None of the queries in this scan asked for it: the requests came from plans that ran before the scan's window, or that Query Store no longer keeps.",
-            );
+            summary.push_str(&match lately {
+                Some(a) => format!(" {}", a.lately_sentence()),
+                None => " None of the queries in this scan asked for it: the requests came from plans that ran before the scan's window, or that Query Store no longer keeps.".to_string(),
+            });
             f.severity = request_severity(snapshot, &c, &linked);
             f.impact.score = (6.0 * (c.weight + 1.0).log10()).clamp(4.0, 40.0);
             f.impact.label = format!("{} lookups", format::count(lookups));
@@ -400,20 +406,27 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
         f.metrics.insert(0, Metric::new("Share of DB time", share, Unit::Ratio));
     }
 
-    if let Some((last, window)) = wanted_before_window(snapshot, &c) {
-        f.inactive = true;
-        f.title = format!("{} was searched by {} without a supporting index", c.table, key_text);
-        f.severity = Severity::Low;
-        f.impact.score *= 0.25;
-        f.last_seen = Some(last.clone());
-        f.caveats.insert(
-            0,
-            format!(
-                "SQL Server's optimizer last asked for this index on {}, before {window}: the queries that wanted it have \
-                 most likely changed or stopped running. Its requests are kept until the server restarts.",
-                format::friendly_date(&last, &snapshot.taken_at),
-            ),
-        );
+    match &asked {
+        Some(a) if a.stopped() => {
+            f.inactive = true;
+            f.title = format!("{} was searched by {} without a supporting index", c.table, key_text);
+            f.severity = Severity::Low;
+            f.impact.score *= 0.25;
+            f.last_seen = Some(a.last.clone());
+            f.caveats.insert(
+                0,
+                format!(
+                    "SQL Server's optimizer last asked for this index on {}, {} before this scan's data ends: the \
+                     queries that wanted it have most likely changed or stopped running. Its requests are kept until \
+                     the server restarts.",
+                    format::friendly_date(&a.last, &snapshot.taken_at),
+                    format::duration(a.silence * 1000.0),
+                ),
+            );
+        }
+        // Said in the summary when no query of the window is linked to it; beside linked ones, as a caveat.
+        Some(a) if !linked.is_empty() => f.caveats.insert(0, a.lately_sentence()),
+        _ => {}
     }
 
     if too_small_to_index(snapshot, &c, &linked) {
@@ -480,16 +493,49 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
     f
 }
 
+/// When SQL Server's optimizer last wanted an index that none of the window's queries wanted.
+pub(super) struct LastAsked {
+    /// The latest of the merged requests' last use.
+    pub(super) last: String,
+    /// Seconds from then to the end of the scan's data.
+    pub(super) silence: f64,
+    /// The window as words ("the last 2 hours").
+    pub(super) window: String,
+}
+
+impl LastAsked {
+    /// History: the queries that wanted it stopped, said only once the silence covers a day
+    /// ([`crate::refine::silent_long_enough`], the rule for statements too).
+    pub(super) fn stopped(&self) -> bool {
+        crate::refine::silent_long_enough(self.silence)
+    }
+
+    /// Under a day: none of the window's statements asked for it, too soon to say they stopped.
+    pub(super) fn lately_sentence(&self) -> String {
+        let possessive =
+            if self.window.ends_with('s') { format!("{}'", self.window) } else { format!("{}'s", self.window) };
+        format!(
+            "None of {possessive} statements asked for it: SQL Server's optimizer last did {}, {} before this scan's \
+             data ends, too short a time to say the statements that wanted it stopped.",
+            crate::queries::when_phrase(&self.last),
+            format::duration(self.silence * 1000.0),
+        )
+    }
+}
+
 /// When SQL Server's optimizer last wanted the index, when that is before the scan's window (or, without query
-/// history, before the last week: a weekly job has had its chance), and the window as words: none of the window's
-/// queries wanted it. `None` when one of the merged requests was wanted within it, or when it isn't known when.
-pub(super) fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option<(String, String)> {
-    let (start, window) = match &snapshot.workload {
+/// history, before the last week: a weekly job has had its chance): none of the window's queries wanted it. `None`
+/// when one of the merged requests was wanted within it, or when it isn't known when.
+pub(super) fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option<LastAsked> {
+    let (end, start, window) = match &snapshot.workload {
         Some(w) => {
-            let end = w.window_end.as_deref().unwrap_or(&snapshot.taken_at);
-            (parse_epoch_seconds(end)? - w.window_hours * 3600.0, w.window_phrase())
+            let end = parse_epoch_seconds(w.window_end.as_deref().unwrap_or(&snapshot.taken_at))?;
+            (end, end - w.window_hours * 3600.0, w.window_phrase())
         }
-        None => (parse_epoch_seconds(&snapshot.taken_at)? - MIN_INDEX_DAYS * 86_400.0, "the last week".to_string()),
+        None => {
+            let end = parse_epoch_seconds(&snapshot.taken_at)?;
+            (end, end - MIN_INDEX_DAYS * 86_400.0, "the last week".to_string())
+        }
     };
     let mut latest: Option<(f64, &str)> = None;
     for m in &c.requests {
@@ -500,7 +546,7 @@ pub(super) fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option
         }
     }
     let (at, text) = latest?;
-    (at < start).then(|| (text.to_string(), window))
+    (at < start).then(|| LastAsked { last: text.to_string(), silence: end - at, window })
 }
 
 /// What a request's fix is, given the table's indexes, and the index it changes instead of adding one.
@@ -610,9 +656,9 @@ pub(crate) fn candidate_fix(snapshot: &Snapshot, c: &Candidate, linked: &[&Query
     })
 }
 
-/// Tables of this many rows or more: reading one in full where a seek would do costs something. Under it, an index is
-/// advice only where the statements that want one take real time. The bar every index advice for a table's reads uses.
-pub(crate) const SCAN_ROWS: f64 = 10_000.0;
+/// Tables of this many rows or more: reading one in full where a seek would do costs something (`plan::SCAN_ROWS`, the
+/// bar a plan's note on a whole-table read uses too).
+pub(crate) use culprit_core::plan::SCAN_ROWS;
 
 /// Pages a run from which what the queries behind a request read is real reading, not the few pages any lookup reads.
 const MEASURED_READS: f64 = 100.0;
@@ -628,10 +674,11 @@ fn reads_per_run(linked: &[&QueryStat]) -> Option<f64> {
 /// estimated gain), or, with none of them in the window, how often it was asked for.
 fn request_severity(snapshot: &Snapshot, c: &Candidate, linked: &[&QueryStat]) -> Severity {
     match query_impact(snapshot, linked) {
+        // What the index would save of their share, graded on the basis that share is on (Culprit's scans where they
+        // measured them): never the scans' share beside the time their totals hold.
         Some(impact) => {
             let gain = (c.impact_pct / 100.0).clamp(0.0, 1.0);
-            let time_ms: f64 = linked.iter().map(|q| q.total_time_ms).sum();
-            severity_for_time(snapshot, time_ms * gain, impact.share * gain)
+            severity_for_statement_share(snapshot, linked, impact.share * gain)
         }
         None => unlinked_severity(snapshot, c, c.seeks + c.scans),
     }
@@ -652,7 +699,12 @@ pub(crate) fn too_small_to_index(snapshot: &Snapshot, c: &Candidate, linked: &[&
 fn too_small_finding(snapshot: &Snapshot, mut f: Finding, c: &Candidate, linked: &[&QueryStat]) -> Finding {
     let rows = snapshot.table(&c.schema, &c.table).and_then(|t| t.rows).unwrap_or(0.0);
     let table_name = format!("{}.{}", c.schema, c.table);
-    f.title = format!("SQL Server asks for an index on {}, which is too small for one to pay off", c.table);
+    // Requests that stopped (see `wanted_before_window`) are told in the past; the table's size is still now.
+    f.title = format!(
+        "SQL Server {} for an index on {}, which is too small for one to pay off",
+        if f.inactive || crate::all_stopped(snapshot, linked) { "asked" } else { "asks" },
+        c.table
+    );
     f.severity = Severity::Low;
     f.confidence = Confidence::Medium;
     f.impact.score *= 0.25;
@@ -1081,7 +1133,9 @@ pub(super) fn parameterized_filter_finding(
         ),
         _ => (format!("{lead}: {} then serves {them}, and no new index is needed.", index.name), None),
     };
-    f.fix = Some(Fix { summary, sql, cost: if partial { write_cost(snapshot, &c.schema, &c.table) } else { None } });
+    // The write cost of "this index" only beside the SQL that creates it.
+    let cost = if partial && sql.is_some() { write_cost(snapshot, &c.schema, &c.table) } else { None };
+    f.fix = Some(Fix { summary, sql, cost });
     f.verify = vec![if partial {
         format!(
             "Change the query, let the workload run, then re-scan: the query's plan seeks {}, and if the optimizer still asks for an index, it's the one above.",

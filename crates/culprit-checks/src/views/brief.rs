@@ -40,26 +40,28 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
     if !queries.is_empty() {
         let _ = writeln!(out, "## Queries involved\n");
         for (r, q) in queries {
-            let share = s.workload.as_ref().map(|w| query_share(w, finding, q)).unwrap_or(0.0);
-            // When it ran as well as how often: a burst on its day, a rate a day only where its runs came that way.
-            let how_often = s
-                .workload
-                .as_ref()
-                .map(|w| w.how_often_of(q))
-                .unwrap_or_else(|| format!("{} runs", format::count(q.executions)));
+            // What it costs as every list of statements says it (`Workload::cost_of`): over Culprit's scans where they
+            // measured it, with the totals beside where those differ twofold; when it ran as well as how often, a
+            // burst on its day and a rate a day only where its runs came that way.
+            let Some(cost) = s.workload.as_ref().map(|w| w.cost_of(q)) else { continue };
+            // One run or two far apart: what they took, never an average that hides it (`QueryStat::few_runs`).
+            let took = q
+                .few_runs_took()
+                .map_or_else(|| format!("{} average", format::duration(cost.mean_ms)), |t| format!("which took {t}"));
             let _ = writeln!(
                 out,
-                "Query `{}`{} — {} of DB time, {how_often}, {} average{}:\n",
+                "Query `{}`{} — {} of DB time, {}, {took}{}{}:\n",
                 q.id,
                 q.object_name.as_deref().map(|o| format!(" in `{o}`")).unwrap_or_default(),
-                format::percent(share),
-                format::duration(q.mean_time_ms),
+                format::percent(cost.share),
+                cost.runs,
+                cost.totals.map(|t| format!(" ({t})")).unwrap_or_default(),
                 // A statement that stopped running: these are what it ran before, not what it runs now.
                 if finding.inactive { " (it no longer runs)" } else { "" }
             );
             let _ = writeln!(out, "```sql\n{}\n```\n", q.text.trim());
             if let Some(plan) = &q.plan {
-                plan_line(&mut out, finding, r, plan);
+                plan_line(&mut out, finding, r, q, plan);
             }
         }
     }
@@ -75,8 +77,12 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
     }
     if !finding.verify.is_empty() {
         let _ = writeln!(out, "## How to verify\n");
+        // A finding names no connection (it is shared and exported); the brief is read where Culprit runs, so its
+        // commands name this one.
+        let command = crate::queries::WHAT_CHANGED_COMMAND;
+        let named = command.replace("<connection>", &report.snapshot.connection);
         for v in &finding.verify {
-            let _ = writeln!(out, "- {v}");
+            let _ = writeln!(out, "- {}", v.replace(command, &named));
         }
         let _ = writeln!(out);
     }
@@ -92,16 +98,15 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
 }
 
 /// The share of database time a finding's statement is said to take, on every surface that lists its statements (the
-/// brief, the exports): a heavy query's own finding states it (over Culprit's scans for a recent entry of a source of
-/// running totals), and every other statement's is its time weighed by how long its plan was cached (`share_of`).
-pub fn query_share(workload: &Workload, finding: &Finding, q: &QueryStat) -> f64 {
-    let own = finding.check == "heavy-query" && finding.queries.len() == 1 && finding.queries[0].id == q.id;
-    finding.impact.db_time_share.filter(|_| own).unwrap_or_else(|| workload.share_of(q.total_time_ms, q))
+/// brief, the exports): the one its findings are weighed by ([`Workload::statement_share`]), over Culprit's scans where
+/// they measured it, otherwise its time weighed by how long its plan was cached (`share_of`).
+pub fn query_share(workload: &Workload, _finding: &Finding, q: &QueryStat) -> f64 {
+    workload.statement_share(q)
 }
 
 /// "Plan: the most expensive step (64% of estimated cost) is `Seq Scan` on `public.orders` …": the step the reader looks
 /// at, with its share only where the plan can state one, and why there is none where it can't.
-fn plan_line(out: &mut String, finding: &Finding, r: &QueryRef, plan: &Plan) {
+fn plan_line(out: &mut String, finding: &Finding, r: &QueryRef, q: &QueryStat, plan: &Plan) {
     let Some(node) = finding_step(finding, r, plan) else { return };
     let on = node.object.as_deref().map(|o| format!(" on `{o}`")).unwrap_or_default();
     if !plan.weighed() {
@@ -134,7 +139,7 @@ fn plan_line(out: &mut String, finding: &Finding, r: &QueryRef, plan: &Plan) {
         node.op,
         node.predicate.as_deref().map(|p| format!(" filtering `{}`", format::predicate(p))).unwrap_or_default()
     );
-    if let Some(why) = no_share_reason(plan, node) {
+    if let Some(why) = finding_no_share_reason(plan, node, Some(q)) {
         let _ = write!(out, " {why}");
     }
     let _ = writeln!(out, "\n");
@@ -174,23 +179,31 @@ pub fn finding_step<'a>(finding: &Finding, r: &QueryRef, plan: &'a Plan) -> Opti
     culprit_core::insights::working_step(plan).filter(|n| plan.step_share(n).is_some())
 }
 
-/// The share of its plan's cost a finding's step is said to have: where the plan can state one (`Plan::step_share`), and
-/// only in a plan that does real work (`insights::does_real_work`), as heavy-query says it. A cheap plan's costliest
-/// step isn't where its statement's time goes, even where it reads a whole table. Every surface that shows a finding's
-/// step (the brief, the exports, the app's finding view) states this share.
+/// The share of its plan's cost a finding's step is said to have: `Plan::step_share`, which states one only in a plan
+/// that does real work, as heavy-query says it (a cheap plan's costliest step isn't where its statement's time goes,
+/// even where it reads a whole table), and never for a step whose cost rests on a guess. Every surface that shows a
+/// finding's step (the brief, the exports, the app's finding view) states this share.
 pub fn finding_step_share(plan: &Plan, node: &PlanNode) -> Option<f64> {
-    plan.step_share(node).filter(|_| culprit_core::insights::does_real_work(plan))
+    plan.step_share(node)
 }
 
-/// Why a plan that weighs its steps states no share for a finding's step `node` ([`finding_step_share`]), as a sentence
-/// to follow the step's name; `None` where it states one, or on a plan without costs (which has no shares to explain).
-/// The plan viewer, which shows every step's share of a cheap plan too, gives the reasons of `Plan::step_share` alone.
-pub fn no_share_reason(plan: &Plan, node: &PlanNode) -> Option<String> {
-    if !plan.weighed() || finding_step_share(plan, node).is_some() {
+/// Said for a step planned on a default guess for a parameter, or above one.
+const GUESSED_ROWS: &str = "The rows it works on rest on the planner's default guess for a parameter, not on the table's statistics, so no \
+     share is given.";
+/// Said for a step a loop runs once for each row of a step planned on such a guess.
+const GUESSED_RUNS: &str = "It runs once for each row of a step whose rows rest on the planner's default guess for a \
+                            parameter, so how often it runs is that guess, and no share is given.";
+
+/// Why a plan that weighs its steps states no share of its cost for step `node` (`Plan::step_share`), as a sentence to
+/// follow the step's name; `None` where it states one, or on a plan without costs (which has no shares to explain).
+/// The true reason, with what the statement `q`'s runs measured where it is known: a plan costed for far fewer rows
+/// than its runs handle isn't "cheap", and nor is one that reads a whole table big enough to matter on every run (a
+/// catalog's or a small table's whole read is no reason, and isn't said). Every surface that says
+/// why a step has no share (the brief, the exports, the plan viewer, the CLI's tree) says it from here; the app
+/// mirrors it (`noShareReason` in `app/src/lib/plan-format.ts`).
+pub fn no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> Option<String> {
+    if !plan.weighed() || plan.step_share(node).is_some() {
         return None;
-    }
-    if plan.step_share(node).is_some() {
-        return Some("The plan as a whole is cheap, so no share of its cost is put on one step.".into());
     }
     let uncosted = plan.uncosted_steps();
     if !uncosted.is_empty() {
@@ -198,16 +211,137 @@ pub fn no_share_reason(plan: &Plan, node: &PlanNode) -> Option<String> {
         let (has, its) = if steps.len() == 1 { ("has", "its") } else { ("have", "their") };
         return Some(format!("{} {has} no cost of {its} own in the plan, so no share is given.", format::list(&steps)));
     }
-    let mut below = Vec::new();
-    node.walk(&mut below);
-    if below.iter().any(|n| n.props.contains_key(culprit_core::GUESSED_SELECTIVITY)) {
-        return Some(
-            "The rows it works on rest on the planner's default guess for a parameter, not on the table's statistics, \
-             so no share is given."
-                .into(),
-        );
+    match plan.guess(node) {
+        Some(culprit_core::Guess::Rows) => return Some(GUESSED_ROWS.into()),
+        Some(culprit_core::Guess::Runs) => return Some(GUESSED_RUNS.into()),
+        None => {}
+    }
+    if !culprit_core::insights::does_real_work(plan) {
+        return Some(cheap_plan_reason(plan, q));
     }
     Some(format!("{} has no cost of its own in the plan, so no share is given.", step_name(node)))
+}
+
+/// Why a finding's step states no share ([`finding_step_share`]): [`no_share_reason`], except that a step the finding
+/// is about which reads its table whole on a cheap plan is said as that read, whatever the table's size. The finding is
+/// what shows that read matters; the size bar of `insights::whole_read_matters` is for plans no finding points at.
+/// Where its runs measured a misestimate, that stays the reason. Mirrored by the app's `findingNoShareReason`.
+pub fn finding_no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> Option<String> {
+    use culprit_core::insights::CheapPlanRuns;
+    let why = no_share_reason(plan, node, q)?;
+    let cheap = plan.uncosted_steps().is_empty() && !plan.has_guess() && !culprit_core::insights::does_real_work(plan);
+    let misestimated = matches!(
+        culprit_core::insights::cheap_plan_runs(plan, q),
+        CheapPlanRuns::MoreRows { .. } | CheapPlanRuns::MoreReads { .. }
+    );
+    Some(if cheap && !misestimated && node.reads_table_whole() { whole_read_reason(plan, node) } else { why })
+}
+
+/// "…too small for a share…, but `Seq Scan` reads all 3.9K rows of public.apps on every run."
+fn whole_read_reason(plan: &Plan, scan: &PlanNode) -> String {
+    let what = scan.object.as_deref().unwrap_or("its table");
+    let all = match scan.table_rows.filter(|r| *r > 0.0) {
+        Some(n) => format!("all {} row{} of {what}", format::count(n), if format::count(n) == "1" { "" } else { "s" }),
+        None => format!("all of {what}"),
+    };
+    format!(
+        "Its estimated cost ({}) is too small for a share of it to say where the time goes, but `{}` reads {all} on \
+         every run.",
+        cost_text(plan.total_cost.max(plan.root.subtree_cost)),
+        scan.op
+    )
+}
+
+/// Why no step of a plan that weighs its steps shows a share of its cost, said once under the plan wherever its steps
+/// are listed (the plan viewer, the CLI's tree, the exports, MCP, the readings); `None` when every costed step shows
+/// one. `q` is the statement it was planned for, where known: its runs say whether a cheap plan's runs are cheap.
+pub fn plan_shares_note(plan: &Plan, q: Option<&QueryStat>) -> Option<String> {
+    if !plan.weighed() {
+        return None;
+    }
+    if !plan.uncosted_steps().is_empty() {
+        return no_share_reason(plan, &plan.root, q);
+    }
+    if !culprit_core::insights::does_real_work(plan) {
+        return Some(cheap_plan_reason(plan, q));
+    }
+    let guesses = plan.guesses();
+    if guesses.is_empty() {
+        return None;
+    }
+    Some(if guesses.iter().any(|(_, g)| *g == culprit_core::Guess::Runs) {
+        "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps \
+         above it or run once for each of its rows."
+            .into()
+    } else {
+        "No share is given for a step whose rows rest on the planner's default guess for a parameter, nor for the steps \
+         above it."
+            .into()
+    })
+}
+
+/// Why a plan that does no real work puts a share of its cost on no step, as its statement's runs measured it
+/// (`insights::cheap_plan_runs`): its costs rest on a guess, on an estimate its runs far exceed, or under the bar while
+/// a scan reads a whole table that can matter (`insights::whole_read_matters`: `SCAN_ROWS` rows or more, not the
+/// catalog's), or its runs are slow; else the plan is cheap.
+fn cheap_plan_reason(plan: &Plan, q: Option<&QueryStat>) -> String {
+    use culprit_core::insights::CheapPlanRuns;
+    // Whether the plan is cheap rests on its total, and a guess anywhere is in the total.
+    if plan.has_guess() {
+        return "The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on \
+                one step."
+            .into();
+    }
+    let mysql = plan.engine == Engine::Mysql;
+    let rows = |n: f64| format!("{} row{}", format::count(n), if format::count(n) == "1" { "" } else { "s" });
+    match culprit_core::insights::cheap_plan_runs(plan, q) {
+        CheapPlanRuns::MoreRows { expected, rows: actual } => format!(
+            "Its costs rest on an estimate of {} a run, and its runs {} far more ({} a run), so no share of them is put \
+             on one step.",
+            rows(expected),
+            if q.is_some_and(QueryStat::writes_rows) { "change" } else { "return" },
+            rows(actual)
+        ),
+        CheapPlanRuns::MoreReads { expected, reads, .. } => format!(
+            "Its costs rest on an estimate of {} a run, and its runs read far more than that needs ({} {} a run), so no \
+             share of them is put on one step.",
+            rows(expected),
+            format::count(reads.round()),
+            if mysql { "rows examined" } else { "pages" }
+        ),
+        CheapPlanRuns::ScansTable(id) => match plan.nodes().into_iter().find(|n| n.id == id) {
+            Some(scan) => whole_read_reason(plan, scan),
+            None => format!(
+                "Its estimated cost ({}) is too small for a share of it to say where the time goes, but a scan reads all \
+                 of its table on every run.",
+                cost_text(plan.total_cost.max(plan.root.subtree_cost))
+            ),
+        },
+        CheapPlanRuns::Slow(ms) => format!(
+            "The plan is estimated to be cheap, yet {}: the time isn't in what it costs, so no share of its cost is put \
+             on one step.",
+            // What a run or two took, where an average would hide it (`QueryStat::few_runs`).
+            match q.and_then(|q| Some((q.executions, q.few_runs_took()?))) {
+                Some((runs, took)) if runs <= 1.0 => format!("its one run took {took}"),
+                Some((_, took)) => format!("its runs took {took}"),
+                None => format!("its runs take {} on average", format::duration(ms)),
+            }
+        ),
+        CheapPlanRuns::Cheap | CheapPlanRuns::Unmeasured | CheapPlanRuns::NotCheap => {
+            "The plan as a whole is cheap, so no share of its cost is put on one step.".into()
+        }
+    }
+}
+
+/// A plan's estimated cost as the engine writes it: whole units from 10, else three significant digits (SQL Server's
+/// point lookups cost hundredths).
+fn cost_text(cost: f64) -> String {
+    if cost >= 10.0 {
+        format!("{cost:.0}")
+    } else {
+        let digits = (2 - cost.max(1e-9).log10().floor() as i32).clamp(0, 6) as usize;
+        format!("{cost:.digits$}")
+    }
 }
 
 /// What a coding agent does about the finding in the project: where the change lives (the application's statements, its
@@ -257,6 +391,7 @@ fn codebase(report: &Report, finding: &Finding) -> String {
     // A fix that asks for no change has none to wait for: the next scan shows where the finding stands.
     let declines = !finding.inactive && !once && finding.fix.as_ref().is_some_and(advises_no_change);
     said.push(verify_line(s, finding, &sql, &statements, once, declines));
+    said.retain(|s| !s.is_empty());
     said.join(" ")
 }
 
@@ -344,21 +479,31 @@ fn where_the_change_is(
                 .flatten()
                 .any(|t| t.to_ascii_lowercase().contains("pragma optimize"))
         });
-        said.push(format!(
-            "{} run it against the database outside busy hours, and if the fix says to repeat it, do that where this \
-             project runs its recurring database work ({}).",
-            if sql.only_upkeep() {
-                "The fix is upkeep of the database, not a change to the application's code:"
-            } else {
-                "The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's code:"
-            },
-            if on_close {
-                "a scheduled job, or where the application opens and closes its connections, which is where SQLite's \
-                 `PRAGMA optimize` belongs"
-            } else {
-                "a scheduled job"
-            }
-        ));
+        // A fix that says the database makes the upkeep itself ("No update is needed…") offers it, not asks for it.
+        if fix.is_some_and(offers_optional_upkeep) {
+            said.push(
+                "The fix's upkeep is optional, as it says: the database makes it on its own. If you run it, run it \
+                 against the database outside busy hours; it isn't a change to the application's code."
+                    .into(),
+            );
+        } else {
+            said.push(format!(
+                "{} run it against the database outside busy hours, and if the fix says to repeat it, do that where \
+                 this project runs its recurring database work ({}).",
+                if sql.only_upkeep() {
+                    "The fix is upkeep of the database, not a change to the application's code:"
+                } else {
+                    "The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's \
+                     code:"
+                },
+                if on_close {
+                    "a scheduled job, or where the application opens and closes its connections, which is where \
+                     SQLite's `PRAGMA optimize` belongs"
+                } else {
+                    "a scheduled job"
+                }
+            ));
+        }
     }
     if sql.plan_pin {
         said.push(
@@ -368,15 +513,24 @@ fn where_the_change_is(
         );
     }
     if sql.event_session {
-        said.push(if sql.other {
-            "The fix's event session runs on the database, not in the application's code: start it there; it changes \
-             nothing by itself."
-                .into()
+        // How to stop the session, where the SQL says it (its last line, a comment).
+        let stop = if sql.session_drop {
+            " Once it has caught what you need, remove it with the DROP in the SQL's last line."
         } else {
-            "The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the \
-             application's code; it changes nothing by itself. The statement to change is the one it catches: find the \
-             code that sends that one (the application, a job or a migration) and change it the way the fix says."
-                .into()
+            ""
+        };
+        said.push(if sql.other {
+            format!(
+                "The fix's event session runs on the database, not in the application's code: start it there; it \
+                 changes nothing by itself.{stop}"
+            )
+        } else {
+            format!(
+                "The fix's SQL starts an event session on the database{}: run it there, not in the application's code; \
+                 it changes nothing by itself.{stop} The statement to change is the one it catches: find the code that \
+                 sends that one (the application, a job or a migration) and change it the way the fix says.",
+                if sql.reads { " and reads what it catches" } else { "" }
+            )
         });
     } else if sql.reads {
         said.push(
@@ -400,16 +554,21 @@ fn where_the_change_is(
         ));
     }
     if said.is_empty() && app.is_empty() && matches!(finding.subject.kind, SubjectKind::Table | SubjectKind::Index) {
-        // An index's subject is `table.index`: the application reads and writes the table.
-        let name = &finding.subject.name;
-        let what = match name.rsplit_once('.').filter(|_| finding.subject.kind == SubjectKind::Index) {
-            Some((table, index)) => format!("the index `{index}` of `{table}`"),
-            None => format!("`{name}`"),
-        };
-        said.push(format!(
-            "Where the fix changes how the application reads or writes {what}, search the code for the statements \
-             that touch it."
-        ));
+        // Every table the finding is about, and the statements its summary quotes, if it quotes any (a deadlock's).
+        let tables = finding_tables(finding);
+        let names = format::list(&tables.iter().map(|t| format!("`{t}`")).collect::<Vec<_>>());
+        said.push(if finding.summary.contains('“') {
+            format!(
+                "The statements to look for are quoted under *What's happening*: find the code that sends them \
+                 (search for {names}) and make the change the fix describes there."
+            )
+        } else {
+            format!(
+                "Where the fix changes how the application reads or writes {names}, search the code for the \
+                 statements that touch {}.",
+                if tables.len() == 1 { "it" } else { "them" }
+            )
+        });
     }
     if said.is_empty() {
         said.push(if quotes_its_statement(finding) {
@@ -441,15 +600,30 @@ impl Scope {
     fn sentence(self, whole: bool, sql: &FixSql) -> String {
         let server = "the server's configuration (infrastructure as code, the platform's parameter group, a configuration \
                       file), which is for settings of the whole server";
+        // Where nothing manages the server's configuration, the change is made by hand: the fix's SQL, run by a login
+        // allowed to change the server's settings, or the steps the fix gives where it has no SQL for them.
+        let by_hand = match (sql.setting, whole) {
+            (true, true) => {
+                "Where nothing manages it, run the fix's SQL against the server as a login allowed to change its \
+                 settings, the way the fix says."
+            }
+            (true, false) => {
+                "Where nothing manages it, run the setting's statements from the fix's SQL against the server as a \
+                 login allowed to change its settings."
+            }
+            (false, _) => "Where nothing manages it, make the change by hand the way the fix says.",
+        };
         match self {
-            Scope::Server if whole => "The fix is a setting of the database server, not a change to the application's \
-                code: apply it where this project manages the server's configuration (infrastructure as code, the \
-                platform's parameter group, the server's configuration file), if it does."
-                .into(),
-            Scope::Server => "The setting in the fix's SQL belongs to the database server, not to the application's \
-                code: apply it where this project manages the server's configuration (infrastructure as code, the \
-                platform's parameter group, the server's configuration file), if it does."
-                .into(),
+            Scope::Server if whole => format!(
+                "The fix is a setting of the database server, not a change to the application's code: apply it where \
+                 this project manages the server's configuration (infrastructure as code, the platform's parameter \
+                 group, the server's configuration file). {by_hand}"
+            ),
+            Scope::Server => format!(
+                "The setting in the fix's SQL belongs to the database server, not to the application's code: apply it \
+                 where this project manages the server's configuration (infrastructure as code, the platform's \
+                 parameter group, the server's configuration file). {by_hand}"
+            ),
             Scope::Database => format!(
                 "{} once against the database as its owner, by hand or shipped as a migration. It isn't a change to \
                  the application's code, nor to {server}.",
@@ -519,13 +693,13 @@ fn verify_line(
     };
     let workload = s.workload.as_ref().filter(|_| !statements.is_empty());
     // A source that keeps totals since its last reset keeps the earlier runs in them (`stay`: which ones, and the verb).
+    // Said once a brief: not where the finding's own *How to verify* says it already.
     let kept = |stay: &str| {
         workload
-            .filter(|w| !w.windowed)
+            .filter(|w| !w.windowed && !says_running_totals(finding, w))
             .map(|w| {
                 format!(
-                    ": {} keeps the statements' totals since its last reset, so {stay} in them and their numbers \
-                     move only as new runs add up",
+                    ": {} keeps running totals, so {stay} in them and their numbers move only as new runs add up",
                     w.source
                 )
             })
@@ -542,7 +716,7 @@ fn verify_line(
     let (runs, does) = if one { ("it runs", "it does") } else { ("they run", "they do") };
     // The slowest run and the spread are kept since the reset whatever runs after it: a scan can't show the change.
     if finding.check == "unstable-query"
-        && finding.verify.is_empty()
+        && (finding.verify.is_empty() || finding.inactive)
         && let Some(w) = workload.filter(|w| !w.windowed)
     {
         let kept = format!(
@@ -550,16 +724,25 @@ fn verify_line(
              are",
             w.source
         );
-        // A statement that no longer runs has nothing to catch: the fix says what runs in its place, if anything.
+        // A statement that no longer runs has nothing to catch (its *How to verify* says so): the fix says what runs
+        // in its place, if anything.
         if finding.inactive {
-            return format!(
-                "There is nothing to check unless it runs again, and even then a later {scan} can't show a change: \
-                 {kept}."
-            );
+            return if finding.verify.first().is_some_and(|v| v.starts_with("Nothing to check")) {
+                format!("If it runs again, even a later {scan} can't show a change: {kept}.")
+            } else {
+                format!(
+                    "There is nothing to check unless it runs again, and even then a later {scan} can't show a \
+                     change: {kept}."
+                )
+            };
         }
         return format!(
             "A later {scan} can't show the change: {kept}. Catch the next slow runs instead, the way the fix says."
         );
+    }
+    // Statements that stopped: their *How to verify* says there is nothing to check unless they run again, once.
+    if finding.inactive && finding.verify.first().is_some_and(|v| v.starts_with("Nothing to check")) {
+        return String::new();
     }
     if finding.inactive {
         let kept = kept("the earlier runs stay");
@@ -587,6 +770,24 @@ fn verify_line(
         ),
         _ => format!("After any change is live, run {scan} and {how}{kept}."),
     }
+}
+
+/// Whether the finding's own *How to verify* says that `w` keeps running totals (the one sentence every verify step on
+/// such a source uses), or that the counters it compares do ("The scan counters of orders keep totals since they
+/// started"), so the brief doesn't say it again.
+fn says_running_totals(finding: &Finding, w: &culprit_core::Workload) -> bool {
+    let sentence = format!("{} keeps running totals", w.source);
+    finding.verify.iter().any(|v| v.contains(&sentence) || v.contains("keep totals since"))
+}
+
+/// Whether a re-scan can show the finding gone (`culprit verify`, the step every export adds after *How to verify*).
+/// Not for statements that stopped (there is nothing to ship), nor for one whose own steps compare two scans of a
+/// source of running totals: those totals keep it on the list after the right change.
+pub fn gone_after_rescan(report: &Report, finding: &Finding) -> bool {
+    // A finding that reads a plan (an index the plan then seeks) is gone from the next scan whatever the totals keep.
+    let says_gone = finding.verify.iter().any(|v| v.contains("this finding should be gone"));
+    !finding.inactive
+        && (says_gone || report.snapshot.workload.as_ref().is_none_or(|w| !says_running_totals(finding, w)))
 }
 
 /// "`id`'s numbers under *Evidence*": what of a finding without its own verify step a later scan shows to compare.
@@ -627,6 +828,8 @@ struct FixSql {
     plan_pin: bool,
     /// An event session started on the database to catch statements as they run.
     event_session: bool,
+    /// A comment says how to stop the session (`-- … DROP EVENT SESSION …`).
+    session_drop: bool,
     /// A statement that only reads (`sql::reads_only`): what the database keeps, or what an event session caught.
     reads: bool,
     /// Anything else: a query rewrite, a batch, an EXPLAIN of the statement.
@@ -644,10 +847,13 @@ impl FixSql {
         let mut out = FixSql {
             in_the_application: routes.contains("in the application"),
             fallback: routes.contains("fallback"),
+            session_drop: routes.contains("drop event session"),
             app_role: sql.contains("<app_role>"),
             ..FixSql::default()
         };
         for statement in code.join("\n").split(';') {
+            // A statement run only if a condition holds (`IF NOT EXISTS (…) CREATE EVENT SESSION …`) does what it does.
+            let statement = guarded(statement);
             let words: Vec<String> = statement
                 .split(|c: char| c.is_whitespace() || c == '(' || c == ',')
                 .filter(|w| !w.is_empty())
@@ -713,7 +919,13 @@ impl FixSql {
     /// Every statement is upkeep.
     fn only_upkeep(&self) -> bool {
         self.upkeep
-            && !(self.settings() || self.local || self.schema || self.plan_pin || self.diagnostic() || self.other)
+            && !(self.settings()
+                || self.local
+                || self.schema
+                || self.plan_pin
+                || self.diagnostic()
+                || self.other
+                || self.in_the_application)
     }
 
     /// Every statement changes the schema, and no comment offers a change in the application: the statements stay as
@@ -737,11 +949,39 @@ impl FixSql {
     }
 }
 
+/// The statement an `IF [NOT] EXISTS (…)` runs, without its condition; any other statement as it is.
+fn guarded(statement: &str) -> &str {
+    let trimmed = statement.trim_start();
+    let is_if = trimmed.get(..3).is_some_and(|w| w.eq_ignore_ascii_case("if ") || w.eq_ignore_ascii_case("if\n"));
+    let Some(open) = trimmed.find('(').filter(|_| is_if) else { return statement };
+    let mut depth = 0;
+    for (at, c) in trimmed[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &trimmed[open + at + 1..];
+                }
+            }
+            _ => {}
+        }
+    }
+    statement
+}
+
 /// A fix that says the change isn't worth making as things stand ("usually not worth having"), or that there is nothing
 /// to change ("Nothing to create", "Nothing to do while they help").
 fn advises_no_change(fix: &Fix) -> bool {
     let text = fix.summary.to_ascii_lowercase();
     text.contains("not worth") || text.starts_with("nothing to ") || text.contains(". nothing to ")
+}
+
+/// A fix whose SQL the database runs on its own anyway ("No update is needed before a query uses these statistics: SQL
+/// Server refreshes them…"): running it is an option, not the change.
+fn offers_optional_upkeep(fix: &Fix) -> bool {
+    let text = fix.summary.to_ascii_lowercase();
+    text.starts_with("no ") && text.split(':').next().is_some_and(|lead| lead.contains(" is needed"))
 }
 
 /// Where a finding's time went when it wasn't work, with a fix that changes no statement.
@@ -767,6 +1007,8 @@ fn waited_rather_than_worked(s: &Snapshot, finding: &Finding, app: &[&QueryStat]
     }
     match finding.check.as_str() {
         "unstable-query" | "parameter-sensitive" => Some(Waited::SlowRuns),
+        // Its time is waiting on locks other transactions hold: the fix says making it faster won't help.
+        "lock-time" => Some(Waited::Locks),
         "heavy-query" => match crate::queries::idle_kind(s, app.first()?)? {
             IdleKind::Locks => Some(Waited::Locks),
             IdleKind::AppLock => Some(Waited::AppLock),
@@ -816,6 +1058,20 @@ impl Waited {
                  its transaction took."
                 .into(),
         }
+    }
+}
+
+/// The tables a finding about tables is about, as `schema.table`: a deadlock's every table, an index's table (the
+/// application reads and writes the table, not its index: a subject `schema.table.index`), else its subject.
+fn finding_tables(finding: &Finding) -> Vec<String> {
+    let deadlocked = crate::deadlocks::deadlock_tables(finding);
+    if !deadlocked.is_empty() {
+        return deadlocked;
+    }
+    let name = &finding.subject.name;
+    match name.rsplit_once('.').filter(|_| finding.subject.kind == SubjectKind::Index) {
+        Some((table, _)) => vec![table.to_string()],
+        None => vec![name.clone()],
     }
 }
 
@@ -891,7 +1147,8 @@ pub fn metric_text(m: &Metric) -> String {
         Unit::Ms => format::duration(m.value),
         Unit::Bytes => format::bytes(m.value),
         Unit::Ratio => format::percent(m.value),
-        Unit::Days => format!("{:.0} days", m.value),
+        // "Counting for: 9.5 days" as the summary says it, never rounded up past what was counted.
+        Unit::Days => format::days(m.value),
         Unit::Text => m.text.clone().unwrap_or_default(),
         Unit::Count | Unit::Rows | Unit::Pages => format::count(m.value),
     }

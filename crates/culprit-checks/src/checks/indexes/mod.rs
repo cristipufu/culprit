@@ -262,24 +262,43 @@ pub(crate) fn new_index_fix(
     }
 }
 
+/// What an index to add costs the table's writes, for a fix whose SQL creates it ("this index"). A fix that only says
+/// to add one, with no SQL, names it [`write_cost_of`]'s way: "this index" is said only beside the SQL that creates it.
 pub(crate) fn write_cost(snapshot: &Snapshot, schema: &str, table: &str) -> Option<String> {
+    write_cost_of(snapshot, schema, table, "this index")
+}
+
+/// [`write_cost`], with the index named as the fix names it: "this index" beside SQL that creates it, "any index you
+/// add" for a fix that only says to add one.
+pub(crate) fn write_cost_of(snapshot: &Snapshot, schema: &str, table: &str, index: &str) -> Option<String> {
     let (writes, days) = measured_writes(snapshot, schema, table)?;
-    // No writes says the table gets none only after a week of counters: a weekly job has had its chance to run.
+    // Counters that may have been reset since the server started (performance_schema's, with its statements) cover a
+    // span nobody knows: no length is said, and no absence claimed before a week of the statements' own counting.
+    let reset = crate::support::counters_may_be_reset(snapshot);
+    // No writes says the table gets none only after a week of counters (`watched_long_enough`: on counters that may
+    // have been reset, a week of the digests'): a weekly job has had its chance to run.
     if writes <= 0.0 && watched_long_enough(snapshot) {
         return Some(format!(
-            "{schema}.{table} received no writes {}, so this index would cost next to nothing to maintain.",
+            "{schema}.{table} received no writes {}, so {index} would cost next to nothing to maintain.",
             since_phrase(snapshot)
+        ));
+    }
+    if writes <= 0.0 && reset {
+        return Some(format!(
+            "{schema}.{table} had no writes in what its counters cover, which may be short: performance_schema's \
+             counters start over when they are reset, and a weekly job may not have run since; each write it gets will \
+             also update {index}.",
         ));
     }
     if writes <= 0.0 {
         return Some(format!(
             "{schema}.{table} had no writes in the {} its counters cover, too short to say it gets none (a weekly job \
-             may not have run yet); each write it gets will also update this index.",
+             may not have run yet); each write it gets will also update {index}.",
             format::duration(days * 86_400_000.0)
         ));
     }
     Some(format!(
-        "{schema}.{table} receives {}; each one will also update this index.",
+        "{schema}.{table} receives {}; each one will also update {index}.",
         how_many(snapshot, writes, days, "write", "writes")
     ))
 }
@@ -312,9 +331,11 @@ pub(crate) fn is_unused(snapshot: &Snapshot, i: &IndexStat) -> bool {
 /// Days an index, and the counters watching it, must have existed before no reads says anything about it.
 pub(crate) const MIN_INDEX_DAYS: f64 = 7.0;
 
-/// Whether the usage counters have counted for a week ([`MIN_INDEX_DAYS`]). Unknown counts as not.
+/// Whether the usage counters have counted for a week ([`MIN_INDEX_DAYS`]). Unknown counts as not. On counters
+/// performance_schema may have reset since the server started, the week is the statement digests' own counting
+/// ([`crate::support::watched_days`]), never the server's uptime.
 pub(crate) fn watched_long_enough(snapshot: &Snapshot) -> bool {
-    counter_days(snapshot).is_some_and(|d| d >= MIN_INDEX_DAYS)
+    crate::support::watched_days(snapshot).is_some_and(|d| d >= MIN_INDEX_DAYS)
 }
 
 /// Days since the latest it may have been created, when a scan found reason to think it may be new.

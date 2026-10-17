@@ -28,7 +28,8 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("planning-time", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             let handle = query_handle(q);
             let word = if pg { "Planning" } else { "Compiling" };
-            f.title = format!("{word} takes {} of the time of {handle}", share_words(share));
+            let takes = if crate::all_stopped(snapshot, &[q]) { "took" } else { "takes" };
+            f.title = format!("{word} {takes} {} of the time of {handle}", share_words(share));
             let per_plan = per_run(plan_ms, plans.max(1.0));
             let every_run = plans >= q.executions * 0.9;
             let reuse = if every_run {
@@ -45,10 +46,10 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                 share_words(share),
                 if pg { "planning" } else { "compiling" },
                 format::duration(plan_ms),
-                window_phrase(snapshot),
+                ran_phrase(snapshot, q),
                 reuse
             );
-            f.severity = if share >= 0.5 && window_at_least(snapshot, plan_ms, 60_000.0) { Severity::Medium } else { Severity::Low };
+            f.severity = if share >= 0.5 && window_at_least(snapshot, q, plan_ms, 60_000.0) { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             severity_score(&mut f);
             f.impact.label = format!("{} planning", format::percent(share));
@@ -78,7 +79,12 @@ pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: None,
                 }
             });
-            f.verify = vec!["Re-scan: planning should be a small part of its time.".into()];
+            // On running totals the planning time holds every plan from before the change: two scans show it.
+            let now = format!("{} over {} runs", format::duration(plan_ms), format::count(q.executions));
+            f.verify = vec![match crate::queries::verify_counts_between_scans(snapshot, "planning time and runs", &now) {
+                Some(compare) => format!("Between two scans, its planning time per run should drop: {compare}."),
+                None => "Re-scan: planning should be a small part of its time.".into(),
+            }];
             if !pg {
                 f.caveats.push("Query Store counts compiles over the query's whole life but keeps runtime statistics only for its retention period: Culprit scales the compiles to the period it keeps runs for and spreads them over the window's runs, so the time per run is an estimate.".into());
             }

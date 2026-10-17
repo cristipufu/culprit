@@ -16,6 +16,8 @@ fn counted_for_ten_days(mut s: Snapshot) -> Snapshot {
     if let Some(p) = s.pressure.as_mut() {
         p.uptime_hours = Some(240.0);
     }
+    // performance_schema's statements counted as long, or its counters may have been reset since.
+    crate::counter_age::digests_counted_since_the_start(&mut s);
     s
 }
 

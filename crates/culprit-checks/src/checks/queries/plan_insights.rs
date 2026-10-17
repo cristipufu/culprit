@@ -9,9 +9,11 @@ use culprit_core::{
 
 use crate::support::*;
 
-/// Rules whose findings other checks already produce, with the evidence and wording users know.
-const COVERED: &[&str] =
-    &["implicit-conversion", "spill", "no-join-predicate", "missing-statistics", "scan-filter", "missing-index-hint"];
+/// Rules whose findings other checks already produce, with the evidence and wording users know. A plan's own
+/// missing-index request isn't one of them: `missing-index` reads the server's list of requests, which a restart
+/// empties, so the plan's request is a finding of its own until refine finds a `missing-index` or `filtered-scan`
+/// finding for the same table and key ("a plan's index request is the finding for its table and key").
+const COVERED: &[&str] = &["implicit-conversion", "spill", "no-join-predicate", "missing-statistics", "scan-filter"];
 
 /// Queries below this share of database time aren't worth a finding, however odd their plan.
 pub(crate) const MIN_SHARE: f64 = 0.01;
@@ -108,8 +110,8 @@ fn build(
         Severity::Low => Severity::Medium,
         _ => Severity::High,
     };
-    let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
-    let cap = by_share.min(severity_for_time(snapshot, share * total, 1.0));
+    // What that share comes to a day, on the basis it is on (Culprit's scans where they measured it).
+    let cap = by_share.min(amount_severity_of(snapshot, &[q], share));
     // An engine verdict the plan can't weigh (SQLite's automatic index) takes the statement's weight, at most Medium:
     // the plan doesn't say how much of the run the throwaway index costs.
     f.severity = if WEIGHED_BY_THE_STATEMENT.contains(&i.rule.as_str()) {
@@ -121,9 +123,11 @@ fn build(
     f.title = i.title.clone();
     f.summary = format!("{} Seen in {}.", i.detail, query_handle(q));
     f.queries = vec![reference];
-    // A plan without costs (SQLite) has no share to state: its insights' weight is a rule's, not a measurement.
-    if weighed && !i.fixed_weight {
-        f.metrics.push(Metric::new("Share of the plan's work", i.impact, Unit::Ratio));
+    // A share of the plan's work only where the plan states one (`insights::stated_share`): a plan without costs
+    // (SQLite) has none, a rule's weight is no measurement, and a cheap plan's or a guessed step's share isn't where the
+    // statement's work is.
+    if let Some(share) = culprit_core::insights::stated_share(plan, i) {
+        f.metrics.push(Metric::new("Share of the plan's work", share, Unit::Ratio));
     }
     f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
     f.fix = Some(Fix { summary: i.fix.clone(), sql: i.fix_sql.clone(), cost: None });

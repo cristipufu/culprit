@@ -86,7 +86,14 @@ fn a_regression_needs_a_real_baseline_and_more_work_per_run() {
         with_plans(vec![fast, slow])
     };
     assert!(find(&analyze(with_work(4.0, 1_000.0)).findings, "plan-regression:8").is_none());
-    assert!(find(&analyze(with_work(4.0, 40_000.0)).findings, "plan-regression:8").is_some());
+    // Forty times the reads a run is a regression: the scan of orders the new plan reads for want of an index on
+    // shipped_at came with it, so the scan's finding carries it (`scan_carries_its_regression`).
+    let report = analyze(with_work(4.0, 40_000.0));
+    let carried = report.findings.iter().any(|f| {
+        f.id == "plan-regression:8"
+            || (f.id.ends_with("shop.orders(shipped_at)") && f.metrics.iter().any(|m| m.label == "Fast plan"))
+    });
+    assert!(carried, "{:?}", report.findings.iter().map(|f| &f.id).collect::<Vec<_>>());
 }
 
 #[test]
@@ -451,8 +458,9 @@ fn a_stopped_unstable_insert_points_at_what_runs_now() {
     let q = query(&mut s, "3432126458605143571");
     q.text = "INSERT INTO events (customer_id, kind) VALUES ($1, $2)".into();
     q.plan = Some(insert_plan_into("public.events"));
-    // Quiet for the last four hours of the window.
-    q.last_seen = Some("2026-10-11T08:00:00Z".into());
+    // Quiet since the morning before the data ends: a day of silence (four quiet hours are too soon to say it stopped).
+    q.first_seen = Some("2026-10-10T06:00:00Z".into());
+    q.last_seen = Some("2026-10-10T08:00:00Z".into());
     q.waits = vec![WaitStat {
         category: "IO".into(),
         wait_type: Some("data file reads and writes".into()),
@@ -535,21 +543,35 @@ fn a_statement_quiet_since_the_first_scan_may_have_stopped_earlier() {
     let q = query(&mut s, ORDERS_SORT);
     q.trend = None;
     q.last_seen = Some("2026-10-11T08:00:00Z".into());
+    // Four hours of Culprit's scans without a run: too soon to say it stopped.
+    let report = analyze(s.clone());
+    let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).expect("the spill");
+    assert!(!f.inactive);
+    assert_eq!(
+        f.caveats[0],
+        "This query hasn't run in the 3 h 54 min since Culprit's first scan (Oct 11, 08:00 UTC): too short a time to say it stopped."
+    );
+    // A day and more of them.
+    let timeline = s.workload.as_mut().unwrap().timeline.as_mut().unwrap();
+    timeline.starts = ["2026-10-10T08:00:00Z", "2026-10-10T16:00:00Z", "2026-10-11T00:00:00Z", "2026-10-11T08:00:00Z"]
+        .map(String::from)
+        .to_vec();
+    query(&mut s, ORDERS_SORT).last_seen = Some("2026-10-10T08:00:00Z".into());
     let report = analyze(s.clone());
     let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).expect("the spill");
     assert!(f.inactive);
     assert!(
         f.caveats[0].starts_with("This query hasn't run in the ")
-            && f.caveats[0].contains(" since Culprit's first scan (Oct 11, 08:00 UTC); it may have stopped earlier."),
+            && f.caveats[0].contains(" since Culprit's first scan (Oct 10, 08:00 UTC); it may have stopped earlier."),
         "{}",
         f.caveats[0]
     );
     assert!(!f.caveats[0].contains("most likely"), "{}", f.caveats[0]);
     // Seen growing at a later scan: it ran until about then, and a deploy most likely changed it.
-    query(&mut s, ORDERS_SORT).last_seen = Some("2026-10-11T09:00:00Z".into());
+    query(&mut s, ORDERS_SORT).last_seen = Some("2026-10-10T09:00:00Z".into());
     let report = analyze(s);
     let f = find(&report.findings, &format!("temp-spill:{ORDERS_SORT}")).expect("the spill");
-    assert!(f.caveats[0].starts_with("This query has not run since 2026-10-11 09:00"), "{}", f.caveats[0]);
+    assert!(f.caveats[0].starts_with("This query has not run since 2026-10-10 09:00"), "{}", f.caveats[0]);
 }
 
 // ── temp-spill ───────────────────────────────────────────────────────────────────────────────────
@@ -767,18 +789,23 @@ fn a_heavy_query_on_running_totals_says_what_culprits_scans_measured() {
     s.workload.as_mut().unwrap().total_time_ms = total;
     let report = analyze(s);
     let f = find(&report.findings, "heavy-query:4911431806993420100").expect("heavy");
+    // The scans' figures lead, the totals since the reset beside them where they differ twofold.
     assert!(
-        f.summary.contains("It ran about once a day at 19.0 s on average: ")
-            && f.summary
-                .contains("Over 36 hours of Culprit's own scans it ran about 10 times a day, 95% of database time."),
+        f.summary.starts_with(
+            "It ran about 10 times a day at 1.9 s on average over 36 hours of Culprit's own scans: 95% of all database time in them ("
+        ) && f.summary.contains("about 1 run a day and 19.0 s on average over the 40 days since statistics were reset)."),
         "{}",
         f.summary
     );
+    assert!(f.title.contains("takes 95% of database time"), "{}", f.title);
     assert!(f.metrics.iter().any(|m| m.label == "Runs per day over Culprit's scans"), "{:?}", f.metrics);
+    let metric = |label: &str| f.metrics.iter().find(|m| m.label == label).map(|m| m.value);
+    assert_eq!(metric("Average duration over Culprit's scans"), Some(1_900.0));
+    assert!(metric("Average duration over the 40 days since statistics were reset").is_some(), "{:?}", f.metrics);
     let verify = &f.verify[0];
     assert!(
-        verify.starts_with("pg_stat_statements keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change.")
-            && verify.contains("open What changed from the change on")
+        verify.starts_with("pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change.")
+            && verify.contains("Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there ")
             && verify.ends_with("A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."),
         "{verify}"
     );
@@ -806,9 +833,148 @@ fn a_recent_entry_is_judged_by_culprits_scans() {
     let t = w.timeline.as_mut().unwrap();
     t.starts = vec!["2026-10-11T00:00:00Z".into(), "2026-10-11T04:00:00Z".into(), "2026-10-11T08:00:00Z".into()];
     assert!(find(&analyze(s).findings, "heavy-query:3432126458605143571").is_none());
-    // An old entry whose runs mostly came before the scans keeps its share of the totals.
+    // An old entry whose runs mostly came before the scans is read by them too, in both directions: 10% over them,
+    // against well under 1% of the totals since the reset, said beside them.
     let report = analyze(with_scans("3432126458605143571", 100.0, 1_000.0));
-    assert!(find(&report.findings, "heavy-query:3432126458605143571").is_none());
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("heavy over the scans");
+    assert!(f.title.ends_with("takes 10% of database time"), "{}", f.title);
+    assert!(
+        f.summary
+            .contains("over 36 hours of Culprit's own scans: 10% of all database time in them (<1% of database time"),
+        "{}",
+        f.summary
+    );
+    assert!(!f.summary.contains("is recent"), "{}", f.summary);
+}
+
+// Theme A's open ends, the aptabase-eu reading: chatty's "Runs per day: 43K" beside a title over Culprit's scans and a
+// summary that named no period; an unstable query's average over the scans beside its slow runs' excess since 2023.
+// Each figure says what it is over: the scans' runs, share and average so, the totals' beside them where they differ
+// twofold, and what only the totals keep (rows a run, the slow runs' excess) over those.
+#[test]
+fn figures_over_the_scans_and_over_the_totals_each_say_what_they_are_over() {
+    let totals = "over the 40 days since statistics were reset";
+    // 15K of a 12-hour step's 50K runs (30%, 30K a day over the scans); 4M since the reset (100K a day, 5% of 80M).
+    let mut s = with_scans("3432126458605143571", 15_000.0, 7_500.0);
+    let w = s.workload.as_mut().unwrap();
+    let t = w.timeline.as_mut().unwrap();
+    (t.executions, t.time_ms) = (vec![50_000.0; 3], vec![30_000.0; 3]);
+    w.total_executions = 80_000_000.0;
+    let q = query(&mut s, "3432126458605143571");
+    (q.executions, q.total_time_ms, q.rows) = (4_000_000.0, 4_000_000.0 * q.mean_time_ms, Some(4_000_000.0));
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let report = analyze(s);
+    let f = find(&report.findings, "chatty-query:3432126458605143571").expect("chatty over the scans");
+    let metric = |label: &str| f.metrics.iter().find(|m| m.label == label).map(|m| m.value.round());
+    assert_eq!(metric("Runs per day over Culprit's scans"), Some(30_000.0), "{:?}", f.metrics);
+    assert_eq!(metric(&format!("Runs per day {totals}")), Some(100_000.0), "{:?}", f.metrics);
+    let share = |label: &str| f.metrics.iter().find(|m| m.label == label).map(|m| (m.value * 100.0).round());
+    assert_eq!(share("Share of executions over Culprit's scans"), Some(30.0), "{:?}", f.metrics);
+    assert_eq!(share(&format!("Share of executions {totals}")), Some(5.0), "{:?}", f.metrics);
+    assert!(metric("Average duration over Culprit's scans").is_some(), "{:?}", f.metrics);
+    assert!(
+        f.summary.starts_with("Its runs are 30% of all statement runs over 36 hours of Culprit's scans, and each run")
+            && f.summary.contains(&format!(" (counted {totals})")),
+        "{}",
+        f.summary
+    );
+
+    // An unstable read: 1% of its 10K runs take 5 s, at the same average over the scans as over the totals.
+    let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
+    let mut s = with_scans("3432126458605143571", 100.0, 100.0 * mean);
+    let q = query(&mut s, "3432126458605143571");
+    (q.executions, q.mean_time_ms, q.total_time_ms) = (n, mean, mean * n);
+    (q.stddev_time_ms, q.max_time_ms) = (Some(sd), Some(max));
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let report = analyze(s);
+    let f = find(&report.findings, "unstable-query:3432126458605143571").expect("unstable over the scans");
+    assert!(f.summary.contains(&format!("more than the average, together {totals}.")), "{}", f.summary);
+    assert!(f.metrics.iter().any(|m| m.label == "Average over Culprit's scans"), "{:?}", f.metrics);
+    let extra = format!("Slow runs' extra time {totals} (at least)");
+    assert!(f.metrics.iter().any(|m| m.label == extra), "{:?}", f.metrics);
+}
+
+// Theme D's tense rule on an idle heavy query (the fresh PostgreSQL reading: "took 99% of database time, most likely
+// waiting for locks" for an update that stopped): its share is until it stopped, whatever it spent it on.
+#[test]
+fn a_stopped_heavy_query_that_waited_took_its_share_until_it_stopped() {
+    let mut s = snapshot("postgres-demo.json");
+    let w = s.workload.as_mut().unwrap();
+    (w.window_start, w.window_hours) = (Some("2026-10-05T11:54:21Z".into()), 144.0);
+    let q = query(&mut s, "4911431806993420100");
+    (q.executions, q.total_time_ms, q.logical_reads) = (50.0, 50.0 * q.mean_time_ms, Some(50.0 * 15.0));
+    (q.first_seen, q.last_seen) = (Some("2026-10-06T00:00:00Z".into()), Some("2026-10-08T00:00:00Z".into()));
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+    let f = find(&analyze(s).findings, "heavy-query:4911431806993420100").cloned().expect("heavy");
+    assert!(f.inactive, "{}", f.title);
+    assert!(
+        f.title.starts_with("An update of products took ")
+            && f.title.ends_with(" of database time until it stopped, most likely waiting for locks"),
+        "{}",
+        f.title
+    );
+}
+
+/// The heavy-query check alone, before the refine stage takes away a heavy query another finding explains.
+fn heavy_queries(s: &Snapshot) -> Vec<culprit_core::Finding> {
+    let check = culprit_checks::all().into_iter().find(|c| c.info().id == "heavy-query").expect("heavy-query");
+    check.run(s)
+}
+
+// The aptabase-us reading: the six heavy places went by the totals since 2023, so an insert that stopped running before
+// the first scan (30% of those totals) took one, and a read at 10.7% over Culprit's scans (5.2% of the totals) lost
+// its finding. Over a day of scans the six are those that run, ranked by the scans; history follows them.
+#[test]
+fn a_stopped_statement_never_takes_a_heavy_place_of_one_that_runs() {
+    let mut s = with_scans("9065391607317686058", 10.0, 2_000.0);
+    let w = s.workload.as_mut().unwrap();
+    let t = w.timeline.as_mut().unwrap();
+    t.time_ms = vec![20_000.0; 3];
+    // Seven statements that run, at 10%, 9.5% … 7% of the scans' time.
+    let running = [
+        "9065391607317686058",
+        "5308963031944094559",
+        "-3722457391793582113",
+        "2004611025554862962",
+        "2885972271926804069",
+        "3432126458605143571",
+        "8465053948014496855",
+    ];
+    for (i, id) in running.iter().enumerate() {
+        let q = query(&mut s, id);
+        q.executions = q.executions.max(30.0);
+        q.trend = Some(culprit_core::QueryTrend {
+            time_ms: vec![Some(2_000.0 - 100.0 * i as f64); 3],
+            executions: vec![Some(10.0); 3],
+        });
+    }
+    // An insert that stopped two and a half days ago: most of the totals since the reset, none of the scans.
+    let stopped = query(&mut s, "4911431806993420100");
+    (stopped.executions, stopped.total_time_ms, stopped.mean_time_ms) = (100_000.0, 10_000_000.0, 100.0);
+    (stopped.first_seen, stopped.last_seen) = (None, Some("2026-10-09T00:00:00Z".into()));
+    stopped.trend = Some(culprit_core::QueryTrend { time_ms: vec![Some(0.0); 3], executions: vec![Some(0.0); 3] });
+    let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+    s.workload.as_mut().unwrap().total_time_ms = total;
+
+    let heavy = heavy_queries(&s);
+    let ids: Vec<&str> = heavy.iter().map(|f| f.id.trim_start_matches("heavy-query:")).collect();
+    // The six that run, by their share over the scans, then the one that stopped: the seventh has no place.
+    assert_eq!(
+        ids,
+        [&running[..6], &["4911431806993420100"]].concat(),
+        "{:?}",
+        heavy.iter().map(|f| &f.title).collect::<Vec<_>>()
+    );
+    assert!(heavy[0].title.ends_with("takes 10% of database time"), "{}", heavy[0].title);
+    // In the report the stopped one is history, ranked after every statement that runs.
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:4911431806993420100").expect("history");
+    // What it took until it stopped: its share of the totals, the scans having measured none of it.
+    assert!(f.inactive && f.title.contains("took 99% of database time"), "{}", f.title);
+    assert!(find(&report.findings, "heavy-query:8465053948014496855").is_none());
 }
 
 #[test]
@@ -975,6 +1141,58 @@ fn heavy_insert(text: &str, rows: f64) -> Snapshot {
     s
 }
 
+// The aptabase readings: "skip the statement where the application already knows the row exists", verified by "its
+// time and its reads per run should drop". Skipping cuts runs, and the runs left are the ones that write, which read
+// more each: a developer would read that as the fix failing. A fix that cuts runs expects fewer runs and less time.
+#[test]
+fn a_fix_that_cuts_runs_expects_fewer_runs_never_fewer_reads() {
+    // pg_stat_statements: the difference between two scans, in What changed, which carries runs and time, said the
+    // CLI's way too.
+    let report =
+        analyze(heavy_insert("INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", 500.0));
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
+    assert!(f.fix.as_ref().unwrap().summary.contains("skip the statement"), "{:?}", f.fix);
+    let verify = f.verify.join(" ");
+    assert!(
+        verify.contains(
+            "Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all, while a run's own time can stay as it is, or rise."
+        ),
+        "{verify}"
+    );
+    assert!(!verify.contains("reads"), "{verify}");
+    // Query Store: the next scan's window shows it.
+    let report = analyze(point_lookup(1.0, 0.0066));
+    let f = find(&report.findings, "heavy-query:7").expect("the heaviest query");
+    assert_eq!(
+        f.verify,
+        [
+            "After the change ships, re-scan: this query should run fewer times and take a smaller share of database time, while what one run reads and takes can stay as it is, or rise."
+        ]
+    );
+}
+
+// A statement that stopped has nothing to verify: its own step ("there its time and its reads per run should drop …
+// and this one then shows as stopped running") promised a change no scan shows, for a statement already stopped.
+#[test]
+fn a_finding_whose_statements_stopped_has_nothing_to_check() {
+    let mut s = heavy_insert("INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", 500.0);
+    // Three days of statistics, and none of its runs in the last 28 hours.
+    s.workload.as_mut().unwrap().window_hours = 72.0;
+    let q = query(&mut s, "3432126458605143571");
+    (q.first_seen, q.last_seen, q.trend) = (None, Some("2026-10-10T08:00:00Z".into()), None);
+    let report = analyze(s);
+    let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
+    assert!(f.inactive, "{:?}", f.caveats);
+    assert_eq!(
+        f.verify,
+        ["Nothing to check unless it runs again: a later scan that sees it run lists this finding as current again."]
+    );
+    // Said once: the brief's codebase section doesn't say it again, nor that the totals keep the earlier runs.
+    let brief = culprit_checks::agent_brief(&report, f);
+    assert_eq!(brief.matches("Nothing to check").count(), 1, "{brief}");
+    assert!(!brief.contains("keeps running totals") && !brief.contains("the way *How to verify* says"), "{brief}");
+}
+
 // The aptabase readings: `INSERT … ON CONFLICT DO NOTHING` took a quarter of database time at 0.56 ms a run, with 3 of
 // 4 runs inserting nothing and 99% of the WAL. "Its plan is cheap, so the share comes from how often it runs", and a
 // fix to batch "inside one transaction" (unstable-query on the same insert says keep those short), with a table-valued
@@ -1023,12 +1241,96 @@ fn a_write_whose_runs_mostly_change_nothing_is_told_to_skip_them() {
     assert!(f.summary.contains("Each run inserts 1 row on average and writes 1.7 KB of WAL"), "{}", f.summary);
 }
 
+// MS-10: the PostgreSQL demo's fresh reading told an UPDATE that ran 8 times in 6 days and a FOR UPDATE read that ran 3
+// times to "find what holds the locks while it waits (Live shows the blocking chain)", while unstable-query already
+// says runs that rare are logged next time. One wording for every check that names a lock wait.
+#[test]
+fn a_lock_wait_too_rare_to_catch_live_is_logged_next_time() {
+    let fix = |runs: f64| {
+        let mut s = snapshot("postgres-demo.json");
+        let q = query(&mut s, "4911431806993420100");
+        (q.executions, q.total_time_ms, q.mean_time_ms) = (runs, runs * 19_000.0, 19_000.0);
+        let total: f64 = s.workload.as_ref().unwrap().queries.iter().map(|q| q.total_time_ms).sum();
+        s.workload.as_mut().unwrap().total_time_ms = total;
+        find(&analyze(s).findings, "heavy-query:4911431806993420100")
+            .cloned()
+            .expect("an update waiting for locks")
+            .fix
+            .unwrap()
+    };
+    let rare = fix(3.0);
+    assert!(
+        rare.summary.starts_with(
+            "It ran 3 times in 5 hours, too seldom to count on catching it while it waits. Have the next ones logged instead. Set log_lock_waits to on"
+        ),
+        "{}",
+        rare.summary
+    );
+    assert!(rare.summary.contains("logs each lock wait longer than deadlock_timeout"), "{}", rare.summary);
+    assert!(!rare.summary.contains("Live shows"), "{}", rare.summary);
+    assert!(
+        rare.sql.as_deref().is_some_and(|sql| sql.contains("ALTER SYSTEM SET log_lock_waits = 'on'")),
+        "{:?}",
+        rare.sql
+    );
+    // Twenty runs an hour: there are waits to catch while they happen.
+    let often = fix(100.0);
+    assert!(
+        often.summary.starts_with("Find what holds the locks while it waits (Live shows the blocking chain)."),
+        "{}",
+        often.summary
+    );
+    assert_eq!(often.sql, None);
+}
+
+// US-4: the aptabase-us reading said "Each run inserts 1 row on average" and "Insert several rows per statement" for an
+// `INSERT … ON CONFLICT … DO UPDATE SET salt = app_salts.salt RETURNING salt`: a get-or-create whose rows count the
+// rows it rewrote, each a new row version and its WAL. Its levers are not sending it when the row is known, and
+// DO NOTHING with a read on a miss; an upsert with new values updates only rows that differ.
+#[test]
+fn an_upsert_is_said_to_insert_or_update_and_a_get_or_create_is_fixed_as_one() {
+    let get_or_create = "INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT (sku) DO UPDATE SET name = products.name RETURNING name";
+    let f = find(&analyze(heavy_insert(get_or_create, 2_000.0)).findings, "heavy-query:3432126458605143571")
+        .cloned()
+        .expect("a heavy upsert");
+    assert!(
+        f.summary.contains("Each run inserts or updates 1 row on average (a run that finds the row there rewrites it"),
+        "{}",
+        f.summary
+    );
+    let fix = f.fix.unwrap().summary;
+    assert!(fix.contains("It is a get-or-create: its DO UPDATE sets a column to the value it has"), "{fix}");
+    assert!(
+        fix.contains(
+            "insert with ON CONFLICT DO NOTHING RETURNING and read the row with a SELECT only when that returns nothing"
+        ),
+        "{fix}"
+    );
+    assert!(!fix.contains("several rows per statement"), "{fix}");
+    let upsert =
+        "INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT (sku) DO UPDATE SET name = EXCLUDED.name";
+    let f = find(&analyze(heavy_insert(upsert, 2_000.0)).findings, "heavy-query:3432126458605143571")
+        .cloned()
+        .expect("a heavy upsert");
+    assert!(f.summary.contains("Each run inserts or updates 1 row on average and writes"), "{}", f.summary);
+    let fix = f.fix.unwrap().summary;
+    assert!(fix.contains("give its DO UPDATE a WHERE that updates only a row whose values differ"), "{fix}");
+}
+
 // The aptabase-us reading: "An insert into app_salts takes 30% of database time" for an insert silent since Culprit's
 // first scan.
 #[test]
 fn a_statement_that_stopped_is_titled_in_the_past() {
     let mut s = heavy_insert("INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", 500.0);
+    // Quiet for the last four hours of the window: too soon to say it stopped, so it is told as it runs.
     query(&mut s, "3432126458605143571").last_seen = Some("2026-10-11T08:00:00Z".into());
+    let f = find(&analyze(s.clone()).findings, "heavy-query:3432126458605143571").cloned().expect("a heavy insert");
+    assert!(!f.inactive);
+    assert!(f.title.starts_with("An insert into products takes "), "{}", f.title);
+    // Quiet since the morning before: a day of silence. Its title, summary and fix are in the past.
+    let q = query(&mut s, "3432126458605143571");
+    q.first_seen = Some("2026-10-10T06:00:00Z".into());
+    q.last_seen = Some("2026-10-10T08:00:00Z".into());
     let report = analyze(s);
     let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
     assert!(f.inactive);
@@ -1037,6 +1339,12 @@ fn a_statement_that_stopped_is_titled_in_the_past() {
         "{}",
         f.title
     );
+    assert!(
+        f.summary.contains("Its plan had nothing to make faster: what a run cost was the write itself"),
+        "{}",
+        f.summary
+    );
+    assert!(f.summary.contains(" and wrote 1.7 KB of WAL"), "{}", f.summary);
 }
 
 #[test]
@@ -1201,14 +1509,27 @@ fn statistics_updated_since_the_plan_was_compiled_are_said_with_a_way_on() {
         "{}",
         fix.summary
     );
+    // CX-2: a bare FORCESEEK allows the seek the plan already does; the hint names the index and the columns it seeks
+    // on, and goes in the statement where the application sends it, which the fix's SQL says for the brief.
     assert!(
         fix.summary.ends_with(
-            "have the statement read shop.customers through ix_customers_segment with a table hint (`WITH (INDEX(ix_customers_segment))`, or FORCESEEK)."
+            "change the statement where the application sends it to read shop.customers with a table hint that seeks ix_customers_segment on segment: `WITH (FORCESEEK ([ix_customers_segment] ([segment])))`."
         ),
         "{}",
         fix.summary
     );
-    assert_eq!(fix.sql.as_deref(), Some("UPDATE STATISTICS [shop].[customers];"));
+    assert_eq!(
+        fix.sql.as_deref(),
+        Some(
+            "UPDATE STATISTICS [shop].[customers];\n\n-- If a re-scan still shows about 750 pages a run, change the statement in the application:\n--    read [shop].[customers] WITH (FORCESEEK ([ix_customers_segment] ([segment])))"
+        )
+    );
+    // The brief allows the code change the fallback is: the upkeep is not the whole fix.
+    let report = analyze(s.clone());
+    let finding = find(&report.findings, "heavy-query:7").cloned().unwrap();
+    let brief = culprit_checks::agent_brief(&report, &finding);
+    assert!(!brief.contains("The fix is upkeep of the database, not a change to the application's code"), "{brief}");
+    assert!(brief.contains("The fix's other option is a change in the application's code"), "{brief}");
     // Statistics as old as the plan's: the update is the fix, as before.
     s.statistics.iter_mut().find(|st| st.name == "ix_customers_email").unwrap().last_updated =
         Some("2026-10-01T10:00:00Z".into());

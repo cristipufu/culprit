@@ -10,7 +10,7 @@ use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
 use super::{
     ExportNote, ExportOptions, environment_label, exported_at, kind_label, node_label, plan_engine_label, prepared,
-    report_engine_label, rows_phrase, rows_text, share, shares_note, sql_text, top_costs, where_,
+    report_engine_label, rows_phrase, rows_text, share, shares_note, sql_text, stats_line, top_costs, where_,
 };
 
 const STYLE: &str = r#"
@@ -145,7 +145,7 @@ fn page(title: &str, chips: &[String], body: &str, options: &ExportOptions) -> S
 fn strip(plan: &Plan) -> String {
     let costs = top_costs(plan, 6);
     // A plan that states no share for any step (no costs, or a step it doesn't cost) has no strip, only why.
-    let note = shares_note(plan)
+    let note = shares_note(plan, None)
         .or_else(|| {
             (!plan.weighed()).then(|| "The plan has the access path only: no costs to weigh its steps by.".into())
         })
@@ -529,11 +529,9 @@ fn finding_body(
         let w = s.workload.as_ref().expect("filtered on workload");
         let _ = write!(
             out,
-            r#"<h2>Query {}</h2><p class="qmeta">{} of database time · {} · {} on average</p><pre>{}</pre>"#,
+            r#"<h2>Query {}</h2><p class="qmeta">{}</p><pre>{}</pre>"#,
             escape(&q.id),
-            format::percent(culprit_checks::query_share(w, finding, q)),
-            escape(&w.how_often_of(q)),
-            format::duration(q.mean_time_ms),
+            escape(&stats_line(w, q)),
             escape(&sql_text(&q.text, engine, options))
         );
         if let Some(plan) = &q.plan {
@@ -558,7 +556,7 @@ fn finding_body(
                 if let Some(p) = pred {
                     details.push(format!("on <code>{}</code>", escape(&format::predicate(p))));
                 }
-                let why = culprit_checks::no_share_reason(&plan, node)
+                let why = culprit_checks::finding_no_share_reason(&plan, node, Some(q))
                     .map(|w| format!(" {}", escape(&w.replace('`', ""))))
                     .unwrap_or_default();
                 let _ = write!(
@@ -585,11 +583,15 @@ fn finding_body(
         for step in &finding.verify {
             let _ = write!(out, "<li>{}</li>", escape(step));
         }
-        let _ = write!(
-            out,
-            "<li>After it ships, <code>culprit verify &lt;connection&gt; {}</code> re-scans and reports whether it's gone.</li></ol>",
-            escape(&finding.id)
-        );
+        // Only where a re-scan can show it gone: not for statements that stopped, nor on running totals.
+        if culprit_checks::gone_after_rescan(report, finding) {
+            let _ = write!(
+                out,
+                "<li>After it ships, <code>culprit verify &lt;connection&gt; {}</code> re-scans and reports whether it's gone.</li>",
+                escape(&finding.id)
+            );
+        }
+        out.push_str("</ol>");
     }
     if !finding.caveats.is_empty() {
         out.push_str(r#"<h2>Before you act</h2><ul class="more">"#);

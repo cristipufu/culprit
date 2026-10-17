@@ -41,6 +41,30 @@ pub fn duration(ms: f64) -> String {
     format!("{:.1} days", h / 24.0)
 }
 
+/// Days counted, never more than were: a tenth under 10 (9.51 days are "9.5", not "10"), whole days from 10 on.
+pub fn days_counted(days: f64) -> String {
+    // A hair under a whole number from adding hours is that number.
+    let days = days + 1e-9;
+    if days < 10.0 {
+        let tenths = format!("{:.1}", (days * 10.0).floor() / 10.0);
+        tenths.strip_suffix(".0").unwrap_or(&tenths).to_string()
+    } else {
+        format!("{}", days.floor())
+    }
+}
+
+/// A span of days as a metric says it: [`days_counted`] ("9.5 days", "1 day"), and under a day the hours and minutes
+/// [`duration`] gives ("9 h 36 min"), never "0 days".
+pub fn days(days: f64) -> String {
+    if days < 1.0 {
+        return duration(days.max(0.0) * 86_400_000.0);
+    }
+    match days_counted(days).as_str() {
+        "1" => "1 day".to_string(),
+        n => format!("{n} days"),
+    }
+}
+
 /// Seconds since the epoch for an RFC 3339 / ISO 8601 timestamp (UTC offsets honoured), without a date library.
 pub fn epoch_seconds(text: &str) -> Option<f64> {
     let t = text.trim();
@@ -296,5 +320,144 @@ mod tests {
         assert_eq!(count(std::iter::empty::<f64>().sum()), "0");
         assert_eq!(percent(0.314), "31%");
         assert_eq!(list(&["a".into(), "b".into(), "c".into()]), "a, b and c");
+    }
+
+    // A staging SQL Server reading: the summary said "9.5 days" and the brief's metric "Counting for: 10 days"; the app
+    // said "0 days" where the brief said hours. One rule: never more days than were counted, and hours under a day.
+    #[test]
+    fn days_say_what_was_counted() {
+        assert_eq!(days(9.51), "9.5 days");
+        assert_eq!(days(10.9), "10 days");
+        assert_eq!(days(1.04), "1 day");
+        assert_eq!(days(0.4), "9 h 36 min");
+        assert_eq!(days(0.01), "14 min");
+        assert_eq!(days(0.0), "0 ms");
+        assert_eq!(days_counted(2.999_999_999_9), "3");
+    }
+
+    /// Inputs every surface formats: `app/src/lib/format.ts` must read each as this module does. Exact ties (2.5,
+    /// 0.125, 12.5%) are among them: Rust rounds them to even, JavaScript's toFixed up.
+    const SHARED_CASES: [(&str, &[f64]); 5] = [
+        (
+            "duration",
+            &[
+                0.0,
+                0.0004,
+                0.004,
+                0.0125,
+                0.125,
+                0.5,
+                0.999,
+                1.0,
+                1.44,
+                2.5,
+                2.59,
+                2.65,
+                9.94,
+                9.95,
+                9.97,
+                10.5,
+                12.5,
+                250.0,
+                999.4,
+                999.5,
+                1_000.0,
+                1_250.0,
+                12_300.0,
+                59_949.0,
+                59_950.0,
+                60_000.0,
+                150_000.0,
+                3_570_000.0,
+                3_600_000.0,
+                5_400_000.0,
+                19_200_000.0,
+                172_799_000.0,
+                172_800_000.0,
+                820_800_000.0,
+            ],
+        ),
+        (
+            "bytes",
+            &[0.0, 0.5, 2.5, 512.0, 1_023.0, 1_024.0, 1_536.0, 2_304.0, 102_400.0, 1_048_576.0, 1.5e9, 6.55e9, 9.7e7],
+        ),
+        (
+            "count",
+            &[
+                -0.0,
+                0.0,
+                1.0,
+                1.6,
+                2.5,
+                12.25,
+                99.5,
+                100.5,
+                999.0,
+                1_000.0,
+                1_234.0,
+                1_250.0,
+                1_550.0,
+                9_999.0,
+                10_000.0,
+                12_500.0,
+                999_999.0,
+                1_000_000.0,
+                1_250_000.0,
+                18_200_000.0,
+                2.5e9,
+                -1_250.0,
+            ],
+        ),
+        ("percent", &[0.0, 0.001, 0.005, 0.0099, 0.01, 0.125, 0.135, 0.314, 0.5, 0.995, 1.0, 1.005]),
+        ("days", &[0.0, 0.0007, 0.01, 0.4, 0.99, 1.0, 1.04, 2.96, 9.51, 9.99, 10.0, 10.9, 400.0]),
+    ];
+
+    /// What this module writes for each of [`SHARED_CASES`]: the table `format.ts` is checked against.
+    fn shared_cases() -> Vec<(&'static str, Vec<(f64, String)>)> {
+        SHARED_CASES
+            .iter()
+            .map(|(name, inputs)| {
+                let f: fn(f64) -> String = match *name {
+                    "duration" => duration,
+                    "bytes" => bytes,
+                    "count" => count,
+                    "percent" => percent,
+                    "days" => days,
+                    other => panic!("no formatter {other}"),
+                };
+                (*name, inputs.iter().map(|&v| (v, f(v))).collect())
+            })
+            .collect()
+    }
+
+    // The app formats metrics and figures from raw values; a value must read the same there as in the finding's prose
+    // and brief ("2.6 ms" both, not "3 ms" in the app). `cargo test -p culprit-core` writes the cases to
+    // app/src/gen/format-cases.json, and `bun run typecheck` runs app/src/lib/format.check.ts over them.
+    #[test]
+    fn the_app_formats_numbers_as_this_module_does() {
+        let cases = shared_cases();
+        let said = |name: &str, input: f64| {
+            cases
+                .iter()
+                .find(|(n, _)| *n == name)
+                .and_then(|(_, c)| c.iter().find(|(v, _)| *v == input))
+                .unwrap()
+                .1
+                .clone()
+        };
+        // Ties to even, as Rust's formatting rounds them; the app follows.
+        assert_eq!(said("duration", 2.5), "2.5 ms");
+        assert_eq!(said("duration", 0.125), "0.12 ms");
+        assert_eq!(said("duration", 150_000.0), "2 min");
+        assert_eq!(said("count", 12_500.0), "12K");
+        assert_eq!(said("percent", 0.125), "12%");
+        assert_eq!(said("days", 0.4), "9 h 36 min");
+        if let Ok(dir) = std::env::var("TS_RS_EXPORT_DIR") {
+            let map: serde_json::Map<String, serde_json::Value> =
+                cases.into_iter().map(|(name, c)| (name.to_string(), serde_json::json!(c))).collect();
+            let text = serde_json::to_string_pretty(&map).expect("cases") + "\n";
+            std::fs::write(std::path::Path::new(&dir).join("format-cases.json"), text)
+                .expect("app/src/gen/format-cases.json");
+        }
     }
 }

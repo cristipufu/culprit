@@ -318,8 +318,9 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     }
 
     if let Some(rounds) = number(snapshot, "pg_stat_statements.dealloc").filter(|d| *d > 0.0) {
-        // The rounds since the previous scan, an hour or more ago, when it's the same count (no reset since): what goes
-        // on now, where the lifetime count can't clear after the fix.
+        // The rounds since the scan the count is read against (the oldest of Culprit's scans a day or more back, else
+        // the previous one), an hour or more ago, when it's the same count (no reset since): what goes on now, where
+        // the lifetime count can't clear after the fix.
         let since = snapshot
             .evictions_before
             .as_ref()
@@ -330,7 +331,7 @@ pub(crate) fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
             .filter(|(_, _, days)| *days >= 1.0 / 24.0);
         // Long enough without a round: the table has had room since, whatever the count says about before. After the
         // limit was raised, that is as long as the room it added takes to fill (`Evictions::quiet_days`).
-        let evicted = Evictions::of(snapshot, rounds);
+        let evicted = Evictions::of(snapshot, rounds, since);
         let quiet = evicted.quiet_days(evicted.raised_room());
         if !since.is_some_and(|(_, new, days)| new == 0.0 && days >= quiet) {
             out.push(statements_evicted(snapshot, &evicted, since));
@@ -390,13 +391,18 @@ struct Evictions {
     raised_from: Option<f64>,
     per_round: f64,
     entries: f64,
-    /// The entries evicted a day over the window the count covers (an hour of it at least). While the table is full,
-    /// new statements arrive as fast as old ones are evicted: it is also how fast new room fills.
+    /// The entries evicted a day now: over Culprit's scans where they cover a day and saw rounds (`since`), like a
+    /// statement's runs on running totals, otherwise over the window the count covers (an hour of it at least). While
+    /// the table is full, new statements arrive as fast as old ones are evicted: it is also how fast new room fills.
     per_day: Option<f64>,
+    /// The entries evicted a day over the window the count covers, said beside the scans' rate where the two differ
+    /// twofold. `None` where `per_day` is it.
+    since_reset: Option<f64>,
 }
 
 impl Evictions {
-    fn of(snapshot: &Snapshot, rounds: f64) -> Evictions {
+    /// `since`: the scan the count is read against (when it was taken, the rounds since, the days between).
+    fn of(snapshot: &Snapshot, rounds: f64, since: Option<(&str, f64, f64)>) -> Evictions {
         let max = number(snapshot, "pg_stat_statements.max").filter(|m| *m > 0.0);
         let default = snapshot
             .setting("pg_stat_statements.max")
@@ -408,8 +414,27 @@ impl Evictions {
         let per_round = raised_from.or(max).map_or(10.0, per_round_at);
         let entries = rounds * per_round;
         // Evictions since its statistics were reset, as a rate over that same window: a burst long ago isn't today's.
-        let per_day = crate::support::rate_per_day(snapshot, entries);
-        Evictions { rounds, max, default, raised_from, per_round, entries, per_day }
+        let all = crate::support::rate_per_day(snapshot, entries);
+        // What Culprit's scans measured over a day or more of them, where they saw rounds: what goes on now.
+        let scans = since
+            .filter(|(_, new, days)| *new > 0.0 && *days >= SCANS_DAY)
+            .map(|(_, new, days)| new * per_round / days);
+        let (per_day, since_reset) = match scans {
+            Some(now) => (Some(now), all),
+            None => (all, None),
+        };
+        Evictions { rounds, max, default, raised_from, per_round, entries, per_day, since_reset }
+    }
+
+    /// The rate over the window the count covers, said beside the scans' (`per_day`) where the two differ twofold:
+    /// " (about 2.9K a day since its statistics were reset)".
+    fn beside(&self, about: &str) -> String {
+        match (self.per_day, self.since_reset) {
+            (Some(now), Some(all)) if now >= all * 2.0 || now * 2.0 <= all => {
+                format!(" ({about} {} a day since its statistics were reset)", format::count(all))
+            }
+            _ => String::new(),
+        }
     }
 
     /// The room a raise of the limit added, at most: from its default to the limit now. None when it wasn't raised.
@@ -432,6 +457,9 @@ impl Evictions {
     }
 }
 
+/// Days of Culprit's scans from which an eviction count says "a day" ([`culprit_core::PER_DAY_MIN_HOURS`]).
+const SCANS_DAY: f64 = culprit_core::PER_DAY_MIN_HOURS / 24.0;
+
 /// The entries one round evicts from a full table of `limit`: the least-used 5%, at least 10.
 fn per_round_at(limit: f64) -> f64 {
     (limit * 0.05).floor().max(10.0).min(limit)
@@ -448,11 +476,15 @@ fn quiet_span(days: f64) -> String {
 
 /// The finding about pg_stat_statements' evictions. The count runs from pg_stat_statements' last statistics reset,
 /// outlives restarts and isn't cleared by a higher limit: what shows the fix is the count no longer growing. `since` is
-/// the previous scan's (when it was taken, the rounds since, the days between): with it the grade is what goes on now,
-/// and a quiet span without a round closes the finding. Without it, after a raise the rounds may all be from before
+/// the scan it is read against (when it was taken, the rounds since, the days between): with it the grade and the rate
+/// are what goes on now, the rate since the reset beside it where the two differ twofold, and a quiet span without a
+/// round closes the finding. Without it, after a raise the rounds may all be from before
 /// it: the grade can't say they go on, and the fix is comparing two scans before raising it again.
 fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&str, f64, f64)>) -> Finding {
-    let Evictions { rounds, max, default, raised_from, per_round, entries, per_day: entries_per_day } = *evicted;
+    let Evictions { rounds, max, default, raised_from, per_round, entries, per_day: entries_per_day, since_reset } =
+        *evicted;
+    // The rate is the scans' where they measured one (`since_reset` then holds the window's, said beside it).
+    let over_scans = since_reset.is_some();
     // More room than it has now: 20,000, or twice the current size when that's already more.
     let room = max.map_or(20_000.0, |m| (m * 2.0).max(20_000.0));
     let change = setting_change(&snapshot.server, "pg_stat_statements.max", &format!("{room:.0}"));
@@ -496,15 +528,18 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
         }
         (None, _) => "the least-used 5% of them, at least 10 entries".into(),
     };
+    // The rate over everything since the reset, where Culprit's scans measured none: theirs is said with theirs.
     let per_day = workload
         .and_then(|w| w.per_day_measured(entries))
+        .filter(|_| !over_scans)
         .map(|d| format!(", {about} {} a day", format::count(d)))
         .unwrap_or_default();
-    // Since the previous scan: the rounds, the entries they evicted and how that reads over the time between.
+    // Since the scan the count is read against (the oldest of Culprit's a day or more back, else the one before): the
+    // rounds, the entries they evicted and how that reads over the time between.
     let recent = since.filter(|(_, new, _)| *new > 0.0).map(|(taken_at, new, days)| {
         let new_entries = new * per_round;
-        let rate = if days >= 20.0 / 24.0 {
-            format!(", {about} {} a day", format::count(new_entries / days))
+        let rate = if days >= SCANS_DAY {
+            format!(", {about} {} a day{}", format::count(new_entries / days), evicted.beside(about))
         } else {
             format!(" in {}", culprit_core::span_words(days * 24.0))
         };
@@ -514,17 +549,18 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
             new_entries,
             new_entries / days,
             format!(
-                " Since the previous scan {when}, it ran out of room {} more times: {about} {} entries{rate}.",
+                " Since Culprit's scan {when}, it ran out of room {} more times: {about} {} entries{rate}.",
                 format::count(new),
                 format::count(new_entries)
             ),
+            when,
         )
     });
     // Medium when this database's statements fill it and it loses at least a thousand entries a day: since the previous
     // scan where there is one. Without it, after a raise the rounds may all be from before it: what goes on now only a
     // second scan shows.
     let losing = match &recent {
-        Some((_, _, a_day, _)) => *a_day >= 1000.0,
+        Some((_, _, a_day, _, _)) => *a_day >= 1000.0,
         None => raised_from.is_none() && entries_per_day.is_some_and(|d| d >= 1000.0),
     };
     let severity = if fills && losing { Severity::Medium } else { Severity::Low };
@@ -552,8 +588,8 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
         "pg_stat_statements.max",
         severity,
         match &recent {
-            Some((new, new_entries, _, _)) => format!(
-                "pg_stat_statements ran out of room {} times since the previous scan, evicting {about} {} entries",
+            Some((new, new_entries, _, _, when)) => format!(
+                "pg_stat_statements ran out of room {} times since Culprit's scan {when}, evicting {about} {} entries",
                 format::count(*new),
                 format::count(*new_entries)
             ),
@@ -570,7 +606,7 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
             capitalize(&reset),
             format::count(rounds),
             format::count(entries),
-            recent.as_ref().map_or("", |(_, _, _, said)| said.as_str())
+            recent.as_ref().map_or("", |(_, _, _, said, _)| said.as_str())
         ),
         Fix {
             summary: fix,
@@ -586,8 +622,8 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
     );
     f.confidence = Confidence::High;
     f.metrics.push(Metric::new("Eviction rounds", rounds, Unit::Count));
-    if let Some((new, _, _, _)) = &recent {
-        f.metrics.push(Metric::new("Eviction rounds since the previous scan", *new, Unit::Count));
+    if let Some((new, _, _, _, when)) = &recent {
+        f.metrics.push(Metric::new(format!("Eviction rounds since Culprit's scan {when}"), *new, Unit::Count));
     }
     f.metrics.push(Metric::new(
         if estimate { "Entries evicted (estimate)" } else { "Entries evicted (at least)" },
@@ -602,10 +638,11 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
     let fills = match entries_per_day {
         _ if quiet <= 20.0 / 24.0 => String::new(),
         Some(a_day) => format!(
-            " The room the change adds (at most {} entries) fills first, at about {} new entries a day (the rate it has \
-             been evicting them), and nothing is evicted until it is full: a shorter quiet span proves nothing.{}",
+            " The room the change adds (at most {} entries) fills first, at about {} new entries a day (the rate {}), \
+             and nothing is evicted until it is full: a shorter quiet span proves nothing.{}",
             format::count(added),
             format::count(a_day),
+            if over_scans { "Culprit's scans measured it evicting them" } else { "it has been evicting them" },
             if added / a_day > 7.0 { " A round after the week reopens this finding." } else { "" }
         ),
         None => {

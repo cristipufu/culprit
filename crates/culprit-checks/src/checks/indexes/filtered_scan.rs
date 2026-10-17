@@ -139,6 +139,48 @@ pub(super) fn measured_keeps_few(snapshot: &Snapshot, q: &QueryStat, table_rows:
     (examined >= table_rows * 0.5).then_some(returned <= table_rows * culprit_core::INDEX_KEEPS_AT_MOST)
 }
 
+/// Put what the runs measured of each scan's filter on the scan itself ([`culprit_core::plan::MEASURED_KEPT`]), where
+/// they can say ([`measured_keeps_few`]): the share of the rows examined that the runs returned. The plan's own rules
+/// then judge the scan by it, as `filtered-scan` does, so a scan this check names is never one its plan's viewer is
+/// silent about (MySQL's fixed `filtered` guess says nothing; the runs do). A prepare step: it adds what the runs
+/// measured, and changes nothing a plan estimated.
+pub fn mark_measured_kept(snapshot: &mut Snapshot) {
+    if snapshot.server.engine != Engine::Mysql {
+        return;
+    }
+    let mut marks: Vec<(String, u32, f64)> = Vec::new();
+    for q in snapshot.queries() {
+        let Some(plan) = &q.plan else { continue };
+        let scans: Vec<&culprit_core::PlanNode> =
+            plan.nodes().into_iter().filter(|n| n.kind == culprit_core::NodeKind::Scan && n.object.is_some()).collect();
+        // One table read whole: rows returned measure that scan's filter only then.
+        let [scan] = scans.as_slice() else { continue };
+        if scan.act_rows.is_some() || scan.predicate.is_none() {
+            continue;
+        }
+        let Some((schema, table)) = scan.object.as_deref().and_then(split_object) else { continue };
+        let Some(rows) = scan_rows(snapshot, scan, &schema, &table) else { continue };
+        if measured_keeps_few(snapshot, q, rows).is_none() {
+            continue;
+        }
+        let (Some(examined), Some(returned)) = (q.reads_per_execution(), q.rows_per_execution()) else { continue };
+        marks.push((q.id.clone(), scan.id, (returned / examined.max(1.0)).clamp(0.0, 1.0)));
+    }
+    let Some(workload) = snapshot.workload.as_mut() else { return };
+    for (id, node, kept) in marks {
+        let Some(plan) = workload.queries.iter_mut().find(|q| q.id == id).and_then(|q| q.plan.as_mut()) else {
+            continue;
+        };
+        fn mark(n: &mut culprit_core::PlanNode, id: u32, kept: f64) {
+            if n.id == id {
+                n.props.insert(culprit_core::plan::MEASURED_KEPT.into(), format!("{kept:.6}"));
+            }
+            n.children.iter_mut().for_each(|c| mark(c, id, kept));
+        }
+        mark(&mut plan.root, node, kept);
+    }
+}
+
 /// Rows returned a run, as a share of the LIMIT, under which at most one run in ten can have returned the LIMIT's count.
 const WELL_UNDER_LIMIT: f64 = 0.1;
 
@@ -189,6 +231,43 @@ pub(super) fn returns_every_kept_row(text: &str) -> bool {
         })
         && !AGGREGATES.iter().any(|a| calls(a))
         && culprit_core::sql::tables_in(text, Engine::Mysql).len() == 1
+}
+
+/// The sentence for an index led by `first_key` that a statement in the workload created (`CREATE [UNIQUE]
+/// [NONCLUSTERED] INDEX [CONCURRENTLY] [IF NOT EXISTS] <name> ON <table> (<first key>, …)`) and the catalog doesn't
+/// hold now: it existed, and was dropped (with the table, where `gone`). `None` when the workload shows no such
+/// statement, or the index is still there.
+fn dropped_index(snapshot: &Snapshot, schema: &str, table: &str, first_key: &str, gone: bool) -> Option<String> {
+    let clean = |w: &str| w.replace(['[', ']', '"', '`'], "").to_ascii_lowercase();
+    let (schema, table, first_key) = (schema.to_ascii_lowercase(), table.to_ascii_lowercase(), clean(first_key));
+    let source = snapshot.workload.as_ref()?.source.clone();
+    snapshot.queries().iter().find_map(|q| {
+        let text = q.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (head, columns) = text.split_once('(')?;
+        let words: Vec<String> = head.split_whitespace().map(clean).collect();
+        let index_at =
+            words.iter().position(|w| w == "index").filter(|_| words.first().is_some_and(|w| w == "create"))?;
+        let on_at = words.iter().skip(index_at).position(|w| w == "on")? + index_at;
+        let name = words.get(on_at - 1).filter(|_| on_at > index_at + 1)?;
+        let object = words[on_at + 1..].iter().find(|w| *w != "only")?;
+        let (in_schema, in_table) = object.rsplit_once('.').map_or((None, object.as_str()), |(s, t)| (Some(s), t));
+        let first = clean(columns.split([',', ')']).next()?.split_whitespace().next()?);
+        let same = in_table == table && in_schema.is_none_or(|s| s.rsplit('.').next() == Some(schema.as_str()));
+        let kept = snapshot.indexes.iter().any(|i| i.table.eq_ignore_ascii_case(&table) && clean(&i.name) == *name);
+        (same && first == first_key && !kept).then(|| {
+            let when =
+                q.first_seen.as_deref().map(|at| format!(" {}", crate::queries::when_phrase(at))).unwrap_or_default();
+            let shown: String = text.chars().take(200).collect();
+            if gone {
+                format!(" An index on {first_key} did exist: {source} recorded `{shown}`{when}.")
+            } else {
+                format!(
+                    " An index on {first_key} did exist: {source} recorded `{shown}`{when}, and the catalog doesn't \
+                     list {name} now, so it was dropped or renamed since."
+                )
+            }
+        })
+    })
 }
 
 pub(crate) fn split_object(object: &str) -> Option<(String, String)> {
@@ -276,9 +355,12 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
         .sum();
     let total = snapshot.workload.as_ref().map_or(0.0, |w| w.total_time_ms);
     let scan_share = if total > 0.0 { (time_ms / total).min(impact.share) } else { impact.share };
-    f.severity = severity_for_time(snapshot, time_ms, scan_share);
+    f.severity = severity_for_time_of(snapshot, &queries, time_ms, scan_share);
     f.confidence = Confidence::High;
-    f.title = format!("{} is read in full to find rows by {}", g.table, key_text);
+    // Statements that stopped (or ran once) are told in the past, all of it: title and summary decide it once. A table
+    // that is gone has no catalog left to say which indexes it had, so only the plans speak for it.
+    let history = queries.iter().all(|q| crate::query_is_history(snapshot, q));
+    f.title = format!("{} {} read in full to find rows by {}", g.table, if history { "was" } else { "is" }, key_text);
     let disabled = disabled_leading_index(snapshot, &g);
     let fk = snapshot.foreign_keys.iter().find(|fk| {
         fk.schema.eq_ignore_ascii_case(&g.schema)
@@ -289,19 +371,37 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     let one = queries.len() == 1;
     // A table the catalog no longer lists: the plans read it before it was dropped or renamed.
     let gone = table_gone(snapshot, &g.table, &queries);
+    let (reads, keeps, accounts) = match (history, one) {
+        (true, true) => ("One query read", "kept", "It accounted"),
+        (true, false) => ("", "kept", "Together they accounted"),
+        (false, true) => ("One query plans to read", "keep", "It accounts"),
+        (false, false) => ("", "keep", "Together they account"),
+    };
+    let reads = match (reads, history) {
+        ("", true) => format!("{} queries read", queries.len()),
+        ("", false) => format!("{} queries plan to read", queries.len()),
+        (said, _) => said.to_string(),
+    };
     f.summary = format!(
-        "{} read every row of {} ({} rows) and keep only those matching `{}`. {}, so the database {} no faster way in. {} for {} of database time.{}",
-        if one { "One query plans to".to_string() } else { format!("{} queries plan to", queries.len()) },
+        "{reads} every row of {} ({} rows) and {keeps} only those matching `{}`. {}. {accounts} for {} of database time.{}",
         table_name,
         format::count(g.rows),
         g.predicate.trim(),
         match disabled {
-            Some(i) => format!("Only {}, which is disabled, starts with {}", i.name, key_text),
-            None if gone => format!("No index started with {key_text}"),
-            None => format!("No index starts with {key_text}"),
+            Some(i) => format!(
+                "Only {}, which is disabled, starts with {key_text}, so the database {} no faster way in",
+                i.name,
+                if history { "had" } else { "has" }
+            ),
+            None if gone => format!(
+                "{} no index starting with {key_text} to seek",
+                if one { "The plan it last ran with had" } else { "The plans they last ran with had" }
+            ),
+            None => format!(
+                "No index starts with {key_text}, so the database {} no faster way in",
+                if history { "had" } else { "has" }
+            ),
         },
-        if gone { "had" } else { "has" },
-        if one { "It accounts" } else { "Together they account" },
         format::percent(impact.share),
         fk.map(|fk| format!(
             " {} is also the foreign key to {}, so deletes there scan this table too.",
@@ -311,6 +411,10 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     );
     if gone {
         f.summary.push_str(&format!(" {table_name} isn't in the database's catalog any more."));
+    }
+    // An index on the key that the workload shows being created, and the catalog doesn't hold now: it was dropped.
+    if let Some(sentence) = g.keys.first().and_then(|key| dropped_index(snapshot, &g.schema, &g.table, key, gone)) {
+        f.summary.push_str(&sentence);
     }
     f.queries = g
         .queries
@@ -351,10 +455,18 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
                 g.table,
                 disabled.map_or("the new index".to_string(), |i| i.name.clone())
             ),
-            format!(
-                "Re-scan after the workload has run: this finding should be gone and {} share of database time lower.",
-                if one { "the query's" } else { "the queries'" }
-            ),
+            // On running totals the share holds every run from before the index: What changed shows the runs since.
+            match crate::queries::what_changed_between_scans(
+                snapshot,
+                if one { "the query" } else { "the queries" },
+                if one { "its time per run should drop" } else { "their time per run should drop" },
+            ) {
+                Some(between) => format!("Re-scan after the workload has run: this finding should be gone. {between}"),
+                None => format!(
+                    "Re-scan after the workload has run: this finding should be gone and {} share of database time lower.",
+                    if one { "the query's" } else { "the queries'" }
+                ),
+            },
         ]
     };
     f

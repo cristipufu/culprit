@@ -23,6 +23,8 @@ fn counted_for_ten_days(mut s: Snapshot) -> Snapshot {
         // PostgreSQL's counter age is the one its scan measured, never the time since the server started.
         s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(240.0);
     }
+    // performance_schema's statements counted as long, or its counters may have been reset since.
+    crate::counter_age::digests_counted_since_the_start(&mut s);
     s
 }
 
@@ -538,12 +540,30 @@ fn a_request_last_made_before_the_window_is_history() {
     assert!(f.verify[0].starts_with("Nothing to check unless they come back"), "{:?}", f.verify);
     assert!(f.title.contains(" was searched by "), "{}", f.title);
 
+    // A staging SQL Server reading: requests last made just before a 2-hour window were called stopped, and the next
+    // scan showed them still coming. Under a day of silence (here 6 hours before the demo's data ends, before its
+    // 4.6-hour window), the finding says what the window shows and stays active, with its SQL.
+    let mut recent = s.clone();
+    recent.missing_indexes.iter_mut().find(|m| m.table == "order_items").unwrap().last_used =
+        Some("2026-10-11T06:00:00Z".into());
+    let report = analyze(recent);
+    let f = finding(&report, "missing-index:shop.order_items(order_id)").expect("the request");
+    assert!(!f.inactive, "{:?}", f.caveats);
+    assert!(f.title.contains(" is searched by "), "{}", f.title);
+    assert!(f.fix.as_ref().is_some_and(|x| x.sql.is_some()), "{:?}", f.fix);
+    let said = f.summary.clone() + " " + &f.caveats.join(" ");
+    assert!(
+        said.contains("None of the last 5 hours' statements asked for it: SQL Server's optimizer last did on Oct 11 at 06:00 UTC, 6 h 14 min before this scan's data ends"),
+        "{said}"
+    );
+    assert!(said.contains("too short a time to say the statements that wanted it stopped"), "{said}");
+
     // Without query history, a request nobody made in the last week is history too.
     s.workload = None;
     let report = analyze(s);
     let f = finding(&report, "missing-index:shop.order_items(order_id)").expect("the request");
     assert!(f.inactive);
-    assert!(f.caveats[0].contains("before the last week"), "{}", f.caveats[0]);
+    assert!(f.caveats[0].contains("days before this scan's data ends"), "{}", f.caveats[0]);
 }
 
 // I13: an index can take over another's queries only if it holds every row the other does, has the other's columns as
@@ -697,7 +717,13 @@ fn a_table_that_is_gone_gets_no_index() {
         "{}",
         fix.summary
     );
-    assert!(gone.summary.contains("No index started with customer_id"), "{}", gone.summary);
+    // MS-9: the catalog that would say which indexes it had is gone with it: its plan speaks for it, in the past.
+    assert!(
+        gone.summary.contains("The plan it last ran with had no index starting with customer_id to seek."),
+        "{}",
+        gone.summary
+    );
+    assert!(gone.summary.starts_with("One query read every row of public.orders"), "{}", gone.summary);
     assert!(gone.verify[0].starts_with("Nothing to check: public.orders is gone"), "{:?}", gone.verify);
     let running = scan(false).expect("the scan's finding");
     assert!(running.fix.as_ref().unwrap().sql.is_some(), "{:?}", running.fix);
@@ -742,4 +768,131 @@ fn rows_returned_well_under_a_limit_measure_the_filter() {
     // The digest's `LIMIT ?`, with the count the provider read from the sample it planned.
     let report = plant(&text("?"), 5.0, Some("50"));
     assert!(finding(&report, id).is_some(), "{:?}", ids(&report));
+}
+
+// MS-9: filtered-scan on a table that was dropped said "No index started with sensor, so the database had no faster
+// way in", where Query Store held the CREATE INDEX on sensor and the fast plan read 3 pages a run through it; and it
+// mixed tenses. A gone table has no catalog to say which indexes it had: its plan speaks for it, in the past, and an
+// index the workload shows created and the catalog doesn't hold was dropped.
+#[test]
+fn a_scan_of_a_table_that_is_gone_is_told_from_its_plan_in_the_past() {
+    let plant = |gone: bool| {
+        let mut s = snapshot("postgres-demo.json");
+        let w = s.workload.as_mut().unwrap();
+        let id = "-3722457391793582113";
+        let mut create = w.queries.iter().find(|q| q.id == id).cloned().expect("a scan of order_items");
+        (create.id, create.plan, create.executions) = ("create".into(), None, 1.0);
+        create.text = "CREATE INDEX ix_items_product ON public.order_items (product_id)".into();
+        create.first_seen = Some("2026-10-11T08:00:00Z".into());
+        w.queries.push(create);
+        if gone {
+            let q = w.queries.iter_mut().find(|q| q.id == id).unwrap();
+            q.executions = 1.0;
+            scan_node(q).unwrap().table_rows = Some(1_000_000.0);
+            s.tables.retain(|t| t.name != "order_items");
+            s.indexes.retain(|i| i.table != "order_items");
+        }
+        let report = analyze(s);
+        finding(&report, "filtered-scan:public.order_items(product_id)").expect("the scan").summary.clone()
+    };
+    let created = "An index on product_id did exist: pg_stat_statements recorded `CREATE INDEX ix_items_product ON \
+                   public.order_items (product_id)` on Oct 11 at 08:00 UTC";
+    let here = plant(false);
+    assert!(
+        here.contains(&format!(
+            "{created}, and the catalog doesn't list ix_items_product now, so it was dropped or renamed since."
+        )),
+        "{here}"
+    );
+    let gone = plant(true);
+    assert!(gone.starts_with("One query read every row of public.order_items (1.0M rows) and kept only"), "{gone}");
+    assert!(
+        gone.contains("The plan it last ran with had no index starting with product_id to seek. It accounted for"),
+        "{gone}"
+    );
+    assert!(gone.contains(&format!("isn't in the database's catalog any more. {created}.")), "{gone}");
+    assert!(!gone.contains("No index start") && !gone.contains("plans to read"), "{gone}");
+}
+
+// MS-5: unindexed-fk:public.order_items(order_id) listed a join whose plan hashed order_items whole and never read it
+// by the key (the build side was empty: the 91 ms were the orders scan). A statement is listed with an index finding
+// only where its plan, when captured, shows the index serving it; without a captured plan it stays as evidence.
+#[test]
+fn a_join_whose_plan_never_reads_the_child_by_the_key_is_not_the_foreign_keys() {
+    let plant = |with_plan: bool| {
+        let mut s = snapshot("postgres-demo.json");
+        let w = s.workload.as_mut().unwrap();
+        let mut q = w.queries.iter().find(|q| q.id == "-3722457391793582113").cloned().expect("a scan of order_items");
+        let scan = scan_node(&mut q).cloned().expect("its scan");
+        let node = |op: &str, kind: NodeKind, object: Option<&str>, predicate: Option<&str>, children| PlanNode {
+            op: op.into(),
+            kind,
+            object: object.map(String::from),
+            predicate: predicate.map(String::from),
+            children,
+            ..scan.clone()
+        };
+        let orders = node("Seq Scan", NodeKind::Scan, Some("public.orders"), Some("(o.note ~~ $1)"), vec![]);
+        let items = node("Seq Scan", NodeKind::Scan, Some("public.order_items"), None, vec![]);
+        let hash = node("Hash", NodeKind::Other, None, None, vec![orders]);
+        let join = node("Hash Join", NodeKind::Join, None, Some("(i.order_id = o.id)"), vec![items, hash]);
+        q.id = "planted-join".into();
+        q.text = "SELECT count(*) FROM orders o JOIN order_items i ON i.order_id = o.id WHERE o.note LIKE $1".into();
+        if with_plan {
+            q.plan.as_mut().unwrap().root = join;
+        } else {
+            q.plan = None;
+        }
+        w.queries.push(q);
+        let report = analyze(s);
+        let listed = finding(&report, "unindexed-fk:public.order_items(order_id)")
+            .expect("the unindexed foreign key")
+            .queries
+            .iter()
+            .any(|r| r.id == "planted-join");
+        let advised = index_advice(&report)
+            .candidates
+            .iter()
+            .filter(|c| c.source == CandidateSource::ForeignKey)
+            .any(|c| c.queries.iter().any(|a| a.id == "planted-join"));
+        (listed, advised)
+    };
+    assert_eq!(plant(true), (false, false), "its plan reads order_items whole as a hash join's side, not by the key");
+    assert_eq!(plant(false), (true, true), "without a plan, a join on the key is evidence the key is used");
+}
+
+// MS-1: a restart empties SQL Server's list of missing-index requests, and the plan's own request is then all that is
+// left of the planted shipped_at index. It is a finding of its own unless a missing-index or filtered-scan finding is
+// about the same table and key, which then takes its statement.
+#[test]
+fn a_plans_own_index_request_is_never_hidden() {
+    let hint_finding = "plan-insights:missing-index-hint:shop.orders";
+    // With the server's list, the request is the missing-index finding's.
+    let report = analyze(snapshot("mssql-demo.json"));
+    assert!(finding(&report, hint_finding).is_none());
+    let request = finding(&report, "missing-index:shop.orders(shipped_at)").expect("the server's request");
+    assert!(request.queries.iter().any(|r| r.id == "8"));
+    // Without it, the scan behind it (a range on a function of parameters and constants) is the finding.
+    let mut s = snapshot("mssql-demo.json");
+    s.missing_indexes.clear();
+    let report = analyze(s.clone());
+    assert!(finding(&report, hint_finding).is_none());
+    let scan = finding(&report, "filtered-scan:shop.orders(shipped_at)").expect("the scan the plan's request is about");
+    assert!(scan.queries.iter().any(|r| r.id == "8"));
+    // And with neither, the plan's own request is.
+    let plan = s
+        .workload
+        .as_mut()
+        .and_then(|w| w.queries.iter_mut().find(|q| q.id == "8"))
+        .and_then(|q| q.plan.as_mut())
+        .expect("query 8's plan");
+    fn unfilter(n: &mut PlanNode) {
+        n.predicate = None;
+        n.children.iter_mut().for_each(unfilter);
+    }
+    unfilter(&mut plan.root);
+    let report = analyze(s);
+    let own = finding(&report, hint_finding).expect("the plan's own request, shown");
+    assert!(own.title.contains("shipped_at"), "{}", own.title);
+    assert!(own.fix.as_ref().and_then(|f| f.sql.as_deref()).is_some_and(|sql| sql.contains("[shipped_at]")));
 }

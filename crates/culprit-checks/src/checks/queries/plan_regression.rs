@@ -106,8 +106,13 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             f.impact.score = score_for_share(latest_share.max(wasted_share));
             f.impact.label = format!("{} slower", format::factor(factor));
             let amount = match (since, end) {
-                (Some(since), Some(end)) => severity_for_recent_time((end - since) / 3600.0, latest.total_time_ms, 1.0),
-                _ => severity_for_time(snapshot, latest.total_time_ms, 1.0),
+                // Runs that came in bursts are graded on their total, never extrapolated to a day.
+                (Some(since), Some(end)) => severity_for_recent_time(
+                    burst_hours(snapshot, q, (end - since) / 3600.0),
+                    latest.total_time_ms,
+                    1.0,
+                ),
+                _ => severity_for_time_of(snapshot, &[q], latest.total_time_ms, 1.0),
             };
             f.severity = severity_for_share(latest_share).min(amount);
             if factor >= 3.0 && wasted_share >= 0.05 {
@@ -132,7 +137,9 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             );
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Fast plan", best.mean_time_ms, Unit::Ms));
-            f.metrics.push(Metric::new("Current plan", latest.mean_time_ms, Unit::Ms));
+            // A statement that stopped has no current plan: the slow one is the last it ran with.
+            let slow_label = if stopped || table_gone(snapshot, q).is_some() { "Last plan" } else { "Current plan" };
+            f.metrics.push(Metric::new(slow_label, latest.mean_time_ms, Unit::Ms));
             match wasted_per_day {
                 Some(extra) => f.metrics.push(Metric::new("Extra time per day", extra, Unit::Ms)),
                 None => f.metrics.push(Metric::new("Extra time", wasted, Unit::Ms)),
@@ -150,8 +157,12 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
                 f.verify = vec!["Nothing to check unless the statement runs again.".into()];
                 return Some(f);
             }
+            // Where SQL Server corrects regressions itself, the fix says what it does and what forcing by hand adds.
+            let automatic = crate::tuning::hand_forcing_note(snapshot)
+                .map(|note| format!(" {note} It hasn't forced plan {} for this one so far.", best.id))
+                .unwrap_or_default();
             f.fix = Some(Fix {
-                summary: "Force the fast plan now to stop the bleeding, then find out why the optimizer changed its mind (statistics, parameter values, schema). Unforce once the cause is fixed.".into(),
+                summary: format!("Force the fast plan now to stop the bleeding, then find out why the optimizer changed its mind (statistics, parameter values, schema). Unforce once the cause is fixed.{automatic}"),
                 sql: Some(format!("EXEC sp_query_store_force_plan @query_id = {}, @plan_id = {};", q.id, best.id)),
                 cost: None,
             });

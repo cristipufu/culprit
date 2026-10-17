@@ -27,13 +27,14 @@ use culprit_core::{Capability, Check, CheckInfo, LockedCheck, Report, ServerInfo
 
 pub use advisor::index_advice;
 pub use brief::{
-    TOTAL_WAIT_METRICS, agent_brief, finding_step, finding_step_share, metric_text, no_share_reason, query_share,
+    TOTAL_WAIT_METRICS, agent_brief, finding_no_share_reason, finding_step, finding_step_share, gone_after_rescan,
+    metric_text, no_share_reason, plan_shares_note, query_share,
 };
 pub use dashboard::dashboard;
 pub use digest::{digest, digest_since};
 pub use drift::drift;
 pub use pipeline::{Pipeline, Prepare, Refine};
-pub(crate) use refine::{query_is_history, query_stopped, ran_once, without_database};
+pub(crate) use refine::{all_stopped, query_is_history, query_stopped, ran_once, without_database};
 pub use summary::summarize;
 
 /// Every built-in check: each area's own list (`checks::AREAS`), in the order they run.

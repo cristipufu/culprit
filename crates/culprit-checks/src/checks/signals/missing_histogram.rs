@@ -160,9 +160,9 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             if let Some(impact) = impact {
                 apply_query_impact(&mut f, &impact);
             }
-            // A fixed guess the plan shows, behind a real amount of time (the rule every time-based finding follows).
-            let time: f64 = queries.iter().map(|q| q.total_time_ms).sum();
-            f.severity = if share >= 0.05 && severity_for_time(snapshot, time, share) >= Severity::Medium {
+            // A fixed guess the plan shows, behind a real amount of time (the rule every time-based finding follows), on
+            // the basis its share is on.
+            f.severity = if share >= 0.05 && severity_for_statement_share(snapshot, &queries, share) >= Severity::Medium {
                 Severity::Medium
             } else {
                 Severity::Low

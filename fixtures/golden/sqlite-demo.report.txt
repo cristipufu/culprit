@@ -17,7 +17,9 @@ fix: Index the foreign key column on main.orders.
           ON "main"."orders" ("customer_id");
       -- SQLite builds an index under the database's write lock: writers wait until it finishes.
 verify:
-  1. Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone.
+  1. Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING INDEX ix_orders_customer_id`) instead of reading all of it.
+  2. Re-scan once the index exists: this finding should be gone, and a delete from main.customers then finds the rows of main.orders it checks through the index, not by scanning the table.
+  3. Re-scan after the workload has run: the queries' time per run should drop.
 caveats:
   - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
 queries:
@@ -72,7 +74,9 @@ brief:
 
     ## How to verify
 
-    - Deletes from main.customers should no longer scan main.orders; re-scan to confirm the finding is gone.
+    - Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING INDEX ix_orders_customer_id`) instead of reading all of it.
+    - Re-scan once the index exists: this finding should be gone, and a delete from main.customers then finds the rows of main.orders it checks through the index, not by scanning the table.
+    - Re-scan after the workload has run: the queries' time per run should drop.
 
     ## Caveats
 
@@ -96,7 +100,7 @@ fix: Index the foreign key column on main.order_items.
           ON "main"."order_items" ("product_id");
       -- SQLite builds an index under the database's write lock: writers wait until it finishes.
 verify:
-  1. Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone.
+  1. Re-scan once the index exists: this finding should be gone, and a delete from main.products then finds the rows of main.order_items it checks through the index, not by scanning the table.
 caveats:
   - SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way.
 brief:
@@ -125,7 +129,7 @@ brief:
 
     ## How to verify
 
-    - Deletes from main.products should no longer scan main.order_items; re-scan to confirm the finding is gone.
+    - Re-scan once the index exists: this finding should be gone, and a delete from main.products then finds the rows of main.order_items it checks through the index, not by scanning the table.
 
     ## Caveats
 

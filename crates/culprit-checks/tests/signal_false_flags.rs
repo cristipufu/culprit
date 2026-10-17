@@ -481,6 +481,8 @@ fn big_read(text: &str, executions: f64, window_hours: f64) -> Report {
     q.plan = None;
     q.executions = executions;
     q.rows = Some(executions * 200_000.0);
+    // Runs over the whole window, not the fixture's four hours: a burst would be judged on its own day.
+    (q.first_seen, q.last_seen) = (None, None);
     analyze(s)
 }
 
@@ -583,6 +585,8 @@ fn a_short_lock_incident_in_a_quiet_database_is_not_high() {
         q.executions = 4.0;
         q.total_time_ms = 120_000.0;
         q.waits = vec![WaitStat { category: "Lock".into(), wait_type: None, wait_ms: 119_000.0, tasks: None }];
+        // Runs over the whole window, not the fixture's two minutes: a burst would be graded on its total.
+        (q.first_seen, q.last_seen) = (None, None);
         analyze(s)
     };
     assert_eq!(of(&lock(24.0), "lock-time")[0].severity, Severity::Low, "2 minutes in a day");
@@ -618,7 +622,7 @@ fn a_read_blocked_by_writers_is_told_of_row_versioning() {
     let read = "SELECT id, status FROM dbo.orders WHERE customer_id = @p0";
     let said = fix(read, "0");
     assert!(
-        said.starts_with("This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. Without it, find the holder while it happens"),
+        said.starts_with("This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. Without it, find what holds the locks while it waits (Live shows the blocking chain)."),
         "{said}"
     );
     for (text, rcsi) in [
@@ -628,10 +632,80 @@ fn a_read_blocked_by_writers_is_told_of_row_versioning() {
     ] {
         let said = fix(text, rcsi);
         assert!(
-            said.starts_with("Find the holder while it happens") && !said.contains("row versioning"),
+            said.starts_with("Find what holds the locks while it waits (Live shows the blocking chain).")
+                && !said.contains("row versioning"),
             "{text}: {said}"
         );
     }
+}
+
+// The SQL Server demo's fresh reading: an update and a read of orders waited on locks between 13:56 and 14:19, as two
+// lock-time findings with the same fix. Statements that waited on one table in the same hours are one episode of
+// blocking: one finding lists both and says what each waited; one that waited at another time stays its own.
+#[test]
+fn one_lock_episode_on_a_table_is_one_finding() {
+    let mut s = fixture("mssql-demo");
+    s.settings.retain(|x| x.name != "is_read_committed_snapshot_on");
+    s.settings.push(Setting {
+        name: "is_read_committed_snapshot_on".into(),
+        value: "0".into(),
+        default_value: None,
+        scope: "database".into(),
+    });
+    let w = s.workload.as_mut().expect("workload");
+    let mut set = |id: &str, text: &str, runs: f64, lock: f64, first: &str, last: &str| {
+        let q = w.queries.iter_mut().find(|q| q.id == id).expect("demo query");
+        (q.text, q.executions, q.total_time_ms, q.mean_time_ms) =
+            (text.into(), runs, lock + 50.0, (lock + 50.0) / runs);
+        q.waits = vec![WaitStat { category: "Lock".into(), wait_type: None, wait_ms: lock, tasks: None }];
+        (q.first_seen, q.last_seen) = (Some(first.into()), Some(last.into()));
+        q.plan = None;
+        q.plans.clear();
+    };
+    set(
+        "7",
+        "UPDATE [shop].[orders] SET [status] = @P1 WHERE [id] = @P2",
+        4.0,
+        115_000.0,
+        "2026-10-11T10:56:00Z",
+        "2026-10-11T11:19:00Z",
+    );
+    set(
+        "9",
+        "SELECT [status] FROM [shop].[orders] WHERE [id] = @P1",
+        3.0,
+        72_000.0,
+        "2026-10-11T10:57:00Z",
+        "2026-10-11T11:19:00Z",
+    );
+    set(
+        "10",
+        "UPDATE [shop].[orders] SET [total] = @P1 WHERE [id] = @P2",
+        2.0,
+        20_000.0,
+        "2026-10-11T08:00:00Z",
+        "2026-10-11T08:01:00Z",
+    );
+    let report = analyze(s);
+    let locks: Vec<&Finding> = report.findings.iter().filter(|f| f.check == "lock-time").collect();
+    let episode = locks.iter().find(|f| f.id == "lock-time:7").expect("the longest wait keeps the finding");
+    let ids: Vec<&str> = episode.queries.iter().map(|q| q.id.as_str()).collect();
+    assert_eq!(ids, vec!["7", "9"], "{:?}", episode.queries);
+    assert!(
+        episode.summary.contains(
+            "A read from orders (query 9) waited on locks on shop.orders on Oct 11, 10:57–11:19 UTC too, 1 min (nearly all of its time): the same episode of blocking, behind the same holder."
+        ),
+        "{}",
+        episode.summary
+    );
+    // The read's own way out (row versioning) stays said.
+    let fix = &episode.fix.as_ref().unwrap().summary;
+    assert!(
+        fix.contains("Query 9, a read, waits for these writes only because READ_COMMITTED_SNAPSHOT is off"),
+        "{fix}"
+    );
+    assert!(locks.iter().all(|f| f.id != "lock-time:9"), "folded in");
+    assert!(locks.iter().any(|f| f.id == "lock-time:10"), "another hour, another episode");
 }
 
 // ── 17. advice that can be applied ─────────────────────────────────────────────────────────────────

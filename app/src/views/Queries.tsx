@@ -15,7 +15,7 @@ import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
 import { querySummary } from "../lib/query-summary";
-import { honest, workloadKind } from "../lib/rates";
+import { figures, honest, workloadKind } from "../lib/rates";
 import { setState, toast, useStore } from "../lib/store";
 import { compareSince } from "./Overview";
 
@@ -42,14 +42,16 @@ function QueryCell({ q }: { q: QueryStat }) {
   );
 }
 
-function value(q: QueryStat, key: SortKey): number {
+/** A column's value for sorting: share, runs and average as the report states them (`figures`: over Culprit's scans
+ * where they measured the statement). */
+function value(report: Report, q: QueryStat, key: SortKey): number {
   switch (key) {
     case "share":
-      return q.total_time_ms;
+      return figures(report, q).share;
     case "runs":
-      return q.executions;
+      return figures(report, q).runs;
     case "avg":
-      return q.mean_time_ms;
+      return figures(report, q).mean;
     case "max":
       return q.max_time_ms ?? 0;
     case "rows":
@@ -74,8 +76,8 @@ export function Queries({ report }: { report: Report }) {
     const q = filter.trim().toLowerCase();
     return workload.queries
       .filter((x) => !q || x.text.toLowerCase().includes(q) || x.id.includes(q) || (x.object_name ?? "").toLowerCase().includes(q))
-      .sort((a, b) => value(b, sort) - value(a, sort));
-  }, [workload, sort, filter]);
+      .sort((a, b) => value(report, b, sort) - value(report, a, sort));
+  }, [report, workload, sort, filter]);
 
   const current = rows.find((q) => q.id === selected) ?? rows[0] ?? null;
   const regressed = useMemo(() => new Set(report.findings.filter((f) => f.check === "regression").flatMap((f) => f.queries.map((r) => r.id))), [report.findings]);
@@ -100,7 +102,8 @@ export function Queries({ report }: { report: Report }) {
     );
   }
 
-  // Per-day only over windows long enough to mean it; measured totals otherwise.
+  // Per-day only over windows long enough to mean it; measured totals otherwise. A burst, or fewer runs than days, is
+  // its count, with when it ran (`figures`).
   const rates = honest(workload);
 
   return (
@@ -141,11 +144,13 @@ export function Queries({ report }: { report: Report }) {
             </thead>
             <tbody>
               {rows.map((q) => {
-                const share = workload.total_time_ms > 0 ? q.total_time_ms / workload.total_time_ms : 0;
+                // As the report states it: over Culprit's scans where they measured it.
+                const f = figures(report, q);
+                const share = f.share;
                 return (
                   <tr key={q.id} className={`row ${q.id === current?.id ? "selected" : ""}`} onClick={() => setState({ query: q.id })}>
                     <td>
-                      <span className="sharecell">
+                      <span className="sharecell" title={f.over ? `Over ${f.over}` : undefined}>
                         <span className="bar">
                           <span style={{ width: `${Math.max(2, Math.sqrt(share) * 100)}%`, background: share >= 0.15 ? "var(--high)" : share >= 0.03 ? "var(--medium)" : "var(--low)" }} />
                         </span>
@@ -158,8 +163,17 @@ export function Queries({ report }: { report: Report }) {
                     <td className="trendcell col-trend">
                       <Sparkline query={q} timeline={workload.timeline} alert={regressed.has(q.id)} />
                     </td>
-                    <td className="r">{count(rates.value(q.executions))}</td>
-                    <td className="r">{duration(q.mean_time_ms)}</td>
+                    <td className="r">
+                      {f.said != null ? (
+                        <span className={rates.perDay ? "muted" : undefined} title={f.said}>
+                          {count(f.runs)}
+                          {rates.perDay ? " in all" : ""}
+                        </span>
+                      ) : (
+                        <span title={f.over ? `Over ${f.over}` : undefined}>{count(f.runs)}</span>
+                      )}
+                    </td>
+                    <td className="r">{duration(f.mean)}</td>
                     <td className="r col-optional">{duration(q.max_time_ms)}</td>
                     <td className="r col-optional">{q.rows != null && q.executions > 0 ? count(q.rows / q.executions) : "—"}</td>
                     <td className="r col-optional">{q.logical_reads != null && q.executions > 0 ? count(q.logical_reads / q.executions) : "—"}</td>
@@ -189,8 +203,13 @@ function rememberedTab(): DetailTab {
 
 function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
   const w = report.snapshot.workload!;
-  const share = w.total_time_ms > 0 ? query.total_time_ms / w.total_time_ms : 0;
+  // Share, runs and average as the report states them: over Culprit's scans where they measured it, with the totals
+  // since the source began counting beside them where those differ twofold.
+  const stated = figures(report, query);
+  const share = stated.share;
   const rates = honest(w);
+  // A burst, or fewer runs than days: its count and when it ran ("runs on Oct 11, 15:51–15:55 UTC").
+  const ran = stated.said?.replace(/^\S+ /, "");
   const related = report.findings.filter((f) => f.queries.some((r) => r.id === query.id));
   const focus = related.flatMap((f) => f.queries.filter((r) => r.id === query.id).map((r) => r.plan_node)).find((n) => n != null) ?? null;
   const [tab, setTab] = useState<DetailTab>(rememberedTab);
@@ -245,12 +264,24 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
             <section style={{ marginTop: 4 }}>
               <div className="metrics">
                 <Metric value={percent(share)} label="of DB time" />
-                <Metric value={count(rates.value(query.executions))} label={`runs ${rates.suffix}`} />
-                <Metric value={duration(query.mean_time_ms)} label="average" />
+                {ran != null ? (
+                  <Metric value={count(stated.runs)} label={ran} />
+                ) : stated.over ? (
+                  <Metric value={count(stated.runs)} label={stated.perDay ? "runs per day" : rates.runsHeader.toLowerCase()} />
+                ) : (
+                  <Metric value={count(rates.value(query.executions))} label={`runs ${rates.suffix}`} />
+                )}
+                <Metric value={duration(stated.mean)} label="average" />
                 <Metric value={duration(query.max_time_ms)} label="slowest" />
                 {query.rows != null && <Metric value={count(query.rows / Math.max(1, query.executions))} label="rows per run" />}
                 {query.logical_reads != null && <Metric value={count(query.logical_reads / Math.max(1, query.executions))} label={report.snapshot.server.engine === "mysql" ? "rows examined per run" : "pages read per run"} />}
               </div>
+              {stated.over && (
+                <p className="muted">
+                  Share, runs and average over {stated.over}
+                  {stated.totals ? ` (${stated.totals})` : ""}.
+                </p>
+              )}
             </section>
             {insights.length > 0 && (
               <button className={`plan-teaser ${worst}`} onClick={() => choose("plan")}>

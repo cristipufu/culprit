@@ -50,7 +50,8 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
             continue;
         }
         flagged += 1;
-        let share = w.share_of(q.total_time_ms, q);
+        // As every surface states it: over Culprit's scans where they measured it.
+        let share = w.statement_share(q);
         let mut rules = HashSet::new();
         for i in &found {
             if !rules.insert(i.rule.clone()) {

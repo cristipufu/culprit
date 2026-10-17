@@ -131,6 +131,32 @@ pub fn evictions(snapshot: &culprit_core::Snapshot) -> Option<f64> {
     snapshot.setting(EVICTIONS_SETTING).and_then(|s| s.value.trim().parse().ok())
 }
 
+/// What pg_stat_statements' eviction count is read against, from Culprit's scans: like a statement's runs on a source
+/// of running totals, the rate it goes at now is what the scans measured, over as much of them as they hold. The
+/// oldest earlier scan of the same database and source, at least a day back ([`culprit_core::PER_DAY_MIN_HOURS`]),
+/// whose count this one continues (no statistics reset since, no count that shrank). `None` without one: the scan
+/// before is the baseline then.
+pub fn evictions_baseline(
+    history: &[Counters],
+    snapshot: &culprit_core::Snapshot,
+) -> Option<culprit_core::CountBaseline> {
+    let now = evictions(snapshot)?;
+    let workload = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+    let at = epoch(&snapshot.taken_at)?;
+    history
+        .iter()
+        .filter(|c| c.source == workload.source && c.database == snapshot.server.database)
+        .filter_map(|c| Some((epoch(&c.taken_at)?, c, c.evictions?)))
+        .filter(|(t, _, _)| *t <= at - culprit_core::PER_DAY_MIN_HOURS * 3600.0)
+        .map(|(t, c, then)| {
+            let start = (c.window_start.as_deref(), workload.window_start.as_deref());
+            (t, culprit_core::CountBaseline::between(&c.taken_at, then, now, start.0, start.1))
+        })
+        .filter(|(_, b)| !b.restarted)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, b)| b)
+}
+
 /// How the step from one scan's running totals (`a`, taken at `ta`) to the next (`b`) reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepKind {
@@ -709,5 +735,44 @@ mod tests {
         let mut alone = unknown.clone();
         infer_window(&mut alone, None, "2026-10-11T00:00:00Z");
         assert!(alone.window_unknown());
+    }
+
+    // A production reading: "about 2.9K a day" from 15,090 eviction rounds since a reset three years back, while
+    // Culprit's scans saw 137 rounds in 3.8 days (9.1K entries a day), the baseline being the scan ten minutes before.
+    // Like a statement's runs, the rate is the scans': the oldest scan a day or more back that the count continues.
+    #[test]
+    fn evictions_are_read_against_the_oldest_scan_a_day_back() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/postgres-demo.json");
+        let mut s = crate::reports::load_snapshot(&path).expect("fixture");
+        let reset = "2023-04-17T10:00:21Z";
+        s.taken_at = "2026-10-15T08:38:38Z".into();
+        s.workload.as_mut().unwrap().window_start = Some(reset.into());
+        s.settings.retain(|x| x.name != EVICTIONS_SETTING);
+        s.settings.push(culprit_core::Setting {
+            name: EVICTIONS_SETTING.into(),
+            value: "15090".into(),
+            default_value: None,
+            scope: "server".into(),
+        });
+        let scan = |at: &str, start: &str, evictions: f64| {
+            let mut c = counters(at, start, &[("a", 1.0, 1.0)]);
+            c.database = s.server.database.clone();
+            c.source = s.workload.as_ref().unwrap().source.clone();
+            c.evictions = Some(evictions);
+            c
+        };
+        let history = vec![
+            scan("2026-10-11T14:31:51Z", reset, 14_953.0),
+            scan("2026-10-13T12:00:00Z", reset, 15_000.0),
+            scan("2026-10-15T08:28:00Z", reset, 15_088.0),
+        ];
+        let b = evictions_baseline(&history, &s).expect("a scan a day back");
+        assert_eq!((b.taken_at.as_str(), b.count, b.restarted), ("2026-10-11T14:31:51Z", 14_953.0, false));
+        // Reset since the oldest: the oldest the count continues.
+        let mut history = history;
+        history[0].window_start = Some("2022-01-01T00:00:00Z".into());
+        assert_eq!(evictions_baseline(&history, &s).map(|b| b.taken_at), Some("2026-10-13T12:00:00Z".into()));
+        // Only scans under a day back: none (the scan before is the baseline then).
+        assert_eq!(evictions_baseline(&history[2..], &s), None);
     }
 }

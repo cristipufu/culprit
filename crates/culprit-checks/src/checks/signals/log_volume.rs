@@ -29,17 +29,22 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
             let per_row = (rows > 0.0).then(|| bytes / rows);
             // A share of the log, or many kilobytes a row, is a threshold only with a volume a day behind it: 30% of a
             // quiet hour is nothing, and neither is 3 GB over three years.
-            let heavy_share = share >= 0.3 && window_at_least(snapshot, bytes, GB);
-            let heavy_rows = per_row.is_some_and(|b| b >= 4_096.0) && window_at_least(snapshot, bytes, 100.0 * MB);
+            let heavy_share = share >= 0.3 && window_at_least(snapshot, q, bytes, GB);
+            let heavy_rows = per_row.is_some_and(|b| b >= 4_096.0) && window_at_least(snapshot, q, bytes, 100.0 * MB);
             (heavy_share || heavy_rows).then_some((q, costs, bytes, share, per_row))
         })
         .map(|(q, costs, bytes, share, per_row)| {
             let mut f = finding("log-volume", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             let handle = query_handle(q);
+            // A statement that stopped running is told in the past.
+            let (writes, changes) =
+                if crate::all_stopped(snapshot, &[q]) { ("wrote", "changed") } else { ("writes", "changes") };
             f.title = match per_row {
-                Some(b) if b >= 4_096.0 => format!("{} writes {} of {log} per row it changes", capitalize(&handle), format::bytes(b)),
+                Some(b) if b >= 4_096.0 => {
+                    format!("{} {writes} {} of {log} per row it {changes}", capitalize(&handle), format::bytes(b))
+                }
                 // The share is of what statements wrote: autovacuum's and checkpoints' WAL isn't in it.
-                _ => format!("{} writes {} of the {log} statements write", capitalize(&handle), format::percent(share)),
+                _ => format!("{} {writes} {} of the {log} statements write", capitalize(&handle), format::percent(share)),
             };
             // pg_stat_statements counts full-page images, not their bytes. A whole page is 8 KB at most: PostgreSQL
             // leaves out the empty middle of each page, and wal_compression shrinks the rest, so 8 KB each is an upper
@@ -54,7 +59,7 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
             f.summary = format!(
                 "It wrote {} of {log} {}: {} of what statements wrote{}. Every byte of {log} is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.{}",
                 format::bytes(bytes),
-                window_phrase(snapshot),
+                ran_phrase(snapshot, q),
                 format::percent(share),
                 per_row.map(|b| format!(", about {} per row it changed", format::bytes(b))).unwrap_or_default(),
                 match (image_share, images) {
@@ -67,14 +72,14 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
                     _ => String::new(),
                 }
             );
-            let busy = share >= 0.5 && window_at_least(snapshot, bytes, GB);
+            let busy = share >= 0.5 && window_at_least(snapshot, q, bytes, GB);
             // Wide rows of log are Medium with a volume behind them: 100 MB a day, not 100 MB over a month.
-            let wide = per_row.is_some_and(|b| b >= 8_192.0) && window_at_least(snapshot, bytes, 100.0 * MB);
+            let wide = per_row.is_some_and(|b| b >= 8_192.0) && window_at_least(snapshot, q, bytes, 100.0 * MB);
             f.severity = if busy || wide { Severity::Medium } else { Severity::Low };
             with_query(snapshot, &mut f, q);
             // Ranked by the log it writes a day, not by the statement's share of database time: a quarter of a quiet
             // database's time spent writing a few megabytes of log a day is no log problem.
-            let a_day = window_rate_per_day(snapshot, bytes).unwrap_or(0.0);
+            let a_day = window_rate_per_day(snapshot, q, bytes).unwrap_or(0.0);
             f.impact.score = base_score(f.severity) + (a_day / MB).max(1.0).log10().min(4.0) * 3.0;
             f.impact.label = format!("{} of {log}", format::bytes(bytes));
             f.confidence = Confidence::High;
@@ -137,7 +142,14 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
                     cost: None,
                 }
             });
-            f.verify = vec![format!("Re-scan: its share of the {log} and the bytes per row should drop.")];
+            // On running totals the log it wrote holds every run from before the change: two scans show it, per row
+            // (batching writes more of it per run, not per row).
+            let now = format!("{} for {} rows", format::bytes(bytes), format::count(q.rows.unwrap_or(0.0)));
+            let counted = format!("{log} and the rows it changed");
+            f.verify = vec![match crate::queries::verify_counts_between_scans(snapshot, &counted, &now) {
+                Some(compare) => format!("Between two scans, the {log} it writes per row should drop: {compare}."),
+                None => format!("Re-scan: its share of the {log} and the bytes per row should drop."),
+            }];
             f
         })
         .collect();

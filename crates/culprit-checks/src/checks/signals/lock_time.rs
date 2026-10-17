@@ -64,20 +64,31 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
             let mut f = finding("lock-time", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
             let handle = query_handle(q);
             let each = per_run(lock, q.executions);
+            // One run, or two of which one took twice the other: what happened, never an average of 5.2 s for runs of
+            // 10.5 s and a fraction of a millisecond. The longer of two waited at least what the other can't have.
+            let few = q.few_runs();
+            let per = match few.as_deref() {
+                Some([_]) => format!(": its one run waited {}", format::duration(lock)),
+                Some([longest, other]) => format!(
+                    ": one run waited {}{}",
+                    if share >= 0.95 { "" } else { "at least " },
+                    format::duration((lock - other).clamp(0.0, *longest))
+                ),
+                _ => format!(", {} per run", format::duration(each)),
+            };
+            // A statement that stopped running is told in the past.
+            let stopped = crate::all_stopped(snapshot, &[q]);
             f.title = if share >= 0.95 {
-                format!("{} spends nearly all its time waiting on locks, {} per run", capitalize(&handle), format::duration(each))
+                let spends = if stopped { "spent" } else { "spends" };
+                format!("{} {spends} nearly all its time waiting on locks{per}", capitalize(&handle))
             } else {
-                format!(
-                    "{} waits on locks for {} of its time, {} per run",
-                    capitalize(&handle),
-                    format::percent(share),
-                    format::duration(each)
-                )
+                let waits = if stopped { "waited" } else { "waits" };
+                format!("{} {waits} on locks for {} of its time{per}", capitalize(&handle), format::percent(share))
             };
             f.summary = format!(
                 "Of its {} {}, {} went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will.{}",
                 format::duration(q.total_time_ms),
-                window_phrase(snapshot),
+                ran_phrase(snapshot, q),
                 format::duration(lock),
                 if snapshot.server.engine == Engine::Mysql && !is_mariadb(snapshot) {
                     " MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only."
@@ -89,12 +100,12 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
             // A share of database time alone makes one two-minute incident in a quiet database High: the waiting must
             // also add up to minutes a day, measured over an hour or more.
             let by_minutes = since_start_severity(
-                window_rate_per_day(snapshot, lock),
+                window_rate_per_day(snapshot, q, lock),
                 LOCK_HIGH_MS_PER_DAY,
                 LOCK_MEDIUM_MS_PER_DAY,
             );
             f.severity = severity_for_share(db_share).min(by_minutes);
-            if window_rate_per_day(snapshot, lock).is_none() {
+            if window_rate_per_day(snapshot, q, lock).is_none() {
                 f.caveats.push(
                     "The statistics don't cover enough time (an hour or more from a known start) to say how many minutes of waiting a day this is, so it isn't raised on its share alone."
                         .into(),
@@ -107,24 +118,41 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics = vec![
                 Metric::new("Lock wait", lock, Unit::Ms),
                 Metric::new("Share of its time", share, Unit::Ratio),
-                Metric::new("Per run", each, Unit::Ms),
+                match few.as_deref() {
+                    Some([longest, _]) => Metric::new("Longest run", *longest, Unit::Ms),
+                    _ => Metric::new("Per run", each, Unit::Ms),
+                },
             ];
             // A read that waits for writers' locks because reads don't use row versions here: that setting is the
             // change that removes the wait, as config:read-committed-snapshot says.
             let versioning = crate::config::read_committed_snapshot_off(snapshot) && crate::config::versioning_spares_read(q);
-            let holders = "the holder while it happens (Live shows who blocks whom). Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere.";
+            // How to find the holder, as every check that names a lock wait says it: Live only for waits that come
+            // often enough to catch one.
+            let LockHolder { lead, sql } = find_lock_holder(snapshot, q, None);
+            let holders = format!(
+                "{lead} Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere."
+            );
             f.fix = Some(Fix {
                 summary: if versioning {
+                    let without = match holders.strip_prefix("Find ") {
+                        Some(rest) => format!("Without it, find {rest}"),
+                        None => format!("Without it, it waits for the writers. {holders}"),
+                    };
                     format!(
-                        "This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. Without it, find {holders}"
+                        "This is a read, and READ_COMMITTED_SNAPSHOT is off for this database, so under read committed it waits for any write holding a lock on the rows it reads. With row versioning on (config:read-committed-snapshot has the change), it would read the last committed version of the rows instead of waiting. {without}"
                     )
                 } else {
-                    format!("Find {holders}")
+                    holders
                 },
-                sql: None,
+                sql,
                 cost: None,
             });
-            f.verify = vec!["Re-scan: lock waits should be a small part of its time.".into()];
+            // On running totals the lock time holds every run from before the change: two scans show it.
+            let now = format!("{} over {} runs", format::duration(lock), format::count(q.executions));
+            f.verify = vec![match crate::queries::verify_counts_between_scans(snapshot, "lock time and runs", &now) {
+                Some(compare) => format!("Between two scans, its lock time per run should drop: {compare}."),
+                None => "Re-scan: lock waits should be a small part of its time.".into(),
+            }];
             f
         })
         .collect();

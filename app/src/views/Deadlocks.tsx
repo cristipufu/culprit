@@ -39,6 +39,14 @@ function when(iso: string | null): { short: string; full: string } {
   return { short, full: d.toLocaleString() };
 }
 
+/** Whose transaction was rolled back, said as Rust's `deadlocks::victim_text` says it: "session 202 (login root)",
+ * never a bare login a reader takes for something else. */
+function victimText(p: DeadlockProcess): string {
+  const by = p.application ?? (p.login ? `login ${p.login}` : null);
+  if (p.session) return by ? `session ${p.session} (${by})` : `session ${p.session}`;
+  return by ? `a session of ${by}` : p.id;
+}
+
 function sourceLine(engine: Engine): string {
   switch (engine) {
     case "mssql":
@@ -230,7 +238,7 @@ export default function Deadlocks({ connection, engine }: { connection: string; 
                     </span>
                   </span>
                   <span className="dl-item-objects">{d.objects.length ? d.objects.join(", ") : "Objects not named"}</span>
-                  {victim && <span className="dl-item-victim muted">Rolled back: {victim.application ?? victim.login ?? (victim.session ? `session ${victim.session}` : victim.id)}</span>}
+                  {victim && <span className="dl-item-victim muted">Rolled back: {victimText(victim)}</span>}
                 </button>
               );
             })}

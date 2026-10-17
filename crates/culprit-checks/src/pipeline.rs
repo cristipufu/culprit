@@ -72,6 +72,7 @@ fn preparation() -> Vec<Arc<dyn Prepare>> {
         step("health counters graded only on the evidence", crate::pressure::grade_on_evidence),
         step("PostgreSQL's WAL time kept out of statement time", statement_time_without_wal),
         step("MariaDB's lock time unknown where it counts the whole run", lock_time_that_counts_the_run),
+        step("a scan's filter judged by what its runs measured", crate::indexes::mark_measured_kept),
     ]
 }
 

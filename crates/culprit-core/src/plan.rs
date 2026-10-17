@@ -93,6 +93,11 @@ pub const NOT_READ_IN_FULL: &str = "Partition Pruning";
 /// or pattern in a generic plan), so the share kept says nothing.
 pub const GUESSED_SELECTIVITY: &str = "Selectivity";
 
+/// Plan prop the analysis sets on a scan whose statement's runs measured what its filter keeps (MySQL and MariaDB count
+/// the rows a statement examines and returns): the share of the rows read the runs kept, a number from 0 to 1. What the
+/// runs measured outweighs an estimate, and a fixed guess most of all ([`PlanNode::kept_share`]).
+pub const MEASURED_KEPT: &str = "Share kept, as its runs measured";
+
 /// Plan prop MySQL's and MariaDB's EXPLAIN carry on a table: the percentage of the rows read that its condition is
 /// expected to keep.
 const MYSQL_FILTERED: &str = "filtered";
@@ -101,6 +106,11 @@ const MYSQL_FILTERED: &str = "filtered";
 /// index touches most of the table's pages anyway, so the scan is the right plan and the fix is to read less. Every
 /// rule that suggests an index from a scan uses this bar.
 pub const INDEX_KEEPS_AT_MOST: f64 = 0.1;
+
+/// Tables of this many rows or more: reading one in full where a seek would do costs something. Under it, an index is
+/// advice only where the statements that want one take real time, and a whole-table read is not said as what makes a
+/// cheap plan's runs cost (`insights::whole_read_matters`). The bar every index advice for a table's reads uses.
+pub const SCAN_ROWS: f64 = 10_000.0;
 
 /// Actual rows at least this many times away from the estimate are a misestimate…
 pub const MISESTIMATE_FACTOR: f64 = 10.0;
@@ -162,6 +172,12 @@ impl PlanNode {
     /// estimates: MySQL's and MariaDB's own share (`filtered`), or the rows estimated against the rows read. None when
     /// the plan doesn't say how many rows it read, or when the share is the optimizer's default guess.
     pub fn kept_share(&self) -> Option<f64> {
+        // What the statement's runs measured, where the analysis put it on the scan ([`MEASURED_KEPT`]).
+        if self.act_rows.is_none()
+            && let Some(kept) = self.props.get(MEASURED_KEPT).and_then(|k| k.trim().parse::<f64>().ok())
+        {
+            return Some(kept.clamp(0.0, 1.0));
+        }
         // A default guess for a parameter compared by range or pattern isn't a share anything can be judged on.
         if self.props.contains_key(GUESSED_SELECTIVITY) {
             return None;
@@ -188,6 +204,19 @@ impl PlanNode {
                 .then(|| self.table_rows.map(|t| t * self.runs()))
                 .flatten()
         })
+    }
+
+    /// Whether the operator reads its whole table on each run: a scan of a table, unless the collector marked it as one
+    /// a run may never read ([`NOT_READ_IN_FULL`]) or the plan's own estimate of the rows it reads is under half the
+    /// table's (a scan under a TOP or a LIMIT that stops at its first rows, in index order).
+    pub fn reads_table_whole(&self) -> bool {
+        if self.kind != NodeKind::Scan || self.object.is_none() || self.props.contains_key(NOT_READ_IN_FULL) {
+            return false;
+        }
+        match (self.rows_read, self.table_rows) {
+            (Some(read), Some(table)) if table > 0.0 => read >= 0.5 * table * self.runs(),
+            _ => true,
+        }
     }
 
     /// Whether the operator reads a BRIN index, by the catalog's mark ([`INDEX_KIND`]).
@@ -276,6 +305,15 @@ impl PlanNode {
     }
 }
 
+/// How a step's cost rests on a default guess for a parameter ([`Plan::guess`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Guess {
+    /// The step, or a step below it, was planned on the guess: the rows it works on are the guess.
+    Rows,
+    /// A loop runs the step once for each row of an input planned on the guess: how many times it runs is the guess.
+    Runs,
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct PlanIndexHint {
@@ -338,24 +376,85 @@ impl Plan {
     }
 
     /// A step's share of the plan's cost where the plan can state one, which is what every "N% of the plan's cost" a
-    /// person reads comes from. `None` on a plan without costs, for a step with no cost of its own, beside a step doing
-    /// work the plan puts no cost on ([`Plan::uncosted_steps`]: next to MySQL's filesort a scan reads as "100%"), and
-    /// when the step's rows rest on a default guess for a parameter rather than on statistics
-    /// ([`crate::GUESSED_SELECTIVITY`] on it or anywhere below it). `culprit_checks::no_share_reason` says why there is
-    /// none, and the app's plan viewer mirrors this rule (`stepShare` in `app/src/lib/plan-format.ts`).
+    /// person reads comes from, on every surface (findings, briefs, exports, the plan viewer, the CLI's tree, MCP).
+    /// `None` where the plan states no shares at all ([`Plan::states_shares`]: a plan without costs, a cheap plan, a
+    /// plan beside whose steps one doing work carries no cost), for a step with no cost of its own, and for a step whose
+    /// cost rests on a default guess for a parameter rather than on statistics ([`Plan::guess`]). `culprit_checks::
+    /// no_share_reason` says why there is none, and the app mirrors this rule (`stepShare` in
+    /// `app/src/lib/plan-format.ts`).
     pub fn step_share(&self, node: &PlanNode) -> Option<f64> {
-        let mut below = Vec::new();
-        node.walk(&mut below);
-        let guessed = below.iter().any(|n| n.props.contains_key(crate::GUESSED_SELECTIVITY));
-        (self.weighed() && node.self_cost > 0.0 && !guessed && self.uncosted_steps().is_empty())
-            .then(|| self.cost_share(node))
+        (self.states_shares() && node.self_cost > 0.0 && self.guess(node).is_none()).then(|| self.cost_share(node))
+    }
+
+    /// Whether the plan states any step's share of its cost: it weighs its steps with costs, it does real work
+    /// ([`crate::insights::does_real_work`]: half of a point lookup's cost isn't where its statement's time goes), and
+    /// it puts a cost on every step doing work ([`Plan::uncosted_steps`]: next to MySQL's filesort a scan reads as
+    /// "100%"). A plan insight's share of the work follows the same rule ([`crate::insights::stated_share`]).
+    pub fn states_shares(&self) -> bool {
+        self.weighed() && crate::insights::does_real_work(self) && self.uncosted_steps().is_empty()
+    }
+
+    /// How the cost of `node` rests on a default guess for a parameter ([`crate::GUESSED_SELECTIVITY`]), where it does:
+    /// the step or one below it was planned on the guess (the rows it works on are the guess), or a loop runs it once for
+    /// each row of an input planned on one (how many times it runs is the guess: the inner side of a nested loop over
+    /// `= ANY($1)`, which the planner takes to hold 10 values). `None` where its cost rests on statistics.
+    pub fn guess(&self, node: &PlanNode) -> Option<Guess> {
+        self.guesses().into_iter().find(|(id, _)| *id == node.id).map(|(_, g)| g)
+    }
+
+    /// Whether any step of the plan was planned on a default guess for a parameter: then what the plan costs in all, and
+    /// whether it is cheap, rests on that guess too.
+    pub fn has_guess(&self) -> bool {
+        self.nodes().iter().any(|n| n.props.contains_key(crate::GUESSED_SELECTIVITY))
+    }
+
+    /// Every step whose cost rests on a guess, with how ([`Plan::guess`]).
+    pub fn guesses(&self) -> Vec<(u32, Guess)> {
+        // Planned on the guess: the step itself, or any step below it.
+        fn mark(n: &PlanNode, planned: &mut Vec<u32>) -> bool {
+            let mut any = n.props.contains_key(crate::GUESSED_SELECTIVITY);
+            for child in &n.children {
+                any |= mark(child, planned);
+            }
+            if any {
+                planned.push(n.id);
+            }
+            any
+        }
+        fn visit(n: &PlanNode, repeated: bool, planned: &[u32], out: &mut Vec<(u32, Guess)>) {
+            if planned.contains(&n.id) {
+                out.push((n.id, Guess::Rows));
+            } else if repeated {
+                out.push((n.id, Guess::Runs));
+            }
+            let nested_loop = n.op.to_ascii_lowercase().starts_with("nested loop");
+            let mut earlier_guessed = false;
+            for (i, child) in n.children.iter().enumerate() {
+                // An InitPlan (a CTE among them) runs once for the statement, whatever its parent repeats.
+                let once = child.props.get("Parent Relationship").is_some_and(|r| r == "InitPlan" || r == "CTE");
+                // A nested loop's later inputs run once for each row of the earlier ones; so does any input the plan
+                // counts more runs for than its parent (a MySQL join's later tables, a correlated subplan).
+                let per_row = !once && i > 0 && (nested_loop || child.est_executions > n.est_executions.max(1.0));
+                visit(child, repeated || (per_row && earlier_guessed), planned, out);
+                earlier_guessed |= planned.contains(&child.id);
+            }
+        }
+        let mut planned = Vec::new();
+        if !mark(&self.root, &mut planned) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        visit(&self.root, false, &planned, &mut out);
+        out
     }
 
     /// Steps doing work that carry no cost of their own in a plan that weighs its steps: MySQL and MariaDB put none on a
     /// filesort or an internal temporary table (nor on the grouping or de-duplication that uses one) unless they give a
-    /// sort's cost. Beside one, a step's share of what the plan costs isn't its share of the statement's work.
+    /// sort's cost. Beside one, a step's share of what the plan costs isn't its share of the statement's work. Only
+    /// theirs: SQL Server and PostgreSQL cost every step, so a step whose own cost works out at nothing there (a Stream
+    /// Aggregate whose subtree cost rounds to its input's, a Memoize) costs too little to matter, not nothing.
     pub fn uncosted_steps(&self) -> Vec<&PlanNode> {
-        if !self.weighed() {
+        if !self.weighed() || self.engine != Engine::Mysql {
             return Vec::new();
         }
         let temporary = |n: &PlanNode| {

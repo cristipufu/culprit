@@ -26,26 +26,37 @@ pub fn heavy_query(snapshot: &Snapshot) -> Vec<Finding> {
         .filter(|q| !is_monitoring_query(q) && heavy_share(snapshot, q) >= HEAVY_SHARE)
         .collect();
     queries.sort_by(|a, b| heavy_share(snapshot, b).total_cmp(&heavy_share(snapshot, a)));
-    queries.into_iter().take(6).map(|q| heavy_query_finding(snapshot, q)).collect()
+    // A statement whose cost is behind it (it stopped running, or ran once) never takes the place of one that runs:
+    // the six are statements that run, and history follows them.
+    let (history, running): (Vec<&QueryStat>, Vec<&QueryStat>) =
+        queries.into_iter().partition(|q| crate::query_is_history(snapshot, q));
+    running
+        .into_iter()
+        .take(HEAVY_QUERIES)
+        .chain(history.into_iter().take(HEAVY_QUERIES))
+        .map(|q| heavy_query_finding(snapshot, q))
+        .collect()
 }
 
+/// The heavy statements that get a finding of their own, of those that run (and as many of those whose cost is behind
+/// them).
+const HEAVY_QUERIES: usize = 6;
+
 pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding {
-    let mut impact = query_impact(snapshot, &[q]).expect("workload present");
+    // Weighed, rated and graded on what Culprit's scans measured of it where they did (`query_impact`), the same
+    // figures the title, the summary and every list of statements state.
+    let impact = query_impact(snapshot, &[q]).expect("workload present");
     let handle = query_handle(q);
     let time = time_noun(snapshot);
     let mut f = finding("heavy-query", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
-    // A recent entry is weighed by what Culprit's scans measured of it, rated over their hours.
+    let scans = snapshot.workload.as_ref().and_then(|w| w.scans_of(q));
     let recent = recent_entry(snapshot, q);
-    if let Some(s) = &recent {
-        impact = QueryImpact { share: s.share(), per_day_ms: Some(s.per_day(s.time_ms)) };
-    }
     apply_impact(snapshot, &mut f, &impact);
-    f.severity = match &recent {
-        Some(s) => severity_for_recent_time(s.hours, s.time_ms, s.share()),
-        None => severity_for_workload_share(snapshot, impact.share),
-    };
+    f.severity = severity_for_impact(snapshot, &[q], &impact);
     f.confidence = Confidence::High;
-    let per_day_runs = rate_per_day(snapshot, q.executions);
+    // Runs a day at the pace it ran: over Culprit's scans where they measured it, a burst's own total, never
+    // extrapolated to a day.
+    let per_day_runs = scans.map(|s| s.per_day(s.runs)).or_else(|| rate_per_day_of(snapshot, &[q], q.executions));
     let kind = kind_of(q);
     // A statement that stopped running is told in the past.
     let stopped = crate::query_stopped(snapshot, q).is_some();
@@ -88,16 +99,19 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
         (true, false) => ("took", "read", "returned"),
         (false, _) => ("takes", reads_verb, "returns"),
     };
+    // A statement that stopped running took its share until it stopped, whatever it spent the time on.
+    let until = if stopped { " until it stopped" } else { "" };
     f.title = match (&idle, reads_per_row, reads_for_nothing) {
-        (Some(idle), _, _) => format!("{} {takes} {share} of {time}, {}", capitalize(&handle), idle.title_tail()),
+        (Some(idle), _, _) => {
+            format!("{} {takes} {share} of {time}{until}, {}", capitalize(&handle), idle.title_tail())
+        }
         (None, _, Some((reads, nothing))) => {
             format!("{} {read} {} {reads_unit} a run to return {nothing}", capitalize(&handle), format::count(reads))
         }
         (None, Some(r), _) if r >= MANY_READS_PER_ROW => {
             format!("{} {read} {} {reads_unit} for every row it {returns}", capitalize(&handle), format::count(r))
         }
-        _ if stopped => format!("{} took {share} of {time} until it stopped", capitalize(&handle)),
-        _ => format!("{} takes {share} of {time}", capitalize(&handle)),
+        _ => format!("{} {takes} {share} of {time}{until}", capitalize(&handle)),
     };
     // With time the source couldn't attribute, the share is of what it could.
     let of = if snapshot.workload.as_ref().is_some_and(|w| w.untracked_time_ms.is_some()) {
@@ -117,20 +131,21 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
             format::duration(s.time_ms / s.runs.max(1.0)),
             format::percent(snapshot.workload.as_ref().map_or(0.0, |w| w.share_of(q.total_time_ms, q)))
         ),
-        None => {
+        // What runs now, where the source's totals go back further than Culprit's scans: their figures, with the
+        // totals' beside them where those differ twofold.
+        None => scans_sentence(snapshot, q, &of).unwrap_or_else(|| {
             let (runs, when) = statement_runs(snapshot, q);
-            let mut sentence = format!(
-                "It ran {runs} at {}{}{when}: {share} {of} in {window}.",
-                format::duration(q.mean_time_ms),
-                if q.executions > 1.0 { " on average" } else { "" },
-            );
-            // What runs now, where the source's totals go back further than Culprit's scans.
-            if let Some(now) = scans_sentence(snapshot, q) {
-                sentence.push(' ');
-                sentence.push_str(&now);
-            }
-            sentence
-        }
+            // Two runs far apart: what each took, never an average that hides it.
+            let at = match q.few_runs_took().filter(|_| q.executions > 1.0) {
+                Some(took) => format!(", taking {took}"),
+                None => format!(
+                    " at {}{}",
+                    format::duration(q.mean_time_ms),
+                    if q.executions > 1.0 { " on average" } else { "" }
+                ),
+            };
+            format!("It ran {runs}{at}{when}: {share} {of} in {window}.")
+        }),
     };
     let wait = dominant_wait(snapshot, q).filter(|_| idle.is_none());
     if let Some(idle) = &idle {
@@ -175,12 +190,30 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
     }
     f.summary = summary;
     let workload = snapshot.workload.as_ref();
-    match &recent {
-        Some(s) => {
+    match (workload, &scans) {
+        // What the scans measured, and the totals since the source began counting where they differ twofold (never
+        // for a recent entry, whose totals are those runs diluted by the time before it began).
+        (Some(w), Some(s)) => {
+            let totals = format!("over {}", w.window_phrase());
+            let beside = !s.is_recent(q);
             f.metrics.push(Metric::new("Share of DB time over Culprit's scans", s.share(), Unit::Ratio));
-            f.metrics.push(Metric::new("Runs per day over Culprit's scans", s.per_day(s.runs), Unit::Count));
+            if beside && s.share_differs(w, q) {
+                let label = format!("{} {totals}", share_metric_label(snapshot));
+                f.metrics.push(Metric::new(label, w.share_of(q.total_time_ms, q), Unit::Ratio));
+            }
+            // Runs that came in bursts are counted, never a rate a day.
+            if s.per_day(s.runs) >= 1.0 && !w.cadence(q).is_burst() {
+                f.metrics.push(Metric::new("Runs per day over Culprit's scans", s.per_day(s.runs), Unit::Count));
+            } else {
+                f.metrics.push(Metric::new("Runs over Culprit's scans", s.runs, Unit::Count));
+            }
+            if beside && s.runs_differ(w, q) && !w.cadence(q).is_burst() {
+                let label = format!("Runs per day {totals}");
+                f.metrics.push(Metric::new(label, w.per_day(q.executions), Unit::Count));
+            }
+            f.metrics.extend(average_metrics(snapshot, q));
         }
-        None => {
+        _ => {
             f.metrics.push(Metric::new(share_metric_label(snapshot), impact.share, Unit::Ratio));
             match workload.and_then(|w| Some((w.runs_per_day_of(q), w.per_day_measured(q.executions)?))) {
                 Some((Some(runs), _)) => f.metrics.push(Metric::new("Runs per day", runs, Unit::Count)),
@@ -188,13 +221,9 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
                 Some((None, _)) => f.metrics.push(Metric::new("Runs", q.executions, Unit::Count)),
                 None => {}
             }
-            if let Some(s) = workload.and_then(|w| w.over_scans(q)).filter(|s| s.runs > 0.0) {
-                f.metrics.push(Metric::new("Runs per day over Culprit's scans", s.per_day(s.runs), Unit::Count));
-                f.metrics.push(Metric::new("Share of DB time over Culprit's scans", s.share(), Unit::Ratio));
-            }
+            f.metrics.extend(average_metrics(snapshot, q));
         }
     }
-    f.metrics.push(Metric::new("Average duration", q.mean_time_ms, Unit::Ms));
     if let Some(r) = q.reads_per_execution() {
         // MySQL counts rows examined, the other engines pages.
         let (label, unit) =
@@ -216,7 +245,7 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
                 f.impact.score = f.impact.score.min(base_score(Severity::Low));
             }
             f.confidence = idle.confidence;
-            f.fix = Some(Fix { summary: idle.fix(), sql: None, cost: None });
+            f.fix = Some(idle.fix(snapshot, q));
             f.verify = vec![verify_line(snapshot, q, idle.verify())];
         }
         None => {
@@ -226,19 +255,16 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
                 (None, Some((plan, node))) => scan_step_fix(snapshot, plan, node, q, kind).map(|fix| (node.id, fix)),
                 _ => None,
             };
-            f.fix = Some(match step_fix {
+            let (fix, lever) = match step_fix {
                 Some((node, fix)) => {
                     plan_node = Some(node);
-                    fix
+                    (fix, Shows::CheaperRuns)
                 }
-                None => heavy_fix(snapshot, hot, per_day_runs, q, kind, cheap_plan),
-            });
-            let reads = if mysql { "rows examined" } else { "pages read" };
+                None => heavy_fix_and_lever(snapshot, hot, per_day_runs, q, kind, cheap_plan),
+            };
+            f.fix = Some(fix);
             let expect = match (&lookups, &wait) {
-                (Some(lookups), _) => Expect::Drop(format!(
-                    "its {reads} per run should drop from {} to a handful",
-                    format::count(lookups.reads)
-                )),
+                (Some(lookups), _) => Expect::Drop(format::count(lookups.reads)),
                 // A read that waits for storage: what the change shortens is the wait, not the pages a run reads.
                 (None, Some((WaitKind::Storage, wait_share, _)))
                     if matches!(kind, StatementKind::Read | StatementKind::Aggregate) =>
@@ -249,8 +275,11 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
                         format::percent(*wait_share)
                     })
                 }
-                _ if culprit_core::sql::is_session_statement(&q.text) => Expect::FewerRuns,
-                _ => Expect::ShareAndReads,
+                _ if culprit_core::sql::is_session_statement(&q.text) => Expect::Session,
+                // A fix that cuts runs leaves what one run reads as it was (or more, once the cheap runs are skipped
+                // or a batch carries more rows): what moves is how often it runs, and its time with it.
+                _ if lever == Shows::FewerRuns => Expect::FewerRuns,
+                _ => Expect::CheaperRuns,
             };
             f.verify = vec![verify_line(snapshot, q, expect)];
         }
@@ -261,29 +290,41 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
 
 /// What a change shows in a later scan, for the verify step ([`verify_line`]).
 enum Expect {
-    /// "its pages read per run should drop from 750 to a handful".
+    /// The lookups that find nothing gone: what a run reads drops from this many pages (rows examined) to a handful.
     Drop(String),
     /// Less of its time waiting for storage, which is this share of it now.
     Storage(String),
-    /// Its share of database time and its reads per run.
-    ShareAndReads,
-    /// A statement the pool or the driver sends: it runs far less often, or not at all.
+    /// A fix that makes each run cheaper: its reads and time per run drop.
+    CheaperRuns,
+    /// A fix that cuts runs (a cache, a skipped or batched call, a rarer poll): fewer runs and less time in all, while
+    /// what one run reads and takes stays, or rises.
     FewerRuns,
+    /// A statement the pool or the driver sends: it runs far less often, or not at all.
+    Session,
     /// Its average run, toward what its reads take (a wait taken away).
     Average,
     /// Its time, or that it stops running (a pause or an application lock taken away).
     TimeOrStops,
 }
 
-/// How a later scan shows the change. A windowed source (Query Store, a log) covers the runs since, so its share and
-/// averages move; on a source of running totals two of Culprit's scans show it ([`verify_between_scans`]).
+/// How a later scan shows the change. A windowed source (Query Store, a log) covers the runs since, so its share,
+/// reads and averages move; on a source of running totals two of Culprit's scans show it, in What changed, which
+/// carries runs and time and no reads ([`verify_between_scans`]).
 fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
+    let mysql = snapshot.server.engine == Engine::Mysql;
+    let (verb, unit, reads) =
+        if mysql { ("examines", "rows", "rows examined") } else { ("reads", "pages", "pages read") };
     let between = match &expect {
-        Expect::Drop(drop) => drop.clone(),
-        Expect::Storage(now) => format!("its time should drop, with less of it spent waiting for storage ({now} now)"),
-        Expect::ShareAndReads => "its time and its reads per run should drop".to_string(),
-        Expect::FewerRuns => "it should run far less often, or not at all".to_string(),
-        Expect::Average => "its average run should drop toward what its reads take".to_string(),
+        Expect::Drop(now) => {
+            format!("its time per run should drop, as each run {verb} a handful of {unit} instead of {now}")
+        }
+        Expect::Storage(now) => {
+            format!("its time per run should drop, as less of it waits for storage ({now} of it now)")
+        }
+        Expect::CheaperRuns => Shows::CheaperRuns.between().to_string(),
+        Expect::FewerRuns => Shows::FewerRuns.between().to_string(),
+        Expect::Session => "it should run far less often, or not at all".to_string(),
+        Expect::Average => "its time per run should drop toward what its reads take".to_string(),
         Expect::TimeOrStops => "its time should drop, or it should stop running".to_string(),
     };
     if let Some(line) = verify_between_scans(snapshot, q, &between) {
@@ -291,14 +332,19 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
     }
     let time = time_noun(snapshot);
     match expect {
-        Expect::Drop(drop) => format!("After the change, re-scan: {drop}."),
+        Expect::Drop(now) => {
+            format!("After the change, re-scan: its {reads} per run should drop from {now} to a handful.")
+        }
         Expect::Storage(now) => format!(
             "After the change ships, re-scan: this query's share of {time} should drop, with less of its time spent waiting for storage ({now} now)."
         ),
-        Expect::ShareAndReads => {
-            format!("After the change ships, re-scan and compare this query's share of {time} and reads per run.")
-        }
-        Expect::FewerRuns => {
+        Expect::CheaperRuns => format!(
+            "After the change ships, re-scan: this query's {reads} and time per run should drop, and its share of {time} with them."
+        ),
+        Expect::FewerRuns => format!(
+            "After the change ships, re-scan: this query should run fewer times and take a smaller share of {time}, while what one run reads and takes can stay as it is, or rise."
+        ),
+        Expect::Session => {
             "After the change, re-scan: this statement should run far less often, or not at all.".to_string()
         }
         Expect::Average => "Re-scan after the change: its average duration drops toward what its reads take.".into(),
@@ -362,10 +408,8 @@ fn whole_table_scan(plan: &Plan) -> Option<&PlanNode> {
     if !plan.weighed() {
         return None;
     }
-    plan.nodes()
-        .into_iter()
-        .filter(|n| n.kind == NodeKind::Scan && n.object.is_some())
-        .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
+    // A scan that stops at its first rows (under a TOP, in index order) doesn't read its table whole.
+    plan.nodes().into_iter().filter(|n| n.reads_table_whole()).max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
 }
 
 /// What a statement does with the rows it touches, as far as its text says.
@@ -505,11 +549,38 @@ impl Idle {
         }
     }
 
-    fn fix(&self) -> String {
+    /// What to do about where the time goes. Where it waits for a lock, how to find the holder is the one every check
+    /// that names a lock wait gives ([`find_lock_holder`]): Live only for waits that come often enough to catch.
+    fn fix(&self, snapshot: &Snapshot, q: &QueryStat) -> Fix {
+        let holder = || find_lock_holder(snapshot, q, None);
+        let (summary, sql) = match self.kind {
+            IdleKind::AppLock => {
+                let LockHolder { lead, sql } = holder();
+                (
+                    format!(
+                        "{lead} Shorten the work done while the lock is held, or take the lock without waiting (a try-lock, or a lock timeout) and retry later."
+                    ),
+                    sql,
+                )
+            }
+            IdleKind::Locks => {
+                let LockHolder { lead, sql } = holder();
+                (
+                    format!(
+                        "{lead} Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait."
+                    ),
+                    sql,
+                )
+            }
+            _ => (self.advice(), None),
+        };
+        Fix { summary, sql, cost: None }
+    }
+
+    fn advice(&self) -> String {
         match self.kind {
             IdleKind::Sleep => "Find who sends it (a health check, a test, a retry loop with a back-off) and whether the pause belongs in the database at all: while it sleeps it holds a connection, and any locks its transaction took.".into(),
-            IdleKind::AppLock => "Find what holds the lock and for how long (Live shows the sessions), and shorten that work; or take the lock without waiting (a try-lock, or a lock timeout) and retry later.".into(),
-            IdleKind::Locks => "Find what holds the locks while it waits (Live shows the blocking chain) and keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.".into(),
+            IdleKind::AppLock | IdleKind::Locks => String::new(),
             IdleKind::Client => "The application reads the results slowly, or row by row while it does other work. Read all rows first and process them afterwards, or fetch fewer.".into(),
             IdleKind::Memory => "It waits for a memory grant while other queries hold the memory: find the queries with the largest grants (Health) and reduce them, usually with better estimates or an index that avoids a big sort or hash.".into(),
             IdleKind::Latch => "Sessions queue for the same pages: typically inserts at the end of an index on an increasing key, or tempdb allocation. See the hot-rows and last-page findings, and Live while it happens.".into(),
@@ -598,11 +669,9 @@ fn dominant_wait(snapshot: &Snapshot, q: &QueryStat) -> Option<(WaitKind, f64, S
         if share >= 1.0 { "Most of its time".to_string() } else { format!("{} of its time", format::percent(share)) };
     let source = snapshot.workload.as_ref().map_or("the statistics", |w| w.source.as_str());
     let kind = if key == "io" { WaitKind::Storage } else { WaitKind::Other };
-    Some((
-        kind,
-        share,
-        format!("{part} is spent {doing} ({source}: {}).", w.wait_type.as_deref().unwrap_or(&w.category)),
-    ))
+    // A part of its time the source keeps only in its totals: said over them where the share is the scans'.
+    let sentence = format!("{part} is spent {doing} ({source}: {}).", w.wait_type.as_deref().unwrap_or(&w.category));
+    Some((kind, share, over_totals(snapshot, q, sentence)))
 }
 
 /// Where a statement's time goes when it isn't work (`idle_time`), for the views that word a finding by it (the brief).
@@ -611,8 +680,33 @@ pub(crate) fn idle_kind(snapshot: &Snapshot, q: &QueryStat) -> Option<IdleKind> 
 }
 
 /// When a statement's time isn't work: it sleeps, waits for a lock, or does too little reading and computing to fill
-/// its run time. Uses the engine's own account (Query Store waits, MySQL lock time) where there is one.
+/// its run time. Uses the engine's own account (Query Store waits, MySQL lock time) where there is one. Its evidence
+/// rests on figures the source keeps only in its totals (reads a run, its run time, its waits): where the summary leads
+/// with Culprit's scans, it says what they are over ([`over_totals`]).
 pub(super) fn idle_time(snapshot: &Snapshot, q: &QueryStat) -> Option<Idle> {
+    let mut idle = idle_time_of(snapshot, q)?;
+    if !matches!(idle.kind, IdleKind::Sleep | IdleKind::AppLock) {
+        idle.evidence = over_totals(snapshot, q, idle.evidence);
+    }
+    Some(idle)
+}
+
+/// A sentence of figures from statement `q`'s totals, led by what they are over where its share and runs are said over
+/// Culprit's scans ([`crate::support::totals_basis`]): "Over the 1277 days since statistics were reset, it read …".
+fn over_totals(snapshot: &Snapshot, q: &QueryStat, sentence: String) -> String {
+    let Some(basis) = crate::support::totals_basis(snapshot, q) else { return sentence };
+    // A pronoun or an adverb leads in lower case after the basis; a name (MySQL) or a figure stays as it is.
+    let lead = match sentence.split_whitespace().next() {
+        Some("It" | "Only" | "Most") => {
+            let mut chars = sentence.chars();
+            chars.next().map(|c| c.to_lowercase().chain(chars).collect()).unwrap_or_default()
+        }
+        _ => sentence,
+    };
+    format!("Over {basis}, {lead}")
+}
+
+fn idle_time_of(snapshot: &Snapshot, q: &QueryStat) -> Option<Idle> {
     let text = squeeze(&q.text);
     let named = |list: &[(&str, &'static str)]| -> Option<&'static str> {
         list.iter()
@@ -801,21 +895,23 @@ fn advice(summary: String) -> Fix {
     Fix { summary, sql: None, cost: None }
 }
 
-pub(super) fn heavy_fix(
+/// The fix for a heavy statement no single step explains, with what it moves: fewer runs (the pool's settings, a
+/// cache, a skipped or batched call), or cheaper runs. The verify step expects what it moves ([`verify_line`]).
+fn heavy_fix_and_lever(
     snapshot: &Snapshot,
     hot: Option<(&Plan, &PlanNode)>,
     per_day_runs: Option<f64>,
     q: &QueryStat,
     kind: StatementKind,
     cheap_plan: bool,
-) -> Fix {
+) -> (Fix, Shows) {
     // The driver or the pool sends these around the application's statements: its settings are the lever.
     if culprit_core::sql::is_session_statement(&q.text) {
-        return advice(session_fix(snapshot.server.engine, &q.text));
+        return (advice(session_fix(snapshot.server.engine, &q.text)), Shows::FewerRuns);
     }
     if let Some((plan, node)) = hot {
         if let Some(fix) = scan_step_fix(snapshot, plan, node, q, kind) {
-            return fix;
+            return (fix, Shows::CheaperRuns);
         }
         // "Most of the work" only from half of what the plan costs, and a share only where the plan can state one.
         let most = match plan.step_share(node) {
@@ -826,39 +922,51 @@ pub(super) fn heavy_fix(
         // A covering index or a sorted index only where the plan's own rule says the step is worth it: covering a
         // seek that finds a row or two copies the selected columns into the index for nothing.
         if culprit_core::insights::has_insight(plan, "key-lookups", node) {
-            return advice(format!(
-                "{most} is looking rows up in the table after finding them in an index. Including the selected columns in that index (a covering index) removes the lookups."
-            ));
+            return (
+                advice(format!(
+                    "{most} is looking rows up in the table after finding them in an index. Including the selected columns in that index (a covering index) removes the lookups."
+                )),
+                Shows::CheaperRuns,
+            );
         }
         if culprit_core::insights::has_insight(plan, "big-sort", node) {
-            return advice(format!(
-                "{most} is sorting. An index whose key order matches the sort lets the database read rows already sorted."
-            ));
+            return (
+                advice(format!(
+                    "{most} is sorting. An index whose key order matches the sort lets the database read rows already sorted."
+                )),
+                Shows::CheaperRuns,
+            );
         }
     }
     // Runs that wait for storage most of their time: the pages they read don't stay in memory.
     if matches!(kind, StatementKind::Read | StatementKind::Aggregate)
         && let Some((WaitKind::Storage, ..)) = dominant_wait(snapshot, q)
     {
-        return advice(storage_fix(snapshot, q, kind, cheap_plan));
+        return (advice(storage_fix(snapshot, q, kind, cheap_plan)), Shows::CheaperRuns);
     }
     // How often it runs is the cost on the same condition the summary says so: runs measured cheap. Only a statement
     // with no plan to judge its runs by is judged by its count alone.
     if cheap_plan {
-        return advice(fewer_runs_fix(
-            snapshot,
-            q,
-            kind,
-            "Each run is fast and its plan is already cheap; the cost is in how often it runs.",
-        ));
+        return (
+            advice(fewer_runs_fix(
+                snapshot,
+                q,
+                kind,
+                "Each run is fast and its plan is already cheap; the cost is in how often it runs.",
+            )),
+            Shows::FewerRuns,
+        );
     }
     if q.plan.as_ref().is_none_or(|p| !p.weighed())
         && per_day_runs.is_some_and(|r| r >= 100_000.0)
-        && q.mean_time_ms < 5.0
+        && snapshot.workload.as_ref().map_or(q.mean_time_ms, |w| w.statement_mean_ms(q)) < 5.0
     {
-        return advice(fewer_runs_fix(snapshot, q, kind, "Each run is fast; the cost is in how often it runs."));
+        return (
+            advice(fewer_runs_fix(snapshot, q, kind, "Each run is fast; the cost is in how often it runs.")),
+            Shows::FewerRuns,
+        );
     }
-    advice(match kind {
+    let fix = advice(match kind {
         StatementKind::Write => "Find this statement in the application and check that it finds the rows it changes through an index, and changes no more rows per run than it needs (split large updates into batches).".into(),
         StatementKind::Locking => "Find this statement in the application: it locks the rows it finds until its transaction ends. Check that it locks only the rows the transaction goes on to change, and that the transaction commits soon after.".into(),
         // A result worth keeping up to date is one that folds many rows into each it returns, not a few-row lookup
@@ -866,7 +974,8 @@ pub(super) fn heavy_fix(
         StatementKind::Aggregate if folds_many_rows(q) => "Find this statement in the application and check whether it aggregates more rows than it needs, or whether the result could be kept up to date instead of recomputed on every run.".into(),
         StatementKind::Aggregate => "Find this statement in the application and check whether it aggregates more rows than it needs.".into(),
         _ => "Find this statement in the application and check whether it reads more rows or columns than it needs.".into(),
-    })
+    });
+    (fix, Shows::CheaperRuns)
 }
 
 /// Whether an aggregate's runs read many pages (rows examined, MySQL) for each row they return.
@@ -940,11 +1049,41 @@ fn fewer_runs_fix(snapshot: &Snapshot, q: &QueryStat, kind: StatementKind, openi
 /// What a write does to rows, in sentences: ("inserts", "insert") for an INSERT.
 fn write_verbs(q: &QueryStat) -> (&'static str, &'static str) {
     match first_verb(main_statement(&q.text)).map(|(_, v)| v) {
+        // Its rows are the ones it inserted and the ones it updated on a conflict.
+        Some("insert") if upsert(q) != Upsert::No => ("inserts or updates", "insert or update"),
         Some("insert") => ("inserts", "insert"),
         Some("update") => ("updates", "update"),
         Some("delete") => ("deletes", "delete"),
         _ => ("changes", "change"),
     }
+}
+
+/// What an INSERT does with a row whose key is already there, where it updates it: PostgreSQL's `ON CONFLICT … DO
+/// UPDATE`. Every such run writes a new version of the row (and its WAL), even one that sets a column to the value it
+/// has, which a get-or-create does only so that RETURNING gives back the row there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Upsert {
+    /// It inserts, or skips the row (`DO NOTHING`).
+    No,
+    /// `DO UPDATE` with new values (`SET c = EXCLUDED.c`).
+    Update,
+    /// `DO UPDATE` that sets each column to itself (`SET salt = app_salts.salt`): the row is rewritten unchanged.
+    GetOrCreate,
+}
+
+fn upsert(q: &QueryStat) -> Upsert {
+    let text = squeeze(main_statement(&q.text));
+    let Some(at) = text.find(" do update set ").filter(|_| text.contains(" on conflict")) else { return Upsert::No };
+    let rest = &text[at + " do update set ".len()..];
+    let end = [" where ", " returning "].iter().filter_map(|k| rest.find(k)).min().unwrap_or(rest.len());
+    let leaf = |side: &str| side.trim().rsplit('.').next().unwrap_or("").to_string();
+    let to_itself = rest[..end].split(',').all(|assignment| {
+        assignment.split_once('=').is_some_and(|(column, value)| {
+            let value = value.trim();
+            !value.starts_with("excluded.") && !leaf(column).is_empty() && leaf(column) == leaf(value)
+        })
+    });
+    if to_itself { Upsert::GetOrCreate } else { Upsert::Update }
 }
 
 /// Whether an INSERT writes one row of values a run (`INSERT … VALUES (…)`, one list): then the runs that change a row
@@ -967,8 +1106,17 @@ fn runs_changing_nothing(q: &QueryStat) -> Option<(f64, bool)> {
 /// average (75% of its runs insert nothing) and writes 1.7 KB of WAL, 99% of all the WAL the statements wrote: 6.7 KB
 /// and 2.7 full-page images (…) for each row it inserts."
 fn write_cost(snapshot: &Snapshot, q: &QueryStat) -> String {
-    let (verb, verb_base) = write_verbs(q);
-    let mut out = "Its plan has nothing to make faster: what a run costs is the write itself (its log, its index entries, the checks of its keys).".to_string();
+    // A statement that stopped running is told in the past.
+    let stopped = crate::all_stopped(snapshot, &[q]);
+    let (verb, verb_base) = match write_verbs(q) {
+        (verb, base) if stopped => (past_tense(verb), past_tense(base)),
+        (verb, base) => (verb.to_string(), base.to_string()),
+    };
+    let mut out = if stopped {
+        "Its plan had nothing to make faster: what a run cost was the write itself (its log, its index entries, the checks of its keys).".to_string()
+    } else {
+        "Its plan has nothing to make faster: what a run costs is the write itself (its log, its index entries, the checks of its keys).".to_string()
+    };
     let rows = q.rows_handled_per_execution();
     let postgres = snapshot.server.engine == Engine::Postgres;
     let log_word = if postgres { "WAL" } else { "transaction log" };
@@ -977,7 +1125,15 @@ fn write_cost(snapshot: &Snapshot, q: &QueryStat) -> String {
     match rows {
         Some(rows) => {
             let n = rows_a_run(rows);
-            out.push_str(&format!(" Each run {verb} {n} row{} on average", if n == "1" { "" } else { "s" }));
+            // Culprit's scans keep a statement's runs and time, not its rows: where its summary leads with them, what a
+            // run changes is said over the totals it comes from (a recent entry's are mostly those scans' runs).
+            let over = crate::support::totals_basis(snapshot, q).map(|b| format!(" over {b}")).unwrap_or_default();
+            out.push_str(&format!(" Each run {verb} {n} row{} on average{over}", if n == "1" { "" } else { "s" }));
+            if upsert(q) == Upsert::GetOrCreate {
+                out.push_str(
+                    " (a run that finds the row there rewrites it: its DO UPDATE sets a column to the value it has, which still writes a new version of the row)",
+                );
+            }
             if let Some((share, exact)) = runs_changing_nothing(q) {
                 out.push_str(&format!(
                     " ({}{} of its runs {verb_base} nothing)",
@@ -999,8 +1155,9 @@ fn write_cost(snapshot: &Snapshot, q: &QueryStat) -> String {
         .map(|s| format!(", {} of all the {log_word} the statements wrote", format::percent(s)))
         .unwrap_or_default();
     out.push_str(&format!(
-        "{} writes {} of {log_word}{share}",
+        "{} {} {} of {log_word}{share}",
         if rows.is_some() { " and" } else { "" },
+        if stopped { "wrote" } else { "writes" },
         format::bytes(log / q.executions)
     ));
     let images = costs.and_then(|c| c.log_full_pages).filter(|n| *n > 0.0 && postgres);
@@ -1018,6 +1175,22 @@ fn write_cost(snapshot: &Snapshot, q: &QueryStat) -> String {
         (None, None) => out.push('.'),
     }
     out
+}
+
+/// A write's verbs ([`write_verbs`]) in the past, for a statement that stopped running: "inserts or updates" →
+/// "inserted or updated".
+fn past_tense(verbs: &str) -> String {
+    verbs
+        .split(' ')
+        .map(|w| match w.trim_end_matches('s') {
+            "insert" => "inserted",
+            "update" => "updated",
+            "delete" => "deleted",
+            "change" => "changed",
+            _ => w,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Rows a run, as a count reads them, and to two decimals under one: 0.25 rows a run, not "0.3", beside "75% of its
@@ -1042,13 +1215,24 @@ fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
         .into_iter()
         .find_map(|o| snapshot.tables.iter().find(|t| names_table(&o, &t.schema, &t.name)));
     // That its plan has nothing to make faster only where a plan says so; a statement judged by its count alone has none.
-    let opening = if q.plan.as_ref().is_some_and(|p| culprit_core::insights::runs_cheaply(p, q)) {
-        "Each run is fast and its plan has nothing to make faster: what costs is the write itself, every time it runs."
-    } else {
-        "Each run is fast; what costs is the write itself, every time it runs."
+    // A statement that stopped running is told in the past.
+    let cheap = q.plan.as_ref().is_some_and(|p| culprit_core::insights::runs_cheaply(p, q));
+    let opening = match (crate::all_stopped(snapshot, &[q]), cheap) {
+        (true, true) => {
+            "Each run was fast and its plan had nothing to make faster: what cost was the write itself, every time it ran."
+        }
+        (true, false) => "Each run was fast; what cost was the write itself, every time it ran.",
+        (false, true) => {
+            "Each run is fast and its plan has nothing to make faster: what costs is the write itself, every time it runs."
+        }
+        (false, false) => "Each run is fast; what costs is the write itself, every time it runs.",
     };
-    let lever = match runs_changing_nothing(q) {
-        Some((share, exact)) => {
+    let lever = match (upsert(q), runs_changing_nothing(q)) {
+        // A get-or-create rewrites the row it finds on every run that finds one: the levers are not sending it when
+        // the application has the row, and not rewriting it when it is there.
+        (Upsert::GetOrCreate, _) => "It is a get-or-create: its DO UPDATE sets a column to the value it has only so that RETURNING gives back the row already there, and that still writes a new version of the row (and its WAL) on every run that finds one. Skip the call where the application already has the row (it read or created it earlier and keeps it), or insert with ON CONFLICT DO NOTHING RETURNING and read the row with a SELECT only when that returns nothing.".to_string(),
+        (Upsert::Update, _) => "On a conflict it updates the row it finds, writing a new version of it even when the values are the same: give its DO UPDATE a WHERE that updates only a row whose values differ (`WHERE t.c IS DISTINCT FROM EXCLUDED.c`), and skip the call where the application knows nothing changed.".to_string(),
+        (Upsert::No, Some((share, exact))) => {
             let skip = if verb == "insert" {
                 "skip the statement where the application already knows the row exists (it read the row, or wrote it earlier, and keeps the value for as long as it holds), and send it only when the row may be missing.".to_string()
             } else {
@@ -1056,13 +1240,15 @@ fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
                     "skip the statement where the application already knows there is nothing to {verb} (the rows aren't there, or already hold the values)."
                 )
             };
+            // What its runs did, in the past once it stopped; the advice stays for the code that sends it.
+            let did = if crate::all_stopped(snapshot, &[q]) { past_tense(verb) } else { verb.to_string() };
             format!(
-                "{}{} of its runs {verb} nothing: {skip}",
+                "{}{} of its runs {did} nothing: {skip}",
                 if exact { "" } else { "At least " },
                 format::percent(share)
             )
         }
-        None => {
+        (Upsert::No, None) => {
             let many = match verb {
                 "update" | "delete" => many_keys(engine, &verb.to_ascii_uppercase()),
                 _ => bulk_insert(engine).to_string(),
@@ -1354,15 +1540,38 @@ impl LookupsForNothing<'_> {
                     .as_deref()
                     .map(|f| format!(" (it holds only the rows where `{f}`)"))
                     .unwrap_or_default();
+                // The engine's own hint is the fallback that doesn't rest on the estimate: a seek on the index by the
+                // columns the statement compares with a value, the index's own leading keys (a bare FORCESEEK allows
+                // the seek the plan already does). It goes in the statement, where the application sends it.
+                let seek_columns: Vec<&str> = index
+                    .key_names()
+                    .into_iter()
+                    .take_while(|k| self.checked.iter().any(|c| c.eq_ignore_ascii_case(k)))
+                    .collect();
+                let hint = format!(
+                    "WITH (FORCESEEK ({} ({})))",
+                    quote(engine, &index.name),
+                    seek_columns.iter().map(|c| quote(engine, c)).collect::<Vec<_>>().join(", ")
+                );
+                let mut sql = refresh.sql.clone();
                 let summary = match updated_note {
-                    // The engine's own hint is the fallback that doesn't rest on the estimate.
-                    Some(note) if engine == Engine::Mssql => format!(
-                        "{opening}{note}. Update them anyway (the SQL below), {statistics}; with that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}. If a re-scan still shows its runs reading about {} pages each, the estimate isn't the statistics' age: have the statement read {name} through {} with a table hint (`WITH (INDEX({}))`, or FORCESEEK).",
-                        index.name,
-                        format::count(self.reads),
-                        index.name,
-                        index.name
-                    ),
+                    Some(note) if engine == Engine::Mssql && !seek_columns.is_empty() => {
+                        // The brief reads a comment that offers a change in the application as one (`FixSql`).
+                        sql = sql.map(|refresh| {
+                            format!(
+                                "{refresh}\n\n-- If a re-scan still shows about {} pages a run, change the statement in the application:\n--    read {} {hint}",
+                                format::count(self.reads),
+                                qualified(engine, &self.schema, &self.table)
+                            )
+                        });
+                        format!(
+                            "{opening}{note}. Update them anyway (the SQL below), {statistics}; with that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}. If a re-scan still shows its runs reading about {} pages each, the estimate isn't the statistics' age: change the statement where the application sends it to read {name} with a table hint that seeks {} on {}: `{hint}`.",
+                            index.name,
+                            format::count(self.reads),
+                            index.name,
+                            format::list(&seek_columns.iter().map(|c| c.to_string()).collect::<Vec<_>>())
+                        )
+                    }
                     Some(note) => format!(
                         "{opening}{note}. Update them anyway (the SQL below), {statistics}; with that estimate the optimizer can find the rows by {column} instead: {} already leads with it{filtered}.",
                         index.name
@@ -1372,7 +1581,7 @@ impl LookupsForNothing<'_> {
                         index.name
                     ),
                 };
-                Fix { summary, sql: refresh.sql, cost: refresh.cost }
+                Fix { summary, sql, cost: refresh.cost }
             }
             None if keeps_few && !crate::query_is_history(snapshot, q) => {
                 let create = create_index_sql(snapshot, &self.schema, &self.table, &self.checked, &[]);
@@ -1420,17 +1629,11 @@ fn statistics_since_plan(
     table: &str,
     name: &str,
 ) -> Option<UpdatedSince> {
-    let raw = plan.raw.as_deref()?;
-    let unquote = |s: &str| s.trim_matches(['[', ']']).to_string();
-    let attr = |tag: &str, key: &str| -> Option<String> {
-        let at = tag.find(&format!(" {key}=\""))? + key.len() + 3;
-        Some(tag[at..].split('"').next()?.to_string())
-    };
-    let compiled_with = raw.split("<StatisticsInfo ").skip(1).find_map(|rest| {
-        let tag = format!(" {}", rest.split('>').next()?);
-        let same = |key: &str, want: &str| attr(&tag, key).is_some_and(|v| unquote(&v).eq_ignore_ascii_case(want));
-        (same("Statistics", name) && same("Table", table) && same("Schema", schema))
-            .then(|| attr(&tag, "LastUpdate"))?
+    let compiled_with = plan_statistics(plan).into_iter().find_map(|s| {
+        (s.name.eq_ignore_ascii_case(name)
+            && s.table.eq_ignore_ascii_case(table)
+            && s.schema.eq_ignore_ascii_case(schema))
+        .then_some(s.last_update)?
     })?;
     let stat = snapshot.statistics.iter().find(|st| {
         st.schema.eq_ignore_ascii_case(schema)
@@ -1841,7 +2044,7 @@ mod tests {
         q.rows = Some(rows * q.executions);
         q.plan = Some(plan.clone());
         let scan = plan.nodes().into_iter().find(|n| n.id == 7).expect("the scan of apps");
-        heavy_fix(snapshot, Some((&plan, scan)), None, &q, statement_kind(&q.text), false)
+        heavy_fix_and_lever(snapshot, Some((&plan, scan)), None, &q, statement_kind(&q.text), false).0
     }
 
     fn scan_fix(rows: f64) -> String {

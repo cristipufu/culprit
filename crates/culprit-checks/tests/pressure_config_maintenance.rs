@@ -79,11 +79,15 @@ fn sql_server_stale_statistics_use_its_own_threshold() {
     s.statistics = vec![stat("products", 20_000.0, 15_000.0)];
     let f = find(&analyze(s.clone()).findings, "stale-stats:shop.products").cloned().expect("past the threshold");
     assert_eq!(f.severity, Severity::Low);
-    assert!(f.caveats.iter().any(|c| c.contains("no query has used it since")), "{:?}", f.caveats);
+    // No plan the scan captured names the statistic: the next compile refreshes it, said as that, not as "no query
+    // has used it" (a cached plan reused needn't compile).
+    let next = "SQL Server refreshes a statistic this far behind when a query next compiles with it";
+    assert!(f.caveats.iter().any(|c| c.contains(next)), "{:?}", f.caveats);
+    assert!(!f.caveats.iter().any(|c| c.contains("no query has used it")), "{:?}", f.caveats);
     // With automatic updates off it stays stale for every query that reads the table.
     set(&mut s, "is_auto_update_stats_on", "0");
     let f = find(&analyze(s).findings, "stale-stats:shop.products").cloned().unwrap();
-    assert!(!f.caveats.iter().any(|c| c.contains("no query has used it since")));
+    assert!(!f.caveats.iter().any(|c| c.contains(next)));
 }
 
 // A staging SQL Server reading: "heavy queries in this workload read this table" for a table only tiny inserts and a monitoring
@@ -232,22 +236,36 @@ fn pg_stat_statements_evictions_are_graded_on_the_rounds_since_the_previous_scan
     let f = find(&r.findings, id).expect("rounds since the previous scan");
     assert_eq!(
         f.title,
-        "pg_stat_statements ran out of room 20 times since the previous scan, evicting about 5.0K entries"
+        "pg_stat_statements ran out of room 20 times since Culprit's scan on Oct 9 at 11:54 UTC, evicting about 5.0K entries"
     );
+    // The rate is the scans' (over a day or more of them), with the one since the reset beside it where the two differ
+    // twofold, and not said a second time with the lifetime count.
     assert!(
-        f.summary.contains("it ran out of room 20 more times: about 5.0K entries, about 2.5K a day."),
+        f.summary.contains(
+            "Since Culprit's scan on Oct 9 at 11:54 UTC, it ran out of room 20 more times: about 5.0K entries, about 2.5K a day (about "
+        ),
         "{}",
         f.summary
     );
+    assert!(f.summary.contains("a day since its statistics were reset)."), "{}", f.summary);
     assert!(
-        f.summary.contains("it has run out of room 15K times"),
-        "the lifetime count stays in the summary: {}",
+        f.summary.contains("it has run out of room 15K times, and each time it evicts the least-used 5% of them, 250 entries at a limit of 5000: about 3.8M entries in all."),
+        "the lifetime count stays in the summary, without its rate: {}",
         f.summary
     );
     assert_eq!(f.severity, Severity::Medium);
     assert_eq!(
-        f.metrics.iter().find(|m| m.label == "Eviction rounds since the previous scan").map(|m| m.value),
+        f.metrics
+            .iter()
+            .find(|m| m.label == "Eviction rounds since Culprit's scan on Oct 9 at 11:54 UTC")
+            .map(|m| m.value),
         Some(20.0)
+    );
+    // The room the change adds fills at the scans' rate.
+    assert!(
+        f.verify[0].contains("at about 2.5K new entries a day (the rate Culprit's scans measured it evicting them)"),
+        "{:?}",
+        f.verify
     );
     assert!(f.verify[0].contains("with none between them this finding is gone"), "{:?}", f.verify);
 
@@ -610,13 +628,18 @@ fn temp_spill_says_what_a_later_scan_shows() {
         .into_iter()
         .find(|f| f.check == "temp-spill")
         .expect("the demo's spilling sort");
+    // What to look at is the spill's total between two scans, not whether this finding (which reads the totals) is
+    // still listed.
     let verify = &f.verify[0];
     assert!(verify.starts_with("Once the application's connections use the new setting"), "{verify}");
-    assert!(verify.contains("compare its temp files with this scan's: 4.2 GB over 214 runs now"), "{verify}");
-    assert!(verify.contains("pg_stat_statements keeps totals since its last reset"), "{verify}");
+    assert!(
+        verify.ends_with(", its temp files should stop growing while its runs go on: pg_stat_statements keeps running totals, so compare its temp files and runs in a scan taken once the change is live and one a day or more later (4.2 GB over 214 runs in this scan)."),
+        "{verify}"
+    );
+    assert!(!verify.contains("finding can stay"), "{verify}");
     let f = analyze(snapshot("mysql-demo.json")).findings.into_iter().find(|f| f.check == "temp-spill").unwrap();
     assert!(
-        f.verify[0].contains("compare its on-disk temporary tables with this scan's: 20 in 20 runs now"),
+        f.verify[0].contains("compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)"),
         "{:?}",
         f.verify
     );

@@ -14,7 +14,7 @@ import { api } from "../lib/api";
 import { ago, count, duration, findingMetric, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { ABOUT_THE_PLAN, doesRealWork, estRows, findingNoShareReason, findingStepShare, hottestStep, rowsOut, rowsRead, stepShare } from "../lib/plan-format";
-import { honest } from "../lib/rates";
+import { figures, honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
 import { can } from "../lib/engines";
@@ -101,6 +101,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
               <>
                 <HotNode
                   plan={firstWithPlan.query.plan}
+                  query={firstWithPlan.query}
                   focus={firstWithPlan.ref.plan_node}
                   aboutThePlan={ABOUT_THE_PLAN.has(finding.check)}
                   weighed={can(firstWithPlan.query.plan.engine, "plan_estimates") || firstWithPlan.query.plan.kind === "actual"}
@@ -245,9 +246,13 @@ function SqlPreview({ text }: { text: string }) {
 
 function QueryCard({ report, query, node }: { report: Report; query: QueryStat; node: number | null }) {
   const w = report.snapshot.workload;
-  const share = w && w.total_time_ms > 0 ? query.total_time_ms / w.total_time_ms : null;
-  // Per day only over a long enough window; a few minutes of data stays a measured count.
+  // Share, runs and average as the report states them: over Culprit's scans where they measured it.
+  const stated = w ? figures(report, query) : null;
+  const share = w && w.total_time_ms > 0 ? stated!.share : null;
+  // Per day only over a long enough window; a few minutes of data stays a measured count, and a burst (or fewer runs
+  // than days) its count with when it ran.
   const rates = w ? honest(w) : null;
+  const ran = stated?.said ?? null;
   return (
     <div
       className="qcard"
@@ -257,18 +262,20 @@ function QueryCard({ report, query, node }: { report: Report; query: QueryStat; 
       onKeyDown={(e) => e.key === "Enter" && setState({ view: "queries", query: query.id })}
     >
       <SqlPreview text={query.text} />
-      <div className="qmeta">
+      <div className="qmeta" title={stated?.over ? `Over ${stated.over}${stated.totals ? ` (${stated.totals})` : ""}` : undefined}>
         {share != null && (
           <span>
             <b>{percent(share)}</b> of DB time
           </span>
         )}
         <span>
-          <b>{count(rates ? rates.value(query.executions) : query.executions)}</b> {rates?.perDay ? "runs/day" : "runs"}
+          <b>{count(stated ? stated.runs : query.executions)}</b>{" "}
+          {ran != null ? ran.replace(/^\S+ /, "") : (stated?.perDay ?? rates?.perDay) ? "runs/day" : "runs"}
         </span>
         <span>
-          avg <b>{duration(query.mean_time_ms)}</b>
+          avg <b>{duration(stated?.mean ?? query.mean_time_ms)}</b>
         </span>
+        {stated?.over && <span className="muted">over {stated.over}</span>}
         {query.object_name && <span className="mono">{query.object_name}</span>}
         <span className="open muted">
           {node != null ? "Open plan" : "Open query"} <ArrowUpRight size={12} />
@@ -314,7 +321,7 @@ function find(node: PlanNode, id: number): PlanNode | null {
  *  can state its share. A finding about something else (a result's size, how often a statement runs) points at no
  *  step. A plan without costs or row estimates (SQLite's) names only the step the finding points at, with what it
  *  searches by, and claims no share or estimate. */
-function HotNode({ plan, focus, weighed, aboutThePlan }: { plan: Plan; focus: number | null; weighed: boolean; aboutThePlan: boolean }) {
+function HotNode({ plan, query, focus, weighed, aboutThePlan }: { plan: Plan; query: QueryStat; focus: number | null; weighed: boolean; aboutThePlan: boolean }) {
   const named = focus != null ? find(plan.root, focus) : null;
   if (!weighed) {
     if (!named) return null;
@@ -338,7 +345,7 @@ function HotNode({ plan, focus, weighed, aboutThePlan }: { plan: Plan; focus: nu
   if (!node) return null;
   // A share only where the plan can state one, in a plan that does real work; otherwise why not.
   const share = findingStepShare(plan, node);
-  const why = share == null ? findingNoShareReason(plan, node) : null;
+  const why = share == null ? findingNoShareReason(plan, node, query) : null;
   const read = rowsRead(node);
   // Counted only by an actual plan whose engine reported it; otherwise the optimizer's estimate or the table's size.
   const counted = plan.kind === "actual" && node.rows_read != null;

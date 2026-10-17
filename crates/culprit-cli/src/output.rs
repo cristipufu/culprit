@@ -459,7 +459,8 @@ impl Out {
         };
         let mut queries: Vec<&QueryStat> = w.queries.iter().collect();
         let key = |q: &QueryStat| match by {
-            TopBy::Time => q.total_time_ms,
+            // Its share as every surface states it: over Culprit's scans where they measured it.
+            TopBy::Time => w.statement_share(q),
             TopBy::Cpu => q.cpu_time_ms.unwrap_or(0.0),
             TopBy::Reads => q.logical_reads.unwrap_or(0.0),
             TopBy::Executions => q.executions,
@@ -473,20 +474,34 @@ impl Out {
         // Under 20 hours of history, runs per day would be an extrapolation: show the runs counted, and over what.
         let short_window = w.window_hours < 20.0;
         let span = format::duration(w.window_hours * 3_600_000.0);
-        let header = if short_window {
-            format!("{} · {} · share of DB time · runs · avg", w.source, w.window_phrase())
-        } else {
-            format!("{} · {span} · share of DB time · runs/day · avg", w.source)
+        // On a source of running totals, what Culprit's scans measured of the statements they did, as every surface
+        // states it; the source's totals for the rest.
+        let scans = queries.iter().filter_map(|q| w.scans_of(q)).max_by(|a, b| a.hours.total_cmp(&b.hours));
+        let header = match &scans {
+            Some(s) => {
+                format!("{} · {} (its totals for the rest) · share of DB time · runs/day · avg", w.source, s.phrase())
+            }
+            None if short_window => format!("{} · {} · share of DB time · runs · avg", w.source, w.window_phrase()),
+            None => format!("{} · {span} · share of DB time · runs/day · avg", w.source),
         };
         println!("{}", self.paint(DIM, &header));
         for q in queries {
             let text = q.text.split_whitespace().collect::<Vec<_>>().join(" ");
             let short: String = text.chars().take(90).collect();
+            // A burst, or fewer runs than days, has no rate a day: when it ran is said after the statement.
+            let burst = w.cadence(q).is_burst();
+            let runs = match w.scans_of(q).filter(|_| !burst) {
+                Some(s) => Some(s.per_day(s.runs)),
+                None if short_window && !burst => Some(q.executions),
+                None => w.runs_per_day_of(q),
+            };
+            let ran =
+                if runs.is_none() { self.paint(DIM, &format!("  ({})", w.how_often_of(q))) } else { String::new() };
             println!(
-                "{:>5}  {:>8}  {:>9}  {}  {}",
-                format::percent(w.share(q.total_time_ms)),
-                format::count(if short_window { q.executions } else { w.per_day(q.executions) }),
-                format::duration(q.mean_time_ms),
+                "{:>5}  {:>8}  {:>9}  {}  {}{ran}",
+                format::percent(w.statement_share(q)),
+                runs.map_or_else(|| "—".to_string(), format::count),
+                format::duration(w.statement_mean_ms(q)),
                 self.paint(DIM, &format!("{:<8}", q.id)),
                 short
             );
@@ -555,15 +570,15 @@ impl Out {
         self.plan_node(plan, &plan.root, 0, own.as_ref().zip(total_time), &flagged);
         // Shares of the estimated cost: why a step shows none ("—").
         if total_time.is_none()
-            && let Some(note) = culprit_engine::export::shares_note(plan)
+            && let Some(note) = culprit_engine::export::shares_note(plan, None)
         {
             println!("{}", self.paint(DIM, &format!("   —  {note}")));
         }
-        self.plan_insights(&found, plan.weighed());
+        self.plan_insights(&found, plan);
     }
 
     /// Insights under the tree: what's wrong, how to fix it, how to check, most important first.
-    fn plan_insights(&self, found: &culprit_core::insights::PlanInsights, weighed: bool) {
+    fn plan_insights(&self, found: &culprit_core::insights::PlanInsights, plan: &Plan) {
         println!();
         if found.items.is_empty() {
             println!("{}", self.paint(BOLD, "No problems found in this plan."));
@@ -583,11 +598,11 @@ impl Out {
                     DIM,
                     &format!(
                         "· {}{} · operator {}",
-                        // A rule's own weight isn't a share of the work, and a plan without costs has none.
-                        if i.fixed_weight || !weighed {
-                            String::new()
-                        } else {
-                            format!("{} of the work · ", format::percent(i.impact))
+                        // A share of the work only where the plan states one (`insights::stated_share`): not a rule's
+                        // own weight, nor on a plan without costs, a cheap plan or a step whose cost rests on a guess.
+                        match culprit_core::insights::stated_share(plan, i) {
+                            Some(share) => format!("{} of the work · ", format::percent(share)),
+                            None => String::new(),
                         },
                         i.rule,
                         i.nodes.first().copied().unwrap_or(0)
@@ -1150,11 +1165,20 @@ fn query_json(report: &Report, q: &QueryStat) -> Value {
         "id": q.id,
         "text": q.text,
         "object_name": q.object_name,
-        "db_time_share": w.map(|w| w.share(q.total_time_ms)),
+        // Share, runs a day and average as every surface states them: over Culprit's scans where they measured it
+        // (`measured_over`), with the source's totals beside them where those differ twofold (`totals`).
+        "db_time_share": w.map(|w| w.statement_share(q)),
         // Per day only from a day's worth of history (20 hours); `runs` and `window_hours` are what was measured.
-        "runs_per_day": w.filter(|w| w.window_hours >= 20.0).map(|w| w.per_day(q.executions)),
+        // Null for a burst or fewer runs than days, said in `how_often` by when it ran.
+        "runs_per_day": w.and_then(|w| match w.scans_of(q).filter(|_| !w.cadence(q).is_burst()) {
+            Some(s) => Some(s.per_day(s.runs)),
+            None => w.runs_per_day_of(q),
+        }),
+        "how_often": w.map(|w| w.cost_of(q).runs),
         "window_hours": w.map(|w| w.window_hours),
-        "mean_time_ms": q.mean_time_ms,
+        "measured_over": w.and_then(|w| w.scans_of(q)).map(|s| s.phrase()),
+        "totals": w.and_then(|w| w.cost_of(q).totals),
+        "mean_time_ms": w.map_or(q.mean_time_ms, |w| w.statement_mean_ms(q)),
         "max_time_ms": q.max_time_ms,
         "cpu_time_ms": q.cpu_time_ms,
         "rows_per_run": q.rows_per_execution(),

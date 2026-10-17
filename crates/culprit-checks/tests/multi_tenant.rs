@@ -33,8 +33,9 @@ fn advice_about_a_query_that_stopped_running_is_marked_inactive() {
     let mut s = snapshot();
     let w = s.workload.as_mut().unwrap();
     let id = w.queries[0].id.clone();
-    // Ran every second from the start of the window, then not once in its last four hours.
+    // Ran every second from the start of the window, then not once in its last four hours: too soon to say it stopped.
     w.queries[0].last_seen = Some("2026-10-11T08:00:00Z".into());
+    let quiet = s.clone();
     s.tuning = Some(TuningAdvice {
         recommendations: vec![TuningRecommendation {
             name: "PR_1".into(),
@@ -48,6 +49,23 @@ fn advice_about_a_query_that_stopped_running_is_marked_inactive() {
         }],
         ..Default::default()
     });
+    let tuning = s.tuning.clone();
+    let report = analyze(s);
+    let f = finding(&report.findings, &format!("tuning-advice:force:{id}")).expect("tuning advice");
+    assert!(!f.inactive, "{:?}", f.caveats);
+    assert!(
+        f.caveats[0]
+            == "This query hasn't run in the last 4 h 14 min of this scan's data (since Oct 11, 08:00 UTC): too short a time to say it stopped.",
+        "{:?}",
+        f.caveats
+    );
+    // Quiet for a day of a longer window: it stopped.
+    let mut s = quiet;
+    s.tuning = tuning;
+    let w = s.workload.as_mut().unwrap();
+    w.window_hours += 48.0;
+    w.queries[0].first_seen = Some("2026-10-09T07:30:00Z".into());
+    w.queries[0].last_seen = Some("2026-10-10T08:00:00Z".into());
     let report = analyze(s);
     let f = finding(&report.findings, &format!("tuning-advice:force:{id}")).expect("tuning advice");
     assert!(f.inactive, "{:?}", f.caveats);
@@ -329,8 +347,8 @@ fn a_query_that_runs_in_bursts_is_not_taken_for_one_that_stopped() {
     };
     // Paused 2¼ hours (07:45–10:15) and came back: 1.9 hours of quiet since is its rhythm.
     assert!(!probe(&[0, 1, 11], "2026-10-11T10:20:00Z"));
-    // Ran steadily until 09:45, then nothing for 2.4 hours: stopped.
-    assert!(probe(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "2026-10-11T09:50:00Z"));
+    // Ran steadily until 09:45, then nothing for 2.4 hours: out of its rhythm, but too soon to say it stopped.
+    assert!(!probe(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "2026-10-11T09:50:00Z"));
 }
 
 #[test]

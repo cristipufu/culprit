@@ -464,7 +464,9 @@ fn escalations_with_none_since_the_previous_scan_are_low_history() {
     assert_eq!(f.queries.len(), 1);
     assert_eq!(f.impact.label, "2 table locks, none new");
     assert_eq!(f.metrics[1].value, 0.0);
-    assert!(f.fix.as_ref().unwrap().summary.starts_with("None happened since the previous scan."));
+    assert!(
+        f.fix.as_ref().unwrap().summary.starts_with("None happened since the previous scan, on Oct 11 at 06:00 UTC.")
+    );
 }
 
 #[test]
@@ -492,6 +494,33 @@ fn the_fix_starts_an_event_session_that_keeps_the_statement() {
     assert!(sql.contains("CREATE EVENT SESSION culprit_lock_escalation ON SERVER"), "{sql}");
     assert!(sql.contains("WHERE sqlserver.database_name = N'culprit_demo')"), "{sql}");
     assert!(sql.contains("FROM sys.dm_xe_session_targets t"), "{sql}");
+    // CX-12: every table's finding starts this one session, so its SQL creates it only where it isn't defined, starts
+    // it only where it isn't running, and says how to stop it.
+    assert!(
+        sql.contains(
+            "IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')\n    \
+             CREATE EVENT SESSION culprit_lock_escalation ON SERVER\n"
+        ),
+        "{sql}"
+    );
+    assert!(
+        sql.contains(
+            "IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')\n    \
+             ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;"
+        ),
+        "{sql}"
+    );
+    assert!(
+        sql.ends_with(
+            "-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON \
+             SERVER;"
+        ),
+        "{sql}"
+    );
+    let other = escalations_on("customers", escalating(2.0, 0.0, 0.0), IndexContention::default());
+    let again = lock_escalations(&other)[0].fix.clone().unwrap().sql.unwrap();
+    let start = |sql: &str| sql[..sql.find("-- Then read").unwrap()].to_string();
+    assert_eq!(start(&sql), start(&again), "one session, defined one way for every table");
     let mut azure = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
     azure.server.cloud = Some("Azure SQL Database".into());
     let sql = lock_escalations(&azure)[0].fix.clone().unwrap().sql.unwrap();
@@ -655,6 +684,8 @@ fn load_ticket(s: &mut Snapshot, runs: f64) -> String {
     q.executions = runs;
     q.rows = Some(runs);
     q.logical_reads = Some(280.0 * runs);
+    // Runs over the whole day, not the fixture's four hours, which in a day would be a burst.
+    (q.first_seen, q.last_seen) = (None, None);
     q.id.clone()
 }
 
@@ -738,7 +769,7 @@ fn large_rows_say_how_fast_they_grow_since_the_previous_scan() {
     // Read whole thousands of times a day and growing by a fifth of its size a day.
     assert_eq!(f.severity, Severity::High);
     assert!(
-        f.summary.contains("It grew by 600 MB since the previous scan on Oct 12 at 09:00 UTC, about 600 MB a day."),
+        f.summary.contains("It grew by 600 MB since the scan on Oct 12 at 09:00 UTC, about 600 MB a day."),
         "{}",
         f.summary
     );
@@ -747,13 +778,17 @@ fn large_rows_say_how_fast_they_grow_since_the_previous_scan() {
     // Six hours apart: the growth, without a daily rate drawn from a quarter of a day.
     s.sizes_before.as_mut().unwrap().taken_at = "2026-10-13T03:00:00Z".into();
     let f = large_rows_of(&s).unwrap();
-    assert!(f.summary.contains("It grew by 600 MB in the 6 hours since the previous scan"), "{}", f.summary);
+    assert!(
+        f.summary.contains("It grew by 600 MB in the 6 hours since the scan on Oct 13 at 03:00 UTC"),
+        "{}",
+        f.summary
+    );
     assert!(!f.metrics.iter().any(|m| m.label == "Growth a day"));
 
     // Not grown.
     s.sizes_before.as_mut().unwrap().tables.insert("shop.support_tickets".into(), 2_931.0 * MB);
     let f = large_rows_of(&s).unwrap();
-    assert!(f.summary.contains("It hasn't grown since the previous scan"), "{}", f.summary);
+    assert!(f.summary.contains("It hasn't grown since the scan on"), "{}", f.summary);
     assert_eq!(f.severity, Severity::Medium);
 
     // The false flag: an earlier scan that measured only the in-row part (PostgreSQL's catalog sizes when the exact

@@ -9,24 +9,37 @@
 
 use std::collections::HashMap;
 
-use culprit_core::{NodeKind, Plan, PlanNode};
+use culprit_core::{IndexStat, NodeKind, Plan, PlanNode, TableStat};
 use tokio_postgres::Client;
 
 use crate::rows::tagged;
 
 const SIZES_SQL: &str =
     "SELECT n.nspname || '.' || c.relname AS qualified, c.relname AS name, c.reltuples::float8 AS rows,
-       c.relispartition AS partition
+       c.relispartition AS partition, c.relpages::float8 AS pages,
+       ARRAY(SELECT DISTINCT a.attname::text FROM pg_index x
+               JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = ANY(x.indkey)
+              WHERE x.indrelid = c.oid) AS indexed
   FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE c.relkind IN ('r', 'm', 'p')
    AND ((n.nspname || '.' || c.relname) = ANY($1) OR (c.relname = ANY($1) AND pg_table_is_visible(c.oid)))";
 
 /// What the catalog says about a scanned table.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Size {
-    rows: f64,
+    /// The planner's count of its rows; `None` where the catalog hasn't counted them.
+    rows: Option<f64>,
     /// A partition of a partitioned table.
     partition: bool,
+    /// The columns its indexes have in their keys; `None` where that isn't known.
+    indexed: Option<Vec<String>>,
+}
+
+/// The planner's count of a table's rows from the catalog: `reltuples`, unknown when it is -1 (never analyzed) or when
+/// it is 0 with no pages counted either (never vacuumed or analyzed: the planner then estimates from the file's size,
+/// and a catalog table it reads that way shows 0 rows where it expects hundreds).
+fn counted_rows(reltuples: f64, relpages: Option<f64>) -> Option<f64> {
+    (reltuples > 0.0 || (reltuples == 0.0 && relpages.is_some_and(|p| p > 0.0))).then_some(reltuples)
 }
 
 /// Fill `table_rows` on the plan's scans, and `rows_read` on sequential scans an estimated plan left without one.
@@ -53,34 +66,71 @@ pub async fn fill(client: &Client, plan: &mut Plan) {
             continue;
         };
         let partition = row.try_get::<_, bool>(3).unwrap_or(false);
-        // -1 means never analyzed: no estimate to give.
-        if count >= 0.0 {
-            let size = Size { rows: count, partition };
-            sizes.insert(qualified, size);
-            sizes.entry(name).or_insert(size);
-        }
+        let pages = row.try_get::<_, f64>(4).ok();
+        let indexed = row.try_get::<_, Vec<String>>(5).ok();
+        let size = Size { rows: counted_rows(count, pages), partition, indexed };
+        sizes.entry(name).or_insert_with(|| size.clone());
+        sizes.insert(qualified, size);
     }
     apply(&mut plan.root, &sizes, false);
 }
 
 /// The sizes a plan carries from its scan (`table_rows`, and which scans were marked as partitions a run may prune),
 /// put back on the same plan read again by a newer parser ([`crate::plan_json::reparse`]): what [`fill`] looked up
-/// then, worked out again without a connection.
-pub(crate) fn refill(plan: &mut Plan, saved: &Plan) {
+/// then, worked out again without a connection. A table the saved plan carries no size for (scans saved before the
+/// collector looked them up) takes it from the scan's own catalog, `tables`, and every table its indexes, `indexes`, so
+/// the plan reads as one a scan takes now.
+pub(crate) fn refill(plan: &mut Plan, saved: &Plan, tables: &[TableStat], indexes: &[IndexStat]) {
     let mut sizes: HashMap<String, Size> = HashMap::new();
     for n in saved.nodes() {
-        if let (Some(object), Some(rows)) = (n.object.as_ref(), n.table_rows) {
+        // A count of 0 where the planner expects rows is one the catalog never made (`counted_rows`): unknown, not 0.
+        let counted = n.table_rows.filter(|rows| *rows > 0.0 || n.est_rows <= 1.0);
+        if let (Some(object), Some(rows)) = (n.object.as_ref(), counted) {
             let partition = n.props.contains_key(culprit_core::NOT_READ_IN_FULL);
-            let size = sizes.entry(object.clone()).or_insert(Size { rows, partition });
+            let size = sizes.entry(object.clone()).or_insert(Size { rows: Some(rows), partition, indexed: None });
             size.partition |= partition;
         }
+    }
+    for n in plan.nodes() {
+        let Some(object) = n.object.as_ref() else { continue };
+        let (schema, name) = object.rsplit_once('.').unwrap_or(("", object));
+        let table = tables.iter().find(|t| t.name == name && (schema.is_empty() || t.schema == schema));
+        let Some(table) = table else { continue };
+        let indexed: Vec<String> = indexes
+            .iter()
+            .filter(|i| i.schema == table.schema && i.table == table.name)
+            .flat_map(|i| i.columns.iter().cloned())
+            .collect();
+        let size = sizes.entry(object.clone()).or_insert(Size { rows: table.rows, partition: false, indexed: None });
+        size.rows = size.rows.or(table.rows);
+        size.indexed = Some(indexed);
     }
     apply(&mut plan.root, &sizes, false);
 }
 
+/// Whether one of the table's indexes has a column that a condition planned on the guess names in its key: only then
+/// may a real value for its parameter let the planner read through an index instead. A condition the planner estimated
+/// from statistics (`(id % $1) = $2`) says nothing of it. False where the table's indexes aren't known.
+fn index_may_serve(filter: &str, indexed: Option<&[String]>) -> bool {
+    let Some(indexed) = indexed else { return false };
+    let mut words = Vec::new();
+    for condition in filter.split(" AND ").filter(|c| guessed_selectivity(c)) {
+        let mut word = String::new();
+        for c in condition.chars().chain(std::iter::once(' ')) {
+            if c.is_alphanumeric() || c == '_' {
+                word.push(c);
+            } else if !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+        }
+    }
+    words.iter().any(|w| indexed.iter().any(|col| col.trim_matches('"').eq_ignore_ascii_case(w)))
+}
+
 /// Said on a partition's scan under an Append in a generic plan, instead of rows read.
 const UNPRUNED: &str = "Listed because the plan has no parameter values: partitions are pruned only when it runs, so this one may never be read.";
-/// Said on a scan whose filter compares a column with a parameter by a range, a pattern or ANY, instead of rows read.
+/// Said on a scan whose filter compares a column with a parameter by a range, a pattern or ANY, instead of rows read,
+/// where an index of its table has a column the filter names.
 const GUESSED: &str = "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): with a real value the planner may well use an index instead.";
 /// Said on any other step whose condition compares a column with a parameter that way.
 const GUESSED_STEP: &str = "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.";
@@ -89,8 +139,10 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
     // Rows a run measured aren't a guess, whatever the plan was planned with.
     let guessed = node.act_rows.is_none()
         && [node.predicate.as_deref(), node.seek_predicate.as_deref()].into_iter().flatten().any(guessed_selectivity);
-    if let Some(size) = node.object.as_ref().and_then(|o| sizes.get(o)).copied() {
-        node.table_rows = Some(size.rows);
+    if let Some(size) = node.object.as_ref().and_then(|o| sizes.get(o)) {
+        if size.rows.is_some() {
+            node.table_rows = size.rows;
+        }
         if node.kind == NodeKind::Scan
             && node.op.contains("Seq Scan")
             && node.rows_read.is_none()
@@ -99,10 +151,13 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
             if under_append && size.partition {
                 node.props.insert(culprit_core::NOT_READ_IN_FULL.into(), UNPRUNED.into());
             } else if guessed {
-                node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), GUESSED.into());
-            } else {
+                // A note never promises an index the table doesn't have.
+                let filter = node.predicate.as_deref().unwrap_or_default();
+                let text = if index_may_serve(filter, size.indexed.as_deref()) { GUESSED } else { GUESSED_STEP };
+                node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), text.into());
+            } else if let Some(rows) = size.rows {
                 // A total over its runs: a scan on a nested loop's inner side reads the table once per outer row.
-                node.rows_read = Some(size.rows * node.runs());
+                node.rows_read = Some(rows * node.runs());
             }
         }
     }
@@ -228,7 +283,9 @@ mod tests {
     fn sizes(entries: &[(&str, f64, bool)]) -> HashMap<String, Size> {
         entries
             .iter()
-            .map(|(n, rows, partition)| (n.to_string(), Size { rows: *rows, partition: *partition }))
+            .map(|(n, rows, partition)| {
+                (n.to_string(), Size { rows: Some(*rows), partition: *partition, indexed: None })
+            })
             .collect()
     }
 
@@ -360,9 +417,84 @@ mod tests {
             "Plan Rows": 5, "Total Cost": 4500.0, "Filter": "(customer_id = $1)"}}]"#;
         let mut saved = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
         apply(&mut saved.root, &sizes(&[("public.orders", 2_000_000.0, false)]), false);
-        let again = crate::plan_json::reparse(&saved, None).unwrap();
+        let again = crate::plan_json::reparse(&saved, None, &[], &[]).unwrap();
         assert_eq!(again.root.table_rows, Some(2_000_000.0));
         assert_eq!(again.root.rows_read, Some(2_000_000.0));
+    }
+
+    fn table(schema: &str, name: &str, rows: f64) -> TableStat {
+        serde_json::from_value(
+            serde_json::json!({"schema": schema, "name": name, "rows": rows, "has_primary_key": true}),
+        )
+        .unwrap()
+    }
+
+    fn index(schema: &str, table: &str, name: &str, columns: &[&str]) -> IndexStat {
+        serde_json::from_value(serde_json::json!({
+            "schema": schema, "table": table, "name": name, "kind": "btree", "columns": columns, "include": [],
+            "is_unique": false, "is_primary_key": false, "is_clustered": false, "is_disabled": false
+        }))
+        .unwrap()
+    }
+
+    // The demo's saved scans kept plans without table sizes: read again, a plan takes them from the scan's own catalog,
+    // so a scan that reads 2M rows to keep 12 reads as one (and its plan's insight says so).
+    #[test]
+    fn a_saved_plan_without_sizes_takes_them_from_the_catalog() {
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
+            "Plan Rows": 12, "Total Cost": 45000.0, "Filter": "(customer_id = $1)"}}]"#;
+        let saved = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        assert_eq!(saved.root.table_rows, None);
+        let again = crate::plan_json::reparse(&saved, None, &[table("public", "orders", 2_000_000.0)], &[]).unwrap();
+        assert_eq!(again.root.table_rows, Some(2_000_000.0));
+        assert_eq!(again.root.rows_read, Some(2_000_000.0));
+        let rules: Vec<String> = culprit_core::insights::insights(&again).into_iter().map(|i| i.rule).collect();
+        assert!(rules.contains(&"scan-filter".to_string()), "{rules:?}");
+    }
+
+    // A guessed scan's note promises an index only where one of the table's indexes has a column the filter names.
+    #[test]
+    fn a_guess_note_never_promises_an_index_the_table_lacks() {
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
+            "Plan Rows": 10000, "Total Cost": 45000.0, "Filter": "((o.note)::text ~~ $1)"}}]"#;
+        let saved = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        let tables = [table("public", "orders", 2_000_000.0)];
+        let note = |indexes: &[IndexStat]| {
+            let plan = crate::plan_json::reparse(&saved, None, &tables, indexes).unwrap();
+            plan.root.props[culprit_core::GUESSED_SELECTIVITY].clone()
+        };
+        let none = note(&[index("public", "orders", "orders_status_created_idx", &["status", "created_at"])]);
+        assert!(!none.contains("use an index"), "{none}");
+        assert!(none.contains("rest on that guess"), "{none}");
+        let some = note(&[index("public", "orders", "orders_note_idx", &["note"])]);
+        assert!(some.contains("may well use an index"), "{some}");
+        // Only the conditions planned on the guess count: the primary key on id serves none of these ranges.
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "orders", "Schema": "public",
+            "Plan Rows": 1111, "Total Cost": 45000.0,
+            "Filter": "((o.total >= $3) AND (o.customer_id > $4) AND ((o.id % $1) = $2))"}}]"#;
+        let saved = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        let plan =
+            crate::plan_json::reparse(&saved, None, &tables, &[index("public", "orders", "orders_pkey", &["id"])])
+                .unwrap();
+        let text = &plan.root.props[culprit_core::GUESSED_SELECTIVITY];
+        assert!(!text.contains("use an index"), "{text}");
+    }
+
+    // reltuples 0 with no pages counted isn't a count: the planner reads the file's size instead (a catalog table it
+    // expects 232 rows of). A saved plan's 0 where the planner expects rows is unknown too.
+    #[test]
+    fn a_zero_the_catalog_never_counted_is_unknown() {
+        assert_eq!(counted_rows(0.0, Some(0.0)), None);
+        assert_eq!(counted_rows(-1.0, Some(10.0)), None);
+        assert_eq!(counted_rows(0.0, Some(3.0)), Some(0.0));
+        assert_eq!(counted_rows(4580.0, Some(60.0)), Some(4580.0));
+        let json = r#"[{"Plan": {"Node Type": "Seq Scan", "Relation Name": "pg_attrdef", "Schema": "pg_catalog",
+            "Plan Rows": 232, "Total Cost": 47.0}}]"#;
+        let mut saved = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
+        saved.root.table_rows = Some(0.0);
+        saved.root.rows_read = Some(0.0);
+        let again = crate::plan_json::reparse(&saved, None, &[], &[]).unwrap();
+        assert_eq!((again.root.table_rows, again.root.rows_read), (None, None));
     }
 
     // A sort above a scan planned on a guess sorts the guess's rows: the plan can't say how many it will sort, and

@@ -46,25 +46,34 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
             let timeout = costs.aborted_mean_ms.and_then(looks_like_timeout).filter(|_| aborted >= failed);
             let how_often =
                 if rate >= 0.999 { "on every run".to_string() } else { format!("{} of the time", format::percent(rate)) };
+            // A statement that stopped running is told in the past.
+            let stopped = crate::all_stopped(snapshot, &[q]);
+            let tense = |present: &'static str, past: &'static str| if stopped { past } else { present };
             f.title = match (aborted > 0.0, failed > 0.0) {
-                (true, true) => format!("{} fails or times out {how_often}", capitalize(&handle)),
+                (true, true) => format!(
+                    "{} {} {how_often}",
+                    capitalize(&handle),
+                    tense("fails or times out", "failed or timed out")
+                ),
                 (true, false) => match timeout {
-                    Some(s) => format!("{} times out {how_often}, at about {s:.0} s", capitalize(&handle)),
-                    None => format!("{} is cancelled {how_often}", capitalize(&handle)),
+                    Some(s) => {
+                        format!("{} {} {how_often}, at about {s:.0} s", capitalize(&handle), tense("times out", "timed out"))
+                    }
+                    None => format!("{} {} cancelled {how_often}", capitalize(&handle), tense("is", "was")),
                 },
                 _ => match &costs.top_error {
-                    Some(e) => format!("{} fails {how_often} ({e})", capitalize(&handle)),
-                    None => format!("{} fails {how_often}", capitalize(&handle)),
+                    Some(e) => format!("{} {} {how_often} ({e})", capitalize(&handle), tense("fails", "failed")),
+                    None => format!("{} {} {how_often}", capitalize(&handle), tense("fails", "failed")),
                 },
             };
             let mut parts = vec![if unfinished >= q.executions {
-                format!("None of its {} runs {} finished.", format::count(q.executions), window_phrase(snapshot))
+                format!("None of its {} runs {} finished.", format::count(q.executions), ran_phrase(snapshot, q))
             } else {
                 format!(
                     "{} of its {} runs {} didn't finish.",
                     format::count(unfinished),
                     format::count(q.executions),
-                    window_phrase(snapshot)
+                    ran_phrase(snapshot, q)
                 )
             }];
             if aborted > 0.0 {
@@ -89,7 +98,7 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
             let recent = mssql || costs.top_error.is_some();
             // High needs it to keep happening, not one incident: ten unfinished runs a day (one blocking episode that
             // timed out five runs of a week's forty is a tenth of them, and Medium).
-            let often = window_at_least(snapshot, unfinished, 10.0);
+            let often = window_at_least(snapshot, q, unfinished, 10.0);
             f.severity = if !recent {
                 Severity::Low
             } else if rate >= 0.10 && often {
@@ -117,7 +126,12 @@ pub fn failing_query(snapshot: &Snapshot) -> Vec<Finding> {
                 f.metrics.push(Metric::text("Recent error", e.clone()));
             }
             f.fix = Some(failing_fix(snapshot, q, costs, timeout, aborted > failed));
-            f.verify = vec!["Re-scan after the change: runs that fail or are cancelled should drop to near zero.".into()];
+            // On running totals the failures hold every run from before the change: two scans show it.
+            let now = format!("{} of {} runs", format::count(unfinished), format::count(q.executions));
+            f.verify = vec![match crate::queries::verify_counts_between_scans(snapshot, "failed runs and runs", &now) {
+                Some(compare) => format!("Between two scans, runs that fail or are cancelled should drop to near zero: {compare}."),
+                None => "Re-scan after the change: runs that fail or are cancelled should drop to near zero.".into(),
+            }];
             if !recent {
                 f.caveats.push(format!(
                     "{} counts errors per statement from when it first saw the statement, with no time for each, and none of its runs in the recent statement history performance_schema keeps failed: these failures may be old. Culprit raises it once a recent run fails too.",
@@ -155,21 +169,36 @@ pub(super) fn failing_fix(
         },
         Engine::Mssql => {
             let azure = snapshot.server.on(culprit_core::Platform::AzureSqlDatabase);
-            let scope = if azure { "DATABASE" } else { "SERVER" };
+            // One session catches every failing statement's errors: each finding's fix starts the same one, once.
+            let start = super::event_session_sql(
+                "culprit_errors",
+                azure,
+                &format!(
+                    "ADD EVENT sqlserver.error_reported (\n  ACTION (sqlserver.client_app_name, sqlserver.sql_text)\n  WHERE severity >= 11 AND sqlserver.database_name = N'{}')\nADD TARGET package0.ring_buffer",
+                    snapshot.server.database.replace('\'', "''")
+                ),
+            );
             Fix {
                 summary: "Query Store counts the errors but doesn't keep them. Capture them for a while with an Extended Events session on error_reported for this database, read the ring buffer, then drop the session.".into(),
                 sql: Some(format!(
-                    "-- Capture errors raised in this database; drop the session when you're done\nCREATE EVENT SESSION culprit_errors ON {scope}\nADD EVENT sqlserver.error_reported (\n  ACTION (sqlserver.client_app_name, sqlserver.sql_text)\n  WHERE severity >= 11 AND sqlserver.database_name = N'{}')\nADD TARGET package0.ring_buffer;\nALTER EVENT SESSION culprit_errors ON {scope} STATE = START;\n-- Later: DROP EVENT SESSION culprit_errors ON {scope};",
-                    snapshot.server.database.replace('\'', "''")
+                    "-- Capture errors raised in this database (one session for every failing statement: once is enough)\n{start}\n{}",
+                    super::event_session_drop("culprit_errors", azure)
                 )),
                 cost: None,
             }
         }
         _ => {
+            // The holder is found the way every check that names a lock wait finds it: Live only for timeouts that come
+            // often enough to catch one.
+            let holder = (code == "1205").then(|| find_lock_holder(snapshot, q, costs.failed.filter(|n| *n > 0.0)));
+            let lock_wait = holder.as_ref().map(|h| {
+                format!(
+                    "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout. {} Keep transactions short.",
+                    h.lead
+                )
+            });
             let advice = match code {
-                "1205" => {
-                    "Another transaction holds the rows it needs for longer than innodb_lock_wait_timeout: find the holder in Live while it happens and keep transactions short."
-                }
+                "1205" => lock_wait.as_deref().unwrap_or_default(),
                 "1213" => "It loses deadlocks: see Deadlocks for the other statement and the order to take locks in.",
                 "3024" | "1969" => {
                     "It hits the statement time limit: make it faster (open its plan), or raise the limit for this statement only."
@@ -179,14 +208,20 @@ pub(super) fn failing_fix(
                     "Read the recent errors with the statement below, then fix the cause in the application or the statement."
                 }
             };
+            let errors = q.query_hash.as_ref().map(|digest| {
+                format!(
+                    "SELECT MYSQL_ERRNO, RETURNED_SQLSTATE, MESSAGE_TEXT\n  FROM performance_schema.events_statements_history\n WHERE DIGEST = '{}' AND MYSQL_ERRNO <> 0;",
+                    digest.replace('\'', "")
+                )
+            });
+            // The settings that log the next lock waits, where they are too rare to catch, after the read.
+            let logging = holder.and_then(|h| h.sql);
             Fix {
                 summary: format!("{advice} The recent errors and their messages are in performance_schema."),
-                sql: q.query_hash.as_ref().map(|digest| {
-                    format!(
-                        "SELECT MYSQL_ERRNO, RETURNED_SQLSTATE, MESSAGE_TEXT\n  FROM performance_schema.events_statements_history\n WHERE DIGEST = '{}' AND MYSQL_ERRNO <> 0;",
-                        digest.replace('\'', "")
-                    )
-                }),
+                sql: match (errors, logging) {
+                    (Some(errors), Some(logging)) => Some(format!("{errors}\n\n{logging}")),
+                    (errors, logging) => errors.or(logging),
+                },
                 cost: None,
             }
         }

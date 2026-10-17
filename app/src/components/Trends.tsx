@@ -17,7 +17,7 @@ function bucketsOf(t: Timeline, windowStart?: string | null): Bucket[] {
   const start = windowStart ? Date.parse(windowStart) : NaN;
   return t.starts.map((s, i) => {
     const next = t.starts[i + 1];
-    const b: Bucket = { start: Date.parse(s), end: next ? Date.parse(next) : end };
+    const b: Bucket = { start: Date.parse(s), end: next ? Date.parse(next) : end, unknown: t.unknown?.[i] === true };
     // The window can begin inside the first bucket: that bucket only holds part of its time.
     if (i === 0 && Number.isFinite(start) && start > b.start && start < b.end) b.covered = (b.end - start) / (b.end - b.start);
     return b;
@@ -85,8 +85,11 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
     return (rate[0] ?? 0) < median * 0.35 ? [{ ...b[0], partial: true }, ...b.slice(1)] : b;
   }, [b, rate]);
   if (buckets.length < 2) return null;
-  const max = Math.max(...rate, 1e-9);
-  const peakIndex = rate.indexOf(max);
+  // A bucket the source can't account for in full is no measurement: never the scale's top or the peak.
+  const known = rate.map((r, i) => (buckets[i]?.unknown ? null : r));
+  const max = Math.max(...known.map((r) => r ?? 0), 1e-9);
+  const peakIndex = known.indexOf(max);
+  const shown = (i: number) => Math.min(rate[i] ?? 0, max);
   return (
     <div className="trend">
       <div className="trend-head">
@@ -108,7 +111,7 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
         max={max}
         format={(v) => duration(v)}
         height={92}
-        peak={{ index: peakIndex, value: max }}
+        peak={peakIndex >= 0 ? { index: peakIndex, value: max } : null}
         flags={flags}
         events={events}
         onSelect={onSelect}
@@ -121,33 +124,54 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
               ? "From the slow query log: statements faster than long_query_time aren't in it."
               : undefined
         }
-        readout={(i) => (
-          <>
-            <b>{duration(rate[i] ?? 0)}</b> per {unit.label}
-            <span className="muted">
-              {" "}
-              · {count(timeline.executions[i] ?? 0)} runs{buckets[i] && isPartial(buckets[i]!) ? " · partial" : ""}
-            </span>
-          </>
-        )}
+        readout={(i) =>
+          buckets[i]?.unknown ? (
+            <>
+              <b>not known in full</b>
+              <span className="muted"> · entries left the source between these scans and took their totals with them</span>
+            </>
+          ) : (
+            <>
+              <b>{duration(rate[i] ?? 0)}</b> per {unit.label}
+              <span className="muted">
+                {" "}
+                · {count(timeline.executions[i] ?? 0)} runs{buckets[i] && isPartial(buckets[i]!) ? " · partial" : ""}
+              </span>
+            </>
+          )
+        }
       >
         {({ x, y }) => {
-          // Partial edge buckets are drawn dashed and left out of the area, so they don't read as a cliff.
-          const edge = (i: number) => isPartial(buckets[i]!) && (i === 0 || i === buckets.length - 1);
-          const solid = buckets.map((bucket, i) => ({ bucket, i })).filter(({ i }) => !edge(i));
-          let line = "";
-          solid.forEach(({ bucket, i }, n) => {
-            const v = y(rate[i] ?? 0);
-            line += `${n === 0 ? "M" : "L"}${x(bucket.start)},${v}L${x(bucket.end)},${v}`;
+          // Partial edge buckets and buckets not known in full are drawn dashed and left out of the area, so they
+          // don't read as a cliff or a peak; one not known in full is drawn no higher than the chart's top.
+          const dashed = (i: number) => buckets[i]!.unknown === true || (isPartial(buckets[i]!) && (i === 0 || i === buckets.length - 1));
+          // Each stretch of solid buckets is its own line and area: nothing is drawn across a bucket not known in full.
+          const stretches: { bucket: Bucket; i: number }[][] = [];
+          buckets.forEach((bucket, i) => {
+            if (dashed(i)) stretches.push([]);
+            else (stretches[stretches.length - 1] ?? stretches[stretches.push([]) - 1]!).push({ bucket, i });
           });
-          const first = solid[0]?.bucket ?? buckets[0]!;
-          const last = solid[solid.length - 1]?.bucket ?? buckets[buckets.length - 1]!;
           return (
             <>
-              <path className="trend-area" d={`${line}L${x(last.end)},${VH}L${x(first.start)},${VH}Z`} />
-              <path className="trend-line" d={line} />
+              {stretches
+                .filter((s) => s.length > 0)
+                .map((s) => {
+                  let line = "";
+                  s.forEach(({ bucket, i }, n) => {
+                    const v = y(shown(i));
+                    line += `${n === 0 ? "M" : "L"}${x(bucket.start)},${v}L${x(bucket.end)},${v}`;
+                  });
+                  const first = s[0]!.bucket;
+                  const last = s[s.length - 1]!.bucket;
+                  return (
+                    <g key={first.start}>
+                      <path className="trend-area" d={`${line}L${x(last.end)},${VH}L${x(first.start)},${VH}Z`} />
+                      <path className="trend-line" d={line} />
+                    </g>
+                  );
+                })}
               {buckets.map((bucket, i) =>
-                edge(i) ? <path key={bucket.start} className="trend-line partial" d={`M${x(bucket.start)},${y(rate[i] ?? 0)}L${x(bucket.end)},${y(rate[i] ?? 0)}`} /> : null,
+                dashed(i) ? <path key={bucket.start} className="trend-line partial" d={`M${x(bucket.start)},${y(shown(i))}L${x(bucket.end)},${y(shown(i))}`} /> : null,
               )}
             </>
           );
@@ -157,14 +181,24 @@ export function WorkloadTrend({ timeline, windowStart, flags, onSelect, selectio
   );
 }
 
+/** What a statement ran in bucket `i`, `[time ms, runs]`, where the bucket accounts for it: null where it wasn't
+ * tracked, in a bucket the source can't account for in full, and where it ran more than the whole database did (a
+ * counter misread, not a run). Mirrors culprit_core::model::Timeline::statement_bucket. */
+export function statementBucket(t: Timeline, q: QueryStat, i: number): [number, number] | null {
+  const time = q.trend?.time_ms[i];
+  const runs = q.trend?.executions[i];
+  const allTime = t.time_ms[i];
+  const allRuns = t.executions[i];
+  if (time == null || runs == null || allTime == null || allRuns == null || t.unknown?.[i] === true) return null;
+  return time <= allTime + 0.5 && runs <= allRuns + 0.5 ? [time, runs] : null;
+}
+
 /** Average duration per run, bucket by bucket; gaps where the query didn't run or the source can't tell. */
-function meanPoints(q: QueryStat, b: Bucket[]): (number | null)[] {
-  const t = q.trend;
-  if (!t) return [];
+function meanPoints(q: QueryStat, t: Timeline, b: Bucket[]): (number | null)[] {
+  if (!q.trend) return [];
   return b.map((_, i) => {
-    const time = t.time_ms[i];
-    const runs = t.executions[i];
-    return time != null && runs != null && runs > 0 ? time / runs : null;
+    const known = statementBucket(t, q, i);
+    return known && known[1] > 0 ? known[0] / known[1] : null;
   });
 }
 
@@ -187,7 +221,7 @@ function linePath(points: (number | null)[], b: Bucket[], x: (t: number) => numb
 /** A tiny line of the query's average duration over the window, for the Queries table. */
 export function Sparkline({ query, timeline, alert }: { query: QueryStat; timeline: Timeline | null | undefined; alert?: boolean }) {
   const b = useMemo(() => (timeline ? bucketsOf(timeline) : []), [timeline]);
-  const points = useMemo(() => meanPoints(query, b), [query, b]);
+  const points = useMemo(() => (timeline ? meanPoints(query, timeline, b) : []), [query, timeline, b]);
   const known = points.filter((p): p is number => p != null);
   // Two points draw as a stray tick, not a trend: show a trend from three readings.
   if (known.length < 3) return <span className="spark-empty">—</span>;
@@ -206,10 +240,11 @@ export function Sparkline({ query, timeline, alert }: { query: QueryStat; timeli
 /** The query's time per run and how often it ran, on one time axis, with a flag where each plan first ran. */
 export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; timeline: Timeline; onSince?: (at: number) => void }) {
   const b = useMemo(() => bucketsOf(timeline), [timeline]);
-  const points = useMemo(() => meanPoints(query, b), [query, b]);
+  const points = useMemo(() => meanPoints(query, timeline, b), [query, timeline, b]);
   const known = points.filter((p): p is number => p != null);
   if (b.length < 2 || known.length < 2) return null;
-  const runs = b.map((_, i) => query.trend?.executions[i] ?? null);
+  // Runs only where the bucket accounts for them: never one the source can't account for, so never a false peak.
+  const runs = b.map((_, i) => statementBucket(timeline, query, i)?.[1] ?? null);
   const maxMean = Math.max(...known);
   const maxRuns = Math.max(...runs.map((r) => r ?? 0), 1e-9);
   const ordered = [...query.plans].sort((a, c) => (a.first_seen ?? "").localeCompare(c.first_seen ?? ""));
@@ -255,7 +290,7 @@ export function QueryTrend({ query, timeline, onSince }: { query: QueryStat; tim
           readout={(i) => (
             <>
               <b>{points[i] != null ? duration(points[i]!) : "—"}</b> per run
-              <span className="muted"> · {runs[i] != null ? `${count(runs[i]!)} runs` : "not tracked"}</span>
+              <span className="muted"> · {runs[i] != null ? `${count(runs[i]!)} runs` : b[i]?.unknown ? "not known in full" : "not tracked"}</span>
             </>
           )}
         >

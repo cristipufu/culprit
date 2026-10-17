@@ -9,9 +9,13 @@ fn snapshot() -> Snapshot {
     let text = std::fs::read_to_string(format!("{}/../../fixtures/mysql-demo.json", env!("CARGO_MANIFEST_DIR")))
         .expect("fixture");
     let mut s: Snapshot = serde_json::from_str(&text).expect("snapshot");
-    // Two hours of statement history: enough for a rate.
+    // Two hours of statement history: enough for a rate. The statements run over all of it, not the fixture's two
+    // minutes, which in two hours would be a burst.
     let workload = s.workload.as_mut().expect("workload");
     workload.window_hours = 2.0;
+    for q in &mut workload.queries {
+        (q.first_seen, q.last_seen) = (None, None);
+    }
     s
 }
 
@@ -81,15 +85,52 @@ fn a_read_in_a_loop_costs_round_trips_and_is_verified_over_the_window_it_was_cou
     let id = q.id.clone();
     workload.total_executions = workload.queries.iter().map(|q| q.executions).sum();
     let f = analyze(s).findings.into_iter().find(|f| f.id == format!("chatty-query:{id}")).expect("a chatty read");
-    assert!(f.title.ends_with("runs 30K times in 2 minutes, one row at a time"), "{}", f.title);
+    assert!(f.title.ends_with("runs 30K times in 2 minutes, one key at a time"), "{}", f.title);
+    assert!(f.summary.starts_with("Its runs are "), "{}", f.summary);
+    assert!(f.summary.contains(" of all statement runs, and each run returns about 1 row."), "{}", f.summary);
     assert!(f.summary.contains("a network round trip.") && !f.summary.contains("connection"), "{}", f.summary);
     // performance_schema keeps running totals: the count a later scan reads still holds every run from before.
     let verify = f.verify.join(" ");
     assert_eq!(
         verify,
-        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
     );
     assert!(!verify.contains("per day"), "{verify}");
+}
+
+// The MySQL demo's fresh reading: "runs 4K times in 6 seconds, one row at a time" for runs that return about 1.6 rows
+// each, and "8% of every statement the database executes" for a share of the statements' runs.
+#[test]
+fn a_chatty_title_says_one_key_a_call_and_the_rows_each_run_handles() {
+    let mut s = snapshot();
+    let workload = s.workload.as_mut().expect("workload");
+    let q = &mut workload.queries[0];
+    q.text = "SELECT `id`, `total` FROM `shop`.`orders` WHERE `customer_id` = ?".into();
+    (q.executions, q.total_time_ms, q.mean_time_ms) = (30_000.0, 30_000.0 * 0.4, 0.4);
+    (q.rows, q.rows_affected) = (Some(48_000.0), None);
+    let id = q.id.clone();
+    workload.total_executions = workload.queries.iter().map(|q| q.executions).sum();
+    let f = analyze(s).findings.into_iter().find(|f| f.id == format!("chatty-query:{id}")).expect("a chatty read");
+    assert!(f.title.ends_with(", one key at a time"), "{}", f.title);
+    // In the tense the statement's history says (it may have stopped in the fixture's window).
+    assert!(f.summary.contains(" of all statement runs, and each run ret"), "{}", f.summary);
+    assert!(f.summary.contains(" about 1.6 rows."), "{}", f.summary);
+    assert!(!f.summary.contains("every statement the database executes"), "{}", f.summary);
+    // A write of 1.6 rows a run isn't "one row each time".
+    let f = chatty_write(
+        snapshot(),
+        "c7b5ac9bb4bcecfe",
+        "UPDATE `shop` . `sessions` SET `seen_at` = NOW ( ) WHERE `user_id` = ?",
+        Some(48_000.0),
+    );
+    assert!(f.title.ends_with(", about 1.6 rows each time"), "{}", f.title);
+    let f = chatty_write(
+        snapshot(),
+        "c7b5ac9bb4bcecfe",
+        "UPDATE `shop` . `sessions` SET `seen_at` = NOW ( ) WHERE `id` = ?",
+        Some(30_000.0),
+    );
+    assert!(f.title.ends_with(", one row each time"), "{}", f.title);
 }
 
 /// The chatty finding about `text`, made the statement of the fixture's query `id`: a single-row write run 30K times

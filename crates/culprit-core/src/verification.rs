@@ -168,10 +168,13 @@ fn still_present_note(was: &Finding, now: &Finding, after: &Report) -> Option<St
                  Check again once that window has moved past it, or scan with a shorter window."
             )
         } else {
+            // A week moves a years-long total by a hair: the difference between two scans shows the change.
             format!(
-                "{} counts since its statistics were reset ({span} ago), so runs from before the change still \
-                 count. Reset the statement statistics after the change, or check again once newer runs dominate.",
-                w.source
+                "{} keeps running totals since its statistics were reset ({span} ago), so runs from before the change \
+                 still count, and it stays listed. What changed, with Since at the ship time (`culprit changes {} \
+                 --since <ship time>`), compares the runs since then with the runs before, from Culprit's scans.",
+                w.source,
+                if after.snapshot.connection.trim().is_empty() { "<connection>" } else { &after.snapshot.connection }
             )
         });
     }

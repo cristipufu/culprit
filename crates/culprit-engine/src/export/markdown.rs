@@ -7,7 +7,7 @@ use culprit_core::{ChangeKind, Finding, Metric, Plan, PlanDiff, PlanNode, Report
 
 use super::{
     ExportNote, ExportOptions, exported_at, kind_label, plan_engine_label, prepared, rows_phrase, rows_text,
-    server_line, share, shares_note, sql_text, top_costs, where_,
+    server_line, share, shares_note, sql_text, stats_line, top_costs, where_,
 };
 
 const MAX_STEPS: usize = 40;
@@ -120,7 +120,7 @@ fn plan_body(out: &mut String, plan: &Plan, notes: &[ExportNote]) {
         let _ = writeln!(out, "\n_…and {} more operators._", rows.len() - MAX_STEPS);
     }
     let _ = writeln!(out);
-    if let Some(note) = shares_note(plan) {
+    if let Some(note) = shares_note(plan, None) {
         let _ = writeln!(out, "_{}_\n", text(&note.replace('`', "")));
     }
     let predicates: Vec<String> = rows
@@ -318,12 +318,7 @@ pub fn finding_detail(report: &Report, finding: &Finding) -> culprit_core::Diges
                         Some(line)
                     });
                     culprit_core::DigestQuery {
-                        stats: format!(
-                            "{} of database time · {} · {} on average",
-                            format::percent(culprit_checks::query_share(w, &f, q)),
-                            w.how_often_of(q),
-                            format::duration(q.mean_time_ms)
-                        ),
+                        stats: stats_line(w, q),
                         sql: culprit_core::redact::redact_sql(q.text.trim(), engine),
                         plan,
                         note: r.note.clone(),
@@ -396,14 +391,7 @@ fn finding_section(
         finding.queries.iter().filter_map(|r| s.workload.as_ref()?.query(&r.id).map(|q| (r, q))).take(3).collect();
     for (r, q) in &queries {
         let w = s.workload.as_ref().expect("filtered on workload");
-        let _ = writeln!(
-            out,
-            "**Query {}** · {} of database time · {} · {} on average\n",
-            code(&q.id),
-            format::percent(culprit_checks::query_share(w, finding, q)),
-            w.how_often_of(q),
-            format::duration(q.mean_time_ms)
-        );
+        let _ = writeln!(out, "**Query {}** · {}\n", code(&q.id), stats_line(w, q));
         fence(out, "sql", &sql_text(&q.text, engine, options));
         if let Some(plan) = &q.plan {
             let plan = prepared(plan, options);
@@ -425,7 +413,7 @@ fn finding_section(
                 }
                 line.push('.');
                 // Where the plan can't state the step's share, why.
-                if let Some(why) = culprit_checks::no_share_reason(&plan, node) {
+                if let Some(why) = culprit_checks::finding_no_share_reason(&plan, node, Some(q)) {
                     let _ = write!(line, " {}", text(&why.replace('`', "")));
                 }
                 let _ = writeln!(out, "{line}\n");
@@ -446,12 +434,16 @@ fn finding_section(
         for (i, step) in finding.verify.iter().enumerate() {
             let _ = writeln!(out, "{}. {step}", i + 1);
         }
-        let _ = writeln!(
-            out,
-            "{}. After it ships: `culprit verify <connection> {}` re-scans and reports whether it's gone.\n",
-            finding.verify.len() + 1,
-            finding.id
-        );
+        // Only where a re-scan can show it gone: not for statements that stopped, nor on running totals.
+        if culprit_checks::gone_after_rescan(report, finding) {
+            let _ = writeln!(
+                out,
+                "{}. After it ships: `culprit verify <connection> {}` re-scans and reports whether it's gone.",
+                finding.verify.len() + 1,
+                finding.id
+            );
+        }
+        out.push('\n');
     }
     if !finding.caveats.is_empty() {
         let _ = writeln!(out, "**Before you act**\n");

@@ -46,13 +46,34 @@ pub(crate) fn result_of_a_spill(snapshot: &Snapshot, q: &QueryStat) -> Option<Re
             summary: format!(
                 " Each run also sends {sends} to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too."
             ),
-            fix: format!(" Where the application doesn't use every row it receives, {}", lowercase_first(RETURN_WHAT_IS_USED)),
-            verify: Some(
-                "If it now returns fewer rows, re-scan: rows per run should drop to what a page or a job actually uses."
-                    .into(),
+            fix: format!(
+                " Where the application doesn't use every row it receives, {}",
+                lowercase_first(RETURN_WHAT_IS_USED)
             ),
+            // On running totals the spill's own step names the two scans to compare and says why, once.
+            verify: Some(if snapshot.workload.as_ref().is_some_and(|w| !w.windowed) {
+                format!(
+                    "If it now returns fewer rows, the rows it returns per run between those two scans should drop to {USED}."
+                )
+            } else {
+                format!("If it now returns fewer rows, re-scan: rows per run should drop to {USED}.")
+            }),
         }
     })
+}
+
+/// How many rows a statement that returns only what's used sends a run.
+const USED: &str = "what a page or a job actually uses";
+
+/// The verify step for a statement that returns too many rows a run: on a source of running totals, what two scans
+/// show of the rows it returns between them ([`crate::queries::verify_counts_between_scans`]); else a later scan's
+/// rows per run.
+fn rows_verify(snapshot: &Snapshot, q: &QueryStat) -> String {
+    let now = format!("{} rows in {} runs", format::count(q.rows.unwrap_or(0.0)), format::count(q.executions));
+    match crate::queries::verify_counts_between_scans(snapshot, "rows and runs", &now) {
+        Some(compare) => format!("Between two scans, the rows it returns per run should drop to {USED}: {compare}."),
+        None => format!("Re-scan: rows per run should drop to {USED}."),
+    }
 }
 
 /// How to send the application only the rows it uses.
@@ -77,8 +98,9 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             let bytes = width.map(|w| w * rows);
             let export = looks_like_export(snapshot, q);
             f.title = format!(
-                "{} returns {} rows{} per run",
+                "{} {} {} rows{} per run",
                 capitalize(&handle),
+                if crate::all_stopped(snapshot, &[q]) { "returned" } else { "returns" },
                 format::count(rows),
                 bytes.map(|b| format!(" (≈ {})", format::bytes(b))).unwrap_or_default()
             );
@@ -90,7 +112,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
                     _ => String::new(),
                 },
                 format::count(q.executions),
-                window_phrase(snapshot),
+                ran_phrase(snapshot, q),
                 format::count(q.rows.unwrap_or(0.0)),
                 if export {
                     format!(
@@ -103,7 +125,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
             );
             f.severity = if export {
                 Severity::Low
-            } else if rows >= 100_000.0 || window_at_least(snapshot, q.rows.unwrap_or(0.0), 100_000_000.0) {
+            } else if rows >= 100_000.0 || window_at_least(snapshot, q, q.rows.unwrap_or(0.0), 100_000_000.0) {
                 Severity::Medium
             } else {
                 Severity::Low
@@ -126,7 +148,7 @@ pub fn big_result(snapshot: &Snapshot) -> Vec<Finding> {
                 sql: None,
                 cost: None,
             });
-            f.verify = vec!["Re-scan: rows per run should drop to what a page or a job actually uses.".into()];
+            f.verify = vec![rows_verify(snapshot, q)];
             f
         })
         .collect();

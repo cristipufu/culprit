@@ -149,7 +149,16 @@ pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
                 "Culprit sees one of these statements' text, so what the others differ in is inferred from it.".into(),
             );
         }
-        f.verify = vec!["Re-scan after a deploy: this family shrinks to one or a few statements.".into()];
+        // pg_stat_statements keeps an entry for each copy until it is evicted or reset: a deploy stops new ones, and
+        // the old ones stay counted.
+        f.verify = vec![if engine == Engine::Postgres {
+            format!(
+                "After a deploy, no new copies should appear: pg_stat_statements keeps an entry for each copy until it evicts it or its statistics are reset, so compare the family's copies in a scan taken when the change ships and one a day or more later ({} in this scan): the count should stay as it is, or fall.",
+                format::count(family.variants)
+            )
+        } else {
+            "Re-scan after a deploy: this family shrinks to one or a few statements.".into()
+        }];
         if !family.sample.is_empty() {
             f.caveats.push(format!("One of them, as recorded:\n{}", family.sample.trim()));
         }

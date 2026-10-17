@@ -49,20 +49,41 @@ pub(crate) const CHECKS: &[&dyn Check] = &[
 const HEAVY_SHARE: f64 = 0.05;
 
 /// What Culprit's own scans measured of a statement whose entry is recent, on a source of running totals: at least half
-/// of its runs came in a day or more of those scans ([`culprit_core::Workload::over_scans`]), where it took a larger
+/// of its runs came in a day or more of those scans ([`culprit_core::ScanSpan::is_recent`]), where it took a larger
 /// share of database time than over everything since the source began counting. Its share of those totals is diluted
 /// by all the time before its entry existed (a statement the application started sending days ago, or an entry evicted
-/// and created again), so it is judged by the scans instead: what it costs now.
+/// and created again): its summary says so. Like every statement those scans measured, it is judged by them
+/// ([`heavy_share`]).
 pub(crate) fn recent_entry(snapshot: &Snapshot, q: &QueryStat) -> Option<culprit_core::ScanSpan> {
     let w = snapshot.workload.as_ref()?;
-    w.over_scans(q).filter(|s| s.runs >= q.executions * 0.5 && s.share() > w.share_of(q.total_time_ms, q))
+    // Runs that came in bursts are said by when they came, never at a rate a day over the scans.
+    w.scans_of(q).filter(|s| s.is_recent(q) && s.share() > w.share_of(q.total_time_ms, q) && !w.cadence(q).is_burst())
 }
 
-/// The share of database time a statement is weighed by for being heavy: its share of the workload, or of Culprit's
-/// scans for a recent entry ([`recent_entry`]).
+/// The share of database time a statement is weighed by for being heavy, the one every surface states
+/// ([`culprit_core::Workload::statement_share`]): over Culprit's scans where they measured it, higher or lower than its
+/// share of the source's totals, otherwise its share of the workload.
 pub(crate) fn heavy_share(snapshot: &Snapshot, q: &QueryStat) -> f64 {
-    let Some(w) = snapshot.workload.as_ref() else { return 0.0 };
-    recent_entry(snapshot, q).map_or_else(|| w.share_of(q.total_time_ms, q), |s| s.share())
+    snapshot.workload.as_ref().map_or(0.0, |w| w.statement_share(q))
+}
+
+/// A statement's average run as a metric, named for what it is over: over Culprit's scans where they measured it, with
+/// the totals' beside it where the two differ twofold (never for a recent entry, whose totals are those runs diluted);
+/// otherwise its average. Every check that shows a statement's average beside its share says it this way.
+pub(crate) fn average_metrics(snapshot: &Snapshot, q: &QueryStat) -> Vec<Metric> {
+    let Some(w) = snapshot.workload.as_ref() else {
+        return vec![Metric::new("Average duration", q.mean_time_ms, Unit::Ms)];
+    };
+    match w.scans_of(q) {
+        Some(s) => {
+            let mut out = vec![Metric::new("Average duration over Culprit's scans", w.statement_mean_ms(q), Unit::Ms)];
+            if !s.is_recent(q) && s.mean_differs(q) {
+                out.push(Metric::new(format!("Average duration over {}", w.window_phrase()), q.mean_time_ms, Unit::Ms));
+            }
+            out
+        }
+        None => vec![Metric::new("Average duration", w.statement_mean_ms(q), Unit::Ms)],
+    }
 }
 
 /// How one statement changes many rows by their keys, in the engine's terms.
@@ -138,22 +159,73 @@ pub(super) fn inserted_unique_key<'a>(
 }
 
 /// How a later scan shows a change to `q` on a source of running totals (pg_stat_statements, performance_schema, the
-/// plan cache), with `between` what the difference between two scans should show. Those totals still hold every run
-/// from before the change, so a week moves a years-long count or average by a hair: the difference between two of
-/// Culprit's scans (What changed) is what shows it, and a rewritten statement is a new entry there, the old one then
-/// stopped running. `None` on a windowed source (Query Store, a log), whose next scan covers the runs since.
-pub(super) fn verify_between_scans(snapshot: &Snapshot, q: &QueryStat, between: &str) -> Option<String> {
-    let w = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+/// plan cache), with `between` what What changed should show. Those totals still hold every run from before the
+/// change, so a week moves a years-long count or average by a hair: what shows it is the difference between two of
+/// Culprit's scans, the first taken when the change ships (What changed snaps its periods to scans: without one then,
+/// runs from before the change fall on its side). What changed carries a statement's runs, its time and its time per
+/// run, never its reads or its share, so `between` names only those ([`Shows`]). Said the app's way and the CLI's. A
+/// rewritten statement is a new entry there, the old one then stopped running. `None` on a windowed source (Query
+/// Store, a log), whose next scan covers the runs since.
+pub(crate) fn verify_between_scans(snapshot: &Snapshot, q: &QueryStat, between: &str) -> Option<String> {
+    let line = what_changed_between_scans(snapshot, "this query", between)?;
     let rewritten = if culprit_core::sql::is_session_statement(&q.text) {
         ""
     } else {
         " A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
     };
+    Some(line + rewritten)
+}
+
+/// [`verify_between_scans`] for a change that leaves the statements as they are (an index): `queries` names them
+/// ("this query", "these queries").
+pub(crate) fn what_changed_between_scans(snapshot: &Snapshot, queries: &str, between: &str) -> Option<String> {
+    let w = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
     Some(format!(
-        "{} keeps running totals, so a later scan's count of runs, share and averages for this query still hold every run from before the change. After it ships, scan again a day or more later and open What changed from the change on: there {between}.{rewritten}",
+        "{} keeps running totals, so a later scan's runs, share and averages for {queries} still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`{WHAT_CHANGED_COMMAND}`): there {between}.",
         w.source
     ))
 }
+
+/// How a later scan shows a change in a number the source keeps for a statement beside its runs and time (its temp
+/// files, the rows it returns, its WAL, its planning time), on a source of running totals: What changed doesn't carry
+/// it, so the two scans' totals are compared by hand. `counted` names them ("temp files and runs"), `now` gives this
+/// scan's ("4.2 GB over 214 runs"); the caller says what the difference shows once the change works. Without the
+/// sentence's final stop. `None` on a windowed source, whose next scan covers the runs since.
+pub(crate) fn verify_counts_between_scans(snapshot: &Snapshot, counted: &str, now: &str) -> Option<String> {
+    let w = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+    Some(format!(
+        "{} keeps running totals, so compare its {counted} in a scan taken once the change is live and one a day or more later ({now} in this scan)",
+        w.source
+    ))
+}
+
+/// What What changed shows of a fix to a statement, between a scan taken when it ships and a later one: only what it
+/// carries (runs, time, time per run), in the direction the fix moves it ([`verify_between_scans`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Shows {
+    /// A fix that cuts runs (a result cached, a call skipped or batched, a poll made rarer, a pool's reset): fewer runs
+    /// and less time in all. What one run reads or takes doesn't drop, and rises where the runs left are the costly
+    /// ones or a batch carries more rows.
+    FewerRuns,
+    /// A fix that makes each run cheaper (an index, a rewrite, a wait or a spill taken away): its time per run.
+    CheaperRuns,
+}
+
+impl Shows {
+    /// The clause after "there": "it should run fewer times …".
+    pub(crate) fn between(self) -> &'static str {
+        match self {
+            Shows::FewerRuns => {
+                "it should run fewer times and take less time in all, while a run's own time can stay as it is, or rise"
+            }
+            Shows::CheaperRuns => "its time per run should drop",
+        }
+    }
+}
+
+/// What changed from the command line, the way a finding says it: findings are shared and exported without their
+/// connection's name, so it is a placeholder there (the agent brief, read where Culprit runs, names the connection).
+pub const WHAT_CHANGED_COMMAND: &str = "culprit changes <connection> --since <ship time>";
 
 /// Text lowercased with names unquoted, whitespace collapsed and no space before an opening parenthesis, so `COUNT ( * )`
 /// (MySQL's digest text) and `[dbo].[f] (x)` read like `count(*)` and `dbo.f(x)`.

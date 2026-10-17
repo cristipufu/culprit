@@ -21,7 +21,8 @@ check!(UnusedIndexCheck: unused_index_info, unused_index);
 
 pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;
-    let days = counter_days(snapshot);
+    // What the counters have surely watched: on performance_schema counters that may have been reset, the digests' days.
+    let days = crate::support::watched_days(snapshot);
     let mut by_table: Vec<(String, String, Vec<&IndexStat>)> = Vec::new();
     // By table and name: MySQL and SQL Server index names are unique only within a table.
     let redundant: Vec<(&str, &str, &str)> = redundant_indexes(snapshot)

@@ -77,6 +77,15 @@ fn a_setting_is_changed_where_the_server_is_managed_not_found_in_the_code() {
         assert!(section.contains("The fix is a setting of the database server"), "{section}");
         assert!(section.contains("the platform's parameter group"), "{section}");
         assert!(!section.contains("search for their table"), "{section}");
+        // MS-12e: where nothing manages the server's configuration, the change is still made: by hand.
+        let by_hand = if sql.is_some() {
+            "Where nothing manages it, run the fix's SQL against the server as a login allowed to change its \
+             settings, the way the fix says."
+        } else {
+            "Where nothing manages it, make the change by hand the way the fix says."
+        };
+        assert!(section.contains(by_hand), "{section}");
+        assert!(!section.contains("if it does"), "{section}");
     }
 }
 
@@ -137,6 +146,43 @@ fn a_setting_the_fix_calls_a_fallback_comes_after_the_application_change() {
     assert!(!section.contains("a setting of the database server"), "{section}");
 }
 
+// CX-4 and CX-2, a staging SQL Server reading: "The fix is upkeep of the database … run it" beside a fix that says no
+// update is needed, and beside one whose way on, if the update doesn't change the plan, is a table hint in the
+// statement. Optional upkeep is said as optional; a change in the code the fix's SQL offers is said as one.
+#[test]
+fn upkeep_the_fix_calls_optional_or_follows_with_a_code_change_is_briefed_as_such() {
+    let mssql = report("mssql-demo.json");
+    let base = finding(&mssql, "heavy-query:");
+    let mut optional = with_fix(
+        base,
+        "No update is needed before a query uses these statistics: SQL Server refreshes them on that query's compile. Updating them now (below) spares that compile the wait.",
+        Some("UPDATE STATISTICS [shop].[products];"),
+    );
+    optional.queries.clear();
+    let section = codebase(&agent_brief(&mssql, &optional));
+    assert!(section.trim_start().starts_with("The fix's upkeep is optional, as it says"), "{section}");
+    assert!(!section.contains("The fix is upkeep of the database"), "{section}");
+    let hinted = with_fix(
+        base,
+        "Update the statistics (the SQL below). If a re-scan still shows the same reads, change the statement where the application sends it to read shop.products with a table hint.",
+        Some(
+            "UPDATE STATISTICS [shop].[products];\n\n-- If a re-scan still shows about 750 pages a run, change the statement in the application:\n--    read [shop].[products] WITH (FORCESEEK ([ix_products_sku] ([sku])))",
+        ),
+    );
+    let section = codebase(&agent_brief(&mssql, &hinted));
+    assert!(
+        !section.contains("The fix is upkeep of the database, not a change to the application's code"),
+        "{section}"
+    );
+    assert!(
+        section.contains(
+            "The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's code"
+        ),
+        "{section}"
+    );
+    assert!(section.contains("The fix's other option is a change in the application's code"), "{section}");
+}
+
 #[test]
 fn statements_a_pool_sends_are_not_looked_for_in_the_code() {
     // DISCARD ALL comes from the pool resetting connections: there is no query of the application's to find.
@@ -169,13 +215,22 @@ fn statements_that_stopped_running_may_need_nothing() {
     assert!(!stopped.contains("most likely"), "{stopped}");
     assert!(stopped.contains("there is nothing to do"), "{stopped}");
     assert!(!stopped.contains("find where the application sends them"), "{stopped}");
-    // Nothing to check until it runs again, and then only what new runs add to the totals.
+    // Nothing to check until it runs again. Marked by hand, it keeps its own step, which already says the totals keep
+    // the earlier runs: the brief says that once.
     assert!(
         stopped.contains("There is nothing to check unless it runs again: if it does, run `culprit scan"),
         "{stopped}"
     );
     assert!(!stopped.contains("After any change is live"), "{stopped}");
-    assert!(stopped.contains("pg_stat_statements keeps the statements' totals since its last reset"), "{stopped}");
+    assert_eq!(brief.matches("keeps running totals").count(), 1, "{brief}");
+    // Once refine has seen it stop, its step is that there is nothing to check unless it runs again: said there alone.
+    f.verify = vec![
+        "Nothing to check unless it runs again: a later scan that sees it run lists this finding as current again."
+            .into(),
+    ];
+    let stopped = codebase(&agent_brief(&report, &f));
+    assert!(!stopped.to_lowercase().contains("nothing to check"), "{stopped}");
+    assert!(stopped.trim_end().ends_with("there is nothing to do."), "{stopped}");
 }
 
 #[test]
@@ -346,6 +401,34 @@ fn a_cheap_plan_puts_no_share_on_its_step() {
 }
 
 #[test]
+fn a_findings_whole_table_read_is_said_whatever_the_tables_size() {
+    // A heavy query about a scan of a table of a few thousand rows: under the size bar a plan's whole read is no reason
+    // worth naming, but this finding is about that read, so its Plan line says it (the plan viewer's note stays plain).
+    let text = std::fs::read_to_string(format!("{}/../../fixtures/postgres-demo.json", env!("CARGO_MANIFEST_DIR")))
+        .expect("fixture");
+    let mut snapshot: Snapshot = serde_json::from_str(&text).expect("snapshot");
+    fn node(n: &mut culprit_core::PlanNode, id: u32) -> Option<&mut culprit_core::PlanNode> {
+        if n.id == id {
+            return Some(n);
+        }
+        n.children.iter_mut().find_map(|c| node(c, id))
+    }
+    let q = snapshot.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "2885972271926804069").unwrap();
+    let plan = q.plan.as_mut().expect("its plan");
+    let scan = node(&mut plan.root, 2).expect("step 2");
+    (scan.kind, scan.op, scan.table_rows) = (culprit_core::NodeKind::Scan, "Seq Scan".into(), Some(3_900.0));
+    let postgres = analyze(snapshot);
+    let mut f = about(&postgres, "2885972271926804069", Some(2));
+    f.check = "heavy-query".into();
+    let line = plan_line(&agent_brief(&postgres, &f));
+    assert!(line.contains("but `Seq Scan` reads all 3.9K rows of public.events on every run."), "{line}");
+    let q =
+        postgres.snapshot.workload.as_ref().unwrap().queries.iter().find(|q| q.id == "2885972271926804069").unwrap();
+    let note = culprit_checks::plan_shares_note(q.plan.as_ref().unwrap(), Some(q)).unwrap();
+    assert_eq!(note, "The plan as a whole is cheap, so no share of its cost is put on one step.");
+}
+
+#[test]
 fn recurring_upkeep_runs_where_it_fits() {
     // A histogram reads the whole table: a scheduled job outside busy hours, never as connections open and close.
     let mysql = report("mysql-demo.json");
@@ -380,11 +463,11 @@ fn upkeep_is_said_only_for_a_fix_that_runs_it() {
     let section = codebase(&agent_brief(&postgres, &rows));
     assert!(!section.contains("upkeep"), "{section}");
     assert!(section.contains("search the code for the statements that touch it"), "{section}");
-    // An index's subject is `table.index`: named as the index of its table, not as a column.
+    // An index's subject is `table.index`: the application reads and writes its table, not the index (CX-10c).
     (rows.subject.kind, rows.subject.name) = (SubjectKind::Index, "app.job_runs.pk_job_runs".into());
     let section = codebase(&agent_brief(&postgres, &rows));
-    assert!(section.contains("reads or writes the index `pk_job_runs` of `app.job_runs`"), "{section}");
-    assert!(!section.contains("`app.job_runs.pk_job_runs`"), "{section}");
+    assert!(section.contains("reads or writes `app.job_runs`, search the code"), "{section}");
+    assert!(!section.contains("pk_job_runs"), "{section}");
 
     // Statistics refreshed for a statement's plan: upkeep, and nothing about changing the statement.
     let stats = with_fix(
@@ -442,6 +525,13 @@ fn a_setting_in_a_statement_fix_is_applied_where_the_server_is_managed() {
     let mysql = report("mysql-demo.json");
     let section = codebase(&agent_brief(&mysql, finding(&mysql, "temp-spill:")));
     assert!(section.contains("The setting in the fix's SQL belongs to the database server"), "{section}");
+    assert!(
+        section.contains(
+            "Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login \
+             allowed to change its settings."
+        ),
+        "{section}"
+    );
     assert!(!section.contains("SET LOCAL"), "{section}");
 }
 
@@ -496,23 +586,32 @@ fn without_a_verify_step_the_brief_says_what_a_later_scan_shows() {
         section.contains(&format!("compare `{}`'s numbers under *Evidence* with this scan's", spill.id)),
         "{section}"
     );
-    assert!(section.contains("pg_stat_statements keeps the statements' totals since its last reset"), "{section}");
+    assert!(
+        section.contains("pg_stat_statements keeps running totals, so the runs from before the change stay in them"),
+        "{section}"
+    );
     assert!(!section.contains("should be gone"), "{section}");
 }
 
 #[test]
 fn a_verify_step_on_totals_since_a_reset_says_they_keep_the_old_runs() {
     // performance_schema keeps totals since the server's restart: a run count only grows, whatever *How to verify*
-    // says to look for.
+    // says to look for. Its own step says so already: the brief points at it and doesn't say it again.
     let mysql = report("mysql-demo.json");
     let chatty = finding(&mysql, "chatty-query:");
-    assert!(!chatty.verify.is_empty());
-    let section = codebase(&agent_brief(&mysql, chatty));
+    assert!(chatty.verify.iter().any(|v| v.contains("performance_schema keeps running totals")), "{:?}", chatty.verify);
+    let brief = agent_brief(&mysql, chatty);
+    let section = codebase(&brief);
+    assert!(section.trim_end().ends_with("the way *How to verify* says."), "{section}");
+    assert_eq!(brief.matches("keeps running totals").count(), 1, "{brief}");
+    // A step that doesn't say it: the brief does.
+    let mut quiet = chatty.clone();
+    quiet.verify = vec!["Re-scan: it should run fewer times.".into()];
+    let section = codebase(&agent_brief(&mysql, &quiet));
     assert!(
-        section.contains("the way *How to verify* says: performance_schema keeps the statements' totals"),
+        section.contains("the way *How to verify* says: performance_schema keeps running totals, so the runs from before the change stay in them"),
         "{section}"
     );
-    assert!(section.contains("the runs from before the change stay in them"), "{section}");
 
     // Query Store's window can leave the old runs out: no such clause.
     let mssql = report("mssql-demo.json");
@@ -564,6 +663,14 @@ fn slow_runs_that_waited_change_no_statement() {
     assert!(section.contains("There is nothing to check unless it runs again"), "{section}");
     assert!(section.contains("even then a later `culprit scan pg-demo` can't show a change"), "{section}");
     assert!(!section.contains("Catch the next slow runs") && !section.contains("culprit live"), "{section}");
+    // Once refine has seen it stop, *How to verify* says there is nothing to check: the brief doesn't say it again.
+    waited.verify = vec![
+        "Nothing to check unless it runs again: a later scan that sees it run lists this finding as current again."
+            .into(),
+    ];
+    let section = codebase(&agent_brief(&postgres, &waited));
+    assert!(!section.to_lowercase().contains("nothing to check"), "{section}");
+    assert!(section.contains("If it runs again, even a later `culprit scan pg-demo` can't show a change"), "{section}");
 }
 
 #[test]
@@ -607,6 +714,19 @@ fn a_statement_that_waited_is_not_rewritten() {
     // The same statement doing work is changed in the application.
     let section = codebase(&agent_brief(&mysql, &with_fix(finding(&mysql, "heavy-query:"), "Read less.", None)));
     assert!(section.contains("find where the application sends them"), "{section}");
+
+    // lock-time is a statement's time spent waiting, whichever statement: its fix says making it faster won't help, so
+    // its brief sends the agent to the transactions that hold the locks, not to a rewrite.
+    let saved =
+        std::fs::read_to_string(format!("{}/../../fixtures/mysql-demo.report.json", env!("CARGO_MANIFEST_DIR")))
+            .expect("fixture");
+    let demo = analyze(serde_json::from_str::<Report>(&saved).expect("report").snapshot);
+    for f in demo.findings.iter().filter(|f| f.check == "lock-time") {
+        let section = codebase(&agent_brief(&demo, f));
+        assert!(!section.contains("an ORM change or a query rewrite"), "{}: {section}", f.id);
+        assert!(section.contains("keep those transactions short"), "{}: {section}", f.id);
+    }
+    assert!(demo.findings.iter().any(|f| f.check == "lock-time"), "the demo's lock-time finding");
 }
 
 #[test]
@@ -630,6 +750,17 @@ fn statements_listed_for_reference_or_caught_by_a_diagnostic_are_not_rewritten()
     assert!(!section.contains("find where the application sends them"), "{section}");
     assert!(section.contains("starts an event session on the database"), "{section}");
     assert!(section.contains("The statement to change is the one it catches"), "{section}");
+    // CX-12: created only where it isn't defined yet, it is still an event session; the brief says how to stop it.
+    let guarded = "IF NOT EXISTS (SELECT 1 FROM sys.database_event_sessions WHERE name = N'culprit_x')\n    \
+                   CREATE EVENT SESSION culprit_x ON DATABASE\n    ADD TARGET package0.ring_buffer;\n\
+                   IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_database_sessions WHERE name = N'culprit_x')\n    \
+                   ALTER EVENT SESSION culprit_x ON DATABASE STATE = START;\n\
+                   -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_x ON DATABASE;";
+    let f = with_fix(finding(&mssql, "heavy-query:"), "Start the event session.", Some(guarded));
+    let section = codebase(&agent_brief(&mssql, &f));
+    assert!(section.contains("The fix's SQL starts an event session on the database: run it there"), "{section}");
+    assert!(section.contains("remove it with the DROP in the SQL's last line"), "{section}");
+    assert!(!section.contains("reads what it catches"), "{section}");
 
     // An index advised for statements that stay as they are: the index is the whole change.
     let mut index = with_fix(
@@ -731,17 +862,20 @@ fn a_statement_quoted_in_a_caveat_is_the_one_to_look_for() {
 
 #[test]
 fn a_heavy_query_line_states_the_share_its_finding_states() {
-    // A recent entry of a source of running totals is weighed over Culprit's scans: its query line says the finding's
-    // share, not a lifetime one the finding never gave.
+    // A statement's query line says the share every surface states it at (`Workload::statement_share`: over Culprit's
+    // scans where they measured it), which a heavy query's own finding is weighed by; another check's share is its own
+    // (the slow runs' extra time), and the line keeps the statement's.
     let postgres = report("postgres-demo.json");
     let mut heavy = finding(&postgres, "heavy-query:").clone();
+    let w = postgres.snapshot.workload.as_ref().expect("a workload");
+    let q = w.query(&heavy.queries[0].id).expect("its statement");
+    assert_eq!(heavy.impact.db_time_share, Some(w.statement_share(q)));
+    let said = format!(" — {} of DB time, ", culprit_core::format::percent(w.statement_share(q)));
     heavy.impact.db_time_share = Some(0.42);
-    let brief = agent_brief(&postgres, &heavy);
-    let line = brief.lines().find(|l| l.starts_with("Query `")).expect("a query line");
-    assert!(line.contains(" — 42% of DB time, "), "{line}");
-    // Another check's share is its own (the slow runs' extra time): the line keeps the statement's.
-    heavy.check = "unstable-query".into();
-    let brief = agent_brief(&postgres, &heavy);
-    let line = brief.lines().find(|l| l.starts_with("Query `")).expect("a query line");
-    assert!(!line.contains(" — 42% of DB time, "), "{line}");
+    for check in ["heavy-query", "unstable-query"] {
+        heavy.check = check.into();
+        let brief = agent_brief(&postgres, &heavy);
+        let line = brief.lines().find(|l| l.starts_with("Query `")).expect("a query line");
+        assert!(line.contains(&said) && !line.contains(" — 42% of DB time, "), "{line}");
+    }
 }

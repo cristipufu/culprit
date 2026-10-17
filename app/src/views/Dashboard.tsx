@@ -21,6 +21,7 @@ import { attention, nowTile, nowUnavailable, STATUS_LABEL } from "../lib/dashboa
 import { ago, duration, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { querySummary } from "../lib/query-summary";
+import { figures } from "../lib/rates";
 import { changeRequest, scan, setState, useStore } from "../lib/store";
 import { waitColor } from "../lib/waits";
 import { openLive } from "./Live";
@@ -461,6 +462,12 @@ function queryLabel(item: TileItem, report: Report): ReactNode {
   );
 }
 
+/** "2.5 ms per run over 89 hours of Culprit's scans": a statement's average as the report states it (`figures`). */
+function perRun(report: Report, q: QueryStat): string {
+  const f = figures(report, q);
+  return `${duration(f.mean)} per run${f.over ? ` over ${f.over}` : ""}`;
+}
+
 function TopQueriesTile({ tile, report }: { tile: Tile; report: Report }) {
   const w = report.snapshot.workload;
   if (!w || tile.status === "unavailable") return <Frame tile={tile} />;
@@ -479,7 +486,7 @@ function TopQueriesTile({ tile, report }: { tile: Tile; report: Report }) {
                 <span className="dash-share" aria-hidden>
                   <span style={{ width: `${Math.max(3, (item.share ?? 0) * 100)}%` }} />
                 </span>
-                <span className="dash-row-value" title={q ? `${duration(q.mean_time_ms)} per run` : undefined}>
+                <span className="dash-row-value" title={q ? perRun(report, q) : undefined}>
                   {item.value}
                 </span>
               </button>
