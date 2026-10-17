@@ -2,6 +2,27 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.2
+
+Findings, fixes and plan explanations now use the same evidence across the desktop app, CLI, agent briefs and exports, including when a saved scan is opened again.
+
+### Fixes
+
+- **Recent workload is measured consistently.** When enough scans are available, rates, averages and shares on sources with running totals use what Culprit's own scans measured. Other figures name their counting period. Bursts, occasional jobs, statements that ran once and statements that stopped running are described and ranked for the work they actually did.
+- **Plans keep their own measurements.** A captured plan is compared with its own variant's runs, where available. Plans opened in the app retain the measurements from that scan when another scan, connection or workload window is opened, including side-by-side comparisons.
+- **Estimates stay estimates.** High page reads alone no longer imply a wrong row estimate or justify statistics, index or forced-plan changes. A residual filter asks for actual row counts and IO before choosing a fix. MySQL's sampled LIMIT values and fixed selectivity guesses no longer justify an index from grouped statement totals.
+- **Index advice follows the evidence.** Covering columns are preserved, newer requests on the same keys remain active, unique-key equality lookups do not demand a statistics refresh, and duplicate causes are merged. Statements that stopped running and tables that are gone get no new index of their own.
+- **Fixes and verification agree.** Agent briefs identify where each chosen change belongs: application code, a migration, maintenance or database settings. Diagnostic fixes gather evidence first. Verification compares new runs or counter increases after the change, and distinguishes fewer calls, cheaper runs, insert throughput and changes to stored data.
+- **Engine-specific guidance is corrected.** PostgreSQL JIT advice respects unknown settings and application overrides. MySQL and MariaDB temporary-table advice distinguishes session limits from shared memory, explains when application connections pick up changes, and does not promise a grouping index removes an aggregate sort. SQL Server planning advice recognizes explicit RECOMPILE hints, and merged lock findings retain each statement's own wait time.
+- **SQLite index SQL works in the right schema.** Generated CREATE INDEX statements qualify the index name, preserving quoted names, uniqueness, key order and partial filters. VACUUM guidance includes the temporary disk space it can need.
+- **Exports handle unusual text safely.** Database names cannot end comments in generated fix SQL, LIMIT values cannot bypass literal redaction, and non-ASCII text no longer causes a panic in text helpers. Number formatting agrees between Rust and the app.
+- **The browser demo stays current.** Saved demo findings, dashboards, index advice, plan insights and share exports are refreshed together with the analysis that produces them.
+
+### For developers
+
+- Golden readings and rules checked across every demo fixture cover findings, briefs, plan explanations and browser output, so an intended fix also checks what users read elsewhere.
+- Provider example executables have engine-specific names, fixing output-file collisions in Windows workspace builds. The demo setup commands use the new names.
+
 ## 0.3.1
 
 A new connection starts with the engine: pick it, then paste its connection string, or choose the file for SQLite.
