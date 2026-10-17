@@ -80,7 +80,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The database setting in the fix's SQL (`ALTER DATABASE`) is kept in this database alone: run it once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `hot-rows:shop.orders` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The database setting in the fix's SQL (`ALTER DATABASE`) is kept in this database alone: run it once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `hot-rows:shop.orders` the way *How to verify* says.
 
 === finding failing-query:263
 high severity · high confidence · queries
@@ -131,7 +131,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `failing-query:263` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `failing-query:263` the way *How to verify* says.
 
 === finding failing-query:246
 high severity · high confidence · queries
@@ -417,7 +417,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:nested-loops:query-263` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:nested-loops:query-263` the way *How to verify* says.
 
 === finding plan-insights:parallelism-blocked:query-263
 medium severity · medium confidence · queries
@@ -473,19 +473,19 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:parallelism-blocked:query-263` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:parallelism-blocked:query-263` the way *How to verify* says.
 
 === finding chatty-query:6
 medium severity · medium confidence · queries
 title: A read from products runs 60K times in 5 hours, one key at a time
-summary: Its runs are 84% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 84% of executions · 0.2% of database time
 metrics:
   - Share of executions: 84%
   - Average duration: 0.01 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+  1. It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -497,7 +497,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 84% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -514,11 +514,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+    - It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all.
 
     ## Caveats
 
@@ -526,7 +526,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
 
 === finding plan-warnings:implicit-conversion:customers.email
 medium severity · high confidence · queries
@@ -578,7 +578,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
 
 === finding missing-index:shop.order_items(order_id)
 medium severity · high confidence · indexes
@@ -837,7 +837,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The database setting in the fix's SQL (`ALTER DATABASE`) is kept in this database alone: run it once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `planning-time:249` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The database setting in the fix's SQL (`ALTER DATABASE`) is kept in this database alone: run it once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `planning-time:249` the way *How to verify* says.
 
 === finding unindexed-fk:shop.ticket_events(ticket_id)
 low severity · high confidence · indexes
@@ -1180,7 +1180,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `big-result:264` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `big-result:264` the way *How to verify* says.
 
 === finding untrusted-constraint:archive.child
 low severity · high confidence · maintenance
@@ -1237,10 +1237,9 @@ metrics:
   - Log written: 232 MB
   - Share of log: 83%
   - Per row: 7.9 KB
-fix: Log this heavy usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, and update only the columns that change.
+fix: Nothing to change: archive.wide isn't in the database's catalog any more, so it was dropped or renamed since these statements ran. If the application now uses other tables, scan those before making a change.
 verify:
-  1. Re-scan later: if it hasn't run again, there is nothing to do.
-  2. Re-scan: its share of the transaction log and the bytes per row should drop.
+  1. Nothing to check: the tables are gone. If these statements return against replacement tables, scan those to see what needs a change.
 caveats:
   - This statement ran once in the last 5 hours. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
 queries:
@@ -1270,12 +1269,11 @@ brief:
 
     ## Suggested fix
 
-    Log this heavy usually means wide rows rewritten whole, many indexes updated, or one transaction per row. Batch writes into transactions of about a thousand rows, and update only the columns that change.
+    Nothing to change: archive.wide isn't in the database's catalog any more, so it was dropped or renamed since these statements ran. If the application now uses other tables, scan those before making a change.
 
     ## How to verify
 
-    - Re-scan later: if it hasn't run again, there is nothing to do.
-    - Re-scan: its share of the transaction log and the bytes per row should drop.
+    - Nothing to check: the tables are gone. If these statements return against replacement tables, scan those to see what needs a change.
 
     ## Caveats
 
@@ -1454,17 +1452,17 @@ shares: The plan as a whole is cheap, so no share of its cost is put on one step
 === plan 138
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
-shares: The plan is estimated to be cheap, yet its runs take 28.7 s on average: the time isn't in what it costs, so no share of its cost is put on one step.
+shares: The plan is estimated to be cheap, yet its runs averaged 28.7 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 143
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
-shares: The plan is estimated to be cheap, yet its runs take 23.9 s on average: the time isn't in what it costs, so no share of its cost is put on one step.
+shares: The plan is estimated to be cheap, yet its runs averaged 23.9 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 161
 no insights
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
-shares: The plan is estimated to be cheap, yet its runs take 601 ms on average: the time isn't in what it costs, so no share of its cost is put on one step.
+shares: The plan is estimated to be cheap, yet its 4 runs took 2.4 s in all, with the slowest taking 2.4 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 249
 insight missing-index-hint · high severity · impact 49%

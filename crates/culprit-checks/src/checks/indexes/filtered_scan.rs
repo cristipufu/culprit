@@ -427,14 +427,30 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     }
     f.metrics.push(Metric::new("Rows scanned per run", g.rows, Unit::Rows));
     f.metrics.push(Metric::new("Queries", queries.len() as f64, Unit::Count));
+    // A scan's own index request also says which returned columns the index must carry to avoid lookups. Keep those
+    // columns when the filtered-scan finding absorbs the plan's request.
+    let mut include = Vec::new();
+    for hint in queries.iter().filter_map(|q| q.plan.as_ref()).flat_map(|p| &p.index_hints) {
+        let keys: Vec<_> = hint.equality.iter().chain(&hint.inequality).cloned().collect();
+        if names_table(&hint.table, &g.schema, &g.table) && lower_set(&keys) == lower_set(&g.keys) {
+            for column in &hint.include {
+                if !g.keys.iter().chain(&include).any(|k| k.eq_ignore_ascii_case(column)) {
+                    include.push(column.clone());
+                }
+            }
+        }
+    }
+    if let Some(note) = drop_large_includes(snapshot, &g.schema, &g.table, &mut include) {
+        f.caveats.push(note);
+    }
     f.fix = Some(match disabled {
-        Some(i) => widen_fix(snapshot, i, &[]),
+        Some(i) => widen_fix(snapshot, i, &include),
         None => new_index_fix(
             snapshot,
             &g.schema,
             &g.table,
             &g.keys,
-            &[],
+            &include,
             &queries,
             format!(
                 "Create an index on {} so {} instead of scanning.",

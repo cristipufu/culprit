@@ -3,16 +3,18 @@ import { useEffect, useMemo, useState } from "react";
 import type { Plan } from "../gen/Plan";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
+import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
 import { count, percent } from "../lib/format";
-import { estRows, estRowsForRuns, insightsByNode, misestimate, noShareReason, rows as rowsText } from "../lib/plan-format";
+import { estRows, estRowsForRuns, findingNoShareReason, insightsByNode, misestimate, noShareReason, rows as rowsText } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
 import { ActualSummary } from "./ActualSummary";
 
 type Props = {
   plan: Plan;
+  query?: QueryStat | null;
   focus?: number | null;
   compact?: boolean;
   /** Select (and reveal) this node when it changes, e.g. an insight picked in the list. */
@@ -64,12 +66,15 @@ function heatVar(share: number): string {
   return "var(--heat-0)";
 }
 
-export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) {
+export function PlanView({ plan, query, focus, compact, selectedId, onSelect }: Props) {
   const nodes = useMemo(() => walk(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
   // Measured plans rank operators by their own time; estimated plans by cost (under a PostgreSQL Limit, children's costs
   // assume they run to completion and add up to more than the root's, which planShares accounts for).
-  const shares = useMemo(() => planShares(plan), [plan]);
+  const shares = useMemo(() => planShares(plan, query), [plan, query]);
+  const reason = (n: PlanNode) => focus === n.id ? findingNoShareReason(plan, n, query) : noShareReason(plan, n, query);
+  const focused = nodes.find((n) => n.id === focus);
+  const note = shares.basis === "cost" && focused ? reason(focused) ?? shares.note : shares.note;
   // The share a person reads: none where the plan can't state one (beside a step it puts no cost on, on a default guess).
   const shareOf = (n: PlanNode) => shares.stated.get(n.id) ?? null;
   // The core's hottest step (never an exchange), only in a plan that does real work and where its share can be stated.
@@ -211,7 +216,7 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
                       </span>
                     </>
                   ) : (
-                    <span className="num muted" title={noShareReason(plan, node) ?? undefined}>
+                    <span className="num muted" title={reason(node) ?? undefined}>
                       —
                     </span>
                   ))}
@@ -220,7 +225,7 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
           );
         })}
       </div>
-      {weighed && shares.note && <div className="muted" style={{ fontSize: 12, padding: "6px 10px" }}>— {shares.note}</div>}
+      {weighed && note && <div className="muted" style={{ fontSize: 12, padding: "6px 10px" }}>— {note}</div>}
       {selectedNode && (
         <NodeDetails
           estimates={weighed}
@@ -228,7 +233,7 @@ export function PlanView({ plan, focus, compact, selectedId, onSelect }: Props) 
           node={selectedNode}
           share={shareOf(selectedNode)}
           subtreeShare={shares.statedSubtree.get(selectedNode.id) ?? null}
-          noShare={shares.basis === "cost" ? noShareReason(plan, selectedNode) : null}
+          noShare={shares.basis === "cost" ? reason(selectedNode) : null}
           insights={flagged.get(selectedNode.id)}
         />
       )}

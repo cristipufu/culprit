@@ -93,7 +93,7 @@ fn a_read_in_a_loop_costs_round_trips_and_is_verified_over_the_window_it_was_cou
     let verify = f.verify.join(" ");
     assert_eq!(
         verify,
-        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
+        "It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
     );
     assert!(!verify.contains("per day"), "{verify}");
 }

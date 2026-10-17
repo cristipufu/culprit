@@ -73,7 +73,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
 
 === finding filtered-scan:public.orders(customer_id)
 medium severity · high confidence · indexes
@@ -188,7 +188,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `planning-time:-967240904657798800` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `planning-time:-967240904657798800` the way *How to verify* says.
 
 === finding replica-lag:analytics_slot
 medium severity · high confidence · configuration
@@ -308,14 +308,14 @@ brief:
 === finding chatty-query:3432126458605143571
 low severity · medium confidence · queries
 title: A read from customers runs 8.2K times in 5 hours, one key at a time
-summary: Its runs are 68% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 68% of executions · 0.1% of database time
 metrics:
   - Share of executions: 68%
   - Average duration: 0.02 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -327,7 +327,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 68% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -344,11 +344,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -356,7 +356,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
 
 === finding filtered-scan:public.order_items(product_id)
 low severity · high confidence · indexes
@@ -483,7 +483,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan pg-demo` and check `jit-overhead:6425265648074738764` the way *How to verify* says.
 
 === finding dead-rows:archive.wide
 low severity · high confidence · maintenance
@@ -535,7 +535,7 @@ brief:
 
     ## What to do in the codebase
 
-    The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job). Ship the fix's schema change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan pg-demo`: `dead-rows:archive.wide` should be gone.
+    The upkeep in the fix's SQL isn't a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job). Ship the fix's schema change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After the change is live, run `culprit scan pg-demo`: `dead-rows:archive.wide` should be gone.
 
 === finding unindexed-fk:public.order_items(order_id)
 low severity · high confidence · indexes
@@ -937,7 +937,7 @@ note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to che
 === plan -967240904657798800
 no insights
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
-shares: Its costs rest on an estimate of 1 row a run, and its runs read far more than that needs (48 pages a run), so no share of them is put on one step.
+shares: Its runs read 48 pages a run; the plan's estimated cost is too small to say where that reading happens, so no share of it is put on one step.
 
 === plan 6425265648074738764
 no insights

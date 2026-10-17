@@ -1,9 +1,10 @@
 import { GitBranch, ListTree, Network, TableProperties } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Plan } from "../gen/Plan";
+import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
-import { allNodes, cost, insightsByNode, noShareReason } from "../lib/plan-format";
+import { allNodes, cost, findingNoShareReason, insightsByNode, noShareReason } from "../lib/plan-format";
 import { NodeDetails } from "./NodeDetails";
 import { PlanDiagram } from "./PlanDiagram";
 import { PlanInsights } from "./PlanInsights";
@@ -56,21 +57,21 @@ export function LookToggle({ look, onChange }: { look: PlanLook; onChange: (look
  * A plan with everything Culprit knows about it: the insights first (what's wrong, how to fix it), then the plan in the
  * chosen view. Picking an insight selects its operator in whichever view is showing, and back.
  */
-export function PlanSurface({ plan, focus, look, badge }: { plan: Plan; focus?: number | null; look: PlanLook; badge?: string }) {
+export function PlanSurface({ plan, query, focus, look, badge }: { plan: Plan; query?: QueryStat | null; focus?: number | null; look: PlanLook; badge?: string }) {
   const [selected, setSelected] = useState<number | null>(null);
   return (
     <div className="plan-surface">
       <PlanInsights plan={plan} selectedNode={selected} onSelectNode={setSelected} />
-      {look === "diagram" && <PlanDiagram plan={plan} focus={focus} selectedId={selected} onSelect={setSelected} badge={badge} />}
-      {look === "tree" && <PlanView plan={plan} focus={focus} selectedId={selected} onSelect={setSelected} />}
-      {look === "operations" && <OperationsPanel plan={plan} selected={selected ?? focus ?? null} onSelect={setSelected} />}
+      {look === "diagram" && <PlanDiagram plan={plan} query={query} focus={focus} selectedId={selected} onSelect={setSelected} badge={badge} />}
+      {look === "tree" && <PlanView plan={plan} query={query} focus={focus} selectedId={selected} onSelect={setSelected} />}
+      {look === "operations" && <OperationsPanel plan={plan} query={query} focus={focus} selected={selected ?? focus ?? null} onSelect={setSelected} />}
     </div>
   );
 }
 
-function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: number | null; onSelect: (id: number) => void }) {
+function OperationsPanel({ plan, query, focus, selected, onSelect }: { plan: Plan; query?: QueryStat | null; focus?: number | null; selected: number | null; onSelect: (id: number) => void }) {
   // The same shares as the diagram and the tree: own time in a timed run, the estimated cost otherwise.
-  const shares = useMemo(() => planShares(plan), [plan]);
+  const shares = useMemo(() => planShares(plan, query), [plan, query]);
   const nodes = useMemo(() => allNodes(plan.root), [plan]);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
   // The share a person reads: none where the plan can't state one.
@@ -91,7 +92,7 @@ function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: n
         <GitBranch size={12} className="muted" />
         <span className="muted">click a row to see the operator</span>
       </div>
-      <PlanOperations plan={plan} selectedId={current?.id ?? null} onSelect={onSelect} />
+      <PlanOperations plan={plan} query={query} focus={focus} selectedId={current?.id ?? null} onSelect={onSelect} />
       {current && (
         <NodeDetails
           estimates={can(plan.engine, "plan_estimates")}
@@ -99,7 +100,7 @@ function OperationsPanel({ plan, selected, onSelect }: { plan: Plan; selected: n
           node={current}
           share={shareOf(current.id)}
           subtreeShare={shares.statedSubtree.get(current.id) ?? null}
-          noShare={shares.basis === "cost" ? noShareReason(plan, current) : null}
+          noShare={shares.basis === "cost" ? (current.id === focus ? findingNoShareReason(plan, current, query) : noShareReason(plan, current, query)) : null}
           insights={flagged.get(current.id)}
         />
       )}

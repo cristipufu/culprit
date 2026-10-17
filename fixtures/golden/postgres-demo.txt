@@ -73,7 +73,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
 
 === finding filtered-scan:public.orders(customer_id)
 medium severity · high confidence · indexes
@@ -139,14 +139,14 @@ brief:
 === finding chatty-query:3432126458605143571
 low severity · medium confidence · queries
 title: A read from customers runs 8.2K times in 5 hours, one key at a time
-summary: Its runs are 71% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 71% of executions · 0.1% of database time
 metrics:
   - Share of executions: 71%
   - Average duration: 0.02 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -158,7 +158,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 71% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -175,11 +175,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 8.2K times in 5 hours. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -187,7 +187,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
 
 === finding filtered-scan:public.order_items(product_id)
 low severity · high confidence · indexes

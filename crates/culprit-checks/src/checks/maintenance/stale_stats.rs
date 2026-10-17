@@ -46,7 +46,11 @@ fn plans_compiled_with<'a>(
     app_queries(snapshot)
         .filter(|q| crate::query_stopped(snapshot, q).is_none())
         .filter_map(|q| {
-            let used = plan_statistics(q.plan.as_ref()?).into_iter().find(|s| {
+            let plan = q.plan.as_ref()?;
+            if only_unique_lookups(snapshot, plan, schema, table) {
+                return None;
+            }
+            let used = plan_statistics(plan).into_iter().find(|s| {
                 s.schema.eq_ignore_ascii_case(schema)
                     && s.table.eq_ignore_ascii_case(table)
                     && names.iter().any(|n| n.eq_ignore_ascii_case(&s.name))
@@ -81,7 +85,9 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             // Heavy reads of the table are the application's reads that matter: a tiny insert, or a monitoring query
             // whose text happens to name it, plans nothing from its statistics worth a sentence. And none is said
             // where no plan this scan captured was compiled with them.
-            let hot = !unused_since && heavy_reads(snapshot, &s.schema, &s.table);
+            let hot = if auto_update {
+                in_use.iter().any(|(q, _)| query_impact(snapshot, &[*q]).is_some_and(|i| i.share >= crate::queries::MIN_SHARE))
+            } else { heavy_reads(snapshot, &s.schema, &s.table) };
             let mut f = finding("stale-stats", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             // The modification counter counts changes (a row updated twice is two), not rows.
             f.title = format!(
@@ -149,12 +155,13 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                 let captured = app_queries(snapshot).any(|q| q.plan.as_ref().is_some_and(|p| !plan_statistics(p).is_empty()));
                 f.caveats.push(format!(
                     "{}SQL Server refreshes a statistic this far behind when a query next compiles with it, unless it was created with NORECOMPUTE, which this scan doesn't see: SQL Server never refreshes those on its own.",
-                    if captured { "None of the plans this scan captured was compiled with these statistics. " } else { "" }
+                    if captured { "No running plan this scan captured needs these statistics to estimate how many rows it finds. " } else { "" }
                 ));
             }
             f.impact.score = base_score(f.severity) + ratio.min(2.0) * 3.0;
             f.impact.label = format!("{} changes", format::count(s.modifications));
             f.confidence = Confidence::Medium;
+            f.queries = query_refs(&in_use.iter().map(|(q, _)| *q).collect::<Vec<_>>());
             f.metrics.push(Metric::new(CHANGES_SINCE_UPDATE, s.modifications, Unit::Count));
             f.metrics.push(Metric::new("Rows in table", s.rows, Unit::Rows));
             if !s.names.is_empty() {
@@ -183,6 +190,31 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             f
         })
         .collect()
+}
+
+/// A full equality on a unique key finds at most one row independently of its statistics. The stored plan's list of
+/// statistics alone is no reason to refresh them for that access path.
+fn only_unique_lookups(snapshot: &Snapshot, plan: &culprit_core::Plan, schema: &str, table: &str) -> bool {
+    let nodes: Vec<_> = plan
+        .nodes()
+        .into_iter()
+        .filter(|n| n.object.as_deref().is_some_and(|o| names_table(o, schema, table)))
+        .collect();
+    !nodes.is_empty()
+        && nodes.iter().all(|n| {
+            if n.kind != culprit_core::NodeKind::Seek {
+                return false;
+            }
+            let Some(index) = n.index.as_deref() else { return false };
+            let name = index.rsplit('.').next().unwrap_or(index).trim_matches(['[', ']', '"']);
+            let equality = predicate_columns(n.seek_predicate.as_deref().unwrap_or_default()).equality;
+            snapshot.indexes_on(schema, table).any(|i| {
+                i.is_unique
+                    && i.name.eq_ignore_ascii_case(name)
+                    && !i.columns.is_empty()
+                    && i.key_names().iter().all(|c| equality.iter().any(|e| e.eq_ignore_ascii_case(c)))
+            })
+        })
 }
 
 /// Whether statements that read `schema.table`, not the monitoring tools' and each a material share of database time
@@ -369,6 +401,7 @@ mod tests {
         }];
         let q =
             s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "6").expect("the demo's read of products");
+        q.plan.as_mut().unwrap().root.seek_predicate = Some("[id] > [@P1]".into());
         q.plan.as_mut().expect("a plan").raw = Some(
             r#"<ShowPlanXML><StatisticsInfo LastUpdate="2026-10-01T00:00:00.00" ModificationCount="10" SamplingPercent="100" Statistics="[st_products]" Table="[products]" Schema="[shop]" Database="[culprit_demo]" /></ShowPlanXML>"#.into(),
         );
@@ -379,6 +412,7 @@ mod tests {
             f.summary
         );
         assert!(!f.caveats.iter().any(|c| c.contains("no query has used it")), "{:?}", f.caveats);
+        assert!(f.queries.iter().any(|r| r.id == "6"), "the named statement is linked");
         let fix = f.fix.unwrap();
         assert!(
             fix.summary.starts_with("Update them now (below): the plans compiled with them, query 6's among them"),
@@ -386,6 +420,21 @@ mod tests {
             fix.summary
         );
         assert!(!fix.summary.contains("No update is needed"), "{}", fix.summary);
+        // A unique equality lookup's cardinality doesn't depend on the statistic named in its stored XML.
+        let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "6").unwrap();
+        let plan = q.plan.as_mut().unwrap();
+        plan.root.kind = culprit_core::NodeKind::Seek;
+        plan.root.object = Some("shop.products".into());
+        plan.root.index = Some("[pk_products]".into());
+        plan.root.seek_predicate = Some("[shop].[products].[id]=[@P1]".into());
+        plan.root.children.clear();
+        let index = s.indexes.iter_mut().find(|i| i.schema == "shop" && i.table == "products").unwrap();
+        index.name = "pk_products".into();
+        index.columns = vec!["id".into()];
+        index.is_unique = true;
+        let f = stale_stats(&s).into_iter().find(|f| f.id == "stale-stats:shop.products").unwrap();
+        assert!(f.queries.is_empty());
+        assert!(f.fix.unwrap().summary.starts_with("No update is needed"));
     }
 
     // A staging SQL Server reading: "26K rows changed (2026-09-08)" for two statistics, the count and the date of one of

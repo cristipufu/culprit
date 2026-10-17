@@ -1202,6 +1202,9 @@ fn a_write_whose_runs_mostly_change_nothing_is_told_to_skip_them() {
     let text = "INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT DO NOTHING";
     let report = analyze(heavy_insert(text, 500.0));
     let f = find(&report.findings, "heavy-query:3432126458605143571").expect("a heavy insert");
+    assert!(!f.fix.as_ref().unwrap().summary.contains("every time it runs"));
+    let rows = f.metrics.iter().find(|m| m.label == "Rows changed per run").unwrap();
+    assert_eq!(culprit_checks::metric_text(rows), "0.25");
     assert!(!f.summary.contains("cheap") && !f.summary.contains("how often it runs"), "{}", f.summary);
     assert!(
         f.summary.contains(
@@ -1340,7 +1343,9 @@ fn a_statement_that_stopped_is_titled_in_the_past() {
         f.title
     );
     assert!(
-        f.summary.contains("Its plan had nothing to make faster: what a run cost was the write itself"),
+        f.summary.contains(
+            "Its plan had nothing to make faster: checking for rows still cost work when a run changed nothing"
+        ),
         "{}",
         f.summary
     );

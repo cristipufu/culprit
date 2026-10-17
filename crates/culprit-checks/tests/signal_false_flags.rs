@@ -691,9 +691,10 @@ fn one_lock_episode_on_a_table_is_one_finding() {
     let episode = locks.iter().find(|f| f.id == "lock-time:7").expect("the longest wait keeps the finding");
     let ids: Vec<&str> = episode.queries.iter().map(|q| q.id.as_str()).collect();
     assert_eq!(ids, vec!["7", "9"], "{:?}", episode.queries);
+    assert_eq!(episode.impact.label, "3 min waiting on locks", "both statements' waits are counted");
     assert!(
         episode.summary.contains(
-            "A read from orders (query 9) waited on locks on shop.orders on Oct 11, 10:57–11:19 UTC too, 1 min (nearly all of its time): the same episode of blocking, behind the same holder."
+            "A read from orders (query 9) waited on locks on shop.orders on Oct 11, 10:57–11:19 UTC too, 1 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another."
         ),
         "{}",
         episode.summary
@@ -701,7 +702,7 @@ fn one_lock_episode_on_a_table_is_one_finding() {
     // The read's own way out (row versioning) stays said.
     let fix = &episode.fix.as_ref().unwrap().summary;
     assert!(
-        fix.contains("Query 9, a read, waits for these writes only because READ_COMMITTED_SNAPSHOT is off"),
+        fix.contains("Query 9, a read, waits for writes on the same table while READ_COMMITTED_SNAPSHOT is off"),
         "{fix}"
     );
     assert!(locks.iter().all(|f| f.id != "lock-time:9"), "folded in");
@@ -833,6 +834,39 @@ fn log_advice_drops_an_index_only_where_one_is_unread() {
     s.indexes.push(idle);
     let fix = of(&analyze(s), "log-volume")[0].fix.clone().unwrap();
     assert!(fix.summary.contains("events has one nobody reads: drop it (see Indexes)"), "{}", fix.summary);
+}
+
+#[test]
+fn a_write_to_a_gone_table_gets_no_log_fix_but_an_active_or_unknown_table_does() {
+    let mut s = wal(2.9 * GB, 450_000.0, 240.0);
+    let q = s
+        .workload
+        .as_mut()
+        .unwrap()
+        .queries
+        .iter_mut()
+        .find(|q| q.costs.as_ref().is_some_and(|c| c.log_bytes.is_some()))
+        .unwrap();
+    q.first_seen = Some("2026-10-01T12:00:00Z".into());
+    q.last_seen = Some("2026-10-01T13:00:00Z".into());
+    q.plan = None;
+    let id = q.id.clone();
+    let before = analyze(s.clone());
+    let f = of(&before, "log-volume").into_iter().find(|f| f.queries.iter().any(|r| r.id == id)).unwrap();
+    assert!(!f.fix.as_ref().unwrap().summary.starts_with("Nothing to change"));
+    s.tables.retain(|t| t.name != "events");
+    let report = analyze(s.clone());
+    let f = of(&report, "log-volume").into_iter().find(|f| f.queries.iter().any(|r| r.id == id)).unwrap();
+    assert!(f.fix.as_ref().unwrap().summary.contains("isn't in the database's catalog"), "{:?}", f.fix);
+    assert!(f.fix.as_ref().unwrap().sql.is_none());
+    assert!(f.verify[0].starts_with("Nothing to check"));
+    s.tables.clear();
+    let report = analyze(s);
+    let f = of(&report, "log-volume").into_iter().find(|f| f.queries.iter().any(|r| r.id == id)).unwrap();
+    assert!(
+        !f.fix.as_ref().unwrap().summary.contains("isn't in the database's catalog"),
+        "an unread catalog proves no absence"
+    );
 }
 
 // A staging SQL Server reading: 192 inserts writing 412 KB of log each into a table of 284 KB rows. The bytes per row went unsaid

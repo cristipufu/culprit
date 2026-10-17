@@ -174,12 +174,7 @@ fn upkeep_the_fix_calls_optional_or_follows_with_a_code_change_is_briefed_as_suc
         !section.contains("The fix is upkeep of the database, not a change to the application's code"),
         "{section}"
     );
-    assert!(
-        section.contains(
-            "The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's code"
-        ),
-        "{section}"
-    );
+    assert!(section.contains("The upkeep in the fix's SQL isn't a change to the application's code"), "{section}");
     assert!(section.contains("The fix's other option is a change in the application's code"), "{section}");
 }
 
@@ -203,7 +198,7 @@ fn statements_that_stopped_running_may_need_nothing() {
     let report = report("postgres-demo.json");
     let mut f = finding(&report, "chatty-query:").clone();
     let running = codebase(&agent_brief(&report, &f));
-    assert!(running.contains("find where the application sends them"), "{running}");
+    assert!(running.contains("Find where the application sends the statements above"), "{running}");
     assert!(!agent_brief(&report, &f).contains("it no longer runs"));
     f.inactive = true;
     // Its rates are what it ran before it stopped, not what it runs now.
@@ -214,7 +209,7 @@ fn statements_that_stopped_running_may_need_nothing() {
     assert!(stopped.contains("a deploy may have changed or fixed them"), "{stopped}");
     assert!(!stopped.contains("most likely"), "{stopped}");
     assert!(stopped.contains("there is nothing to do"), "{stopped}");
-    assert!(!stopped.contains("find where the application sends them"), "{stopped}");
+    assert!(!stopped.contains("Find where the application sends the statements above"), "{stopped}");
     // Nothing to check until it runs again. Marked by hand, it keeps its own step, which already says the totals keep
     // the earlier runs: the brief says that once.
     assert!(
@@ -315,10 +310,7 @@ fn a_step_the_plan_puts_no_cost_on_leaves_the_share_out() {
     let grouped = plan_line(&agent_brief(&mysql, &about(&mysql, "04cd7be9c366fadc", Some(2))));
     assert!(!grouped.contains("of estimated cost"), "{grouped}");
     assert!(!grouped.contains("most expensive"), "{grouped}");
-    assert!(
-        grouped.contains("`Sort` (using filesort) and `Group` (using temporary table) have no cost of their own"),
-        "{grouped}"
-    );
+    assert!(grouped.contains("The database leaves some of this plan's work without a cost estimate"), "{grouped}");
     assert!(grouped.contains("the step this finding is about is `Group`"), "{grouped}");
     // Named by no finding, the scan isn't "the most expensive step" of a plan that doesn't cost its other steps.
     let mut unnamed = about(&mysql, "04cd7be9c366fadc", None);
@@ -327,7 +319,7 @@ fn a_step_the_plan_puts_no_cost_on_leaves_the_share_out() {
     assert!(!brief.lines().any(|l| l.starts_with("Plan:")), "{brief}");
     let scan = plan_line(&agent_brief(&mysql, &about(&mysql, "19bd4ff468839ea3", Some(2))));
     assert!(scan.contains("the step this finding is about is `Table scan` on `shop.orders`"), "{scan}");
-    assert!(scan.contains("`Sort` (using filesort) has no cost of its own"), "{scan}");
+    assert!(scan.contains("The database leaves some of this plan's work without a cost estimate"), "{scan}");
     assert!(!scan.contains("100%"), "{scan}");
 
     // A plan that costs every step keeps its share.
@@ -477,7 +469,7 @@ fn upkeep_is_said_only_for_a_fix_that_runs_it() {
     );
     let section = codebase(&agent_brief(&postgres, &stats));
     assert!(section.contains("The fix is upkeep of the database"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
 
     // The same for a plan warning whose fix is SQL Server's UPDATE STATISTICS.
     let mssql = report("mssql-demo.json");
@@ -488,7 +480,7 @@ fn upkeep_is_said_only_for_a_fix_that_runs_it() {
     );
     let section = codebase(&agent_brief(&mssql, &stats));
     assert!(section.contains("The fix is upkeep of the database"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
 }
 
 #[test]
@@ -505,7 +497,7 @@ fn a_fix_that_advises_against_itself_ships_nothing() {
     let section = codebase(&agent_brief(&mssql, &low));
     assert!(section.contains("The fix doesn't recommend this change as things stand"), "{section}");
     assert!(!section.contains("Ship the fix's index change"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
     // No change to wait for: the next scan shows where the finding stands.
     assert!(!section.contains("After any change is live"), "{section}");
     assert!(section.contains("A later `culprit scan mssql-demo` shows where"), "{section}");
@@ -653,7 +645,7 @@ fn slow_runs_that_waited_change_no_statement() {
     );
     assert!(!section.contains("updates or deletes"), "{section}");
     assert!(section.contains("keep those transactions short"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
     assert!(!section.contains("with this scan"), "{section}");
     assert!(section.contains("can't show the change"), "{section}");
     assert!(section.contains("Catch the next slow runs instead, the way the fix says"), "{section}");
@@ -691,10 +683,10 @@ fn a_statement_that_waited_is_not_rewritten() {
     };
     let section = codebase(&agent_brief(&postgres, &about_query(&postgres, "sleep")));
     assert!(section.contains("Its time is a pause the statement asks for"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
     let section = codebase(&agent_brief(&postgres, &about_query(&postgres, "lock")));
     assert!(section.contains("waiting for an application lock another session holds"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
 
     // MySQL counts the lock time: an update that spent most of its time waiting for row locks.
     let mut mysql = report("mysql-demo.json");
@@ -709,11 +701,11 @@ fn a_statement_that_waited_is_not_rewritten() {
     let section = codebase(&agent_brief(&mysql, &about_query(&mysql, "update")));
     assert!(section.contains("waiting for locks other transactions hold"), "{section}");
     assert!(section.contains("so no rewrite or index of it shortens it"), "{section}");
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
 
     // The same statement doing work is changed in the application.
     let section = codebase(&agent_brief(&mysql, &with_fix(finding(&mysql, "heavy-query:"), "Read less.", None)));
-    assert!(section.contains("find where the application sends them"), "{section}");
+    assert!(section.contains("Find where the application sends the statements above"), "{section}");
 
     // lock-time is a statement's time spent waiting, whichever statement: its fix says making it faster won't help, so
     // its brief sends the agent to the transactions that hold the locks, not to a rewrite.
@@ -727,6 +719,48 @@ fn a_statement_that_waited_is_not_rewritten() {
         assert!(section.contains("keep those transactions short"), "{}: {section}", f.id);
     }
     assert!(demo.findings.iter().any(|f| f.check == "lock-time"), "the demo's lock-time finding");
+    // Settings-only SQL catches the next wait; it doesn't turn the fix into a rewrite of the waiting statement.
+    let mut f = demo.findings.iter().find(|f| f.check == "lock-time").unwrap().clone();
+    for sql in ["ALTER SYSTEM SET log_lock_waits = 'on';\nSELECT pg_reload_conf();", "SET GLOBAL slow_query_log = ON;"]
+    {
+        f.fix.as_mut().unwrap().sql = Some(sql.into());
+        let section = codebase(&agent_brief(&demo, &f));
+        assert!(section.contains("keep those transactions short"), "{section}");
+        assert!(!section.contains("an ORM change or a query rewrite"), "{section}");
+        assert!(section.contains("setting in the fix's SQL belongs to the database server"), "{section}");
+    }
+}
+
+#[test]
+fn a_plan_note_does_not_invent_a_row_misestimate_from_large_reads_or_hide_a_few_runs() {
+    let report = report("mssql-demo.json");
+    let mut q = report.snapshot.workload.unwrap().queries[0].clone();
+    let mut plan = q.plan.clone().unwrap();
+    plan.root.children.clear();
+    plan.root.object = None;
+    plan.root.props.clear();
+    plan.root.kind = culprit_core::NodeKind::Modify;
+    plan.root.est_rows = 1.0;
+    plan.total_cost = 0.001;
+    plan.root.subtree_cost = 0.001;
+    plan.root.self_cost = 0.001;
+    q.plans.clear();
+    q.plan_id = None;
+    q.executions = 1.0;
+    q.rows = Some(1.0);
+    q.logical_reads = Some(72.0);
+    let note = culprit_checks::plan_shares_note(&plan, Some(&q)).unwrap();
+    assert!(note.contains("72 pages a run"), "{note}");
+    assert!(!note.contains("costs rest on an estimate of 1 row"), "{note}");
+    q.executions = 4.0;
+    q.rows = Some(4.0);
+    q.logical_reads = Some(4.0);
+    q.total_time_ms = 2404.0;
+    q.mean_time_ms = 601.0;
+    q.max_time_ms = Some(2400.0);
+    let note = culprit_checks::plan_shares_note(&plan, Some(&q)).unwrap();
+    assert!(note.contains("4 runs took 2.4 s in all, with the slowest taking 2.4 s"), "{note}");
+    assert!(!note.contains("601 ms"), "{note}");
 }
 
 #[test]
@@ -747,7 +781,7 @@ fn statements_listed_for_reference_or_caught_by_a_diagnostic_are_not_rewritten()
         Some(session),
     );
     let section = codebase(&agent_brief(&mssql, &f));
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
     assert!(section.contains("starts an event session on the database"), "{section}");
     assert!(section.contains("The statement to change is the one it catches"), "{section}");
     // CX-12: created only where it isn't defined yet, it is still an event session; the brief says how to stop it.
@@ -770,7 +804,7 @@ fn statements_listed_for_reference_or_caught_by_a_diagnostic_are_not_rewritten()
     );
     index.category = Category::Indexes;
     let section = codebase(&agent_brief(&mssql, &index));
-    assert!(!section.contains("find where the application sends them"), "{section}");
+    assert!(!section.contains("Find where the application sends the statements above"), "{section}");
     assert!(section.contains("Ship the fix's index change"), "{section}");
 }
 

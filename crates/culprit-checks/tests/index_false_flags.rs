@@ -539,6 +539,19 @@ fn a_request_last_made_before_the_window_is_history() {
     );
     assert!(f.verify[0].starts_with("Nothing to check unless they come back"), "{:?}", f.verify);
     assert!(f.title.contains(" was searched by "), "{}", f.title);
+    assert!(f.summary.contains("needed to. It estimated"), "{}", f.summary);
+
+    // A small newer request on the same key is still evidence of activity, even below the candidate count threshold.
+    let mut same_key = s.clone();
+    let mut newer = same_key.missing_indexes.iter().find(|m| m.table == "order_items").unwrap().clone();
+    newer.include.push("quantity".into());
+    newer.seeks = 4.0;
+    newer.scans = 0.0;
+    newer.last_used = Some("2026-10-11T06:00:00Z".into());
+    same_key.missing_indexes.push(newer);
+    let report = analyze(same_key);
+    let f = finding(&report, "missing-index:shop.order_items(order_id)").unwrap();
+    assert!(!f.inactive, "a newer request on the same keys keeps it active: {:?}", f.caveats);
 
     // A staging SQL Server reading: requests last made just before a 2-hour window were called stopped, and the next
     // scan showed them still coming. Under a day of silence (here 6 hours before the demo's data ends, before its
@@ -713,7 +726,7 @@ fn a_table_that_is_gone_gets_no_index() {
     let fix = gone.fix.as_ref().unwrap();
     assert!(fix.sql.is_none(), "{:?}", fix.sql);
     assert!(
-        fix.summary.starts_with("Nothing to create: public.orders isn't in the database's catalog any more"),
+        fix.summary.starts_with("Nothing to change: public.orders isn't in the database's catalog any more"),
         "{}",
         fix.summary
     );
@@ -724,7 +737,7 @@ fn a_table_that_is_gone_gets_no_index() {
         gone.summary
     );
     assert!(gone.summary.starts_with("One query read every row of public.orders"), "{}", gone.summary);
-    assert!(gone.verify[0].starts_with("Nothing to check: public.orders is gone"), "{:?}", gone.verify);
+    assert!(gone.verify[0].starts_with("Nothing to check: the tables are gone"), "{:?}", gone.verify);
     let running = scan(false).expect("the scan's finding");
     assert!(running.fix.as_ref().unwrap().sql.is_some(), "{:?}", running.fix);
 }
@@ -879,6 +892,7 @@ fn a_plans_own_index_request_is_never_hidden() {
     assert!(finding(&report, hint_finding).is_none());
     let scan = finding(&report, "filtered-scan:shop.orders(shipped_at)").expect("the scan the plan's request is about");
     assert!(scan.queries.iter().any(|r| r.id == "8"));
+    assert!(sql(scan).contains("INCLUDE ([total])"), "the plan's covering columns survive: {}", sql(scan));
     // And with neither, the plan's own request is.
     let plan = s
         .workload

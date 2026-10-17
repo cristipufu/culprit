@@ -549,7 +549,7 @@ fn statements_evicted(snapshot: &Snapshot, evicted: &Evictions, since: Option<(&
             new_entries,
             new_entries / days,
             format!(
-                " Since Culprit's scan {when}, it ran out of room {} more times: {about} {} entries{rate}.",
+                " {} of those rounds came since Culprit's scan {when}: {about} {} entries{rate}.",
                 format::count(new),
                 format::count(new_entries)
             ),

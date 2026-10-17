@@ -109,9 +109,9 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                 f.summary = f.summary.replacen(
                     "more than the average, together.",
                     &format!(
-                        "more than its average over {}, together ({} a run, against {} over {}).",
-                        workload.window_phrase(),
+                        "more, together, than its average of {} a run over {} ({} over {}).",
                         format::duration(q.mean_time_ms),
+                        workload.window_phrase(),
                         format::duration(s.mean_ms().unwrap_or(q.mean_time_ms)),
                         s.phrase()
                     ),

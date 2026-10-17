@@ -3,10 +3,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import type { Plan } from "../gen/Plan";
 import type { PlanInsight } from "../gen/PlanInsight";
 import type { PlanNode } from "../gen/PlanNode";
+import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { duration, percent } from "../lib/format";
 import { can, serverName } from "../lib/engines";
-import { allNodes, costBasis as basis, cost, estRowsForRuns, insightsByNode, isWrapper, misestimate, noShareReason, rows, rowsOut, uncostedSteps } from "../lib/plan-format";
+import { allNodes, costBasis as basis, cost, estRowsForRuns, findingNoShareReason, insightsByNode, isWrapper, misestimate, noShareReason, rows, rowsOut, uncostedSteps } from "../lib/plan-format";
 import { ActualSummary } from "./ActualSummary";
 import { NodeDetails } from "./NodeDetails";
 import { OpIcon } from "./OpIcon";
@@ -128,9 +129,11 @@ function layout(root: PlanNode, total: number, expanded: Set<number>, keep: Set<
 const px = (x: number) => PAD + x * (CARD_W + GAP_X);
 const py = (y: number) => PAD + 24 + y * (CARD_H + GAP_Y);
 
-export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) => void }) {
+export function CostStrip({ plan, query, focus, onPick }: { plan: Plan; query?: QueryStat | null; focus?: number | null; onPick: (id: number) => void }) {
   // Actual plans with per-operator timing show where the time went; everything else, the optimizer's cost estimate.
-  const shares = useMemo(() => planShares(plan), [plan]);
+  const shares = useMemo(() => planShares(plan, query), [plan, query]);
+  const focused = allNodes(plan.root).find((n) => n.id === focus);
+  const note = shares.basis === "cost" && focused ? findingNoShareReason(plan, focused, query) ?? shares.note : shares.note;
   if (shares.basis !== "time" && !can(plan.engine, "plan_estimates")) {
     return (
       <div className="cost-strip">
@@ -144,10 +147,10 @@ export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) =
     .filter((n) => own(n) > 0)
     .sort((a, b) => own(b) - own(a))
     .slice(0, 4);
-  if (top.length === 0 && shares.note) {
+  if (top.length === 0 && note) {
     return (
       <div className="cost-strip">
-        <div className="eyebrow">Where the cost goes: {shares.note}</div>
+        <div className="eyebrow">Where the cost goes: {note}</div>
       </div>
     );
   }
@@ -186,6 +189,7 @@ export function CostStrip({ plan, onPick }: { plan: Plan; onPick: (id: number) =
 
 export function PlanDiagram(props: {
   plan: Plan;
+  query?: QueryStat | null;
   focus?: number | null;
   /** Comparison marks by node id; marked nodes are never folded away. */
   marks?: Map<number, Mark>;
@@ -209,10 +213,11 @@ export function PlanDiagram(props: {
   /** Drawn over each visible operator in the same coordinates as its card, e.g. live progress. */
   overlay?: (node: PlanNode, box: { x: number; y: number; w: number; h: number }) => ReactNode;
 }) {
-  const { plan, focus, marks, selectedId, onSelect, initialZoom, badge, bare, tints, onZoomChange, overlay, kindLabel } = props;
+  const { plan, query, focus, marks, selectedId, onSelect, initialZoom, badge, bare, tints, onZoomChange, overlay, kindLabel } = props;
+  const reason = (n: PlanNode) => focus === n.id ? findingNoShareReason(plan, n, query) : noShareReason(plan, n, query);
   const total = basis(plan);
   // Measured plans rank operators by their own time; estimated plans by cost.
-  const shares = useMemo(() => planShares(plan), [plan]);
+  const shares = useMemo(() => planShares(plan, query), [plan, query]);
   // The share a person reads: none where the plan can't state one (beside a step it puts no cost on, on a default guess).
   const shareOf = (n: PlanNode) => shares.stated.get(n.id) ?? null;
   const planCost = plan.total_cost || plan.root.subtree_cost;
@@ -324,7 +329,7 @@ export function PlanDiagram(props: {
         </div>
       )}
       {!bare && plan.kind === "actual" && <ActualSummary plan={plan} onPick={select} />}
-      {!bare && <CostStrip plan={plan} onPick={select} />}
+      {!bare && <CostStrip plan={plan} query={query} focus={focus} onPick={select} />}
       <div className="diagram-wrap">
         {bare && (
           <div className="diagram-float">
@@ -391,7 +396,7 @@ export function PlanDiagram(props: {
                   y={py(b.y)}
                   hot={hot.has(b.node.id)}
                   hottest={b.node.id === hottest?.id && (shareOf(b.node) ?? 0) >= 0.05}
-                  noShare={shares.basis === "cost" ? noShareReason(plan, b.node) : null}
+                  noShare={shares.basis === "cost" ? reason(b.node) : null}
                   selected={b.node.id === selected}
                   mark={marks?.get(b.node.id)}
                   tint={tints?.get(b.node.id)}
@@ -426,7 +431,7 @@ export function PlanDiagram(props: {
           node={selectedNode}
           share={shareOf(selectedNode)}
           subtreeShare={shares.statedSubtree.get(selectedNode.id) ?? null}
-          noShare={shares.basis === "cost" ? noShareReason(plan, selectedNode) : null}
+          noShare={shares.basis === "cost" ? reason(selectedNode) : null}
           insights={flagged.get(selectedNode.id)}
         />
       )}

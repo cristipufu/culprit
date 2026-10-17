@@ -73,8 +73,8 @@ brief:
 === finding lock-time:4167fe7f2c20deb7
 low severity · high confidence · queries
 title: A read from orders spends nearly all its time waiting on locks, 28.8 s per run
-summary: Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): the same episode of blocking, behind the same holder.
-impact: 2 min waiting on locks · 80.2% of database time
+summary: Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
+impact: 4 min waiting on locks · 80.2% of database time
 metrics:
   - Lock wait: 2 min
   - Share of its time: 100%
@@ -87,7 +87,7 @@ caveats:
 queries:
   - 4167fe7f2c20deb7: 40% of database time
   - fc709554a9248878: 40% of database time
-    note: Waited 2 min (nearly all of its time) on locks on shop.orders, in the same episode.
+    note: Waited 2 min (nearly all of its time) on locks on shop.orders in the same hours; the holder isn't recorded.
 brief:
     # A read from orders spends nearly all its time waiting on locks, 28.8 s per run
 
@@ -95,7 +95,7 @@ brief:
 
     ## What's happening
 
-    Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): the same episode of blocking, behind the same holder.
+    Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
 
     ## Evidence
 
@@ -136,14 +136,14 @@ brief:
 === finding chatty-query:9b30e6ad79d940fe
 low severity · medium confidence · queries
 title: A read from products runs 30K times in 2 minutes, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 impact: 75% of executions · 0.4% of database time
 metrics:
   - Share of executions: 75%
   - Average duration: 0.04 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -155,7 +155,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (<1% of database time in all), but each call costs a network round trip.
+    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -172,11 +172,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mysql-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mysql-demo --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -184,7 +184,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says.
 
 === finding temp-spill:04cd7be9c366fadc
 low severity · high confidence · queries
@@ -225,7 +225,7 @@ brief:
     SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
     ```
 
-    Plan: the step this finding is about is `Group`. `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
+    Plan: the step this finding is about is `Group`. The database leaves some of this plan's work without a cost estimate, so no step is given a share.
 
     ## Suggested fix
 
@@ -244,7 +244,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
 
 === finding scan-heavy:shop.orders
 low severity · medium confidence · indexes
@@ -302,7 +302,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding deadlocks:opposite-order:shop.customers+shop.orders
 low severity · high confidence · queries
@@ -486,7 +486,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `row-lock-waits:server` the way *How to verify* says: performance_schema keeps running totals, so the runs from before the change stay in them and their numbers move only as new runs add up.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `row-lock-waits:server` the way *How to verify* says: performance_schema keeps running totals, so the runs from before the change stay in them and their numbers move only as new runs add up.
 
 === finding big-result:7f47c8550af0c644
 low severity · medium confidence · queries
@@ -533,7 +533,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `big-result:7f47c8550af0c644` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `big-result:7f47c8550af0c644` the way *How to verify* says.
 
 === finding config:slow_query_log
 low severity · medium confidence · configuration
@@ -610,7 +610,7 @@ shares: The plan as a whole is cheap, so no share of its cost is put on one step
 === plan 4167fe7f2c20deb7
 no insights
 note: MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.
-shares: The plan is estimated to be cheap, yet its runs take 28.8 s on average: the time isn't in what it costs, so no share of its cost is put on one step.
+shares: The plan is estimated to be cheap, yet its runs averaged 28.8 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 7f47c8550af0c644
 no insights

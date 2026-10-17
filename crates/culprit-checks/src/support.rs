@@ -768,7 +768,7 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
 
 /// "once", never "1 times": a count of runs in a sentence.
 fn times(n: f64) -> String {
-    match format::count(n).as_str() {
+    match format::count(n.round()).as_str() {
         "1" => "once".to_string(),
         count => format!("{count} times"),
     }

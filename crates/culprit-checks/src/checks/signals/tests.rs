@@ -464,9 +464,7 @@ fn escalations_with_none_since_the_previous_scan_are_low_history() {
     assert_eq!(f.queries.len(), 1);
     assert_eq!(f.impact.label, "2 table locks, none new");
     assert_eq!(f.metrics[1].value, 0.0);
-    assert!(
-        f.fix.as_ref().unwrap().summary.starts_with("None happened since the previous scan, on Oct 11 at 06:00 UTC.")
-    );
+    assert!(!f.fix.as_ref().unwrap().summary.contains("since the previous scan"), "the fix doesn't repeat the history");
 }
 
 #[test]

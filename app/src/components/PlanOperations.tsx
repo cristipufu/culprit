@@ -2,10 +2,11 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
+import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
 import { duration, percent } from "../lib/format";
-import { allNodes, estRowsForRuns, insightsByNode, misestimate, noShareReason, rows } from "../lib/plan-format";
+import { allNodes, estRowsForRuns, findingNoShareReason, insightsByNode, misestimate, noShareReason, rows } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
@@ -35,13 +36,13 @@ const COLUMNS: { key: SortKey; label: string; title: string; actual?: boolean }[
 ];
 
 /** Every operator in one sortable table: where the work goes, where estimates broke, which ones have problems. */
-export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; selectedId: number | null; onSelect: (id: number) => void }) {
+export function PlanOperations({ plan, query: statement, focus, selectedId, onSelect }: { plan: Plan; query?: QueryStat | null; focus?: number | null; selectedId: number | null; onSelect: (id: number) => void }) {
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "cost", desc: true });
   const [query, setQuery] = useState("");
   const [issuesOnly, setIssuesOnly] = useState(false);
   const body = useRef<HTMLTableSectionElement>(null);
   // The same shares as the diagram and the tree: own time in a timed run, the estimated cost otherwise.
-  const shares = useMemo(() => planShares(plan), [plan]);
+  const shares = useMemo(() => planShares(plan, statement), [plan, statement]);
   const actual = allNodes(plan.root).some((n) => n.act_rows != null);
   const timed = allNodes(plan.root).some((n) => n.act_time_ms != null);
   const flagged = useMemo(() => insightsByNode(plan), [plan]);
@@ -204,7 +205,7 @@ export function PlanOperations({ plan, selectedId, onSelect }: { plan: Plan; sel
                             {percent(r.self)}
                           </span>
                         ) : (
-                          <span className="muted" title={shares.basis === "cost" ? noShareReason(plan, n) ?? undefined : undefined}>
+                          <span className="muted" title={shares.basis === "cost" ? (focus === n.id ? findingNoShareReason(plan, n, statement) : noShareReason(plan, n, statement)) ?? undefined : undefined}>
                             —
                           </span>
                         ))}

@@ -21,6 +21,75 @@ fn every_demo_fixture_opens() {
     assert!(reports.iter().all(|(_, r)| !r.findings.is_empty()), "every demo has findings");
 }
 
+#[test]
+fn no_stopped_finding_promises_a_fix_when_only_its_table_grows() {
+    let mut seen = 0;
+    for (name, report) in demo_reports() {
+        // The saved demos mostly keep running. Exercise the rule on each fixture after its statements have been
+        // silent for two days, with no trend buckets that would contradict that history.
+        let mut snapshot = report.snapshot;
+        let Some(w) = snapshot.workload.as_mut() else { continue };
+        let end = chrono::DateTime::parse_from_rfc3339(w.window_end.as_deref().unwrap_or(&snapshot.taken_at)).unwrap();
+        w.window_hours = 96.0;
+        for q in &mut w.queries {
+            q.first_seen = Some((end - chrono::Duration::hours(96)).to_rfc3339());
+            q.last_seen = Some((end - chrono::Duration::hours(48)).to_rfc3339());
+            q.trend = None;
+        }
+        let report = culprit_checks::analyze(snapshot);
+        for f in report.findings.iter().filter(|f| f.inactive) {
+            seen += 1;
+            assert!(
+                f.verify.iter().all(|v| !v.contains("once ") || v.contains("runs again") || v.contains("is gone")),
+                "{name} {}: {:?}",
+                f.id,
+                f.verify
+            );
+            let code = culprit_checks::agent_brief(&report, f);
+            assert!(
+                !brief_section(&code, "What to do in the codebase").contains("After any change is live"),
+                "{name} {}: {code}",
+                f.id
+            );
+        }
+    }
+    assert!(seen > 0);
+}
+
+#[test]
+fn a_plan_note_never_uses_pages_alone_as_proof_of_a_row_misestimate() {
+    for (name, report) in demo_reports() {
+        for q in report.snapshot.workload.iter().flat_map(|w| &w.queries) {
+            let Some(plan) = &q.plan else { continue };
+            if matches!(
+                culprit_core::insights::cheap_plan_runs(plan, Some(q)),
+                culprit_core::insights::CheapPlanRuns::MoreReads { .. }
+            ) {
+                let note = culprit_checks::plan_shares_note(plan, Some(q)).unwrap();
+                assert!(!note.contains("costs rest on an estimate of"), "{name} {}: {note}", q.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn briefs_keep_lock_holders_as_the_fix_when_their_sql_only_logs_waits() {
+    let mut seen = 0;
+    for (name, report) in demo_reports() {
+        for f in report.findings.iter().filter(|f| !f.inactive && f.check == "lock-time") {
+            seen += 1;
+            let mut diagnostic = f.clone();
+            diagnostic.fix.as_mut().unwrap().sql =
+                Some("ALTER SYSTEM SET log_lock_waits = 'on';\nSELECT pg_reload_conf();".into());
+            let brief = culprit_checks::agent_brief(&report, &diagnostic);
+            let code = brief_section(&brief, "What to do in the codebase");
+            assert!(code.contains("keep those transactions short"), "{name} {}: {code}", f.id);
+            assert!(!code.contains("an ORM change or a query rewrite"), "{name} {}: {code}", f.id);
+        }
+    }
+    assert!(seen > 0);
+}
+
 // ── tables: what index and table findings, their fixes and their briefs say ──
 
 /// A text's sentences as the refine stage compares them (lower case, spaces collapsed, no final stop): split after a

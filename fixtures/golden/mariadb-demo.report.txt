@@ -42,7 +42,7 @@ brief:
     SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
     ```
 
-    Plan: the step this finding is about is `Temporary table`. `Sort` (sum(orders.total) desc) and `Temporary table` have no cost of their own in the plan, so no share is given.
+    Plan: the step this finding is about is `Temporary table`. The database leaves some of this plan's work without a cost estimate, so no step is given a share.
 
     ## Suggested fix
 
@@ -61,19 +61,19 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says.
 
 === finding chatty-query:a92bb0be330ac53a
 low severity · medium confidence · queries
 title: A read from products runs 30K times in 1 minute, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.
 impact: 75% of executions · 1.0% of database time
 metrics:
   - Share of executions: 75%
   - Average duration: 0.02 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -85,7 +85,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (1% of database time in all), but each call costs a network round trip.
+    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -102,11 +102,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mariadb-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mariadb-demo --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -114,7 +114,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `chatty-query:a92bb0be330ac53a` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `chatty-query:a92bb0be330ac53a` the way *How to verify* says.
 
 === finding heavy-query:decf59629e790076
 low severity · high confidence · queries
@@ -167,7 +167,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `heavy-query:decf59629e790076` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `heavy-query:decf59629e790076` the way *How to verify* says.
 
 === finding scan-heavy:shop.orders
 low severity · medium confidence · indexes
@@ -225,7 +225,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding deadlocks:opposite-order:shop.customers+shop.orders
 low severity · high confidence · queries

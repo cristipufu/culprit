@@ -15,7 +15,7 @@ import { count, duration, oneLine, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { addPlan, compare } from "../lib/plans";
 import { querySummary } from "../lib/query-summary";
-import { figures, honest, workloadKind } from "../lib/rates";
+import { figures, honest, workloadKind, windowPhrase } from "../lib/rates";
 import { setState, toast, useStore } from "../lib/store";
 import { compareSince } from "./Overview";
 
@@ -279,7 +279,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
               {stated.over && (
                 <p className="muted">
                   Share, runs and average over {stated.over}
-                  {stated.totals ? ` (${stated.totals})` : ""}.
+                  {stated.totals ? ` (${stated.totals})` : ""}. Slowest run, rows and reads are counted over {windowPhrase(w)}.
                 </p>
               )}
             </section>
@@ -504,7 +504,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
           </div>
         </div>
       )}
-      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} focus={planId === dominant ? focus : null} look={look} />}
+      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} query={{ ...query, plan_id: planId }} focus={planId === dominant ? focus : null} look={look} />}
     </section>
   );
 }

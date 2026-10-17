@@ -5,7 +5,7 @@ use super::*;
 pub fn chatty_query_info() -> CheckInfo {
     CheckInfo {
         id: "chatty-query".into(),
-        title: "Chatty queries (N+1)".into(),
+        title: "Chatty queries".into(),
         category: Category::Queries,
         engines: vec![Engine::Mssql, Engine::Postgres, Engine::Mysql],
         requires: vec![],
@@ -154,11 +154,11 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                 (
                     format!("{handle} {ran} {runs}, one key at a time"),
                     format!(
-                        "Its runs {are} {exec} of all statement runs{runs_over}, and each run {returns} about {}. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run {is} cheap ({share} in all), but each call costs a network round trip.",
+                        "Its runs {are} {exec} of all statement runs{runs_over}, and each run {returns} about {}. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run {is} cheap ({share} in all), but each call costs a network round trip.",
                         rows_said(rows)
                     ),
-                    "Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.".to_string(),
-                    fewer,
+                    "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.".to_string(),
+                    fewer_runs("it should run fewer times and take less time in all"),
                     "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.",
                 )
             };

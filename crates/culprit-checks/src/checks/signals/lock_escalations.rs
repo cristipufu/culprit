@@ -335,10 +335,7 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
             let bulk = writes.first().filter(|q| rows_per_run(q).is_some_and(|r| r >= ESCALATION_THRESHOLD / 5.0));
             let (lead, find) = match (historical, bulk) {
                 (true, _) => (
-                    format!(
-                        "None happened since the previous scan{}. If a statement still changes thousands of rows of {table} at once, change it into",
-                        new.map(|(b, _)| format!(", {}", crate::queries::when_phrase(&b.taken_at))).unwrap_or_default()
-                    ),
+                    format!("If a statement still changes thousands of rows of {table} at once, change it into"),
                     "To learn which statement it is, start the event session below",
                 ),
                 (false, Some(_)) => (

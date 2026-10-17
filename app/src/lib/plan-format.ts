@@ -174,24 +174,35 @@ function wholeReadReason(plan: Plan, s: PlanNode): string {
   return `Its estimated cost (${costText(Math.max(plan.total_cost, plan.root.subtree_cost))}) is too small for a share of it to say where the time goes, but \`${s.op}\` reads ${all} on every run.`;
 }
 
-/** The misestimate a statement's runs measured against a cheap plan, as the sentence that says it; null where they
- * measured none (or weren't measured). Mirrors the MoreRows/MoreReads arms of culprit_core::insights::cheap_plan_runs. */
+/** The captured plan's own measurements. Statement-wide rows can't be assigned to one of several variants. */
+function capturedRuns(query: QueryStat) {
+  const variant = query.plans.find((p) => p.id === query.plan_id);
+  const ambiguous = !variant && query.plans.length > 1;
+  const runs = variant?.executions ?? query.executions;
+  const writes = /^[\s(]*(insert|update|delete|merge|replace)/i.test(withoutParameterList(query.text));
+  const handled = query.plans.length <= 1 ? (writes ? (query.rows_affected ?? query.rows) : query.rows) : null;
+  const pages = variant ? variant.logical_reads : ambiguous ? null : query.logical_reads;
+  return { runs, writes, reads: pages != null && runs > 0 ? pages / runs : null,
+    rows: handled != null && query.executions > 0 ? handled / query.executions : null,
+    mean: variant?.mean_time_ms ?? (ambiguous ? null : query.mean_time_ms),
+    total: variant?.total_time_ms ?? query.total_time_ms,
+    max: variant ? variant.max_time_ms : query.max_time_ms };
+}
+
+/** Rows or reads its small estimated cost doesn't explain; pages alone establish no row misestimate. Mirrors the
+ * MoreRows/MoreReads arms of culprit_core::insights::cheap_plan_runs. */
 function misestimateReason(plan: Plan, query?: QueryStat | null): string | null {
-  const runs = query && query.executions > 0 ? query.executions : null;
-  const writes = query ? /^[\s(]*(insert|update|delete|merge|replace)/i.test(withoutParameterList(query.text)) : false;
-  const handled = query && runs ? (writes ? (query.rows_affected ?? query.rows) : query.rows) : null;
-  const reads = query?.logical_reads != null && runs ? query.logical_reads / runs : null;
-  const rows = handled != null && runs ? handled / runs : null;
-  if (reads == null || rows == null) return null;
+  if (!query) return null;
+  const { rows, reads, writes } = capturedRuns(query);
   const root = plan.root;
   const fed = root.kind === "modify" ? (root.children[0]?.est_rows ?? 0) : 0;
   const expected = Math.max(root.est_rows, fed, 1);
-  if (rows >= expected * 10 && rows >= 100) {
+  if (rows != null && rows >= expected * 10 && rows >= 100) {
     return `Its costs rest on an estimate of ${rowCount(expected)} a run, and its runs ${writes ? "change" : "return"} far more (${rowCount(rows)} a run), so no share of them is put on one step.`;
   }
-  if (reads > LOOKUP_PAGES_PER_ROW * Math.max(rows, 1)) {
+  if (reads != null && reads > LOOKUP_PAGES_PER_ROW * Math.max(rows ?? expected, 1)) {
     const unit = plan.engine === "mysql" ? "rows examined" : "pages";
-    return `Its costs rest on an estimate of ${rowCount(expected)} a run, and its runs read far more than that needs (${count(Math.round(reads))} ${unit} a run), so no share of them is put on one step.`;
+    return `Its runs read ${count(Math.round(reads))} ${unit} a run; the plan's estimated cost is too small to say where that reading happens, so no share of it is put on one step.`;
   }
   return null;
 }
@@ -301,24 +312,22 @@ function cheapPlanReason(plan: Plan, query?: QueryStat | null): string {
   // A whole read of a small table or of the catalog is no reason: the runs are read as if it weren't there.
   // `>=` keeps the last of equal costs, as the core's max_by does.
   for (const n of allNodes(plan.root)) if (wholeReadMatters(plan, n) && (!scan || n.self_cost >= scan.self_cost)) scan = n;
-  const runs = query && query.executions > 0 ? query.executions : null;
-  const writes = query ? /^[\s(]*(insert|update|delete|merge|replace)/i.test(withoutParameterList(query.text)) : false;
-  const handled = query && runs ? (writes ? (query.rows_affected ?? query.rows) : query.rows) : null;
-  const reads = query?.logical_reads != null && runs ? query.logical_reads / runs : null;
-  const rows = handled != null && runs ? handled / runs : null;
-  if (!query || reads == null || rows == null) return scan ? wholeReadReason(plan, scan) : cheap;
+  if (!query) return scan ? wholeReadReason(plan, scan) : cheap;
   const misestimate = misestimateReason(plan, query);
   if (misestimate) return misestimate;
   if (scan) return wholeReadReason(plan, scan);
-  if (query.mean_time_ms >= 10) {
+  const { runs, total, max, mean } = capturedRuns(query);
+  if (mean != null && mean >= 10) {
     // What a run or two took, where an average would hide it (culprit_core::model::QueryStat::few_runs).
-    const longest = query.max_time_ms != null ? Math.min(Math.max(query.max_time_ms, 0), query.total_time_ms) : null;
+    const longest = max != null && total > 0 ? Math.min(Math.max(max, 0), total) : null;
     const few =
-      query.executions === 1
-        ? `its one run took ${duration(query.total_time_ms)}`
-        : query.executions === 2 && longest != null && query.total_time_ms > 0 && longest >= (query.total_time_ms - longest) * 2
-          ? `its runs took ${duration(longest)} and ${duration(query.total_time_ms - longest)}`
-          : `its runs take ${duration(query.mean_time_ms)} on average`;
+      runs === 1
+        ? `its one run took ${duration(total)}`
+        : runs === 2 && longest != null && longest >= (total - longest) * 2
+          ? `its runs took ${duration(longest)} and ${duration(total - longest)}`
+          : runs <= 10 && longest != null && longest >= mean * 2
+            ? `its ${count(runs)} runs took ${duration(total)} in all, with the slowest taking ${duration(longest)}`
+            : `its runs averaged ${duration(mean)}`;
     return `The plan is estimated to be cheap, yet ${few}: the time isn't in what it costs, so no share of its cost is put on one step.`;
   }
   return cheap;

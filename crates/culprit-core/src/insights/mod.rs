@@ -543,9 +543,9 @@ pub enum CheapPlanRuns {
     Unmeasured,
     /// Its runs return or change far more rows than the plan expected (`expected` a run, as `rows` a run).
     MoreRows { expected: f64, rows: f64 },
-    /// Its runs read far more pages (rows examined, MySQL) for each row than a lookup does: the plan was costed for far
-    /// less reading than they do.
-    MoreReads { expected: f64, reads: f64, rows: f64 },
+    /// Its runs read many pages (rows examined, MySQL). This alone proves no row misestimate: large values and index
+    /// maintenance can read many pages for a correctly estimated row.
+    MoreReads { reads: f64 },
     /// A step reads a whole table that can weigh on a run on every run (the costliest such scan's id,
     /// [`whole_read_matters`]): cheap only while the table is small.
     ScansTable(u32),
@@ -567,32 +567,36 @@ pub fn cheap_plan_runs(plan: &Plan, q: Option<&crate::model::QueryStat>) -> Chea
         .filter(|n| whole_read_matters(plan, n))
         .max_by(|a, b| a.self_cost.total_cmp(&b.self_cost))
         .map(|n| n.id);
-    let measured = q.and_then(|q| Some((q, q.reads_per_execution()?, q.rows_handled_per_execution()?)));
-    let Some((q, reads, rows)) = measured else {
-        return match scan {
-            Some(id) => CheapPlanRuns::ScansTable(id),
-            None if q.is_some() => CheapPlanRuns::Unmeasured,
-            None => CheapPlanRuns::Cheap,
-        };
-    };
     // What the plan expects a run to return or change: PostgreSQL estimates that a modification returns nothing, so
     // what it feeds the modification.
     let root = &plan.root;
     let fed = root.children.first().filter(|_| root.kind == NodeKind::Modify).map_or(0.0, |c| c.est_rows);
     let expected = root.est_rows.max(fed).max(1.0);
-    if rows >= expected * MISESTIMATE_FACTOR && rows >= crate::plan::MISESTIMATE_MIN_ROWS {
+    let variant = q.and_then(|q| q.captured_plan_variant());
+    let ambiguous = variant.is_none() && q.is_some_and(|q| q.plans.len() > 1);
+    let reads = match variant {
+        Some(p) => p.logical_reads.filter(|_| p.executions > 0.0).map(|r| r / p.executions),
+        None if ambiguous => None,
+        None => q.and_then(|q| q.reads_per_execution()),
+    };
+    // Query Store keeps no rows per variant in this model. Never compare a plan with rows measured over other plans.
+    let rows = q.filter(|q| q.plans.len() <= 1).and_then(|q| q.rows_handled_per_execution());
+    let mean = variant.map(|p| p.mean_time_ms).or_else(|| q.filter(|_| !ambiguous).map(|q| q.mean_time_ms));
+    if let Some(rows) =
+        rows.filter(|rows| *rows >= expected * MISESTIMATE_FACTOR && *rows >= crate::plan::MISESTIMATE_MIN_ROWS)
+    {
         return CheapPlanRuns::MoreRows { expected, rows };
     }
-    if reads > LOOKUP_PAGES_PER_ROW * rows.max(1.0) {
-        return CheapPlanRuns::MoreReads { expected, reads, rows };
+    if let Some(reads) = reads.filter(|reads| *reads > LOOKUP_PAGES_PER_ROW * rows.unwrap_or(expected).max(1.0)) {
+        return CheapPlanRuns::MoreReads { reads };
     }
     if let Some(id) = scan {
         return CheapPlanRuns::ScansTable(id);
     }
-    if q.mean_time_ms >= MATERIAL_MS {
-        return CheapPlanRuns::Slow(q.mean_time_ms);
+    if let Some(ms) = mean.filter(|ms| *ms >= MATERIAL_MS) {
+        return CheapPlanRuns::Slow(ms);
     }
-    CheapPlanRuns::Cheap
+    if q.is_some() && (reads.is_none() || rows.is_none()) { CheapPlanRuns::Unmeasured } else { CheapPlanRuns::Cheap }
 }
 
 /// Whether the plan does real work: a measured run of at least `MATERIAL_MS`, or, unmeasured, an estimated cost of at
@@ -616,9 +620,9 @@ const LOOKUP_PAGES_PER_ROW: f64 = 32.0;
 /// Whether a statement's runs are cheap, as measured: its plan does no real work ([`does_real_work`]), its runs take
 /// under `MATERIAL_MS`, read no more than a lookup's pages for each row they return or change
 /// (`LOOKUP_PAGES_PER_ROW`), return or change not far more rows than the plan expected (`MISESTIMATE_FACTOR`), and no
-/// step reads a whole table. A cheap estimate alone isn't enough: with stale statistics or a generic plan's guess the
-/// runs do far more than the plan was costed at (750 pages a run where it expected to read one row), and a scan is
-/// cheap only while its table is small. Without the statement's reads and rows, nothing says its runs are cheap.
+/// step reads a whole table. A cheap estimate alone isn't enough: the runs may handle more rows, read many pages of
+/// large values, or wait, and a scan is cheap only while its table is small. Without the statement's reads and rows,
+/// nothing says its runs are cheap.
 ///
 /// Any whole-table read keeps the runs from being called cheap here, a small table's too: what it reads grows with the
 /// table, so heavy-query weighs the scan as the step to fix. Only the note on a plan's shares

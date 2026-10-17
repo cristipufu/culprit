@@ -24,7 +24,7 @@ import {
   type LoadedPlan,
 } from "../lib/plans";
 import { deliver, exportOptions } from "../lib/share";
-import { toast } from "../lib/store";
+import { currentReport, toast, useStore } from "../lib/store";
 import { planEngineName } from "../lib/engines";
 import { keys } from "../lib/keys";
 import { copyAndTell } from "../lib/clipboard";
@@ -243,6 +243,9 @@ function PlanRow({ item, active }: { item: LoadedPlan; active: boolean }) {
 }
 
 function Single({ item }: { item: LoadedPlan }) {
+  const report = useStore(currentReport);
+  const query = report?.snapshot.connection === item.source?.connection ? report?.snapshot.workload?.queries.find((q) => q.id === item.source?.queryId) : null;
+  const statement = query ? { ...query, plan_id: item.source?.planId ?? query.plan_id } : null;
   const [look, setPlanLook] = useState<PlanLook>(rememberedPlanLook);
   const setLook = (next: PlanLook) => {
     setPlanLook(next);
@@ -320,7 +323,7 @@ function Single({ item }: { item: LoadedPlan }) {
           <Sql text={plan.statement} />
         </div>
       )}
-      <PlanSurface key={item.id} plan={plan} look={look} />
+      <PlanSurface key={item.id} plan={plan} query={statement} look={look} />
     </div>
   );
 }

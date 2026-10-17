@@ -228,10 +228,16 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
         // MySQL counts rows examined, the other engines pages.
         let (label, unit) =
             if mysql { ("Rows examined per run", Unit::Rows) } else { ("Pages read per run", Unit::Pages) };
+        let label = crate::support::totals_basis(snapshot, q)
+            .map_or_else(|| label.to_string(), |basis| format!("{label} over {basis}"));
         f.metrics.push(Metric::new(label, r, unit));
     }
     if let (Some(r), Some(label)) = (q.rows_per_execution(), rows_label(snapshot.server.engine, kind)) {
-        f.metrics.push(rows_metric(label, r, q.executions));
+        let mut metric = rows_metric(label, r, q.executions);
+        if let Some(basis) = crate::support::totals_basis(snapshot, q) {
+            metric.label.push_str(&format!(" over {basis}"));
+        }
+        f.metrics.push(metric);
     }
     if let Some(cpu) = q.cpu_time_ms.filter(|_| q.total_time_ms > 0.0) {
         f.metrics.push(Metric::new("CPU share of its time", (cpu / q.total_time_ms).min(1.0), Unit::Ratio));
@@ -361,6 +367,9 @@ fn rows_metric(label: &str, per_run: f64, runs: f64) -> Metric {
             label.trim_end_matches(" per run"),
             format!("{n} row{} in {} runs", if n == "1" { "" } else { "s" }, format::count(runs)),
         );
+    }
+    if per_run > 0.0 && per_run < 1.0 {
+        return Metric::text(label, rows_a_run(per_run));
     }
     Metric::new(label, per_run, Unit::Rows)
 }
@@ -1112,7 +1121,15 @@ fn write_cost(snapshot: &Snapshot, q: &QueryStat) -> String {
         (verb, base) if stopped => (past_tense(verb), past_tense(base)),
         (verb, base) => (verb.to_string(), base.to_string()),
     };
-    let mut out = if stopped {
+    let mut out = if upsert(q) == Upsert::No && runs_changing_nothing(q).is_some() {
+        if stopped {
+            "Its plan had nothing to make faster: checking for rows still cost work when a run changed nothing."
+                .to_string()
+        } else {
+            "Its plan has nothing to make faster: checking for rows still costs work when a run changes nothing."
+                .to_string()
+        }
+    } else if stopped {
         "Its plan had nothing to make faster: what a run cost was the write itself (its log, its index entries, the checks of its keys).".to_string()
     } else {
         "Its plan has nothing to make faster: what a run costs is the write itself (its log, its index entries, the checks of its keys).".to_string()
@@ -1217,15 +1234,22 @@ fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
     // That its plan has nothing to make faster only where a plan says so; a statement judged by its count alone has none.
     // A statement that stopped running is told in the past.
     let cheap = q.plan.as_ref().is_some_and(|p| culprit_core::insights::runs_cheaply(p, q));
-    let opening = match (crate::all_stopped(snapshot, &[q]), cheap) {
-        (true, true) => {
+    let nothing = upsert(q) == Upsert::No && runs_changing_nothing(q).is_some();
+    let opening = match (crate::all_stopped(snapshot, &[q]), cheap, nothing) {
+        (true, _, true) => {
+            "Each run was fast, but most of its runs changed nothing: the cost was in sending them anyway."
+        }
+        (false, _, true) => {
+            "Each run is fast, but most of its runs change nothing: the cost is in sending them anyway."
+        }
+        (true, true, false) => {
             "Each run was fast and its plan had nothing to make faster: what cost was the write itself, every time it ran."
         }
-        (true, false) => "Each run was fast; what cost was the write itself, every time it ran.",
-        (false, true) => {
+        (true, false, false) => "Each run was fast; what cost was the write itself, every time it ran.",
+        (false, true, false) => {
             "Each run is fast and its plan has nothing to make faster: what costs is the write itself, every time it runs."
         }
-        (false, false) => "Each run is fast; what costs is the write itself, every time it runs.",
+        (false, false, false) => "Each run is fast; what costs is the write itself, every time it runs.",
     };
     let lever = match (upsert(q), runs_changing_nothing(q)) {
         // A get-or-create rewrites the row it finds on every run that finds one: the levers are not sending it when
@@ -1243,9 +1267,10 @@ fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
             // What its runs did, in the past once it stopped; the advice stays for the code that sends it.
             let did = if crate::all_stopped(snapshot, &[q]) { past_tense(verb) } else { verb.to_string() };
             format!(
-                "{}{} of its runs {did} nothing: {skip}",
+                "{}{} of its runs {did} nothing{}: {skip}",
                 if exact { "" } else { "At least " },
-                format::percent(share)
+                format::percent(share),
+                crate::support::totals_basis(snapshot, q).map(|basis| format!(" over {basis}")).unwrap_or_default()
             )
         }
         (Upsert::No, None) => {

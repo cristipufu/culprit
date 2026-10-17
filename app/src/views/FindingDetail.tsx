@@ -111,7 +111,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
                 </button>
                 {showPlan && (
                   <div style={{ marginTop: 8 }}>
-                    <PlanView plan={firstWithPlan.query.plan} focus={firstWithPlan.ref.plan_node} compact />
+                    <PlanView plan={firstWithPlan.query.plan} query={firstWithPlan.query} focus={firstWithPlan.ref.plan_node} compact />
                   </div>
                 )}
               </>

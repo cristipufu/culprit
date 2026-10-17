@@ -53,19 +53,19 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
 
 === finding chatty-query:6
 medium severity · medium confidence · queries
 title: A read from products runs 60K times in 5 hours, one key at a time
-summary: Its runs are 86% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+summary: Its runs are 86% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (2% of database time in all), but each call costs a network round trip.
 impact: 86% of executions · 2.0% of database time
 metrics:
   - Share of executions: 86%
   - Average duration: 0.01 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+  1. It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -77,7 +77,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 86% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+    Its runs are 86% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (2% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -94,11 +94,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 60K times in 5 hours; after the change it should run orders of magnitude fewer times.
+    - It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all.
 
     ## Caveats
 
@@ -106,7 +106,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
 
 === finding regression:8
 low severity · high confidence · queries
@@ -293,7 +293,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `heavy-query:10` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `heavy-query:10` the way *How to verify* says.
 
 === finding missing-index:shop.orders(shipped_at)
 low severity · high confidence · indexes

@@ -235,7 +235,7 @@ fn is_write(q: &QueryStat) -> bool {
     matches!(verb(&q.text).as_str(), "insert" | "update" | "delete" | "merge" | "copy" | "replace" | "upsert")
 }
 
-fn lock_ms(q: &QueryStat) -> f64 {
+pub(crate) fn lock_ms(q: &QueryStat) -> f64 {
     q.waits.iter().filter(|w| category_key(&w.category) == "lock").map(|w| w.wait_ms).sum()
 }
 

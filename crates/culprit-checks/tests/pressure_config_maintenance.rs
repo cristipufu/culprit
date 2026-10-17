@@ -242,7 +242,7 @@ fn pg_stat_statements_evictions_are_graded_on_the_rounds_since_the_previous_scan
     // twofold, and not said a second time with the lifetime count.
     assert!(
         f.summary.contains(
-            "Since Culprit's scan on Oct 9 at 11:54 UTC, it ran out of room 20 more times: about 5.0K entries, about 2.5K a day (about "
+            "20 of those rounds came since Culprit's scan on Oct 9 at 11:54 UTC: about 5.0K entries, about 2.5K a day (about "
         ),
         "{}",
         f.summary

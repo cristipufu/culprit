@@ -41,6 +41,7 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("statements that stopped running", stopped_running),
         rule("nothing is created for statements that stopped", stopped_statements_get_nothing_created),
         rule("statements that ran once", ran_once_only),
+        rule("a table that is gone has nothing to change", gone_tables_get_no_fix),
         rule("a finding whose statements stopped has nothing to check", nothing_to_check_once_stopped),
         // Wording.
         rule("names without the database", names_without_database),
@@ -416,7 +417,7 @@ fn without_database_prose(f: &mut Finding, database: &str) {
 }
 
 fn table_leaf(name: &str) -> String {
-    name.rsplit('.').next().unwrap_or(name).to_ascii_lowercase()
+    name.rsplit('.').next().unwrap_or(name).trim_matches(['[', ']', '"', '`']).to_ascii_lowercase()
 }
 
 /// SQL Server reports the same gap twice: as a missing-index suggestion and as a scan in the plan. Keep the suggestion, which
@@ -794,15 +795,59 @@ fn stopped_running(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
 #[allow(clippy::ptr_arg)] // every rule has the signature `rules` lists them by
 fn nothing_to_check_once_stopped(_: &Snapshot, findings: &mut Vec<Finding>) {
     for f in findings.iter_mut().filter(|f| f.inactive) {
-        if f.verify.first().is_some_and(|v| v.starts_with("Nothing to check")) {
+        if f.verify
+            .first()
+            .is_some_and(|v| v.starts_with("Nothing to check") && (v.contains("unless") || v.contains(" gone")))
+        {
             continue;
         }
-        f.verify = vec![if f.queries.len() <= 1 {
+        f.verify = vec![if f.queries.is_empty() && f.check == "missing-index" {
+            "Nothing to check unless the optimizer asks for this index again within a scan's window."
+        } else if f.queries.len() <= 1 {
             "Nothing to check unless it runs again: a later scan that sees it run lists this finding as current again."
         } else {
             "Nothing to check unless they run again: a later scan that sees one of them run lists this finding as current again."
         }
         .to_string()];
+    }
+}
+
+/// The catalog and statements agree that their tables are history. Apply this to every query finding, including
+/// writes whose log volume outlives the table, rather than leaving each check to propose work against a dropped table.
+#[allow(clippy::ptr_arg)]
+fn gone_tables_get_no_fix(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    let Some(workload) = &snapshot.workload else { return };
+    for f in findings.iter_mut().filter(|f| about_queries(f)) {
+        let statements: Vec<_> = f.queries.iter().filter_map(|r| workload.query(&r.id)).collect();
+        // A finding's subject can be a column (customers.email). Only the statement's actual objects establish its
+        // tables. For a write, the target is what the fix would change, not tables it only reads for a join or a key.
+        let tables: BTreeSet<String> = statements
+            .iter()
+            .flat_map(|q| {
+                let targets = support::write_targets(q, snapshot.server.engine);
+                if !targets.is_empty() {
+                    return targets;
+                }
+                q.plan.iter().flat_map(|p| p.nodes()).filter_map(|n| n.object.clone()).collect()
+            })
+            .collect();
+        if tables.is_empty()
+            || !tables.iter().all(|t| crate::indexes::table_gone(snapshot, &table_leaf(t), &statements))
+        {
+            continue;
+        }
+        f.severity = Severity::Low;
+        f.fix = Some(culprit_core::Fix {
+            summary: format!(
+                "Nothing to change: {} {} in the database's catalog any more, so {} dropped or renamed since these statements ran. If the application now uses other tables, scan those before making a change.",
+                format::list(&tables.iter().cloned().collect::<Vec<_>>()),
+                if tables.len() == 1 { "isn't" } else { "aren't" },
+                if tables.len() == 1 { "it was" } else { "they were" }
+            ),
+            sql: None,
+            cost: None,
+        });
+        f.verify = vec!["Nothing to check: the tables are gone. If these statements return against replacement tables, scan those to see what needs a change.".into()];
     }
 }
 
@@ -1546,7 +1591,7 @@ fn one_lock_episode(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             _ => "in the same window".to_string(),
         };
         findings[into].summary.push_str(&format!(
-            " {} (query {}) waited on locks on {table} {when} too, {}: the same episode of blocking, behind the same holder.",
+            " {} (query {}) waited on locks on {table} {when} too, {}: likely the same episode of blocking, behind the same holder or one another.",
             capitalize(&support::query_handle(gone)),
             gone.id,
             waited.trim_end()
@@ -1559,15 +1604,20 @@ fn one_lock_episode(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         let stopped = query_stopped(snapshot, gone).is_some();
         if versioning && let Some(fix) = findings[into].fix.as_mut() {
             fix.summary.push_str(&format!(
-                " Query {}, a read, {} for these writes only because READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it {} the last committed version of the rows instead.",
+                " Query {}, a read, {} for writes on the same table while READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it {} the last committed version of the rows instead.",
                 gone.id,
                 if stopped { "waited" } else { "waits" },
                 if stopped { "would have read" } else { "reads" }
             ));
         }
         // The metrics stay the first statement's, as its title says them; the other's are in the sentence and its note.
-        let note = format!("Waited {} on locks on {table}, in the same episode.", waited.trim_end());
+        let note =
+            format!("Waited {} on locks on {table} in the same hours; the holder isn't recorded.", waited.trim_end());
         absorb(snapshot, findings, into, from, Some(note));
+        let target = if from < into { into - 1 } else { into };
+        let lock: f64 =
+            findings[target].queries.iter().filter_map(|r| workload.query(&r.id)).map(signals::lock_ms).sum();
+        findings[target].impact.label = format!("{} waiting on locks", format::duration(lock));
         if from < i {
             i -= 1;
         }

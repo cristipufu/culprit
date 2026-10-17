@@ -1604,6 +1604,24 @@ fn a_cheap_plans_runs_say_why_they_are_not_cheap() {
     assert!(matches!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::MoreReads { .. }));
     q.logical_reads = Some(2026.0 * 4.0);
     assert_eq!(cheap_plan_runs(&p, Some(&q)), CheapPlanRuns::Cheap);
+    let mut variants = q.clone();
+    variants.plans = serde_json::from_value(serde_json::json!([
+        { "id": "fast", "executions": 2000.0, "total_time_ms": 2000.0, "mean_time_ms": 1.0, "logical_reads": 4000.0, "is_forced": false },
+        { "id": "slow", "executions": 26.0, "total_time_ms": 520.0, "mean_time_ms": 20.0, "logical_reads": 520.0, "is_forced": false }
+    ])).unwrap();
+    variants.plan_id = Some("slow".into());
+    assert_eq!(
+        cheap_plan_runs(&p, Some(&variants)),
+        CheapPlanRuns::Slow(20.0),
+        "the slow plan isn't hidden by the statement's average"
+    );
+    variants.plans[1].logical_reads = Some(26.0 * 322.0);
+    assert_eq!(cheap_plan_runs(&p, Some(&variants)), CheapPlanRuns::MoreReads { reads: 322.0 });
+    variants.plan_id = Some("fast".into());
+    assert!(
+        !matches!(cheap_plan_runs(&p, Some(&variants)), CheapPlanRuns::MoreReads { .. } | CheapPlanRuns::Slow(_)),
+        "the fast plan doesn't inherit the other plan's reading"
+    );
     let mut scan = node(1, "Index Scan", NodeKind::Scan);
     scan.object = Some("app.call_dispatch_intents".into());
     scan.table_rows = Some(12_621.0);

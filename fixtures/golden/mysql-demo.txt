@@ -42,7 +42,7 @@ brief:
     SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
     ```
 
-    Plan: the step this finding is about is `Group`. `Sort` (using filesort) and `Group` (using temporary table) have no cost of their own in the plan, so no share is given.
+    Plan: the step this finding is about is `Group`. The database leaves some of this plan's work without a cost estimate, so no step is given a share.
 
     ## Suggested fix
 
@@ -61,19 +61,19 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
 
 === finding chatty-query:9b30e6ad79d940fe
 low severity · medium confidence · queries
 title: A read from products runs 30K times in 2 minutes, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (2% of database time in all), but each call costs a network round trip.
 impact: 75% of executions · 2.4% of database time
 metrics:
   - Share of executions: 75%
   - Average duration: 0.04 ms
-fix: Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+fix: Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 verify:
-  1. It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+  1. It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 caveats:
   - Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching.
 queries:
@@ -85,7 +85,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. That pattern usually comes from a loop in application code (N+1): one query per item instead of one query for all items. Each run is cheap (2% of database time in all), but each call costs a network round trip.
+    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (2% of database time in all), but each call costs a network round trip.
 
     ## Evidence
 
@@ -102,11 +102,11 @@ brief:
 
     ## Suggested fix
 
-    Load the rows in one query (WHERE key IN (…) or a join) before the loop, or cache them. ORMs usually have an eager-loading option for this.
+    Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.
 
     ## How to verify
 
-    - It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mysql-demo --since <ship time>`): there it should run orders of magnitude fewer times. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+    - It ran 30K times in 2 minutes. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes mysql-demo --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
 
     ## Caveats
 
@@ -114,7 +114,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says.
 
 === finding heavy-query:19bd4ff468839ea3
 low severity · high confidence · queries
@@ -155,7 +155,7 @@ brief:
     SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?
     ```
 
-    Plan: the step this finding is about is `Table scan` on `shop.orders` filtering `(shop.o.promo_code = '?')`. `Sort` (using filesort) has no cost of its own in the plan, so no share is given.
+    Plan: the step this finding is about is `Table scan` on `shop.orders` filtering `(shop.o.promo_code = '?')`.
 
     ## Suggested fix
 
@@ -167,7 +167,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:19bd4ff468839ea3` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:19bd4ff468839ea3` the way *How to verify* says.
 
 === finding heavy-query:c7b5ac9bb4bcecfe
 low severity · high confidence · queries
@@ -220,7 +220,7 @@ brief:
 
     ## What to do in the codebase
 
-    Where the fix changes the statements above, find where the application sends them (search for their table and column names) and change them the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:c7b5ac9bb4bcecfe` the way *How to verify* says.
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `heavy-query:c7b5ac9bb4bcecfe` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
 low severity · medium confidence · indexes

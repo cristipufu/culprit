@@ -457,7 +457,9 @@ impl Workload {
     /// are ("1 run in the last 6 days", not "0.2 runs a day"). [`Workload::how_often_of`] says it for one statement.
     pub fn how_often(&self, runs: f64) -> String {
         match self.per_day_measured(runs) {
-            Some(per_day) if per_day >= 1.0 => format!("about {} runs a day", crate::format::count(per_day)),
+            Some(per_day) if per_day >= 1.0 => {
+                format!("about {} {} a day", crate::format::count(per_day.round()), runs_noun(per_day.round()))
+            }
             Some(_) => format!("{} {} in {}", crate::format::count(runs), runs_noun(runs), self.window_phrase()),
             None => format!("{} {} over {}", crate::format::count(runs), runs_noun(runs), self.window_phrase()),
         }
@@ -491,9 +493,16 @@ impl Workload {
                 )
             }
             Cadence::DailyWithin { per_day, from, to } => {
-                format!("about {} runs a day {}", crate::format::count(per_day), days_when(&from, to.as_deref()))
+                format!(
+                    "about {} {} a day {}",
+                    crate::format::count(per_day.round()),
+                    runs_noun(per_day.round()),
+                    days_when(&from, to.as_deref())
+                )
             }
-            Cadence::Daily(per_day) => format!("about {} runs a day", crate::format::count(per_day)),
+            Cadence::Daily(per_day) => {
+                format!("about {} {} a day", crate::format::count(per_day.round()), runs_noun(per_day.round()))
+            }
         }
     }
 
@@ -502,7 +511,7 @@ impl Workload {
     fn totals_runs(&self, q: &QueryStat, noun: bool) -> Option<String> {
         let per_day = self.per_day_measured(q.executions).filter(|_| !self.window_unknown())?;
         Some(if per_day >= 1.0 {
-            let n = crate::format::count(per_day);
+            let n = crate::format::count(per_day.round());
             let runs = match (noun, n == "1") {
                 (false, _) => "",
                 (true, true) => " run",
@@ -910,7 +919,12 @@ impl ScanSpan {
     pub fn runs_phrase(&self) -> String {
         let per_day = self.per_day(self.runs);
         if per_day >= 1.0 {
-            format!("about {} runs a day over {}", crate::format::count(per_day), self.phrase())
+            format!(
+                "about {} {} a day over {}",
+                crate::format::count(per_day.round()),
+                runs_noun(per_day.round()),
+                self.phrase()
+            )
         } else {
             format!("{} {} over {}", crate::format::count(self.runs), runs_noun(self.runs), self.phrase())
         }
@@ -1176,6 +1190,13 @@ impl QueryTrend {
 }
 
 impl QueryStat {
+    /// The measured runs of the attached plan, where the source identifies its variants. A statement's average over
+    /// all its plans says nothing about whether this particular plan runs cheaply.
+    pub fn captured_plan_variant(&self) -> Option<&PlanVariant> {
+        let id = self.plan_id.as_ref()?;
+        self.plans.iter().find(|p| &p.id == id)
+    }
+
     /// What its runs took, where an average would hide it: its one run's time, or two runs' times, the longest first,
     /// where one took twice the other or more (an average of 5.2 s for runs of 10.5 s and 0.3 ms). `None` for more
     /// runs, for two alike, and where the engine keeps no longest run.

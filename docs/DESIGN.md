@@ -320,7 +320,7 @@ Every tool call is appended to a private `audit.jsonl`, with the SQL text for `e
 | `unused-index` | both | Indexes with writes but no reads since stats reset, with uptime-based confidence; not before an index may be a week old (`indexes[].created_at_latest`: a scan saw it appear, or its table changed before the first scan) |
 | `duplicate-index` | both | Identical or left-prefix-redundant indexes |
 | `heavy-query` | both | Queries that dominate database time or read far more than they return (reads per row only for reads, not aggregates or writes); one that sleeps, waits for a lock or reads too little to fill its run time says it is waiting |
-| `chatty-query` | both | N+1 shape: very high executions, ~1 row each, tiny duration |
+| `chatty-query` | both | Very frequent tiny statements: reuse or cache valid results; batch calls where the caller loops over items |
 | `plan-warnings` | SQL Server | Implicit conversions, spills, key lookups, no join predicate in cached plans |
 | `plan-regression` | SQL Server | Query Store: the plan running now is markedly slower than one it replaced (that one stopped before it started; plans used side by side are `parameter-sensitive`), on a real part of the workload |
 | `regression` | all | The query's average duration stepped up at least 2× (and 2 ms) at a point in the timeline and stayed up; says when, and the plan change if one coincides (then it replaces `plan-regression` for that query, with the force-plan fix) |

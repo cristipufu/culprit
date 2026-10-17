@@ -1208,6 +1208,7 @@ const SETTINGS: &[&str] = &[
     "jit_above_cost",
     "track_io_timing",
     "track_wal_io_timing",
+    "log_lock_waits",
     "default_statistics_target",
 ];
 

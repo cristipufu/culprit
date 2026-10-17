@@ -333,16 +333,20 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
     let lately = asked.as_ref().filter(|a| !a.stopped());
 
     // Asked for by statements that all stopped running: told in the past, as refine then marks it.
-    let is = if crate::all_stopped(snapshot, &linked) { "was" } else { "is" };
+    let history = crate::all_stopped(snapshot, &linked) || asked.as_ref().is_some_and(LastAsked::stopped);
+    let is = if history { "was" } else { "is" };
     f.title = format!("{} {is} searched by {} without a supporting index", c.table, key_text);
     let mut summary = format!(
-        "SQL Server's optimizer asked for an index on {} ({}) {} times {}. Without it, each of those lookups reads more of {}{} than it needs to. It estimates the index would make them about {:.0}% cheaper.",
+        "SQL Server's optimizer asked for an index on {} ({}) {} times {}. Without it, each of those lookups {} more of {}{} than it {} to. It {} the index would make them about {:.0}% cheaper.",
         table_name,
         key_text,
         format::count(lookups),
         since_phrase(snapshot),
+        if history { "read" } else { "reads" },
         table_name,
         rows.map(|r| format!(" ({} rows)", format::count(r))).unwrap_or_default(),
+        if history { "needed" } else { "needs" },
+        if history { "estimated" } else { "estimates" },
         c.impact_pct
     );
     match query_impact(snapshot, &linked) {
@@ -350,7 +354,13 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
             summary.push_str(&format!(
                 " The {} that asked for it {} for {} of database time.",
                 if linked.len() == 1 { "query".to_string() } else { format!("{} queries", linked.len()) },
-                if linked.len() == 1 { "accounts" } else { "account" },
+                if history {
+                    "accounted"
+                } else if linked.len() == 1 {
+                    "accounts"
+                } else {
+                    "account"
+                },
                 format::percent(impact.share)
             ));
             apply_query_impact(&mut f, &impact);
@@ -538,7 +548,15 @@ pub(super) fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option
         }
     };
     let mut latest: Option<(f64, &str)> = None;
-    for m in &c.requests {
+    // Even a request below the candidate's count threshold proves that this same key was wanted more recently.
+    let same_key = snapshot.missing_indexes.iter().filter(|m| {
+        m.schema.eq_ignore_ascii_case(&c.schema)
+            && m.table.eq_ignore_ascii_case(&c.table)
+            && lower_set(&m.equality) == lower_set(&c.equality)
+            && m.inequality.len() == c.inequality.len()
+            && m.inequality.iter().zip(&c.inequality).all(|(a, b)| a.eq_ignore_ascii_case(b))
+    });
+    for m in c.requests.iter().chain(same_key) {
         let text = m.last_used.as_deref()?;
         let at = parse_epoch_seconds(text)?;
         if latest.is_none_or(|(l, _)| at > l) {
@@ -739,11 +757,20 @@ fn too_small_finding(snapshot: &Snapshot, mut f: Finding, c: &Candidate, linked:
     f.fix = Some(Fix {
         summary: format!(
             "Nothing to create while {table_name} stays this small: it holds {} rows{took}, so reading it whole costs \
-             little, and an index on {} would add to every one of its writes{writes}.{existing} Create one only if the \
-             table grows past {} rows or these lookups come to take real time.",
+             little, and an index on {} would add to every one of its writes{writes}.{existing} {}",
             format::count(rows),
             format::list(&c.keys()),
-            format::count(SCAN_ROWS)
+            if f.inactive {
+                format!(
+                    "Reconsider it only if the statements return and the optimizer asks again, and the table grows past {} rows or those lookups come to take real time.",
+                    format::count(SCAN_ROWS)
+                )
+            } else {
+                format!(
+                    "Create one only if the table grows past {} rows or these lookups come to take real time.",
+                    format::count(SCAN_ROWS)
+                )
+            }
         ),
         sql: None,
         cost: None,

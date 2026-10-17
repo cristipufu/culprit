@@ -573,7 +573,7 @@ fn mysql(snapshot: &Snapshot) -> Vec<Finding> {
                 // What the table costs the lock time every check reads: the reason Culprit asks for it said beside it.
                 cost: snapshot.server.is_mariadb().then(|| {
                     format!(
-                        "{MARIADB_TABLE_LOCK_TIME} Leave TABLE out to keep their lock time, at the cost of the logged statements Culprit plans digests with."
+                        "{MARIADB_TABLE_LOCK_TIME} Leaving TABLE out keeps lock time real, but Culprit then can't use the logged statements to plan digests without sample text."
                     )
                 }),
             },
@@ -820,7 +820,7 @@ mod tests {
             cost.starts_with("Written to a table (TABLE in log_output), MariaDB counts the whole run of each statement it logs as that statement's lock time"),
             "{cost}"
         );
-        assert!(cost.contains("Leave TABLE out to keep their lock time"), "{cost}");
+        assert!(cost.contains("Leaving TABLE out keeps lock time real"), "{cost}");
     }
 
     fn buffer_pool_snapshot(hit: f64, reads: f64) -> Snapshot {

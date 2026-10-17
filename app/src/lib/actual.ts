@@ -1,5 +1,6 @@
 import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
+import type { QueryStat } from "../gen/QueryStat";
 import { doesRealWork, hottestStep, misestimate, sharesNote, stepShare, subtreeShare, uncostedSteps } from "./plan-format";
 
 function nodesOf(n: PlanNode, out: PlanNode[] = []): PlanNode[] {
@@ -70,7 +71,7 @@ function largest(nodes: PlanNode[], shares: Map<number, number | null>): PlanNod
 }
 
 /** Timed operators must be at least half the plan, or the picture would be mostly guesswork. */
-export function planShares(plan: Plan): Shares {
+export function planShares(plan: Plan, query?: QueryStat | null): Shares {
   const nodes = nodesOf(plan.root);
   const timed = nodes.filter((n) => n.act_time_ms != null).length;
   if (plan.kind === "actual" && timed > 0 && timed * 2 >= nodes.length) {
@@ -103,7 +104,7 @@ export function planShares(plan: Plan): Shares {
     subtree: new Map(nodes.map((n) => [n.id, n.subtree_cost / total])),
     stated,
     statedSubtree: new Map(nodes.map((n) => [n.id, subtreeShare(plan, n, uncosted)])),
-    note: sharesNote(plan),
+    note: sharesNote(plan, query),
     hottest: hot && stated.get(hot.id) != null ? hot : null,
     ms: new Map(),
     total,

@@ -139,7 +139,14 @@ fn plan_line(out: &mut String, finding: &Finding, r: &QueryRef, q: &QueryStat, p
         node.op,
         node.predicate.as_deref().map(|p| format!(" filtering `{}`", format::predicate(p))).unwrap_or_default()
     );
-    if let Some(why) = finding_no_share_reason(plan, node, Some(q)) {
+    if let Some(why) = finding_no_share_reason(plan, node, Some(q))
+        .filter(|_| plan.uncosted_steps().is_empty() || !finding.summary.contains("no cost"))
+    {
+        let why = if plan.uncosted_steps().is_empty() {
+            why.as_str()
+        } else {
+            "The database leaves some of this plan's work without a cost estimate, so no step is given a share."
+        };
         let _ = write!(out, " {why}");
     }
     let _ = writeln!(out, "\n");
@@ -302,10 +309,9 @@ fn cheap_plan_reason(plan: &Plan, q: Option<&QueryStat>) -> String {
             if q.is_some_and(QueryStat::writes_rows) { "change" } else { "return" },
             rows(actual)
         ),
-        CheapPlanRuns::MoreReads { expected, reads, .. } => format!(
-            "Its costs rest on an estimate of {} a run, and its runs read far more than that needs ({} {} a run), so no \
-             share of them is put on one step.",
-            rows(expected),
+        CheapPlanRuns::MoreReads { reads } => format!(
+            "Its runs read {} {} a run; the plan's estimated cost is too small to say where that reading happens, so \
+             no share of it is put on one step.",
             format::count(reads.round()),
             if mysql { "rows examined" } else { "pages" }
         ),
@@ -320,17 +326,39 @@ fn cheap_plan_reason(plan: &Plan, q: Option<&QueryStat>) -> String {
         CheapPlanRuns::Slow(ms) => format!(
             "The plan is estimated to be cheap, yet {}: the time isn't in what it costs, so no share of its cost is put \
              on one step.",
-            // What a run or two took, where an average would hide it (`QueryStat::few_runs`).
-            match q.and_then(|q| Some((q.executions, q.few_runs_took()?))) {
-                Some((runs, took)) if runs <= 1.0 => format!("its one run took {took}"),
-                Some((_, took)) => format!("its runs took {took}"),
-                None => format!("its runs take {} on average", format::duration(ms)),
-            }
+            plan_run_times(q, ms)
         ),
         CheapPlanRuns::Cheap | CheapPlanRuns::Unmeasured | CheapPlanRuns::NotCheap => {
             "The plan as a whole is cheap, so no share of its cost is put on one step.".into()
         }
     }
+}
+
+/// What the captured plan's completed runs took. A handful with one outlier is said as a total and a maximum,
+/// rather than an average that describes none of them. Past tense also holds for statements that stopped.
+fn plan_run_times(q: Option<&QueryStat>, mean: f64) -> String {
+    let Some(q) = q else { return format!("its runs averaged {}", format::duration(mean)) };
+    let (runs, total, max) = match q.captured_plan_variant() {
+        Some(p) => (p.executions, p.total_time_ms, p.max_time_ms),
+        None => (q.executions, q.total_time_ms, q.max_time_ms),
+    };
+    if runs == 1.0 {
+        return format!("its one run took {}", format::duration(total));
+    }
+    if let Some(max) = max.filter(|_| total > 0.0).map(|m| m.clamp(0.0, total)) {
+        if runs == 2.0 && max >= (total - max) * 2.0 {
+            return format!("its runs took {} and {}", format::duration(max), format::duration(total - max));
+        }
+        if runs <= 10.0 && max >= mean * 2.0 {
+            return format!(
+                "its {} runs took {} in all, with the slowest taking {}",
+                format::count(runs),
+                format::duration(total),
+                format::duration(max)
+            );
+        }
+    }
+    format!("its runs averaged {}", format::duration(mean))
 }
 
 /// A plan's estimated cost as the engine writes it: whole units from 10, else three significant digits (SQL Server's
@@ -359,7 +387,9 @@ fn codebase(report: &Report, finding: &Finding) -> String {
     let once = !finding.inactive && !app.is_empty() && app.iter().all(|q| crate::ran_once(q));
     let sql = FixSql::read(finding.fix.as_ref().and_then(|f| f.sql.as_deref()).unwrap_or_default(), s.server.engine);
     let mut said: Vec<String> = Vec::new();
-    if finding.inactive {
+    if finding.inactive && statements.is_empty() && finding.check == "missing-index" {
+        said.push("This scan identifies no statement behind this historical index request. Make no change for it unless the optimizer asks again; a later scan can show the new request.".into());
+    } else if finding.inactive {
         // Unchanged since Culprit's first scan, that scan is only the latest they can have run: they may have stopped
         // long before it, and the deploy that changed them may be an earlier one.
         let by_first_scan = finding
@@ -432,9 +462,9 @@ fn where_the_change_is(
     } else if !app.is_empty() && !declines && !sql.in_the_application && !sql.only_runs_on_the_database() && !index_only
     {
         said.push(
-            "Where the fix changes the statements above, find where the application sends them (search for their \
-             table and column names) and change them the way this project ships query changes (an ORM change or a \
-             query rewrite)."
+            "Find where the application sends the statements above (search for their table and column names) and \
+             apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes \
+             (an ORM change or a query rewrite)."
                 .into(),
         );
     }
@@ -493,7 +523,7 @@ fn where_the_change_is(
                 if sql.only_upkeep() {
                     "The fix is upkeep of the database, not a change to the application's code:"
                 } else {
-                    "The upkeep in the fix's SQL (statistics, vacuuming, a rebuild) isn't a change to the application's \
+                    "The upkeep in the fix's SQL isn't a change to the application's \
                      code:"
                 },
                 if on_close {
@@ -870,6 +900,8 @@ impl FixSql {
                 out.setting = true;
             } else if procedure == "SP_UPDATESTATS" {
                 out.upkeep = true;
+            } else if first == "SELECT" && matches!(word(1), "PG_RELOAD_CONF" | "PG_CATALOG.PG_RELOAD_CONF") {
+                out.setting = true;
             } else if first == "SET" {
                 match word(1) {
                     "LOCAL" => out.local = true,
@@ -1002,7 +1034,9 @@ enum Waited {
 /// statement: the slow runs of unstable-query and parameter-sensitive, and a heavy query that waited for locks, for an
 /// application lock or on a pause of its own (`queries::idle_kind`, the way heavy-query read it).
 fn waited_rather_than_worked(s: &Snapshot, finding: &Finding, app: &[&QueryStat]) -> Option<Waited> {
-    if finding.fix.as_ref().is_none_or(|f| f.sql.is_some()) {
+    let fix = finding.fix.as_ref()?;
+    let sql = FixSql::read(fix.sql.as_deref().unwrap_or_default(), s.server.engine);
+    if sql.upkeep || sql.schema || sql.plan_pin || sql.local || sql.other || sql.in_the_application {
         return None;
     }
     match finding.check.as_str() {
