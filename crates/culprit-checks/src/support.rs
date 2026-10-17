@@ -396,7 +396,6 @@ pub fn mentions_word(text: &str, word: &str) -> bool {
     false
 }
 
-/// The engine's quoting (`Engine::dialect`).
 /// Text for a `--` comment line of fix SQL. A database's names can hold line breaks (a quoted identifier may), and one
 /// would end the comment and turn the rest of the name into SQL that whoever runs the fix executes: every control
 /// character and line or paragraph separator becomes a space. Every name or value a comment line carries goes through it.
@@ -404,6 +403,7 @@ pub fn comment_text(text: &str) -> String {
     text.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).collect()
 }
 
+/// The engine's quoting (`Engine::dialect`).
 pub fn quote(engine: Engine, ident: &str) -> String {
     engine.dialect().quote(ident)
 }
