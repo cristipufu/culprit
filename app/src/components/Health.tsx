@@ -6,7 +6,7 @@ import type { Report } from "../gen/Report";
 import type { SignalStatus } from "../gen/SignalStatus";
 import type { ResourceSample } from "../gen/ResourceSample";
 import type { Signal } from "../gen/Signal";
-import { duration, percent } from "../lib/format";
+import { duration, percent, percentValue } from "../lib/format";
 import { findingStatus, worstFinding } from "../lib/health";
 import { SIGNAL_SCOPE, signalValue } from "../lib/waits";
 import { Replication, StorageLatency } from "./BeyondTime";
@@ -196,7 +196,7 @@ function ResourceChart({ label, status, times, values }: { label: string; status
               At or above 95% in <b>{percent(atLimit)}</b> of recorded samples
             </>
           ) : (
-            <>Recorded peak {Math.round(peak)}%</>
+            <>Recorded peak {percentValue(peak)}</>
           )}
         </span>
       </div>
@@ -207,7 +207,7 @@ function ResourceChart({ label, status, times, values }: { label: string; status
           <span style={{ top: "100%" }}>0</span>
         </div>
         <div className="resource-canvas">
-          <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" role="img" aria-label={`${label}: at or above 95% in ${percent(atLimit)} of recorded samples, peak ${Math.round(peak)}%`}>
+          <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="none" role="img" aria-label={`${label}: at or above 95% in ${percent(atLimit)} of recorded samples, peak ${percentValue(peak)}`}>
             <line className="grid" x1="0" x2={VW} y1={y(50)} y2={y(50)} />
             <line className="grid" x1="0" x2={VW} y1={y(100)} y2={y(100)} />
             <line className="limit" x1="0" x2={VW} y1={y(LIMIT)} y2={y(LIMIT)} />
@@ -215,11 +215,11 @@ function ResourceChart({ label, status, times, values }: { label: string; status
             <path className="line" d={line} vectorEffect="non-scaling-stroke" />
             {hover != null && <line className="cursor" x1={x(times[hover]!)} x2={x(times[hover]!)} y1="0" y2={VH} vectorEffect="non-scaling-stroke" />}
           </svg>
-          <span className="peak" style={{ left: `${(x(times[peakIndex]!) / VW) * 100}%`, top: `${(y(peak) / VH) * 100}%` }} title={`Peak ${Math.round(peak)}% at ${timeFmt.format(times[peakIndex]!)} UTC`} />
+          <span className="peak" style={{ left: `${(x(times[peakIndex]!) / VW) * 100}%`, top: `${(y(peak) / VH) * 100}%` }} title={`Peak ${percentValue(peak)} at ${timeFmt.format(times[peakIndex]!)} UTC`} />
           <span className="limit-label">95%</span>
           {hover != null && hv != null && (
             <span className="readout" style={{ left: `${(x(times[hover]!) / VW) * 100}%` }}>
-              <b>{Math.round(hv)}%</b> {timeFmt.format(times[hover]!)}
+              <b>{percentValue(hv)}</b> {timeFmt.format(times[hover]!)}
             </span>
           )}
         </div>

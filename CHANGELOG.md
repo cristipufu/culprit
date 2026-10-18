@@ -2,6 +2,12 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## Unreleased
+
+### Fixes
+
+- Small positive health measurements stay visible: CPU averages such as 0.02275% display as 0.02%, and positive measurements below 0.01% display as <0.01%. Health tiles, resource charts, cloud charts and CLI readings use the same precision; recorded zero and unavailable measurements remain distinct.
+
 ## 0.3.3
 
 Health reflects measured database activity and the selected period, with historical and shared counters clearly identified.

@@ -289,9 +289,9 @@ pub(crate) fn grade_on_evidence(snapshot: &mut Snapshot) {
             .unwrap_or_default();
         let signal = Signal {
             healthy: Some(format!(
-                "{coverage}Average over {} of recorded samples; peak {:.1}%. At or above 95% of this database's limit in {} of samples. {}",
+                "{coverage}Average over {} of recorded samples; peak {}. At or above 95% of this database's limit in {} of samples. {}",
                 culprit_core::span_words(u.hours),
-                u.peak,
+                format::percent_value(u.peak),
                 format::percent(u.at_limit),
                 if key == "memory-use" {
                     "Allocated memory includes cache; a full cache is normal and is not graded as memory pressure."
@@ -355,6 +355,25 @@ mod tests {
         assert_eq!((cpu.status, cpu.scope), (SignalStatus::Good, SignalScope::Window));
         assert_eq!(p.signal("signal-wait").unwrap().status, SignalStatus::Info);
         assert!(p.signal("compiles-per-batch").is_none(), "never substitute another database's compile ratio");
+        assert!(!r.findings.iter().any(|f| f.check == "tier-limit"));
+    }
+
+    #[test]
+    fn a_quiet_hour_keeps_its_measured_cpu_instead_of_displaying_zero() {
+        let s = azure(|i| match i {
+            0 => 3.86,
+            1 => 0.91,
+            2 => 0.57,
+            3..=4 => 0.02,
+            5..=12 => 0.01,
+            _ => 0.0,
+        });
+        let r = crate::analyze(s);
+        let cpu = r.snapshot.pressure.as_ref().unwrap().signal("cpu-use").unwrap();
+        assert!((cpu.value - 0.02275).abs() < 1e-9);
+        assert_eq!(cpu.status, SignalStatus::Good);
+        assert_eq!(crate::views::dashboard::signal_value(cpu), "0.02%");
+        assert!(cpu.healthy.as_ref().unwrap().contains("peak 3.86%"));
         assert!(!r.findings.iter().any(|f| f.check == "tier-limit"));
     }
 

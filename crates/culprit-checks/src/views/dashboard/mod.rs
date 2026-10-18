@@ -240,7 +240,7 @@ fn sentence(text: &str) -> String {
 /// A signal's value as a person reads it, with its unit.
 pub fn signal_value(s: &Signal) -> String {
     match s.unit {
-        SignalUnit::Percent => format!("{:.0}%", s.value),
+        SignalUnit::Percent => format::percent_value(s.value),
         SignalUnit::PerSecond => format!("{}/s", format::count(s.value)),
         SignalUnit::PerHour => format!("{}/h", format::count(s.value)),
         SignalUnit::Count => format::count(s.value),

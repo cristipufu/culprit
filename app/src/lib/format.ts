@@ -106,6 +106,14 @@ export function percent(ratio: number | null | undefined): string {
   return `${fixed(p, 0)}%`;
 }
 
+/** A measured percentage on a 0–100 scale. Mirrors culprit_core::format::percent_value. */
+export function percentValue(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (value === 0) return "0%";
+  if (Math.abs(value) < 0.01) return value > 0 ? "<0.01%" : ">-0.01%";
+  return `${fixed(value, 2).replace(/0+$/, "").replace(/\.$/, "")}%`;
+}
+
 /** A total wait to the second under an hour: "1 min 29 s", where `duration` would round 88,960 ms down to "1 min" next to
  * a title that says otherwise, and 152 s up to "3 min". Mirrors culprit_checks::signals::total_wait. */
 export function totalWait(ms: number): string {

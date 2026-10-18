@@ -3,7 +3,7 @@ import type { Signal } from "../gen/Signal";
 import type { WaitSample } from "../gen/WaitSample";
 import type { WaitStat } from "../gen/WaitStat";
 import { api, errorMessage, type ApiError } from "./api";
-import { bytes, count, duration } from "./format";
+import { bytes, count, duration, percentValue } from "./format";
 
 /** The shared wait categories, in the same order and words as the Rust side (culprit_core::waits). */
 export const WAIT_LABEL: Record<string, string> = {
@@ -93,7 +93,7 @@ export function foldWaits(waits: WaitStat[]): FoldedWait[] {
 export function signalValue(s: Signal): string {
   switch (s.unit) {
     case "percent":
-      return `${s.value >= 10 || s.value === 0 ? Math.round(s.value) : s.value.toFixed(1)}%`;
+      return percentValue(s.value);
     case "per-second":
       // Under one every ten seconds, a per-minute rate says more than "0.0/s".
       return s.value > 0 && s.value < 0.1 ? `${count(s.value * 60)}/min` : `${count(s.value)}/s`;

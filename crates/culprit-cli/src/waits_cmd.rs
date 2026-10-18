@@ -193,7 +193,7 @@ fn print_signals(title: &str, p: &Pressure, signals: &[Signal]) {
 
 pub fn value(s: &Signal) -> String {
     match s.unit {
-        SignalUnit::Percent => format!("{:.1}%", s.value),
+        SignalUnit::Percent => format::percent_value(s.value),
         // Under one every ten seconds, a per-minute rate says more than "0.0/s".
         SignalUnit::PerSecond if s.value > 0.0 && s.value < 0.1 => format!("{}/min", format::count(s.value * 60.0)),
         SignalUnit::PerSecond => format!("{}/s", format::count(s.value)),

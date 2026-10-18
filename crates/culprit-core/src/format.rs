@@ -169,6 +169,22 @@ pub fn percent(ratio: f64) -> String {
     format!("{:.0}%", p)
 }
 
+/// A measured percentage already on a 0–100 scale. Keep low resource use visible, and distinguish a positive
+/// measurement below the displayed precision from a recorded zero.
+pub fn percent_value(value: f64) -> String {
+    if !value.is_finite() {
+        return "—".into();
+    }
+    if value == 0.0 {
+        return "0%".into();
+    }
+    if value.abs() < 0.01 {
+        return if value > 0.0 { "<0.01%" } else { ">-0.01%" }.into();
+    }
+    let text = format!("{value:.2}");
+    format!("{}%", text.trim_end_matches('0').trim_end_matches('.'))
+}
+
 /// "3.4×", "710×": how many times larger, written the way the rest of the product writes it.
 pub fn factor(value: f64) -> String {
     if value >= 100.0 {
@@ -337,7 +353,7 @@ mod tests {
 
     /// Inputs every surface formats: `app/src/lib/format.ts` must read each as this module does. Exact ties (2.5,
     /// 0.125, 12.5%) are among them: Rust rounds them to even, JavaScript's toFixed up.
-    const SHARED_CASES: [(&str, &[f64]); 5] = [
+    const SHARED_CASES: [(&str, &[f64]); 6] = [
         (
             "duration",
             &[
@@ -409,6 +425,30 @@ mod tests {
             ],
         ),
         ("percent", &[0.0, 0.001, 0.005, 0.0099, 0.01, 0.125, 0.135, 0.314, 0.5, 0.995, 1.0, 1.005]),
+        (
+            "percent_value",
+            &[
+                0.0,
+                -0.0,
+                0.0001,
+                0.004583333,
+                0.0099,
+                0.01,
+                0.02275,
+                0.05,
+                0.1,
+                0.125,
+                0.135,
+                0.836,
+                3.86,
+                10.0,
+                20.452493,
+                99.99,
+                100.0,
+                -0.004,
+                -0.125,
+            ],
+        ),
         ("days", &[0.0, 0.0007, 0.01, 0.4, 0.99, 1.0, 1.04, 2.96, 9.51, 9.99, 10.0, 10.9, 400.0]),
     ];
 
@@ -422,6 +462,7 @@ mod tests {
                     "bytes" => bytes,
                     "count" => count,
                     "percent" => percent,
+                    "percent_value" => percent_value,
                     "days" => days,
                     other => panic!("no formatter {other}"),
                 };
@@ -451,6 +492,11 @@ mod tests {
         assert_eq!(said("duration", 150_000.0), "2 min");
         assert_eq!(said("count", 12_500.0), "12K");
         assert_eq!(said("percent", 0.125), "12%");
+        assert_eq!(said("percent_value", 0.02275), "0.02%");
+        assert_eq!(said("percent_value", 0.004583333), "<0.01%");
+        assert_eq!(said("percent_value", 0.0), "0%");
+        assert_eq!(percent_value(f64::NAN), "—");
+        assert_eq!(percent_value(f64::INFINITY), "—");
         assert_eq!(said("days", 0.4), "9 h 36 min");
         if let Ok(dir) = std::env::var("TS_RS_EXPORT_DIR") {
             let map: serde_json::Map<String, serde_json::Value> =

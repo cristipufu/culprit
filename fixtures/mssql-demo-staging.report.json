@@ -1399,7 +1399,7 @@
       "replicas": [],
       "signals": [
         {
-          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 77.1%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 77.09%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
           "key": "cpu-use",
           "label": "CPU used against its limit",
           "scope": "last-hour",
@@ -1408,7 +1408,7 @@
           "value": 43.00887499999999
         },
         {
-          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 26.2%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 26.25%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
           "key": "data-io",
           "label": "Storage I/O used against its limit",
           "scope": "last-hour",
@@ -1426,7 +1426,7 @@
           "value": 66.7080833333334
         },
         {
-          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 9.9%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 9.94%. At or above 95% of this database's limit in 0% of samples. A warning needs at least 10% of samples near the limit.",
           "key": "workers-use",
           "label": "Worker slots used against their limit",
           "scope": "last-hour",
@@ -1435,7 +1435,7 @@
           "value": 6.413875
         },
         {
-          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 76.0%. At or above 95% of this database's limit in 0% of samples. Allocated memory includes cache; a full cache is normal and is not graded as memory pressure.",
+          "healthy": "7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 76%. At or above 95% of this database's limit in 0% of samples. Allocated memory includes cache; a full cache is normal and is not graded as memory pressure.",
           "key": "memory-use",
           "label": "Memory allocated against its limit",
           "scope": "last-hour",

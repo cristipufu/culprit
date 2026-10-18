@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import type { CloudSeries } from "../gen/CloudSeries";
 import type { CloudSignals } from "../gen/CloudSignals";
 import type { ThrottleEpisode } from "../gen/ThrottleEpisode";
-import { bytes, count, duration } from "../lib/format";
+import { bytes, count, duration, percentValue } from "../lib/format";
 import { stamp, useCloud } from "../lib/events";
 import { TimeChart, VH, type Bucket, type ChartEvent } from "./TimeChart";
 import "./timeline.css";
@@ -11,7 +11,7 @@ import "./timeline.css";
 export function cloudValue(series: Pick<CloudSeries, "unit">, v: number): string {
   switch (series.unit) {
     case "percent":
-      return `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
+      return percentValue(v);
     case "ms":
       return duration(v);
     case "bytes":

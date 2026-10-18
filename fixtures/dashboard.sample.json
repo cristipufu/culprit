@@ -269,7 +269,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "100%"
+            "value": "99.96%"
           },
           {
             "at": null,
@@ -280,7 +280,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "17%"
+            "value": "17.16%"
           },
           {
             "at": null,
@@ -335,7 +335,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "3%"
+            "value": "2.65%"
           },
           {
             "at": null,
@@ -346,7 +346,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "4%"
+            "value": "3.97%"
           }
         ],
         "key": "health",
@@ -553,7 +553,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "3%"
+            "value": "2.65%"
           }
         ],
         "key": "connections",
@@ -953,7 +953,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "46%"
+            "value": "45.89%"
           },
           {
             "at": null,
@@ -975,7 +975,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "2%"
+            "value": "1.76%"
           },
           {
             "at": null,
@@ -1612,7 +1612,7 @@
             "query_id": null,
             "share": null,
             "status": "bad",
-            "value": "67%"
+            "value": "66.71%"
           },
           {
             "at": null,
@@ -1623,7 +1623,7 @@
             "query_id": null,
             "share": null,
             "status": "good",
-            "value": "43%"
+            "value": "43.01%"
           },
           {
             "at": null,
@@ -1634,7 +1634,7 @@
             "query_id": null,
             "share": null,
             "status": "good",
-            "value": "15%"
+            "value": "14.77%"
           },
           {
             "at": null,
@@ -1645,7 +1645,7 @@
             "query_id": null,
             "share": null,
             "status": "good",
-            "value": "6%"
+            "value": "6.41%"
           },
           {
             "at": null,
@@ -1656,7 +1656,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "74%"
+            "value": "73.98%"
           }
         ],
         "key": "health",
@@ -1682,7 +1682,7 @@
         ],
         "next": "culprit waits mssql-demo-staging",
         "status": "bad",
-        "takeaway": "Log throughput used against its limit: 67%; 7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 99.6%. At or above 95% of this database's limit in 38% of samples. A warning needs at least 10% of samples near the limit.",
+        "takeaway": "Log throughput used against its limit: 66.71%; 7d selected; 60 minutes of resource samples available. Average over 60 minutes of recorded samples; peak 99.6%. At or above 95% of this database's limit in 38% of samples. A warning needs at least 10% of samples near the limit.",
         "title": "Health"
       },
       {
@@ -2155,7 +2155,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "98%"
+            "value": "98.14%"
           },
           {
             "at": null,
@@ -2166,7 +2166,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "68%"
+            "value": "67.95%"
           },
           {
             "at": null,
@@ -2221,7 +2221,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "5%"
+            "value": "4.64%"
           },
           {
             "at": null,
@@ -2232,7 +2232,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "5%"
+            "value": "4.64%"
           }
         ],
         "key": "health",
@@ -2444,7 +2444,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "5%"
+            "value": "4.64%"
           }
         ],
         "key": "connections",
@@ -2830,7 +2830,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "55%"
+            "value": "55.29%"
           },
           {
             "at": null,
@@ -2863,7 +2863,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "0%"
+            "value": "0.25%"
           },
           {
             "at": null,
@@ -2896,7 +2896,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "16%"
+            "value": "15.62%"
           },
           {
             "at": null,
@@ -2907,7 +2907,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "6%"
+            "value": "6.19%"
           }
         ],
         "key": "health",
@@ -3125,7 +3125,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "6%"
+            "value": "6.19%"
           },
           {
             "at": null,
@@ -3147,7 +3147,7 @@
             "query_id": null,
             "share": null,
             "status": "info",
-            "value": "1%"
+            "value": "1.09%"
           }
         ],
         "key": "connections",
