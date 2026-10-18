@@ -999,6 +999,35 @@ pub fn has_mssql_recompile_hint(text: &str) -> bool {
     })
 }
 
+/// The table whose optimizer statistics T-SQL refreshes. Comments and literals cannot name the operation, and
+/// `UPDATE statistics SET …` (including an alias) is an ordinary row update. Ambiguous quoted text stays unknown.
+pub fn mssql_statistics_target(text: &str) -> Option<String> {
+    let readings = readings(without_parameter_list(text), Engine::Mssql).ok()?;
+    let target = |tokens: &[Token<'_>]| -> Option<String> {
+        if !matches!(tokens.first(), Some(Token::Word(w)) if w.eq_ignore_ascii_case("update"))
+            || !matches!(tokens.get(1), Some(Token::Word(w)) if w.eq_ignore_ascii_case("statistics"))
+            || tokens.iter().any(|t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("set")))
+        {
+            return None;
+        }
+        let mut at = 2;
+        loop {
+            let name = match tokens.get(at)? {
+                Token::Word(w) if !w.starts_with('@') => (*w).to_string(),
+                Token::Quoted(w, b']') => w.replace("]]", "]"),
+                Token::Quoted(w, b'"') => w.replace("\"\"", "\""),
+                _ => return None,
+            };
+            if tokens.get(at + 1) != Some(&Token::Punct('.')) {
+                return (!name.is_empty()).then_some(name);
+            }
+            at += 2;
+        }
+    };
+    let first = target(readings.first()?)?;
+    readings.iter().all(|tokens| target(tokens).as_ref() == Some(&first)).then_some(first)
+}
+
 /// Each table a statement names after FROM, JOIN, INTO, UPDATE…, with the alias it gives it.
 fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     let Some(tokens) = modes(engine).iter().find_map(|m| lex(text, engine, *m).ok()) else {
@@ -1133,6 +1162,33 @@ pub fn limit_count(text: &str, engine: Engine) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn statistics_maintenance_is_code_not_a_table_name_or_comment() {
+        for (text, table) in [
+            ("UPDATE STATISTICS dbo.Orders WITH FULLSCAN", "Orders"),
+            ("/* before */ UPDATE /* nested /* why */ */ STATISTICS [dbo].[Order Lines]", "Order Lines"),
+            ("(@P1 int) UPDATE STATISTICS dbo.Orders", "Orders"),
+            ("UPDATE STATISTICS [dbo].[set] WITH FULLSCAN", "set"),
+            ("UPDATE STATISTICS [dbo].[Order]]Lines]", "Order]Lines"),
+        ] {
+            assert_eq!(mssql_statistics_target(text).as_deref(), Some(table), "{text}");
+        }
+        for text in [
+            "-- UPDATE STATISTICS dbo.Orders\nSELECT * FROM dbo.Orders",
+            "SELECT 'UPDATE STATISTICS dbo.Orders'",
+            "UPDATE statistics SET value = 1",
+            "UPDATE statistics s SET value = 1",
+            "UPDATE statistics AS s SET value = 1",
+            "UPDATE statistics_log SET value = 1",
+            "UPDATE STATISTICS",
+            "UPDATE STATISTICS dbo.",
+            "UPDATE STATISTICS dbo.Orders /* unclosed",
+            "UPDATE STATISTICS \"dbo\".\"Orders\"",
+        ] {
+            assert_eq!(mssql_statistics_target(text), None, "{text}");
+        }
+    }
 
     #[test]
     fn a_recompile_hint_is_code_in_the_option_list() {

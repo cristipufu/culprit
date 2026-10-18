@@ -449,7 +449,7 @@
         "kind": "query",
         "name": "6"
       },
-      "summary": "Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call costs a network round trip.",
+      "summary": "Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.",
       "title": "A read from products runs 60K times in 5 hours, one key at a time",
       "verify": [
         "It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all."

@@ -2,6 +2,16 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## Unreleased
+
+### Fixes
+
+- Saved-file commands apply today's plan and health rules, matching scans opened by connection name.
+- PostgreSQL planner cost defaults no longer imply a tuning problem. Saved SQL Server statistics warnings describe compilation-time evidence and ask for current diagnostics before recommending a change.
+- Frequent calls no longer prove timer-based polling or a log flush per statement. Statistics maintenance and TOP updates name their real target; empty maintenance showplans no longer count as parser failures, and conditional SQL Server plans retain their own operators and measurements.
+- Findings state the cumulative period beside database-wide daily averages, keeping it distinct from query figures measured between Culprit's scans.
+- Plan-level warnings on SQL Server's own catalog no longer suggest application schema changes.
+
 ## 0.3.4
 
 ### Fixes

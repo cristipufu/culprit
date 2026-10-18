@@ -66,10 +66,10 @@ fn a_mismatch_sql_server_says_stops_a_seek_is_titled_as_a_seek_not_any_use() {
     assert!(!f.title.contains("using an index"), "{}", f.title);
 }
 
-// SQL Server warned of no statistics on a column the plan seeks an index on: the index's statistics exist (they come
-// with the index), so the finding says they're out of date, and what the catalog holds of them, not that there are none.
+// A saved compilation warning remains historical even when its columns appear in an index seek. Current catalog
+// facts add context; they do not turn the warning into proof that a refresh is needed.
 #[test]
-fn statistics_an_index_has_are_said_out_of_date_with_what_the_catalog_holds() {
+fn a_saved_statistics_warning_keeps_current_catalog_facts_separate() {
     fn seek_on_priority(n: &mut culprit_core::PlanNode) -> Option<&mut culprit_core::PlanNode> {
         if n.index.as_deref() == Some("ix_support_tickets_priority") {
             return Some(n);
@@ -90,14 +90,15 @@ fn statistics_an_index_has_are_said_out_of_date_with_what_the_catalog_holds() {
 
     let report = culprit_checks::analyze(s);
     let f = report.findings.iter().find(|f| f.id == "plan-warnings:10:missing-statistics").expect("the warning");
-    assert!(f.title.ends_with("is planned on out-of-date statistics on priority"), "{}", f.title);
+    assert!(f.title.contains("captured plan") && f.title.ends_with("statistics warning on priority"), "{}", f.title);
     assert!(
         f.summary.contains(
-            "found nothing in them it could use. The statistics of ix_support_tickets_priority were last updated on Aug 28, when the table had 1 row, and have counted 95 changes since; the table held 300K rows when this plan was compiled, and holds 300K now."
+            "Current catalog: The statistics of ix_support_tickets_priority were last updated on Aug 28, when the table had 1 row, and have counted 95 changes since; the table held 300K rows when this plan was compiled, and holds 300K now."
         ),
         "{}",
         f.summary
     );
     assert!(!f.summary.contains("read like this"), "{}", f.summary);
-    assert_eq!(f.fix.as_ref().and_then(|x| x.sql.as_deref()), Some("UPDATE STATISTICS [shop].[support_tickets];"));
+    assert!(!f.fix.as_ref().and_then(|x| x.sql.as_deref()).unwrap_or_default().contains("UPDATE STATISTICS"));
+    assert!(f.verify[0].contains("newly compiled plan") && f.verify[0].contains("original XML"));
 }

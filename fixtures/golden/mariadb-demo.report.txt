@@ -66,7 +66,7 @@ brief:
 === finding chatty-query:a92bb0be330ac53a
 low severity · medium confidence · queries
 title: A read from products runs 30K times in 1 minute, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.
+summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
 impact: 75% of executions · 1.0% of database time
 metrics:
   - Share of executions: 75%
@@ -85,7 +85,7 @@ brief:
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.
+    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
 
     ## Evidence
 

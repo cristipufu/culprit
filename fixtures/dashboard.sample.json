@@ -2615,7 +2615,7 @@
             "kind": "finding",
             "label": "A read from orders writes about 19.9 MB of temp files per run",
             "query_id": null,
-            "share": 0.4402906625894278,
+            "share": 0.44029066258942773,
             "status": "watch",
             "value": "44% of DB time"
           },
@@ -2637,7 +2637,7 @@
             "kind": "finding",
             "label": "Planning takes almost all of the time of a read from orders",
             "query_id": null,
-            "share": 9.965739591641848e-05,
+            "share": 9.965739591641849e-05,
             "status": "watch",
             "value": "100% planning"
           }

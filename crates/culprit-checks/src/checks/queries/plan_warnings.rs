@@ -241,13 +241,11 @@ pub(super) fn plan_warning_finding(
             }
         }
         PlanWarning::MissingStatistics => {
-            f.title =
-                format!("{} {} planned without statistics on some columns", capitalize(&handle), tense("is", "was"));
-            f.summary = "The optimizer had to guess how many rows match because some columns have no statistics. Guesses lead to the wrong join type or memory grant.".into();
+            f.title = format!("The captured plan for {handle} reported a statistics warning");
+            f.summary = "SQL Server reported unavailable statistics at compilation time. The saved warning alone does not establish missing or stale statistics now, or a slow plan.".into();
             f.severity = Severity::Low;
             f.confidence = Confidence::Medium;
-            // The plan's own insight knows whether the columns are an index's keys (statistics exist but are empty:
-            // update them) or have none at all (a database setting): one reading for the finding and the plan view.
+            // The plan viewer and finding use the same compilation-time evidence and diagnostic guidance.
             let insight = q
                 .plan
                 .as_ref()
@@ -256,12 +254,11 @@ pub(super) fn plan_warning_finding(
             f.fix = Some(match insight {
                 Some(i) => {
                     f.summary = i.detail;
-                    // An index's keys have statistics: say they're out of date, and what the catalog says of them.
+                    // The catalog is current context; a saved compilation warning cannot establish staleness now.
                     if let Some(stale) = &stale {
                         f.title = format!(
-                            "{} {} planned on out-of-date statistics on {}",
-                            capitalize(&handle),
-                            tense("is", "was"),
+                            "The captured plan for {} reported a statistics warning on {}",
+                            handle,
                             format::list(&stale.columns)
                         );
                         if let Some(said) = statistics_now(snapshot, stale) {
@@ -271,7 +268,7 @@ pub(super) fn plan_warning_finding(
                     Fix { summary: i.fix, sql: i.fix_sql, cost: None }
                 }
                 None => Fix {
-                    summary: "Make sure automatic statistics creation is on, or create statistics on the columns named in the plan warning.".into(),
+                    summary: "Inspect current column statistics and automatic statistics settings, then compare a newly compiled plan before choosing a statistics change.".into(),
                     sql: None,
                     cost: None,
                 },
@@ -279,7 +276,11 @@ pub(super) fn plan_warning_finding(
         }
         _ => return None,
     }
-    f.verify = vec!["Re-scan after the change; the warning should be gone from this query's plan.".into()];
+    f.verify = vec![if warning == PlanWarning::MissingStatistics {
+        "Capture a newly compiled plan after any justified statistics change and compare its warning and estimates with representative runs. Query Store may retain the original XML, so a re-scan of that saved plan alone cannot verify the change.".into()
+    } else {
+        "Re-scan after the change; the warning should be gone from this query's plan.".into()
+    }];
     Some(f)
 }
 

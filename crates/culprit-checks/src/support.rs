@@ -660,6 +660,9 @@ pub fn main_statement(text: &str) -> &str {
 
 /// `query_handle` for bare statement text.
 pub fn statement_handle(text: &str) -> String {
+    if let Some(table) = statistics_maintenance_table(text) {
+        return format!("a statistics refresh on {table}");
+    }
     let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
     // A driver's or a pool's statement (BEGIN, COMMIT, DISCARD ALL, SELECT 1) is named as it is: it is short, and
     // "a query" would hide what sends it.
@@ -759,11 +762,36 @@ fn main_table(text: &str, lower: &str, verb: &str) -> Option<String> {
         _ => " from ",
     };
     let at = lower.find(marker)? + marker.len();
-    let rest = text[at..].trim_start();
+    let mut rest = text[at..].trim_start();
+    if verb == "update"
+        && rest.get(..3).is_some_and(|s| s.eq_ignore_ascii_case("top"))
+        && rest[3..].starts_with(|c: char| c.is_whitespace() || c == '(')
+    {
+        let after = rest[3..].trim_start();
+        let tail = if after.starts_with('(') {
+            after.find(')').map(|end| &after[end + 1..])
+        } else {
+            let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+            (digits > 0 && after[digits..].starts_with(char::is_whitespace)).then(|| &after[digits..])
+        };
+        if let Some(tail) = tail {
+            rest = tail.trim_start();
+            if rest.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("percent"))
+                && rest[7..].starts_with(char::is_whitespace)
+            {
+                rest = rest[7..].trim_start();
+            }
+        }
+    }
     let token: String =
         rest.chars().take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '[' | ']' | '"' | '`')).collect();
     let name = token.rsplit('.').next()?.trim_matches(|c| matches!(c, '[' | ']' | '"' | '`')).to_string();
     (!name.is_empty() && name != "(").then_some(name)
+}
+
+/// UPDATE STATISTICS is optimizer maintenance, not an UPDATE of application rows.
+pub(crate) fn statistics_maintenance_table(text: &str) -> Option<String> {
+    culprit_core::sql::mssql_statistics_target(text)
 }
 
 /// "once", never "1 times": a count of runs in a sentence.
@@ -1259,6 +1287,25 @@ pub(crate) mod tests {
         assert_eq!(query_handle(&q), "a read from Orders");
         q.text = "UPDATE dbo.Users SET a = 1".into();
         assert_eq!(query_handle(&q), "an update of Users");
+        q.text = "UPDATE STATISTICS dbo.[Orders] WITH SAMPLE 100 PERCENT".into();
+        assert_eq!(query_handle(&q), "a statistics refresh on Orders");
+        q.text = "UPDATE\nSTATISTICS dbo.[Orders]".into();
+        assert_eq!(query_handle(&q), "a statistics refresh on Orders");
+        q.text = "(@P1 int) UPDATE STATISTICS dbo.[Orders]".into();
+        assert_eq!(query_handle(&q), "a statistics refresh on Orders");
+        assert!(statistics_maintenance_table("UPDATE dbo.Statistics SET value = 1").is_none());
+        assert!(statistics_maintenance_table("UPDATE statistics_log SET value = 1").is_none());
+        assert!(statistics_maintenance_table("UPDATE statistics SET value = 1").is_none());
+        assert!(statistics_maintenance_table("UPDATE statistics s SET value = 1").is_none());
+        assert!(statistics_maintenance_table("UPDATE statistics AS s SET value = 1").is_none());
+        q.text = "UPDATE TOP (1000) dbo.[Orders] SET state = 1".into();
+        assert_eq!(query_handle(&q), "an update of Orders");
+        q.text = "UPDATE TOP (@limit) dbo.[Orders] SET state = 1".into();
+        assert_eq!(query_handle(&q), "an update of Orders");
+        q.text = "UPDATE TOP 10 PERCENT dbo.[Orders] SET state = 1".into();
+        assert_eq!(query_handle(&q), "an update of Orders");
+        q.text = "UPDATE top100 SET state = 1".into();
+        assert_eq!(query_handle(&q), "an update of top100");
     }
 
     pub(crate) fn sample() -> QueryStat {

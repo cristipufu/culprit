@@ -474,38 +474,8 @@ fn latest_compat(server: &ServerInfo) -> u32 {
 
 fn postgres(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();
-    let cloud = snapshot.server.is_managed();
-    let rpc = value(snapshot, &["random_page_cost"]).and_then(|v| v.parse::<f64>().ok());
-    // The cost of a random read against a sequential one, as this server has them: seq_page_cost need not be 1.
-    let seq = value(snapshot, &["seq_page_cost"]).and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0);
-    if let Some(rpc) = rpc.filter(|v| *v / seq.unwrap_or(1.0) >= 4.0 && cloud) {
-        let ratio = rpc / seq.unwrap_or(1.0);
-        let change = setting_change(&snapshot.server, "random_page_cost", "1.1");
-        // Nothing in a scan's numbers shows the planner choosing a scan for this reason: what the setting can do, not
-        // what it did.
-        let mut f = setting_finding(
-            "random_page_cost",
-            Severity::Low,
-            "random_page_cost assumes spinning disks".into(),
-            format!(
-                "random_page_cost is {}{}, which tells the planner that a random read costs {} times a sequential one. On SSD-backed cloud storage they cost about the same, so the planner may choose a sequential scan where an index scan would be cheaper.",
-                format::count(rpc),
-                seq.filter(|s| (*s - 1.0).abs() > f64::EPSILON)
-                    .map(|s| format!(" and seq_page_cost {}", format::count(s)))
-                    .unwrap_or_default(),
-                format::count(ratio)
-            ),
-            Fix { summary: format!("Lower it. {}", change.how), sql: change.sql, cost: None },
-        );
-        f.confidence = Confidence::Medium;
-        // Culprit's next scan is a new session, so it reads the database's value as the application's new sessions do.
-        f.verify = vec![
-            "Re-scan: random_page_cost reads 1.1 in Culprit's new session, as it will in the application's new \
-             sessions, and this finding is gone."
-                .into(),
-        ];
-        out.push(f);
-    }
+    // Planner cost constants are a model of this installation's cache and storage. A default ratio, including on
+    // managed storage, proves no slow plan and justifies no database-wide change. Keep them visible in settings.
     if value(snapshot, &["track_io_timing"]).is_some_and(|v| !is_on(v)) {
         let change = setting_change(&snapshot.server, "track_io_timing", "on");
         let mut f = setting_finding(

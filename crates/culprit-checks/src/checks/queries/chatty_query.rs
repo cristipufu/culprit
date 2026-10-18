@@ -78,7 +78,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                     |scans| format!("It ran {runs}. {scans}"),
                 )
             };
-            let fewer = fewer_runs("it should run orders of magnitude fewer times");
+            let fewer = fewer_runs("it should run fewer times and take less time in all while the useful work stays the same");
             let engine = snapshot.server.engine;
             // Shapes that look alike in the counters and need different fixes: a poll that mostly finds nothing, a
             // counter handed out one number at a time, a write repeated row by row (or a heartbeat), and a read inside
@@ -87,13 +87,13 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                 (
                     format!("{handle} {ran} {runs} and most runs {find} nothing"),
                     format!(
-                        "Its runs {are} {exec} of all statement runs{runs_over}, and on average a run {} {} row{}{rows_over}: the app is polling, asking on a timer whether there is work. Each run {is} cheap ({share} in all), but every instance of the app asks on its own, so the cost grows with the fleet, not with the work.",
+                        "Its runs {are} {exec} of all statement runs{runs_over}, and on average a run {} {} row{}{rows_over}. Empty results can come from polling, request-driven checks or legitimate misses; the counters do not identify the caller or prove a timer. Each run {is} cheap ({share} in all), but unnecessary calls still add round trips.",
                         if writes { changes } else { returns },
                         format::count(rows),
                         if rows == 1.0 { "" } else { "s" },
                     ),
-                    "Ask less often when the last run found nothing (back off to a few seconds), let one instance poll for the fleet, or have the writer wake the poller (a queue, a notification, a channel). Keep the poll on a small index, for example one filtered to the pending rows.".to_string(),
-                    fewer_runs("it should run an order of magnitude fewer times while the work it finds stays the same"),
+                    "Check the caller first. If it polls for work, back off after empty results, coordinate pollers, or have the writer wake them (a queue or notification). For request-driven checks, reuse an answer only while it remains valid. Keep necessary checks and their correctness guarantees.".to_string(),
+                    fewer_runs("unnecessary calls and total database time should fall while the useful work stays the same"),
                     "Some frequent checks are legitimate (a lease or a lock checked on every request). Check the calling code before changing how often it asks.",
                 )
             } else if writes {
@@ -110,7 +110,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                     ),
                     WriteKind::Update => (
                         format!(
-                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Updates that small and that frequent are usually a loop updating rows one at a time, or a heartbeat or status kept in one row; each one is a round trip and a log flush ({share} in all).",
+                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Frequent small updates can be independent requests, row-by-row loops, heartbeats or status changes; each call can add a round trip, and each committing transaction can flush the log ({share} in all). The counters do not show whether calls already share a transaction.",
                             rows_said(rows)
                         ),
                         format!(
@@ -122,7 +122,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                     ),
                     WriteKind::Delete => (
                         format!(
-                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Deletes that small and that frequent are usually a loop deleting rows one at a time; each one is a round trip and a log flush ({share} in all).",
+                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Frequent small deletes can be independent removals or a row-by-row loop; each call can add a round trip, and each committing transaction can flush the log ({share} in all). The counters do not show whether calls already share a transaction.",
                             rows_said(rows)
                         ),
                         format!(
@@ -134,7 +134,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                     ),
                     WriteKind::Insert => (
                         format!(
-                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Writes that small and that frequent are usually a loop writing row by row, or a heartbeat; each one is a round trip and a log flush ({share} in all).",
+                            "Its runs {are} {exec} of all statement runs{runs_over}, and each run {changes} about {}. Frequent small writes can be individual events, heartbeats or a row-by-row loop; each call can add a round trip, and each committing transaction can flush the log ({share} in all). The counters do not show whether calls already share a transaction.",
                             rows_said(rows)
                         ),
                         format!(
@@ -154,7 +154,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                 (
                     format!("{handle} {ran} {runs}, one key at a time"),
                     format!(
-                        "Its runs {are} {exec} of all statement runs{runs_over}, and each run {returns} about {}. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run {is} cheap ({share} in all), but each call costs a network round trip.",
+                        "Its runs {are} {exec} of all statement runs{runs_over}, and each run {returns} about {}. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run {is} cheap ({share} in all), but each call can add a network round trip.",
                         rows_said(rows)
                     ),
                     "Reuse a result the application already has, or cache it for as long as it remains valid; access checks must still reflect permission changes. If the caller loops over items, load their rows in one query (WHERE key IN (…) or a join) before the loop; ORMs usually have an eager-loading option for this.".to_string(),

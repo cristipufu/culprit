@@ -289,6 +289,11 @@ fn on_system_objects(cx: &Cx, d: &Draft) -> bool {
         return false;
     }
     let mut objects: Vec<&str> = Vec::new();
+    // A warning on the plan itself may highlight no operator (for example a compilation-time conversion warning).
+    // Its scope is the whole plan, just like a warning attached to the root, not an absence of catalog evidence.
+    if d.nodes.is_empty() {
+        objects.extend(cx.nodes.iter().filter_map(|n| n.object.as_deref()));
+    }
     for n in d.nodes.iter().filter_map(|id| cx.node(*id)) {
         let mut involved = Vec::new();
         if d.subtree || n.object.is_none() {

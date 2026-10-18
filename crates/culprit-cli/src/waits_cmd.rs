@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use clap::Args;
 use culprit_core::{
-    Error, FileIo, Pressure, Replica, ReplicaRole, Report, Result, Signal, SignalScope, SignalStatus, SignalUnit,
-    Snapshot, WaitSample, WaitsReport, format,
+    Error, FileIo, Pressure, Replica, ReplicaRole, Result, Signal, SignalScope, SignalStatus, SignalUnit, Snapshot,
+    WaitSample, WaitsReport, format,
 };
 use culprit_engine::Workspace;
 use serde_json::json;
@@ -54,11 +54,7 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
     }
     let (name, snapshot) = match (&args.file, &args.connection) {
         (Some(path), _) => {
-            let text = std::fs::read_to_string(path).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-            let snapshot = serde_json::from_str::<Report>(&text)
-                .map(|r| r.snapshot)
-                .or_else(|_| serde_json::from_str::<Snapshot>(&text))
-                .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
+            let snapshot = ws.analyze_file(path)?.snapshot;
             (snapshot.connection.clone(), snapshot)
         }
         (None, Some(connection)) => {

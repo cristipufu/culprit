@@ -48,6 +48,12 @@ export function querySummary(text: string, objectName?: string | null): QuerySum
   let body = clean(text);
   // A parameterized batch keeps its declarations in front: "(@P1 int)SELECT …".
   body = body.replace(/^\((@\w+[^)]*)\)\s*/, "");
+  if (
+    /^UPDATE\s+STATISTICS\b/i.test(body)
+    && !new RegExp(String.raw`^UPDATE\s+STATISTICS\s+(?:SET\b|(?:AS\s+)?` + IDENT + String.raw`\s+SET\b)`, "i").test(body)
+  ) {
+    return { verb: "UPDATE STATISTICS", target: first(body, String.raw`^UPDATE\s+STATISTICS\s+` + IDENT), predicate: null };
+  }
   // Skip CTE definitions to reach the statement they feed.
   if (/^WITH\b/i.test(body)) {
     let depth = 0;
@@ -70,7 +76,7 @@ export function querySummary(text: string, objectName?: string | null): QuerySum
       target = first(body, String.raw`\bFROM\s+` + IDENT);
       break;
     case "UPDATE":
-      target = first(body, String.raw`^UPDATE\s+(?:TOP\s*\(\s*\d+\s*\)\s*)?` + IDENT);
+      target = first(body, String.raw`^UPDATE\s+(?:TOP\b\s*(?:\([^)]*\)|\d+)\s+(?:PERCENT\s+)?)?` + IDENT);
       break;
     case "INSERT":
       target = first(body, String.raw`\bINTO\s+` + IDENT);

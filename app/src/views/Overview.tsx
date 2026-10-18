@@ -225,8 +225,8 @@ function Header({
         <div className="vital">
           <div className="label">{short ? "Database time" : "Database time per day"}</div>
           <div className="value">{w ? duration(short ? w.total_time_ms : perDay(w.total_time_ms, w.window_hours)) : "—"}</div>
-          <div className="hint" title={w ? `${count(w.query_count)} queries · ${count(w.total_executions)} runs` : undefined}>
-            {w ? (short ? span : `${count(w.query_count)} queries · ${count(perDay(w.total_executions, w.window_hours))} runs/day`) : "No workload data"}
+          <div className="hint" title={w ? `${count(w.query_count)} queries · ${count(w.total_executions)} runs · ${span}` : undefined}>
+            {w ? (short ? span : `${span} · ${count(w.query_count)} queries · ${count(perDay(w.total_executions, w.window_hours))} runs/day`) : "No workload data"}
           </div>
         </div>
         <WaitsVital report={report} onOpen={onOpenWaits} />

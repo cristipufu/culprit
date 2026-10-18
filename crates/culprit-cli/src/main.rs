@@ -17,7 +17,7 @@ use culprit_core::{
     AuthKind, Engine, Environment, Error, ExplainMode, Report, SessionAction, Severity, SnapshotOptions,
 };
 use culprit_engine::entra::SignInEvent;
-use culprit_engine::{ImportSource, NewConnection, Workspace, reports};
+use culprit_engine::{ImportSource, NewConnection, Workspace};
 use output::{Format, Out};
 
 #[derive(Parser)]
@@ -722,7 +722,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
                 (None, None) => ws.drift(&a, &b)?,
                 (fa, fb) => {
                     let side = |name: &str, file: Option<PathBuf>| match file {
-                        Some(path) => reports::load(&path),
+                        Some(path) => ws.analyze_file(&path),
                         None => load(&ws, name, None).map(|mut r| {
                             r.snapshot.connection = name.to_string();
                             r
@@ -743,7 +743,7 @@ async fn run(command: Command, out: &Out) -> culprit_core::Result<u8> {
         Command::Cloud(args) => timeline_cmd::cloud(&ws, args, out).await,
         Command::Indexes { connection } => {
             let advice = match report_file(&connection) {
-                Some(path) => ws.index_advice_for(reports::load(&path)?),
+                Some(path) => ws.index_advice_for(ws.analyze_file(&path)?),
                 None => ws.index_advice(&connection)?,
             };
             out.index_advice(&advice);
@@ -771,7 +771,7 @@ fn fail_code(report: &Report, fail_on: Option<SeverityArg>) -> u8 {
 
 fn load(ws: &Workspace, connection: &str, path: Option<&PathBuf>) -> culprit_core::Result<Report> {
     if let Some(path) = path {
-        return reports::load(path);
+        return ws.analyze_file(path);
     }
     ws.latest_report(connection, None)?.ok_or_else(|| {
         Error::not_found(format!("No saved report for '{connection}'"))
@@ -997,6 +997,29 @@ mod tests {
     use clap::Parser;
 
     use super::*;
+
+    #[test]
+    fn saved_file_findings_apply_current_health_rules_without_rewriting_the_file() {
+        let dir = std::env::temp_dir().join(format!("culprit-file-reading-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ws = Workspace::open_in(&dir);
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pg-demo.report.json");
+        let mut report = ws.analyze_file(&fixture).unwrap();
+        let signal =
+            report.snapshot.pressure.as_mut().unwrap().signals.iter_mut().find(|s| s.key == "cache-hit").unwrap();
+        signal.status = culprit_core::SignalStatus::Bad;
+        signal.healthy = Some("Legacy cache threshold".into());
+        let path = dir.join("saved.json");
+        let bytes = serde_json::to_vec(&report).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        let reopened = load(&ws, "unused", Some(&path)).unwrap();
+        let signal = reopened.snapshot.pressure.as_ref().unwrap().signal("cache-hit").unwrap();
+        assert_eq!(signal.status, culprit_core::SignalStatus::Info);
+        assert!(signal.healthy.as_deref().unwrap().contains("ratio alone"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn scan_args(args: &[&str]) -> Result<ScanArgs, clap::Error> {
         let cli = Cli::try_parse_from([&["culprit", "scan", "shop"], args].concat())?;

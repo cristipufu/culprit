@@ -368,6 +368,7 @@ GROUP BY ws.wait_category_desc
                     plans_parsed += 1;
                     Some(plan)
                 }
+                Err(_) if plan_xml::is_empty(xml) => None,
                 Err(_) => {
                     plan_errors += 1;
                     None
@@ -661,6 +662,7 @@ pub(crate) async fn from_plan_cache(
                         plans_parsed += 1;
                         Some(p)
                     }
+                    Err(_) if plan_xml::is_empty(&xml) => None,
                     Err(_) => {
                         plan_errors += 1;
                         None

@@ -1730,3 +1730,63 @@ fn a_forced_plan_is_called_older_than_its_index_only_when_the_index_is_dated() {
     let f = forced_scan(1e-6, &[], Some("2026-10-01T12:00:00Z")).unwrap();
     assert!(!f.summary.contains("forced before it existed"), "{}", f.summary);
 }
+
+#[test]
+fn statistics_maintenance_is_not_told_to_batch_application_updates() {
+    let mut s = snapshot("mssql-demo.json");
+    let w = s.workload.as_mut().unwrap();
+    let mut q = w.queries[0].clone();
+    q.id = "statistics-maintenance".into();
+    q.text = "UPDATE STATISTICS dbo.orders WITH FULLSCAN".into();
+    q.object_name = None;
+    q.plan = None;
+    q.plans.clear();
+    q.waits.clear();
+    q.trend = None;
+    q.executions = 2.0;
+    q.total_time_ms = 20_000.0;
+    q.mean_time_ms = 10_000.0;
+    q.rows = None;
+    q.first_seen = None;
+    q.last_seen = None;
+    w.total_time_ms = q.total_time_ms;
+    w.total_executions = q.executions;
+    w.queries = vec![q];
+    let findings = heavy_queries(&s);
+    let f = find(&findings, "heavy-query:statistics-maintenance").unwrap();
+    assert!(f.title.starts_with("A statistics refresh on orders"), "{}", f.title);
+    assert!(f.summary.contains("optimizer statistics maintenance"), "{}", f.summary);
+    let fix = f.fix.as_ref().unwrap();
+    assert!(fix.summary.contains("scheduled maintenance"));
+    assert!(fix.sql.is_none());
+    assert!(!f.verify.iter().any(|v| v.contains("pages read")));
+}
+
+#[test]
+fn frequent_empty_results_do_not_establish_a_timer_or_multiple_pollers() {
+    let mut s = snapshot("mssql-demo.json");
+    let w = s.workload.as_mut().unwrap();
+    let mut q = w.queries[0].clone();
+    q.id = "request-check".into();
+    q.text = "SELECT id FROM dbo.orders WHERE token = @token".into();
+    q.object_name = None;
+    q.plan = None;
+    q.plans.clear();
+    q.waits.clear();
+    q.trend = None;
+    q.executions = 100_000.0;
+    q.total_time_ms = 10_000.0;
+    q.mean_time_ms = 0.1;
+    q.rows = Some(0.0);
+    q.first_seen = None;
+    q.last_seen = None;
+    w.total_time_ms = q.total_time_ms;
+    w.total_executions = q.executions;
+    w.window_hours = 24.0;
+    w.queries = vec![q];
+    let report = analyze(s);
+    let f = find(&report.findings, "chatty-query:request-check").unwrap();
+    assert!(f.summary.contains("request-driven checks"), "{}", f.summary);
+    assert!(!f.summary.contains("the app is polling") && !f.summary.contains("every instance"));
+    assert!(f.fix.as_ref().unwrap().summary.contains("Check the caller first"));
+}

@@ -165,27 +165,19 @@ pub(super) fn missing_statistics(cx: &Cx) -> Vec<Draft> {
         .take(1)
         .map(|n| {
             let cols = n.props.get("ColumnsWithNoStatistics").cloned();
-            let table = what(n);
             let mut d = Draft::new("missing-statistics", InsightArea::Statistics, cx.subtree(n), vec![n.id]);
-            d.cap = Severity::Medium;
-            d.verify = "Explain again: the ColumnsWithNoStatistics warning is gone.".into();
-            // SQL Server creates an index's statistics with the index: on a column the plan seeks an index on, they
-            // exist, and creating statistics changes nothing. What they hold is what's missing.
-            if let Some(stale) = keys_without_statistics(cx, n) {
-                d.title = format!(
-                    "The statistics on {} are out of date, so {} row counts are guesses",
-                    format::list(&stale.columns),
-                    if stale.columns.len() == 1 { "its" } else { "their" }
-                );
-                d.detail = stale_index_statistics_detail(&stale, None);
-                d.fix = format!("Update the statistics on {}, so its index statistics describe the rows it holds.", table_leaf(&table));
-                d.fix_sql = Some(Engine::Mssql.dialect().refresh_statistics(&qualified(Engine::Mssql, &table)));
-                return d;
-            }
-            d.title = format!("No statistics on {}, so its row counts are guesses", cols.clone().unwrap_or_else(|| format!("some columns of {}", table_leaf(&table))));
-            d.detail = "Without statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size. SQL Server creates them by itself unless AUTO_CREATE_STATISTICS is off for the database or it can't write to the database (read-only).".into();
-            d.fix = "Check the database's settings: if automatic statistics creation is off, turn it back on (it's on by default); if the database is read-only, create the statistics while it is writable (or on the primary, for a readable secondary) so they come with it.".into();
-            d.fix_sql = Some("SELECT name, is_auto_create_stats_on, is_read_only\n  FROM sys.databases\n WHERE database_id = DB_ID();\n-- If is_auto_create_stats_on is 0:\n-- ALTER DATABASE CURRENT SET AUTO_CREATE_STATISTICS ON;".into());
+            d.cap = Severity::Low;
+            d.title = format!(
+                "The captured plan reported no usable statistics on {}",
+                cols.unwrap_or_else(|| "some columns".into())
+            );
+            d.detail = match keys_without_statistics(cx, n) {
+                Some(context) => stale_index_statistics_detail(&context, None),
+                None => "SQL Server reported ColumnsWithNoStatistics when this plan was compiled. This is a compilation-time warning, not a measurement of current statistics or proof of a slow plan. Query Store can retain the original plan XML after statistics change.".into(),
+            };
+            d.fix = "Inspect the current column and index statistics and AUTO_CREATE_STATISTICS before choosing a change. An index histogram describes only its first key, so a column appearing in a seek does not prove that it has a usable histogram. Refresh or create statistics only where current evidence supports it; compare actual rows with estimates if the query is costly.".into();
+            d.fix_sql = Some("SELECT name, is_auto_create_stats_on, is_read_only\n  FROM sys.databases\n WHERE database_id = DB_ID();".into());
+            d.verify = "Capture a newly compiled plan after any justified statistics change and compare its warning and row estimates with representative runs. Reopening Query Store's original saved XML alone cannot verify that the warning is still current or has cleared.".into();
             d
         })
         .collect()
@@ -197,9 +189,8 @@ fn warns_of_no_statistics(n: &PlanNode) -> bool {
     n.warnings.contains(&PlanWarning::MissingStatistics) && table_variable_of(n).is_none()
 }
 
-/// Columns SQL Server warned have no statistics ("ColumnsWithNoStatistics") that are keys of an index the plan seeks on
-/// them. SQL Server creates an index's statistics with the index, so they exist, but held nothing it could use: they
-/// need updating, and creating statistics changes nothing.
+/// Seek-key context for ColumnsWithNoStatistics. The legacy name does not imply a current staleness verdict: a
+/// composite index has a histogram only on its first key, and a saved warning describes compilation time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StaleIndexStatistics {
     /// The table, as the plan names it (`app.support_escalations`).
@@ -243,26 +234,14 @@ fn keys_without_statistics(cx: &Cx, n: &PlanNode) -> Option<StaleIndexStatistics
     Some(StaleIndexStatistics { table, columns, indexes, table_rows })
 }
 
-/// What a warning of no statistics on an index's keys means. `catalog` is what the database's catalog says of those
-/// statistics now (when they were updated, from how many rows, the changes since), where a scan read it; without it,
-/// the plan says only what SQL Server found in them.
+/// Context for a compilation-time warning. A seek key proves an index exists, not that this column leads its
+/// histogram, that its statistics were stale then, or that any current statistics need updating.
 pub fn stale_index_statistics_detail(s: &StaleIndexStatistics, catalog: Option<&str>) -> String {
-    let one = s.columns.len() == 1;
-    let why = match catalog {
-        Some(said) => said.trim_end_matches('.').to_string(),
-        None => format!(
-            "That happens to statistics built while the table was empty or nearly so, and not updated since{}",
-            s.table_rows
-                .map(|rows| format!("; the table held {} when this plan was compiled", plural(rows, "row", "rows")))
-                .unwrap_or_default()
-        ),
-    };
+    let now = catalog.map(|said| format!(" Current catalog: {}.", said.trim_end_matches('.'))).unwrap_or_default();
     format!(
-        "{} {} {}, so {} statistics (SQL Server creates an index's statistics with the index), but SQL Server found nothing in them it could use. {why}. Without usable statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size.",
+        "SQL Server reported no usable statistics on {} when this plan was compiled. These columns appear in seek keys of {}. An index has statistics, but its histogram describes only the first key; the seek alone does not establish that each named column has a histogram or that the statistics are out of date. Query Store can retain the original warning after statistics change.{now}",
         format::list(&s.columns),
-        if one { "is a key of" } else { "are keys of" },
         format::list(&s.indexes),
-        if one { "it has" } else { "they have" },
     )
 }
 

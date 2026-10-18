@@ -100,6 +100,8 @@ Per engine: SQL Server attributes every Query Store wait category to queries; My
 
 Health colors are assessments, never thresholds on an isolated ratio or size. CPU use is measured utilization of the selected database's limit, where available; the scheduling share of waits is historical context. Resource samples and dated events follow the selected window. A source that holds only an hour, or only cumulative totals, states that coverage explicitly. Historical counters are grouped separately, and missing measurements are unavailable. Compiles come from this database's Query Store entries: lifetime compilation totals stay separate from selected-window runtime unless the entry began inside the window. Cloud measurements use the same selected period and distinguish observed limits from proven query delays. Query, table, storage, replication and health warning colors follow the report's evidence assessments.
 
+Planner cost constants stay visible as settings; a default alone supplies no measured reason to change one. A saved statistics warning describes the plan's compilation, not current statistics: index seek keys do not prove that each column has a histogram or that a refresh is needed. Frequent empty calls can be polling or request-driven checks, and statement counts do not reveal transaction boundaries. Advice names these possibilities and asks for the evidence needed to choose a change.
+
 ### Finding detail (the heart of the product)
 
 ```

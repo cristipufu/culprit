@@ -195,10 +195,12 @@ fn a_single_row_update_is_batched_by_its_keys_not_by_a_bulk_insert() {
         Some(30_000.0),
     );
     assert!(
-        f.summary.contains("Updates that small and that frequent are usually a loop updating rows one at a time"),
+        f.summary.contains("independent requests, row-by-row loops, heartbeats or status changes"),
         "{}",
         f.summary
     );
+    assert!(f.summary.contains("counters do not show whether calls already share a transaction"));
+    assert!(!f.summary.contains("each one is a round trip and a log flush"));
     let fix = f.fix.as_ref().unwrap().summary.clone();
     assert!(fix.contains("an UPDATE over a list of keys") && !fix.contains("multi-row VALUES"), "{fix}");
     assert!(f.caveats.iter().any(|c| c.contains("single-row updates")), "{:?}", f.caveats);

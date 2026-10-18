@@ -147,40 +147,19 @@ fn pg_stat_statements_evictions_are_the_servers_when_this_database_has_few_entri
     assert!(f.summary.contains("the app sends many distinct statements"), "{}", f.summary);
 }
 
-// The aptabase reading: random_page_cost 4 on RDS. The ratio is to seq_page_cost, not a fixed "four times"; the change
-// is the platform's (`setting_change`), and what the planner does with it is a possibility nothing in the scan showed.
+// A cloud platform and a planner cost ratio don't establish that the chosen plans are wrong. In particular the
+// default models caching too; it is not proof of spinning disks, and supplies no measured benefit from changing it.
 #[test]
-fn random_page_cost_says_its_ratio_and_changes_where_the_server_runs() {
-    let mut s = snapshot("postgres-demo.json");
-    s.server.cloud = Some("Amazon RDS".into());
-    set(&mut s, "random_page_cost", "4");
-    set(&mut s, "seq_page_cost", "1");
-    let f = find(&analyze(s.clone()).findings, "config:random_page_cost").cloned().expect("random_page_cost");
-    assert!(
-        f.summary.contains(
-            "random_page_cost is 4, which tells the planner that a random read costs 4 times a sequential one"
-        ),
-        "{}",
-        f.summary
-    );
-    assert!(f.summary.contains("may choose a sequential scan") && !f.summary.contains("more often than it should"));
-    let fix = f.fix.unwrap();
-    // A setting any owner sets per database: this database first, the parameter group for every database.
-    assert_eq!(fix.sql.as_deref(), Some("ALTER DATABASE demo SET random_page_cost = 1.1;"));
-    assert!(fix.summary.contains("DB parameter group"), "{}", fix.summary);
-    set(&mut s, "random_page_cost", "8");
-    set(&mut s, "seq_page_cost", "2");
-    let f = find(&analyze(s.clone()).findings, "config:random_page_cost").cloned().expect("a ratio of 4");
-    assert!(
-        f.summary.contains(
-            "random_page_cost is 8 and seq_page_cost 2, which tells the planner that a random read costs 4 times"
-        ),
-        "{}",
-        f.summary
-    );
-    // Raised together, the ratio the planner weighs is 2.
-    set(&mut s, "random_page_cost", "4");
-    assert!(find(&analyze(s).findings, "config:random_page_cost").is_none());
+fn planner_cost_constants_alone_never_request_a_database_wide_change() {
+    for (random, sequential) in [("4", "1"), ("8", "2"), ("4", "2"), ("100", "1")] {
+        let mut s = snapshot("postgres-demo.json");
+        s.server.cloud = Some("Amazon RDS".into());
+        set(&mut s, "random_page_cost", random);
+        set(&mut s, "seq_page_cost", sequential);
+        let report = analyze(s);
+        assert!(find(&report.findings, "config:random_page_cost").is_none());
+        assert_eq!(report.snapshot.setting("random_page_cost").unwrap().value, random);
+    }
 }
 
 // The aptabase readings: `dealloc` counts rounds, each evicting 5% of the limit (at least 10), so "15K evictions" was
@@ -348,8 +327,7 @@ fn every_config_finding_says_how_to_verify_it() {
     set(&mut pg, "pg_stat_statements.dealloc", "15000");
     set(&mut pg, "pg_stat_statements.max", "5000");
     let report = analyze(pg);
-    let rpc = find(&report.findings, "config:random_page_cost").expect("random_page_cost");
-    assert!(rpc.verify.iter().any(|v| v.contains("random_page_cost reads 1.1")), "{:?}", rpc.verify);
+    assert!(find(&report.findings, "config:random_page_cost").is_none());
     assert!(find(&report.findings, "config:pg_stat_statements.max").is_some_and(|f| !f.verify.is_empty()));
     let mut all = report.findings;
     for name in ["mssql-demo.json", "mysql-demo.json"] {

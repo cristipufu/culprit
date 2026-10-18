@@ -1284,6 +1284,31 @@ fn query_stores_unnamed_functions_are_the_catalogs_own() {
     assert!(app.contains(&"many-to-many".to_string()) && app.contains(&"optimizer-timeout".to_string()), "{app:?}");
 }
 
+#[test]
+fn a_plan_level_conversion_warning_does_not_rewrite_the_engines_catalog() {
+    let make = |object: &str| {
+        let mut seek = node(0, "Index Seek", NodeKind::Seek);
+        seek.object = Some(object.into());
+        let mut p = plan(Engine::Mssql, seek);
+        // The warning is on QueryPlan; no operator predicate contains this expression.
+        p.props.insert(
+            "PlanAffectingConvert".into(),
+            "Cardinality Estimate: CONVERT_IMPLICIT(int,[aty].[value],0)".into(),
+        );
+        p
+    };
+    assert!(!rules(&make("sys.syspalnames")).contains(&"implicit-conversion".to_string()));
+    let app = make("app.settings");
+    let warning =
+        insights(&app).into_iter().find(|i| i.rule == "implicit-conversion").expect("application warning retained");
+    assert!(warning.nodes.is_empty(), "the regression covers a warning with no highlighted operator");
+    let mut mixed = make("sys.syspalnames");
+    let mut application = node(1, "Index Seek", NodeKind::Seek);
+    application.object = Some("app.settings".into());
+    mixed.root.children.push(application);
+    assert!(rules(&mixed).contains(&"implicit-conversion".to_string()), "mixed plans retain application advice");
+}
+
 // An estimated plan's lookups are the optimizer's expectation; a measured run's are what happened.
 #[test]
 fn estimated_lookups_are_said_as_an_estimate() {
@@ -1306,48 +1331,31 @@ fn estimated_lookups_are_said_as_an_estimate() {
     assert_eq!(lookups(true), "Looks up 1.5K rows in app.messages one at a time");
 }
 
-// SQL Server warned of no statistics on id, a key of the clustered index the lookup seeks. An index's statistics come
-// with the index: they need updating, and creating statistics or checking the database's settings changes nothing.
+// A seek proves an index exists. It doesn't establish the histogram's leading key or current statistics freshness.
 #[test]
-fn missing_statistics_on_an_index_key_updates_the_tables_statistics() {
+fn a_saved_statistics_warning_does_not_prescribe_a_refresh_from_a_seek() {
     let mut seek = node(2, "Index Seek", NodeKind::Seek);
-    seek.object = Some("app.support_escalations".into());
-    seek.index = Some("ix_support_escalations_active".into());
-    seek.seek_predicate = Some("[tenant_id] = CONVERT_IMPLICIT(uniqueidentifier,[@par0],0)".into());
+    seek.object = Some("app.items".into());
+    seek.index = Some("ix_items_tenant".into());
+    seek.seek_predicate = Some("[tenant_id] = [@tenant] AND [account_id] = [@account]".into());
     seek.warnings = vec![PlanWarning::MissingStatistics];
-    seek.props.insert("ColumnsWithNoStatistics".into(), "id".into());
-    let mut lookup = node(4, "Key Lookup", NodeKind::Lookup);
-    lookup.object = Some("app.support_escalations".into());
-    lookup.index = Some("pk_support_escalations".into());
-    lookup.seek_predicate = Some("[id] = [app-db].[app].[support_escalations].[id]".into());
-    let mut join = node(1, "Nested Loops", NodeKind::Join);
-    join.children = vec![seek, lookup];
-    let stats = |p: &Plan| insights(p).into_iter().find(|i| i.rule == "missing-statistics").expect("the warning");
-    join.children[0].table_rows = Some(91.0);
-    let keyed = stats(&plan(Engine::Mssql, join.clone()));
-    assert_eq!(keyed.fix_sql.as_deref(), Some("UPDATE STATISTICS [app].[support_escalations];"));
-    // They exist, so the title doesn't say there are none; the plan's own count of the table's rows is the fact it has.
-    assert_eq!(keyed.title, "The statistics on id are out of date, so its row counts are guesses");
-    assert_eq!(
-        keyed.detail,
-        "id is a key of pk_support_escalations, so it has statistics (SQL Server creates an index's statistics with the index), but SQL Server found nothing in them it could use. That happens to statistics built while the table was empty or nearly so, and not updated since; the table held 91 rows when this plan was compiled. Without usable statistics the optimizer uses fixed guesses for how many rows match, which leads to the wrong join type or memory size."
-    );
-    assert!(keyed.fix.starts_with("Update the statistics on support_escalations"), "{}", keyed.fix);
-    // A check that read the catalog says what it holds instead.
-    let stale = stale_index_statistics(&plan(Engine::Mssql, join.clone())).expect("index keys");
-    assert_eq!(stale.indexes, vec!["pk_support_escalations".to_string()]);
-    let told =
-        stale_index_statistics_detail(&stale, Some("They were last updated on Aug 28, when the table had 1 row."));
-    assert!(
-        told.contains("could use. They were last updated on Aug 28, when the table had 1 row. Without usable"),
-        "{told}"
-    );
-
-    // A column no seek keys on has no statistics at all: the database's settings say why.
-    join.children[0].props.insert("ColumnsWithNoStatistics".into(), "kind".into());
-    let unkeyed = stats(&plan(Engine::Mssql, join));
-    assert_eq!(unkeyed.title, "No statistics on kind, so its row counts are guesses");
-    assert!(unkeyed.fix_sql.unwrap().starts_with("SELECT name, is_auto_create_stats_on"));
+    seek.props.insert("ColumnsWithNoStatistics".into(), "tenant_id, account_id".into());
+    seek.table_rows = Some(100.0);
+    let p = plan(Engine::Mssql, seek.clone());
+    let warning = insights(&p).into_iter().find(|i| i.rule == "missing-statistics").unwrap();
+    assert!(warning.title.starts_with("The captured plan reported"), "{}", warning.title);
+    assert!(warning.detail.contains("histogram describes only the first key"), "{}", warning.detail);
+    assert!(!warning.title.contains("out of date"));
+    assert!(!warning.fix_sql.as_deref().unwrap_or_default().contains("UPDATE STATISTICS"));
+    assert!(warning.verify.contains("original saved XML"), "{}", warning.verify);
+    let context = stale_index_statistics(&p).unwrap();
+    let detail =
+        stale_index_statistics_detail(&context, Some("The statistics were updated today with no changes since"));
+    assert!(detail.contains("Current catalog: The statistics were updated today"), "{detail}");
+    seek.props.insert("ColumnsWithNoStatistics".into(), "kind".into());
+    let warning = insights(&plan(Engine::Mssql, seek)).into_iter().find(|i| i.rule == "missing-statistics").unwrap();
+    assert!(warning.title.contains("captured plan"));
+    assert!(!warning.fix_sql.unwrap().contains("ALTER DATABASE"));
 }
 
 // The rows a sort expects from a scan planned on PostgreSQL's default guess (a parameter compared by range in a generic

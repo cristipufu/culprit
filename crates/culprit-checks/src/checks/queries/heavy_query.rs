@@ -290,6 +290,11 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
             f.verify = vec![verify_line(snapshot, q, expect)];
         }
     }
+    if statistics_maintenance_table(&q.text).is_some() {
+        f.summary.push_str(" This is optimizer statistics maintenance, not an update of application rows.");
+        f.fix = Some(advice("Check whether this was an automatic refresh or scheduled maintenance. Keep necessary statistics current; review an unnecessarily frequent schedule or full scan only with evidence of its cost.".into()));
+        f.verify = vec!["Compare the frequency and duration of subsequent statistics refreshes under comparable load, together with query performance. A completed maintenance operation can remain in Query Store's history after any scheduling change.".into()];
+    }
     f.queries = vec![QueryRef { id: q.id.clone(), plan_node, note: None }];
     f
 }

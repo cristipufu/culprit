@@ -63,6 +63,23 @@ pub fn parse(xml: &str) -> Result<Plan> {
     parse_statement(xml, None)
 }
 
+/// Query Store also keeps valid empty showplans for maintenance such as UPDATE STATISTICS. They provide no
+/// operator tree; that is absent plan data, not a parser failure. Malformed or nonempty unsupported XML is not empty.
+pub(crate) fn is_empty(xml: &str) -> bool {
+    let options = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
+    let Ok(doc) = Document::parse_with_options(xml, options) else { return false };
+    doc.root_element().has_tag_name_local("ShowPlanXML")
+        && doc.descendants().any(|n| n.has_tag_name_local("Statements"))
+        && doc
+            .descendants()
+            .filter(|n| n.has_tag_name_local("Statements"))
+            .all(|n| !n.children().any(|c| c.is_element()))
+        && doc
+            .descendants()
+            .filter(|n| n.is_element())
+            .all(|n| matches!(n.tag_name().name(), "ShowPlanXML" | "BatchSequence" | "Batch" | "Statements"))
+}
+
 /// A plan a scan saved, read again from its XML with this parser, so a scan saved by an older Culprit reads the way
 /// one taken today would: the same statement of the document (by the `QueryHash` the saved plan carries). `None` when
 /// the plan kept no XML, or this parser can't read it.
@@ -76,8 +93,16 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
     let options = ParsingOptions { allow_dtd: false, ..ParsingOptions::default() };
     let doc = Document::parse_with_options(xml, options)
         .map_err(|e| Error::internal(format!("Could not read the SQL Server plan XML: {e}")))?;
-    let candidates =
-        || doc.descendants().filter(|n| n.has_tag_name_local("StmtSimple") && child(*n, "QueryPlan").is_some());
+    fn query_plan_of<'a, 'input>(n: Node<'a, 'input>) -> Option<Node<'a, 'input>> {
+        if n.has_tag_name_local("StmtSimple") {
+            child(n, "QueryPlan")
+        } else if n.has_tag_name_local("StmtCond") {
+            child(n, "Condition").and_then(|c| child(c, "QueryPlan"))
+        } else {
+            None
+        }
+    }
+    let candidates = || doc.descendants().filter(|n| query_plan_of(*n).is_some());
     let matching = query_hash.and_then(|hash| {
         candidates().find(|n| n.attribute("QueryHash").is_some_and(|h| h.eq_ignore_ascii_case(hash.trim())))
     });
@@ -87,13 +112,13 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
                 .max_by(|a, b| attr_f64(*a, "StatementSubTreeCost").total_cmp(&attr_f64(*b, "StatementSubTreeCost")))
         })
         .ok_or_else(|| Error::internal("The plan XML contains no statement with a query plan"))?;
-    let query_plan = child(statement, "QueryPlan").expect("filtered on QueryPlan above");
+    let query_plan = query_plan_of(statement).expect("filtered on QueryPlan above");
     let root_op = child(query_plan, "RelOp").ok_or_else(|| Error::internal("The query plan has no operators"))?;
 
     let mut root = parse_relop(root_op);
     let total_cost =
         statement.attribute("StatementSubTreeCost").and_then(|v| v.parse().ok()).unwrap_or(root.subtree_cost);
-    let is_actual = doc.descendants().any(|n| n.has_tag_name_local("RunTimeInformation"));
+    let is_actual = query_plan.descendants().any(|n| n.has_tag_name_local("RunTimeInformation"));
 
     let mut props = Properties::new();
     copy_attrs(statement, STATEMENT_PROPS, &mut props);
@@ -666,6 +691,19 @@ fn push_unique(list: &mut Vec<PlanWarning>, warning: PlanWarning) {
 mod tests {
 
     #[test]
+    fn empty_maintenance_showplans_are_absent_data_not_parse_failures() {
+        let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements /></Batch></BatchSequence></ShowPlanXML>"#;
+        assert!(super::is_empty(xml));
+        assert!(!super::is_empty("<ShowPlanXML>"), "malformed XML remains a parser failure");
+        assert!(!super::is_empty("<something><Statements /></something>"));
+        assert!(!super::is_empty("<ShowPlanXML><Statements><StmtSimple /></Statements></ShowPlanXML>"));
+        assert!(!super::is_empty("<ShowPlanXML><Statements><Unknown /></Statements></ShowPlanXML>"));
+        assert!(!super::is_empty("<ShowPlanXML><Statements /><Unknown /></ShowPlanXML>"));
+        assert!(!super::is_empty("<ShowPlanXML><Statements /><RelOp /></ShowPlanXML>"));
+        assert!(!super::is_empty("<ShowPlanXML />"), "a missing expected structure is not a known empty plan");
+    }
+
+    #[test]
     fn statement_types_list_every_statement_the_server_sees() {
         let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
             <StmtSimple StatementText="SELECT 1" StatementType="SELECT WITHOUT QUERY"/>
@@ -681,6 +719,28 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_conditional_plan_keeps_its_own_operators_hash_and_measurements() {
+        let xml = r#"<ShowPlanXML><BatchSequence><Batch><Statements>
+          <StmtCond StatementText="IF NOT EXISTS (SELECT 1 FROM dbo.orders)" QueryHash="0x01" StatementSubTreeCost="1">
+            <Condition><QueryPlan CompileTime="2"><RelOp NodeId="0" PhysicalOp="Index Seek" EstimateRows="1" EstimatedTotalSubtreeCost="1"><IndexScan><Object Schema="[dbo]" Table="[orders]" Index="[pk_orders]" /></IndexScan></RelOp></QueryPlan></Condition>
+            <Then><Statements><StmtSimple StatementText="SELECT payload FROM dbo.orders" QueryHash="0x02" StatementSubTreeCost="9">
+              <QueryPlan><RelOp NodeId="1" PhysicalOp="Table Scan" EstimateRows="10" EstimatedTotalSubtreeCost="9"><RunTimeInformation><RunTimeCountersPerThread Thread="0" ActualRows="10" ActualExecutions="1" /></RunTimeInformation><TableScan><Object Schema="[dbo]" Table="[orders]" /></TableScan></RelOp></QueryPlan>
+            </StmtSimple></Statements></Then>
+          </StmtCond>
+        </Statements></Batch></BatchSequence></ShowPlanXML>"#;
+        let condition = parse_statement(xml, Some("0X01")).unwrap();
+        assert_eq!(condition.root.op, "Index Seek");
+        assert_eq!(condition.root.object.as_deref(), Some("dbo.orders"));
+        assert_eq!(condition.kind, PlanKind::Estimated, "a branch's measurements do not belong to the condition");
+        assert_eq!(condition.total_cost, 1.0);
+        assert_eq!(condition.props.get("CompileTime").map(String::as_str), Some("2"));
+        assert!(condition.statement.as_deref().unwrap().starts_with("IF NOT EXISTS"));
+        assert_eq!(reparse(&condition).unwrap().root.op, "Index Seek");
+        assert_eq!(parse(xml).unwrap().root.op, "Table Scan", "the default still picks the most costly statement");
+        assert_eq!(parse_statement(xml, Some("0x02")).unwrap().kind, PlanKind::Actual);
+    }
 
     const ESTIMATED: &str = r#"<?xml version="1.0" encoding="utf-16"?>
 <ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan" Version="1.564" Build="16.0.4135.4">

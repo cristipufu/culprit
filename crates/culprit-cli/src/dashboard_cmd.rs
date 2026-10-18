@@ -3,7 +3,7 @@
 
 use clap::Args;
 use culprit_core::{Dashboard, Result, SnapshotOptions, Tile, TileKey, TileStatus};
-use culprit_engine::{Workspace, reports};
+use culprit_engine::Workspace;
 use serde_json::json;
 
 use crate::output::{Format, Out, age};
@@ -28,7 +28,7 @@ pub struct DashboardArgs {
 
 pub async fn run(ws: &Workspace, args: DashboardArgs, out: &Out) -> Result<u8> {
     let mut dashboard = match crate::report_file(&args.connection) {
-        Some(path) => culprit_engine::dashboard_report(&reports::load(&path)?),
+        Some(path) => culprit_engine::dashboard_report(&ws.analyze_file(&path)?),
         None => {
             let window = crate::window_minutes(args.window, args.window_days);
             if args.scan {

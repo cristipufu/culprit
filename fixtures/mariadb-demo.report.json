@@ -98,7 +98,7 @@
         "kind": "query",
         "name": "a92bb0be330ac53a"
       },
-      "summary": "Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call costs a network round trip.",
+      "summary": "Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.",
       "title": "A read from products runs 30K times in 1 minute, one key at a time",
       "verify": [
         "It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
