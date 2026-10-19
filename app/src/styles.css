@@ -206,6 +206,7 @@ textarea {
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
 }
 
@@ -216,6 +217,7 @@ textarea {
   flex-direction: column;
   padding: 0 8px 10px;
   min-width: 0;
+  min-height: 0;
 }
 
 .sidebar-drag {
@@ -4203,6 +4205,7 @@ table.grid tr.row.confirming td {
 .schema {
   display: grid;
   grid-template-columns: var(--list-w, 290px) 0 minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
@@ -4288,8 +4291,7 @@ body.resizing {
 
 .tl-sort .spacer,
 .data-bar .spacer,
-.rg-bar .spacer,
-.rel-row .spacer {
+.rg-bar .spacer {
   flex: 1;
 }
 
@@ -4454,11 +4456,15 @@ body.resizing {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .td-head {
   padding: 14px 20px 12px;
   flex-shrink: 0;
+  max-height: 50%;
+  overflow: auto;
 }
 
 .td-title {
@@ -4490,6 +4496,12 @@ body.resizing {
   flex-wrap: wrap;
   gap: 8px 26px;
   margin-top: 10px;
+}
+
+.td-facts .fact {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .fact .l {
@@ -4588,11 +4600,6 @@ body.resizing {
   white-space: nowrap;
 }
 
-.ix-uses-inner {
-  width: 0;
-  min-width: 100%;
-}
-
 .td-tabs {
   display: flex;
   gap: 2px;
@@ -4639,12 +4646,13 @@ body.resizing {
 }
 
 .td-body {
+  --detail-padding: 20px;
   flex: 1;
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  overflow-wrap: anywhere;
-  padding: 0 20px 28px;
+  overflow-wrap: break-word;
+  padding: 0 var(--detail-padding) 28px;
 }
 
 .td-body > :first-child {
@@ -4652,7 +4660,8 @@ body.resizing {
 }
 
 /* The rows grid fills the tab and scrolls inside itself, so there is one scrollbar, not two. */
-.td-body.fill {
+.td-body.fill,
+.td-body.grid-tab {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4669,8 +4678,63 @@ body.resizing {
 }
 
 .td-grid-wrap {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+}
+
+.td-grid-wrap:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+table.td-grid {
+  table-layout: fixed;
+  overflow-wrap: normal;
+  line-height: 1.5;
+}
+
+table.columns-grid {
+  min-width: 620px;
+}
+
+.columns-grid .column-name-col {
+  width: 27%;
+}
+
+.columns-grid .column-type-col {
+  width: 23%;
+}
+
+.columns-grid .nullable-col {
+  width: 70px;
+}
+
+table.ix-grid {
+  min-width: 640px;
+}
+
+.ix-grid .index-name-col {
+  width: 32%;
+}
+
+.ix-grid .index-used-col {
+  width: 112px;
+}
+
+.ix-grid .index-activity-col {
+  width: 100px;
+}
+
+.ix-grid .index-size-col {
+  width: 94px;
+}
+
+table.td-grid th {
+  height: 34px;
+  color: var(--text-2);
 }
 
 table.td-grid th:first-child {
@@ -4686,11 +4750,13 @@ table.td-grid tr:last-child td {
 }
 
 table.td-grid td {
-  height: 32px;
+  height: 36px;
+  padding: 8px 10px;
+  vertical-align: top;
 }
 
 table.td-grid .num-col {
-  width: 28px;
+  width: 36px;
   padding-right: 2px;
   text-align: right;
   font-size: var(--fs-micro);
@@ -4701,14 +4767,14 @@ table.grid td.col-name {
 }
 
 .col-name .cn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 5px;
-  max-width: 260px;
-  vertical-align: middle;
+  min-width: 0;
 }
 
 .col-name .cn .mono {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4720,14 +4786,26 @@ table.grid td.col-name {
 }
 
 .fk-link {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 3px;
-  margin-left: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 4px;
   font: var(--fs-micro) var(--mono);
   color: var(--link);
+}
+
+.fk-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  vertical-align: middle;
+}
+
+.td-grid .tag,
+.td-grid svg {
+  flex-shrink: 0;
 }
 
 .fk-link:hover,
@@ -4737,14 +4815,19 @@ table.grid td.col-name {
 }
 
 table.grid td.type-col {
-  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+td.type-col > .mono {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 td.type-col .default {
   display: block;
-  margin-top: -1px;
+  margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: var(--fs-micro);
@@ -4753,16 +4836,24 @@ td.type-col .default {
 
 table.grid td.chips-col {
   white-space: normal;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+
+.column-indexes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 .chip-ix {
   display: inline-flex;
   align-items: center;
-  max-width: 280px;
-  height: 18px;
-  margin: 1px 4px 1px 0;
+  min-width: 0;
+  max-width: 100%;
+  height: 20px;
   border-radius: 4px;
   overflow: hidden;
   background: var(--sunken);
@@ -4772,6 +4863,7 @@ table.grid td.chips-col {
 }
 
 .chip-ix .nm {
+  min-width: 0;
   padding: 0 5px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4782,6 +4874,8 @@ table.grid td.chips-col {
   display: inline-flex;
   align-items: center;
   height: 100%;
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 0 5px;
   background: var(--border);
   font: 600 var(--fs-2xs) var(--font);
@@ -4806,30 +4900,30 @@ table.ix-grid td {
   padding-top: 8px;
   padding-bottom: 8px;
   vertical-align: top;
-  white-space: normal;
-}
-
-.ix-name {
-  min-width: 170px;
-  max-width: 300px;
 }
 
 .ix-name .cn {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px 6px;
+  min-width: 0;
   flex-wrap: wrap;
 }
 
 .ix-name .cn .mono {
-  font-weight: 600;
-  overflow-wrap: anywhere;
+  flex: 0 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
 }
 
 .ix-note {
-  margin-top: 3px;
   font-size: var(--fs-ui-sm);
-  line-height: 1.4;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: normal;
   color: var(--text-3);
 }
 
@@ -4847,33 +4941,47 @@ table.ix-grid td {
 }
 
 .ix-keys {
-  min-width: 96px;
-  max-width: 220px;
-  overflow-wrap: break-word;
+  font-size: var(--fs-ui-sm);
 }
 
-.ix-used {
-  min-width: 96px;
+.ix-key-list,
+.ix-keys .muted {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ix-keys .muted {
-  margin-top: 2px;
+  margin-top: 4px;
   font-size: var(--fs-micro);
 }
 
 .used-btn {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
-  padding: 2px 4px;
-  margin: -2px -4px;
+  min-height: 28px;
+  padding: 4px;
+  margin: -4px;
   border-radius: 5px;
-  font-size: var(--fs-ui);
+  font-size: var(--fs-ui-sm);
+  white-space: nowrap;
   text-align: left;
 }
 
 .used-btn:hover {
   background: var(--hover);
+}
+
+.used-btn[aria-expanded="true"] {
+  background: var(--active);
+}
+
+.ix-used > .muted {
+  display: block;
+  white-space: normal;
+  font-size: var(--fs-ui-sm);
 }
 
 .rot {
@@ -4883,7 +4991,9 @@ table.ix-grid td {
 .rw {
   display: inline-flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  padding-top: 4px;
+  max-width: 100%;
 }
 
 .rw-bar {
@@ -4908,6 +5018,8 @@ table.ix-grid td {
   color: var(--text-2);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .size-cell {
@@ -4915,25 +5027,71 @@ table.ix-grid td {
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+  font-size: var(--fs-ui-sm);
 }
 
 .size-cell .bar {
-  width: 36px;
+  width: 24px;
 }
 
-tr.ix-uses td {
-  padding: 0 8px 8px;
+table.ix-grid tr.ix-uses td {
+  padding: 8px 10px 12px;
   background: var(--sunken);
 }
 
-.use-row {
+table.ix-grid tr.ix-has-notes td {
+  border-bottom: 0;
+}
+
+table.ix-grid tr.ix-notes td {
+  padding: 0 10px 10px;
+}
+
+.ix-notes-inner {
+  display: grid;
+  gap: 6px;
+}
+
+.ix-notes-inner,
+.ix-uses-inner {
+  position: sticky;
+  left: 10px;
+  width: min(100%, calc(100cqi - var(--detail-padding) - var(--detail-padding) - 22px));
+  min-width: 0;
+}
+
+.ix-uses-inner {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.ix-uses-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-ui-sm);
+  font-weight: 500;
+}
+
+.use-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 3px 12px;
   width: 100%;
-  padding: 5px 8px;
-  border-radius: 5px;
+  min-width: 0;
+  padding: 10px;
   text-align: left;
+}
+
+.use-row + .use-row {
+  border-top: 1px solid var(--border);
 }
 
 .use-row:hover {
@@ -4941,7 +5099,7 @@ tr.ix-uses td {
 }
 
 .use-row .q {
-  flex: 1;
+  grid-column: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4950,13 +5108,22 @@ tr.ix-uses td {
 }
 
 .use-row .ops {
+  grid-column: 1;
+  grid-row: 2;
   font-size: var(--fs-ui-sm);
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.use-arrow {
+  grid-column: 2;
+  grid-row: 1 / 3;
 }
 
 .td-foot {
-  margin: 8px 2px 0;
+  flex-shrink: 0;
+  margin: 10px 2px 0;
   font-size: var(--fs-ui-sm);
+  line-height: 1.5;
   color: var(--text-3);
 }
 
@@ -4978,15 +5145,36 @@ tr.ix-uses td {
 }
 
 .rel-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  padding: 7px 10px;
-  margin-bottom: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: var(--fs-ui);
+}
+
+.rel-path {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.rel-endpoint {
+  min-width: 0;
+}
+
+.rel-columns,
+.rel-target {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.rel-columns {
+  font-size: var(--fs-ui-sm);
 }
 
 .rel-target {
@@ -4994,8 +5182,20 @@ tr.ix-uses td {
   color: var(--link);
 }
 
+.rel-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.rel-meta .tag {
+  flex-shrink: 0;
+}
+
 .rel-name {
-  max-width: 220px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5007,6 +5207,7 @@ tr.ix-uses td {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .data-bar {
@@ -5037,6 +5238,7 @@ tr.ix-uses td {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -5045,8 +5247,10 @@ tr.ix-uses td {
 .rg-bar {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 6px 3px 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  gap: 4px;
+  padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-meta);
 }
@@ -5060,7 +5264,7 @@ tr.ix-uses td {
 .rg-scroll {
   flex: 1;
   overflow: auto;
-  min-height: 120px;
+  min-height: 0;
   outline: none;
 }
 
@@ -5153,7 +5357,8 @@ table.rg {
   }
 
   .td-body {
-    padding: 0 14px 24px;
+    --detail-padding: 14px;
+    padding: 0 var(--detail-padding) 24px;
   }
 
   .td-tabs {
@@ -5164,12 +5369,8 @@ table.rg {
     display: none;
   }
 
-  .chip-ix {
-    max-width: 160px;
-  }
-
-  table.grid td.type-col {
-    max-width: 140px;
+  .ix-size .bar {
+    display: none;
   }
 
   .td-facts {

@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.7
+
+### Fixes
+
+- Schema Columns and Indexes grids keep stable column widths, readable spacing and sticky headers. Long names truncate with their full value on hover, and index-position badges stay on one line.
+- Expanded index usage stays inside the detail pane, with SQL and operations on separate lines. Index notes span the row instead of squeezing into the name column.
+- Relations align their source, target and constraint details. Data preview controls wrap within the pane, and keyboard arrows scroll the focused grid without switching tables.
+- Short windows keep the workspace and table tabs visible, including when many findings are expanded. Large captured-query counts fit their column.
+
 ## 0.3.6
 
 ### Fixes

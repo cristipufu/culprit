@@ -1,5 +1,5 @@
 import { ArrowRight, ChevronRight, Copy, KeyRound, Link2, Play, SquarePen } from "lucide-react";
-import { Fragment, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useId, useMemo, useState, type ReactNode } from "react";
 import { TableSignalFacts } from "../components/BeyondTime";
 import { ResultGrid } from "../components/ResultGrid";
 import { Sql } from "../components/Sql";
@@ -43,6 +43,7 @@ async function copy(text: string, what: string) {
 export function SchemaTable({ report, table, onOpenTable }: { report: Report; table: TableStat; onOpenTable: (key: string) => void }) {
   const { snapshot } = report;
   const engine = snapshot.server.engine;
+  const tabId = useId();
   const [tab, setTab] = useState<Tab>(rememberedTab);
   const indexes = useMemo(() => snapshot.indexes.filter((i) => i.schema === table.schema && i.table === table.name), [snapshot.indexes, table]);
   const columns = useMemo(
@@ -79,7 +80,9 @@ export function SchemaTable({ report, table, onOpenTable }: { report: Report; ta
   ];
 
   return (
-    <div className="td">
+    <div className="td" onKeyDown={(e) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) e.stopPropagation();
+    }}>
       <Header report={report} table={table} findings={findings} />
       <div
         className="td-tabs"
@@ -98,9 +101,11 @@ export function SchemaTable({ report, table, onOpenTable }: { report: Report; ta
         {tabs.map((t) => (
           <button
             key={t.key}
+            id={`${tabId}-${t.key}`}
             data-tab={t.key}
             role="tab"
             aria-selected={tab === t.key}
+            aria-controls={`${tabId}-panel`}
             tabIndex={tab === t.key ? 0 : -1}
             className={tab === t.key ? "on" : ""}
             title={`${t.label} (${t.hotkey})`}
@@ -111,7 +116,7 @@ export function SchemaTable({ report, table, onOpenTable }: { report: Report; ta
           </button>
         ))}
       </div>
-      <div className={`td-body ${tab === "data" ? "fill" : ""}`} role="tabpanel">
+      <div id={`${tabId}-panel`} className={`td-body ${tab === "data" ? "fill" : tab === "columns" || tab === "indexes" ? "grid-tab" : ""}`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`}>
         {tab === "columns" && <Columns report={report} table={table} indexes={indexes} links={links} onOpenTable={onOpenTable} />}
         {tab === "indexes" && <Indexes report={report} table={table} indexes={indexes} links={links} />}
         {tab === "relations" && <Relations links={links} onOpenTable={onOpenTable} />}
@@ -275,14 +280,21 @@ function Columns({
   const columns = report.snapshot.columns.filter((c) => c.schema === table.schema && c.table === table.name).sort((a, b) => a.ordinal - b.ordinal);
   if (columns.length === 0) return <div className="notice">This scan has no column metadata. Re-scan to collect it.</div>;
   return (
-    <div className="td-grid-wrap">
-      <table className="grid td-grid">
+    <div className="td-grid-wrap" role="region" aria-label="Columns" tabIndex={0}>
+      <table className="grid td-grid columns-grid">
+        <colgroup>
+          <col className="num-col" />
+          <col className="column-name-col" />
+          <col className="column-type-col" />
+          <col className="nullable-col" />
+          <col />
+        </colgroup>
         <thead>
           <tr>
             <th className="num-col">#</th>
             <th>Column</th>
             <th>Type</th>
-            <th title="Columns that allow NULL are marked">Null</th>
+            <th>Nullable</th>
             <th>In indexes</th>
           </tr>
         </thead>
@@ -304,9 +316,9 @@ function Columns({
                     {c.generated && <span className="tag">auto</span>}
                   </span>
                   {ref && (
-                    <button className="fk-link" title={`Foreign key ${ref.name}`} onClick={() => onOpenTable(`${ref.ref_schema}.${ref.ref_table}`)}>
+                    <button className="fk-link" title={`${ref.ref_table}.${ref.ref_columns[0]} · Foreign key ${ref.name}`} onClick={() => onOpenTable(`${ref.ref_schema}.${ref.ref_table}`)}>
                       <Link2 size={11} />
-                      {ref.ref_table}.{ref.ref_columns[0]}
+                      <span>{ref.ref_table}.{ref.ref_columns[0]}</span>
                     </button>
                   )}
                 </td>
@@ -314,37 +326,40 @@ function Columns({
                   <span className="mono muted">{c.data_type}</span>
                   {c.default && <span className="mono default">= {c.default}</span>}
                 </td>
-                <td>{c.nullable && <span className="tag">null</span>}</td>
+                <td className="muted">{c.nullable ? "Yes" : "No"}</td>
                 <td className="chips-col">
-                  {chips.slice(0, 3).map((m) => (
-                    <span
-                      key={m.index.name}
-                      className={`chip-ix ${m.position === 0 ? "lead" : ""}`}
-                      title={
-                        m.included
-                          ? `${m.index.name}: included column (stored, not searchable)`
-                          : m.position === 0
-                            ? `${m.index.name}: leading key, so searches on ${c.name} can seek`
-                            : `${m.index.name}: key ${m.position! + 1} of ${m.index.columns.length}`
-                      }
-                    >
-                      <span className="nm">{m.index.name}</span>
-                      <span className="pos">
-                        {m.included ? "incl" : m.position === 0 ? "1st" : `${m.position! + 1}${m.position === 1 ? "nd" : m.position === 2 ? "rd" : "th"}`}
+                  <div className="column-indexes">
+                    {chips.slice(0, 3).map((m) => (
+                      <span
+                        key={m.index.name}
+                        className={`chip-ix ${m.position === 0 ? "lead" : ""}`}
+                        title={
+                          m.included
+                            ? `${m.index.name}: included column (stored, not searchable)`
+                            : m.position === 0
+                              ? `${m.index.name}: leading key, so searches on ${c.name} can seek`
+                              : `${m.index.name}: key ${m.position! + 1} of ${m.index.columns.length}`
+                        }
+                      >
+                        <span className="nm">{m.index.name}</span>
+                        <span className="pos">
+                          {m.included ? "incl" : m.position === 0 ? "1st" : `${m.position! + 1}${m.position === 1 ? "nd" : m.position === 2 ? "rd" : "th"}`}
+                        </span>
                       </span>
-                    </span>
-                  ))}
-                  {chips.length > 3 && (
-                    <span
-                      className="chip-ix more"
-                      title={chips
-                        .slice(3)
-                        .map((m) => m.index.name)
-                        .join(", ")}
-                    >
-                      +{chips.length - 3}
-                    </span>
-                  )}
+                    ))}
+                    {chips.length > 3 && (
+                      <span
+                        className="chip-ix more"
+                        title={chips
+                          .slice(3)
+                          .map((m) => m.index.name)
+                          .join(", ")}
+                      >
+                        +{chips.length - 3}
+                      </span>
+                    )}
+                    {chips.length === 0 && <span className="muted">—</span>}
+                  </div>
                 </td>
               </tr>
             );
@@ -357,6 +372,7 @@ function Columns({
 
 function Indexes({ report, table, indexes, links }: { report: Report; table: TableStat; indexes: IndexStat[]; links: Links }) {
   const engine = report.snapshot.server.engine;
+  const usageId = useId();
   // The foreign key an index serves: its leading keys are the key's columns.
   const backs = (i: IndexStat) =>
     links.outgoing.find(({ fk }) => {
@@ -386,8 +402,15 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
     );
   return (
     <>
-      <div className="td-grid-wrap">
+      <div className="td-grid-wrap" role="region" aria-label="Indexes" tabIndex={0}>
         <table className="grid td-grid ix-grid">
+          <colgroup>
+            <col className="index-name-col" />
+            <col />
+            <col className="index-used-col" />
+            <col className="index-activity-col" />
+            <col className="index-size-col" />
+          </colgroup>
           <thead>
             <tr>
               <th>Index</th>
@@ -398,7 +421,8 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
             </tr>
           </thead>
           <tbody>
-            {indexes.map((i) => {
+            {indexes.map((i, position) => {
+              const usesId = `${usageId}-${position}`;
               const uses = usage.get(indexKey(i.schema, i.table, i.name)) ?? [];
               const wider = coveredBy(i, indexes);
               const redundant = finding(i.name, "duplicate-index");
@@ -451,7 +475,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                 });
               return (
                 <Fragment key={i.name}>
-                  <tr className={`row ${expanded ? "selected" : ""}`}>
+                  <tr className={`row ${expanded ? "selected" : ""} ${notes.length > 0 ? "ix-has-notes" : ""}`}>
                     <td className="ix-name">
                       <div className="cn">
                         <span className="mono" title={i.name}>
@@ -461,28 +485,9 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                         {i.is_unique && !i.is_primary_key && <span className="tag">unique</span>}
                         {i.is_clustered && !i.is_primary_key && <span className="tag">clustered</span>}
                       </div>
-                      {notes.map((n) => (
-                        <div key={n.text} className={`ix-note ${n.tone}`}>
-                          {n.finding ? (
-                            <button
-                              onClick={() =>
-                                setState({
-                                  view: "overview",
-                                  finding: n.finding!,
-                                })
-                              }
-                              title="Open the finding"
-                            >
-                              {n.text} <ArrowRight size={11} />
-                            </button>
-                          ) : (
-                            n.text
-                          )}
-                        </div>
-                      ))}
                     </td>
                     <td className="ix-keys mono">
-                      <span title={i.columns.join(", ")}>{i.columns.join(", ")}</span>
+                      <span className="ix-key-list" title={i.columns.join(", ")}>{i.columns.join(", ")}</span>
                       {i.include.length > 0 && (
                         <div className="muted" title={`INCLUDE (${i.include.join(", ")})`}>
                           + {i.include.join(", ")}
@@ -496,10 +501,9 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                     </td>
                     <td className="ix-used">
                       {uses.length > 0 ? (
-                        <button className="used-btn" onClick={() => setOpen(expanded ? null : i.name)} aria-expanded={expanded}>
+                        <button className="used-btn" onClick={() => setOpen(expanded ? null : i.name)} aria-expanded={expanded} aria-controls={expanded ? usesId : undefined} title={`${uses.length} captured ${uses.length === 1 ? "query uses" : "queries use"} ${i.name}`}>
                           <ChevronRight size={12} className={expanded ? "rot" : ""} />
-                          <b>{uses.length}</b> {uses.length === 1 ? "query" : "queries"}
-                          <span className="muted"> · {[...new Set(uses.flatMap((u) => u.ops))].slice(0, 2).join(", ").toLowerCase()}</span>
+                          <b>{count(uses.length)}</b> {uses.length === 1 ? "query" : "queries"}
                         </button>
                       ) : (
                         <span
@@ -542,21 +546,41 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
                       </span>
                     </td>
                   </tr>
-                  {expanded && (
-                    <tr className="ix-uses">
+                  {notes.length > 0 && (
+                    <tr className="ix-notes">
                       <td colSpan={5}>
-                        {/* Zero intrinsic width: long statements truncate instead of widening the table. */}
+                        <div className="ix-notes-inner">
+                          {notes.map((n) => (
+                            <div key={n.text} className={`ix-note ${n.tone}`} title={n.text}>
+                              {n.finding ? (
+                                <button onClick={() => setState({ view: "overview", finding: n.finding! })} title="Open the finding">
+                                  {n.text} <ArrowRight size={11} />
+                                </button>
+                              ) : n.text}
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {expanded && (
+                    <tr className="ix-uses" id={usesId}>
+                      <td colSpan={5}>
                         <div className="ix-uses-inner">
+                          <div className="ix-uses-head">
+                            <span>Queries using this index</span>
+                            <span className="muted">{uses.length} captured</span>
+                          </div>
                           {uses.map((u) => (
                             <button
                               key={u.query.id}
                               className="use-row"
                               onClick={() => setState({ view: "queries", query: u.query.id })}
-                              title="Open in Queries"
+                              title={`${oneLine(u.query.text)}\nOpen in Queries`}
                             >
                               <span className="mono q">{oneLine(u.query.text)}</span>
                               <span className="muted ops">{u.ops.join(", ")}</span>
-                              <ArrowRight size={12} className="muted" />
+                              <ArrowRight size={14} className="muted use-arrow" />
                             </button>
                           ))}
                         </div>
@@ -590,25 +614,28 @@ function Relations({ links, onOpenTable }: { links: Links; onOpenTable: (key: st
         {links.outgoing.length === 0 && <p className="muted">This table doesn't reference others.</p>}
         {links.outgoing.map(({ fk, indexed }) => (
           <div key={fk.name} className="rel-row">
-            <span className="mono">{fk.columns.join(", ")}</span>
-            <ArrowRight size={12} className="muted" />
-            <button className="rel-target" onClick={() => onOpenTable(`${fk.ref_schema}.${fk.ref_table}`)}>
-              {fk.ref_schema}.{fk.ref_table}
-            </button>
-            <span className="mono muted">({fk.ref_columns.join(", ")})</span>
-            <span className="spacer" />
-            {indexed ? (
-              <span className="tag good" title="An index leads with these columns, so joins and parent deletes can seek">
-                indexed
-              </span>
-            ) : (
-              <span className="tag medium" title={`Deleting or updating a ${fk.ref_table} row scans this table to check ${fk.columns.join(", ")}`}>
-                not indexed
-              </span>
-            )}
-            <span className="muted rel-name" title={fk.name}>
-              {fk.name}
-            </span>
+            <div className="rel-path">
+              <span className="mono rel-columns" title={fk.columns.join(", ")}>{fk.columns.join(", ")}</span>
+              <ArrowRight size={14} className="muted" />
+              <div className="rel-endpoint">
+                <button className="rel-target" title={`${fk.ref_schema}.${fk.ref_table}`} onClick={() => onOpenTable(`${fk.ref_schema}.${fk.ref_table}`)}>
+                  {fk.ref_schema}.{fk.ref_table}
+                </button>
+                <span className="mono muted rel-columns" title={fk.ref_columns.join(", ")}>({fk.ref_columns.join(", ")})</span>
+              </div>
+            </div>
+            <div className="rel-meta">
+              <span className="muted rel-name" title={fk.name}>{fk.name}</span>
+              {indexed ? (
+                <span className="tag good" title="An index leads with these columns, so joins and parent deletes can seek">
+                  indexed
+                </span>
+              ) : (
+                <span className="tag medium" title={`Deleting or updating a ${fk.ref_table} row scans this table to check ${fk.columns.join(", ")}`}>
+                  not indexed
+                </span>
+              )}
+            </div>
           </div>
         ))}
       </section>
@@ -619,16 +646,19 @@ function Relations({ links, onOpenTable }: { links: Links; onOpenTable: (key: st
         {links.incoming.length === 0 && <p className="muted">No other table references this one.</p>}
         {links.incoming.map((fk) => (
           <div key={`${fk.schema}.${fk.table}.${fk.name}`} className="rel-row">
-            <button className="rel-target" onClick={() => onOpenTable(`${fk.schema}.${fk.table}`)}>
-              {fk.schema}.{fk.table}
-            </button>
-            <span className="mono muted">({fk.columns.join(", ")})</span>
-            <ArrowRight size={12} className="muted" />
-            <span className="mono">{fk.ref_columns.join(", ")}</span>
-            <span className="spacer" />
-            <span className="muted rel-name" title={fk.name}>
-              {fk.name}
-            </span>
+            <div className="rel-path">
+              <div className="rel-endpoint">
+                <button className="rel-target" title={`${fk.schema}.${fk.table}`} onClick={() => onOpenTable(`${fk.schema}.${fk.table}`)}>
+                  {fk.schema}.{fk.table}
+                </button>
+                <span className="mono muted rel-columns" title={fk.columns.join(", ")}>({fk.columns.join(", ")})</span>
+              </div>
+              <ArrowRight size={14} className="muted" />
+              <span className="mono rel-columns" title={fk.ref_columns.join(", ")}>{fk.ref_columns.join(", ")}</span>
+            </div>
+            <div className="rel-meta">
+              <span className="muted rel-name" title={fk.name}>{fk.name}</span>
+            </div>
           </div>
         ))}
       </section>

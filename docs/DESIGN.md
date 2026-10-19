@@ -211,6 +211,8 @@ What a query really did, never by running it behind your back.
 
 A health view, not a browser: tables by size with health badges (no clustered index, stale statistics, dead rows), indexes with reads vs writes, size, last use, unused / duplicate flags.
 
+The table detail's Columns and Indexes grids keep stable column widths and one scroll area inside the tab, with sticky headers. Long identifiers truncate with their full value on hover; badges and counts stay on one line. A narrow pane scrolls the grid horizontally rather than squeezing text into vertical columns. Expanding an index keeps the columns in place and shows a bounded list of captured queries, each with its SQL, operations and a link to Queries. The header stays bounded in short windows, with expanded findings reachable by scrolling. Relations keep their source, target and constraint metadata aligned. Data previews scroll inside their result grid.
+
 **Compare with…** shows environment drift against another connection of the same engine, from both latest scans: indexes missing on one side (with the `CREATE INDEX` to add it, labelled with the connection it is for; *Open in editor* only when that is the current connection), the same index under different names, tables and columns present on one side or typed differently, and settings and versions that differ. Indexes match by table, key columns, included columns, uniqueness and filter, never by name.
 
 **Index advisor** (pinned at the top of the table list, `a`): one ranked plan for the whole database instead of per-table notes. Three tiles summarize it (to add, with the share of database time behind them; to clean up, with the space it frees; tables to look at), each a filter.
