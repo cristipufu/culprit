@@ -31,3 +31,8 @@ check(replicaStatus(report([]), slot as Replica) === "info", "An inactive slot a
 check(replicaStatus(report([finding({ check: "replica-lag", subject: { kind: "database", name: slot.name } })]), slot as Replica) === "info", "A bounded slot's Low finding stays informational");
 check(findingStatus(finding({ severity: "high" })) === "bad", "Confirmed incidents retain their warning");
 console.log("Health warning regressions passed");
+
+for (const actionability of ["information", "history"] as const) {
+  const observation = finding({ severity: "high", actionability });
+  check(findingStatus(observation) === "info", `${actionability} never creates a health warning`);
+}

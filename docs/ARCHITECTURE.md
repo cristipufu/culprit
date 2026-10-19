@@ -145,7 +145,7 @@ steps but not their tree. A PostgreSQL plan saved without a table's size takes i
 3. **Refine**: rules over all the findings (`culprit-checks/src/refine.rs`): two findings about one cause become one,
    and a finding that rests on statements whose cost is behind them (they stopped running, or ran once) says so and
    ranks low. A rule here applies to every check on every engine.
-4. **Rank and summarize**: active findings first, by severity, then by impact; then the headline (`summary.rs`).
+4. **Rank and summarize**: actionable findings first (needs attention, then optional improvements), followed by information and history; by severity and impact within each group. Counts and alerts include only actionable findings; then the headline (`summary.rs`).
 
 `culprit_checks::analyze(snapshot)` runs the built-in pipeline. `Pipeline::builtin().with_check(..).with_refine(..)
 .with_prepare(..)` adds an embedder's own; they run, rank and summarize exactly like the built-in ones, and a plug-in
@@ -164,6 +164,8 @@ sits in that area's `mod.rs`, and what every check shares (the evidence rules) i
 finding has a stable id (`<check>:<subject>`), a title and a plain-language summary, evidence (metrics, the queries
 behind it), a fix that is safe to run, a way to verify it, a severity, a confidence and an impact used for ranking.
 
+Cumulative findings declare `VerificationBasis::CounterChange`: losing their counters is unknown, not proof of a fix, and exports ask for comparisons under representative load. This contract applies to built-in and embedded checks alike.
+
 Plan insights (`culprit-core/src/insights.rs`) are rules over one plan, shown in the plan viewer; the `plan-insights`
 check promotes the ones that matter to findings.
 
@@ -181,7 +183,7 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | Counters are named for what they cover: performance_schema's start over when its statements are truncated, so where the statements begin well after the server started they are "since the server started or its performance_schema counters were last reset", with no length and no rate a day. "The previous scan" is the scan just before; a baseline further back is "the scan on Oct 15 at 09:32 UTC". | `support::since_phrase`, `counters_may_be_reset`, `counters_measure_a_day` |
 | A number reads the same on every surface: the app's `format.ts` mirrors `culprit_core::format` (a tenth under 10 ms, ties rounded to even, a span of days never more than was counted and in hours under one), pinned on shared cases (`app/src/gen/format-cases.json`, checked by `bun run typecheck`). | `culprit_core::format`, `format::days`, `format::days_counted` |
 | A captured plan is compared with its own variant's runs and reads, where identified; statement totals across other variants prove no row misestimate for it. Many pages for one row can be large values or index maintenance, so pages alone never prove that a row estimate is wrong, establish a lookup count or justify statistics/index/forced-plan changes. A residual filter beside high page counts needs actual operator measurements first. A handful of runs with one outlier is said as their total and slowest run. Plans retained in the app keep the measurements they were opened with across later scans and connection/window switches. | `QueryStat::captured_plan_variant`, `insights::cheap_plan_runs`, `heavy_query::residual_read`, `brief::plan_run_times`; mirrored by `plan-format.ts`, `plans.ts::addPlan` |
-| A unique-key equality lookup's estimate of one row doesn't depend on statistics. Its stored XML alone is no reason to refresh them; statements that do rely on the stale statistics are linked as evidence. | `stale_stats::only_unique_lookups`, `plans_compiled_with` |
+| A unique-key equality lookup's estimate of one row doesn't depend on statistics. Its stored XML alone is no reason to refresh them; statements that do rely on the stale statistics are linked as evidence. | `stale_stats::only_unique_lookups`, `saved_plans_referencing` |
 | Tables absent from a collected catalog, whose statements are all history, get no fix against those tables, on every query finding. A missing catalog proves no absence. | refine rule `a table that is gone has nothing to change`, `indexes::table_gone` |
 | A claim about a cause is the engine's own verdict, never inferred from a plan's shape ("stops a seek" needs SQL Server's Seek Plan warning). | `insights::implicit_conversion` |
 | A saved statistics warning describes compilation time, not current freshness. A seek key does not establish a histogram on that column (SQL Server builds it only on the first statistics key). Current catalog facts stay separate, and verification needs a newly compiled plan. A planner cost default alone justifies no setting change. | `insights::missing_statistics`, `stale_index_statistics_detail`, `plan_warnings`; `config` |

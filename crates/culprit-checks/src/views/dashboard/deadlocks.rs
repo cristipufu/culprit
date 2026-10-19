@@ -63,7 +63,7 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
         let status = report
             .findings
             .iter()
-            .filter(|f| f.check == "deadlocks" && !f.inactive)
+            .filter(|f| f.check == "deadlocks" && f.is_actionable())
             .map(|f| severity_status(f.severity))
             .max()
             .unwrap_or(TileStatus::Info);
@@ -100,7 +100,7 @@ pub(super) fn deadlocks(report: &Report) -> Tile {
                 report
                     .findings
                     .iter()
-                    .filter(|f| f.check == "deadlocks" && !f.inactive)
+                    .filter(|f| f.check == "deadlocks" && f.is_actionable())
                     .map(|f| severity_status(f.severity))
                     .max()
                     .unwrap_or(TileStatus::Info),

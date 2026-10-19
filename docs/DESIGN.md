@@ -7,7 +7,7 @@ Culprit connects to a database and tells you, in plain language, what is making 
 1. **Connect → answers.** The first screen after connecting is the dashboard: what needs a look, most urgent first, each tile a plain sentence with the ranked findings one keystroke away (`2`). Never a schema tree. A scan reads only statistics views and finishes in seconds.
 2. **Human first, numbers second.** Every finding opens with one sentence a non-DBA understands, then the evidence.
 3. **Rank by impact.** Order by severity, which weighs the share of database time with the time behind it, then by that share (or the resource the finding wastes), never by how many warnings fired.
-4. **Every finding is actionable.** Evidence → Fix → Verify. A finding without a next step is not shipped.
+4. **Every finding has a next step.** Evidence → Fix → Verify. Distinguish needs attention, optional improvements, information and history. Only the first two count as opportunities or alerts; information and history remain available without asking for a database change.
 5. **Safe on production by construction.** Read-only sessions, short timeouts, nothing that executes user queries without an explicit, per-action confirmation.
 6. **Agent-first.** Everything the app shows, the CLI prints as stable JSON with stable IDs. Agents reference connections by name and never see credentials.
 7. **Fast.** Window on screen in < 300 ms, last scan rendered instantly from disk, fresh scan in < 5 s, every interaction < 100 ms, keyboard for everything.
@@ -78,6 +78,7 @@ Why it leads instead of the findings list: the list answers "what should I fix",
 
 - Headline sentence: *"14 opportunities. The top 3 account for 38 % of database time over the last 7 days."*
 - Vital signs strip: database time per day, what the database waits on (CPU / IO / locks / memory / network), size, data window.
+- Information and history are folded away by default, with their own count and an explicit label when opened. Historical counters do not mean that a query stopped running.
 - Filter chips: All · Indexes · Queries · Maintenance · Config · Health, with counts.
 - Ranked list. Each row: impact bar, severity dot, human headline, subject (table / query), confidence.
 - Detail pane on the right; the first finding is selected on open. `j`/`k` move, `Enter` focuses detail.

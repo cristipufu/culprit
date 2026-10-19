@@ -423,6 +423,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        contention_before: None,
         evictions_before: None,
         sizes_before: None,
     };
@@ -504,6 +505,7 @@ async fn collect_with_base(
     let mut queries: Vec<QueryStat> = rows
         .iter()
         .map(|r| QueryStat {
+            resolved_write_target: None,
             id: r.string("id"),
             query_hash: None,
             text: r.string("query"),

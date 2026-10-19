@@ -17,3 +17,10 @@ for (const [sql, verb, target] of cases) {
  if (result.verb !== verb || result.target !== target) throw new Error(JSON.stringify({ sql, result, verb, target }));
 }
 console.log(`All ${cases.length} SQL naming review cases passed.`);
+
+const cte = "WITH pending AS (SELECT * FROM shop.orders WHERE state = 0) UPDATE pending SET state = 1";
+if (querySummary(cte, null, "shop.orders").target !== "orders") throw new Error("Resolved CTE target lost");
+if (querySummary(cte).target !== "pending (CTE)") throw new Error("Unknown CTE was labeled as a base table");
+
+if (querySummary(`(@p nvarchar(4000))${cte}`, null, "shop.orders").target !== "orders") throw new Error("Parameterized CTE target lost");
+if (querySummary("WITH [pending] AS(SELECT * FROM shop.orders) UPDATE [pending] SET state = 1").target !== "pending (CTE)") throw new Error("Quoted CTE label lost");

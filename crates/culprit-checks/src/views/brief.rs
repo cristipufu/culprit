@@ -15,12 +15,13 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
     let _ = writeln!(out, "# {}\n", finding.title);
     let _ = writeln!(
         out,
-        "Database: **{}** ({}, database `{}`, {} environment). Finding `{}`: {} impact, {} confidence. Scanned {}.\n",
+        "Database: **{}** ({}, database `{}`, {} environment). Finding `{}`: {}, {} impact, {} confidence. Scanned {}.\n",
         s.connection,
         s.server.product,
         s.server.database,
         format!("{:?}", s.environment).to_lowercase(),
         finding.id,
+        finding.actionability.label(),
         format!("{:?}", finding.severity).to_lowercase(),
         format!("{:?}", finding.confidence).to_lowercase(),
         s.taken_at
@@ -385,6 +386,23 @@ fn codebase(report: &Report, finding: &Finding) -> String {
     let app: Vec<&QueryStat> =
         statements.iter().copied().filter(|q| !culprit_core::sql::is_session_statement(&q.text)).collect();
     let once = !finding.inactive && !app.is_empty() && app.iter().all(|q| crate::ran_once(q));
+    if !finding.inactive && !finding.is_actionable() && !once {
+        let diagnostic = if finding
+            .fix
+            .as_ref()
+            .and_then(|f| f.sql.as_deref())
+            .is_some_and(|sql| sql.contains("CREATE EVENT SESSION"))
+        {
+            " If you start the optional diagnostic event session, remove it with the DROP statement supplied in the fix when collection is complete."
+        } else {
+            ""
+        };
+        return format!(
+            "{}: inspect the evidence and follow its verification guidance if the workload warrants it. This observation requests no immediate database change. Use `culprit scan {}` for a later comparison if needed, as *How to verify* describes.{diagnostic}",
+            finding.actionability.label(),
+            s.connection
+        );
+    }
     let sql = FixSql::read(finding.fix.as_ref().and_then(|f| f.sql.as_deref()).unwrap_or_default(), s.server.engine);
     let mut said: Vec<String> = Vec::new();
     if finding.inactive && statements.is_empty() && finding.check == "missing-index" {
@@ -860,7 +878,8 @@ fn says_running_totals(finding: &Finding, w: &culprit_core::Workload) -> bool {
 pub fn gone_after_rescan(report: &Report, finding: &Finding) -> bool {
     // A finding that reads a plan (an index the plan then seeks) is gone from the next scan whatever the totals keep.
     let says_gone = finding.verify.iter().any(|v| v.contains("this finding should be gone"));
-    !finding.inactive
+    finding.is_actionable()
+        && finding.verification_basis != culprit_core::VerificationBasis::CounterChange
         && (says_gone || report.snapshot.workload.as_ref().is_none_or(|w| !says_running_totals(finding, w)))
 }
 

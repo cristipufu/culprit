@@ -88,7 +88,8 @@ async fn each_scan_compares_escalations_with_the_scan_before() {
     // hours since the start is more than one a day.
     let first = scan().await;
     assert!(first.snapshot.escalations_before.is_none());
-    assert_eq!(escalation(&first).severity, Severity::High);
+    assert_eq!(escalation(&first).severity, Severity::Low);
+    assert_eq!(escalation(&first).actionability, culprit_core::Actionability::Information);
     assert!(escalation(&first).title.contains("2 times since SQL Server started"), "{}", escalation(&first).title);
 
     // Nothing new since: history.
@@ -129,7 +130,8 @@ fn a_scheduled_digest_compares_escalations_with_the_previous_digest() {
     // A job keeps no scans: the first digest can't tell, the next ones compare with the digest before.
     let first = ws.digest(None, Some(&report("a.json", "2026-10-12T06:00:00Z", 2, started)), None, 10, 5).unwrap();
     assert_eq!(first.server_started_at.as_deref(), Some(started));
-    assert_eq!(finding(&first).severity, Severity::High);
+    assert_eq!(finding(&first).severity, Severity::Low);
+    assert_eq!(finding(&first).actionability, culprit_core::Actionability::Information);
     let first_path = write("first.json", serde_json::to_vec(&first).unwrap());
 
     let same =

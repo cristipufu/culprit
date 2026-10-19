@@ -2,6 +2,15 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.6
+
+### Fixes
+
+- Findings distinguish needs attention, optional improvements, information and history. Opportunity counts, health colors, digests and exports use the same classification.
+- Lock counter comparisons respect the selected time window and distinguish new waits from undated history. Quiet intervals alone no longer verify a fix.
+- Query findings lead with measured time and its period. Index candidates need measured workload before offering creation SQL; saved plan statistics remain historical evidence.
+- Counter and batching advice preserves application updates, returned values and transaction requirements. Writes through simple CTEs name their underlying table when known.
+
 ## 0.3.5
 
 ### Fixes

@@ -1,3 +1,4 @@
+import { isActionable } from "../lib/findings";
 import { ChevronRight, Copy, FileText, GitCompareArrows, Radio, RefreshCw, SquarePen } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
@@ -392,8 +393,8 @@ function DbTimeTile({ tile, report }: { tile: Tile; report: Report }) {
 function FindingsTile({ tile, report }: { tile: Tile; report: Report }) {
   // Findings you dismissed stay out of the tile, as they do in the list; the takeaway still describes the whole scan.
   const dismissed = useStore((s) => s.dismissed);
-  const hidden = report.findings.filter((f) => !f.inactive && dismissed[f.id]).length;
-  const open = report.findings.filter((f) => !f.inactive && !dismissed[f.id]);
+  const hidden = report.findings.filter((f) => isActionable(f) && dismissed[f.id]).length;
+  const open = report.findings.filter((f) => isActionable(f) && !dismissed[f.id]);
   const counts = (["high", "medium", "low"] as const).map((s) => ({
     s,
     n: hidden > 0 ? open.filter((f) => f.severity === s).length : metricValue(tile, s),
@@ -453,7 +454,7 @@ function severityOf(status: TileStatus | null): "high" | "medium" | "low" {
 function queryLabel(item: TileItem, report: Report): ReactNode {
   const q = item.query_id ? report.snapshot.workload?.queries.find((x) => x.id === item.query_id) : undefined;
   if (!q) return item.label;
-  const s = querySummary(q.text, q.object_name);
+  const s = querySummary(q.text, q.object_name, q.resolved_write_target);
   return (
     <>
       <span className="dash-verb">{s.verb}</span> {s.target ?? ""}

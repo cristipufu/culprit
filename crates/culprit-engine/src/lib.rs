@@ -746,6 +746,8 @@ impl Workspace {
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
+        snapshot.contention_before =
+            previous.as_ref().and_then(|p| culprit_core::ContentionBaseline::from_scan(p, &snapshot));
         // pg_stat_statements' evictions are counted since its last reset: the oldest of Culprit's scans a day or more
         // back tells the rate they go at now, else the previous scan's count tells new ones.
         snapshot.evictions_before = reports::evictions_baseline(&dir, &snapshot).or_else(|| {

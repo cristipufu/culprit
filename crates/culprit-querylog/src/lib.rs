@@ -174,6 +174,7 @@ impl Aggregator {
                 let mean = s.total_ms / s.runs.max(1.0);
                 let variance = (s.squares / s.runs.max(1.0) - mean * mean).max(0.0);
                 QueryStat {
+                    resolved_write_target: None,
                     id: id(&key),
                     query_hash: None,
                     text: s.display,

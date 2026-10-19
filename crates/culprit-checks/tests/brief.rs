@@ -290,6 +290,7 @@ fn statements_a_pool_sends_are_not_looked_for_in_the_code() {
     workload.queries.push(discard);
     let mut f = finding(&report, "heavy-query:").clone();
     f.queries = vec![QueryRef { id: "discard".into(), plan_node: None, note: None }];
+    f.actionability = culprit_core::Actionability::OptionalImprovement;
     let section = codebase(&agent_brief(&report, &f));
     assert!(section.contains("the driver or the connection pool"), "{section}");
     assert!(!section.contains("search for their table"), "{section}");
@@ -781,6 +782,7 @@ fn a_statement_that_waited_is_not_rewritten() {
     let about_query = |report: &Report, id: &str| {
         let mut f = with_fix(finding(report, "heavy-query:"), "Find what holds it.", None);
         f.queries = vec![QueryRef { id: id.into(), plan_node: None, note: None }];
+        f.actionability = culprit_core::Actionability::OptionalImprovement;
         f
     };
     let section = codebase(&agent_brief(&postgres, &about_query(&postgres, "sleep")));

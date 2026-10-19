@@ -6,7 +6,11 @@ import type { QueryTrend } from "./QueryTrend";
 import type { Spread } from "./Spread";
 import type { WaitStat } from "./WaitStat";
 
-export type QueryStat = { id: string, query_hash: string | null, text: string, 
+export type QueryStat = { 
+/**
+ * A CTE write's unambiguous base table, resolved by shared SQL analysis. Absent when unknown or unnecessary.
+ */
+resolved_write_target: string | null, id: string, query_hash: string | null, text: string, 
 /**
  * Parameter declarations sent with the statement, e.g. `@P1 nvarchar(4000)`; they explain implicit conversions.
  */

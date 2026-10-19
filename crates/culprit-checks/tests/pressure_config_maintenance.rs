@@ -88,7 +88,7 @@ fn sql_server_stale_statistics_use_its_own_threshold() {
     assert_eq!(f.severity, Severity::Low);
     // No plan the scan captured names the statistic: the next compile refreshes it, said as that, not as "no query
     // has used it" (a cached plan reused needn't compile).
-    let next = "SQL Server refreshes a statistic this far behind when a query next compiles with it";
+    let next = "Automatic updates depend on the engine's thresholds and settings";
     assert!(f.caveats.iter().any(|c| c.contains(next)), "{:?}", f.caveats);
     assert!(!f.caveats.iter().any(|c| c.contains("no query has used it")), "{:?}", f.caveats);
     // With automatic updates off it stays stale for every query that reads the table.
@@ -110,8 +110,8 @@ fn stale_statistics_name_heavy_reads_only_where_there_are_some() {
     // Off: the demo's lookup of products by id, 2% of database time, reads it.
     set(&mut s, "is_auto_update_stats_on", "0");
     let f = find(&analyze(s.clone()).findings, "stale-stats:shop.products").cloned().unwrap();
-    assert!(f.summary.contains(heavy), "{}", f.summary);
-    assert_eq!(f.severity, Severity::Medium);
+    assert!(!f.summary.contains(heavy), "quiet reads alone do not establish material cost");
+    assert_eq!(f.severity, Severity::Low);
     // An insert into it, and a monitoring query whose text names it, read nothing worth the sentence.
     let w = s.workload.as_mut().unwrap();
     let insert = w.queries.iter_mut().find(|q| q.id == "6").unwrap();

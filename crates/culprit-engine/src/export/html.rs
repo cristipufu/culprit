@@ -473,6 +473,9 @@ pub fn diff_html(a: &Plan, b: &Plan, diff: &PlanDiff, name_a: &str, name_b: &str
 }
 
 fn severity(f: &Finding) -> &'static str {
+    if !f.is_actionable() {
+        return "low";
+    }
     match f.severity {
         Severity::High => "high",
         Severity::Medium => "medium",
@@ -502,9 +505,10 @@ fn finding_body(
     let _ = write!(out, r#"<section class="finding"><{level}>{}</{level}>"#, escape(&finding.title));
     let _ = write!(
         out,
-        r#"<p class="sub"><span class="sev {}"></span>{} · {} impact, {} confidence · {}</p>"#,
+        r#"<p class="sub"><span class="sev {}"></span>{} · {} · {} impact, {} confidence · {}</p>"#,
         severity(finding),
         escape(&finding.impact.label),
+        finding.actionability.label(),
         format!("{:?}", finding.severity).to_lowercase(),
         format!("{:?}", finding.confidence).to_lowercase(),
         escape(&format!("{}, {} environment", s.server.product, environment_label(s.environment)))

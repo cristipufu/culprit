@@ -1,75 +1,7 @@
 {
   "findings": [
     {
-      "category": "indexes",
-      "caveats": [
-        "Counted since the indexes' metadata was loaded into memory, usually since SQL Server started."
-      ],
-      "check": "hot-rows",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": "-- Readers stop waiting for writers; test first\nALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;",
-        "summary": "Keep the transactions that change orders short and commit before slow work; make their WHERE use an index so they lock only the rows they change. If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first."
-      },
-      "id": "hot-rows:shop.orders",
-      "impact": {
-        "db_time_share": 0.561121078462286,
-        "label": "3 min 7 s waiting on locks",
-        "score": 74.90801548981831,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T14:19:10Z",
-      "metrics": [
-        {
-          "label": "Lock waits",
-          "text": null,
-          "unit": "count",
-          "value": 5.0
-        },
-        {
-          "label": "Time waiting",
-          "text": null,
-          "unit": "ms",
-          "value": 186660.0
-        },
-        {
-          "label": "Average wait",
-          "text": null,
-          "unit": "ms",
-          "value": 37332.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "138",
-          "note": "Waited 2 min on locks, nearly all of its time in the last 5 hours.",
-          "plan_node": null
-        },
-        {
-          "id": "143",
-          "note": "Waited 1 min on locks, nearly all of its time in the last 5 hours.",
-          "plan_node": null
-        },
-        {
-          "id": "161",
-          "note": null,
-          "plan_node": null
-        }
-      ],
-      "severity": "high",
-      "subject": {
-        "kind": "index",
-        "name": "shop.orders.pk_orders"
-      },
-      "summary": "Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
-      "title": "Sessions wait 37.3 s each on row locks in orders",
-      "verify": [
-        "Re-scan a day later: lock waits on orders should stop growing."
-      ]
-    },
-    {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [],
       "check": "failing-query",
@@ -126,13 +58,15 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
+      "summary": "The associated statements used 2 min of database time over the last 5 hours (27%). None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
       "title": "A read from order_items times out on every run, at about 15 s",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [],
       "check": "failing-query",
@@ -183,60 +117,15 @@
         "kind": "query",
         "name": "246"
       },
-      "summary": "50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
+      "summary": "The associated statements used 9.1 ms of database time over the last 5 hours (<1%). 50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.",
       "title": "A read from orders fails 25% of the time",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after the change: runs that fail or are cancelled should drop to near zero."
       ]
     },
     {
-      "category": "indexes",
-      "caveats": [
-        "SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each."
-      ],
-      "check": "lock-escalations",
-      "confidence": "high",
-      "fix": {
-        "cost": null,
-        "sql": "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.\n-- It catches them on every table, so another table's finding starts this same session: once is enough.\nIF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')\n    CREATE EVENT SESSION culprit_lock_escalation ON SERVER\n    ADD EVENT sqlserver.lock_escalation (\n        SET collect_statement = 1\n        ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n        WHERE sqlserver.database_name = N'culprit_demo')\n    ADD TARGET package0.ring_buffer\n    WITH (STARTUP_STATE = ON);\nIF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')\n    ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);\n\n-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;",
-        "summary": "Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement."
-      },
-      "id": "lock-escalations:shop.support_tickets",
-      "impact": {
-        "db_time_share": null,
-        "label": "5 table locks",
-        "score": 45.0,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": "2026-10-11T12:13:47Z",
-      "metrics": [
-        {
-          "label": "Escalations since SQL Server started",
-          "text": null,
-          "unit": "count",
-          "value": 5.0
-        }
-      ],
-      "queries": [
-        {
-          "id": "10",
-          "note": "Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
-          "plan_node": null
-        }
-      ],
-      "severity": "high",
-      "subject": {
-        "kind": "table",
-        "name": "shop.support_tickets"
-      },
-      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: under read committed it gives each row lock up as it moves on, but it keeps them until the statement ends when its plan prefetches its key lookups, under a locking hint (HOLDLOCK, UPDLOCK), or in a REPEATABLE READ or SERIALIZABLE transaction, and one that reads thousands of rows that way takes enough to escalate. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
-      "title": "Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)",
-      "verify": [
-        "Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed."
-      ]
-    },
-    {
+      "actionability": "needs-attention",
       "category": "indexes",
       "caveats": [],
       "check": "last-page-insert",
@@ -283,12 +172,85 @@
       },
       "summary": "pk_hot starts with a value that only grows (id), so every insert goes to the same last page. Concurrent inserts wait for each other's latch on it (PAGELATCH_EX): 106K waits, 53.6 s in all since the index was loaded. It gets worse with more concurrent writers.",
       "title": "Inserts into hot queue for the last page of pk_hot",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan to confirm OPTIMIZE_FOR_SEQUENTIAL_KEY is ON. Compare completed inserts per second and the time to insert the same batch before and after, under comparable writer concurrency: the goal is better insert throughput under contention.",
         "Page-latch waits can continue, and BTREE_INSERT_FLOW_CONTROL waits may appear. Compare measurements over equal intervals; cumulative wait totals need not stop growing."
       ]
     },
     {
+      "actionability": "needs-attention",
+      "category": "indexes",
+      "caveats": [
+        "Counted since the indexes' metadata was loaded into memory, usually since SQL Server started."
+      ],
+      "check": "hot-rows",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": null,
+        "summary": "It ran 4 times in 5 hours, too seldom to count on catching it while it waits. Have the next ones reported instead: SQL Server's blocked process report names the session holding the lock, with its statement, for each wait longer than the server's blocked process threshold (s) (0, off, by default; sp_configure sets it). Capture sqlserver.blocked_process_report in an event session to keep them. Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere. Query 143, a read, waits for writes on the same table while READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it reads the last committed version of the rows instead."
+      },
+      "id": "hot-rows:shop.orders",
+      "impact": {
+        "db_time_share": 0.561121078462286,
+        "label": "3 min waiting on locks",
+        "score": 74.90801548981831,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T14:19:10Z",
+      "metrics": [
+        {
+          "label": "Historical lock waits",
+          "text": null,
+          "unit": "count",
+          "value": 5.0
+        },
+        {
+          "label": "Historical time waiting",
+          "text": null,
+          "unit": "ms",
+          "value": 186660.0
+        },
+        {
+          "label": "Historical average wait",
+          "text": null,
+          "unit": "ms",
+          "value": 37332.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "138",
+          "note": "Waited 2 min on locks, nearly all of its time in the last 5 hours.",
+          "plan_node": null
+        },
+        {
+          "id": "143",
+          "note": "Waited 1 min on locks, nearly all of its time in the last 5 hours.",
+          "plan_node": null
+        },
+        {
+          "id": "161",
+          "note": null,
+          "plan_node": null
+        }
+      ],
+      "severity": "medium",
+      "subject": {
+        "kind": "index",
+        "name": "shop.orders.pk_orders"
+      },
+      "summary": "The associated statements used 3 min of database time over the last 5 hours (56%). Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. No comparable earlier counters place these waits in the selected window or establish that contention continues. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.",
+      "title": "Queries on orders recorded lock waits in the last 5 hours",
+      "verification_basis": "counter-change",
+      "verify": [
+        "Compare new lock waits and their time between scans under comparable load on orders. An unchanged counter reports no new waits; an idle interval alone does not verify a fix."
+      ]
+    },
+    {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [
         "Based on the estimated plan; actual row counts can tell a different story."
@@ -341,14 +303,16 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.",
+      "summary": "The associated statements used 2 min of database time over the last 5 hours (27%). The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.",
       "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
+      "verification_basis": "rescan",
       "verify": [
         "Explain again without the hint: a hash or merge join instead of the loop.",
         "Re-scan: this finding is gone."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [
         "Based on the estimated plan; actual row counts can tell a different story."
@@ -395,14 +359,16 @@
         "kind": "query",
         "name": "263"
       },
-      "summary": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.",
+      "summary": "The associated statements used 2 min of database time over the last 5 hours (27%). Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.",
       "title": "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)",
+      "verification_basis": "rescan",
       "verify": [
         "Explain again: no NonParallelPlanReason, and Parallelism operators appear.",
         "Re-scan: this finding is gone."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [
         "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
@@ -417,7 +383,7 @@
       "id": "chatty-query:6",
       "impact": {
         "db_time_share": 0.002440152984950049,
-        "label": "84% of executions",
+        "label": "822 ms of database time over the last 5 hours (<1%)",
         "score": 38.54100010970061,
         "time_ms_per_day": null
       },
@@ -449,13 +415,15 @@
         "kind": "query",
         "name": "6"
       },
-      "summary": "Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.",
+      "summary": "822 ms of database time over the last 5 hours (<1%). Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.",
       "title": "A read from products runs 60K times in 5 hours, one key at a time",
+      "verification_basis": "rescan",
       "verify": [
         "It ran 60K times in 5 hours; after the change it should run fewer times and take less time in all."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "queries",
       "caveats": [],
       "check": "plan-warnings",
@@ -506,13 +474,15 @@
         "kind": "table",
         "name": "customers.email"
       },
-      "summary": "The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.",
+      "summary": "The associated statements used 22.2 s of database time over the last 5 hours (7%). The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.",
       "title": "A type mismatch on customers.email stops a read from customers from seeking an index",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after the change; the warning should be gone from this query's plan."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "indexes",
       "caveats": [
         "Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together."
@@ -527,7 +497,7 @@
       "id": "missing-index:shop.order_items(order_id)",
       "impact": {
         "db_time_share": 0.06033893214724244,
-        "label": "6% of DB time",
+        "label": "20.3 s of database time over the last 5 hours (6%)",
         "score": 24.498803196658823,
         "time_ms_per_day": null
       },
@@ -576,14 +546,16 @@
         "kind": "table",
         "name": "shop.order_items"
       },
-      "summary": "SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.",
+      "summary": "20.3 s of database time over the last 5 hours (6%). SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.",
       "title": "order_items is searched by order_id without a supporting index",
+      "verification_basis": "rescan",
       "verify": [
         "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
         "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
       ]
     },
     {
+      "actionability": "needs-attention",
       "category": "configuration",
       "caveats": [
         "Readers then see the last committed version instead of waiting. Code that relies on blocking reads for correctness (rare) must use locking hints."
@@ -620,11 +592,13 @@
       },
       "summary": "With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.",
       "title": "Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the change has taken effect: this finding is gone."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "regression",
@@ -687,13 +661,15 @@
         "kind": "query",
         "name": "8"
       },
-      "summary": "Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.",
+      "summary": "The associated statements used 5.0 s of database time over the last 5 hours (1%). Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.",
       "title": "A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after the fix: this query's trend in Queries should drop back to about 9.5 ms per run."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -734,11 +710,13 @@
       },
       "summary": "Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.",
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together."
@@ -753,7 +731,7 @@
       "id": "missing-index:shop.orders(shipped_at)",
       "impact": {
         "db_time_share": 0.014778470818232064,
-        "label": "1% of DB time",
+        "label": "5.0 s of database time over the last 5 hours (1%)",
         "score": 10.941006061038433,
         "time_ms_per_day": null
       },
@@ -797,14 +775,16 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.",
+      "summary": "5.0 s of database time over the last 5 hours (1%). SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.",
       "title": "orders is searched by shipped_at without a supporting index",
+      "verification_basis": "rescan",
       "verify": [
         "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
         "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "deadlocks",
@@ -851,12 +831,14 @@
       },
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
       "title": "Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
@@ -893,12 +875,14 @@
       },
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.",
         "Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "duplicate-index",
@@ -933,12 +917,14 @@
       },
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.",
         "Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "big-result",
@@ -983,13 +969,15 @@
         "kind": "query",
         "name": "264"
       },
-      "summary": "Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
+      "summary": "The associated statements used 329 ms of database time over the last 5 hours (<1%). Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.",
       "title": "A read from order_items returns 20K rows per run",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan: rows per run should drop to what a page or a job actually uses."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "maintenance",
       "caveats": [],
       "check": "untrusted-constraint",
@@ -1024,11 +1012,165 @@
       },
       "summary": "fk_child_parent and ck_child_amount were created or re-enabled WITH NOCHECK, so existing rows were never checked against them. The optimizer only relies on trusted constraints: it can't remove a join to the referenced table when no columns from it are used, or rule out values a check constraint excludes, so it plans work it could skip.",
       "title": "SQL Server doesn't trust 2 constraints on child",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan: the constraint should no longer be listed."
       ]
     },
     {
+      "actionability": "optional-improvement",
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
+        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
+      },
+      "id": "config:cost-threshold-for-parallelism",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "cost-threshold-for-parallelism"
+      },
+      "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
+      "title": "Cost threshold for parallelism is still the 1990s default of 5",
+      "verification_basis": "rescan",
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
+    },
+    {
+      "actionability": "optional-improvement",
+      "category": "configuration",
+      "caveats": [],
+      "check": "config",
+      "confidence": "medium",
+      "fix": {
+        "cost": null,
+        "sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
+        "summary": "Switch to automatic capture."
+      },
+      "id": "config:query-store-capture",
+      "impact": {
+        "db_time_share": null,
+        "label": "Setting",
+        "score": 6.4,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "query-store-capture"
+      },
+      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.",
+      "title": "Query Store records every statement, including one-off ones",
+      "verification_basis": "rescan",
+      "verify": [
+        "Re-scan once the change has taken effect: this finding is gone."
+      ]
+    },
+    {
+      "actionability": "optional-improvement",
+      "category": "configuration",
+      "caveats": [],
+      "check": "last-actual-plans",
+      "confidence": "high",
+      "fix": {
+        "cost": "Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.",
+        "sql": "ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;",
+        "summary": "Turn it on for this database."
+      },
+      "id": "last-actual-plans:last-query-plan-stats",
+      "impact": {
+        "db_time_share": null,
+        "label": "Diagnostics",
+        "score": 4.8,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": null,
+      "metrics": [],
+      "queries": [],
+      "severity": "low",
+      "subject": {
+        "kind": "setting",
+        "name": "LAST_QUERY_PLAN_STATS"
+      },
+      "summary": "With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)",
+      "title": "LAST_QUERY_PLAN_STATS is off for this database",
+      "verification_basis": "rescan",
+      "verify": [
+        "Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick \"Last actual run\" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data."
+      ]
+    },
+    {
+      "actionability": "information",
+      "category": "indexes",
+      "caveats": [
+        "These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.",
+        "SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each."
+      ],
+      "check": "lock-escalations",
+      "confidence": "high",
+      "fix": {
+        "cost": null,
+        "sql": "-- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.\n-- It catches them on every table, so another table's finding starts this same session: once is enough.\nIF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')\n    CREATE EVENT SESSION culprit_lock_escalation ON SERVER\n    ADD EVENT sqlserver.lock_escalation (\n        SET collect_statement = 1\n        ACTION (sqlserver.sql_text, sqlserver.client_app_name)\n        WHERE sqlserver.database_name = N'culprit_demo')\n    ADD TARGET package0.ring_buffer\n    WITH (STARTUP_STATE = ON);\nIF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')\n    ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;\n\n-- Then read what it caught\nSELECT e.x.value('@timestamp', 'datetime2') AS at_utc,\n       OBJECT_NAME(e.x.value('(data[@name=\"object_id\"]/value)[1]', 'int')) AS table_name,\n       e.x.value('(data[@name=\"escalated_lock_count\"]/value)[1]', 'int') AS locks,\n       e.x.value('(data[@name=\"statement\"]/value)[1]', 'nvarchar(max)') AS statement,\n       e.x.value('(action[@name=\"client_app_name\"]/value)[1]', 'nvarchar(256)') AS app\n  FROM (SELECT CAST(t.target_data AS xml) AS d\n          FROM sys.dm_xe_session_targets t\n          JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address\n         WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r\n CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);\n\n-- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;",
+        "summary": "Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks."
+      },
+      "id": "lock-escalations:shop.support_tickets",
+      "impact": {
+        "db_time_share": null,
+        "label": "5 table locks",
+        "score": 8.0,
+        "time_ms_per_day": null
+      },
+      "inactive": false,
+      "last_seen": "2026-10-11T12:13:47Z",
+      "metrics": [
+        {
+          "label": "Escalations since SQL Server started",
+          "text": null,
+          "unit": "count",
+          "value": 5.0
+        }
+      ],
+      "queries": [
+        {
+          "id": "10",
+          "note": "Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
+          "plan_node": null
+        }
+      ],
+      "severity": "low",
+      "subject": {
+        "kind": "table",
+        "name": "shop.support_tickets"
+      },
+      "summary": "SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.",
+      "title": "Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)",
+      "verification_basis": "counter-change",
+      "verify": [
+        "Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix."
+      ]
+    },
+    {
+      "actionability": "history",
       "category": "queries",
       "caveats": [
         "This statement ran once in the last 5 hours. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running."
@@ -1081,106 +1223,11 @@
         "kind": "query",
         "name": "255"
       },
-      "summary": "It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
+      "summary": "The associated statements used 528 ms of database time over the last 5 hours (<1%). It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.",
       "title": "An update of wide writes 7.9 KB of transaction log per row it changes",
+      "verification_basis": "rescan",
       "verify": [
         "Nothing to check: the tables are gone. If these statements return against replacement tables, scan those to see what needs a change."
-      ]
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": "EXEC sp_configure 'show advanced options', 1;\nRECONFIGURE;\nEXEC sp_configure 'cost threshold for parallelism', 50;\nRECONFIGURE;",
-        "summary": "A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50."
-      },
-      "id": "config:cost-threshold-for-parallelism",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "cost-threshold-for-parallelism"
-      },
-      "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
-      "title": "Cost threshold for parallelism is still the 1990s default of 5",
-      "verify": [
-        "Re-scan once the change has taken effect: this finding is gone."
-      ]
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "config",
-      "confidence": "medium",
-      "fix": {
-        "cost": null,
-        "sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
-        "summary": "Switch to automatic capture."
-      },
-      "id": "config:query-store-capture",
-      "impact": {
-        "db_time_share": null,
-        "label": "Setting",
-        "score": 6.4,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "query-store-capture"
-      },
-      "summary": "Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.",
-      "title": "Query Store records every statement, including one-off ones",
-      "verify": [
-        "Re-scan once the change has taken effect: this finding is gone."
-      ]
-    },
-    {
-      "category": "configuration",
-      "caveats": [],
-      "check": "last-actual-plans",
-      "confidence": "high",
-      "fix": {
-        "cost": "Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.",
-        "sql": "ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;",
-        "summary": "Turn it on for this database."
-      },
-      "id": "last-actual-plans:last-query-plan-stats",
-      "impact": {
-        "db_time_share": null,
-        "label": "Diagnostics",
-        "score": 4.8,
-        "time_ms_per_day": null
-      },
-      "inactive": false,
-      "last_seen": null,
-      "metrics": [],
-      "queries": [],
-      "severity": "low",
-      "subject": {
-        "kind": "setting",
-        "name": "LAST_QUERY_PLAN_STATS"
-      },
-      "summary": "With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)",
-      "title": "LAST_QUERY_PLAN_STATS is off for this database",
-      "verify": [
-        "Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick \"Last actual run\" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data."
       ]
     }
   ],
@@ -1567,6 +1614,7 @@
         "table": "child"
       }
     ],
+    "contention_before": null,
     "deadlocks": {
       "counted": null,
       "counted_since": null,
@@ -3947,6 +3995,7 @@
             }
           ],
           "query_hash": "0xE9B9B9AEF7209B51",
+          "resolved_write_target": null,
           "rows": 1200.0,
           "rows_affected": null,
           "spread": {
@@ -4184,6 +4233,7 @@
             }
           ],
           "query_hash": "0xBBCBE1D0C08154BC",
+          "resolved_write_target": null,
           "rows": 906.0,
           "rows_affected": null,
           "spread": {
@@ -4473,6 +4523,7 @@
             }
           ],
           "query_hash": "0xFEBD637132E1276E",
+          "resolved_write_target": null,
           "rows": 3900000.0,
           "rows_affected": null,
           "spread": {
@@ -4734,6 +4785,7 @@
             }
           ],
           "query_hash": "0x11CC33E7EA9F4952",
+          "resolved_write_target": null,
           "rows": 984960.0,
           "rows_affected": null,
           "spread": {
@@ -4941,6 +4993,7 @@
             }
           ],
           "query_hash": "0xBD30C1112C2A5560",
+          "resolved_write_target": null,
           "rows": 60000.0,
           "rows_affected": null,
           "spread": {
@@ -5243,6 +5296,7 @@
             }
           ],
           "query_hash": "0x1C16A4743BB078B3",
+          "resolved_write_target": null,
           "rows": 20016.0,
           "rows_affected": null,
           "spread": {
@@ -5415,6 +5469,7 @@
             }
           ],
           "query_hash": "0x80E844211996BFCC",
+          "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
           "spread": {
@@ -5525,6 +5580,7 @@
             }
           ],
           "query_hash": "0x4139ABA55C1459B3",
+          "resolved_write_target": null,
           "rows": 771.0,
           "rows_affected": null,
           "spread": {
@@ -5825,6 +5881,7 @@
             }
           ],
           "query_hash": "0x2E60BD5F2B1B322C",
+          "resolved_write_target": null,
           "rows": 4.0,
           "rows_affected": null,
           "spread": {
@@ -5971,6 +6028,7 @@
             }
           ],
           "query_hash": "0xBFDD28B1F8A5DB44",
+          "resolved_write_target": null,
           "rows": 3.0,
           "rows_affected": null,
           "spread": {
@@ -6107,6 +6165,7 @@
             }
           ],
           "query_hash": "0x70DEB9137DC844BA",
+          "resolved_write_target": null,
           "rows": 3.0,
           "rows_affected": null,
           "spread": {
@@ -6180,6 +6239,7 @@
             }
           ],
           "query_hash": "0xDF29AECD4582DE17",
+          "resolved_write_target": null,
           "rows": 150.0,
           "rows_affected": null,
           "spread": {
@@ -6937,6 +6997,7 @@
             }
           ],
           "query_hash": "0xE5DE7151675598B3",
+          "resolved_write_target": null,
           "rows": 300.0,
           "rows_affected": null,
           "spread": {
@@ -7170,6 +7231,7 @@
             }
           ],
           "query_hash": "0xAC0F7C57637DD3EA",
+          "resolved_write_target": null,
           "rows": 30000.0,
           "rows_affected": null,
           "spread": {
@@ -7590,6 +7652,7 @@
             }
           ],
           "query_hash": "0xCE8A3BF747BC6C47",
+          "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
           "spread": {
@@ -7669,6 +7732,7 @@
             }
           ],
           "query_hash": "0x5DA4E11A569A7C0C",
+          "resolved_write_target": null,
           "rows": 500000.0,
           "rows_affected": null,
           "spread": {
@@ -7778,11 +7842,11 @@
     "by_category": [
       {
         "category": "indexes",
-        "count": 8
+        "count": 7
       },
       {
         "category": "queries",
-        "count": 10
+        "count": 9
       },
       {
         "category": "maintenance",
@@ -7795,21 +7859,21 @@
     ],
     "by_severity": [
       {
-        "count": 5,
+        "count": 3,
         "severity": "high"
       },
       {
-        "count": 6,
+        "count": 7,
         "severity": "medium"
       },
       {
-        "count": 12,
+        "count": 11,
         "severity": "low"
       }
     ],
-    "headline": "23 opportunities. The top ones touch 83% of database time over the last 5 hours.",
+    "headline": "21 opportunities. The top ones touch 2 min of database time over the last 5 hours (27%).",
     "no_workload": null,
-    "opportunities": 23,
+    "opportunities": 21,
     "over_scans": [],
     "runs_said": [
       {
@@ -7817,6 +7881,6 @@
         "runs": "2 runs on Oct 11, 11:54–12:13 UTC"
       }
     ],
-    "top_share": 0.8285132103468869
+    "top_share": 0.2673921318846009
   }
 }

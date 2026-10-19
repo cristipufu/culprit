@@ -1,12 +1,12 @@
 reading: MySQL 8.4.11 · database shop · scanned 2026-10-11T12:09:00Z
-headline: 10 opportunities. The top ones touch 85% of database time over the 2 minutes since statistics were reset.
+headline: 10 opportunities. The top ones touch 4 min of database time over the 2 minutes since statistics were reset (85%).
 top share: 85%
 findings: 10
 
 === finding failing-query:4515abd524a46f37
-high severity · high confidence · queries
+Needs attention · high severity · high confidence · queries
 title: An update of orders fails 28% of the time (1205 lock wait timeout)
-summary: 12 of its 43 runs since its statistics began 2 minutes ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+summary: The associated statements used 12.0 s of database time over the 2 minutes since statistics were reset (4%). 12 of its 43 runs since its statistics began 2 minutes ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 impact: 28% of runs fail · 4.2% of database time
 metrics:
   - Runs: 43
@@ -27,11 +27,11 @@ queries:
 brief:
     # An update of orders fails 28% of the time (1205 lock wait timeout)
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `failing-query:4515abd524a46f37`: high impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `failing-query:4515abd524a46f37`: Needs attention, high impact, high confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    12 of its 43 runs since its statistics began 2 minutes ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+    The associated statements used 12.0 s of database time over the 2 minutes since statistics were reset (4%). 12 of its 43 runs since its statistics began 2 minutes ago didn't finish. 12 ended in an error; the recent ones were 1205 lock wait timeout. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 
     ## Evidence
 
@@ -71,9 +71,9 @@ brief:
     The fix's query only reads: run it against the database and act on what it shows, the way the fix says; it changes nothing by itself. After any change is live, run `culprit scan mysql-demo` and check `failing-query:4515abd524a46f37` the way *How to verify* says.
 
 === finding lock-time:4167fe7f2c20deb7
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: A read from orders spends nearly all its time waiting on locks, 28.8 s per run
-summary: Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
+summary: The associated statements used 4 min of database time over the 2 minutes since statistics were reset (80%). Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
 impact: 4 min waiting on locks · 80.2% of database time
 metrics:
   - Lock wait: 2 min
@@ -91,11 +91,11 @@ queries:
 brief:
     # A read from orders spends nearly all its time waiting on locks, 28.8 s per run
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `lock-time:4167fe7f2c20deb7`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `lock-time:4167fe7f2c20deb7`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
+    The associated statements used 4 min of database time over the 2 minutes since statistics were reset (80%). Of its 2 min since its statistics began 2 minutes ago, 2 min went to waiting for locks other sessions held. That time belongs to the sessions holding the locks: making this statement faster won't help, shortening the transactions that hold the rows will. MySQL counts row-lock waits in a statement's lock time from 8.0.28; earlier versions count table locks only. An update of orders (query fc709554a9248878) waited on locks on shop.orders on Oct 11, 13:48–14:19 UTC too, 2 min (nearly all of its time): likely the same episode of blocking, behind the same holder or one another.
 
     ## Evidence
 
@@ -134,10 +134,10 @@ brief:
     The fix changes no statement: the finding reads its time as waiting for locks other transactions hold (the summary says how sure it is), not as work, so no rewrite or index of it shortens it. Find the code that changes or locks rows of `orders` inside a transaction, and keep those transactions short: commit right after the write, with no network calls or other slow work before the commit. After any change is live, run `culprit scan mysql-demo` and check `lock-time:4167fe7f2c20deb7` the way *How to verify* says.
 
 === finding chatty-query:9b30e6ad79d940fe
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: A read from products runs 30K times in 2 minutes, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
-impact: 75% of executions · 0.4% of database time
+summary: 1.1 s of database time over the 2 minutes since statistics were reset (<1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+impact: 1.1 s of database time over the 2 minutes since statistics were reset (<1%) · 0.4% of database time
 metrics:
   - Share of executions: 75%
   - Average duration: 0.04 ms
@@ -151,11 +151,11 @@ queries:
 brief:
     # A read from products runs 30K times in 2 minutes, one key at a time
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `chatty-query:9b30e6ad79d940fe`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `chatty-query:9b30e6ad79d940fe`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+    1.1 s of database time over the 2 minutes since statistics were reset (<1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
 
     ## Evidence
 
@@ -187,9 +187,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `chatty-query:9b30e6ad79d940fe` the way *How to verify* says.
 
 === finding temp-spill:04cd7be9c366fadc
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: A read from orders builds an on-disk temporary table about once per run
-summary: The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+summary: The associated statements used 34.5 s of database time over the 2 minutes since statistics were reset (12%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
 impact: 12% of DB time · 12.0% of database time
 metrics:
   - On-disk temporary tables per run: 1
@@ -206,11 +206,11 @@ queries:
 brief:
     # A read from orders builds an on-disk temporary table about once per run
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `temp-spill:04cd7be9c366fadc`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `temp-spill:04cd7be9c366fadc`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+    The associated statements used 34.5 s of database time over the 2 minutes since statistics were reset (12%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (1.0 MB, the smaller of tmp_table_size and max_heap_table_size, where these tables use the MEMORY engine; the TempTable engine stops at tmp_table_size and temptable_max_ram instead) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
 
     ## Evidence
 
@@ -247,9 +247,9 @@ brief:
     If you choose an index from the fix's options, ship it through this project's schema migrations. If you choose a query change, find where the application sends the statements above (search for their table and column names) and make that change in the calling code. If you choose the session-setting option, set those variables on the application's connections. The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mysql-demo` and check `temp-spill:04cd7be9c366fadc` the way *How to verify* says.
 
 === finding scan-heavy:shop.orders
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: orders is read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows)
-summary: shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+summary: The associated statements used 4.3 s of database time over the 2 minutes since statistics were reset (1%). shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 impact: 1% of DB time · 1.5% of database time
 metrics:
   - Full reads: 81
@@ -267,11 +267,11 @@ queries:
 brief:
     # orders is read in full 81 times since the server started or its performance_schema counters were last reset (40.5M rows)
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `scan-heavy:shop.orders`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `scan-heavy:shop.orders`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+    The associated statements used 4.3 s of database time over the 2 minutes since statistics were reset (1%). shop.orders has 499K rows, and queries have read all of it 81 times since the server started or its performance_schema counters were last reset: 40.5M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 04cd7be9c366fadc) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 
     ## Evidence
 
@@ -307,7 +307,7 @@ brief:
     Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run in a test environment. Check the actual row counts and IO for that run before choosing a change to the application's statements, indexes or statistics. After any change is live, run `culprit scan mysql-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: ix_orders_status is covered by the wider ix_orders_status_created on orders
 summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
 impact: 10.5 MB redundant
@@ -325,7 +325,7 @@ caveats:
 brief:
     # ix_orders_status is covered by the wider ix_orders_status_created on orders
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
@@ -359,7 +359,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ix_products_sku duplicates uq_products_sku on products
 summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
 impact: 432 KB redundant
@@ -375,7 +375,7 @@ verify:
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
@@ -405,7 +405,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mysql-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding row-lock-waits:server
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: Transactions on this server waited 1 min 27 s for row locks since MySQL started 80 minutes ago, 14.5 s each on average
 summary: Since MySQL started 80 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 6 times, 1 min 27 s in all and about 14.5 s each: about 1 min an hour on average; the counters don't say when. In this database, a read from orders waited longest on locks (2 min in total). Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.
 impact: 1 min/h lock waits
@@ -423,7 +423,7 @@ queries:
 brief:
     # Transactions on this server waited 1 min 27 s for row locks since MySQL started 80 minutes ago, 14.5 s each on average
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `row-lock-waits:server`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `row-lock-waits:server`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
@@ -460,9 +460,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `row-lock-waits:server` the way *How to verify* says: performance_schema keeps running totals, so the runs from before the change stay in them and their numbers move only as new runs add up.
 
 === finding big-result:7f47c8550af0c644
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: A read from order_items returns 20K rows per run
-summary: Each run sends 20K rows to the application; its 25 runs since its statistics began 2 minutes ago moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
+summary: The associated statements used 82 ms of database time over the 2 minutes since statistics were reset (<1%). Each run sends 20K rows to the application; its 25 runs since its statistics began 2 minutes ago moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
 impact: 20K rows per run · 0.0% of database time
 metrics:
   - Rows per run: 20K
@@ -475,11 +475,11 @@ queries:
 brief:
     # A read from order_items returns 20K rows per run
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `big-result:7f47c8550af0c644`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `big-result:7f47c8550af0c644`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 
-    Each run sends 20K rows to the application; its 25 runs since its statistics began 2 minutes ago moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
+    The associated statements used 82 ms of database time over the 2 minutes since statistics were reset (<1%). Each run sends 20K rows to the application; its 25 runs since its statistics began 2 minutes ago moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
 
     ## Evidence
 
@@ -507,7 +507,7 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mysql-demo` and check `big-result:7f47c8550af0c644` the way *How to verify* says.
 
 === finding config:slow_query_log
-low severity · medium confidence · configuration
+Optional improvement · low severity · medium confidence · configuration
 title: The slow query log is off
 summary: Without it there is no record of individual slow statements with their real parameter values, only the aggregated digests. Logged to the mysql.slow_log table, Culprit also uses those statements to plan digests that have no sample text.
 impact: Setting
@@ -521,7 +521,7 @@ verify:
 brief:
     # The slow query log is off
 
-    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `config:slow_query_log`: low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
+    Database: **mysql-demo** (MySQL 8.4.11, database `shop`, local environment). Finding `config:slow_query_log`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:09:00Z.
 
     ## What's happening
 

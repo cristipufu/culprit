@@ -43,10 +43,74 @@ pub(crate) fn rules() -> Vec<Arc<dyn Refine>> {
         rule("statements that ran once", ran_once_only),
         rule("a table that is gone has nothing to change", gone_tables_get_no_fix),
         rule("a finding whose statements stopped has nothing to check", nothing_to_check_once_stopped),
+        rule("query-driven index changes need measured work", index_changes_need_work),
+        rule("query evidence leads with absolute cost and period", absolute_query_cost),
         // Wording.
         rule("names without the database", names_without_database),
         rule("a caveat repeats nothing the summary or the fix says", caveats_repeat_nothing),
     ]
+}
+
+/// Keep an optimizer candidate visible without offering DDL until measured work justifies evaluating the cost
+/// of another index. This applies to every provider and also to embedded checks that emit index advice.
+#[allow(clippy::ptr_arg)] // pipeline rules share one signature
+fn index_changes_need_work(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    for f in findings.iter_mut().filter(|f| !f.inactive) {
+        if f.check == "unindexed-fk"
+            || (f.queries.is_empty()
+                && !matches!(f.check.as_str(), "missing-index" | "filtered-scan" | "plan-insights" | "tuning-advice"))
+        {
+            continue;
+        }
+        let Some(sql) = f.fix.as_ref().and_then(|fix| fix.sql.as_deref()) else { continue };
+        if !culprit_core::sql::creates_index(sql, snapshot.server.engine) {
+            continue;
+        }
+        let queries: Vec<_> = f.queries.iter().filter_map(|r| snapshot.workload.as_ref()?.query(&r.id)).collect();
+        if support::index_work_is_material(snapshot, &queries) {
+            continue;
+        }
+        if f.actionability != culprit_core::Actionability::History {
+            f.actionability = culprit_core::Actionability::Information;
+        }
+        f.severity = Severity::Low;
+        if let Some(fix) = f.fix.as_mut() {
+            fix.summary = format!(
+                "Keep this as an index candidate. The captured workload does not establish enough measured work to recommend creating it now. Compare representative plans, reads and write maintenance if the workload grows. Only if later measurements justify a change, evaluate this candidate: {}",
+                fix.summary
+            );
+            fix.sql = None;
+        }
+        f.verify = vec!["Measure comparable query runs and their total time in a later window before choosing an index. A historical optimizer request can remain after the relevant workload has changed.".into()];
+    }
+}
+
+#[allow(clippy::ptr_arg)] // pipeline rules share one signature
+fn absolute_query_cost(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
+    for f in findings.iter_mut().filter(|f| !f.inactive && f.impact.db_time_share.is_some()) {
+        let mut queries: Vec<_> = f.queries.iter().filter_map(|r| snapshot.workload.as_ref()?.query(&r.id)).collect();
+        queries.sort_by(|a, b| a.id.cmp(&b.id));
+        queries.dedup_by(|a, b| a.id == b.id);
+        let same_share = support::query_impact(snapshot, &queries)
+            .zip(f.impact.db_time_share)
+            .is_some_and(|(impact, share)| (impact.share - share).abs() < 1e-9);
+        if same_share && let Some(cost) = support::query_cost_context(snapshot, &queries) {
+            if f.check == "heavy-query" {
+                let share = f.impact.db_time_share.unwrap_or(0.0);
+                let share_phrase = format!("{} of {}", format::percent(share), crate::queries::time_noun(snapshot));
+                f.title = f.title.replace(&share_phrase, &cost);
+            }
+            let direct = matches!(f.check.as_str(), "heavy-query" | "chatty-query" | "missing-index" | "filtered-scan");
+            f.summary = if direct {
+                format!("{cost}. {}", f.summary)
+            } else {
+                format!("The associated statements used {cost}. {}", f.summary)
+            };
+            if matches!(f.check.as_str(), "heavy-query" | "chatty-query" | "missing-index" | "filtered-scan") {
+                f.impact.label = cost;
+            }
+        }
+    }
 }
 
 /// SQL Server reports the same gap twice: as a missing-index suggestion and as a scan in the plan. Keep the suggestion, which
@@ -697,6 +761,7 @@ fn ran_once_only(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         if queries.is_empty() || !queries.iter().all(|q| ran_once(q)) {
             continue;
         }
+        f.actionability = culprit_core::Actionability::History;
         f.severity = Severity::Low;
         f.impact.score *= 0.25;
         // The slow query log keeps only runs over long_query_time: once in it is one slow run, not one run.
@@ -836,6 +901,7 @@ fn gone_tables_get_no_fix(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         {
             continue;
         }
+        f.actionability = culprit_core::Actionability::History;
         f.severity = Severity::Low;
         f.fix = Some(culprit_core::Fix {
             summary: format!(
@@ -1526,8 +1592,30 @@ fn one_blocking_chain(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
         for (_, _, sentence) in &notes {
             findings[target].summary.push_str(sentence);
         }
+        // Historical table counters must not hide independent lock time measured in this window.
+        let current = findings[i].is_actionable()
+            && ids
+                .iter()
+                .filter_map(|id| snapshot.workload.as_ref()?.query(id))
+                .any(|q| !query_is_history(snapshot, q));
+        if current && !findings[target].is_actionable() {
+            let table = findings[target].subject.name.split('.').rev().nth(1).unwrap_or("this table");
+            findings[target].title = format!("Queries on {table} recorded lock waits{window}");
+            findings[target].actionability = culprit_core::Actionability::OptionalImprovement;
+            findings[target].fix = findings[i].fix.clone();
+        }
         absorb(snapshot, findings, target, i, None);
         let target = if i < target { target - 1 } else { target };
+        if current {
+            let lock_ms: f64 = findings[target]
+                .queries
+                .iter()
+                .filter_map(|r| snapshot.workload.as_ref()?.query(&r.id))
+                .filter(|q| !query_is_history(snapshot, q))
+                .map(signals::lock_ms)
+                .sum();
+            findings[target].impact.label = format!("{} waiting on locks", format::duration(lock_ms));
+        }
         for (id, note, _) in notes {
             if let Some(reference) = findings[target].queries.iter_mut().find(|q| q.id == id) {
                 reference.note = Some(note);

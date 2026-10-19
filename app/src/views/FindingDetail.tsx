@@ -1,3 +1,4 @@
+import { actionLabel, isActionable } from "../lib/findings";
 import { ArrowUpRight, Bot, Check, Copy, EyeOff, Flame, History, SquarePen } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { SignalEvidence } from "../components/BeyondTime";
@@ -57,7 +58,8 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
     <div className="detail">
       <div className="detail-inner">
         <div className="crumbs">
-          <span className={`tag ${finding.severity}`}>{SEVERITY_LABEL[finding.severity]}</span>
+          <span className={`tag ${isActionable(finding) ? finding.severity : ""}`}>{actionLabel(finding)}</span>
+          {isActionable(finding) && <span className={`tag ${finding.severity}`}>{SEVERITY_LABEL[finding.severity]}</span>}
           <span className="tag">{CONFIDENCE_LABEL[finding.confidence]}</span>
           <CopyId id={finding.id} />
         </div>

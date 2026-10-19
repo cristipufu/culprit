@@ -1,3 +1,4 @@
+import { isActionable } from "./findings";
 import { useSyncExternalStore } from "react";
 import type { ChangeRequest } from "../gen/ChangeRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
@@ -186,7 +187,7 @@ async function showCachedThenScan(name: string, windowMinutes: WindowMinutes, re
     if (getState().active !== name || getState().windowMinutes !== windowMinutes) return;
     if (cached) {
       const keep = getState().finding;
-      const finding = keep && cached.findings.some((f) => f.id === keep) ? keep : cached.findings[0]?.id ?? null;
+      const finding = keep && cached.findings.some((f) => f.id === keep) ? keep : cached.findings.find(isActionable)?.id ?? null;
       setState({ report: { status: "ready", report: cached, scanning: rescan, scanError: null }, finding });
     }
     if (!cached || rescan) await scan(name);
@@ -207,7 +208,7 @@ export async function scan(name: string): Promise<void> {
     const stillThere = keep && report.findings.some((f) => f.id === keep);
     setState({
       report: { status: "ready", report, scanning: false, scanError: null },
-      finding: stillThere ? keep : report.findings[0]?.id ?? null,
+      finding: stillThere ? keep : report.findings.find(isActionable)?.id ?? null,
     });
     loadConnections();
   } catch (e) {

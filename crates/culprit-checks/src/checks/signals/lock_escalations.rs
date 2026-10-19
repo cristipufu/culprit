@@ -89,7 +89,7 @@ pub(super) fn escalation_session_sql(database: &str, azure_sql_database: bool) -
 /// READ_COMMITTED_SNAPSHOT a read under read committed takes no row locks, so only the hint is left.
 fn keeps_row_locks(q: &QueryStat, schema: &str, table: &str, rcsi: bool) -> Option<&'static str> {
     if ["holdlock", "updlock", "xlock", "repeatableread", "serializable"].iter().any(|h| mentions_word(&q.text, h)) {
-        return Some("it asks for a locking hint, which keeps its row locks until the statement ends");
+        return Some("it asks for a locking hint, which can retain row locks until its transaction ends");
     }
     let plan = q.plan.as_ref().filter(|_| !rcsi)?;
     let looks_up = plan.nodes().iter().any(|n| {
@@ -142,9 +142,11 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 None => "since its indexes were loaded into memory".to_string(),
             };
             let started_on = started.map(crate::queries::when_phrase);
+            f.verification_basis = culprit_core::VerificationBasis::CounterChange;
             // How many since the earlier scan, when there is one to compare with and the counts compare.
             let new = before.and_then(|b| b.since(&name, t.escalations).map(|n| (b, n)));
             let historical = new.is_some_and(|(_, n)| n == 0.0);
+            if historical { f.actionability = culprit_core::Actionability::History; }
             // Without one, how many a day since SQL Server started, over an hour or more of counting.
             let first_scan_rate = if new.is_none() { counter_rate_per_day(snapshot, t.escalations) } else { None };
             let happened = match new {
@@ -188,10 +190,10 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                     // Without an earlier scan, only how often they happened on average says whether they recur.
                     let often = match first_scan_rate {
                         Some(r) if r >= ESCALATIONS_HIGH_PER_DAY => {
-                            " That is once a day or more on average since then: often enough to be still happening."
+                            " That is once a day or more on average over the counter history; it does not date individual events."
                         }
                         Some(r) if r >= ESCALATIONS_MEDIUM_PER_DAY => {
-                            " That is once a week or more on average since then: likely to happen again."
+                            " That is once a week or more on average over the counter history; it does not establish current recurrence."
                         }
                         Some(_) => " That is less than once a week on average since then: they may all be old.",
                         None => " SQL Server started too recently to tell how often it happens.",
@@ -260,9 +262,9 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                     },
                     None if !reads.is_empty() => {
                         let how = if rcsi {
-                            "With READ_COMMITTED_SNAPSHOT on, a read under read committed takes no row locks; one escalates only under a locking hint (HOLDLOCK, UPDLOCK) or in a REPEATABLE READ or SERIALIZABLE transaction, where it keeps every row lock it takes until it ends."
+                            "With READ_COMMITTED_SNAPSHOT on, ordinary reads under read committed avoid row locks. Locking hints (HOLDLOCK, UPDLOCK) or stronger isolation can still retain row locks until the transaction ends."
                         } else {
-                            "A read can escalate too: under read committed it gives each row lock up as it moves on, but it keeps them until the statement ends when its plan prefetches its key lookups, under a locking hint (HOLDLOCK, UPDLOCK), or in a REPEATABLE READ or SERIALIZABLE transaction, and one that reads thousands of rows that way takes enough to escalate."
+                            "A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt."
                         };
                         let likeliest = match reads.first().and_then(|q| keeps(q).map(|why| (q, why))) {
                             Some((q, why)) => format!(
@@ -278,9 +280,8 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 }
             };
             f.summary = format!(
-                "{happened} An escalation happens when one statement takes about 5,000 locks on one index: \
-                 SQL Server swaps them for a single lock on the whole table, and every other session that writes to {table}, or reads it without \
-                 row versioning, waits until that statement's transaction ends.{suspects}"
+                "{happened} SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. \
+                 A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked.{suspects}"
             );
             f.queries = writes
                 .iter()
@@ -309,6 +310,14 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 Some(_) => Severity::High,
                 None => since_start_severity(first_scan_rate, ESCALATIONS_HIGH_PER_DAY, ESCALATIONS_MEDIUM_PER_DAY),
             };
+            let placed_in_window = new.is_some_and(|(b, _)| {
+                days_between(&b.taken_at, &snapshot.taken_at).is_some_and(|d| d >= 0.0 && snapshot.options.as_ref().is_none_or(|o| d * 1440.0 <= f64::from(o.window_in_minutes()) + 1.0 / 60.0))
+            });
+            if !historical && !placed_in_window {
+                f.informational();
+                f.severity = Severity::Low;
+                f.caveats.push("These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.".into());
+            }
             severity_score(&mut f);
             let locks = |n: f64, new: &str| {
                 format!("{} {new}table lock{}", format::count(n), if n == 1.0 { "" } else { "s" })
@@ -356,9 +365,10 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 _ => None,
             });
             let loop_fix = format!(
-                "{lead} a loop over at most 1,000 rows at a time, each its own statement, so none takes enough locks to escalate. \
-                 An UPDATE loop's filter must leave out the rows it already changed, or it never ends. Inside one transaction the loop still holds every row it changed until the commit, \
-                 but other sessions then wait only for those rows, not for the whole table. \
+                "{lead} smaller batches, for example up to 1,000 changed rows per statement, after checking its access path and lock footprint. \
+                 A row limit does not bound all locks acquired or prevent escalation under lock-memory pressure. \
+                 Use smaller transactions only where partial commits preserve the application's required atomicity. \
+                 An UPDATE loop's filter must leave out rows already changed. A single enclosing transaction can retain locks until commit, so batching is no guarantee against a table lock. \
                  {find} ({ESCALATION_SESSION}): it keeps each escalation with its statement, in memory, at almost no cost."
             );
             // A read keeps its locks for a reason of its own; the loop is for a write the query history doesn't show.
@@ -366,12 +376,12 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 let hint = keeps(q).is_some_and(|why| why.contains("hint"));
                 format!(
                     "Start the event session below ({ESCALATION_SESSION}) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. \
-                     If it is a read, it escalates because it keeps its row locks until it ends: {}{}read fewer rows a run, so it stays under the 5,000 locks that escalate. \
-                     If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement.",
+                     If it is a read, it escalates because it keeps its row locks until it ends: {}{}consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. \
+                     If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.",
                     if rcsi {
                         ""
                     } else {
-                        "READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or "
+                        "Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or "
                     },
                     if hint { "drop the locking hint where the read doesn't need it, or " } else { "" }
                 )
@@ -383,7 +393,7 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 },
                 sql: Some(match lp {
                     Some(statement) => format!(
-                        "-- One statement over every matching row escalates; 1,000 at a time doesn't\n\
+                        "-- Example only: check lock footprint and required atomicity before batching\n\
                          WHILE 1 = 1\n\
                          BEGIN\n    \
                              {statement}\n    \
@@ -397,7 +407,7 @@ pub fn lock_escalations(snapshot: &Snapshot) -> Vec<Finding> {
                 cost: None,
             });
             f.verify = vec![format!(
-                "Scan again later: Culprit compares with this scan, and the finding says how many escalations on {table} happened since. None means it's fixed."
+                "Compare new escalations on {table} and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix."
             )];
             f.caveats.push(
                 "SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each."

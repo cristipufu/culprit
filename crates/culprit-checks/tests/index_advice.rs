@@ -496,8 +496,8 @@ fn azure_index_recommendations_are_findings_unless_another_finding_has_them() {
         report.findings.iter().find(|f| f.id == "tuning-advice:create-index:shop.orders(channel,created_at)").unwrap();
     assert!(new.title.starts_with("Azure SQL recommends an index on orders ("), "{}", new.title);
     assert!(new.summary.contains(", since Oct 6, and scores it 64 out of 100."), "{}", new.summary);
-    assert_eq!(new.severity, Severity::Medium);
-    assert!(new.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("ON [shop].[orders] ([channel], [created_at])"));
+    assert_eq!(new.actionability, culprit_core::Actionability::Information);
+    assert!(new.fix.as_ref().unwrap().sql.is_none());
 
     // ix_customers_email leads with email but lacks the column the recommendation includes: widening it does the same.
     let widen = report.findings.iter().find(|f| f.id == "tuning-advice:create-index:shop.customers(email)").unwrap();
@@ -818,16 +818,12 @@ fn a_filtered_index_is_widened_only_for_queries_that_fit_its_filter() {
         create.summary
     );
 
-    // No query in the scan asked: nothing shows it could use the filtered index.
+    // No query in the selected scan asked: retain the candidate without recommending DDL.
     let mut s = request("[is_deleted] = 0", Some(filtered));
     s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
     let create = fix(s);
-    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
-    assert!(
-        create.summary.ends_with("and Culprit can't show that these lookups ask for only those."),
-        "{}",
-        create.summary
-    );
+    assert!(create.sql.is_none());
+    assert!(create.summary.contains("does not establish enough measured work"));
 
     // An unfiltered index with the keys is widened as before.
     let id = "missing-index:shop.support_tickets(customer_id)";
@@ -915,24 +911,12 @@ fn a_request_one_column_past_an_existing_index_widens_it() {
         widen.sql.unwrap().contains("INCLUDE ([status])\n    WHERE ([is_deleted]=(0))\n    WITH (DROP_EXISTING = ON")
     );
 
-    // No query in the scan to show they ask for those rows: a new index, and the filtered one named.
+    // Without its captured query, the candidate stays informational and has no DDL.
     let mut s = filtered();
     s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
     let create = fix(s);
-    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
-    assert!(
-        create.summary.ends_with(
-            " ix_support_tickets_open leads with customer_id and priority but holds only the rows where is_deleted = 0, \
-             and Culprit can't show that these lookups ask for only those."
-        ),
-        "{}",
-        create.summary
-    );
-
-    // ix_support_tickets_customer_id seeks on customer_id alone: not enough of (customer_id, is_deleted) to widen.
-    let report = analyze(asked(&["customer_id", "is_deleted"], &[], &["status"], "[is_deleted] = 0", None));
-    let create = report.findings.iter().find(|f| f.id == ASKED).expect("the request").fix.clone().unwrap();
-    assert!(!create.sql.unwrap().contains("DROP_EXISTING"));
+    assert!(create.sql.is_none());
+    assert!(create.summary.contains("does not establish enough measured work"));
 }
 
 // Confidence is how sure, severity how much. The optimizer's 95% of runs that read 2,000 pages each of a 300K-row
@@ -1028,28 +1012,8 @@ fn an_index_that_lacks_only_the_range_is_named() {
     s.workload.as_mut().unwrap().queries.retain(|q| q.id != "4242");
     let report = analyze(s);
     let fix = report.findings.iter().find(|f| f.id == RANGED).expect("the request").fix.clone().unwrap();
-    assert!(
-        fix.summary.ends_with(
-            " ix_support_tickets_open leads with customer_id but holds only the rows where is_deleted = 0, and Culprit \
-             can't show that these lookups ask for only those."
-        ),
-        "{}",
-        fix.summary
-    );
-
-    // A query that asks for those rows: the index finds them by customer_id and has no key for the range, so the new
-    // index seeks it; nothing is widened to check the range row by row.
-    let report = analyze(asked(&["customer_id", "is_deleted"], &["opened_at"], &[], "[is_deleted] = 0", Some(index)));
-    let fix = report.findings.iter().find(|f| f.id == RANGED).expect("the request").fix.clone().unwrap();
-    assert!(!fix.sql.as_deref().unwrap_or_default().contains("DROP_EXISTING"), "{:?}", fix.sql);
-    assert!(
-        fix.summary.ends_with(
-            " ix_support_tickets_open already finds these rows by customer_id, in the rows where is_deleted = 0, but \
-             has no key for opened_at: this index seeks the range as well."
-        ),
-        "{}",
-        fix.summary
-    );
+    assert!(fix.sql.is_none());
+    assert!(fix.summary.contains("does not establish enough measured work"));
 }
 
 // A widen rebuilds an existing index under its own name: the verify names it, not "the new index".
@@ -1300,8 +1264,11 @@ fn a_low_azure_score_gives_way_to_a_heavy_statement_on_its_keys() {
         q.executions = 2000.0;
         q.logical_reads = Some(1_500_000.0);
         q.rows = Some(0.0);
-        q.total_time_ms = if heavy { 4000.0 } else { 40.0 };
+        q.total_time_ms = if heavy { 40_000.0 } else { 40.0 };
         q.mean_time_ms = q.total_time_ms / q.executions;
+        if heavy {
+            w.total_time_ms = 400_000.0;
+        }
         w.queries.push(q);
         let report = analyze(s);
         report.findings.into_iter().find(|f| f.id == ID).expect("the recommendation")
@@ -1387,7 +1354,8 @@ fn a_heavy_statement_names_the_index_its_plan_reads_through() {
         q.executions = 2000.0;
         q.logical_reads = Some(1_500_000.0);
         q.rows = Some(0.0);
-        q.total_time_ms = 4000.0;
+        q.total_time_ms = 40_000.0;
+        w.total_time_ms = 400_000.0;
         q.mean_time_ms = q.total_time_ms / q.executions;
         w.queries.push(q);
         analyze(s).findings.into_iter().find(|f| f.id == ID).expect("the recommendation")

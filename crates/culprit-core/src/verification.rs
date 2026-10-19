@@ -51,8 +51,11 @@ pub struct Verification {
 /// Compare `after` (a fresh scan) with `before`. `ids` picks the findings to check; empty means every finding `before`
 /// had.
 pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verification {
-    let targets: Vec<String> =
-        if ids.is_empty() { before.findings.iter().map(|f| f.id.clone()).collect() } else { ids.to_vec() };
+    let targets: Vec<String> = if ids.is_empty() {
+        before.findings.iter().filter(|f| f.is_actionable()).map(|f| f.id.clone()).collect()
+    } else {
+        ids.to_vec()
+    };
     let find = |report: &'_ Report, id: &str| report.findings.iter().find(|f| f.id == id).cloned();
     let mut findings = Vec::new();
     for id in &targets {
@@ -81,6 +84,11 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
                     )),
                 }
             }
+            (Some(was), None) if was.verification_basis == crate::VerificationBasis::CounterChange => VerifiedFinding {
+                id: id.clone(), title: was.title.clone(), status: VerifyStatus::Unknown,
+                before: Some(was.impact.label.clone()), after: None,
+                note: Some("This observation uses cumulative counters. A reset, removed index or unavailable counter can make it disappear without verifying a fix. Compare new counts and waits under representative load.".into()),
+            },
             (Some(was), None) => match locked(after, &was) {
                 Some(missing) => VerifiedFinding {
                     id: id.clone(),
@@ -125,7 +133,7 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
     let new_findings: Vec<VerifiedFinding> = after
         .findings
         .iter()
-        .filter(|f| !before.findings.iter().any(|b| b.id == f.id) && !targets.contains(&f.id))
+        .filter(|f| f.is_actionable() && !before.findings.iter().any(|b| b.id == f.id) && !targets.contains(&f.id))
         .map(|f| VerifiedFinding {
             id: f.id.clone(),
             title: f.title.clone(),
@@ -153,6 +161,12 @@ fn locked(report: &Report, finding: &Finding) -> Option<String> {
 }
 
 fn still_present_note(was: &Finding, now: &Finding, after: &Report) -> Option<String> {
+    if !now.is_actionable() {
+        return Some(format!(
+            "{}: retained as context. This does not demonstrate that a change was verified under representative load.",
+            now.actionability.label()
+        ));
+    }
     if !now.queries.is_empty()
         && let Some(w) = after.snapshot.workload.as_ref()
     {
@@ -209,4 +223,26 @@ fn summary(findings: &[VerifiedFinding], new: usize) -> String {
         out.push_str(&format!(" {new} new finding{}.", if new == 1 { "" } else { "s" }));
     }
     out
+}
+
+#[cfg(test)]
+mod counter_verification_tests {
+    use super::*;
+    #[test]
+    fn losing_counters_never_proves_a_fix_on_any_provider() {
+        for engine in [crate::Engine::Mssql, crate::Engine::Postgres, crate::Engine::Mysql, crate::Engine::Sqlite] {
+            let mut before: Report =
+                serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+            before.snapshot.server.engine = engine;
+            before.findings.truncate(1);
+            before.findings[0].verification_basis = crate::VerificationBasis::CounterChange;
+            let mut after = before.clone();
+            after.findings.clear();
+            let result = compare_reports(&before, &after, &[]);
+            assert_eq!(result.findings[0].status, VerifyStatus::Unknown, "{engine:?}");
+            // A schema change with normal rescan evidence can still be confirmed gone.
+            before.findings[0].verification_basis = crate::VerificationBasis::Rescan;
+            assert_eq!(compare_reports(&before, &after, &[]).findings[0].status, VerifyStatus::Fixed);
+        }
+    }
 }

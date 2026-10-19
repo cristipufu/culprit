@@ -34,10 +34,9 @@ pub(super) struct Stale {
     each: Vec<(String, f64, Option<String>)>,
 }
 
-/// The statements still running whose plan was compiled with one of `names` on `schema.table` (SQL Server's plan XML
-/// lists the statistics it used), with the statistic each names: a cached plan that is reused runs on with them without
-/// compiling, so it doesn't refresh them.
-fn plans_compiled_with<'a>(
+/// Saved plans that name a statistic. Their XML describes the captured compilation, which may predate both the
+/// current catalog statistics and later compilations of the same query. It does not prove current use or harm.
+fn saved_plans_referencing<'a>(
     snapshot: &'a Snapshot,
     schema: &str,
     table: &str,
@@ -75,19 +74,9 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
         .map(|s| {
             let table_name = format!("{}.{}", s.schema, s.table);
             let ratio = s.modifications / s.rows.max(1.0);
-            // With AUTO_UPDATE_STATISTICS on, SQL Server refreshes a statistic past its threshold when a query compiles
-            // with it. Off (or a statistic created with NORECOMPUTE, which the scan doesn't see) it stays stale for
-            // everyone. A cached plan reused doesn't compile: one compiled with these statistics runs on with them
-            // (its plan XML names them), so what the next compile does is no answer for it.
             let auto_update = snapshot.server.engine == Engine::Mssql && !mssql_auto_update_off(snapshot);
-            let in_use = if auto_update { plans_compiled_with(snapshot, &s.schema, &s.table, &s.names) } else { Vec::new() };
-            let unused_since = auto_update && in_use.is_empty();
-            // Heavy reads of the table are the application's reads that matter: a tiny insert, or a monitoring query
-            // whose text happens to name it, plans nothing from its statistics worth a sentence. And none is said
-            // where no plan this scan captured was compiled with them.
-            let hot = if auto_update {
-                in_use.iter().any(|(q, _)| query_impact(snapshot, &[*q]).is_some_and(|i| i.share >= crate::queries::MIN_SHARE))
-            } else { heavy_reads(snapshot, &s.schema, &s.table) };
+            let in_use = if auto_update { saved_plans_referencing(snapshot, &s.schema, &s.table, &s.names) } else { Vec::new() };
+            let hot = !auto_update && heavy_reads(snapshot, &s.schema, &s.table);
             let mut f = finding("stale-stats", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             // The modification counter counts changes (a row updated twice is two), not rows.
             f.title = format!(
@@ -96,31 +85,10 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                 format::count(s.modifications),
                 format::percent(ratio.min(9.99))
             );
-            // A statistic no query has compiled with since it fell behind plans nothing: what happens is the next
-            // compile's, which refreshes it first (and waits for that, unless AUTO_UPDATE_STATISTICS_ASYNC is on).
-            let async_update = snapshot.setting("is_auto_update_stats_async_on").is_some_and(|s| crate::config::is_on(&s.value));
-            let effect = if unused_since {
-                format!(
-                    "With AUTO_UPDATE_STATISTICS on, SQL Server refreshes a statistic this far behind when the next query that uses it compiles{}.",
-                    if async_update {
-                        "; that query compiles with the old statistics while they refresh in the background (AUTO_UPDATE_STATISTICS_ASYNC is on)"
-                    } else {
-                        ", and that query waits for the refresh"
-                    }
-                )
-            } else if let Some((q, stat)) = in_use.first() {
-                // A plan compiled with one of them still runs: it uses the statistic as it was.
-                let others = match in_use.len() - 1 {
-                    0 => String::new(),
-                    1 => " (and 1 other statement's)".to_string(),
-                    n => format!(" (and {n} other statements')"),
-                };
-                format!(
-                    "Query {}'s plan{others}, which ran in this scan's window, was compiled with {stat}: SQL Server refreshes a statistic this far behind when a query compiles with it, and a cached plan that is reused runs on without compiling, so that plan's estimates for this table come from the statistic as it was.",
-                    q.id
-                )
+            let effect = if auto_update {
+                "Automatic statistics updates are enabled or were not reported disabled. A saved plan's statistics list describes its captured compilation; it does not establish which version later compilations or current executions use. Catalog modification counts alone do not demonstrate a slow plan or justify an immediate refresh.".to_string()
             } else {
-                "The optimizer plans queries from those statistics, so its row estimates for this table drift, and with them join choices and memory grants.".to_string()
+                "The optimizer uses these statistics for row estimates. Check current estimates against actual rows before choosing maintenance; modification counts alone do not measure query harm.".to_string()
             };
             // The count and the date said together are one statistic's: the most changed one, with the others' beside.
             let since = match s.each.as_slice() {
@@ -150,13 +118,10 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
                 if hot { " Heavy queries in this workload read this table." } else { "" }
             );
             f.severity = if hot && ratio >= 0.5 { Severity::Medium } else { Severity::Low };
-            if unused_since {
-                // Absence of a plan is only what the scan captured: plans it saw name the statistics they used.
-                let captured = app_queries(snapshot).any(|q| q.plan.as_ref().is_some_and(|p| !plan_statistics(p).is_empty()));
-                f.caveats.push(format!(
-                    "{}SQL Server refreshes a statistic this far behind when a query next compiles with it, unless it was created with NORECOMPUTE, which this scan doesn't see: SQL Server never refreshes those on its own.",
-                    if captured { "No running plan this scan captured needs these statistics to estimate how many rows it finds. " } else { "" }
-                ));
+            if auto_update {
+                f.actionability = culprit_core::Actionability::Information;
+                f.title = format!("Statistics on {} have {} recorded changes", s.table, format::count(s.modifications));
+                f.caveats.push("Automatic updates depend on the engine's thresholds and settings, including asynchronous updates and per-statistic NORECOMPUTE; this scan does not establish when every statistic will refresh.".into());
             }
             f.impact.score = base_score(f.severity) + ratio.min(2.0) * 3.0;
             f.impact.label = format!("{} changes", format::count(s.modifications));
@@ -170,23 +135,19 @@ pub fn stale_stats(snapshot: &Snapshot) -> Vec<Finding> {
             let engine = snapshot.server.engine;
             let target = qualified(engine, &s.schema, &s.table);
             let mut fix = engine.spec().refresh_statistics(&target);
-            if unused_since {
-                fix.summary = format!(
-                    "No update is needed before a query uses these statistics: SQL Server refreshes them on that query's compile. Updating them now (below) {}.",
-                    if async_update { "gives that first compile fresh statistics" } else { "spares that compile the wait" }
-                );
-            } else if let Some((q, _)) = in_use.first() {
-                fix.summary = format!(
-                    "Update them now (below): the plans compiled with them, query {}'s among them, compile again with fresh statistics on their next run.",
-                    q.id
-                );
+            if auto_update {
+                fix = Fix {
+                    summary: "Inspect current statistics metadata and a newly compiled plan under representative load if this query is slow. Refresh only when that evidence supports it; the historical plan reference is not a request to update statistics now.".into(),
+                    sql: None,
+                    cost: None,
+                };
             }
             f.fix = Some(fix);
-            f.verify = vec![format!(
-                "Scan again after the update{}: the count of changes since the statistics on {} were updated starts over from zero, and this finding is gone.",
-                if unused_since { " (the fix's SQL, or SQL Server's own on a query's compile)" } else { "" },
-                s.table
-            )];
+            f.verify = vec![if auto_update {
+                "Compare the current catalog update time and modification counter with a newly compiled plan's estimates and measured rows. An older saved XML reference may remain after maintenance, and does not prove that the change failed.".into()
+            } else {
+                format!("After maintenance and representative workload, compare the changes-since-update counter on {} and fresh plan estimates with actual rows; check measured query time as well.", s.table)
+            }];
             f
         })
         .collect()
@@ -223,7 +184,9 @@ fn heavy_reads(snapshot: &Snapshot, schema: &str, table: &str) -> bool {
     queries_touching(snapshot, schema, table).into_iter().any(|q| {
         !is_monitoring_query(q)
             && first_verb(main_statement(&q.text)).is_some_and(|(_, verb)| verb == "select")
-            && query_impact(snapshot, &[q]).is_some_and(|i| i.share >= crate::queries::MIN_SHARE)
+            && query_impact(snapshot, &[q]).is_some_and(|i| {
+                i.share >= crate::queries::MIN_SHARE && amount_severity_of(snapshot, &[q], i.share) >= Severity::Medium
+            })
     })
 }
 
@@ -340,54 +303,26 @@ mod tests {
     // used it since it fell behind", a fix to enable AUTO_UPDATE_STATISTICS_ASYNC (which only lets a compile go on
     // without waiting for the update) and no way to verify.
     #[test]
-    fn a_statistic_no_query_has_used_since_says_what_the_next_compile_does() {
-        let f = stale_products(&[("is_auto_update_stats_on", "1"), ("is_auto_update_stats_async_on", "0")]);
-        assert!(!f.summary.contains("drift"), "{}", f.summary);
-        assert!(
-            f.summary.ends_with(
-                "With AUTO_UPDATE_STATISTICS on, SQL Server refreshes a statistic this far behind when the next query that uses it compiles, and that query waits for the refresh."
-            ),
-            "{}",
-            f.summary
-        );
-        let fix = f.fix.clone().unwrap();
-        assert!(!fix.summary.contains("ASYNC"), "{}", fix.summary);
-        assert!(fix.summary.contains("spares that compile the wait"), "{}", fix.summary);
-        assert_eq!(fix.sql.as_deref(), Some("UPDATE STATISTICS [shop].[products];"));
-        assert_eq!(
-            f.verify,
-            vec![
-                "Scan again after the update (the fix's SQL, or SQL Server's own on a query's compile): the count of changes since the statistics on products were updated starts over from zero, and this finding is gone."
-            ]
-        );
-        assert!(f.title.ends_with("15K changes since they were updated (75% of the table's rows)"), "{}", f.title);
-        assert!(
-            f.summary.starts_with("15K changes to shop.products (20K rows) since its statistics were last updated"),
-            "{}",
-            f.summary
-        );
-        // Asynchronous updates: the first compile goes on with the old statistics.
-        let f = stale_products(&[("is_auto_update_stats_on", "1"), ("is_auto_update_stats_async_on", "1")]);
-        assert!(
-            f.summary.contains("compiles with the old statistics while they refresh in the background"),
-            "{}",
-            f.summary
-        );
-        // Off, every query plans from the stale statistics; the fix schedules the update.
+    fn auto_updates_and_saved_plans_do_not_request_an_immediate_refresh() {
+        for asynchronous in ["0", "1"] {
+            let f =
+                stale_products(&[("is_auto_update_stats_on", "1"), ("is_auto_update_stats_async_on", asynchronous)]);
+            assert_eq!(f.actionability, culprit_core::Actionability::Information);
+            assert!(f.summary.contains("captured compilation"));
+            assert!(f.fix.unwrap().sql.is_none());
+            assert!(f.verify[0].contains("newly compiled plan"));
+        }
         let f = stale_products(&[("is_auto_update_stats_on", "0")]);
-        assert!(f.summary.contains("drift"), "{}", f.summary);
-        assert_eq!(
-            f.fix.unwrap().summary,
-            "Update the statistics now; if this table changes fast, schedule the update in a maintenance job."
-        );
-        assert!(!f.verify.is_empty());
+        assert!(f.is_actionable());
+        assert!(f.fix.unwrap().sql.is_some());
+        assert!(f.summary.contains("Check current estimates against actual rows"));
     }
 
     // A staging SQL Server reading: "no query has used it since it fell behind" for a statistic a plan that ran 6.3K
     // times in the window lists in its StatisticsInfo. A cached plan reused doesn't compile, so it runs on with the
     // statistic as it was; "No update is needed" was wrong for it.
     #[test]
-    fn a_statistic_a_running_plan_was_compiled_with_is_in_use() {
+    fn a_saved_statistics_reference_does_not_prove_current_use() {
         let mut s = crate::waits::snapshot_with(Engine::Mssql);
         s.statistics = vec![StatisticsInfo {
             schema: "shop".into(),
@@ -406,20 +341,10 @@ mod tests {
             r#"<ShowPlanXML><StatisticsInfo LastUpdate="2026-10-01T00:00:00.00" ModificationCount="10" SamplingPercent="100" Statistics="[st_products]" Table="[products]" Schema="[shop]" Database="[culprit_demo]" /></ShowPlanXML>"#.into(),
         );
         let f = stale_stats(&s).into_iter().find(|f| f.id == "stale-stats:shop.products").expect("finding");
-        assert!(
-            f.summary.contains("Query 6's plan, which ran in this scan's window, was compiled with st_products: SQL Server refreshes a statistic this far behind when a query compiles with it, and a cached plan that is reused runs on without compiling"),
-            "{}",
-            f.summary
-        );
-        assert!(!f.caveats.iter().any(|c| c.contains("no query has used it")), "{:?}", f.caveats);
-        assert!(f.queries.iter().any(|r| r.id == "6"), "the named statement is linked");
-        let fix = f.fix.unwrap();
-        assert!(
-            fix.summary.starts_with("Update them now (below): the plans compiled with them, query 6's among them"),
-            "{}",
-            fix.summary
-        );
-        assert!(!fix.summary.contains("No update is needed"), "{}", fix.summary);
+        assert!(f.summary.contains("captured compilation"), "{}", f.summary);
+        assert!(f.queries.iter().any(|r| r.id == "6"));
+        assert_eq!(f.actionability, culprit_core::Actionability::Information);
+        assert!(f.fix.unwrap().sql.is_none());
         // A unique equality lookup's cardinality doesn't depend on the statistic named in its stored XML.
         let q = s.workload.as_mut().unwrap().queries.iter_mut().find(|q| q.id == "6").unwrap();
         let plan = q.plan.as_mut().unwrap();
@@ -434,7 +359,7 @@ mod tests {
         index.is_unique = true;
         let f = stale_stats(&s).into_iter().find(|f| f.id == "stale-stats:shop.products").unwrap();
         assert!(f.queries.is_empty());
-        assert!(f.fix.unwrap().summary.starts_with("No update is needed"));
+        assert!(f.fix.unwrap().sql.is_none());
     }
 
     // A staging SQL Server reading: "26K rows changed (2026-09-08)" for two statistics, the count and the date of one of
@@ -460,7 +385,7 @@ mod tests {
             "{}",
             f.summary
         );
-        assert!(f.title.contains("26K changes"), "{}", f.title);
+        assert!(f.title.contains("26K recorded changes"), "{}", f.title);
         assert_eq!(f.impact.label, "26K changes");
     }
 }

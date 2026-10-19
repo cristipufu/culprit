@@ -9,7 +9,7 @@ use crate::support;
 pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     let mut by_category: Vec<CategoryCount> = Vec::new();
     for category in [Category::Indexes, Category::Queries, Category::Maintenance, Category::Configuration] {
-        let count = findings.iter().filter(|f| f.category == category).count() as u32;
+        let count = findings.iter().filter(|f| f.is_actionable() && f.category == category).count() as u32;
         if count > 0 {
             by_category.push(CategoryCount { category, count });
         }
@@ -18,7 +18,7 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
         .into_iter()
         .map(|severity| SeverityCount {
             severity,
-            count: findings.iter().filter(|f| f.severity == severity).count() as u32,
+            count: findings.iter().filter(|f| f.is_actionable() && f.severity == severity).count() as u32,
         })
         .filter(|c| c.count > 0)
         .collect();
@@ -27,7 +27,8 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
     // Over Culprit's scans where they measured every statement behind it, as the findings say it.
     let scans = support::top_findings_scans(snapshot, findings.iter());
 
-    let n = findings.iter().filter(|f| !f.inactive).count();
+    let cost = support::top_findings_cost(snapshot, findings.iter());
+    let n = findings.iter().filter(|f| f.is_actionable()).count();
     let window = support::summary_window(snapshot);
     let headline = match (n, top_share, &window) {
         (0, _, Some(window)) => format!("Nothing stands out over {window}."),
@@ -36,6 +37,12 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
             "Nothing stands out in the tables, indexes and settings; this scan has no query history.".to_string()
         }
         (0, _, None) => "Nothing stands out.".to_string(),
+        (n, Some(share), Some(_)) if share >= 0.05 && cost.is_some() => format!(
+            "{} {}. The top ones touch {}.",
+            n,
+            plural(n, "opportunity", "opportunities"),
+            cost.as_deref().unwrap()
+        ),
         (n, Some(share), Some(window)) if share >= 0.05 => format!(
             "{} {}. The top ones touch {} of database time over {}.",
             n,

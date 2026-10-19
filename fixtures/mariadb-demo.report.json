@@ -1,6 +1,7 @@
 {
   "findings": [
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "temp-spill",
@@ -45,13 +46,15 @@
         "kind": "query",
         "name": "375c64398248650e"
       },
-      "summary": "The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
+      "summary": "The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
+      "verification_basis": "rescan",
       "verify": [
         "Once the application's connections use the new limits, its on-disk temporary tables should stop growing while its runs go on: performance_schema keeps running totals, so compare its on-disk temporary tables and runs in a scan taken once the change is live and one a day or more later (20 in 20 runs in this scan)."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [
         "Some high-frequency single-row lookups are legitimate (for example, by primary key on a hot path). Check the calling code before batching."
@@ -66,7 +69,7 @@
       "id": "chatty-query:a92bb0be330ac53a",
       "impact": {
         "db_time_share": 0.010408117938943744,
-        "label": "75% of executions",
+        "label": "587 ms of database time over the 1 minute since statistics were reset (1%)",
         "score": 40.142138158298046,
         "time_ms_per_day": null
       },
@@ -98,13 +101,15 @@
         "kind": "query",
         "name": "a92bb0be330ac53a"
       },
-      "summary": "Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.",
+      "summary": "587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.",
       "title": "A read from products runs 30K times in 1 minute, one key at a time",
+      "verification_basis": "rescan",
       "verify": [
         "It ran 30K times in 1 minute. performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there it should run fewer times and take less time in all. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "heavy-query",
@@ -117,7 +122,7 @@
       "id": "heavy-query:decf59629e790076",
       "impact": {
         "db_time_share": 0.05613893923861639,
-        "label": "6% of DB time",
+        "label": "3.2 s of database time over the 1 minute since statistics were reset (6%)",
         "score": 23.693657218465955,
         "time_ms_per_day": null
       },
@@ -161,13 +166,15 @@
         "kind": "query",
         "name": "decf59629e790076"
       },
-      "summary": "It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.",
-      "title": "A read from orders takes 6% of database time",
+      "summary": "3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.",
+      "title": "A read from orders takes 3.2 s of database time over the 1 minute since statistics were reset (6%)",
+      "verification_basis": "rescan",
       "verify": [
         "performance_schema keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "Counters accumulate since statistics were last reset; one nightly report can make up much of them."
@@ -220,14 +227,16 @@
         "kind": "table",
         "name": "shop.orders"
       },
-      "summary": "shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
+      "summary": "The associated statements used 2.3 s of database time over the 1 minute since statistics were reset (4%). shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.",
       "title": "orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)",
+      "verification_basis": "rescan",
       "verify": [
         "After adding an index for a selective filter, the full reads of orders should grow far slower. Compare how much its scan counters grow between a scan taken once the change is live and one a day or more later (80 full reads in this scan).",
         "Whether the fix adds an index or reads fewer rows or columns: performance_schema keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [
         "InnoDB keeps only its most recent deadlock. Turn on innodb_print_all_deadlocks to write every one to the error log."
@@ -276,12 +285,14 @@
       },
       "summary": "Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.",
       "title": "Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan tomorrow: no new opposite access order deadlocks on shop.customers and shop.orders.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
@@ -318,12 +329,14 @@
       },
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.",
         "Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "duplicate-index",
@@ -358,12 +371,14 @@
       },
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.",
         "Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [
         "MariaDB counts row-lock waits for the whole server, so other databases' waits are in these numbers."
@@ -412,6 +427,7 @@
       },
       "summary": "Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 2 min 32 s in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.",
       "title": "Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average",
+      "verification_basis": "rescan",
       "verify": [
         "Sample Waits → Right now during normal load: it counts row-lock waits over the sample, which should be rare and short."
       ]
@@ -653,6 +669,7 @@
     ],
     "connection": "mariadb-demo",
     "constraints": [],
+    "contention_before": null,
     "deadlocks": {
       "counted": null,
       "counted_since": null,
@@ -2001,6 +2018,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "375c64398248650e848f6c600d7e2143",
+          "resolved_write_target": null,
           "rows": 400.0,
           "rows_affected": null,
           "spread": {
@@ -2119,6 +2137,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "decf59629e790076bee034e582b5053a",
+          "resolved_write_target": null,
           "rows": 2000.0,
           "rows_affected": null,
           "spread": {
@@ -2265,6 +2284,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "258e3c9b580f1ecccd48f76c4f83acb1",
+          "resolved_write_target": null,
           "rows": 300.0,
           "rows_affected": null,
           "spread": {
@@ -2312,6 +2332,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "a92bb0be330ac53ad0b54014b3f02efa",
+          "resolved_write_target": null,
           "rows": 30000.0,
           "rows_affected": null,
           "spread": {
@@ -2463,6 +2484,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "46db559fdff712fd13e0107d6e1cd6f2",
+          "resolved_write_target": null,
           "rows": 9991.0,
           "rows_affected": null,
           "spread": {
@@ -2646,6 +2668,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "d1f45c9664edccf9dc77a3076d1ad0b7",
+          "resolved_write_target": null,
           "rows": 6398.0,
           "rows_affected": null,
           "spread": {
@@ -2736,7 +2759,7 @@
         "severity": "low"
       }
     ],
-    "headline": "8 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.",
+    "headline": "8 opportunities. The top ones touch 53.7 s of database time over the 1 minute since statistics were reset (95%).",
     "no_workload": null,
     "opportunities": 8,
     "over_scans": [],

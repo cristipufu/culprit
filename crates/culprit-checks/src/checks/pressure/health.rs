@@ -29,7 +29,7 @@ pub(crate) fn grade_findings(snapshot: &mut Snapshot, findings: &[Finding]) {
             "oldest-transaction" => "held-cleanup",
             _ => continue,
         };
-        let severity = findings.iter().filter(|f| f.check == check && !f.inactive).map(|f| f.severity).max();
+        let severity = findings.iter().filter(|f| f.check == check && f.is_actionable()).map(|f| f.severity).max();
         if s.value == 0.0 && s.key != "oldest-transaction" {
             s.status = SignalStatus::Good;
             s.healthy =
@@ -42,7 +42,7 @@ pub(crate) fn grade_findings(snapshot: &mut Snapshot, findings: &[Finding]) {
             _ if s.value == 0.0 => SignalStatus::Good,
             _ => SignalStatus::Info,
         };
-        if let Some(f) = findings.iter().find(|f| f.check == check && !f.inactive) {
+        if let Some(f) = findings.iter().find(|f| f.check == check && f.is_actionable()) {
             s.healthy = Some(f.title.clone());
         } else if s.key == "oldest-transaction" {
             s.healthy = Some("A cleanup holder observed at the scan's instant; no long-held-cleanup finding is supported by this scan.".into());

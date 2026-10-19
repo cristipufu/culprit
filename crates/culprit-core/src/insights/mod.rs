@@ -138,7 +138,7 @@ const MANY_ROWS: f64 = 10_000.0;
 /// …in a plan that does real work: a measured run of at least this long, or, unmeasured, an estimated cost of at least
 /// what reading about `MANY_ROWS` rows costs in the engine's own units (`cheap_below`). A problem measured in time of
 /// its own (compiling, JIT, waiting for memory) is material when that time reaches this.
-const MATERIAL_MS: f64 = 10.0;
+pub const MATERIAL_MS: f64 = 10.0;
 
 /// Compute and attach insights (and the coverage note) to a plan.
 pub fn annotate(plan: &mut Plan) {

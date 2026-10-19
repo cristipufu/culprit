@@ -160,6 +160,34 @@ pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     if let Some(baseline) = evictions_baseline(dir, snapshot) {
         snapshot.evictions_before = Some(baseline);
     }
+    if snapshot.indexes.iter().any(|i| i.contention.is_some()) {
+        let now = trends::epoch(&snapshot.taken_at);
+        // Only a few adjacent scans are needed, and every candidate must precede this report. Reopening a saved
+        // report never compares it with scans taken later or with another database. This path writes nothing.
+        for id in report_ids(dir)
+            .into_iter()
+            .rev()
+            .filter(|id| {
+                id_epoch(id).zip(now).is_some_and(|(at, now)| at < now && at >= now - trends::HISTORY_DAYS * 86_400.0)
+            })
+            .take(5)
+        {
+            let Ok(previous) = load_snapshot(&dir.join(format!("{id}.json"))) else { continue };
+            if !crate::history::same_database(&previous, snapshot)
+                || trends::epoch(&previous.taken_at).zip(now).is_none_or(|(at, now)| at >= now)
+            {
+                continue;
+            }
+            snapshot.escalations_before = culprit_core::EscalationBaseline::from_scan(&previous, snapshot);
+            if let Some(baseline) = culprit_core::ContentionBaseline::from_scan(&previous, snapshot) {
+                snapshot.contention_before = Some(baseline);
+            } else {
+                snapshot.contention_before = None;
+            }
+            // A reset or unknown start in the closest matching scan cannot be bypassed by an older counter.
+            break;
+        }
+    }
     rebuild_timeline(dir, snapshot);
 }
 
@@ -301,6 +329,54 @@ mod tests {
         report.snapshot.id = id.into();
         report.snapshot.options = Some(SnapshotOptions::default().with_window_minutes(window_minutes));
         report
+    }
+
+    #[test]
+    fn saved_lock_baselines_use_only_earlier_matching_scans_and_write_nothing() {
+        let dir = std::env::temp_dir().join(format!("culprit-lock-history-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let make = |id: &str, at: &str| {
+            let mut r = fixture_report(id, 60);
+            r.snapshot.taken_at = at.into();
+            r.snapshot.server.started_at = Some("2026-10-01T00:00:00Z".into());
+            r.snapshot.indexes[0].contention = Some(culprit_core::IndexContention {
+                row_lock_waits: 1.0,
+                row_lock_wait_ms: 13_000.0,
+                ..Default::default()
+            });
+            r
+        };
+        let old = make("20261018T100000", "2026-10-18T10:00:00Z");
+        save(&dir, &old).unwrap();
+        let future = make("20261018T130000", "2026-10-18T13:00:00Z");
+        save(&dir, &future).unwrap();
+        let mut wrong = make("20261018T110000", "2026-10-18T11:00:00Z");
+        wrong.snapshot.server.database = "another_database".into();
+        save(&dir, &wrong).unwrap();
+        let contents = || -> Vec<_> {
+            let mut files: Vec<_> = fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
+            files.sort();
+            files
+                .into_iter()
+                .map(|p| {
+                    let b = fs::read(&p).unwrap();
+                    (p, b)
+                })
+                .collect()
+        };
+        let original = contents();
+        let mut current = make("20261018T120000", "2026-10-18T12:00:00Z").snapshot;
+        rebase_on_scans(&dir, &mut current);
+        assert_eq!(current.contention_before.as_ref().unwrap().taken_at, old.snapshot.taken_at);
+        assert_eq!(current.contention_before.as_ref().unwrap().since(&current.indexes[0]).unwrap().waits, 0.0);
+        assert_eq!(contents(), original);
+        // The nearest matching scan has an unknown start: do not leap over it to resurrect old counters.
+        let mut unknown = make("20261018T113000", "2026-10-18T11:30:00Z");
+        unknown.snapshot.server.started_at = None;
+        save(&dir, &unknown).unwrap();
+        rebase_on_scans(&dir, &mut current);
+        assert!(current.contention_before.is_none());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -146,6 +146,7 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
             }
             // A plan forced onto a table that is gone can't apply: there is nothing to force.
             if let Some(gone) = table_gone(snapshot, q) {
+                f.actionability = culprit_core::Actionability::History;
                 f.fix = Some(Fix {
                     summary: format!(
                         "{gone} is no longer in the catalog, so the statement can't run as it was, and plan {} can't be forced onto it: a forced plan that names a table or an index that is gone fails to apply. Nothing to force; if a statement on the table that replaced it is slow, its own findings say so.",

@@ -4,7 +4,7 @@ no workload: Query Store is OFF on this database.
 findings: 7
 
 === finding tier-limit:log-write
-high severity · high confidence · configuration
+Needs attention · high severity · high confidence · configuration
 title: Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes
 summary: Azure caps each tier's log writes. In the last 60 minutes it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). This is measured resource use, not a share of waits: writes can be throttled at the cap. At the cap, Azure makes requests wait rather than fail, so it shows up as slowness. Samples near the cap alone do not prove throttling or failed requests occurred.
 impact: near limit 38%
@@ -17,7 +17,7 @@ verify:
 brief:
     # Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `tier-limit:log-write`: high impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `tier-limit:log-write`: Needs attention, high impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -41,7 +41,7 @@ brief:
     First change the application or job that writes the rows: batch small writes into fewer transactions and avoid row-by-row changes. If the resource still reaches its cap, change the service tier or capacity where this project manages its cloud database. After any change is live, run `culprit scan mssql-demo-staging` and check `tier-limit:log-write` the way *How to verify* says.
 
 === finding unindexed-fk:shop.ticket_events(ticket_id)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ticket_events has no index on ticket_id, its foreign key to support_tickets
 summary: Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
 impact: 800K rows unindexed
@@ -58,7 +58,7 @@ verify:
 brief:
     # ticket_events has no index on ticket_id, its foreign key to support_tickets
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -88,7 +88,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `unindexed-fk:shop.ticket_events(ticket_id)` the way *How to verify* says.
 
 === finding deadlocks:key-lookup:shop.customers
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 summary: Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
 impact: 1 deadlock
@@ -105,7 +105,7 @@ verify:
 brief:
     # Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:key-lookup:shop.customers`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `deadlocks:key-lookup:shop.customers`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -135,7 +135,7 @@ brief:
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo-staging` and check `deadlocks:key-lookup:shop.customers` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: ix_orders_status is covered by the wider ix_orders_status_created on orders
 summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
 impact: 26.5 MB redundant
@@ -153,7 +153,7 @@ caveats:
 brief:
     # ix_orders_status is covered by the wider ix_orders_status_created on orders
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.orders.ix_orders_status`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -187,7 +187,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ix_products_sku duplicates uq_products_sku on products
 summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
 impact: 648 KB redundant
@@ -203,7 +203,7 @@ verify:
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `duplicate-index:shop.products.ix_products_sku`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -233,7 +233,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo-staging` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding config:cost-threshold-for-parallelism
-low severity · medium confidence · configuration
+Optional improvement · low severity · medium confidence · configuration
 title: Cost threshold for parallelism is still the 1990s default of 5
 summary: Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
 impact: Setting
@@ -248,7 +248,7 @@ verify:
 brief:
     # Cost threshold for parallelism is still the 1990s default of 5
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:cost-threshold-for-parallelism`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:cost-threshold-for-parallelism`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 
@@ -274,7 +274,7 @@ brief:
     The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan mssql-demo-staging` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
 
 === finding config:query-store-capture
-low severity · medium confidence · configuration
+Optional improvement · low severity · medium confidence · configuration
 title: Query Store records every statement, including one-off ones
 summary: Capture mode ALL keeps statements that ran once or cost nothing. On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.
 impact: Setting
@@ -286,7 +286,7 @@ verify:
 brief:
     # Query Store records every statement, including one-off ones
 
-    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:query-store-capture`: low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
+    Database: **mssql-demo-staging** (SQL Server 2022, database `culprit_demo`, staging environment). Finding `config:query-store-capture`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:15:12Z.
 
     ## What's happening
 

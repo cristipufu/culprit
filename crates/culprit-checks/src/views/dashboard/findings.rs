@@ -3,10 +3,11 @@
 use super::*;
 
 pub(super) fn findings(report: &Report) -> Tile {
-    let active: Vec<&Finding> = report.findings.iter().filter(|f| !f.inactive).collect();
+    let active: Vec<&Finding> = report.findings.iter().filter(|f| f.is_actionable()).collect();
     let count = |sev: Severity| active.iter().filter(|f| f.severity == sev).count();
     let (high, medium, low) = (count(Severity::High), count(Severity::Medium), count(Severity::Low));
-    let stopped = report.findings.len() - active.len();
+    let stopped = report.findings.iter().filter(|f| f.inactive).count();
+    let context = report.findings.iter().filter(|f| !f.inactive && !f.is_actionable()).count();
     let span = report.snapshot.workload.as_ref().map(window_phrase);
     let status = if high > 0 {
         TileStatus::Bad
@@ -25,6 +26,10 @@ pub(super) fn findings(report: &Report) -> Tile {
             Some(span) => format!("Nothing stands out over {span}."),
             None => "Nothing stands out.".into(),
         }
+    } else if let Some(cost) =
+        crate::support::top_findings_cost(&report.snapshot, active.iter().copied()).filter(|_| touched >= 0.05)
+    {
+        format!("{}; the top ones touch {cost}.", capitalized(&plural(active.len(), "opportunity", "opportunities")))
     } else if touched >= 0.05 {
         format!(
             "{}; the top {} touch {} of database time.",
@@ -43,6 +48,14 @@ pub(super) fn findings(report: &Report) -> Tile {
         TileMetric::new("medium", "Medium", Some(medium as f64), medium.to_string()),
         TileMetric::new("low", "Low", Some(low as f64), low.to_string()),
     ];
+    if context > 0 {
+        tile.metrics.push(TileMetric::new(
+            "context",
+            "Information and history",
+            Some(context as f64),
+            context.to_string(),
+        ));
+    }
     if stopped > 0 {
         tile.metrics.push(TileMetric::new("stopped", "Stopped running", Some(stopped as f64), stopped.to_string()));
         // Unchanged since Culprit's first scan, that scan is only the latest they can have run: they may have stopped

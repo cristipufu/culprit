@@ -1,91 +1,12 @@
 reading: SQL Server 2022 · database culprit_demo · scanned 2026-10-11T12:13:47Z
-headline: 23 opportunities. The top ones touch 83% of database time over the last 5 hours.
-top share: 83%
+headline: 21 opportunities. The top ones touch 2 min of database time over the last 5 hours (27%).
+top share: 27%
 findings: 23
 
-=== finding hot-rows:shop.orders
-high severity · high confidence · indexes
-title: Sessions wait 37.3 s each on row locks in orders
-summary: Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
-impact: 3 min 7 s waiting on locks · 56.1% of database time
-metrics:
-  - Lock waits: 5
-  - Time waiting: 3 min 7 s
-  - Average wait: 37.3 s
-fix: Keep the transactions that change orders short and commit before slow work; make their WHERE use an index so they lock only the rows they change. If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first.
-  sql:
-      -- Readers stop waiting for writers; test first
-      ALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
-verify:
-  1. Re-scan a day later: lock waits on orders should stop growing.
-caveats:
-  - Counted since the indexes' metadata was loaded into memory, usually since SQL Server started.
-queries:
-  - 138: 34% of database time
-    note: Waited 2 min on locks, nearly all of its time in the last 5 hours.
-  - 143: 21% of database time
-    note: Waited 1 min on locks, nearly all of its time in the last 5 hours.
-  - 161: <1% of database time
-brief:
-    # Sessions wait 37.3 s each on row locks in orders
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `hot-rows:shop.orders`: high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
-
-    ## Evidence
-
-    - Lock waits: 5
-    - Time waiting: 3 min 7 s
-    - Average wait: 37.3 s
-
-    ## Queries involved
-
-    Query `138` — 34% of DB time, 4 runs over the last 5 hours, 28.7 s average:
-
-    ```sql
-    UPDATE [shop].[orders] set [status] = [status]  WHERE [id]=@1
-    ```
-
-    Query `143` — 21% of DB time, 3 runs over the last 5 hours, 23.9 s average:
-
-    ```sql
-    SELECT [status] FROM [shop].[orders] WHERE [id]=@1
-    ```
-
-    Query `161` — <1% of DB time, 4 runs over the last 5 hours, 601 ms average:
-
-    ```sql
-    UPDATE [shop].[orders] set [total] = [total]+@1  WHERE [id]=@2
-    ```
-
-    ## Suggested fix
-
-    Keep the transactions that change orders short and commit before slow work; make their WHERE use an index so they lock only the rows they change. If readers are the ones waiting, READ_COMMITTED_SNAPSHOT lets them read the last committed version instead: it changes what readers see and uses tempdb, so test it first.
-
-    ```sql
-    -- Readers stop waiting for writers; test first
-    ALTER DATABASE CURRENT SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;
-    ```
-
-    ## How to verify
-
-    - Re-scan a day later: lock waits on orders should stop growing.
-
-    ## Caveats
-
-    - Counted since the indexes' metadata was loaded into memory, usually since SQL Server started.
-
-    ## What to do in the codebase
-
-    The database setting in the fix's SQL (`ALTER DATABASE`) is kept in this database alone: run it once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `hot-rows:shop.orders` the way *How to verify* says.
-
 === finding failing-query:263
-high severity · high confidence · queries
+Needs attention · high severity · high confidence · queries
 title: A read from order_items times out on every run, at about 15 s
-summary: None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+summary: The associated statements used 2 min of database time over the last 5 hours (27%). None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 impact: 100% of runs fail · 26.7% of database time
 metrics:
   - Runs: 6
@@ -100,11 +21,11 @@ queries:
 brief:
     # A read from order_items times out on every run, at about 15 s
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `failing-query:263`: high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `failing-query:263`: Needs attention, high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+    The associated statements used 2 min of database time over the last 5 hours (27%). None of its 6 runs in the last 5 hours finished. 6 were cancelled by the client after 15.0 s on average, which is what a command timeout looks like. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 
     ## Evidence
 
@@ -134,9 +55,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `failing-query:263` the way *How to verify* says.
 
 === finding failing-query:246
-high severity · high confidence · queries
+Needs attention · high severity · high confidence · queries
 title: A read from orders fails 25% of the time
-summary: 50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+summary: The associated statements used 9.1 ms of database time over the last 5 hours (<1%). 50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 impact: 25% of runs fail · 0.0% of database time
 metrics:
   - Runs: 200
@@ -161,11 +82,11 @@ queries:
 brief:
     # A read from orders fails 25% of the time
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `failing-query:246`: high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `failing-query:246`: Needs attention, high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
+    The associated statements used 9.1 ms of database time over the last 5 hours (<1%). 50 of its 200 runs in the last 5 hours didn't finish. 50 ended in an error. A run that doesn't finish still costs the time it ran, and the application retries it or shows an error.
 
     ## Evidence
 
@@ -206,116 +127,8 @@ brief:
 
     The fix's SQL starts an event session on the database: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `failing-query:246` the way *How to verify* says.
 
-=== finding lock-escalations:shop.support_tickets
-high severity · high confidence · indexes
-title: Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
-summary: SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: under read committed it gives each row lock up as it moves on, but it keeps them until the statement ends when its plan prefetches its key lookups, under a locking hint (HOLDLOCK, UPDLOCK), or in a REPEATABLE READ or SERIALIZABLE transaction, and one that reads thousands of rows that way takes enough to escalate. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-impact: 5 table locks
-metrics:
-  - Escalations since SQL Server started: 5
-fix: Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement.
-  sql:
-      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
-      -- It catches them on every table, so another table's finding starts this same session: once is enough.
-      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
-          CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-          ADD EVENT sqlserver.lock_escalation (
-              SET collect_statement = 1
-              ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-              WHERE sqlserver.database_name = N'culprit_demo')
-          ADD TARGET package0.ring_buffer
-          WITH (STARTUP_STATE = ON);
-      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
-          ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
-
-      -- Then read what it caught
-      SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
-             OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
-             e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
-             e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
-             e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
-        FROM (SELECT CAST(t.target_data AS xml) AS d
-                FROM sys.dm_xe_session_targets t
-                JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-               WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
-       CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
-
-      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
-verify:
-  1. Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed.
-caveats:
-  - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
-queries:
-  - 10: 2% of database time
-    note: Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-brief:
-    # Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `lock-escalations:shop.support_tickets`: high impact, high confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average since then: often enough to be still happening. An escalation happens when one statement takes about 5,000 locks on one index: SQL Server swaps them for a single lock on the whole table, and every other session that writes to support_tickets, or reads it without row versioning, waits until that statement's transaction ends. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: under read committed it gives each row lock up as it moves on, but it keeps them until the statement ends when its plan prefetches its key lookups, under a locking hint (HOLDLOCK, UPDLOCK), or in a REPEATABLE READ or SERIALIZABLE transaction, and one that reads thousands of rows that way takes enough to escalate. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
-
-    ## Evidence
-
-    - Escalations since SQL Server started: 5
-
-    ## Queries involved
-
-    Query `10` — 2% of DB time, 4.0K runs over the last 5 hours, 1.4 ms average:
-
-    ```sql
-    SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1
-    ```
-
-    ## Suggested fix
-
-    Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks at all (it changes what readers see and uses tempdb, so test it first); or read fewer rows a run, so it stays under the 5,000 locks that escalate. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), change it into a loop over at most 1,000 rows at a time, each its own statement.
-
-    ```sql
-    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
-    -- It catches them on every table, so another table's finding starts this same session: once is enough.
-    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
-        CREATE EVENT SESSION culprit_lock_escalation ON SERVER
-        ADD EVENT sqlserver.lock_escalation (
-            SET collect_statement = 1
-            ACTION (sqlserver.sql_text, sqlserver.client_app_name)
-            WHERE sqlserver.database_name = N'culprit_demo')
-        ADD TARGET package0.ring_buffer
-        WITH (STARTUP_STATE = ON);
-    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
-        ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
-
-    -- Then read what it caught
-    SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
-           OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
-           e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
-           e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
-           e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
-      FROM (SELECT CAST(t.target_data AS xml) AS d
-              FROM sys.dm_xe_session_targets t
-              JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
-             WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
-     CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
-
-    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
-    ```
-
-    ## How to verify
-
-    - Scan again later: Culprit compares with this scan, and the finding says how many escalations on support_tickets happened since. None means it's fixed.
-
-    ## Caveats
-
-    - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
-
-    ## What to do in the codebase
-
-    The fix's SQL starts an event session on the database and reads what it catches: run it there, not in the application's code; it changes nothing by itself. Once it has caught what you need, remove it with the DROP in the SQL's last line. The statement to change is the one it catches: find the code that sends that one (the application, a job or a migration) and change it the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `lock-escalations:shop.support_tickets` the way *How to verify* says.
-
 === finding last-page-insert:archive.hot.pk_hot
-high severity · medium confidence · indexes
+Needs attention · high severity · medium confidence · indexes
 title: Inserts into hot queue for the last page of pk_hot
 summary: pk_hot starts with a value that only grows (id), so every insert goes to the same last page. Concurrent inserts wait for each other's latch on it (PAGELATCH_EX): 106K waits, 53.6 s in all since the index was loaded. It gets worse with more concurrent writers.
 impact: 53.6 s latch waits
@@ -332,7 +145,7 @@ verify:
 brief:
     # Inserts into hot queue for the last page of pk_hot
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `last-page-insert:archive.hot.pk_hot`: high impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `last-page-insert:archive.hot.pk_hot`: Needs attention, high impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -361,10 +174,81 @@ brief:
 
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `last-page-insert:archive.hot.pk_hot` the way *How to verify* says.
 
+=== finding hot-rows:shop.orders
+Needs attention · medium severity · high confidence · indexes
+title: Queries on orders recorded lock waits in the last 5 hours
+summary: The associated statements used 3 min of database time over the last 5 hours (56%). Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. No comparable earlier counters place these waits in the selected window or establish that contention continues. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
+impact: 3 min waiting on locks · 56.1% of database time
+metrics:
+  - Historical lock waits: 5
+  - Historical time waiting: 3 min
+  - Historical average wait: 37.3 s
+fix: It ran 4 times in 5 hours, too seldom to count on catching it while it waits. Have the next ones reported instead: SQL Server's blocked process report names the session holding the lock, with its statement, for each wait longer than the server's blocked process threshold (s) (0, off, by default; sp_configure sets it). Capture sqlserver.blocked_process_report in an event session to keep them. Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere. Query 143, a read, waits for writes on the same table while READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it reads the last committed version of the rows instead.
+verify:
+  1. Compare new lock waits and their time between scans under comparable load on orders. An unchanged counter reports no new waits; an idle interval alone does not verify a fix.
+caveats:
+  - Counted since the indexes' metadata was loaded into memory, usually since SQL Server started.
+queries:
+  - 138: 34% of database time
+    note: Waited 2 min on locks, nearly all of its time in the last 5 hours.
+  - 143: 21% of database time
+    note: Waited 1 min on locks, nearly all of its time in the last 5 hours.
+  - 161: <1% of database time
+brief:
+    # Queries on orders recorded lock waits in the last 5 hours
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `hot-rows:shop.orders`: Needs attention, medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    The associated statements used 3 min of database time over the last 5 hours (56%). Since its index pk_orders was loaded into memory, sessions waited 5 times for locks on the rows and pages of orders, 3 min 7 s in all, 37.3 s each on average. Waits like these come from transactions that hold rows for long, or from writes whose filter isn't indexed and so lock more rows than they change. No comparable earlier counters place these waits in the selected window or establish that contention continues. An update of orders waited 2 min for these locks in the last 5 hours, nearly all of its time. A read from orders waited 1 min for these locks in the last 5 hours, nearly all of its time.
+
+    ## Evidence
+
+    - Historical lock waits: 5
+    - Historical time waiting: 3 min
+    - Historical average wait: 37.3 s
+
+    ## Queries involved
+
+    Query `138` — 34% of DB time, 4 runs over the last 5 hours, 28.7 s average:
+
+    ```sql
+    UPDATE [shop].[orders] set [status] = [status]  WHERE [id]=@1
+    ```
+
+    Query `143` — 21% of DB time, 3 runs over the last 5 hours, 23.9 s average:
+
+    ```sql
+    SELECT [status] FROM [shop].[orders] WHERE [id]=@1
+    ```
+
+    Query `161` — <1% of DB time, 4 runs over the last 5 hours, 601 ms average:
+
+    ```sql
+    UPDATE [shop].[orders] set [total] = [total]+@1  WHERE [id]=@2
+    ```
+
+    ## Suggested fix
+
+    It ran 4 times in 5 hours, too seldom to count on catching it while it waits. Have the next ones reported instead: SQL Server's blocked process report names the session holding the lock, with its statement, for each wait longer than the server's blocked process threshold (s) (0, off, by default; sp_configure sets it). Capture sqlserver.blocked_process_report in an event session to keep them. Keep the holding transactions short and commit before slow work; make UPDATE and DELETE filter on an index so they lock only the rows they change; touch rows in the same order everywhere. Query 143, a read, waits for writes on the same table while READ_COMMITTED_SNAPSHOT is off: with row versioning on (config:read-committed-snapshot has the change), it reads the last committed version of the rows instead.
+
+    ## How to verify
+
+    - Compare new lock waits and their time between scans under comparable load on orders. An unchanged counter reports no new waits; an idle interval alone does not verify a fix.
+
+    ## Caveats
+
+    - Counted since the indexes' metadata was loaded into memory, usually since SQL Server started.
+
+    ## What to do in the codebase
+
+    Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `hot-rows:shop.orders` the way *How to verify* says.
+
 === finding plan-insights:nested-loops:query-263
-medium severity · medium confidence · queries
+Needs attention · medium severity · medium confidence · queries
 title: Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)
-summary: The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.
+summary: The associated statements used 2 min of database time over the last 5 hours (27%). The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.
 impact: 27% of DB time · 26.7% of database time
 metrics:
   - Share of DB time: 27%
@@ -382,11 +266,11 @@ queries:
 brief:
     # Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-insights:nested-loops:query-263`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-insights:nested-loops:query-263`: Needs attention, medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.
+    The associated statements used 2 min of database time over the last 5 hours (27%). The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join. Seen in a read from order_items.
 
     ## Evidence
 
@@ -422,9 +306,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:nested-loops:query-263` the way *How to verify* says.
 
 === finding plan-insights:parallelism-blocked:query-263
-medium severity · medium confidence · queries
+Needs attention · medium severity · medium confidence · queries
 title: This plan runs on one CPU because its statement says OPTION (MAXDOP 1)
-summary: Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
+summary: The associated statements used 2 min of database time over the last 5 hours (27%). Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
 impact: 27% of DB time · 26.7% of database time
 metrics:
   - Share of DB time: 27%
@@ -441,11 +325,11 @@ queries:
 brief:
     # This plan runs on one CPU because its statement says OPTION (MAXDOP 1)
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-insights:parallelism-blocked:query-263`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-insights:parallelism-blocked:query-263`: Needs attention, medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
+    The associated statements used 2 min of database time over the last 5 hours (27%). Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead. Seen in a read from order_items.
 
     ## Evidence
 
@@ -478,10 +362,10 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-insights:parallelism-blocked:query-263` the way *How to verify* says.
 
 === finding chatty-query:6
-medium severity · medium confidence · queries
+Needs attention · medium severity · medium confidence · queries
 title: A read from products runs 60K times in 5 hours, one key at a time
-summary: Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
-impact: 84% of executions · 0.2% of database time
+summary: 822 ms of database time over the last 5 hours (<1%). Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+impact: 822 ms of database time over the last 5 hours (<1%) · 0.2% of database time
 metrics:
   - Share of executions: 84%
   - Average duration: 0.01 ms
@@ -495,11 +379,11 @@ queries:
 brief:
     # A read from products runs 60K times in 5 hours, one key at a time
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `chatty-query:6`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `chatty-query:6`: Needs attention, medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+    822 ms of database time over the last 5 hours (<1%). Its runs are 84% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
 
     ## Evidence
 
@@ -531,9 +415,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `chatty-query:6` the way *How to verify* says.
 
 === finding plan-warnings:implicit-conversion:customers.email
-medium severity · high confidence · queries
+Needs attention · medium severity · high confidence · queries
 title: A type mismatch on customers.email stops a read from customers from seeking an index
-summary: The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
+summary: The associated statements used 22.2 s of database time over the last 5 hours (7%). The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
 impact: 7% of DB time · 6.6% of database time
 metrics:
   - Share of DB time: 7%
@@ -548,11 +432,11 @@ queries:
 brief:
     # A type mismatch on customers.email stops a read from customers from seeking an index
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-warnings:implicit-conversion:customers.email`: medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `plan-warnings:implicit-conversion:customers.email`: Needs attention, medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
+    The associated statements used 22.2 s of database time over the last 5 hours (7%). The database has to convert customers.email before comparing it with a parameter of a different type (`CONVERT_IMPLICIT(nvarchar(200),[shop].[customers].[email],0)=[@P1]`). SQL Server warns that the conversion keeps it from searching an index, so it reads every row instead. The application declares its parameters as `@P1 nvarchar(4000)`: Unicode strings compared with a non-Unicode column.
 
     ## Evidence
 
@@ -583,10 +467,10 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `plan-warnings:implicit-conversion:customers.email` the way *How to verify* says.
 
 === finding missing-index:shop.order_items(order_id)
-medium severity · high confidence · indexes
+Needs attention · medium severity · high confidence · indexes
 title: order_items is searched by order_id without a supporting index
-summary: SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.
-impact: 6% of DB time · 6.0% of database time
+summary: 20.3 s of database time over the last 5 hours (6%). SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.
+impact: 20.3 s of database time over the last 5 hours (6%) · 6.0% of database time
 metrics:
   - Share of DB time: 6%
   - Lookups that wanted it: 300
@@ -609,11 +493,11 @@ queries:
 brief:
     # order_items is searched by order_id without a supporting index
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.order_items(order_id)`: medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.order_items(order_id)`: Needs attention, medium impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.
+    20.3 s of database time over the last 5 hours (6%). SQL Server's optimizer asked for an index on shop.order_items (order_id) 300 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.order_items (1.5M rows) than it needs to. It estimates the index would make them about 99% cheaper. The 2 queries that asked for it account for 6% of database time.
 
     ## Evidence
 
@@ -666,7 +550,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `missing-index:shop.order_items(order_id)` the way *How to verify* says.
 
 === finding config:read-committed-snapshot
-medium severity · medium confidence · configuration
+Needs attention · medium severity · medium confidence · configuration
 title: Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)
 summary: With row versioning off for read committed, a SELECT waits for any write holding a lock on the rows it reads, and vice versa. In the last 5 hours, reads waited 1 min on locks held by writes (21% of database time). 1 deadlock in this database had a read in it. Most OLTP applications run with it on; Azure SQL Database enables it by default.
 impact: Setting
@@ -683,7 +567,7 @@ caveats:
 brief:
     # Readers and writers block each other (READ_COMMITTED_SNAPSHOT is off)
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:read-committed-snapshot`: medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:read-committed-snapshot`: Needs attention, medium impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -716,9 +600,9 @@ brief:
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `config:read-committed-snapshot` the way *How to verify* says.
 
 === finding regression:8
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed
-summary: Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
+summary: The associated statements used 5.0 s of database time over the last 5 hours (1%). Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
 impact: 3.4× slower · 1.5% of database time
 metrics:
   - Before: 9.5 ms
@@ -736,11 +620,11 @@ queries:
 brief:
     # A read from orders got 3.4× slower on Oct 11 at 10:45 UTC, when its plan changed
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `regression:8`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `regression:8`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
+    The associated statements used 5.0 s of database time over the last 5 hours (1%). Until Oct 11, 10:45 UTC it averaged 9.5 ms per run; since then 32 ms, over 93 runs: 2.1 s of extra database time in 89 minutes. Plan 47 first ran on Oct 11 at 10:46 UTC and averages 32 ms; plan 8 averaged 9.5 ms.
 
     ## Evidence
 
@@ -777,7 +661,7 @@ brief:
     The fix's Query Store procedure runs against the database (Query Store keeps the plan it forces or the hint it sets), not in the application's code: run it there. After any change is live, run `culprit scan mssql-demo` and check `regression:8` the way *How to verify* says.
 
 === finding unindexed-fk:shop.ticket_events(ticket_id)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ticket_events has no index on ticket_id, its foreign key to support_tickets
 summary: Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.
 impact: 800K rows unindexed
@@ -795,7 +679,7 @@ verify:
 brief:
     # ticket_events has no index on ticket_id, its foreign key to support_tickets
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `unindexed-fk:shop.ticket_events(ticket_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -827,10 +711,10 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `unindexed-fk:shop.ticket_events(ticket_id)` the way *How to verify* says.
 
 === finding missing-index:shop.orders(shipped_at)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: orders is searched by shipped_at without a supporting index
-summary: SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.
-impact: 1% of DB time · 1.5% of database time
+summary: 5.0 s of database time over the last 5 hours (1%). SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.
+impact: 5.0 s of database time over the last 5 hours (1%) · 1.5% of database time
 metrics:
   - Share of DB time: 1%
   - Lookups that wanted it: 150
@@ -853,11 +737,11 @@ queries:
 brief:
     # orders is searched by shipped_at without a supporting index
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.orders(shipped_at)`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `missing-index:shop.orders(shipped_at)`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.
+    5.0 s of database time over the last 5 hours (1%). SQL Server's optimizer asked for an index on shop.orders (shipped_at) 150 times in the hour since the server last restarted. Without it, each of those lookups reads more of shop.orders (1.0M rows) than it needs to. It estimates the index would make them about 81% cheaper. The query that asked for it accounts for 1% of database time.
 
     ## Evidence
 
@@ -903,7 +787,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `missing-index:shop.orders(shipped_at)` the way *How to verify* says.
 
 === finding deadlocks:key-lookup:shop.customers
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 summary: Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.
 impact: 1 deadlock
@@ -920,7 +804,7 @@ verify:
 brief:
     # Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `deadlocks:key-lookup:shop.customers`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `deadlocks:key-lookup:shop.customers`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -950,7 +834,7 @@ brief:
     The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `deadlocks:key-lookup:shop.customers` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: ix_orders_status is covered by the wider ix_orders_status_created on orders
 summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
 impact: 26.5 MB redundant
@@ -968,7 +852,7 @@ caveats:
 brief:
     # ix_orders_status is covered by the wider ix_orders_status_created on orders
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.orders.ix_orders_status`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -1002,7 +886,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ix_products_sku duplicates uq_products_sku on products
 summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
 impact: 648 KB redundant
@@ -1018,7 +902,7 @@ verify:
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `duplicate-index:shop.products.ix_products_sku`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -1048,9 +932,9 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding big-result:264
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: A read from order_items returns 20K rows per run
-summary: Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
+summary: The associated statements used 329 ms of database time over the last 5 hours (<1%). Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
 impact: 20K rows per run · 0.1% of database time
 metrics:
   - Rows per run: 20K
@@ -1063,11 +947,11 @@ queries:
 brief:
     # A read from order_items returns 20K rows per run
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `big-result:264`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `big-result:264`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
+    The associated statements used 329 ms of database time over the last 5 hours (<1%). Each run sends 20K rows to the application; its 25 runs in the last 5 hours moved 500K rows. Few screens or jobs need that many at once: the database reads them, the network carries them and the application holds them in memory.
 
     ## Evidence
 
@@ -1095,7 +979,7 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mssql-demo` and check `big-result:264` the way *How to verify* says.
 
 === finding untrusted-constraint:archive.child
-low severity · high confidence · maintenance
+Optional improvement · low severity · high confidence · maintenance
 title: SQL Server doesn't trust 2 constraints on child
 summary: fk_child_parent and ck_child_amount were created or re-enabled WITH NOCHECK, so existing rows were never checked against them. The optimizer only relies on trusted constraints: it can't remove a join to the referenced table when no columns from it are used, or rule out values a check constraint excludes, so it plans work it could skip.
 impact: 2 untrusted
@@ -1111,7 +995,7 @@ verify:
 brief:
     # SQL Server doesn't trust 2 constraints on child
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `untrusted-constraint:archive.child`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `untrusted-constraint:archive.child`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
@@ -1140,10 +1024,234 @@ brief:
 
     Ship the fix's schema change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mssql-demo` and check `untrusted-constraint:archive.child` the way *How to verify* says.
 
+=== finding config:cost-threshold-for-parallelism
+Optional improvement · low severity · medium confidence · configuration
+title: Cost threshold for parallelism is still the 1990s default of 5
+summary: Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+impact: Setting
+fix: A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+  sql:
+      EXEC sp_configure 'show advanced options', 1;
+      RECONFIGURE;
+      EXEC sp_configure 'cost threshold for parallelism', 50;
+      RECONFIGURE;
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Cost threshold for parallelism is still the 1990s default of 5
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:cost-threshold-for-parallelism`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
+
+    ## Suggested fix
+
+    A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
+
+    ```sql
+    EXEC sp_configure 'show advanced options', 1;
+    RECONFIGURE;
+    EXEC sp_configure 'cost threshold for parallelism', 50;
+    RECONFIGURE;
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
+
+=== finding config:query-store-capture
+Optional improvement · low severity · medium confidence · configuration
+title: Query Store records every statement, including one-off ones
+summary: Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
+impact: Setting
+fix: Switch to automatic capture.
+  sql:
+      ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+verify:
+  1. Re-scan once the change has taken effect: this finding is gone.
+brief:
+    # Query Store records every statement, including one-off ones
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:query-store-capture`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
+
+    ## Suggested fix
+
+    Switch to automatic capture.
+
+    ```sql
+    ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
+    ```
+
+    ## How to verify
+
+    - Re-scan once the change has taken effect: this finding is gone.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `config:query-store-capture` the way *How to verify* says.
+
+=== finding last-actual-plans:last-query-plan-stats
+Optional improvement · low severity · high confidence · configuration
+title: LAST_QUERY_PLAN_STATS is off for this database
+summary: With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+impact: Diagnostics
+fix: Turn it on for this database.
+  sql:
+      ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
+  cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
+verify:
+  1. Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
+brief:
+    # LAST_QUERY_PLAN_STATS is off for this database
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `last-actual-plans:last-query-plan-stats`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
+
+    ## Suggested fix
+
+    Turn it on for this database.
+
+    ```sql
+    ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
+    ```
+
+    Cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
+
+    ## How to verify
+
+    - Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
+
+    ## What to do in the codebase
+
+    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `last-actual-plans:last-query-plan-stats` the way *How to verify* says.
+
+=== finding lock-escalations:shop.support_tickets
+Information · low severity · high confidence · indexes
+title: Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
+summary: SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+impact: 5 table locks
+metrics:
+  - Escalations since SQL Server started: 5
+fix: Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
+  sql:
+      -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+      -- It catches them on every table, so another table's finding starts this same session: once is enough.
+      IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+          CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+          ADD EVENT sqlserver.lock_escalation (
+              SET collect_statement = 1
+              ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+              WHERE sqlserver.database_name = N'culprit_demo')
+          ADD TARGET package0.ring_buffer
+          WITH (STARTUP_STATE = ON);
+      IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+          ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+
+      -- Then read what it caught
+      SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
+             OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
+             e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
+             e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
+             e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
+        FROM (SELECT CAST(t.target_data AS xml) AS d
+                FROM sys.dm_xe_session_targets t
+                JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+               WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
+       CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+      -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
+verify:
+  1. Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
+caveats:
+  - These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.
+  - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
+queries:
+  - 10: 2% of database time
+    note: Returns about 973 rows a run. Its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+brief:
+    # Row locks on support_tickets escalated to a table lock 5 times since SQL Server started (Oct 11)
+
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `lock-escalations:shop.support_tickets`: Information, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+
+    ## What's happening
+
+    SQL Server replaced the row and page locks on support_tickets with one lock on the whole table 5 times since it started, on Oct 11 at 11:06 UTC, 67 minutes before this scan, so none is older than that. The next scan compares with this one and says whether any happened since. That is once a day or more on average over the counter history; it does not date individual events. SQL Server can attempt escalation around 5,000 locks on one table reference, or under lock-memory pressure. A successful table lock can block incompatible lock requests until the transaction ends; the escalation counter alone does not establish that other sessions were blocked. SQL Server doesn't record which statement it was, and none of the statements in the query history writes to support_tickets. A read can escalate too: an ordinary read under read committed usually releases row locks as it advances, but prefetching key lookups can retain locks until the statement ends. Locking hints (HOLDLOCK, UPDLOCK), REPEATABLE READ and SERIALIZABLE can retain them until the transaction ends. Reading many rows can acquire enough locks for an escalation attempt. The likeliest is a read from support_tickets, which returns about 973 rows a run on average: its plan prefetches its key lookups, which keeps their row locks until the statement ends.
+
+    ## Evidence
+
+    - Escalations since SQL Server started: 5
+
+    ## Queries involved
+
+    Query `10` — 2% of DB time, 4.0K runs over the last 5 hours, 1.4 ms average:
+
+    ```sql
+    SELECT [id], [subject], [opened_at], [status] FROM [shop].[support_tickets] WHERE [priority] = @P1
+    ```
+
+    ## Suggested fix
+
+    Start the event session below (culprit_lock_escalation) to learn which statement escalates: it keeps each escalation with its statement, in memory, at almost no cost. If it is a read, it escalates because it keeps its row locks until it ends: Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks (it changes what readers see and uses tempdb, so test it first); or consider reading fewer rows per run after checking the access path; row counts do not bound all locks or prevent escalation under lock-memory pressure. If it is a statement outside the query history that changes many rows at once (a job, a migration, maintenance), consider smaller batches. Use separate transactions only if partial commits preserve required atomicity; an enclosing transaction may retain locks.
+
+    ```sql
+    -- SQL Server doesn't record which statement escalated: this session keeps the next ones with their statement.
+    -- It catches them on every table, so another table's finding starts this same session: once is enough.
+    IF NOT EXISTS (SELECT 1 FROM sys.server_event_sessions WHERE name = N'culprit_lock_escalation')
+        CREATE EVENT SESSION culprit_lock_escalation ON SERVER
+        ADD EVENT sqlserver.lock_escalation (
+            SET collect_statement = 1
+            ACTION (sqlserver.sql_text, sqlserver.client_app_name)
+            WHERE sqlserver.database_name = N'culprit_demo')
+        ADD TARGET package0.ring_buffer
+        WITH (STARTUP_STATE = ON);
+    IF NOT EXISTS (SELECT 1 FROM sys.dm_xe_sessions WHERE name = N'culprit_lock_escalation')
+        ALTER EVENT SESSION culprit_lock_escalation ON SERVER STATE = START;
+
+    -- Then read what it caught
+    SELECT e.x.value('@timestamp', 'datetime2') AS at_utc,
+           OBJECT_NAME(e.x.value('(data[@name="object_id"]/value)[1]', 'int')) AS table_name,
+           e.x.value('(data[@name="escalated_lock_count"]/value)[1]', 'int') AS locks,
+           e.x.value('(data[@name="statement"]/value)[1]', 'nvarchar(max)') AS statement,
+           e.x.value('(action[@name="client_app_name"]/value)[1]', 'nvarchar(256)') AS app
+      FROM (SELECT CAST(t.target_data AS xml) AS d
+              FROM sys.dm_xe_session_targets t
+              JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+             WHERE s.name = N'culprit_lock_escalation' AND t.target_name = N'ring_buffer') r
+     CROSS APPLY r.d.nodes('RingBufferTarget/event') e(x);
+
+    -- Once it has caught what you need, stop and remove it: DROP EVENT SESSION culprit_lock_escalation ON SERVER;
+    ```
+
+    ## How to verify
+
+    - Compare new escalations on support_tickets and observed blocking under comparable workload before and after a justified change. No new events means none were recorded in that interval; an idle interval alone does not verify a fix.
+
+    ## Caveats
+
+    - These totals do not establish a new increase or continuing blocking in the selected window. Capture dated events or compare counters wholly within that period before treating this as current pressure.
+    - SQL Server counts escalations since the table's indexes were loaded into memory, usually since it started, and keeps no time for each.
+
+    ## What to do in the codebase
+
+    Information: inspect the evidence and follow its verification guidance if the workload warrants it. This observation requests no immediate database change. Use `culprit scan mssql-demo` for a later comparison if needed, as *How to verify* describes. If you start the optional diagnostic event session, remove it with the DROP statement supplied in the fix when collection is complete.
+
 === finding log-volume:255
-low severity · high confidence · queries
+History · low severity · high confidence · queries
 title: An update of wide writes 7.9 KB of transaction log per row it changes
-summary: It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.
+summary: The associated statements used 528 ms of database time over the last 5 hours (<1%). It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.
 impact: 232 MB of transaction log · 0.2% of database time
 metrics:
   - Log written: 232 MB
@@ -1159,11 +1267,11 @@ queries:
 brief:
     # An update of wide writes 7.9 KB of transaction log per row it changes
 
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `log-volume:255`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
+    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `log-volume:255`: History, low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
 
     ## What's happening
 
-    It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.
+    The associated statements used 528 ms of database time over the last 5 hours (<1%). It wrote 232 MB of transaction log in the last 5 hours: 83% of what statements wrote, about 7.9 KB per row it changed. Every byte of transaction log is also written to backups and sent to replicas, so it drives replication lag, backup size and checkpoints.
 
     ## Evidence
 
@@ -1194,120 +1302,6 @@ brief:
     ## What to do in the codebase
 
     The statement behind this finding ran once in the last 5 hours: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan mssql-demo` and check `log-volume:255` the way *How to verify* says.
-
-=== finding config:cost-threshold-for-parallelism
-low severity · medium confidence · configuration
-title: Cost threshold for parallelism is still the 1990s default of 5
-summary: Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
-impact: Setting
-fix: A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
-  sql:
-      EXEC sp_configure 'show advanced options', 1;
-      RECONFIGURE;
-      EXEC sp_configure 'cost threshold for parallelism', 50;
-      RECONFIGURE;
-verify:
-  1. Re-scan once the change has taken effect: this finding is gone.
-brief:
-    # Cost threshold for parallelism is still the 1990s default of 5
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:cost-threshold-for-parallelism`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.
-
-    ## Suggested fix
-
-    A common starting point is 50; adjust with your workload. Set cost threshold for parallelism to 50.
-
-    ```sql
-    EXEC sp_configure 'show advanced options', 1;
-    RECONFIGURE;
-    EXEC sp_configure 'cost threshold for parallelism', 50;
-    RECONFIGURE;
-    ```
-
-    ## How to verify
-
-    - Re-scan once the change has taken effect: this finding is gone.
-
-    ## What to do in the codebase
-
-    The fix is a setting of the database server, not a change to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the fix's SQL against the server as a login allowed to change its settings, the way the fix says. After any change is live, run `culprit scan mssql-demo` and check `config:cost-threshold-for-parallelism` the way *How to verify* says.
-
-=== finding config:query-store-capture
-low severity · medium confidence · configuration
-title: Query Store records every statement, including one-off ones
-summary: Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
-impact: Setting
-fix: Switch to automatic capture.
-  sql:
-      ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
-verify:
-  1. Re-scan once the change has taken effect: this finding is gone.
-brief:
-    # Query Store records every statement, including one-off ones
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `config:query-store-capture`: low impact, medium confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    Capture mode ALL keeps statements that ran once or cost nothing. With 16 statements in the last 5 hours it costs little now; once one-off statements arrive (ad-hoc queries, generated SQL), they crowd the store, shorten how far back it can look and add overhead. AUTO keeps what matters.
-
-    ## Suggested fix
-
-    Switch to automatic capture.
-
-    ```sql
-    ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);
-    ```
-
-    ## How to verify
-
-    - Re-scan once the change has taken effect: this finding is gone.
-
-    ## What to do in the codebase
-
-    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `config:query-store-capture` the way *How to verify* says.
-
-=== finding last-actual-plans:last-query-plan-stats
-low severity · high confidence · configuration
-title: LAST_QUERY_PLAN_STATS is off for this database
-summary: With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
-impact: Diagnostics
-fix: Turn it on for this database.
-  sql:
-      ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
-  cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
-verify:
-  1. Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
-brief:
-    # LAST_QUERY_PLAN_STATS is off for this database
-
-    Database: **mssql-demo** (SQL Server 2022, database `culprit_demo`, local environment). Finding `last-actual-plans:last-query-plan-stats`: low impact, high confidence. Scanned 2026-10-11T12:13:47Z.
-
-    ## What's happening
-
-    With LAST_QUERY_PLAN_STATS on, SQL Server can keep the real row counts and timings of an eligible cached query's most recent run. Complex or resource-intensive queries can then show where they actually spent their time, operator by operator, without running them again. Simple transactional queries may retain only the root operator; plans that aren't cached or have been evicted retain no last-run data. Without retained runtime data, the saved estimated plan cannot confirm a row misestimate. (Trace flag 2451 turns the same on for the whole server; if it is set, actual plans are kept already.)
-
-    ## Suggested fix
-
-    Turn it on for this database.
-
-    ```sql
-    ALTER DATABASE SCOPED CONFIGURATION SET LAST_QUERY_PLAN_STATS = ON;
-    ```
-
-    Cost: Uses SQL Server's lightweight profiling to keep a little runtime data per cached plan: a small CPU overhead on very busy servers.
-
-    ## How to verify
-
-    - Let the workload run, re-scan, then open a complex or resource-intensive query in Queries and pick "Last actual run" when available: the diagram shows the rows and timings SQL Server retained. A simple query may have only a root operator, and an uncached or evicted plan has no last-run data.
-
-    ## What to do in the codebase
-
-    The fix is a setting kept in this database alone: run its SQL once against the database as its owner, by hand or shipped as a migration. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. After any change is live, run `culprit scan mssql-demo` and check `last-actual-plans:last-query-plan-stats` the way *How to verify* says.
 
 === plan 7
 insight implicit-conversion · high severity · impact 88%

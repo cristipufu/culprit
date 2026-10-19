@@ -66,6 +66,7 @@ impl Refine for Step<fn(&Snapshot, &mut Vec<Finding>)> {
 fn preparation() -> Vec<Arc<dyn Prepare>> {
     let step = |name: &'static str, run: fn(&mut Snapshot)| Arc::new(Step { name, run }) as Arc<dyn Prepare>;
     vec![
+        step("CTE writes named for their base table", culprit_core::sql::resolve_write_targets),
         step("plans captured before a column changed type", culprit_core::insights::mark_snapshot),
         step("MySQL's possible keys named with their columns", culprit_core::insights::mark_snapshot_keys),
         step("plan operators marked with their index's kind", culprit_core::insights::mark_snapshot_index_kinds),
@@ -211,6 +212,19 @@ impl Pipeline {
         for rule in &self.refine {
             rule.refine(&snapshot, &mut findings);
         }
+        for f in &mut findings {
+            f.actionability = if f.inactive {
+                culprit_core::Actionability::History
+            } else if f.actionability == culprit_core::Actionability::OptionalImprovement {
+                if f.severity == culprit_core::Severity::Low {
+                    culprit_core::Actionability::OptionalImprovement
+                } else {
+                    culprit_core::Actionability::NeedsAttention
+                }
+            } else {
+                f.actionability
+            };
+        }
         rank(&mut findings);
         crate::pressure::grade_findings(&mut snapshot, &findings);
         let summary = crate::summarize(&snapshot, &findings);
@@ -223,6 +237,10 @@ impl Pipeline {
 /// plan says is harmless) never tops a Medium one.
 fn rank(findings: &mut [Finding]) {
     findings.sort_by(|a, b| {
-        a.inactive.cmp(&b.inactive).then(b.severity.cmp(&a.severity)).then(b.impact.score.total_cmp(&a.impact.score))
+        a.actionability
+            .cmp(&b.actionability)
+            .then(a.inactive.cmp(&b.inactive))
+            .then(b.severity.cmp(&a.severity))
+            .then(b.impact.score.total_cmp(&a.impact.score))
     });
 }

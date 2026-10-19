@@ -1025,10 +1025,235 @@ pub fn mssql_statistics_target(text: &str) -> Option<String> {
         }
     };
     let first = target(readings.first()?)?;
-    readings.iter().all(|tokens| target(tokens).as_ref() == Some(&first)).then_some(first)
+    readings.iter().all(|tokens| target(tokens).as_deref() == Some(first.as_str())).then_some(first)
 }
 
-/// Each table a statement names after FROM, JOIN, INTO, UPDATE…, with the alias it gives it.
+/// Whether suggested SQL creates an index. Identifiers, literals and comments cannot supply the operation.
+pub fn creates_index(text: &str, engine: Engine) -> bool {
+    readings(text, engine).is_ok_and(|readings| {
+        readings.iter().all(|tokens| {
+            tokens.iter().enumerate().any(|(i, t)| {
+                if !matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("create")) {
+                    return false;
+                }
+                for t in &tokens[i + 1..] {
+                    match t {
+                        Token::Word(w) if w.eq_ignore_ascii_case("index") => return true,
+                        Token::Word(w)
+                            if [
+                                "unique",
+                                "clustered",
+                                "nonclustered",
+                                "columnstore",
+                                "spatial",
+                                "fulltext",
+                                "bitmap",
+                            ]
+                            .iter()
+                            .any(|k| w.eq_ignore_ascii_case(k)) => {}
+                        _ => return false,
+                    }
+                }
+                false
+            })
+        })
+    })
+}
+
+/// Whether an UPDATE's only assignment and returned value are this counter. This establishes only its SQL shape;
+/// application requirements (per-parent numbering, gaps, ordering and atomicity) still need to be checked.
+pub fn isolated_counter_update(text: &str, engine: Engine, column: &str) -> bool {
+    let Ok(readings) = readings(without_parameter_list(text), engine) else { return false };
+    readings.iter().all(|tokens| {
+        if !matches!(tokens.first(), Some(Token::Word(w)) if w.eq_ignore_ascii_case("update")) {
+            return false;
+        }
+        let Some(set) = tokens.iter().position(|t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("set"))) else {
+            return false;
+        };
+        let Some(eq) = tokens[set + 1..].iter().position(|t| *t == Token::Punct('=')) else { return false };
+        let lhs = &tokens[set + 1..set + 1 + eq];
+        if !matches!(lhs.last(), Some(Token::Word(w) | Token::Quoted(w, _)) if w.eq_ignore_ascii_case(column)) {
+            return false;
+        }
+        let mut depth = 0;
+        let mut end = tokens.len();
+        for (i, t) in tokens.iter().enumerate().skip(set + 1) {
+            match t {
+                Token::Punct('(') => depth += 1,
+                Token::Punct(')') => depth -= 1,
+                Token::Punct(',') if depth == 0 => return false,
+                Token::Word(w)
+                    if depth == 0
+                        && ["output", "returning", "where", "from"].iter().any(|k| w.eq_ignore_ascii_case(k)) =>
+                {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(at) = tokens.iter().position(
+            |t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("output") || w.eq_ignore_ascii_case("returning")),
+        ) else {
+            return engine == Engine::Mysql
+                && tokens[set + 1..end]
+                    .iter()
+                    .any(|t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("last_insert_id")));
+        };
+        let tail = &tokens[at + 1..];
+        let stop = tail
+            .iter()
+            .position(|t| {
+                matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("where") || w.eq_ignore_ascii_case("from"))
+                    || matches!(t, Token::Semicolon(_))
+            })
+            .unwrap_or(tail.len());
+        let names: Vec<_> = tail[..stop]
+            .iter()
+            .filter_map(|t| match t {
+                Token::Word(w) | Token::Quoted(w, _) => Some(*w),
+                Token::Punct('.') => None,
+                _ => Some(""),
+            })
+            .collect();
+        match names.as_slice() {
+            [c] => c.eq_ignore_ascii_case(column),
+            [table, c] => !table.eq_ignore_ascii_case("deleted") && c.eq_ignore_ascii_case(column),
+            _ => false,
+        }
+    })
+}
+
+/// The base table of a write through a simple CTE, where every lexical reading agrees. Joins, unions, nested
+/// sources and otherwise ambiguous CTEs stay unresolved; a display must not invent a table for them.
+pub fn cte_write_target(text: &str, engine: Engine) -> Option<String> {
+    fn name(tokens: &[Token<'_>], at: &mut usize) -> Option<String> {
+        let mut parts = Vec::new();
+        loop {
+            let part = match tokens.get(*at)? {
+                Token::Word(w) | Token::Quoted(w, _) if !w.starts_with('@') => *w,
+                _ => return None,
+            };
+            // The display target is a dotted string, so a dot inside a quoted part cannot be represented without
+            // ambiguity. Keep that uncommon shape unresolved instead of naming the wrong base table.
+            if part.contains('.') || part.contains([']', '"', '`']) {
+                return None;
+            }
+            parts.push(part.to_string());
+            *at += 1;
+            if tokens.get(*at) != Some(&Token::Punct('.')) {
+                break;
+            }
+            *at += 1;
+        }
+        Some(parts.join("."))
+    }
+    fn read(tokens: &[Token<'_>]) -> Option<String> {
+        let tokens = &tokens[tokens.iter().take_while(|t| matches!(t, Token::Semicolon(_))).count()..];
+        let word = |i: usize, k: &str| matches!(tokens.get(i), Some(Token::Word(w)) if w.eq_ignore_ascii_case(k));
+        if !word(0, "with") {
+            return None;
+        }
+        let mut at = if word(1, "recursive") { 2 } else { 1 };
+        let mut ctes: Vec<(String, Option<String>)> = Vec::new();
+        loop {
+            let cte = name(tokens, &mut at)?;
+            if !word(at, "as") {
+                return None;
+            }
+            at += 1;
+            if word(at, "not") {
+                at += 1;
+            }
+            if word(at, "materialized") {
+                at += 1;
+            }
+            if tokens.get(at) != Some(&Token::Punct('(')) {
+                return None;
+            }
+            at += 1;
+            let start = at;
+            let mut depth = 1;
+            while let Some(t) = tokens.get(at) {
+                match t {
+                    Token::Punct('(') => depth += 1,
+                    Token::Punct(')') => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                at += 1;
+            }
+            if depth != 0 {
+                return None;
+            }
+            let body = &tokens[start..at];
+            let sources: Vec<_> = body.iter().enumerate().filter(|(_, t)| matches!(t, Token::Word(w) if ["from", "join", "union", "intersect", "except"].iter().any(|k| w.eq_ignore_ascii_case(k)))).collect();
+            let base = if let [(i, Token::Word(w))] = sources.as_slice() {
+                if w.eq_ignore_ascii_case("from") {
+                    let mut from = i + 1;
+                    let n = name(body, &mut from)?;
+                    let mut depth = 0;
+                    let ambiguous = body[from..].iter().take_while(|t| {
+                        !matches!(t, Token::Word(w) if ["where", "order", "group", "limit", "offset"].iter().any(|k| w.eq_ignore_ascii_case(k)))
+                    }).any(|t| {
+                        match t {
+                            Token::Punct('(') => depth += 1,
+                            Token::Punct(')') => depth -= 1,
+                            Token::Punct(',') if depth == 0 => return true,
+                            _ => {},
+                        }
+                        false
+                    });
+                    if matches!(body.get(from), Some(Token::Punct(',' | '('))) || ambiguous {
+                        None
+                    } else if let Some((_, base)) = ctes.iter().find(|(c, _)| c.eq_ignore_ascii_case(&n)) {
+                        base.clone()
+                    } else if n.eq_ignore_ascii_case(&cte) {
+                        None
+                    } else {
+                        Some(n)
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            ctes.push((cte, base));
+            at += 1;
+            if tokens.get(at) != Some(&Token::Punct(',')) {
+                break;
+            }
+            at += 1;
+        }
+        if !word(at, "update") && !word(at, "delete") {
+            return None;
+        }
+        at += 1;
+        if word(at, "from") {
+            at += 1;
+        }
+        let target = name(tokens, &mut at)?;
+        ctes.into_iter().find(|(c, _)| c.eq_ignore_ascii_case(&target))?.1
+    }
+    let readings = readings(without_parameter_list(text), engine).ok()?;
+    let first = read(readings.first()?)?;
+    readings.iter().all(|t| read(t).as_deref() == Some(first.as_str())).then_some(first)
+}
+
+/// Resolve display targets centrally for every provider, including saved reports and injected snapshots.
+pub fn resolve_write_targets(snapshot: &mut crate::Snapshot) {
+    let engine = snapshot.server.engine;
+    if let Some(w) = &mut snapshot.workload {
+        for q in &mut w.queries {
+            q.resolved_write_target = cte_write_target(&q.text, engine);
+        }
+    }
+}
+
 fn table_refs(text: &str, engine: Engine) -> Vec<(String, Option<String>)> {
     let Some(tokens) = modes(engine).iter().find_map(|m| lex(text, engine, *m).ok()) else {
         return Vec::new();
@@ -1714,5 +1939,56 @@ mod tests {
         assert_eq!(without_parameter_list("  (@P1 int,@P2 decimal(10, 2))SELECT 1"), "SELECT 1");
         assert_eq!(without_parameter_list("(SELECT 1) UNION (SELECT 2)"), "(SELECT 1) UNION (SELECT 2)");
         assert_eq!(without_parameter_list("(@P1 int"), "(@P1 int");
+    }
+}
+
+#[cfg(test)]
+mod display_evidence_tests {
+    use super::*;
+
+    #[test]
+    fn compound_updates_are_never_isolated_allocators() {
+        for engine in [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite] {
+            assert!(!isolated_counter_update(
+                "UPDATE orders SET n = n + 1, changed_at = CURRENT_TIMESTAMP RETURNING n",
+                engine,
+                "n"
+            ));
+            assert!(!isolated_counter_update("UPDATE orders SET n = n + 1 RETURNING n, status", engine, "n"));
+            assert!(!isolated_counter_update("UPDATE orders SET status = 1 RETURNING n", engine, "n"));
+        }
+        assert!(isolated_counter_update(
+            "UPDATE orders SET n = n + 1 OUTPUT inserted.n WHERE id = @id",
+            Engine::Mssql,
+            "n"
+        ));
+        assert!(isolated_counter_update("UPDATE orders SET n = n + 1 RETURNING n", Engine::Postgres, "n"));
+        assert!(isolated_counter_update(
+            "UPDATE orders SET n = LAST_INSERT_ID(n + 1) WHERE id = ?",
+            Engine::Mysql,
+            "n"
+        ));
+        assert!(isolated_counter_update("UPDATE orders SET n = n + 1 RETURNING n", Engine::Sqlite, "n"));
+    }
+
+    #[test]
+    fn cte_targets_resolve_only_unambiguous_sources_on_every_engine() {
+        for engine in [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite] {
+            assert_eq!(cte_write_target("/* task */ WITH pending AS (SELECT * FROM shop.orders WHERE state = 0) UPDATE pending SET state = 1", engine).as_deref(), Some("shop.orders"));
+            assert_eq!(
+                cte_write_target("WITH a AS (SELECT * FROM orders), b AS (SELECT * FROM a) DELETE FROM b", engine)
+                    .as_deref(),
+                Some("orders")
+            );
+            for sql in [
+                "WITH a AS (SELECT * FROM orders o JOIN products p ON p.id = o.id) UPDATE a SET state = 1",
+                "WITH a AS (SELECT * FROM orders o, products p) UPDATE a SET state = 1",
+                "WITH a AS (SELECT * FROM a) UPDATE a SET state = 1",
+                "WITH a AS (SELECT * FROM orders UNION SELECT * FROM products) UPDATE a SET state = 1",
+            ] {
+                assert_eq!(cte_write_target(sql, engine), None, "{engine:?}: {sql}");
+            }
+        }
+        assert_eq!(cte_write_target("WITH [pending] AS (SELECT TOP (10) * FROM [shop].[orders] WITH (UPDLOCK, READPAST)) UPDATE [pending] SET state = 1", Engine::Mssql).as_deref(), Some("shop.orders"));
     }
 }

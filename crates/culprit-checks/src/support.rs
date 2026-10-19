@@ -9,6 +9,7 @@ pub fn finding(check: &str, key: &str, category: Category, subject: Subject) -> 
         check: check.to_string(),
         category,
         severity: Severity::Low,
+        actionability: Default::default(),
         confidence: Confidence::Medium,
         title: String::new(),
         summary: String::new(),
@@ -18,6 +19,7 @@ pub fn finding(check: &str, key: &str, category: Category, subject: Subject) -> 
         queries: Vec::new(),
         fix: None,
         verify: Vec::new(),
+        verification_basis: Default::default(),
         caveats: Vec::new(),
         last_seen: None,
         inactive: false,
@@ -197,6 +199,57 @@ pub fn severity_over_scans(snapshot: &Snapshot, queries: &[&QueryStat], share: f
     Some(severity_for_share(share).min(severity_for_amount(a_day)))
 }
 
+/// Measured workload supporting a query-driven index change, shared by checks and the advisor. Reuse the
+/// existing amount bar and plan materiality bar: fast reads can still matter through sustained aggregate cost.
+/// Schema obligations such as foreign keys have separate evidence and do not use this gate.
+pub(crate) fn index_work_is_material(snapshot: &Snapshot, queries: &[&QueryStat]) -> bool {
+    let current: Vec<_> = queries.iter().copied().filter(|q| !crate::query_is_history(snapshot, q)).collect();
+    let Some(w) = &snapshot.workload else { return false };
+    let Some(impact) = query_impact(snapshot, &current) else { return false };
+    amount_severity_of(snapshot, &current, impact.share) >= Severity::Medium
+        || current.iter().any(|q| q.executions > 0.0 && w.statement_mean_ms(q) >= culprit_core::insights::MATERIAL_MS)
+}
+
+/// Absolute query cost and its period on the same basis as the share. Mixed scan intervals cannot honestly be
+/// added into a single measured total; in that case retain the individual evidence rather than inventing a period.
+pub(crate) fn query_cost_context(snapshot: &Snapshot, queries: &[&QueryStat]) -> Option<String> {
+    let w = snapshot.workload.as_ref()?;
+    let impact = query_impact(snapshot, queries)?;
+    let time_noun = crate::queries::time_noun(snapshot);
+    if queries.iter().any(|q| w.scans_of(q).is_some()) {
+        if queries.len() != 1 {
+            return None;
+        }
+        if !queries.iter().all(|q| w.scans_of(q).is_some()) {
+            return None;
+        }
+        let scans: Vec<_> = queries.iter().filter_map(|q| w.scans_of(q)).collect();
+        let first = scans.first()?;
+        if !scans.iter().all(|s| s.phrase() == first.phrase()) {
+            return None;
+        }
+        let time: f64 = scans.iter().map(|s| s.time_ms).sum();
+        Some(format!(
+            "{} of {time_noun} over {} ({})",
+            format::duration(time),
+            first.phrase(),
+            format::percent(impact.share)
+        ))
+    } else {
+        // Plan-cache shares can weight entries with different ages. Their raw totals are not an amount over one
+        // common interval, so keep their existing per-entry evidence rather than manufacture a matching total.
+        if w.hourly_time_ms.is_some() {
+            return None;
+        }
+        Some(format!(
+            "{} of {time_noun} over {} ({})",
+            format::duration(queries.iter().map(|q| q.total_time_ms).sum()),
+            w.window_phrase(),
+            format::percent(impact.share)
+        ))
+    }
+}
+
 pub fn apply_query_impact(f: &mut Finding, impact: &QueryImpact) {
     f.impact.db_time_share = Some(impact.share);
     f.impact.time_ms_per_day = impact.per_day_ms;
@@ -263,6 +316,9 @@ pub fn first_verb(text: &str) -> Option<(usize, &'static str)> {
 /// lower-cased: past a `WITH` list, `TOP (n)`, INTO, FROM and ONLY, and an alias (T-SQL's `UPDATE o … FROM orders o`)
 /// resolved to its table. `None` for a read, a table variable, or anything else.
 pub fn write_target(text: &str, engine: Engine) -> Option<String> {
+    if let Some(base) = culprit_core::sql::cte_write_target(text, engine) {
+        return Some(base.to_ascii_lowercase());
+    }
     // MySQL's digest text spaces the dot of a qualified name: `shop` . `orders`.
     let text = text.replace("` . `", "`.`");
     let main = main_statement(&text);
@@ -613,13 +669,69 @@ pub fn query_handle(q: &QueryStat) -> String {
     if let Some(object) = &q.object_name {
         return format!("a statement in {object}");
     }
+    if let Some(base) = &q.resolved_write_target {
+        let verb = first_verb(main_statement(&q.text)).map(|(_, v)| v);
+        let name = base.rsplit('.').next().unwrap_or(base);
+        if verb == Some("update") {
+            return format!("an update of {name}");
+        }
+        if verb == Some("delete") {
+            return format!("a delete from {name}");
+        }
+    }
+    let body = statement_body(&q.text);
+    let main = main_statement(body);
+    if body.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("with")) && main.len() != body.len() {
+        match first_verb(main).map(|(_, v)| v) {
+            Some("update") => return "an update in a WITH statement".into(),
+            Some("delete") => return "a delete in a WITH statement".into(),
+            _ => {}
+        }
+    }
     statement_handle(&q.text)
 }
 
 /// The statement a `WITH` list leads to: `WITH b AS (SELECT …) DELETE FROM jobs …` is a delete, not a read. The text
 /// from the first verb outside the common table expressions' parentheses and strings; any other text as it is.
+fn statement_body(text: &str) -> &str {
+    let mut text = text.trim_start();
+    loop {
+        let unwrapped = culprit_core::sql::without_parameter_list(text).trim_start();
+        if unwrapped.len() != text.len() {
+            text = unwrapped;
+            continue;
+        }
+        if let Some(rest) = text.strip_prefix("--") {
+            text = rest.split_once('\n').map_or("", |(_, rest)| rest).trim_start();
+        } else if let Some(rest) = text.strip_prefix("/*") {
+            let bytes = rest.as_bytes();
+            let (mut at, mut depth) = (0, 1);
+            while at + 1 < bytes.len() && depth > 0 {
+                if &bytes[at..at + 2] == b"/*" {
+                    depth += 1;
+                    at += 2;
+                } else if &bytes[at..at + 2] == b"*/" {
+                    depth -= 1;
+                    at += 2;
+                } else {
+                    at += 1;
+                }
+            }
+            if depth != 0 {
+                return text;
+            }
+            text = rest[at..].trim_start();
+        } else if let Some(rest) = text.strip_prefix(';') {
+            text = rest.trim_start();
+        } else {
+            break;
+        }
+    }
+    text
+}
+
 pub fn main_statement(text: &str) -> &str {
-    let text = text.trim_start_matches(|c: char| c.is_whitespace() || c == '(');
+    let text = statement_body(text).trim_start_matches(|c: char| c.is_whitespace() || c == '(');
     if !text.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("with")) {
         return text;
     }
@@ -919,6 +1031,14 @@ pub fn scans_sentence(snapshot: &Snapshot, q: &QueryStat, of: &str) -> Option<St
     ))
 }
 
+/// Absolute cost of the same distinct statements the top-findings share counts.
+pub(crate) fn top_findings_cost<'a>(
+    snapshot: &'a Snapshot,
+    findings: impl IntoIterator<Item = &'a Finding>,
+) -> Option<String> {
+    query_cost_context(snapshot, &top_queries(snapshot, findings))
+}
+
 /// The distinct statements behind the top three active findings.
 fn top_queries<'a>(
     snapshot: &'a Snapshot,
@@ -927,7 +1047,7 @@ fn top_queries<'a>(
     let Some(w) = snapshot.workload.as_ref() else { return Vec::new() };
     let ids: std::collections::BTreeSet<&str> = findings
         .into_iter()
-        .filter(|f| !f.inactive)
+        .filter(|f| f.is_actionable())
         .take(3)
         .flat_map(|f| f.queries.iter().map(|q| q.id.as_str()))
         .collect();
@@ -1310,6 +1430,7 @@ pub(crate) mod tests {
 
     pub(crate) fn sample() -> QueryStat {
         QueryStat {
+            resolved_write_target: None,
             id: "1".into(),
             query_hash: None,
             text: String::new(),

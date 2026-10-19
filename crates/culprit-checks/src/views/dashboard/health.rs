@@ -57,7 +57,7 @@ pub(super) fn health(report: &Report) -> Tile {
     let mut items: Vec<TileItem> = Vec::new();
     // An old open transaction holds back cleanup on every engine; it earns a row of its own.
     if let Some(tx) = p.oldest_transaction.as_ref() {
-        let assessed = report.findings.iter().find(|f| f.check == "held-cleanup" && !f.inactive);
+        let assessed = report.findings.iter().find(|f| f.check == "held-cleanup" && f.is_actionable());
         let tx_status = assessed.map(|f| severity_status(f.severity)).unwrap_or(TileStatus::Info);
         let mut item = TileItem::new(ItemKind::Signal, "oldest-transaction", "Oldest open transaction");
         item.value = Some(format!(

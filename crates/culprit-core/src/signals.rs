@@ -297,8 +297,58 @@ impl IndexContention {
     }
 }
 
-/// The lock escalations an earlier scan of the same database counted per table. SQL Server counts them from when it
-/// started and keeps no time for each, so this is how a scan tells the ones since the earlier scan from old ones.
+/// Timed row and page lock waits kept by one index.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct IndexLockCounts {
+    pub waits: f64,
+    pub wait_ms: f64,
+}
+
+/// Per-index lock counters from an earlier scan. Missing indexes, a restart or counters that shrink do not establish
+/// zero activity. A provider without per-index lock counters supplies no baseline.
+#[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
+#[ts(export)]
+pub struct ContentionBaseline {
+    pub taken_at: String,
+    pub indexes: BTreeMap<String, IndexLockCounts>,
+}
+
+impl ContentionBaseline {
+    fn key(index: &crate::IndexStat) -> String {
+        serde_json::to_string(&(&index.schema, &index.table, &index.name)).expect("three index name strings")
+    }
+
+    pub fn from_scan(previous: &Snapshot, current: &Snapshot) -> Option<Self> {
+        if crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
+            || previous.server.engine != current.server.engine
+            || previous.server.database != current.server.database
+            || restarted(previous.server.started_at.as_deref()?, current.server.started_at.as_deref()?)?
+        {
+            return None;
+        }
+        let indexes: BTreeMap<_, _> = previous
+            .indexes
+            .iter()
+            .filter_map(|i| {
+                let c = i.contention.as_ref()?;
+                Some((Self::key(i), IndexLockCounts { waits: c.lock_waits(), wait_ms: c.lock_wait_ms() }))
+            })
+            .collect();
+        (!indexes.is_empty()).then(|| Self { taken_at: previous.taken_at.clone(), indexes })
+    }
+
+    pub fn since(&self, index: &crate::IndexStat) -> Option<IndexLockCounts> {
+        let then = self.indexes.get(&Self::key(index))?;
+        let now = index.contention.as_ref()?;
+        (now.lock_waits() >= then.waits && now.lock_wait_ms() >= then.wait_ms).then(|| IndexLockCounts {
+            waits: now.lock_waits() - then.waits,
+            wait_ms: now.lock_wait_ms() - then.wait_ms,
+        })
+    }
+}
+
+/// The lock escalations an earlier scan counted, separately from timed lock waits.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, Default, PartialEq)]
 #[ts(export)]
 pub struct EscalationBaseline {

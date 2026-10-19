@@ -496,6 +496,19 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
     let before = candidates.len();
     candidates.retain(|c| {
+        if c.source != CandidateSource::ForeignKey {
+            if c.finding_id
+                .as_deref()
+                .and_then(|id| report.findings.iter().find(|f| f.id == id))
+                .is_some_and(|f| !f.is_actionable())
+            {
+                return false;
+            }
+            let measured: Vec<_> = c.queries.iter().filter_map(|q| s.workload.as_ref()?.query(&q.id)).collect();
+            if !index_work_is_material(s, &measured) {
+                return false;
+            }
+        }
         let table_known =
             s.tables.is_empty() || s.tables.iter().any(|t| same_table(&t.schema, &t.name, &c.schema, &c.table));
         let all_stopped = c.finding_id.as_deref().is_some_and(|id| inactive.contains(id))
@@ -788,10 +801,10 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     }
     if skipped > 0 {
         notes.push(if skipped == 1 {
-            "Left out 1 candidate for a table that no longer exists or queries that stopped running or ran once.".to_string()
+            "Left out 1 candidate without sufficient current measured workload, or for a table that is gone or queries that are history.".to_string()
         } else {
             format!(
-                "Left out {skipped} candidates for tables that no longer exist or queries that stopped running or ran once."
+                "Left out {skipped} candidates without sufficient current measured workload, or for tables that are gone or queries that are history."
             )
         });
     }
@@ -954,7 +967,7 @@ mod tests {
             .retain(|t| !(t.schema.eq_ignore_ascii_case(&first.schema) && t.name.eq_ignore_ascii_case(&first.table)));
         let after = index_advice(&r);
         assert!(after.candidates.iter().all(|c| !(c.schema == first.schema && c.table == first.table)));
-        assert!(after.notes.iter().any(|n| n.contains("no longer exist")), "{:?}", after.notes);
+        assert!(after.notes.iter().any(|n| n.contains("table that is gone")), "{:?}", after.notes);
 
         // Every query behind a candidate stopped running: left out too.
         let mut r = report("mssql-demo.report.json");

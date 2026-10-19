@@ -17,6 +17,7 @@ import { CheckedFine } from "../components/CheckedFine";
 import { WorkloadUnlock } from "../components/WorkloadUnlock";
 import { HealthLine, WaitsVital, type WaitsTab } from "../components/Waits";
 import { FindingDetail } from "./FindingDetail";
+import { actionability, actionLabel, isActionable } from "../lib/findings";
 import { can } from "../lib/engines";
 
 const CATEGORY_LABEL: Record<Category, string> = {
@@ -57,6 +58,7 @@ export function Overview({ report }: { report: Report }) {
   const [category, setCategory] = useState<Category | "all">("all");
   const [filter, setFilter] = useState("");
   const [showDismissed, setShowDismissed] = useState(false);
+  const [showContext, setShowContext] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [waits, setWaits] = useState<{ tab: WaitsTab; category?: string } | null>(null);
@@ -65,16 +67,20 @@ export function Overview({ report }: { report: Report }) {
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
     return report.findings.filter((f) => {
+      if (!showContext && !q && !isActionable(f) && f.id !== selected) return false;
       if (category !== "all" && f.category !== category) return false;
       if (!showDismissed && dismissed[f.id]) return false;
       if (!q) return true;
       return `${f.title} ${f.subject.name} ${f.id}`.toLowerCase().includes(q);
     });
-  }, [report.findings, category, filter, dismissed, showDismissed]);
+  }, [report.findings, category, filter, dismissed, showDismissed, showContext, selected]);
 
   const dismissedCount = report.findings.filter((f) => dismissed[f.id]).length;
   // Chips count what their filter would list: dismissed findings only while they're shown.
   const listed = showDismissed ? report.findings : report.findings.filter((f) => !dismissed[f.id]);
+  const noOpportunities = listed.length > 0 && !listed.some(isActionable);
+  const contextCount = listed.filter((f) => !isActionable(f)).length;
+  const counted = showContext ? listed : listed.filter((f) => isActionable(f) || f.id === selected);
   const current = report.findings.find((f) => f.id === selected) ?? visible[0] ?? null;
   // A source that keeps running totals (pg_stat_statements) is dated by Culprit's scans: the first one bounds when a
   // statement that hasn't run since last ran.
@@ -107,9 +113,9 @@ export function Overview({ report }: { report: Report }) {
         <Header report={report} onOpenWaits={openWaits} changes={changes} />
         <div className="filters">
           <button className={`chip ${category === "all" ? "on" : ""}`} onClick={() => setCategory("all")}>
-            All <span className="n">{listed.length}</span>
+            All <span className="n">{counted.length}</span>
           </button>
-          {categoryCounts(listed).map((c) => (
+          {categoryCounts(counted).map((c) => (
             <button key={c.category} className={`chip ${category === c.category ? "on" : ""}`} onClick={() => setCategory(c.category)}>
               {CATEGORY_LABEL[c.category]} <span className="n">{c.count}</span>
             </button>
@@ -134,9 +140,9 @@ export function Overview({ report }: { report: Report }) {
           <WorkloadUnlock report={report} />
           {visible.map((f, i) => (
             <div key={f.id}>
-              {f.inactive && !visible[i - 1]?.inactive && (
-                <div className="group-label eyebrow" title="These queries stopped running before the scan's data ends: a deploy may have changed or fixed them">
-                  Stopped running
+              {(!visible[i - 1] || actionLabel(f) !== actionLabel(visible[i - 1]!)) && (
+                <div className="group-label eyebrow" >
+                  {actionability(f) === "optional-improvement" ? "Optional improvements" : actionLabel(f)}
                 </div>
               )}
               <FindingRow finding={f} selected={f.id === current?.id} dismissed={!!dismissed[f.id]} firstScan={firstScan} />
@@ -144,9 +150,14 @@ export function Overview({ report }: { report: Report }) {
           ))}
           {visible.length === 0 && (
             <div className="empty" style={{ padding: 32 }}>
-              <h3>{report.findings.length === 0 ? "Nothing stands out" : "No findings match"}</h3>
-              <p>{report.findings.length === 0 ? "The checks found nothing worth your time in this window." : "Clear the filter to see everything."}</p>
+              <h3>{noOpportunities ? "No opportunities in this window" : report.findings.length === 0 ? "Nothing stands out" : "No findings match"}</h3>
+              <p>{noOpportunities ? "Open information and history below to inspect the other observations." : report.findings.length === 0 ? "The checks found nothing worth your time in this window." : "Clear the filter to see everything."}</p>
             </div>
+          )}
+          {contextCount > 0 && (
+            <button className="btn ghost" style={{ margin: "8px 4px" }} onClick={() => setShowContext((v) => !v)}>
+              {showContext ? "Hide" : "Show"} information and history ({contextCount})
+            </button>
           )}
           {dismissedCount > 0 && (
             <button className="btn ghost" style={{ margin: "8px 4px" }} onClick={() => setShowDismissed((v) => !v)}>
@@ -298,20 +309,20 @@ function FindingRow({ finding, selected, dismissed, firstScan }: { finding: Find
   const fill = share != null ? Math.sqrt(share) : finding.impact.score / 100;
   return (
     <button
-      className={`frow ${selected ? "selected" : ""} ${dismissed || finding.inactive ? "dismissed" : ""}`}
+      className={`frow ${selected ? "selected" : ""} ${dismissed || !isActionable(finding) ? "dismissed" : ""}`}
       onClick={() => setState({ finding: finding.id, changes: null })}
     >
-      <span className={`sev ${finding.severity}`} />
+      <span className={`sev ${isActionable(finding) ? finding.severity : "low"}`} />
       <span className="title">{finding.title}</span>
       <span className="impact">
         <span className="v">{share != null ? percent(share) : ""}</span>
         <span className="bar">
-          <span style={{ width: `${Math.max(4, Math.min(100, fill * 100))}%`, background: `var(--${finding.severity})` }} />
+          <span style={{ width: `${Math.max(4, Math.min(100, fill * 100))}%`, background: `var(--${isActionable(finding) ? finding.severity : "low"})` }} />
         </span>
       </span>
       <span className="meta">
         {finding.inactive && finding.last_seen ? `${lastRan(finding.last_seen, firstScan)} · ` : ""}
-        {CATEGORY_LABEL[finding.category]} · {finding.impact.label}
+        {actionLabel(finding)} · {CATEGORY_LABEL[finding.category]} · {finding.impact.label}
         {finding.subject.kind !== "query" ? ` · ${finding.subject.name}` : ""}
       </span>
     </button>

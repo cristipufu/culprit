@@ -308,7 +308,7 @@ fn hot_rows_are_one_finding_per_table() {
     let hot = of(&r, "hot-rows");
     assert_eq!(hot.len(), 1, "{:?}", hot.iter().map(|f| &f.id).collect::<Vec<_>>());
     assert!(
-        hot[0].title.contains("in orders") && hot[0].summary.contains("waited on pk_orders and"),
+        hot[0].title.contains("orders") && hot[0].summary.contains("waited on pk_orders and"),
         "{}",
         hot[0].summary
     );
@@ -317,7 +317,11 @@ fn hot_rows_are_one_finding_per_table() {
         "{}",
         hot[0].summary
     );
-    assert_eq!(hot[0].severity, Severity::High, "about 23 minutes a day over 12 hours of counting");
+    assert_eq!(
+        hot[0].actionability,
+        culprit_core::Actionability::Information,
+        "undated cumulative totals are not current contention"
+    );
 }
 
 // Inserting large values logs them in full: log-volume's advice (batch, drop indexes) can't shrink that.
@@ -642,9 +646,13 @@ fn counts_since_the_start_rise_only_on_a_measured_rate() {
         let f = of(&r, check)[0];
         assert_eq!(f.severity, Severity::Low, "{check}");
         assert!(
-            f.caveats
-                .iter()
-                .any(|c| c.contains("only the minute since the server last restarted: too little time to make a rate")),
+            if check == "hot-rows" {
+                f.actionability == culprit_core::Actionability::Information
+            } else {
+                f.caveats.iter().any(|c| {
+                    c.contains("only the minute since the server last restarted: too little time to make a rate")
+                })
+            },
             "{check}: {:?}",
             f.caveats
         );
@@ -652,7 +660,7 @@ fn counts_since_the_start_rise_only_on_a_measured_rate() {
     // Twelve hours of counting: 15 minutes of waiting is 30 a day.
     s.server.started_at = Some("2026-10-11T00:13:03Z".into());
     let r = analyze(s);
-    assert_eq!(of(&r, "hot-rows")[0].severity, Severity::High);
+    assert_eq!(of(&r, "hot-rows")[0].actionability, culprit_core::Actionability::Information);
     assert_eq!(of(&r, "last-page-insert")[0].severity, Severity::High);
 }
 
@@ -1182,7 +1190,9 @@ fn an_escalation_with_no_write_names_the_read_that_keeps_its_locks() {
         fix.summary
             .starts_with("Start the event session below (culprit_lock_escalation) to learn which statement escalates")
     );
-    assert!(fix.summary.contains("READ_COMMITTED_SNAPSHOT lets reads under read committed take no row locks"));
+    assert!(fix.summary.contains(
+        "Without locking hints, READ_COMMITTED_SNAPSHOT lets ordinary reads under read committed avoid row locks"
+    ));
     assert!(!fix.summary.contains("UPDATE loop"), "{}", fix.summary);
     assert!(fix.sql.unwrap().starts_with("-- SQL Server doesn't record which statement escalated"));
 }

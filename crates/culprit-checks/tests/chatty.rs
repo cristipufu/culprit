@@ -86,7 +86,7 @@ fn a_read_in_a_loop_costs_round_trips_and_is_verified_over_the_window_it_was_cou
     workload.total_executions = workload.queries.iter().map(|q| q.executions).sum();
     let f = analyze(s).findings.into_iter().find(|f| f.id == format!("chatty-query:{id}")).expect("a chatty read");
     assert!(f.title.ends_with("runs 30K times in 2 minutes, one key at a time"), "{}", f.title);
-    assert!(f.summary.starts_with("Its runs are "), "{}", f.summary);
+    assert!(f.summary.contains("Its runs are "), "{}", f.summary);
     assert!(f.summary.contains(" of all statement runs, and each run returns about 1 row."), "{}", f.summary);
     assert!(f.summary.contains("a network round trip.") && !f.summary.contains("connection"), "{}", f.summary);
     // performance_schema keeps running totals: the count a later scan reads still holds every run from before.
@@ -153,7 +153,7 @@ fn mssql() -> Snapshot {
 }
 
 #[test]
-fn an_update_that_hands_out_a_counter_is_told_to_use_a_sequence_not_a_bulk_insert() {
+fn a_compound_counter_preserves_its_other_work_and_results() {
     // A conversation's next message number: one row locked and updated per message, not a loop writing row by row.
     let f = chatty_write(
         mssql(),
@@ -168,13 +168,11 @@ fn an_update_that_hands_out_a_counter_is_told_to_use_a_sequence_not_a_bulk_inser
     );
     assert!(!f.summary.contains("row by row"), "{}", f.summary);
     let fix = f.fix.as_ref().unwrap().summary.clone();
-    assert!(fix.contains("a SEQUENCE (`NEXT VALUE FOR`)") && fix.contains("in the INSERT that uses it"), "{fix}");
+    assert!(fix.contains("preserve every assignment, returned value, row filter and transaction guarantee"), "{fix}");
+    assert!(!fix.contains("in the INSERT") && !fix.contains("NEXT VALUE FOR"));
     assert!(!fix.contains("multi-row VALUES") && !fix.contains("bulk insert"), "{fix}");
     assert!(!f.caveats.iter().any(|c| c.contains("lookups")), "{:?}", f.caveats);
-    assert_eq!(
-        f.verify,
-        vec!["It ran 30K times in 5 hours; after the change it should no longer run, or run far fewer times."]
-    );
+    assert!(f.verify[0].contains("numbering, metadata updates and returned values remain correct"));
     // MySQL's counter hands its number back through LAST_INSERT_ID: no sequences there.
     let f = chatty_write(
         snapshot(),

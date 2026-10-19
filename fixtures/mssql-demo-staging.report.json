@@ -1,6 +1,7 @@
 {
   "findings": [
     {
+      "actionability": "needs-attention",
       "category": "configuration",
       "caveats": [],
       "check": "tier-limit",
@@ -41,11 +42,13 @@
       },
       "summary": "Azure caps each tier's log writes. In the last 60 minutes it was at 95% or more of that cap in 38% of the 15-second samples (peak 100%). This is measured resource use, not a share of waits: writes can be throttled at the cap. At the cap, Azure makes requests wait rather than fail, so it shows up as slowness. Samples near the cap alone do not prove throttling or failed requests occurred.",
       "title": "Log writes reached 95% of the tier's limit in 38% of samples over the last 60 minutes",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan: log writes should stay under 95% for most of the time (the Health strip on Overview shows it)."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "unindexed-fk",
@@ -86,11 +89,13 @@
       },
       "summary": "Deleting a row from shop.support_tickets, or changing its key, makes the database look for matching rows in shop.ticket_events (800K rows) without an index, which means reading the whole table. Queries that load ticket_events rows for one support_tickets row can't seek either.",
       "title": "ticket_events has no index on ticket_id, its foreign key to support_tickets",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the index exists: this finding should be gone, and a delete from shop.support_tickets then finds the rows of shop.ticket_events it checks through the index, not by scanning the table."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "queries",
       "caveats": [],
       "check": "deadlocks",
@@ -137,12 +142,14 @@
       },
       "summary": "Key-lookup deadlock on shop.customers: a read through ix_customers_email and a write to the same rows took their locks in opposite order; session 61's transaction was rolled back. The read finds rows through ix_customers_email and then looks each one up in the table's main index; the write changes the main index first and then ix_customers_email. Each ends up holding the lock the other needs next. It recurs whenever the two statements touch the same rows at the same time.",
       "title": "Two queries deadlocked once in the last 6 hours (key-lookup deadlock on shop.customers)",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan tomorrow: no new key-lookup deadlocks on shop.customers.",
         "Live › Deadlocks shows the graph of each one, with both statements."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "ix_orders_status is narrower, so scans of it read fewer pages. Keep it if a hot query scans it rather than seeking."
@@ -179,12 +186,14 @@
       },
       "summary": "ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.",
       "title": "ix_orders_status is covered by the wider ix_orders_status_created on orders",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_orders_status: this finding should be gone, and ix_orders_status_created should still exist.",
         "Compare queries on shop.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "duplicate-index",
@@ -219,12 +228,14 @@
       },
       "summary": "ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.",
       "title": "ix_products_sku duplicates uq_products_sku on products",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_products_sku: this finding should be gone, and uq_products_sku should still exist.",
         "Compare queries on shop.products over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "configuration",
       "caveats": [],
       "check": "config",
@@ -252,11 +263,13 @@
       },
       "summary": "Even cheap queries go parallel, which wastes CPU on coordination and shows up as CXPACKET/CXCONSUMER waits.",
       "title": "Cost threshold for parallelism is still the 1990s default of 5",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the change has taken effect: this finding is gone."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "configuration",
       "caveats": [],
       "check": "config",
@@ -284,6 +297,7 @@
       },
       "summary": "Capture mode ALL keeps statements that ran once or cost nothing. On a busy database they crowd the store, shorten how far back it can look and add overhead; AUTO keeps what matters.",
       "title": "Query Store records every statement, including one-off ones",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the change has taken effect: this finding is gone."
       ]
@@ -748,6 +762,7 @@
     ],
     "connection": "mssql-demo-staging",
     "constraints": [],
+    "contention_before": null,
     "deadlocks": {
       "counted": null,
       "counted_since": null,

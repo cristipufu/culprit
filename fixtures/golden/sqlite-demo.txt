@@ -1,12 +1,12 @@
 reading: SQLite · database demo.db · scanned 2026-10-16T21:01:15Z
-headline: 5 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.
+headline: 5 opportunities. The top ones touch 43.9 s of database time over the 90 minutes the Rails log covers (99%).
 top share: 99%
 findings: 5
 
 === finding unindexed-fk:main.orders(customer_id)
-high severity · high confidence · indexes
+Needs attention · high severity · high confidence · indexes
 title: orders has no index on customer_id, its foreign key to customers
-summary: Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
+summary: The associated statements used 43.9 s of database time over the 90 minutes the Rails log covers (99%). Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
 impact: 99% of DB time · 98.9% of database time
 metrics:
   - Rows in table: 200K
@@ -29,11 +29,11 @@ queries:
 brief:
     # orders has no index on customer_id, its foreign key to customers
 
-    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.orders(customer_id)`: high impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.orders(customer_id)`: Needs attention, high impact, high confidence. Scanned 2026-10-16T21:01:15Z.
 
     ## What's happening
 
-    Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
+    The associated statements used 43.9 s of database time over the 90 minutes the Rails log covers (99%). Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.
 
     ## Evidence
 
@@ -87,7 +87,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. SQLite builds an index under the database's write lock, so the application's writes wait until it finishes: run it when writes are quiet. After any change is live, run `culprit scan sqlite-demo` and check `unindexed-fk:main.orders(customer_id)` the way *How to verify* says.
 
 === finding unindexed-fk:main.order_items(product_id)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: order_items has no index on product_id, its foreign key to products
 summary: Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.
 impact: 200K rows unindexed
@@ -106,7 +106,7 @@ caveats:
 brief:
     # order_items has no index on product_id, its foreign key to products
 
-    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.order_items(product_id)`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `unindexed-fk:main.order_items(product_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
 
     ## What's happening
 
@@ -140,7 +140,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. SQLite builds an index under the database's write lock, so the application's writes wait until it finishes: run it when writes are quiet. After any change is live, run `culprit scan sqlite-demo` and check `unindexed-fk:main.order_items(product_id)` the way *How to verify* says.
 
 === finding duplicate-index:main.orders.ix_orders_status_again
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ix_orders_status_again duplicates ix_orders_status on orders
 summary: ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.
 impact: 3.5 MB redundant
@@ -156,7 +156,7 @@ verify:
 brief:
     # ix_orders_status_again duplicates ix_orders_status on orders
 
-    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `duplicate-index:main.orders.ix_orders_status_again`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `duplicate-index:main.orders.ix_orders_status_again`: Optional improvement, low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
 
     ## What's happening
 
@@ -186,7 +186,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan sqlite-demo` and check `duplicate-index:main.orders.ix_orders_status_again` the way *How to verify* says.
 
 === finding config:sqlite-statistics
-low severity · high confidence · maintenance
+Optional improvement · low severity · high confidence · maintenance
 title: SQLite has no statistics to choose between this file's indexes
 summary: The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
 impact: No statistics
@@ -201,7 +201,7 @@ verify:
 brief:
     # SQLite has no statistics to choose between this file's indexes
 
-    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-statistics`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-statistics`: Optional improvement, low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
 
     ## What's happening
 
@@ -230,7 +230,7 @@ brief:
     The fix is upkeep of the database, not a change to the application's code: run it against the database outside busy hours, and if the fix says to repeat it, do that where this project runs its recurring database work (a scheduled job, or where the application opens and closes its connections, which is where SQLite's `PRAGMA optimize` belongs). After any change is live, run `culprit scan sqlite-demo` and check `config:sqlite-statistics` the way *How to verify* says.
 
 === finding config:sqlite-free-pages
-low severity · high confidence · maintenance
+Optional improvement · low severity · high confidence · maintenance
 title: 47.0 MB of the file is free pages (71% of it)
 summary: Deleted rows leave their pages in the file for SQLite to reuse; the file doesn't shrink on its own. That's fine when new rows will fill them again. If not, the file stays larger than its data, which every backup and copy pays for.
 impact: 47.0 MB free
@@ -247,7 +247,7 @@ verify:
 brief:
     # 47.0 MB of the file is free pages (71% of it)
 
-    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-free-pages`: low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
+    Database: **sqlite-demo** (SQLite, database `demo.db`, development environment). Finding `config:sqlite-free-pages`: Optional improvement, low impact, high confidence. Scanned 2026-10-16T21:01:15Z.
 
     ## What's happening
 

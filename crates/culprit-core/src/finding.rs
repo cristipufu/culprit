@@ -42,6 +42,46 @@ pub enum Confidence {
     High,
 }
 
+/// What a person can do with a finding, independently of its severity. Historical and informational evidence stays
+/// available, but contributes neither an opportunity nor an alert. Older reports default to optional advice until
+/// the current checks read their evidence again.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum Actionability {
+    NeedsAttention,
+    #[default]
+    OptionalImprovement,
+    Information,
+    History,
+}
+
+impl Actionability {
+    pub fn is_actionable(self) -> bool {
+        matches!(self, Self::NeedsAttention | Self::OptionalImprovement)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NeedsAttention => "Needs attention",
+            Self::OptionalImprovement => "Optional improvement",
+            Self::Information => "Information",
+            Self::History => "History",
+        }
+    }
+}
+
+/// What a later scan can establish. A cumulative observation cannot disappear as proof of a fix: resetting or
+/// losing its counters can remove it too. Embedding checks can opt into the same verification contract.
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum VerificationBasis {
+    #[default]
+    Rescan,
+    CounterChange,
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 #[ts(export)]
@@ -129,6 +169,8 @@ pub struct Finding {
     pub check: String,
     pub category: Category,
     pub severity: Severity,
+    #[serde(default)]
+    pub actionability: Actionability,
     pub confidence: Confidence,
     pub title: String,
     pub summary: String,
@@ -138,6 +180,8 @@ pub struct Finding {
     pub queries: Vec<QueryRef>,
     pub fix: Option<Fix>,
     pub verify: Vec<String>,
+    #[serde(default)]
+    pub verification_basis: VerificationBasis,
     pub caveats: Vec<String>,
     /// When the affected queries last ran, for query findings.
     #[serde(default)]
@@ -145,6 +189,17 @@ pub struct Finding {
     /// The affected queries stopped running well before the end of the window: a deploy may have fixed or replaced them.
     #[serde(default)]
     pub inactive: bool,
+}
+
+impl Finding {
+    pub fn is_actionable(&self) -> bool {
+        !self.inactive && self.actionability.is_actionable()
+    }
+
+    /// A check's explicit decision that its evidence supplies context and no justified change.
+    pub fn informational(&mut self) {
+        self.actionability = Actionability::Information;
+    }
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]

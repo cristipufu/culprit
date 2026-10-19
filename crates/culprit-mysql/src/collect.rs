@@ -431,6 +431,7 @@ pub async fn snapshot(
         constraints: Vec::new(),
         histograms: None,
         escalations_before: None,
+        contention_before: None,
         evictions_before: None,
         sizes_before: None,
     };
@@ -683,6 +684,7 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
     let digest = r.string("digest");
     Digest {
         stat: QueryStat {
+            resolved_write_target: None,
             id: digest.chars().take(16).collect(),
             query_hash: Some(digest),
             text: r.string("digest_text"),
@@ -1517,6 +1519,7 @@ mod tests {
     fn digest(id: &str, time: f64, calls: f64, examined: f64) -> Digest {
         Digest {
             stat: QueryStat {
+                resolved_write_target: None,
                 id: id.into(),
                 query_hash: None,
                 text: String::new(),

@@ -220,6 +220,7 @@ pub fn workload(
             let total: f64 = sorted.iter().sum();
             let trend = timeline.as_ref().map(|(t, _)| query_trend(runs, &prints, &g.key, t));
             QueryStat {
+                resolved_write_target: None,
                 id: id.clone(),
                 query_hash: Some(id),
                 text: g.display,

@@ -6,7 +6,7 @@ use super::*;
 /// Findings arrive ranked by impact; among equally severe ones the first is the most important. (`max_by_key` keeps
 /// the last of equal maximums, hence the reversal.)
 pub(super) fn worst_finding<'a>(report: &'a Report, check: &str) -> Option<&'a Finding> {
-    report.findings.iter().filter(|f| f.check == check && !f.inactive).rev().max_by_key(|f| f.severity)
+    report.findings.iter().filter(|f| f.check == check && f.is_actionable()).rev().max_by_key(|f| f.severity)
 }
 
 /// A collector's note, when it explains why a tile has nothing to show.
@@ -111,7 +111,7 @@ pub(super) fn storage(report: &Report) -> Tile {
                     report
                         .findings
                         .iter()
-                        .filter(|g| !g.inactive && g.id.starts_with(&prefix))
+                        .filter(|g| g.is_actionable() && g.id.starts_with(&prefix))
                         .filter(|g| {
                             g.metrics.iter().any(|m| {
                                 matches!(m.label.as_str(), "File" | "Files")
@@ -270,7 +270,7 @@ pub(super) fn replication(report: &Report) -> Tile {
                 report
                     .findings
                     .iter()
-                    .filter(|f| f.check == "replica-lag" && !f.inactive && f.subject.name == r.name)
+                    .filter(|f| f.check == "replica-lag" && f.is_actionable() && f.subject.name == r.name)
                     .map(|f| severity_status(f.severity))
                     .max()
                     .unwrap_or(TileStatus::Info),
@@ -348,7 +348,7 @@ pub(super) fn failures(report: &Report) -> Tile {
                 report
                     .findings
                     .iter()
-                    .find(|f| f.id == id && !f.inactive)
+                    .find(|f| f.id == id && f.is_actionable())
                     .map(|f| severity_status(f.severity))
                     .unwrap_or(TileStatus::Info),
             );

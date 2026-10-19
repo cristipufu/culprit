@@ -1,12 +1,12 @@
 reading: MariaDB 11.8.9 · database shop · scanned 2026-10-11T16:05:40Z
-headline: 8 opportunities. The top ones touch 95% of database time over the 1 minute since statistics were reset.
+headline: 8 opportunities. The top ones touch 53.7 s of database time over the 1 minute since statistics were reset (95%).
 top share: 95%
 findings: 8
 
 === finding temp-spill:375c64398248650e
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: A read from orders builds an on-disk temporary table about once per run
-summary: The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+summary: The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
 impact: 89% of DB time · 88.6% of database time
 metrics:
   - On-disk temporary tables per run: 1
@@ -23,11 +23,11 @@ queries:
 brief:
     # A read from orders builds an on-disk temporary table about once per run
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `temp-spill:375c64398248650e`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `temp-spill:375c64398248650e`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
-    The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+    The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
 
     ## Evidence
 
@@ -64,10 +64,10 @@ brief:
     If you choose an index from the fix's options, ship it through this project's schema migrations. If you choose a query change, find where the application sends the statements above (search for their table and column names) and make that change in the calling code. If you choose the session-setting option, set those variables on the application's connections. The setting in the fix's SQL belongs to the database server, not to the application's code: apply it where this project manages the server's configuration (infrastructure as code, the platform's parameter group, the server's configuration file). Where nothing manages it, run the setting's statements from the fix's SQL against the server as a login allowed to change its settings. After any change is live, run `culprit scan mariadb-demo` and check `temp-spill:375c64398248650e` the way *How to verify* says.
 
 === finding chatty-query:a92bb0be330ac53a
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: A read from products runs 30K times in 1 minute, one key at a time
-summary: Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
-impact: 75% of executions · 1.0% of database time
+summary: 587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
+impact: 587 ms of database time over the 1 minute since statistics were reset (1%) · 1.0% of database time
 metrics:
   - Share of executions: 75%
   - Average duration: 0.02 ms
@@ -81,11 +81,11 @@ queries:
 brief:
     # A read from products runs 30K times in 1 minute, one key at a time
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `chatty-query:a92bb0be330ac53a`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `chatty-query:a92bb0be330ac53a`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
-    Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
+    587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
 
     ## Evidence
 
@@ -117,10 +117,10 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `chatty-query:a92bb0be330ac53a` the way *How to verify* says.
 
 === finding heavy-query:decf59629e790076
-low severity · high confidence · queries
-title: A read from orders takes 6% of database time
-summary: It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
-impact: 6% of DB time · 5.6% of database time
+Optional improvement · low severity · high confidence · queries
+title: A read from orders takes 3.2 s of database time over the 1 minute since statistics were reset (6%)
+summary: 3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+impact: 3.2 s of database time over the 1 minute since statistics were reset (6%) · 5.6% of database time
 metrics:
   - Share of DB time: 6%
   - Average duration: 1.6 ms
@@ -132,13 +132,13 @@ verify:
 queries:
   - decf59629e790076: 6% of database time · plan step 1
 brief:
-    # A read from orders takes 6% of database time
+    # A read from orders takes 3.2 s of database time over the 1 minute since statistics were reset (6%)
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `heavy-query:decf59629e790076`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `heavy-query:decf59629e790076`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
-    It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+    3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
 
     ## Evidence
 
@@ -170,9 +170,9 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan mariadb-demo` and check `heavy-query:decf59629e790076` the way *How to verify* says.
 
 === finding scan-heavy:shop.orders
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)
-summary: shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+summary: The associated statements used 2.3 s of database time over the 1 minute since statistics were reset (4%). shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 impact: 4% of DB time · 4.0% of database time
 metrics:
   - Full reads: 80
@@ -190,11 +190,11 @@ queries:
 brief:
     # orders is read in full 80 times since the server started or its performance_schema counters were last reset (40.0M rows)
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `scan-heavy:shop.orders`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `scan-heavy:shop.orders`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
-    shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
+    The associated statements used 2.3 s of database time over the 1 minute since statistics were reset (4%). shop.orders has 499K rows, and queries have read all of it 80 times since the server started or its performance_schema counters were last reset: 40.0M rows read without an index. 1 of the captured statements reads it in full (its plan scans it); explain it to check the access path, then measure rows kept in representative runs. A read from orders (query 375c64398248650e) reads it in full too, on purpose: it has no WHERE clause, so no index on a filter changes that.
 
     ## Evidence
 
@@ -230,7 +230,7 @@ brief:
     Gather the runtime evidence the fix asks for first, from a retained actual plan or a representative run in a test environment. Check the actual row counts and IO for that run before choosing a change to the application's statements, indexes or statistics. After any change is live, run `culprit scan mariadb-demo` and check `scan-heavy:shop.orders` the way *How to verify* says.
 
 === finding deadlocks:opposite-order:shop.customers+shop.orders
-low severity · high confidence · queries
+Optional improvement · low severity · high confidence · queries
 title: Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)
 summary: Two transactions locked shop.customers and shop.orders in opposite order and waited on each other; session 202's transaction was rolled back. Each transaction had already changed rows the other one wanted next: session 202 was running “UPDATE shop.customers SET name = name WHERE id = 1” and session 201 “UPDATE shop.orders SET status = status WHERE id = 1”. With the same order in both, the second would simply wait instead of deadlocking.
 impact: at least 1 deadlock
@@ -247,7 +247,7 @@ caveats:
 brief:
     # Two queries deadlocked at least once, most recently on Oct 11 at 16:05 UTC (opposite access order on shop.customers and shop.orders)
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `deadlocks:opposite-order:shop.customers+shop.orders`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
@@ -277,7 +277,7 @@ brief:
     The statements to look for are quoted under *What's happening*: find the code that sends them (search for `shop.customers` and `shop.orders`) and make the change the fix describes there. After any change is live, run `culprit scan mariadb-demo` and check `deadlocks:opposite-order:shop.customers+shop.orders` the way *How to verify* says.
 
 === finding duplicate-index:shop.orders.ix_orders_status
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: ix_orders_status is covered by the wider ix_orders_status_created on orders
 summary: ix_orders_status has keys (status) and ix_orders_status_created has keys (status, created_at). Any query that can seek on ix_orders_status can seek on ix_orders_status_created instead. Every write to shop.orders maintains both.
 impact: 9.5 MB redundant
@@ -295,7 +295,7 @@ caveats:
 brief:
     # ix_orders_status is covered by the wider ix_orders_status_created on orders
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.orders.ix_orders_status`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.orders.ix_orders_status`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
@@ -329,7 +329,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mariadb-demo` and check `duplicate-index:shop.orders.ix_orders_status` the way *How to verify* says.
 
 === finding duplicate-index:shop.products.ix_products_sku
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: ix_products_sku duplicates uq_products_sku on products
 summary: ix_products_sku has keys (sku) and uq_products_sku has keys (sku). They are the same index twice. Every write to shop.products maintains both.
 impact: 432 KB redundant
@@ -345,7 +345,7 @@ verify:
 brief:
     # ix_products_sku duplicates uq_products_sku on products
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.products.ix_products_sku`: low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `duplicate-index:shop.products.ix_products_sku`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 
@@ -375,7 +375,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. After any change is live, run `culprit scan mariadb-demo` and check `duplicate-index:shop.products.ix_products_sku` the way *How to verify* says.
 
 === finding row-lock-waits:server
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average
 summary: Since MariaDB started 69 minutes ago, InnoDB made transactions across the whole server (it counts every database together) wait for row locks 20 times, 2 min 32 s in all and about 7.6 s each: about 2 min an hour on average; the counters don't say when. Lock waits grow with long transactions, and with UPDATE or DELETE statements whose filter isn't indexed: they lock every row they scan.
 impact: 2 min/h lock waits
@@ -391,7 +391,7 @@ caveats:
 brief:
     # Transactions on this server waited 2 min 32 s for row locks since MariaDB started 69 minutes ago, 7.6 s each on average
 
-    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `row-lock-waits:server`: low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
+    Database: **mariadb-demo** (MariaDB 11.8.9, database `shop`, development environment). Finding `row-lock-waits:server`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T16:05:40Z.
 
     ## What's happening
 

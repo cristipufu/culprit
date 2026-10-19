@@ -211,6 +211,9 @@ pub(super) fn plan_warning_finding(
                     });
                 }
                 JoinCondition::Present => {
+                    if q.plan.as_ref().is_some_and(|p| culprit_core::insights::runs_cheaply(p, q)) {
+                        f.informational();
+                    }
                     f.title = format!(
                         "{}'s plan {} two inputs without a join condition",
                         capitalize(&handle),

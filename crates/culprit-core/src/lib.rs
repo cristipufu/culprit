@@ -62,8 +62,9 @@ pub use plan_diff::{
 pub use platform::Platform;
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
 pub use signals::{
-    ColumnHistogram, ConstraintIssue, ConstraintKind, CountBaseline, EscalationBaseline, FileIo, FileKind,
-    IndexContention, QueryCosts, Replica, ReplicaRole, SizeBaseline, TableStorage, escalations_by_table,
+    ColumnHistogram, ConstraintIssue, ConstraintKind, ContentionBaseline, CountBaseline, EscalationBaseline, FileIo,
+    FileKind, IndexContention, IndexLockCounts, QueryCosts, Replica, ReplicaRole, SizeBaseline, TableStorage,
+    escalations_by_table,
 };
 pub use verification::{Verification, VerifiedFinding, VerifyStatus, compare_reports};
 pub use waits::{

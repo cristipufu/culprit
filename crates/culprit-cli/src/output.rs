@@ -385,7 +385,7 @@ impl Out {
         println!("{}", self.paint(BOLD, &report.summary.headline));
         println!();
         // Findings whose queries stopped running come last, under their own heading: likely fixed or changed by a deploy.
-        let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = list.iter().partition(|f| !f.inactive);
+        let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = list.iter().partition(|f| f.is_actionable());
         for (i, f) in active.iter().enumerate() {
             println!(
                 "{:>3}  {}  {}  {}",
@@ -398,16 +398,7 @@ impl Out {
         }
         if !stopped.is_empty() {
             println!();
-            println!(
-                "{}",
-                self.paint(
-                    BOLD,
-                    &format!(
-                        "Stopped running ({}): their queries no longer run; a deploy may have changed them",
-                        stopped.len()
-                    )
-                )
-            );
+            println!("{}", self.paint(BOLD, &format!("Information and history ({})", stopped.len())));
             for (i, f) in stopped.iter().enumerate() {
                 println!("{:>3}  {}  {}", active.len() + i + 1, self.paint(DIM, "○"), self.paint(DIM, &f.title));
                 println!("       {}", self.paint(DIM, &f.id));
@@ -1256,14 +1247,14 @@ fn markdown_report(report: &Report) -> String {
         culprit_core::changes::dated_time(&s.taken_at),
         report.summary.headline
     );
-    let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = report.findings.iter().partition(|f| !f.inactive);
+    let (active, stopped): (Vec<&Finding>, Vec<&Finding>) = report.findings.iter().partition(|f| f.is_actionable());
     let table = |out: &mut String, list: &[&Finding], from: usize| {
-        out.push_str("| # | Severity | Finding | Impact | Id |\n|---|---|---|---|---|\n");
+        out.push_str("| # | Status | Finding | Impact | Id |\n|---|---|---|---|---|\n");
         for (i, f) in list.iter().enumerate() {
             out.push_str(&format!(
-                "| {} | {:?} | {} | {} | `{}` |\n",
+                "| {} | {} | {} | {} | `{}` |\n",
                 from + i + 1,
-                f.severity,
+                if f.inactive { "Stopped running" } else { f.actionability.label() },
                 md_cell(&f.title),
                 md_cell(&f.impact.label),
                 f.id.replace('`', "'")
@@ -1272,10 +1263,7 @@ fn markdown_report(report: &Report) -> String {
     };
     table(&mut out, &active, 0);
     if !stopped.is_empty() {
-        out.push_str(&format!(
-            "\n## Stopped running ({})\n\nTheir queries no longer run; a deploy may have changed them.\n\n",
-            stopped.len()
-        ));
+        out.push_str(&format!("\n## Information and history ({})\n\n", stopped.len()));
         table(&mut out, &stopped, active.len());
     }
     out
@@ -1321,11 +1309,11 @@ mod tests {
     #[test]
     fn stopped_findings_get_their_own_section_and_text_stays_text() {
         let mut r = report();
-        let stopped = r.findings.iter().filter(|f| f.inactive).count();
+        let context = r.findings.iter().filter(|f| !f.is_actionable()).count();
         r.findings[0].inactive = true;
         r.findings[1].title = "orders <img src=x onerror=alert(1)> | split".into();
         let md = markdown_report(&r);
-        assert!(md.contains(&format!("## Stopped running ({})", stopped + 1)), "{md}");
+        assert!(md.contains(&format!("## Information and history ({})", context + 1)), "{md}");
         assert!(md.contains("&lt;img") && !md.contains("<img"));
         assert!(md.contains("\\| split"));
     }

@@ -222,6 +222,10 @@ pub struct DigestFinding {
     pub id: String,
     pub title: String,
     pub severity: Severity,
+    #[serde(default)]
+    pub actionability: crate::Actionability,
+    #[serde(default)]
+    pub verification_basis: crate::VerificationBasis,
     /// Share of database time behind it, 0–1, when it is about queries.
     pub db_time_share: Option<f64>,
     /// How big it is in a few words: "11% of DB time", "2.0 MB unused".

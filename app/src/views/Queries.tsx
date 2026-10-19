@@ -32,7 +32,7 @@ const COLUMNS: { key: SortKey; label: string; optional?: boolean }[] = [
 
 /** Verb, table and key predicate on one line ("SELECT orders · customer_id = @P1"); the statement on hover. */
 function QueryCell({ q }: { q: QueryStat }) {
-  const s = querySummary(q.text, q.object_name);
+  const s = querySummary(q.text, q.object_name, q.resolved_write_target);
   return (
     <span className="qsum" title={oneLine(q.text)}>
       <b>{s.verb}</b>

@@ -244,7 +244,8 @@ fn hot_rows_and_last_page() {
         ..Default::default()
     });
     let hot = hot_rows(&s);
-    assert_eq!(hot[0].title, format!("Sessions wait 3.0 s each on row locks in {table}"));
+    assert_eq!(hot[0].title, format!("{table} has 40 recorded historical lock waits"));
+    assert_eq!(hot[0].actionability, culprit_core::Actionability::Information);
     assert!(hot[0].summary.contains("escalated"));
     let page = last_page_insert(&s);
     assert_eq!(page[0].title, format!("Inserts into {table} queue for the last page of {index}"));
@@ -301,7 +302,7 @@ fn lock_escalations_add_up_per_table_and_name_the_write_that_changes_the_most_ro
         f[0].summary
     );
     assert_eq!(f[0].queries[0].id, id);
-    assert_eq!(f[0].severity, Severity::High);
+    assert_eq!(f[0].severity, Severity::Low);
     assert_eq!(f[0].metrics[0].label, ESCALATIONS_METRIC);
     assert_eq!(f[0].metrics[0].value, 5.0);
     assert!(f[0].fix.as_ref().unwrap().sql.as_ref().unwrap().contains("DELETE TOP (1000) FROM [dbo].[orders]"));
@@ -327,15 +328,15 @@ fn a_table_with_no_statement_writing_to_it_says_where_to_look() {
     );
     assert!(f[0].summary.contains("none of the statements in the query history writes to it"), "{}", f[0].summary);
     assert!(f[0].queries.is_empty());
-    assert_eq!(f[0].severity, Severity::High);
+    assert_eq!(f[0].severity, Severity::Low);
 }
 
 #[test]
-fn a_single_lock_escalation_is_high() {
+fn a_single_undated_lock_escalation_is_information() {
     let s = escalations_on("orders", escalating(1.0, 1.0, 0.0), IndexContention::default());
     let f = lock_escalations(&s);
     assert_eq!(f[0].title, "Row locks on orders escalated to a table lock once since SQL Server started (Oct 11)");
-    assert_eq!(f[0].severity, Severity::High);
+    assert_eq!(f[0].severity, Severity::Low);
 }
 
 /// `s` with the counts of an earlier scan of it, taken at 06:00 on the day it was taken.
@@ -360,10 +361,10 @@ fn with_earlier_scan(mut s: Snapshot, counts: &[(&str, f64)], started_at: Option
 // tell whether they're recent. The finding says when the count began, and only a rate measured since then raises
 // it: two in the 12 hours since the start is High.
 #[test]
-fn escalations_without_an_earlier_scan_are_graded_on_their_rate_since_the_start() {
+fn escalations_without_an_earlier_scan_are_undated_information() {
     let mut s = escalations_on("orders", escalating(2.0, 0.0, 0.0), IndexContention::default());
     let f = &lock_escalations(&s)[0];
-    assert_eq!(f.severity, Severity::High);
+    assert_eq!(f.severity, Severity::Low);
     // Counted for 12 hours: none of them is older than that (the fresh SQL Server reading said "they may be old" three
     // minutes after a restart).
     assert!(
@@ -374,7 +375,7 @@ fn escalations_without_an_earlier_scan_are_graded_on_their_rate_since_the_start(
         "{}",
         f.summary
     );
-    assert!(f.summary.contains("once a day or more on average since then"), "{}", f.summary);
+    assert!(f.summary.contains("once a day or more on average over the counter history"), "{}", f.summary);
     assert_eq!(f.metrics.len(), 1);
     // Counted for days, they may be old.
     s.server.started_at = Some("2026-10-08T00:13:03Z".into());
@@ -400,7 +401,7 @@ fn one_escalation_in_six_months_is_low_history_on_a_first_scan() {
     // A few a week since the start is Medium: likely to happen again.
     s.server.started_at = Some("2026-10-01T12:00:00Z".into());
     s.indexes.iter_mut().filter_map(|i| i.contention.as_mut()).for_each(|c| c.lock_escalations = 3.0);
-    assert_eq!(lock_escalations(&s)[0].severity, Severity::Medium);
+    assert_eq!(lock_escalations(&s)[0].severity, Severity::Low);
     // Minutes of counting make no rate: the demo's server started 44 seconds before the scan.
     s.server.started_at = Some("2026-10-11T12:13:03Z".into());
     let f = &lock_escalations(&s)[0];

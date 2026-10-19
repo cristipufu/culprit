@@ -525,21 +525,18 @@ fn a_request_last_made_before_the_window_is_history() {
         Some("2026-08-01T09:00:00Z".into());
     let report = analyze(s.clone());
     let f = finding(&report, "missing-index:shop.order_items(order_id)").expect("the request");
-    assert!(f.inactive);
+    assert_eq!(f.actionability, culprit_core::Actionability::History);
+    assert!(!f.inactive, "an old request does not prove that its associated statements stopped");
     assert_eq!(f.severity, Severity::Low);
     assert!(f.caveats[0].starts_with("SQL Server's optimizer last asked for this index on Aug 1"), "{}", f.caveats[0]);
     assert!(!index_advice(&report).candidates.iter().any(|c| c.finding_id.as_deref() == Some(f.id.as_str())));
-    // CX-B: history gets no index of its own: no SQL, and nothing to check unless the statements come back.
+    // Historical requests get no DDL without new evidence in the selected period.
     let fix = f.fix.as_ref().unwrap();
     assert!(fix.sql.is_none(), "{:?}", fix.sql);
-    assert!(
-        fix.summary.starts_with("Nothing to create unless the statements that wanted it come back"),
-        "{}",
-        fix.summary
-    );
-    assert!(f.verify[0].starts_with("Nothing to check unless they come back"), "{:?}", f.verify);
-    assert!(f.title.contains(" was searched by "), "{}", f.title);
-    assert!(f.summary.contains("needed to. It estimated"), "{}", f.summary);
+    assert!(fix.summary.starts_with("Keep this candidate as context"), "{}", fix.summary);
+    assert!(f.verify[0].starts_with("A later scan must show a new request"), "{:?}", f.verify);
+    assert!(f.title.contains("previously requested an index"), "{}", f.title);
+    assert!(f.summary.contains("does not establish that this historical request is still needed"), "{}", f.summary);
 
     // A small newer request on the same key is still evidence of activity, even below the candidate count threshold.
     let mut same_key = s.clone();
@@ -555,15 +552,16 @@ fn a_request_last_made_before_the_window_is_history() {
 
     // A staging SQL Server reading: requests last made just before a 2-hour window were called stopped, and the next
     // scan showed them still coming. Under a day of silence (here 6 hours before the demo's data ends, before its
-    // 4.6-hour window), the finding says what the window shows and stays active, with its SQL.
+    // 4.6-hour window), the finding says what the window shows and stays informational, without DDL.
     let mut recent = s.clone();
     recent.missing_indexes.iter_mut().find(|m| m.table == "order_items").unwrap().last_used =
         Some("2026-10-11T06:00:00Z".into());
     let report = analyze(recent);
     let f = finding(&report, "missing-index:shop.order_items(order_id)").expect("the request");
     assert!(!f.inactive, "{:?}", f.caveats);
-    assert!(f.title.contains(" is searched by "), "{}", f.title);
-    assert!(f.fix.as_ref().is_some_and(|x| x.sql.is_some()), "{:?}", f.fix);
+    assert!(f.title.contains("previously requested an index"), "{}", f.title);
+    assert_eq!(f.actionability, culprit_core::Actionability::Information);
+    assert!(f.fix.as_ref().is_some_and(|x| x.sql.is_none()), "{:?}", f.fix);
     let said = f.summary.clone() + " " + &f.caveats.join(" ");
     assert!(
         said.contains("None of the last 5 hours' statements asked for it: SQL Server's optimizer last did on Oct 11 at 06:00 UTC, 6 h 14 min before this scan's data ends"),
@@ -575,7 +573,8 @@ fn a_request_last_made_before_the_window_is_history() {
     s.workload = None;
     let report = analyze(s);
     let f = finding(&report, "missing-index:shop.order_items(order_id)").expect("the request");
-    assert!(f.inactive);
+    assert_eq!(f.actionability, culprit_core::Actionability::History);
+    assert!(!f.inactive, "an old request does not prove that its associated statements stopped");
     assert!(f.caveats[0].contains("days before this scan's data ends"), "{}", f.caveats[0]);
 }
 
@@ -838,7 +837,7 @@ fn a_scan_of_a_table_that_is_gone_is_told_from_its_plan_in_the_past() {
         "{here}"
     );
     let gone = plant(true);
-    assert!(gone.starts_with("One query read every row of public.order_items (1.0M rows) and kept only"), "{gone}");
+    assert!(gone.contains("One query read every row of public.order_items (1.0M rows) and kept only"), "{gone}");
     assert!(
         gone.contains("The plan it last ran with had no index starting with product_id to seek. It accounted for"),
         "{gone}"

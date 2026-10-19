@@ -373,8 +373,9 @@ fn finding_section(
     let _ = writeln!(out, "{level} {}\n", text(&finding.title));
     let _ = writeln!(
         out,
-        "**{}** · {} impact, {} confidence · {}\n",
+        "**{}** · {} · {} impact, {} confidence · {}\n",
         finding.impact.label,
+        finding.actionability.label(),
         format!("{:?}", finding.severity).to_lowercase(),
         format!("{:?}", finding.confidence).to_lowercase(),
         server_line(report)
@@ -498,6 +499,9 @@ pub fn report_markdown(report: &Report, options: &ExportOptions) -> String {
 }
 
 fn severity_dot(f: &Finding) -> &'static str {
+    if !f.is_actionable() {
+        return "○";
+    }
     match f.severity {
         culprit_core::Severity::High => "🔴",
         culprit_core::Severity::Medium => "🟠",

@@ -272,6 +272,20 @@ fn document_columns_stay_out_of_suggested_includes() {
         last_used: None,
         query_hashes: Vec::new(),
     });
+    let w = s.workload.as_mut().unwrap();
+    let mut q = w.queries[0].clone();
+    q.id = "document-lookup".into();
+    q.query_hash = Some("0xD0C001".into());
+    q.text = "SELECT zz_note FROM shop.ticket_events WHERE zz_channel = @channel".into();
+    q.plan = None;
+    q.plans.clear();
+    q.first_seen = None;
+    q.last_seen = None;
+    q.executions = 1000.0;
+    q.total_time_ms = 20_000.0;
+    q.mean_time_ms = 20.0;
+    w.queries.push(q);
+    s.missing_indexes.last_mut().unwrap().query_hashes = vec!["0xD0C001".into()];
     let report = analyze(s);
     let f = finding(&report.findings, "missing-index:shop.ticket_events(zz_channel)").expect("missing index");
     let sql = f.fix.as_ref().unwrap().sql.as_deref().unwrap();

@@ -26,19 +26,40 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
     let previous_at = baseline.as_ref().map(|(at, _)| at.clone());
     let board = crate::dashboard(report);
     let day = report.snapshot.workload.as_ref().and_then(day_over_day);
-    let active: Vec<&Finding> = report.findings.iter().filter(|f| !f.inactive).collect();
+    let active: Vec<&Finding> = report.findings.iter().filter(|f| f.is_actionable()).collect();
     let count = |s: Severity| active.iter().filter(|f| f.severity == s).count() as u32;
     let since = baseline.map(|(taken_at, before)| {
         let was = |id: &str| before.iter().find(|f| f.id == id);
         DigestChanges {
             taken_at,
-            new: active.iter().filter(|f| was(&f.id).is_none()).take(top).map(|f| item(f, None)).collect(),
-            fixed: before.iter().filter(|f| !active.iter().any(|a| a.id == f.id)).take(top).cloned().collect(),
+            new: active
+                .iter()
+                .filter(|f| {
+                    was(&f.id).is_none_or(|before| !before.actionability.is_actionable() && event_count(f).is_none())
+                })
+                .take(top)
+                .map(|f| item(f, None))
+                .collect(),
+            fixed: before
+                .iter()
+                .filter(|f| {
+                    f.actionability.is_actionable()
+                        && f.verification_basis != culprit_core::VerificationBasis::CounterChange
+                        && f.count.is_none()
+                        && !report.findings.iter().any(|a| a.id == f.id)
+                })
+                .take(top)
+                .cloned()
+                .collect(),
             // A count since startup turns a finding High when it grew and Low when it didn't: `again` says that.
             worse: active
                 .iter()
                 .filter(|f| event_count(f).is_none())
-                .filter_map(|f| was(&f.id).filter(|b| f.severity > b.severity).map(|b| item(f, Some(b.severity))))
+                .filter_map(|f| {
+                    was(&f.id)
+                        .filter(|b| b.actionability.is_actionable() && f.severity > b.severity)
+                        .map(|b| item(f, Some(b.severity)))
+                })
                 .take(top)
                 .collect(),
             again: active
@@ -71,7 +92,7 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         },
         since,
         top: grouped(&active, top),
-        findings: active.iter().map(|f| item(f, None)).collect(),
+        findings: report.findings.iter().filter(|f| !f.inactive).map(|f| item(f, None)).collect(),
         top_queries: heaviest_queries(report, &active, top_queries),
         index_advice: Some(index_advice(report, &active, top)),
         deadlocks: Some(deadlocks(report, previous_at.as_deref(), top)),
@@ -430,6 +451,8 @@ fn item(f: &Finding, was: Option<Severity>) -> DigestFinding {
         id: f.id.clone(),
         title: f.title.clone(),
         severity: f.severity,
+        actionability: f.actionability,
+        verification_basis: f.verification_basis,
         db_time_share: f.impact.db_time_share,
         impact: f.impact.label.clone(),
         was,
@@ -454,11 +477,11 @@ mod tests {
     fn a_first_digest_counts_and_ranks_without_changes() {
         let r = report();
         let d = digest(&r, None, 3, 5);
-        let active = r.findings.iter().filter(|f| !f.inactive).count() as u32;
+        let active = r.findings.iter().filter(|f| f.is_actionable()).count() as u32;
         assert_eq!(d.counts.active, active);
         assert_eq!(d.counts.high + d.counts.medium + d.counts.low, active);
         assert_eq!(d.top.len(), 3.min(active as usize));
-        assert_eq!(d.top[0].id, r.findings.iter().find(|f| !f.inactive).unwrap().id);
+        assert_eq!(d.top[0].id, r.findings.iter().find(|f| f.is_actionable()).unwrap().id);
         assert!(d.since.is_none());
         assert_eq!(d.headline, r.summary.headline);
         // The demo's history covers under a day: no day-over-day comparison.
@@ -566,7 +589,7 @@ mod tests {
         let gone = before.findings.remove(0);
         let from_report = digest(&now, Some(&before), 10, 5).since.expect("changes");
         let previous = digest(&before, None, 3, 5);
-        assert_eq!(previous.findings.len(), before.findings.iter().filter(|f| !f.inactive).count());
+        assert_eq!(previous.findings.len(), before.findings.iter().filter(|f| f.is_actionable()).count());
         let from_digest = digest_since(&now, &previous, 10, 5).since.expect("changes");
         assert_eq!(from_digest, from_report);
         assert_eq!(from_digest.new[0].id, gone.id);
@@ -624,7 +647,7 @@ mod tests {
         let about: Vec<&str> = r
             .findings
             .iter()
-            .filter(|f| !f.inactive)
+            .filter(|f| f.is_actionable())
             .filter(|f| {
                 (f.subject.kind == SubjectKind::Query && f.subject.name == first.id)
                     || f.queries.iter().any(|q| q.id == first.id)
@@ -671,6 +694,15 @@ mod tests {
             }],
             ..Default::default()
         });
+        let w = s.workload.as_mut().unwrap();
+        let q = &mut w.queries[0];
+        q.text = "SELECT total FROM shop.orders WHERE channel = 1 AND created_at = @date".into();
+        q.plan = None;
+        q.executions = 1000.0;
+        q.total_time_ms = 100_000.0;
+        q.mean_time_ms = 100.0;
+        q.first_seen = None;
+        q.last_seen = None;
         let d = digest(&crate::analyze(s), None, 10, 5).index_advice.expect("advice");
         let azure = d.create.iter().find(|c| c.source == "azure").expect("Azure's recommendation");
         assert_eq!(azure.table, "shop.orders");
@@ -767,7 +799,7 @@ mod tests {
         old.id = "unused-index:shop.old_table".into();
         before.findings.push(old.clone());
         // A finding that is medium or high now was low before.
-        let rising = before.findings.iter().position(|f| !f.inactive && f.severity > Severity::Low).expect("one");
+        let rising = before.findings.iter().position(|f| f.is_actionable() && f.severity > Severity::Low).expect("one");
         before.findings[rising].severity = Severity::Low;
         let rising = before.findings[rising].id.clone();
 

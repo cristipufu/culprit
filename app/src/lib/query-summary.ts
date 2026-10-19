@@ -44,16 +44,24 @@ function predicate(text: string): string | null {
   return short.length > 48 ? `${short.slice(0, 46).trimEnd()}…` : short;
 }
 
-export function querySummary(text: string, objectName?: string | null): QuerySummary {
+export function querySummary(text: string, objectName?: string | null, resolvedWriteTarget?: string | null): QuerySummary {
   let body = clean(text);
   // A parameterized batch keeps its declarations in front: "(@P1 int)SELECT …".
-  body = body.replace(/^\((@\w+[^)]*)\)\s*/, "");
+  if (/^\(\s*@/.test(body)) {
+    let depth = 0;
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === "(") depth++;
+      else if (body[i] === ")" && --depth === 0) { body = body.slice(i + 1).trim(); break; }
+    }
+  }
+  body = body.replace(/^;+\s*/, "");
   if (
     /^UPDATE\s+STATISTICS\b/i.test(body)
     && !new RegExp(String.raw`^UPDATE\s+STATISTICS\s+(?:SET\b|(?:AS\s+)?` + IDENT + String.raw`\s+SET\b)`, "i").test(body)
   ) {
     return { verb: "UPDATE STATISTICS", target: first(body, String.raw`^UPDATE\s+STATISTICS\s+` + IDENT), predicate: null };
   }
+  const cteNames = [...body.matchAll(new RegExp(String.raw`(?:^WITH\s+(?:RECURSIVE\s+)?|,\s*)` + IDENT + String.raw`\s*(?:\([^)]*\)\s*)?AS\s*(?:(?:NOT\s+)?MATERIALIZED\s*)?\(`, "gi"))].map((m) => tableName(m[1]!).toLowerCase());
   // Skip CTE definitions to reach the statement they feed.
   if (/^WITH\b/i.test(body)) {
     let depth = 0;
@@ -92,6 +100,10 @@ export function querySummary(text: string, objectName?: string | null): QuerySum
     case "CALL":
       target = first(body, String.raw`^(?:EXEC|EXECUTE|CALL)\s+` + IDENT);
       break;
+  }
+  if (["UPDATE", "DELETE"].includes(verb)) {
+    if (resolvedWriteTarget) target = tableName(resolvedWriteTarget);
+    else if (target && cteNames.includes(target.toLowerCase())) target = `${target} (CTE)`;
   }
   // A statement without a table still calls something people recognise: `SELECT pg_sleep($1)`, `DO SLEEP(?)`.
   if (!target && (verb === "SELECT" || verb === "DO")) {

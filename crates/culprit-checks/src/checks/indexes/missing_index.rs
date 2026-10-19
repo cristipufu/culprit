@@ -418,7 +418,9 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
 
     match &asked {
         Some(a) if a.stopped() => {
-            f.inactive = true;
+            // An old request is history even if an associated query hash still runs with another plan.
+            f.actionability = culprit_core::Actionability::History;
+            f.inactive = crate::all_stopped(snapshot, &linked);
             f.title = format!("{} was searched by {} without a supporting index", c.table, key_text);
             f.severity = Severity::Low;
             f.impact.score *= 0.25;
@@ -441,6 +443,30 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
 
     if too_small_to_index(snapshot, &c, &linked) {
         return too_small_finding(snapshot, f, &c, &linked);
+    }
+    if let Some(a) = asked.as_ref().filter(|_| !f.inactive) {
+        f.actionability =
+            if a.stopped() { culprit_core::Actionability::History } else { culprit_core::Actionability::Information };
+        f.severity = Severity::Low;
+        f.title = format!("SQL Server previously requested an index on {} ({key_text})", c.table);
+        f.summary = format!(
+            "SQL Server last requested this index {}, before {}. The {} requests are cumulative {}. Associated statements may still run, but their activity does not establish that this historical request is still needed in the selected period.",
+            crate::queries::when_phrase(&a.last),
+            a.window,
+            format::count(lookups),
+            since_phrase(snapshot)
+        );
+        f.impact.db_time_share = None;
+        f.impact.time_ms_per_day = None;
+        f.impact.score = base_score(Severity::Low);
+        f.impact.label = "Historical optimizer request".into();
+        f.metrics.retain(|m| m.label != "Share of DB time");
+        for r in &mut f.queries {
+            r.note = Some("Associated with a request made before the selected window; current query activity does not date that request.".into());
+        }
+        f.fix = Some(Fix { summary: "Keep this candidate as context. Check representative plans and reads in the period that matters before choosing an index. If the optimizer requests it again, compare the measured benefit with index storage and write maintenance.".into(), sql: None, cost: None });
+        f.verify = vec!["A later scan must show a new request inside its workload window and enough measured work before this becomes an index recommendation.".into()];
+        return f;
     }
     // A request no query in the window made is history: it gets no index of its own.
     if f.inactive {
@@ -715,6 +741,7 @@ pub(crate) fn too_small_to_index(snapshot: &Snapshot, c: &Candidate, linked: &[&
 /// The finding for a request on a table too small for an index to pay ([`too_small_to_index`]): what the optimizer
 /// asked for, and why there is nothing to create.
 fn too_small_finding(snapshot: &Snapshot, mut f: Finding, c: &Candidate, linked: &[&QueryStat]) -> Finding {
+    f.actionability = culprit_core::Actionability::Information;
     let rows = snapshot.table(&c.schema, &c.table).and_then(|t| t.rows).unwrap_or(0.0);
     let table_name = format!("{}.{}", c.schema, c.table);
     // Requests that stopped (see `wanted_before_window`) are told in the past; the table's size is still now.

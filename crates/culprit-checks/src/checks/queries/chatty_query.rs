@@ -99,14 +99,14 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
             } else if writes {
                 let write = WriteKind::of(&q.text, engine);
                 let (summary, fix, verify, caveat) = match &write {
-                    WriteKind::Counter { column, table } => (
+                    WriteKind::Counter { column, table, isolated } => (
                         format!(
-                            "Its runs {are} {exec} of all statement runs{runs_over}. Each run adds to {column} in one row of {table} and returns the new value: a counter handed out one number at a time. Each is a round trip, and the row stays locked until its transaction commits, so callers that need the next number of the same row can wait for each other. In all it takes {share}{}.",
+                            "Its runs {are} {exec} of all statement runs{runs_over}. Each run adds to {column} in one row of {table} and returns the new value. It may allocate numbers or maintain other application state; the SQL alone does not establish its business purpose or a removable call. Each call can add a round trip, and the row stays locked until its transaction commits, so callers that need the next number of the same row can wait for each other. In all it takes {share}{}.",
                             lock_waits(snapshot, q).map(|w| format!(", and {w}")).unwrap_or_default()
                         ),
-                        counter_fix(snapshot),
-                        fewer_runs("it should no longer run, or run far fewer times"),
-                        "A sequence's numbers only increase: they can skip values and aren't counted per row. Check whether the application relies on gapless numbers for each row before replacing the counter.",
+                        counter_fix(snapshot, *isolated),
+                        fewer_runs("compare total time and any avoidable calls, while checking that numbering, metadata updates and returned values remain correct"),
+                        "A sequence can have gaps, allocates outside transaction commit order and does not provide per-parent numbering. Check the application's numbering and atomicity requirements before considering one.",
                     ),
                     WriteKind::Update => (
                         format!(
@@ -126,7 +126,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                             rows_said(rows)
                         ),
                         format!(
-                            "Delete many rows per statement ({}, or by a condition the rows share) inside one transaction.",
+                            "If the caller already has independent removals that can safely be grouped, delete many rows per statement ({}, or by a condition the rows share) inside one transaction.",
                             many_keys(engine, "DELETE")
                         ),
                         fewer,
@@ -138,7 +138,7 @@ pub fn chatty_query(snapshot: &Snapshot) -> Vec<Finding> {
                             rows_said(rows)
                         ),
                         format!(
-                            "Write many rows per statement ({}) inside one transaction; for a heartbeat or lease, renew less often.",
+                            "If the caller already has independent rows that can safely be grouped, write many rows per statement ({}) inside one transaction; for a heartbeat or lease, renew less often.",
                             bulk_insert(engine)
                         ),
                         fewer,
@@ -216,6 +216,7 @@ enum WriteKind {
     Counter {
         column: String,
         table: String,
+        isolated: bool,
     },
     Update,
     Delete,
@@ -230,7 +231,11 @@ impl WriteKind {
             Some("update") => match (counter_column(main), write_target(text, engine)) {
                 (Some(column), Some(table)) => {
                     let table = table.rsplit('.').next().unwrap_or(&table).to_string();
-                    WriteKind::Counter { column, table }
+                    WriteKind::Counter {
+                        isolated: culprit_core::sql::isolated_counter_update(text, engine, &column),
+                        column,
+                        table,
+                    }
                 }
                 _ => WriteKind::Update,
             },
@@ -310,7 +315,10 @@ fn lock_waits(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
 
 /// Let the database hand out the numbers: each engine's sequence, without a row to lock; or the number assigned in the
 /// INSERT that uses it.
-fn counter_fix(snapshot: &Snapshot) -> String {
+fn counter_fix(snapshot: &Snapshot, isolated: bool) -> String {
+    if !isolated {
+        return "The SQL does not establish an isolated counter-only operation: preserve every assignment, returned value, row filter and transaction guarantee. Check the caller before changing it. If it already has independent work that can safely share a call, consider batching that work; per-parent numbering and metadata updates may require this atomic UPDATE. A sequence is not a replacement for the whole statement.".into();
+    }
     let sequence = match snapshot.server.engine {
         Engine::Mssql => "a SEQUENCE (`NEXT VALUE FOR`)",
         Engine::Postgres => "a sequence (`nextval()`, or an identity column)",
@@ -319,6 +327,6 @@ fn counter_fix(snapshot: &Snapshot) -> String {
         Engine::Sqlite => "an INTEGER PRIMARY KEY",
     };
     format!(
-        "If the numbers only need to increase, let the database hand them out: {sequence} gives each caller the next number without locking a row. If each row needs its own numbers in order, assign the number in the INSERT that uses it, in the same statement, so this UPDATE and its round trip go away."
+        "If the caller confirms that this is solely a number allocator, consider {sequence} only if a database-wide allocator, gaps and allocation order satisfy the application's requirements. It does not preserve gapless or per-parent numbering or commit order. Otherwise keep the atomic UPDATE. Check whether the caller can combine work without losing filters, returned values or transaction guarantees; the SQL alone does not establish a removable call."
     )
 }

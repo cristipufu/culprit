@@ -1,3 +1,4 @@
+import { isActionable } from "./findings";
 import type { FileIo } from "../gen/FileIo";
 import type { Finding } from "../gen/Finding";
 import type { QueryStat } from "../gen/QueryStat";
@@ -8,13 +9,13 @@ import type { TableStat } from "../gen/TableStat";
 
 /** Measurements are facts. Warning colors come from the report's assessed findings, not a second set of UI ratios. */
 export function findingStatus(finding: Finding | undefined): SignalStatus {
-  if (!finding || finding.inactive || finding.severity === "low") return "info";
+  if (!finding || !isActionable(finding) || finding.severity === "low") return "info";
   return finding.severity === "high" ? "bad" : "watch";
 }
 
 export function worstFinding(report: Report, matches: (f: Finding) => boolean): Finding | undefined {
   const rank = { high: 2, medium: 1, low: 0 };
-  return report.findings.filter((f) => !f.inactive && matches(f)).sort((a, b) => rank[b.severity] - rank[a.severity])[0];
+  return report.findings.filter((f) => isActionable(f) && matches(f)).sort((a, b) => rank[b.severity] - rank[a.severity])[0];
 }
 
 export function querySignalStatus(report: Report, query: QueryStat, checks: string[]): SignalStatus {

@@ -369,6 +369,9 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     let one = queries.len() == 1;
     // A table the catalog no longer lists: the plans read it before it was dropped or renamed.
     let gone = table_gone(snapshot, &g.table, &queries);
+    if gone {
+        f.actionability = culprit_core::Actionability::History;
+    }
     let (reads, keeps, accounts) = match (history, one) {
         (true, true) => ("One query read", "kept", "It accounted"),
         (true, false) => ("", "kept", "Together they accounted"),

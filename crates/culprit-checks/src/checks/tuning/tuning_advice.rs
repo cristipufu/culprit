@@ -631,6 +631,7 @@ pub(super) fn forced_plans_finding(snapshot: &Snapshot, kept: &[(&ForcedPlan, Op
             note: Some(format!("Plan {} is forced.", p.plan_id)),
         })
         .collect();
+    f.informational();
     f.fix = Some(Fix {
         summary: "Nothing to do while they help. Unforce one whose query or indexes changed since it was forced and \
             compare its duration before and after: SQL Server chooses a plan again."
@@ -975,6 +976,9 @@ pub(super) fn create_index_advice(
     }
     let nothing_to_create = fix.sql.is_none() && ((same_keys.is_some() && lacking.is_empty()) || fast.is_some());
     let picked_nothing = fix.sql.is_none() && same_keys.is_none();
+    if fix.sql.is_none() {
+        f.informational();
+    }
     f.fix = Some(fix);
     let fewer_reads = match &heavy {
         Some(h) => format!("query {} reads far fewer than {} pages a run", h.query.id, format::count(h.pages)),

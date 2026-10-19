@@ -1037,6 +1037,9 @@ fn days_when(from: &str, to: Option<&str>) -> String {
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct QueryStat {
+    /// A CTE write's unambiguous base table, resolved by shared SQL analysis. Absent when unknown or unnecessary.
+    #[serde(default)]
+    pub resolved_write_target: Option<String>,
     pub id: String,
     pub query_hash: Option<String>,
     pub text: String,
@@ -1545,6 +1548,9 @@ pub struct Snapshot {
     /// digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
     #[serde(default)]
     pub escalations_before: Option<crate::signals::EscalationBaseline>,
+    /// Per-index lock counters read by an earlier scan of this database; absent without comparable history.
+    #[serde(default)]
+    pub contention_before: Option<crate::signals::ContentionBaseline>,
     /// pg_stat_statements' eviction rounds an earlier scan counted, set from the scans Culprit keeps: what tells rounds
     /// since then from old ones, since the count outlives restarts and a higher limit. `None` without an earlier scan
     /// that read them.

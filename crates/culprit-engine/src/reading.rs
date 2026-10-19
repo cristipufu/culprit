@@ -72,7 +72,8 @@ fn finding(out: &mut String, report: &Report, f: &Finding) {
     let _ = writeln!(out, "\n=== finding {}", f.id);
     let _ = writeln!(
         out,
-        "{} severity · {} confidence · {}{}",
+        "{} · {} severity · {} confidence · {}{}",
+        f.actionability.label(),
         format!("{:?}", f.severity).to_lowercase(),
         format!("{:?}", f.confidence).to_lowercase(),
         f.category.label().to_lowercase(),

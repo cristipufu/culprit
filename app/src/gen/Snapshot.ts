@@ -3,6 +3,7 @@ import type { CollectorNote } from "./CollectorNote";
 import type { ColumnHistogram } from "./ColumnHistogram";
 import type { ColumnInfo } from "./ColumnInfo";
 import type { ConstraintIssue } from "./ConstraintIssue";
+import type { ContentionBaseline } from "./ContentionBaseline";
 import type { CountBaseline } from "./CountBaseline";
 import type { DeadlockReport } from "./DeadlockReport";
 import type { Environment } from "./Environment";
@@ -62,6 +63,10 @@ histograms: Array<ColumnHistogram> | null,
  * digest: what tells escalations since then from old ones. `None` without an earlier scan to compare with.
  */
 escalations_before: EscalationBaseline | null, 
+/**
+ * Per-index lock counters read by an earlier scan of this database; absent without comparable history.
+ */
+contention_before: ContentionBaseline | null, 
 /**
  * pg_stat_statements' eviction rounds an earlier scan counted, set from the scans Culprit keeps: what tells rounds
  * since then from old ones, since the count outlives restarts and a higher limit. `None` without an earlier scan

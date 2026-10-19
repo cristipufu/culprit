@@ -1,6 +1,7 @@
 {
   "findings": [
     {
+      "actionability": "needs-attention",
       "category": "indexes",
       "caveats": [
         "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
@@ -57,8 +58,9 @@
         "kind": "table",
         "name": "main.orders"
       },
-      "summary": "Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
+      "summary": "The associated statements used 43.9 s of database time over the 90 minutes the Rails log covers (99%). Deleting a row from main.customers, or changing its key, makes the database look for matching rows in main.orders (200K rows) without an index, which means reading the whole table. Queries that load orders rows for one customers row can't seek either. The statements that go through it take 99% of database time. SQLite already builds this index for itself on every run of one of these statements, and drops it after.",
       "title": "orders has no index on customer_id, its foreign key to customers",
+      "verification_basis": "rescan",
       "verify": [
         "Explain the queries listed again: each reads main.orders through ix_orders_customer_id (`SEARCH … USING INDEX ix_orders_customer_id`) instead of reading all of it.",
         "Re-scan once the index exists: this finding should be gone, and a delete from main.customers then finds the rows of main.orders it checks through the index, not by scanning the table.",
@@ -66,6 +68,7 @@
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [
         "SQLite looks for matching child rows only on connections that enable PRAGMA foreign_keys; queries that join or filter on the key need the index either way."
@@ -108,11 +111,13 @@
       },
       "summary": "Deleting a row from main.products, or changing its key, makes the database look for matching rows in main.order_items (200K rows) without an index, which means reading the whole table. Queries that load order_items rows for one products row can't seek either.",
       "title": "order_items has no index on product_id, its foreign key to products",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan once the index exists: this finding should be gone, and a delete from main.products then finds the rows of main.order_items it checks through the index, not by scanning the table."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "indexes",
       "caveats": [],
       "check": "duplicate-index",
@@ -147,12 +152,14 @@
       },
       "summary": "ix_orders_status_again has keys (status) and ix_orders_status has keys (status). They are the same index twice. Every write to main.orders maintains both.",
       "title": "ix_orders_status_again duplicates ix_orders_status on orders",
+      "verification_basis": "rescan",
       "verify": [
         "Re-scan after removing ix_orders_status_again: this finding should be gone, and ix_orders_status should still exist.",
         "Compare queries on main.orders over comparable periods before and after the change, under a similar workload: their time per run should stay the same or drop. If a query gets slower, check its plan before keeping the index removed."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "maintenance",
       "caveats": [],
       "check": "config",
@@ -187,11 +194,13 @@
       },
       "summary": "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.",
       "title": "SQLite has no statistics to choose between this file's indexes",
+      "verification_basis": "rescan",
       "verify": [
         "Scan again: the file has sqlite_stat1, and this finding is gone."
       ]
     },
     {
+      "actionability": "optional-improvement",
       "category": "maintenance",
       "caveats": [],
       "check": "config",
@@ -232,6 +241,7 @@
       },
       "summary": "Deleted rows leave their pages in the file for SQLite to reuse; the file doesn't shrink on its own. That's fine when new rows will fill them again. If not, the file stays larger than its data, which every backup and copy pays for.",
       "title": "47.0 MB of the file is free pages (71% of it)",
+      "verification_basis": "rescan",
       "verify": [
         "Scan again: free pages are a small part of the file."
       ]
@@ -413,6 +423,7 @@
     ],
     "connection": "sqlite-demo",
     "constraints": [],
+    "contention_before": null,
     "deadlocks": null,
     "duration_ms": 214.635166,
     "environment": "development",
@@ -931,6 +942,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
           "spread": null,
@@ -1043,6 +1055,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
           "spread": null,
@@ -1179,6 +1192,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
           "spread": null,
@@ -1264,6 +1278,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
           "spread": null,
@@ -1349,6 +1364,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
           "spread": null,
@@ -1394,7 +1410,7 @@
         "severity": "low"
       }
     ],
-    "headline": "5 opportunities. The top ones touch 99% of database time over the 90 minutes the Rails log covers.",
+    "headline": "5 opportunities. The top ones touch 43.9 s of database time over the 90 minutes the Rails log covers (99%).",
     "no_workload": null,
     "opportunities": 5,
     "over_scans": [],

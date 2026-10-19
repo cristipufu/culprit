@@ -699,7 +699,7 @@ fn a_text_column_sends_a_mariadb_temporary_table_to_disk_whatever_the_limit() {
 fn a_sleep_and_a_blocked_update_are_waiting_not_reading() {
     let report = analyze(snapshot("postgres-demo.json"));
     let sleep = find(&report.findings, "heavy-query:-8886085649470066503").unwrap();
-    assert!(sleep.title.ends_with("of database time, sleeping"), "{}", sleep.title);
+    assert!(sleep.title.contains("of database time over") && sleep.title.ends_with(", sleeping"), "{}", sleep.title);
     assert!(!sleep.fix.as_ref().unwrap().summary.contains("reads more rows"));
     let update = find(&report.findings, "heavy-query:4911431806993420100").unwrap();
     assert!(update.title.ends_with("most likely waiting for locks"), "{}", update.title);
@@ -751,11 +751,7 @@ fn a_heavy_query_says_when_a_burst_ran_and_counts_a_few_runs() {
     let q = query(&mut s, "7");
     (q.first_seen, q.last_seen) = (Some("2026-10-11T07:44:33Z".into()), Some("2026-10-11T07:47:52Z".into()));
     let f = find(&analyze(s).findings, "heavy-query:7").cloned().expect("heavy");
-    assert!(
-        f.summary.starts_with("It ran 3.0K times at 1 ms on average, on Oct 11, 07:44–07:47 UTC: "),
-        "{}",
-        f.summary
-    );
+    assert!(f.summary.contains("It ran 3.0K times at 1 ms on average, on Oct 11, 07:44–07:47 UTC: "), "{}", f.summary);
     assert!(!f.summary.contains("a day"), "{}", f.summary);
     assert!(!f.metrics.iter().any(|m| m.label == "Runs per day"), "{:?}", f.metrics);
     assert!(f.metrics.iter().any(|m| m.label == "Runs" && m.value == 3_000.0), "{:?}", f.metrics);
@@ -766,7 +762,7 @@ fn a_heavy_query_says_when_a_burst_ran_and_counts_a_few_runs() {
     let q = query(&mut s, "4911431806993420100");
     (q.executions, q.total_time_ms) = (3.0, 3.0 * q.mean_time_ms);
     let f = find(&analyze(s).findings, "heavy-query:4911431806993420100").cloned().expect("heavy");
-    assert!(f.summary.starts_with("It ran 3 times at 19.0 s on average: "), "{}", f.summary);
+    assert!(f.summary.contains("It ran 3 times at 19.0 s on average: "), "{}", f.summary);
 }
 
 /// The PostgreSQL demo as if pg_stat_statements had counted for 40 days, with 36 hours of Culprit's own scans in three
@@ -805,13 +801,13 @@ fn a_heavy_query_on_running_totals_says_what_culprits_scans_measured() {
     let f = find(&report.findings, "heavy-query:4911431806993420100").expect("heavy");
     // The scans' figures lead, the totals since the reset beside them where they differ twofold.
     assert!(
-        f.summary.starts_with(
+        f.summary.contains(
             "It ran about 10 times a day at 1.9 s on average over 36 hours of Culprit's own scans: 95% of all database time in them ("
         ) && f.summary.contains("about 1 run a day and 19.0 s on average over the 40 days since statistics were reset)."),
         "{}",
         f.summary
     );
-    assert!(f.title.contains("takes 95% of database time"), "{}", f.title);
+    assert!(f.title.contains("28.5 s of database time over 36 hours of Culprit's scans (95%)"), "{}", f.title);
     assert!(f.metrics.iter().any(|m| m.label == "Runs per day over Culprit's scans"), "{:?}", f.metrics);
     let metric = |label: &str| f.metrics.iter().find(|m| m.label == label).map(|m| m.value);
     assert_eq!(metric("Average duration over Culprit's scans"), Some(1_900.0));
@@ -832,9 +828,9 @@ fn a_recent_entry_is_judged_by_culprits_scans() {
     // 6K of its 8.2K runs came in the scans, 1 s of every 10 s step.
     let report = analyze(with_scans("3432126458605143571", 2_000.0, 1_000.0));
     let f = find(&report.findings, "heavy-query:3432126458605143571").expect("heavy now");
-    assert!(f.title.ends_with("takes 10% of database time"), "{}", f.title);
+    assert!(f.title.ends_with("over 36 hours of Culprit's scans (10%)"), "{}", f.title);
     assert!(
-        f.summary.starts_with(
+        f.summary.contains(
             "Its entry in pg_stat_statements is recent: 6.0K of its 8.2K runs came during 36 hours of Culprit's own scans, where it ran about 4.0K times a day at 0.50 ms on average and took 10% of database time."
         ),
         "{}",
@@ -851,7 +847,7 @@ fn a_recent_entry_is_judged_by_culprits_scans() {
     // against well under 1% of the totals since the reset, said beside them.
     let report = analyze(with_scans("3432126458605143571", 100.0, 1_000.0));
     let f = find(&report.findings, "heavy-query:3432126458605143571").expect("heavy over the scans");
-    assert!(f.title.ends_with("takes 10% of database time"), "{}", f.title);
+    assert!(f.title.ends_with("over 36 hours of Culprit's scans (10%)"), "{}", f.title);
     assert!(
         f.summary
             .contains("over 36 hours of Culprit's own scans: 10% of all database time in them (<1% of database time"),
@@ -888,7 +884,7 @@ fn figures_over_the_scans_and_over_the_totals_each_say_what_they_are_over() {
     assert_eq!(share(&format!("Share of executions {totals}")), Some(5.0), "{:?}", f.metrics);
     assert!(metric("Average duration over Culprit's scans").is_some(), "{:?}", f.metrics);
     assert!(
-        f.summary.starts_with("Its runs are 30% of all statement runs over 36 hours of Culprit's scans, and each run")
+        f.summary.contains("Its runs are 30% of all statement runs over 36 hours of Culprit's scans, and each run")
             && f.summary.contains(&format!(" (counted {totals})")),
         "{}",
         f.summary
@@ -1567,13 +1563,13 @@ fn slow_log(mut s: Snapshot) -> Snapshot {
 fn shares_from_the_slow_log_are_of_logged_slow_runs() {
     let report = analyze(slow_log(snapshot("mysql-demo.json")));
     let f = find(&report.findings, "heavy-query:c7b5ac9bb4bcecfe").unwrap();
-    assert!(f.title.ends_with("of logged slow-run time"), "{}", f.title);
-    assert!(f.impact.label.ends_with("of logged slow-run time"), "{}", f.impact.label);
+    assert!(f.title.contains("of logged slow-run time over"), "{}", f.title);
+    assert!(f.impact.label.contains("of logged slow-run time over"), "{}", f.impact.label);
     // A log that keeps every statement covers all of the time.
     let mut s = slow_log(snapshot("mysql-demo.json"));
     set(&mut s, "long_query_time", "0.000000");
     let f = find(&analyze(s).findings, "heavy-query:c7b5ac9bb4bcecfe").cloned().unwrap();
-    assert!(f.title.ends_with("of database time"), "{}", f.title);
+    assert!(f.title.contains("of database time over"), "{}", f.title);
 }
 
 #[test]

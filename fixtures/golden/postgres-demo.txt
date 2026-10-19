@@ -1,12 +1,12 @@
 reading: PostgreSQL 18.6 · database demo · scanned 2026-10-11T11:54:21Z
-headline: 9 opportunities. The top ones touch 69% of database time over the 5 hours since statistics were reset.
+headline: 7 opportunities. The top ones touch 2 min of database time over the 5 hours since statistics were reset (69%).
 top share: 69%
 findings: 9
 
 === finding temp-spill:9065391607317686058
-medium severity · high confidence · queries
+Needs attention · medium severity · high confidence · queries
 title: A read from orders writes about 19.9 MB of temp files per run
-summary: A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
+summary: The associated statements used 1 min of database time over the 5 hours since statistics were reset (45%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
 impact: 45% of DB time · 45.2% of database time
 metrics:
   - Temp written per run: 19.9 MB
@@ -29,11 +29,11 @@ queries:
 brief:
     # A read from orders writes about 19.9 MB of temp files per run
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `temp-spill:9065391607317686058`: medium impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `temp-spill:9065391607317686058`: Needs attention, medium impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
+    The associated statements used 1 min of database time over the 5 hours since statistics were reset (45%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
 
     ## Evidence
 
@@ -76,10 +76,10 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). The role setting in the fix's SQL (`ALTER ROLE … SET`) applies to that role's new connections alone: run it once against the database, as that role or one allowed to change it, by hand or shipped as a migration, with the role the application connects as (its connection string names it) in place of `<app_role>`. It isn't a change to the application's code, nor to the server's configuration (infrastructure as code, the platform's parameter group, a configuration file), which is for settings of the whole server. `SET LOCAL` is the exception: it lasts only until the end of the transaction it runs in, so it goes in the application's code, inside the transaction that runs the statement, just before it. After any change is live, run `culprit scan pg-demo` and check `temp-spill:9065391607317686058` the way *How to verify* says.
 
 === finding filtered-scan:public.orders(customer_id)
-medium severity · high confidence · indexes
+Needs attention · medium severity · high confidence · indexes
 title: orders is read in full to find rows by customer_id
-summary: One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
-impact: 24% of DB time · 24.0% of database time
+summary: 37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+impact: 37.7 s of database time over the 5 hours since statistics were reset (24%) · 24.0% of database time
 metrics:
   - Share of DB time: 24%
   - Rows scanned per run: 2.0M
@@ -96,11 +96,11 @@ queries:
 brief:
     # orders is read in full to find rows by customer_id
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `filtered-scan:public.orders(customer_id)`: medium impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `filtered-scan:public.orders(customer_id)`: Needs attention, medium impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+    37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
 
     ## Evidence
 
@@ -137,10 +137,10 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.orders(customer_id)` the way *How to verify* says.
 
 === finding chatty-query:3432126458605143571
-low severity · medium confidence · queries
+Optional improvement · low severity · medium confidence · queries
 title: A read from customers runs 8.2K times in 5 hours, one key at a time
-summary: Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
-impact: 71% of executions · 0.1% of database time
+summary: 129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+impact: 129 ms of database time over the 5 hours since statistics were reset (<1%) · 0.1% of database time
 metrics:
   - Share of executions: 71%
   - Average duration: 0.02 ms
@@ -154,11 +154,11 @@ queries:
 brief:
     # A read from customers runs 8.2K times in 5 hours, one key at a time
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `chatty-query:3432126458605143571`: low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `chatty-query:3432126458605143571`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+    129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 71% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
 
     ## Evidence
 
@@ -190,10 +190,10 @@ brief:
     Find where the application sends the statements above (search for their table and column names) and apply the fix in that calling code. Where it changes SQL, use the way this project ships query changes (an ORM change or a query rewrite). After any change is live, run `culprit scan pg-demo` and check `chatty-query:3432126458605143571` the way *How to verify* says.
 
 === finding filtered-scan:public.order_items(product_id)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: order_items is read in full to find rows by product_id
-summary: One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
-impact: 4% of DB time · 4.3% of database time
+summary: 6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
+impact: 6.8 s of database time over the 5 hours since statistics were reset (4%) · 4.3% of database time
 metrics:
   - Share of DB time: 4%
   - Rows scanned per run: 1.0M
@@ -210,11 +210,11 @@ queries:
 brief:
     # order_items is read in full to find rows by product_id
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `filtered-scan:public.order_items(product_id)`: low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `filtered-scan:public.order_items(product_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
+    6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
 
     ## Evidence
 
@@ -251,7 +251,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `filtered-scan:public.order_items(product_id)` the way *How to verify* says.
 
 === finding unindexed-fk:public.order_items(order_id)
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: order_items has no index on order_id, its foreign key to orders
 summary: Deleting a row from public.orders, or changing its key, makes the database look for matching rows in public.order_items (1.0M rows) without an index, which means reading the whole table. Queries that load order_items rows for one orders row can't seek either.
 impact: 1.0M rows unindexed
@@ -267,7 +267,7 @@ verify:
 brief:
     # order_items has no index on order_id, its foreign key to orders
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `unindexed-fk:public.order_items(order_id)`: low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `unindexed-fk:public.order_items(order_id)`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
@@ -295,67 +295,8 @@ brief:
 
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `unindexed-fk:public.order_items(order_id)` the way *How to verify* says.
 
-=== finding heavy-query:4911431806993420100
-low severity · medium confidence · queries
-title: An update of products takes 12% of database time, most likely waiting for locks
-summary: It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
-impact: 12% of DB time · 12.1% of database time
-metrics:
-  - Share of DB time: 12%
-  - Average duration: 19.0 s
-  - Pages read per run: 15
-  - Rows changed per run: 1
-fix: It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
-verify:
-  1. Re-scan later: if it hasn't run again, there is nothing to do.
-  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
-caveats:
-  - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
-queries:
-  - 4911431806993420100: 12% of database time
-brief:
-    # An update of products takes 12% of database time, most likely waiting for locks
-
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `heavy-query:4911431806993420100`: low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
-
-    ## What's happening
-
-    It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
-
-    ## Evidence
-
-    - Share of DB time: 12%
-    - Average duration: 19.0 s
-    - Pages read per run: 15
-    - Rows changed per run: 1
-
-    ## Queries involved
-
-    Query `4911431806993420100` — 12% of DB time, 1 run over the 5 hours since statistics were reset, which took 19.0 s:
-
-    ```sql
-    UPDATE products SET name = name WHERE id = $1
-    ```
-
-    ## Suggested fix
-
-    It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
-
-    ## How to verify
-
-    - Re-scan later: if it hasn't run again, there is nothing to do.
-    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
-
-    ## Caveats
-
-    - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
-
-    ## What to do in the codebase
-
-    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:4911431806993420100` the way *How to verify* says.
-
 === finding duplicate-index:public.orders.orders_status_idx
-low severity · medium confidence · indexes
+Optional improvement · low severity · medium confidence · indexes
 title: orders_status_idx is covered by the wider orders_status_created_idx on orders
 summary: orders_status_idx has keys (status) and orders_status_created_idx has keys (status, created_at). Any query that can seek on orders_status_idx can seek on orders_status_created_idx instead. Every write to public.orders maintains both.
 impact: 13.3 MB redundant
@@ -373,7 +314,7 @@ caveats:
 brief:
     # orders_status_idx is covered by the wider orders_status_created_idx on orders
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `duplicate-index:public.orders.orders_status_idx`: low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `duplicate-index:public.orders.orders_status_idx`: Optional improvement, low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
@@ -407,7 +348,7 @@ brief:
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.orders.orders_status_idx` the way *How to verify* says.
 
 === finding duplicate-index:public.products.products_sku_idx
-low severity · high confidence · indexes
+Optional improvement · low severity · high confidence · indexes
 title: products_sku_idx duplicates products_sku_key on products
 summary: products_sku_idx has keys (sku) and products_sku_key has keys (sku). They are the same index twice. Every write to public.products maintains both.
 impact: 328 KB redundant
@@ -423,7 +364,7 @@ verify:
 brief:
     # products_sku_idx duplicates products_sku_key on products
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `duplicate-index:public.products.products_sku_idx`: low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `duplicate-index:public.products.products_sku_idx`: Optional improvement, low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
@@ -452,11 +393,70 @@ brief:
 
     Ship the fix's index change the way this project ships schema changes (a migration), keeping the options the fix's SQL already has. `CONCURRENTLY` can't run inside a transaction, and most migration tools wrap each migration in one: run this one without it (Rails `disable_ddl_transaction!`, Django `atomic = False`, a non-transactional Flyway migration). After any change is live, run `culprit scan pg-demo` and check `duplicate-index:public.products.products_sku_idx` the way *How to verify* says.
 
+=== finding heavy-query:4911431806993420100
+History · low severity · medium confidence · queries
+title: An update of products takes 19.0 s of database time over the 5 hours since statistics were reset (12%), most likely waiting for locks
+summary: 19.0 s of database time over the 5 hours since statistics were reset (12%). It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
+impact: 19.0 s of database time over the 5 hours since statistics were reset (12%) · 12.1% of database time
+metrics:
+  - Share of DB time: 12%
+  - Average duration: 19.0 s
+  - Pages read per run: 15
+  - Rows changed per run: 1
+fix: It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
+verify:
+  1. Re-scan later: if it hasn't run again, there is nothing to do.
+  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+caveats:
+  - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
+queries:
+  - 4911431806993420100: 12% of database time
+brief:
+    # An update of products takes 19.0 s of database time over the 5 hours since statistics were reset (12%), most likely waiting for locks
+
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `heavy-query:4911431806993420100`: History, low impact, medium confidence. Scanned 2026-10-11T11:54:21Z.
+
+    ## What's happening
+
+    19.0 s of database time over the 5 hours since statistics were reset (12%). It ran once in 5 hours at 19.0 s: 12% of all database time in the 5 hours since statistics were reset. It read 15 pages per run, which takes milliseconds, yet ran 19.0 s: almost all of that time it was waiting, most likely for a row lock another transaction held (pg_stat_statements doesn't record what a statement waited for).
+
+    ## Evidence
+
+    - Share of DB time: 12%
+    - Average duration: 19.0 s
+    - Pages read per run: 15
+    - Rows changed per run: 1
+
+    ## Queries involved
+
+    Query `4911431806993420100` — 12% of DB time, 1 run over the 5 hours since statistics were reset, which took 19.0 s:
+
+    ```sql
+    UPDATE products SET name = name WHERE id = $1
+    ```
+
+    ## Suggested fix
+
+    It ran once in the 5 hours since statistics were reset, so there is no wait to catch now; if it runs again, have its lock waits logged (log_lock_waits) to see what holds them. Keep those transactions short: commit sooner, and don't wait for a user or another service inside a transaction. An index or a rewrite of this statement won't shorten the wait.
+
+    ## How to verify
+
+    - Re-scan later: if it hasn't run again, there is nothing to do.
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for this query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop toward what its reads take. A rewritten statement is a new entry with an id of its own, and this one then shows as stopped running.
+
+    ## Caveats
+
+    - This statement ran once in the 5 hours since statistics were reset. One run shows what it cost, not that it will run again: an export, a backfill or a query someone ran by hand looks like this. It needs work only if it keeps running.
+
+    ## What to do in the codebase
+
+    The statement behind this finding ran once in the 5 hours since statistics were reset: an export, a backfill or a query someone ran by hand looks like this. Change nothing unless it keeps running. If it runs again, run `culprit scan pg-demo` and check `heavy-query:4911431806993420100` the way *How to verify* says.
+
 === finding heavy-query:-8886085649470066503
-low severity · high confidence · queries
-title: A call to pg_sleep takes 13% of database time, sleeping
-summary: It ran once in 5 hours at 20.0 s: 13% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
-impact: 13% of DB time · 12.7% of database time
+History · low severity · high confidence · queries
+title: A call to pg_sleep takes 20.0 s of database time over the 5 hours since statistics were reset (13%), sleeping
+summary: 20.0 s of database time over the 5 hours since statistics were reset (13%). It ran once in 5 hours at 20.0 s: 13% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
+impact: 20.0 s of database time over the 5 hours since statistics were reset (13%) · 12.7% of database time
 metrics:
   - Share of DB time: 13%
   - Average duration: 20.0 s
@@ -471,13 +471,13 @@ caveats:
 queries:
   - -8886085649470066503: 13% of database time
 brief:
-    # A call to pg_sleep takes 13% of database time, sleeping
+    # A call to pg_sleep takes 20.0 s of database time over the 5 hours since statistics were reset (13%), sleeping
 
-    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `heavy-query:-8886085649470066503`: low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
+    Database: **pg-demo** (PostgreSQL 18.6, database `demo`, local environment). Finding `heavy-query:-8886085649470066503`: History, low impact, high confidence. Scanned 2026-10-11T11:54:21Z.
 
     ## What's happening
 
-    It ran once in 5 hours at 20.0 s: 13% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
+    20.0 s of database time over the 5 hours since statistics were reset (13%). It ran once in 5 hours at 20.0 s: 13% of all database time in the 5 hours since statistics were reset. It calls pg_sleep: the time is a deliberate pause, not work, and no index or rewrite makes it shorter.
 
     ## Evidence
 
