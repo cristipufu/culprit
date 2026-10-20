@@ -75,11 +75,7 @@ impl QueryCosts {
 
 /// Estimated bytes per row a plan returns: SQL Server's AvgRowSize or PostgreSQL's width on the top operator.
 pub fn plan_row_bytes(plan: &Plan) -> Option<f64> {
-    ["AvgRowSize", "Plan Width"]
-        .iter()
-        .find_map(|key| plan.root.props.get(*key))
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .filter(|w| *w > 0.0)
+    plan.root.facts().estimated_row_bytes.filter(|w| w.is_finite() && *w > 0.0)
 }
 
 /// Fill `row_bytes` from each statement's plan, creating its costs when needed.

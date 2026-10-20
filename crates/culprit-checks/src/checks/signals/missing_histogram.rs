@@ -36,7 +36,7 @@ fn no_choice(snapshot: &Snapshot, q: &QueryStat, plan: &culprit_core::Plan, node
         plan.nodes().iter().filter_map(|n| n.object.as_deref()).map(|o| node_table(o).to_ascii_lowercase()).collect();
     tables.sort();
     tables.dedup();
-    let possible_keys = node.props.get("possible_keys").is_some_and(|k| !k.trim().is_empty());
+    let possible_keys = !node.facts().possible_index_names.is_empty();
     let table = node.object.as_deref().map(node_table).unwrap_or_default();
     let lower = q.text.to_ascii_lowercase().replace('`', "");
     let ordered =
@@ -98,7 +98,7 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             // Only a step whose estimate is the optimizer's fixed guess: MySQL's 10% for =, a third for ranges, a ninth
             // for BETWEEN (and their products for several conditions); MariaDB without statistics for the column counts
             // the condition as keeping every row, 100%. Anything else came from somewhere other than a guess.
-            let Some(filtered) = node.props.get("filtered").and_then(|v| v.parse::<f64>().ok()) else { continue };
+            let Some(filtered) = node.facts().estimated_filtered_percent else { continue };
             let guess = if mariadb {
                 (filtered - 100.0).abs() < 0.01
             } else {

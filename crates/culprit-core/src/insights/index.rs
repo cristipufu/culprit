@@ -35,9 +35,10 @@ pub(super) fn index_sql(engine: Engine, table: &str, keys: &[String], include: &
 
 /// Output columns of an operator (`OutputList` on SQL Server), as plain names.
 pub(super) fn output_columns(n: &PlanNode) -> Vec<String> {
-    n.props
-        .get("OutputList")
-        .map(|list| list.split(", ").map(column_leaf).filter(|c| !c.is_empty() && !c.starts_with("Expr")).collect())
+    n.facts()
+        .output_columns
+        .as_ref()
+        .map(|list| list.iter().filter(|c| !c.is_empty() && !c.starts_with("Expr")).cloned().collect())
         .unwrap_or_default()
 }
 
@@ -202,7 +203,7 @@ pub(super) fn scan_filter(cx: &Cx) -> Vec<Draft> {
         d.title = format!("Reads {} of {table} to keep {}", plural(read, "row", "rows"), rows_text(kept));
         let estimated = n.act_rows.is_none();
         // What the statement's runs measured of the filter, where the analysis put it on the scan.
-        let measured = estimated && n.props.contains_key(crate::plan::MEASURED_KEPT);
+        let measured = estimated && n.facts().measured_kept_share.is_some();
         d.detail = format!(
             "{} {} reads the rows and checks `{}` on each one, so most of the reading is thrown away.{}",
             if measured {
@@ -374,7 +375,7 @@ pub(super) fn automatic_index(cx: &Cx) -> Vec<Draft> {
 pub(super) fn many_to_many(cx: &Cx) -> Vec<Draft> {
     cx.nodes
         .iter()
-        .filter(|n| n.op == "Merge Join" && is_true(n.props.get("ManyToMany")))
+        .filter(|n| n.op == "Merge Join" && (n.facts().many_to_many == Some(true)))
         .take(1)
         .map(|n| {
             let mut d = Draft::new("many-to-many", InsightArea::Index, cx.share(n), vec![n.id]);
@@ -393,10 +394,10 @@ pub(super) fn join_buffer(cx: &Cx) -> Vec<Draft> {
     for n in cx
         .nodes
         .iter()
-        .filter(|n| n.props.contains_key("using_join_buffer") && (n.predicate.is_some() || n.seek_predicate.is_some()))
+        .filter(|n| n.facts().join_buffer.is_some() && (n.predicate.is_some() || n.seek_predicate.is_some()))
     {
         let table = what(n);
-        let how = n.props["using_join_buffer"].clone();
+        let how = n.facts().join_buffer.clone().unwrap_or_default();
         // One read of a small table into the buffer costs too little for an index to be worth having. Batched Key
         // Access buffers the rows joined so far and looks each one up through an index: no full read to speak of.
         if rows_read(n) < MANY_ROWS || how.contains("Batched Key Access") {
@@ -404,7 +405,7 @@ pub(super) fn join_buffer(cx: &Cx) -> Vec<Draft> {
         }
         let cond = n.predicate.clone().unwrap_or_default();
         let own = table_leaf(&table).to_ascii_lowercase();
-        let alias = n.props.get("table_name").map(|a| a.to_ascii_lowercase());
+        let alias = n.facts().table_alias.as_ref().map(|a| a.to_ascii_lowercase());
         // Columns of this table in the join condition: `t`.`col` where t is this table's name or alias.
         let cols: Vec<String> = cond
             .split(" and ")
@@ -429,7 +430,7 @@ pub(super) fn join_buffer(cx: &Cx) -> Vec<Draft> {
         let join_cols = if cols.is_empty() { "the join column".to_string() } else { format::list(&cols) };
         // MySQL listed indexes it could use on this table, yet joins through the buffer: it judged a full read
         // cheaper, or those indexes serve another condition. Either way the plan doesn't show an index is missing.
-        match n.props.get("possible_keys").filter(|k| !k.is_empty()) {
+        match (!n.facts().possible_index_names.is_empty()).then(|| n.facts().possible_index_names.join(", ")) {
             Some(keys) => {
                 d.title = format!("Joins {leaf} through a join buffer ({how}) over a full read instead of an index");
                 d.detail = format!(

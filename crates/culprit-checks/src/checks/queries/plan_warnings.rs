@@ -116,26 +116,42 @@ pub(super) fn plan_warning_finding(
     let tense = |present: &'static str, past: &'static str| if stopped { past } else { present };
     match warning {
         PlanWarning::ImplicitConversion => {
-            let node_props = node.into_iter().flat_map(|n| n.props.values());
-            let plan_props = q.plan.iter().flat_map(|p| p.props.values());
-            let named: Vec<&str> =
-                node_props.chain(plan_props).flat_map(|v| v.lines()).filter(|l| l.contains("CONVERT")).collect();
-            // Only a column converted to match a value of another type is a mismatch (the rule the plan parser applies;
-            // scans saved before it flagged every conversion SQL Server warned about).
-            // A plan captured before a column changed type still shows its old conversion (`current_conversions`).
-            let still =
-                |l: &str| q.plan.as_ref().map_or_else(|| converts_column(l), |p| !current_conversions(p, l).is_empty());
-            let lines: Vec<&str> = named.iter().copied().filter(|l| still(l)).collect();
+            let mut named: Vec<culprit_core::PlanConversion> =
+                node.into_iter().flat_map(|n| n.facts().conversions.clone()).collect();
+            named.extend(q.plan.iter().flat_map(|p| p.facts().conversions.clone()));
+            if named.is_empty() {
+                named.extend(
+                    node.into_iter()
+                        .flat_map(|n| [n.predicate.as_ref(), n.seek_predicate.as_ref()])
+                        .flatten()
+                        .filter(|s| s.contains("CONVERT"))
+                        .map(|expression| culprit_core::PlanConversion {
+                            issue: culprit_core::PlanConversionIssue::Other("Convert".into()),
+                            expression: expression.clone(),
+                        }),
+                );
+            }
+            let still = |c: &&culprit_core::PlanConversion| {
+                q.plan.as_ref().map_or_else(
+                    || converts_column(&c.expression),
+                    |p| !current_conversions(p, &c.expression).is_empty(),
+                )
+            };
+            let lines: Vec<_> = named.iter().filter(still).collect();
             if !named.is_empty() && lines.is_empty() {
                 return None;
             }
-            let issue = lines.iter().find(|l| l.contains("Seek Plan")).or(lines.first()).copied();
-            let blocks_seek = issue.is_some_and(|l| l.contains("Seek Plan"));
-            let converted = issue.and_then(|l| current_conversions(q.plan.as_ref()?, l).into_iter().next());
+            let issue = lines
+                .iter()
+                .find(|c| c.issue == culprit_core::PlanConversionIssue::SeekPlan)
+                .or(lines.first())
+                .copied();
+            let blocks_seek = issue.is_some_and(|c| c.issue == culprit_core::PlanConversionIssue::SeekPlan);
+            let converted = issue.and_then(|c| current_conversions(q.plan.as_ref()?, &c.expression).into_iter().next());
             let column = converted.as_ref().map(|(c, _)| c.clone());
             let target = converted.map(|(_, t)| t);
             let unicode = target.as_deref().is_some_and(|t| t.to_ascii_lowercase().starts_with("nvarchar"));
-            let convert = issue.map(|l| l.split_once(": ").map(|(_, e)| e).unwrap_or(l).to_string());
+            let convert = issue.map(|c| c.expression.clone());
             // "Can't seek an index" is SQL Server's verdict (a "Seek Plan" warning), not a reading of the conversion: without
             // it the plan may still seek (a range through the conversion), and the warning is about its estimates. With it,
             // the plan may still scan the index, so the index isn't unused: it can't be searched.

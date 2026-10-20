@@ -4737,6 +4737,30 @@
           "physical_reads": 311.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 37.0,
+              "compile_memory_kb": 264.0,
+              "compile_ms": 80.0,
+              "compiled_parameters": "@P1 = N'user141017@example.com'",
+              "conversions": [
+                {
+                  "expression": "CONVERT_IMPLICIT(nvarchar(200),[culprit_demo].[shop].[customers].[email],0)=[@P1]",
+                  "issue": {
+                    "kind": "seek-plan"
+                  }
+                }
+              ],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xE9B9B9AEF7209B51",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -4793,6 +4817,37 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.00025,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 36.0,
+                    "expression_cache": false,
+                    "index_method": "nonclustered",
+                    "output_columns": [
+                      "id"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "id"
+                        ],
+                        "name": "pk_customers"
+                      },
+                      {
+                        "columns": [
+                          "email"
+                        ],
+                        "name": "ix_customers_email"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 2,
                   "index": "ix_customers_email",
                   "kind": "scan",
@@ -4841,6 +4896,24 @@
                   "detail": null,
                   "est_executions": 1.00025424,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 123.0,
+                    "expression_cache": false,
+                    "index_method": "clustered",
+                    "output_columns": [
+                      "name",
+                      "segment"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "user_functions": []
+                  },
                   "id": 4,
                   "index": "pk_customers",
                   "kind": "lookup",
@@ -4882,6 +4955,23 @@
               "detail": "Inner Join",
               "est_executions": 1.0,
               "est_rows": 1.00025,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 127.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "id",
+                  "name",
+                  "segment"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 1,
               "index": null,
               "kind": "join",
@@ -5137,6 +5227,23 @@
           "physical_reads": 7864.999999999999,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 32.0,
+              "compile_memory_kb": 192.0,
+              "compile_ms": 193.0,
+              "compiled_parameters": "@P1 = (408418)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xBBCBE1D0C08154BC",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [
               {
                 "equality": [
@@ -5211,6 +5318,39 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.8457,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 32.0,
+                    "expression_cache": false,
+                    "index_method": "clustered",
+                    "output_columns": [
+                      "product_id",
+                      "quantity",
+                      "unit_price"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "id"
+                        ],
+                        "name": "pk_order_items"
+                      },
+                      {
+                        "columns": [
+                          "product_id"
+                        ],
+                        "name": "ix_order_items_product_id"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": "pk_order_items",
                   "kind": "scan",
@@ -5254,6 +5394,23 @@
               "detail": "Gather Streams",
               "est_executions": 1.0,
               "est_rows": 1.8457,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 24.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "product_id",
+                  "quantity",
+                  "unit_price"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "parallelism",
@@ -5505,6 +5662,23 @@
           "physical_reads": 3768.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 31.0,
+              "compile_memory_kb": 200.0,
+              "compile_ms": 123.0,
+              "compiled_parameters": "@P1 = (5)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xFEBD637132E1276E",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -5544,6 +5718,23 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 287.868,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 11.0,
+                    "expression_cache": false,
+                    "index_method": "nonclustered",
+                    "output_columns": [
+                      "id"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "user_functions": []
+                  },
                   "id": 2,
                   "index": "ix_support_tickets_priority",
                   "kind": "seek",
@@ -5590,6 +5781,25 @@
                   "detail": null,
                   "est_executions": 287.868,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 229.0,
+                    "expression_cache": false,
+                    "index_method": "clustered",
+                    "output_columns": [
+                      "status",
+                      "subject",
+                      "opened_at"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "user_functions": []
+                  },
                   "id": 4,
                   "index": "pk_support_tickets",
                   "kind": "lookup",
@@ -5631,6 +5841,24 @@
               "detail": "Inner Join",
               "est_executions": 1.0,
               "est_rows": 287.868,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 233.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "id",
+                  "status",
+                  "subject",
+                  "opened_at"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "join",
@@ -5882,6 +6110,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 24.0,
+              "compile_memory_kb": 216.0,
+              "compile_ms": 73.0,
+              "compiled_parameters": "@P2 = (1), @P1 = (0)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0x11CC33E7EA9F4952",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [
               {
                 "equality": [],
@@ -5960,6 +6205,58 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 3282.66,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 30.0,
+                    "expression_cache": false,
+                    "index_method": "clustered",
+                    "output_columns": [
+                      "id",
+                      "total"
+                    ],
+                    "possible_index_names": [],
+                    "storage": "RowStore",
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "id"
+                        ],
+                        "name": "pk_orders"
+                      },
+                      {
+                        "columns": [
+                          "customer_id",
+                          "created_at"
+                        ],
+                        "name": "ix_orders_customer_id"
+                      },
+                      {
+                        "columns": [
+                          "status"
+                        ],
+                        "name": "ix_orders_status"
+                      },
+                      {
+                        "columns": [
+                          "status",
+                          "created_at"
+                        ],
+                        "name": "ix_orders_status_created"
+                      },
+                      {
+                        "columns": [
+                          "channel"
+                        ],
+                        "name": "ix_orders_channel"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": "pk_orders",
                   "kind": "scan",
@@ -6003,6 +6300,22 @@
               "detail": "Gather Streams",
               "est_executions": 1.0,
               "est_rows": 3282.66,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 24.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "id",
+                  "total"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "parallelism",
@@ -6270,6 +6583,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 1.0,
+              "compile_memory_kb": 120.0,
+              "compile_ms": 1.0,
+              "compiled_parameters": "@P1 = (12148)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xBD30C1112C2A5560",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -6304,6 +6634,25 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 224.0,
+                "expression_cache": false,
+                "index_method": "clustered",
+                "output_columns": [
+                  "id",
+                  "name",
+                  "price"
+                ],
+                "possible_index_names": [],
+                "storage": "RowStore",
+                "user_functions": []
+              },
               "id": 0,
               "index": "pk_products",
               "kind": "seek",
@@ -6512,6 +6861,24 @@
           "physical_reads": 10560.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 57.0,
+              "compile_memory_kb": 232.0,
+              "compile_ms": 375.0,
+              "compiled_parameters": "@P1 = (115003)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "optimization_early_abort": "GoodEnoughPlanFound",
+              "query_hash": "0x1C16A4743BB078B3",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -6557,6 +6924,24 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 5.00205,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 21.0,
+                        "expression_cache": false,
+                        "index_method": "nonclustered",
+                        "output_columns": [
+                          "id",
+                          "created_at"
+                        ],
+                        "possible_index_names": [],
+                        "storage": "RowStore",
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": "ix_orders_customer_id",
                       "kind": "seek",
@@ -6603,6 +6988,24 @@
                       "detail": null,
                       "est_executions": 5.00205,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 30.0,
+                        "expression_cache": false,
+                        "index_method": "clustered",
+                        "output_columns": [
+                          "status",
+                          "total"
+                        ],
+                        "possible_index_names": [],
+                        "storage": "RowStore",
+                        "user_functions": []
+                      },
                       "id": 4,
                       "index": "pk_orders",
                       "kind": "lookup",
@@ -6644,6 +7047,24 @@
                   "detail": "Inner Join",
                   "est_executions": 1.0,
                   "est_rows": 5.00205,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 44.0,
+                    "expression_cache": false,
+                    "output_columns": [
+                      "id",
+                      "status",
+                      "total",
+                      "created_at"
+                    ],
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "join",
@@ -6676,6 +7097,24 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 5.00205,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 44.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "id",
+                  "status",
+                  "total",
+                  "created_at"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -6926,6 +7365,22 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 11.0,
+              "compile_memory_kb": 96.0,
+              "compile_ms": 11.0,
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0x80E844211996BFCC",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -6959,6 +7414,26 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 43.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "table_id",
+                  "oplsn_fseqno",
+                  "oplsn_bOffset",
+                  "oplsn_slotid",
+                  "item_guid"
+                ],
+                "possible_index_names": [],
+                "storage": "RowStore",
+                "user_functions": []
+              },
               "id": 0,
               "index": "FFtUpdateIdx",
               "kind": "scan",
@@ -7248,6 +7723,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 2.0,
+              "compile_memory_kb": 232.0,
+              "compile_ms": 2.0,
+              "compiled_parameters": "@1 = (1)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0x2E60BD5F2B1B322C",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -7302,6 +7794,24 @@
                               "detail": null,
                               "est_executions": 1.0,
                               "est_rows": 1.0,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [],
+                                "conversions": [],
+                                "estimated_execution_mode": {
+                                  "kind": "row"
+                                },
+                                "estimated_row_bytes": 29.0,
+                                "expression_cache": false,
+                                "index_method": "clustered",
+                                "output_columns": [
+                                  "id",
+                                  "status"
+                                ],
+                                "possible_index_names": [],
+                                "storage": "RowStore",
+                                "user_functions": []
+                              },
                               "id": 5,
                               "index": "pk_orders",
                               "kind": "seek",
@@ -7344,6 +7854,22 @@
                           "detail": null,
                           "est_executions": 1.0,
                           "est_rows": 1.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_execution_mode": {
+                              "kind": "row"
+                            },
+                            "estimated_row_bytes": 29.0,
+                            "expression_cache": false,
+                            "output_columns": [
+                              "id",
+                              "status"
+                            ],
+                            "possible_index_names": [],
+                            "user_functions": []
+                          },
                           "id": 4,
                           "index": null,
                           "kind": "other",
@@ -7376,6 +7902,24 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 37.0,
+                        "expression_cache": false,
+                        "output_columns": [
+                          "id",
+                          "status",
+                          "Expr1005",
+                          "Expr1006"
+                        ],
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 3,
                       "index": null,
                       "kind": "compute",
@@ -7408,6 +7952,24 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 37.0,
+                    "expression_cache": false,
+                    "output_columns": [
+                      "id",
+                      "status",
+                      "Expr1005",
+                      "Expr1006"
+                    ],
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 2,
                   "index": null,
                   "kind": "compute",
@@ -7440,6 +8002,19 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 9.0,
+                "expression_cache": false,
+                "index_method": "clustered",
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 1,
               "index": "pk_orders",
               "kind": "modify",
@@ -7682,6 +8257,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 1.0,
+              "compile_memory_kb": 120.0,
+              "compile_ms": 1.0,
+              "compiled_parameters": "@1 = (1)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xBFDD28B1F8A5DB44",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -7716,6 +8308,23 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 21.0,
+                "expression_cache": false,
+                "index_method": "clustered",
+                "output_columns": [
+                  "status"
+                ],
+                "possible_index_names": [],
+                "storage": "RowStore",
+                "user_functions": []
+              },
               "id": 0,
               "index": "pk_orders",
               "kind": "seek",
@@ -7888,6 +8497,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 2.0,
+              "compile_memory_kb": 224.0,
+              "compile_ms": 2.0,
+              "compiled_parameters": "@1 = (1), @2 = (2)",
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0x70DEB9137DC844BA",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -7922,6 +8548,19 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 9.0,
+                "expression_cache": false,
+                "index_method": "clustered",
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": "pk_orders",
               "kind": "modify",
@@ -8152,6 +8791,22 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 42.0,
+              "compile_memory_kb": 2288.0,
+              "compile_ms": 43.0,
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 1600.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xE5DE7151675598B3",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [
               {
                 "equality": [
@@ -8271,6 +8926,23 @@
                                               "detail": null,
                                               "est_executions": 1.0,
                                               "est_rows": 1.0,
+                                              "facts": {
+                                                "columns_without_statistics": [],
+                                                "conditions": [],
+                                                "conversions": [],
+                                                "estimated_execution_mode": {
+                                                  "kind": "row"
+                                                },
+                                                "estimated_row_bytes": 11.0,
+                                                "expression_cache": false,
+                                                "index_method": "clustered",
+                                                "output_columns": [
+                                                  "customer_id"
+                                                ],
+                                                "possible_index_names": [],
+                                                "storage": "RowStore",
+                                                "user_functions": []
+                                              },
                                               "id": 9,
                                               "index": "pk_orders",
                                               "kind": "seek",
@@ -8313,6 +8985,21 @@
                                           "detail": "Distribute Streams",
                                           "est_executions": 1.0,
                                           "est_rows": 1.0,
+                                          "facts": {
+                                            "columns_without_statistics": [],
+                                            "conditions": [],
+                                            "conversions": [],
+                                            "estimated_execution_mode": {
+                                              "kind": "row"
+                                            },
+                                            "estimated_row_bytes": 11.0,
+                                            "expression_cache": false,
+                                            "output_columns": [
+                                              "customer_id"
+                                            ],
+                                            "possible_index_names": [],
+                                            "user_functions": []
+                                          },
                                           "id": 8,
                                           "index": null,
                                           "kind": "parallelism",
@@ -8359,6 +9046,37 @@
                                                   "detail": null,
                                                   "est_executions": 1.0,
                                                   "est_rows": 1.0,
+                                                  "facts": {
+                                                    "columns_without_statistics": [],
+                                                    "conditions": [],
+                                                    "conversions": [],
+                                                    "estimated_execution_mode": {
+                                                      "kind": "row"
+                                                    },
+                                                    "estimated_row_bytes": 19.0,
+                                                    "expression_cache": false,
+                                                    "index_method": "clustered",
+                                                    "output_columns": [
+                                                      "product_id"
+                                                    ],
+                                                    "possible_index_names": [],
+                                                    "storage": "RowStore",
+                                                    "table_indexes": [
+                                                      {
+                                                        "columns": [
+                                                          "id"
+                                                        ],
+                                                        "name": "pk_order_items"
+                                                      },
+                                                      {
+                                                        "columns": [
+                                                          "product_id"
+                                                        ],
+                                                        "name": "ix_order_items_product_id"
+                                                      }
+                                                    ],
+                                                    "user_functions": []
+                                                  },
                                                   "id": 12,
                                                   "index": "pk_order_items",
                                                   "kind": "scan",
@@ -8402,6 +9120,21 @@
                                               "detail": "Repartition Streams",
                                               "est_executions": 1.0,
                                               "est_rows": 1.0,
+                                              "facts": {
+                                                "columns_without_statistics": [],
+                                                "conditions": [],
+                                                "conversions": [],
+                                                "estimated_execution_mode": {
+                                                  "kind": "row"
+                                                },
+                                                "estimated_row_bytes": 11.0,
+                                                "expression_cache": false,
+                                                "output_columns": [
+                                                  "product_id"
+                                                ],
+                                                "possible_index_names": [],
+                                                "user_functions": []
+                                              },
                                               "id": 11,
                                               "index": null,
                                               "kind": "parallelism",
@@ -8438,6 +9171,20 @@
                                               "detail": null,
                                               "est_executions": 1.0000000053196,
                                               "est_rows": 1.0,
+                                              "facts": {
+                                                "columns_without_statistics": [],
+                                                "conditions": [],
+                                                "conversions": [],
+                                                "estimated_execution_mode": {
+                                                  "kind": "row"
+                                                },
+                                                "estimated_row_bytes": 16.0,
+                                                "expression_cache": false,
+                                                "index_method": "clustered",
+                                                "possible_index_names": [],
+                                                "storage": "RowStore",
+                                                "user_functions": []
+                                              },
                                               "id": 13,
                                               "index": "pk_products",
                                               "kind": "seek",
@@ -8479,6 +9226,18 @@
                                           "detail": "Inner Join",
                                           "est_executions": 1.0,
                                           "est_rows": 1.0,
+                                          "facts": {
+                                            "columns_without_statistics": [],
+                                            "conditions": [],
+                                            "conversions": [],
+                                            "estimated_execution_mode": {
+                                              "kind": "row"
+                                            },
+                                            "estimated_row_bytes": 9.0,
+                                            "expression_cache": false,
+                                            "possible_index_names": [],
+                                            "user_functions": []
+                                          },
                                           "id": 10,
                                           "index": null,
                                           "kind": "join",
@@ -8510,6 +9269,21 @@
                                       "detail": "Inner Join",
                                       "est_executions": 1.0,
                                       "est_rows": 1.0,
+                                      "facts": {
+                                        "columns_without_statistics": [],
+                                        "conditions": [],
+                                        "conversions": [],
+                                        "estimated_execution_mode": {
+                                          "kind": "row"
+                                        },
+                                        "estimated_row_bytes": 11.0,
+                                        "expression_cache": false,
+                                        "output_columns": [
+                                          "customer_id"
+                                        ],
+                                        "possible_index_names": [],
+                                        "user_functions": []
+                                      },
                                       "id": 7,
                                       "index": null,
                                       "kind": "join",
@@ -8546,6 +9320,23 @@
                                       "detail": null,
                                       "est_executions": 1.0000000053196,
                                       "est_rows": 5.00834,
+                                      "facts": {
+                                        "columns_without_statistics": [],
+                                        "conditions": [],
+                                        "conversions": [],
+                                        "estimated_execution_mode": {
+                                          "kind": "row"
+                                        },
+                                        "estimated_row_bytes": 15.0,
+                                        "expression_cache": false,
+                                        "index_method": "nonclustered",
+                                        "output_columns": [
+                                          "id"
+                                        ],
+                                        "possible_index_names": [],
+                                        "storage": "RowStore",
+                                        "user_functions": []
+                                      },
                                       "id": 14,
                                       "index": "ix_orders_customer_id",
                                       "kind": "seek",
@@ -8588,6 +9379,21 @@
                                   "detail": "Inner Join",
                                   "est_executions": 1.0,
                                   "est_rows": 5.00834,
+                                  "facts": {
+                                    "columns_without_statistics": [],
+                                    "conditions": [],
+                                    "conversions": [],
+                                    "estimated_execution_mode": {
+                                      "kind": "row"
+                                    },
+                                    "estimated_row_bytes": 15.0,
+                                    "expression_cache": false,
+                                    "output_columns": [
+                                      "id"
+                                    ],
+                                    "possible_index_names": [],
+                                    "user_functions": []
+                                  },
                                   "id": 5,
                                   "index": null,
                                   "kind": "join",
@@ -8624,6 +9430,38 @@
                                   "detail": null,
                                   "est_executions": 1.0,
                                   "est_rows": 15.0,
+                                  "facts": {
+                                    "columns_without_statistics": [],
+                                    "conditions": [],
+                                    "conversions": [],
+                                    "estimated_execution_mode": {
+                                      "kind": "batch"
+                                    },
+                                    "estimated_row_bytes": 19.0,
+                                    "expression_cache": false,
+                                    "index_method": "clustered",
+                                    "output_columns": [
+                                      "order_id",
+                                      "product_id"
+                                    ],
+                                    "possible_index_names": [],
+                                    "storage": "RowStore",
+                                    "table_indexes": [
+                                      {
+                                        "columns": [
+                                          "id"
+                                        ],
+                                        "name": "pk_order_items"
+                                      },
+                                      {
+                                        "columns": [
+                                          "product_id"
+                                        ],
+                                        "name": "ix_order_items_product_id"
+                                      }
+                                    ],
+                                    "user_functions": []
+                                  },
                                   "id": 16,
                                   "index": "pk_order_items",
                                   "kind": "scan",
@@ -8668,6 +9506,21 @@
                               "detail": "Inner Join",
                               "est_executions": 1.0,
                               "est_rows": 8.93328,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [],
+                                "conversions": [],
+                                "estimated_execution_mode": {
+                                  "kind": "batch"
+                                },
+                                "estimated_row_bytes": 11.0,
+                                "expression_cache": false,
+                                "output_columns": [
+                                  "product_id"
+                                ],
+                                "possible_index_names": [],
+                                "user_functions": []
+                              },
                               "id": 4,
                               "index": null,
                               "kind": "join",
@@ -8704,6 +9557,20 @@
                               "detail": null,
                               "est_executions": 8.933282992,
                               "est_rows": 1.0,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [],
+                                "conversions": [],
+                                "estimated_execution_mode": {
+                                  "kind": "row"
+                                },
+                                "estimated_row_bytes": 16.0,
+                                "expression_cache": false,
+                                "index_method": "clustered",
+                                "possible_index_names": [],
+                                "storage": "RowStore",
+                                "user_functions": []
+                              },
                               "id": 17,
                               "index": "pk_products",
                               "kind": "seek",
@@ -8745,6 +9612,18 @@
                           "detail": "Inner Join",
                           "est_executions": 1.0,
                           "est_rows": 8.93328,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_execution_mode": {
+                              "kind": "row"
+                            },
+                            "estimated_row_bytes": 9.0,
+                            "expression_cache": false,
+                            "possible_index_names": [],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "join",
@@ -8776,6 +9655,18 @@
                       "detail": "Gather Streams",
                       "est_executions": 1.0,
                       "est_rows": 8.93328,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 9.0,
+                        "expression_cache": false,
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "parallelism",
@@ -8807,6 +9698,21 @@
                   "detail": "Aggregate",
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 11.0,
+                    "expression_cache": false,
+                    "output_columns": [
+                      "Expr1046"
+                    ],
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "aggregate",
@@ -8839,6 +9745,21 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 11.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "Expr1008"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "compute",
@@ -9327,6 +10248,22 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 1.0,
+              "compile_memory_kb": 240.0,
+              "compile_ms": 1.0,
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 0.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "query_hash": "0xAC0F7C57637DD3EA",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -9370,6 +10307,22 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 11.0,
+                        "expression_cache": false,
+                        "output_columns": [
+                          "id"
+                        ],
+                        "possible_index_names": [],
+                        "storage": "RowStore",
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": "pk_wide",
                       "kind": "scan",
@@ -9409,6 +10362,22 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 4011.0,
+                    "expression_cache": false,
+                    "output_columns": [
+                      "id",
+                      "Expr1002"
+                    ],
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "compute",
@@ -9441,6 +10410,18 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "row"
+                },
+                "estimated_row_bytes": 9.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": "pk_wide",
               "kind": "modify",
@@ -9648,6 +10629,23 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "mssql",
+            "facts": {
+              "cardinality_estimator": 160,
+              "changed_columns": [],
+              "compile_cpu_ms": 3.0,
+              "compile_memory_kb": 416.0,
+              "compile_ms": 3.0,
+              "conversions": [],
+              "cost_threshold_for_parallelism": 5.0,
+              "database_maxdop": 0,
+              "memory_desired_kb": 4304.0,
+              "memory_granted_kb": 0.0,
+              "memory_max_used_kb": 0.0,
+              "parallelism_blocker": "MaxDOPSetToOne",
+              "query_hash": "0xCE8A3BF747BC6C47",
+              "server_maxdop": 0,
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -9729,6 +10727,37 @@
                           "detail": null,
                           "est_executions": 1.0,
                           "est_rows": 1500000.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_execution_mode": {
+                              "kind": "batch"
+                            },
+                            "estimated_row_bytes": 15.0,
+                            "expression_cache": false,
+                            "index_method": "nonclustered",
+                            "output_columns": [
+                              "id"
+                            ],
+                            "possible_index_names": [],
+                            "storage": "RowStore",
+                            "table_indexes": [
+                              {
+                                "columns": [
+                                  "id"
+                                ],
+                                "name": "pk_order_items"
+                              },
+                              {
+                                "columns": [
+                                  "product_id"
+                                ],
+                                "name": "ix_order_items_product_id"
+                              }
+                            ],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": "ix_order_items_product_id",
                           "kind": "scan",
@@ -9771,6 +10800,21 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1500000.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "batch"
+                        },
+                        "estimated_row_bytes": 15.0,
+                        "expression_cache": false,
+                        "output_columns": [
+                          "Expr1003"
+                        ],
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "compute",
@@ -9822,6 +10866,37 @@
                                   "detail": null,
                                   "est_executions": 1.0,
                                   "est_rows": 1500000.0,
+                                  "facts": {
+                                    "columns_without_statistics": [],
+                                    "conditions": [],
+                                    "conversions": [],
+                                    "estimated_execution_mode": {
+                                      "kind": "row"
+                                    },
+                                    "estimated_row_bytes": 15.0,
+                                    "expression_cache": false,
+                                    "index_method": "nonclustered",
+                                    "output_columns": [
+                                      "id"
+                                    ],
+                                    "possible_index_names": [],
+                                    "storage": "RowStore",
+                                    "table_indexes": [
+                                      {
+                                        "columns": [
+                                          "id"
+                                        ],
+                                        "name": "pk_order_items"
+                                      },
+                                      {
+                                        "columns": [
+                                          "product_id"
+                                        ],
+                                        "name": "ix_order_items_product_id"
+                                      }
+                                    ],
+                                    "user_functions": []
+                                  },
                                   "id": 7,
                                   "index": "ix_order_items_product_id",
                                   "kind": "scan",
@@ -9864,6 +10939,21 @@
                               "detail": null,
                               "est_executions": 1.0,
                               "est_rows": 1500000.0,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [],
+                                "conversions": [],
+                                "estimated_execution_mode": {
+                                  "kind": "row"
+                                },
+                                "estimated_row_bytes": 15.0,
+                                "expression_cache": false,
+                                "output_columns": [
+                                  "Expr1004"
+                                ],
+                                "possible_index_names": [],
+                                "user_functions": []
+                              },
                               "id": 6,
                               "index": null,
                               "kind": "compute",
@@ -9896,6 +10986,22 @@
                           "detail": "Aggregate",
                           "est_executions": 1.0,
                           "est_rows": 999.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_execution_mode": {
+                              "kind": "row"
+                            },
+                            "estimated_row_bytes": 23.0,
+                            "expression_cache": false,
+                            "output_columns": [
+                              "Expr1004",
+                              "partialagg1005"
+                            ],
+                            "possible_index_names": [],
+                            "user_functions": []
+                          },
                           "id": 5,
                           "index": null,
                           "kind": "aggregate",
@@ -9928,6 +11034,22 @@
                       "detail": "Lazy Spool",
                       "est_executions": 1500001.0,
                       "est_rows": 999.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_execution_mode": {
+                          "kind": "row"
+                        },
+                        "estimated_row_bytes": 23.0,
+                        "expression_cache": false,
+                        "output_columns": [
+                          "Expr1004",
+                          "partialagg1005"
+                        ],
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 4,
                       "index": null,
                       "kind": "spool",
@@ -9960,6 +11082,21 @@
                   "detail": "Inner Join",
                   "est_executions": 1.0,
                   "est_rows": 1498500.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_execution_mode": {
+                      "kind": "row"
+                    },
+                    "estimated_row_bytes": 15.0,
+                    "expression_cache": false,
+                    "output_columns": [
+                      "partialagg1005"
+                    ],
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "join",
@@ -9992,6 +11129,21 @@
               "detail": "Aggregate",
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_execution_mode": {
+                  "kind": "batch"
+                },
+                "estimated_row_bytes": 15.0,
+                "expression_cache": false,
+                "output_columns": [
+                  "Expr1002"
+                ],
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",

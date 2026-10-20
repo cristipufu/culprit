@@ -25,6 +25,9 @@ pub mod operations;
 pub mod plan;
 pub mod plan_compare;
 pub mod plan_diff;
+pub mod plan_facts;
+#[cfg(test)]
+mod plan_facts_tests;
 pub mod plan_view;
 pub mod platform;
 pub mod provider;
@@ -65,6 +68,10 @@ pub use plan::*;
 pub use plan_compare::{CompareContext, Scenario, ScenarioKind};
 pub use plan_diff::{
     ChangeKind, NodeMatch, PlanChange, PlanDiff, PlanRegion, plan_cost_basis, plan_diff, plan_diff_in, plan_diff_named,
+};
+pub use plan_facts::{
+    PlanAutomaticIndex, PlanChangedColumn, PlanConversion, PlanConversionIssue, PlanExecutionMode, PlanFacts,
+    PlanIndexColumns, PlanNodeFacts, PlanParentRelationship,
 };
 pub use plan_view::{PlanInsightShare, PlanOperatorView, PlanView};
 pub use platform::Platform;

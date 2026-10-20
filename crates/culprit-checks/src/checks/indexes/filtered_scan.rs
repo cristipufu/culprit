@@ -60,8 +60,8 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             }
             let (Some(object), Some(predicate)) = (&node.object, &node.predicate) else { continue };
             // A partition a run would prune isn't read; a columnstore is read by segments, never sought.
-            if node.props.contains_key(culprit_core::plan::NOT_READ_IN_FULL)
-                || node.props.get("Storage").is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
+            if node.facts().partition_pruning.is_some()
+                || node.facts().storage.as_ref().is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
             {
                 continue;
             }
@@ -69,9 +69,9 @@ pub(crate) fn scan_groups(snapshot: &Snapshot) -> Vec<ScanGroup<'_>> {
             let rows = scan_rows(snapshot, node, &schema, &table).unwrap_or(0.0);
             // An estimate is the optimizer's word only where it isn't a default guess: PostgreSQL's for a parameter
             // compared by range, MySQL's fixed 10% for an equality it has no statistics for.
-            let guessed = node.props.contains_key(culprit_core::plan::GUESSED_SELECTIVITY)
+            let guessed = node.facts().selectivity_guess.is_some()
                 || (snapshot.server.engine == Engine::Mysql
-                    && node.props.get("filtered").and_then(|f| f.parse::<f64>().ok()).is_some_and(|f| {
+                    && node.facts().estimated_filtered_percent.is_some_and(|f| {
                         culprit_core::insights::mysql_guessed_filtered(
                             f,
                             culprit_core::insights::condition_count(predicate),
@@ -170,6 +170,7 @@ pub fn mark_measured_kept(snapshot: &mut Snapshot) {
     // Saved snapshots can carry an annotation inferred by an older version. Re-establish it from today's evidence
     // rules, including withdrawing it when a sample LIMIT never described all of the statement's runs.
     fn clear(node: &mut culprit_core::PlanNode) {
+        node.facts_mut().measured_kept_share = None;
         node.props.remove(culprit_core::plan::MEASURED_KEPT);
         node.children.iter_mut().for_each(clear);
     }
@@ -201,7 +202,8 @@ pub fn mark_measured_kept(snapshot: &mut Snapshot) {
         };
         fn mark(n: &mut culprit_core::PlanNode, id: u32, kept: f64) {
             if n.id == id {
-                n.props.insert(culprit_core::plan::MEASURED_KEPT.into(), format!("{kept:.6}"));
+                n.facts_mut().measured_kept_share = Some(kept);
+                n.props.insert(culprit_core::plan::MEASURED_KEPT.into(), kept.to_string());
             }
             n.children.iter_mut().for_each(|c| mark(c, id, kept));
         }

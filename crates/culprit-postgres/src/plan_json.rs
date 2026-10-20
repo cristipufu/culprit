@@ -89,6 +89,7 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         props.insert("PlanningMs".into(), ms.to_string());
     }
     let mut plan = Plan {
+        facts: Some(statement_facts(top)),
         view: None,
         engine: Engine::Postgres,
         kind,
@@ -107,6 +108,35 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
 
 /// Buffer counts (with BUFFERS), temp-file spills and per-worker rows. Postgres reports buffers including the operator's
 /// inputs; Culprit keeps each operator's own share so they add up across the plan.
+fn statement_facts(top: &Map<String, Value>) -> culprit_core::PlanFacts {
+    use culprit_core::plan_facts::nonnegative;
+    culprit_core::PlanFacts {
+        query_identifier: top.get("Query Identifier").and_then(prop_text),
+        elapsed_ms: number(top, "Execution Time").and_then(nonnegative),
+        planning_ms: number(top, "Planning Time").and_then(nonnegative),
+        jit_time_ms: top
+            .get("JIT")
+            .and_then(|v| v.pointer("/Timing/Total"))
+            .and_then(Value::as_f64)
+            .and_then(nonnegative),
+        trigger_timings: top
+            .get("Triggers")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| {
+                Some(culprit_core::actual::TriggerTiming {
+                    name: v.get("Trigger Name").and_then(Value::as_str).unwrap_or("Trigger").into(),
+                    relation: v.get("Relation").and_then(Value::as_str).map(str::to_string),
+                    time_ms: v.get("Time").and_then(Value::as_f64).and_then(nonnegative)?,
+                    calls: v.get("Calls").and_then(Value::as_f64).and_then(culprit_core::plan_facts::whole),
+                })
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
 fn runtime(map: &Map<String, Value>) -> Option<NodeRuntime> {
     let blocks = |m: &Map<String, Value>, keys: &[&str]| -> Option<f64> {
         let values: Vec<f64> = keys.iter().filter_map(|k| number(m, k)).collect();
@@ -245,6 +275,40 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
         repeat_inner_side(&mut children, total_cost);
     }
     let result = PlanNode {
+        facts: Some(culprit_core::PlanNodeFacts {
+            estimated_row_bytes: number(map, "Plan Width").and_then(culprit_core::plan_facts::nonnegative),
+            join_filter: text(map, "Join Filter"),
+            conditions: ["Filter", "Join Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond"]
+                .iter()
+                .filter_map(|k| text(map, k))
+                .collect(),
+            table_alias: text(map, "Alias"),
+            subplan_name: text(map, "Subplan Name"),
+            aggregate_strategy: text(map, "Strategy"),
+            parent_relationship: text(map, "Parent Relationship")
+                .as_deref()
+                .map(culprit_core::PlanParentRelationship::from_source),
+            estimated_rows_per_process: number(map, "Plan Rows")
+                .filter(|_| partial && !analyzed)
+                .and_then(culprit_core::plan_facts::nonnegative),
+            disk_usage_kb: number(map, "Disk Usage").and_then(culprit_core::plan_facts::nonnegative),
+            sort_space_kb: number(map, "Sort Space Used").and_then(culprit_core::plan_facts::nonnegative),
+            hash_batches: number(map, "Hash Batches").and_then(culprit_core::plan_facts::count),
+            hash_aggregate_batches: number(map, "HashAgg Batches").and_then(culprit_core::plan_facts::count),
+            heap_fetches: number(map, "Heap Fetches").and_then(culprit_core::plan_facts::nonnegative),
+            lossy_heap_blocks: number(map, "Lossy Heap Blocks").and_then(culprit_core::plan_facts::nonnegative),
+            exact_heap_blocks: number(map, "Exact Heap Blocks").and_then(culprit_core::plan_facts::nonnegative),
+            rows_removed_by_recheck: number(map, "Rows Removed by Index Recheck")
+                .and_then(culprit_core::plan_facts::nonnegative),
+            workers_planned: number(map, "Workers Planned").and_then(culprit_core::plan_facts::count),
+            workers_launched: number(map, "Workers Launched").and_then(culprit_core::plan_facts::count),
+            sort_on_disk: text(map, "Sort Space Type").and_then(|s| match s.as_str() {
+                "Disk" => Some(true),
+                "Memory" => Some(false),
+                _ => None,
+            }),
+            ..Default::default()
+        }),
         id,
         kind: kind_of(&op),
         detail: detail(map),
@@ -278,13 +342,14 @@ fn node(map: &Map<String, Value>, next_id: &mut u32, parallelism: f64, divisor: 
 /// side (a semi or unique join stops at the first match and is costed for less).
 fn repeat_inner_side(children: &mut [PlanNode], loop_cost: f64) {
     // Its two inputs, outer first; its other children are InitPlans and SubPlans (text EXPLAIN names only those).
-    let mut inputs = children
-        .iter_mut()
-        .filter(|c| c.props.get("Parent Relationship").is_none_or(|r| matches!(r.as_str(), "Outer" | "Inner")));
+    let mut inputs = children.iter_mut().filter(|c| {
+        c.facts().parent_relationship.as_ref().is_none_or(|r| {
+            matches!(r, culprit_core::PlanParentRelationship::Outer | culprit_core::PlanParentRelationship::Inner)
+        })
+    });
     let (Some(outer), Some(inner)) = (inputs.next(), inputs.next()) else { return };
     let runs = outer.est_rows.max(1.0);
-    let planned =
-        outer.props.get("Plan Rows per process").and_then(|r| r.parse::<f64>().ok()).unwrap_or(outer.est_rows);
+    let planned = outer.facts().estimated_rows_per_process.unwrap_or(outer.est_rows);
     let left = loop_cost - outer.subtree_cost;
     let cost_runs = if inner.subtree_cost > 0.0 { planned.min(left / inner.subtree_cost).max(1.0) } else { 1.0 };
     repeat(inner, runs, cost_runs);
@@ -302,7 +367,9 @@ fn repeat(node: &mut PlanNode, runs: f64, cost_runs: f64) {
     }
     node.subtree_cost *= cost_runs;
     for child in node.children.iter_mut() {
-        if child.props.get("Parent Relationship").is_none_or(|r| !matches!(r.as_str(), "InitPlan" | "CTE")) {
+        if child.facts().parent_relationship.as_ref().is_none_or(|r| {
+            !matches!(r, culprit_core::PlanParentRelationship::InitPlan | culprit_core::PlanParentRelationship::Cte)
+        }) {
             repeat(child, runs, cost_runs);
         }
     }
@@ -387,6 +454,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn measured_plan_facts_survive_removing_the_display_properties() {
+        let json = r#"[{"Plan": {"Node Type": "Gather", "Workers Planned": 4, "Workers Launched": 0,
+            "Actual Total Time": 100, "Actual Rows": 10000, "Actual Loops": 1, "Plan Rows": 10000, "Total Cost": 100,
+            "Plans": [{"Node Type": "Sort", "Sort Space Type": "Disk", "Sort Space Used": 128,
+                "Actual Total Time": 40, "Actual Rows": 10000, "Actual Loops": 1, "Plan Rows": 10000, "Total Cost": 90}]},
+            "Planning Time": 0.004, "Execution Time": 100.5, "JIT": {"Timing": {"Total": 60}},
+            "Triggers": [{"Trigger Name": "audit", "Time": 0.004, "Calls": 1}]}]"#;
+        let mut plan = parse(json, PlanKind::Actual, None).unwrap();
+        assert_eq!(plan.facts().planning_ms, Some(0.004));
+        assert_eq!(plan.root.facts().workers_launched, Some(0));
+        assert_eq!(plan.root.children[0].facts().sort_space_kb, Some(128.0));
+        plan.props.clear();
+        plan.root.props.clear();
+        plan.root.children[0].props.clear();
+        let summary = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!(summary.elapsed_ms, Some(100.5));
+        assert_eq!(summary.triggers[0].time_ms, 0.004);
+        let found = culprit_core::insights::insights(&plan);
+        for rule in ["spill", "workers-short", "jit"] {
+            assert!(found.iter().any(|i| i.rule == rule), "missing {rule}");
+        }
+    }
+
+    #[test]
     fn parallel_workers_share_their_loops() {
         let json = r#"[{"Plan": {"Node Type": "Gather", "Workers Planned": 2, "Workers Launched": 2,
             "Actual Total Time": 60.0, "Actual Rows": 14, "Actual Loops": 1, "Plan Rows": 15, "Total Cost": 100,
@@ -429,6 +520,8 @@ mod tests {
         let plan = parse(analyzed, PlanKind::Actual, None).unwrap();
         assert_eq!(plan.root.children[0].est_rows, 4_167.0);
         assert!(plan.nodes().iter().all(|n| !n.warnings.contains(&PlanWarning::Misestimate)));
+        assert_eq!(scan.facts().estimated_rows_per_process, Some(4167.0));
+        assert_eq!(scan.facts().parent_relationship, Some(culprit_core::PlanParentRelationship::Outer));
     }
 
     #[test]

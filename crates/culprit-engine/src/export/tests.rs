@@ -47,6 +47,8 @@ fn a_plan_file_never_puts_markup_into_an_html_page() {
     for key in ["flavor", "server_version", "query_cost", "dop"] {
         plan.props.insert(key.into(), "<img src=x onerror=alert(1)>".into());
     }
+    plan.facts_mut().flavor = Some("<img src=x onerror=alert(1)>".into());
+    plan.facts_mut().server_version = Some("<img src=x onerror=alert(1)>".into());
     assert_eq!(plan_engine_label(&plan), "MySQL");
     let options = ExportOptions::default();
     let page = plan_html(&plan, "Plan", &options);

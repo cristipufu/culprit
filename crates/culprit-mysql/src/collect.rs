@@ -947,10 +947,12 @@ async fn attach_plans(connector: &Connector, database: &str, queries: &mut [Dige
                     Ok(plan) if plan.root.children.is_empty() => outcome.empty += 1,
                     Ok(mut plan) => {
                         if let Some(version) = connector.version() {
+                            plan.facts_mut().server_version = Some(version.to_string());
                             plan.props.insert("server_version".into(), version.to_string());
                         }
                         // A simple MariaDB plan reads like MySQL's JSON; say which server made it so notes name it.
                         if connector.flavor() == Flavor::Mariadb {
+                            plan.facts_mut().flavor = Some("MariaDB".into());
                             plan.props.insert("flavor".into(), "MariaDB".into());
                         }
                         plan.props.insert("Sample".into(), digest.sample_from.sentence().into());

@@ -27,14 +27,14 @@ pub(super) fn partition_filtering(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Postgres || cx.plan.kind != PlanKind::Actual {
         return vec![];
     }
-    let mut groups: std::collections::BTreeMap<&str, Vec<&PlanNode>> = Default::default();
+    let mut groups: std::collections::BTreeMap<String, Vec<&PlanNode>> = Default::default();
     for n in &cx.nodes {
         if n.act_executions.is_some_and(|v| v > 0.0)
             && n.predicate.is_some()
             && n.act_rows.is_some()
-            && let Some(parent) = n.props.get("Partition Of")
+            && let Some(parent) = n.facts().partition_parent.as_ref()
         {
-            groups.entry(parent).or_default().push(n);
+            groups.entry(parent.clone()).or_default().push(n);
         }
     }
     groups.into_iter().filter_map(|(parent,nodes)|{

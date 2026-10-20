@@ -25,10 +25,9 @@ pub fn explain(conn: &Connection, statement: &str) -> Result<Plan> {
         .map_err(|e| map_error(&e))?;
     let mut plan = plan_from_rows(statement, &rows);
     if parameters > 0 {
-        plan.props.insert(
-            "Generic Plan".into(),
-            "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.".into(),
-        );
+        let reason = "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.";
+        plan.facts_mut().generic_plan_reason = Some(reason.into());
+        plan.props.insert("Generic Plan".into(), reason.into());
     }
     Ok(plan)
 }
@@ -99,6 +98,7 @@ pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Plan {
     let aliases = culprit_core::sql::table_aliases(statement, Engine::Sqlite);
     resolve_aliases(&mut root, &aliases);
     Plan {
+        facts: Some(Default::default()),
         view: None,
         engine: Engine::Sqlite,
         kind: PlanKind::Estimated,
@@ -117,6 +117,10 @@ fn resolve_aliases(n: &mut PlanNode, aliases: &[(String, String)]) {
     if let Some(object) = n.object.clone()
         && let Some((_, table)) = aliases.iter().find(|(alias, _)| alias.eq_ignore_ascii_case(&object))
     {
+        n.facts_mut().table_alias = Some(object.clone());
+        if let Some(built) = &mut n.facts_mut().automatic_index {
+            built.table = table.clone();
+        }
         n.props.insert("Alias".into(), object);
         n.object = Some(table.clone());
     }
@@ -138,6 +142,7 @@ fn children(parent: i64, rows: &[(i64, i64, String)]) -> Vec<PlanNode> {
 
 fn node(id: i64, op: &str, kind: NodeKind) -> PlanNode {
     PlanNode {
+        facts: Some(Default::default()),
         id: id.max(0) as u32,
         op: op.to_string(),
         kind,
@@ -189,6 +194,7 @@ fn step(id: i64, detail: &str) -> PlanNode {
         if let Some(at) = upper.find(" ON ") {
             let on = text[at + 4..].trim();
             n.object = on.split('(').next().map(|t| t.trim().to_string());
+            n.facts_mut().automatic_index = culprit_core::PlanAutomaticIndex::from_description(on);
             n.props.insert(AUTOMATIC_INDEX.into(), on.to_string());
         }
         n
@@ -266,6 +272,10 @@ fn access(n: &mut PlanNode, rest: &str) {
                 (!name.is_empty()).then_some(name)
             })
             .collect();
+        n.facts_mut().automatic_index = Some(culprit_core::PlanAutomaticIndex {
+            table: n.object.clone().unwrap_or_default(),
+            columns: columns.clone(),
+        });
         n.index = Some("automatic index".into());
         n.props.insert(
             AUTOMATIC_INDEX.into(),
@@ -302,6 +312,25 @@ fn title(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_index_advice_uses_typed_keys_after_the_raw_description_is_removed() {
+        let mut plan = plan_from_rows(
+            "SELECT * FROM orders o JOIN items i ON i.order_id = o.id",
+            &rows(&[(1, 0, "SCAN o"), (2, 0, "SEARCH i USING AUTOMATIC COVERING INDEX (order_id=?)")]),
+        );
+        let expected = culprit_core::insights::engine_built_indexes(&plan);
+        assert_eq!(expected.len(), 1);
+        assert_eq!(plan.root.children[1].facts().automatic_index.as_ref().unwrap().table, "items");
+        assert_eq!(
+            (expected[0].table.as_str(), expected[0].keys.as_slice()),
+            ("items", ["order_id".to_string()].as_slice())
+        );
+        for node in &mut plan.root.children {
+            node.props.clear();
+        }
+        assert_eq!(culprit_core::insights::engine_built_indexes(&plan), expected);
+    }
 
     fn rows(lines: &[(i64, i64, &str)]) -> Vec<(i64, i64, String)> {
         lines.iter().map(|(i, p, d)| (*i, *p, d.to_string())).collect()

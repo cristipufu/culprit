@@ -15,7 +15,7 @@ const MAX_PLANS: usize = 60;
 
 pub(crate) async fn attach(client: &mut MsClient, window_minutes: u32, queries: &mut [QueryStat]) {
     for q in queries.iter_mut() {
-        let compiled = q.plan.as_ref().and_then(|p| p.props.get("Parameters").cloned());
+        let compiled = q.plan.as_ref().and_then(|p| p.facts().compiled_parameters.clone());
         if let (Some(first), Some(compiled)) = (q.plans.first_mut(), compiled) {
             first.compiled = Some(compiled);
         }
@@ -35,7 +35,7 @@ pub(crate) async fn attach(client: &mut MsClient, window_minutes: u32, queries: 
                 .into_iter()
                 .filter_map(|r| {
                     let plan = plan_xml::parse(&r.str("query_plan")?).ok()?;
-                    Some((r.string("plan_id"), plan.props.get("Parameters")?.clone()))
+                    Some((r.string("plan_id"), plan.facts().compiled_parameters.clone()?))
                 })
                 .collect();
             for p in queries.iter_mut().flat_map(|q| q.plans.iter_mut()) {

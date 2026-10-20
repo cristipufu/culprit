@@ -170,9 +170,11 @@ fn self_times_from_progress(plan: &Plan, nodes: &[NodeProgress]) -> std::collect
 /// SQL Server batch-mode operators report their own time; row-mode operators (and every Postgres and MySQL operator)
 /// report time including their inputs.
 fn batch_mode(node: &PlanNode) -> bool {
-    ["ActualExecutionMode", "EstimatedExecutionMode"]
-        .iter()
-        .any(|k| node.props.get(*k).is_some_and(|v| v.eq_ignore_ascii_case("batch")))
+    let facts = node.facts();
+    matches!(
+        facts.actual_execution_mode.as_ref().or(facts.estimated_execution_mode.as_ref()),
+        Some(crate::PlanExecutionMode::Batch)
+    )
 }
 
 /// Each operator's own time from reported times that may include inputs (row mode), exclude them (batch mode), or be
@@ -285,7 +287,7 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
         return None;
     }
     let nodes = plan.nodes();
-    let prop = |k: &str| plan.props.get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0);
+    let facts = plan.facts();
     let sum = |f: &dyn Fn(&PlanNode) -> Option<f64>| {
         let values: Vec<f64> = nodes.iter().filter_map(|n| f(n)).filter(|v| v.is_finite() && *v >= 0.0).collect();
         (!values.is_empty()).then(|| values.iter().sum::<f64>()).filter(|v| v.is_finite())
@@ -317,13 +319,13 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
     let worst = (!found.is_empty()).then(|| origin(&plan.root, largest / 2.0, &factor)).flatten();
     Some(ActualSummary {
         triggers: trigger_timings(plan),
-        elapsed_ms: known(prop("ElapsedMs").or(plan.root.act_time_ms)),
-        cpu_ms: known(prop("CpuMs").or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms)))),
+        elapsed_ms: known(facts.elapsed_ms.or(plan.root.act_time_ms)),
+        cpu_ms: known(facts.cpu_ms.or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms)))),
         logical_reads: sum(&|n| n.runtime.as_ref().and_then(|r| r.logical_reads)),
         physical_reads: sum(&|n| n.runtime.as_ref().and_then(|r| r.physical_reads)),
         rows: plan.root.act_rows,
-        memory_granted_kb: prop("MemoryGrantedKB"),
-        memory_used_kb: prop("MemoryMaxUsedKB"),
+        memory_granted_kb: facts.memory_granted_kb,
+        memory_used_kb: facts.memory_max_used_kb,
         spilled: plan.has_warning(crate::plan::PlanWarning::Spill)
             || nodes.iter().any(|n| n.runtime.as_ref().and_then(|r| r.spill_pages).is_some_and(|p| p > 0.0)),
         slowest_node: slowest.map(|s| s.0),
@@ -335,7 +337,7 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
         spill_pages: sum(&|n| n.runtime.as_ref().and_then(|r| r.spill_pages)),
         skew: worker_skew(plan),
         last_run_at: plan.props.get("LastRunAt").cloned(),
-        workers: prop("UsedThreads"),
+        workers: facts.used_threads.map(f64::from),
     })
 }
 
@@ -353,22 +355,14 @@ pub fn trigger_timings(plan: &Plan) -> Vec<TriggerTiming> {
     if plan.engine != Engine::Postgres {
         return vec![];
     }
-    let Some(value) = plan.props.get("Triggers").and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else {
-        return vec![];
-    };
-    let Some(items) = value.as_array() else {
-        return vec![];
-    };
-    items
+    plan.facts()
+        .trigger_timings
         .iter()
-        .filter_map(|v| {
-            let time_ms = v.get("Time")?.as_f64().filter(|v| v.is_finite() && *v >= 0.0)?;
-            Some(TriggerTiming {
-                name: v.get("Trigger Name").and_then(|s| s.as_str()).unwrap_or("Trigger").into(),
-                relation: v.get("Relation").and_then(|s| s.as_str()).map(str::to_string),
-                time_ms,
-                calls: v.get("Calls").and_then(|v| v.as_f64()).filter(|v| v.is_finite() && *v >= 0.0),
-            })
+        .filter(|t| t.time_ms.is_finite() && t.time_ms >= 0.0)
+        .cloned()
+        .map(|mut t| {
+            t.calls = t.calls.and_then(crate::plan_facts::whole);
+            t
         })
         .collect()
 }
@@ -381,6 +375,7 @@ mod tests {
 
     fn node(id: u32, time: f64, est: f64, act: f64, cost: f64, children: Vec<PlanNode>) -> PlanNode {
         PlanNode {
+            facts: None,
             id,
             op: format!("op{id}"),
             kind: NodeKind::Other,
@@ -407,6 +402,7 @@ mod tests {
 
     fn plan(root: PlanNode) -> Plan {
         Plan {
+            facts: None,
             view: None,
             engine: Engine::Postgres,
             kind: PlanKind::Actual,

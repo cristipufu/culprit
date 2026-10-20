@@ -61,7 +61,7 @@ pub fn query_plan_insights(snapshot: &Snapshot, query: &QueryStat, plan: &Plan) 
     let growth = plan.nodes().into_iter().any(|n| {
         n.kind == culprit_core::NodeKind::Scan && n.predicate.is_some()
             && n.table_rows.is_some_and(|rows| rows > 0.0 && rows < culprit_core::plan::SCAN_ROWS)
-            && !n.props.contains_key(culprit_core::plan::NOT_READ_IN_FULL)
+            && !n.facts().partition_pruning.is_some()
     }).then(|| "A filtered scan of a small table can be appropriate today. Track rows read and execution time as the table grows; low current cost does not establish that the access path will scale.".to_string());
     let notes: Vec<_> = [culprit_core::insights::coverage_note(plan), context, growth].into_iter().flatten().collect();
     let note = (!notes.is_empty()).then(|| notes.join(" "));

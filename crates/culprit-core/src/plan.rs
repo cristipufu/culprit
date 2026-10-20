@@ -77,11 +77,16 @@ pub struct PlanNode {
     pub subtree_cost: f64,
     pub self_cost: f64,
     pub act_time_ms: Option<f64>,
-    /// CPU, reads, per-thread rows and spills, when the plan carries runtime counters (actual plans, live progress).
+    // CPU, reads, per-thread rows and spills, when the plan carries runtime counters (actual plans, live progress).
     #[serde(default)]
     pub runtime: Option<crate::actual::NodeRuntime>,
     pub warnings: Vec<PlanWarning>,
     pub props: Properties,
+    // Captured and prepared calculation inputs. None identifies an older plan requiring the property adapter;
+    // Some with unknown fields never borrows a conflicting display property.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facts: Option<crate::PlanNodeFacts>,
     pub children: Vec<PlanNode>,
 }
 
@@ -97,10 +102,6 @@ pub const GUESSED_SELECTIVITY: &str = "Selectivity";
 /// the rows a statement examines and returns): the share of the rows read the runs kept, a number from 0 to 1. What the
 /// runs measured outweighs an estimate, and a fixed guess most of all ([`PlanNode::kept_share`]).
 pub const MEASURED_KEPT: &str = "Share kept, as its runs measured";
-
-/// Plan prop MySQL's and MariaDB's EXPLAIN carry on a table: the percentage of the rows read that its condition is
-/// expected to keep.
-const MYSQL_FILTERED: &str = "filtered";
 
 /// An index pays off for a filter that keeps at most this share of the rows a scan reads. Above it, reading through the
 /// index touches most of the table's pages anyway, so the scan is the right plan and the fix is to read less. Every
@@ -130,6 +131,20 @@ pub const INDEX_KIND: &str = "Index Kind";
 pub const UDF_IN_SEEK_ONLY: &str = "UserDefinedFunctionsInSeekOnly";
 
 impl PlanNode {
+    pub fn facts(&self) -> std::borrow::Cow<'_, crate::PlanNodeFacts> {
+        self.facts
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(crate::PlanNodeFacts::from_legacy_properties(&self.props)))
+    }
+
+    /// Materialize legacy evidence before a preparation step changes it, preserving the other captured facts.
+    pub fn facts_mut(&mut self) -> &mut crate::PlanNodeFacts {
+        if self.facts.is_none() {
+            self.facts = Some(crate::PlanNodeFacts::from_legacy_properties(&self.props));
+        }
+        self.facts.as_mut().unwrap()
+    }
     pub fn walk<'a>(&'a self, out: &mut Vec<&'a PlanNode>) {
         out.push(self);
         for child in &self.children {
@@ -150,8 +165,7 @@ impl PlanNode {
         match self.act_executions {
             Some(runs) if runs <= 0.0 => 0.0,
             Some(runs) => {
-                let threads =
-                    self.props.get(PARALLEL_THREADS).and_then(|t| t.parse::<f64>().ok()).unwrap_or(1.0).max(1.0);
+                let threads = self.facts().parallel_threads.unwrap_or(1).max(1) as f64;
                 (runs - (threads - 1.0)).max(1.0)
             }
             None => self.est_executions.max(1.0),
@@ -174,17 +188,17 @@ impl PlanNode {
     pub fn kept_share(&self) -> Option<f64> {
         // What the statement's runs measured, where the analysis put it on the scan ([`MEASURED_KEPT`]).
         if self.act_rows.is_none()
-            && let Some(kept) = self.props.get(MEASURED_KEPT).and_then(|k| k.trim().parse::<f64>().ok())
+            && let Some(kept) = self.facts().measured_kept_share.and_then(crate::plan_facts::fraction)
         {
             return Some(kept.clamp(0.0, 1.0));
         }
         // A default guess for a parameter compared by range or pattern isn't a share anything can be judged on.
-        if self.props.contains_key(GUESSED_SELECTIVITY) {
+        if self.facts().selectivity_guess.is_some() {
             return None;
         }
         // MySQL estimates the share its condition keeps of each scan; one of its fixed guesses says nothing.
         if self.act_rows.is_none()
-            && let Some(filtered) = self.props.get(MYSQL_FILTERED).and_then(|f| f.trim().parse::<f64>().ok())
+            && let Some(filtered) = self.facts().estimated_filtered_percent.and_then(crate::plan_facts::percentage)
         {
             let conditions = self.predicate.as_deref().map_or(1, crate::insights::condition_count);
             return (!crate::insights::mysql_guessed_filtered(filtered, conditions))
@@ -200,7 +214,7 @@ impl PlanNode {
     /// may never read ([`NOT_READ_IN_FULL`]: a partition a generic plan lists but a run would prune).
     pub fn rows_read_total(&self) -> Option<f64> {
         self.rows_read.or_else(|| {
-            (self.kind == NodeKind::Scan && !self.props.contains_key(NOT_READ_IN_FULL))
+            (self.kind == NodeKind::Scan && self.facts().partition_pruning.is_none())
                 .then(|| self.table_rows.map(|t| t * self.runs()))
                 .flatten()
         })
@@ -210,7 +224,7 @@ impl PlanNode {
     /// a run may never read ([`NOT_READ_IN_FULL`]) or the plan's own estimate of the rows it reads is under half the
     /// table's (a scan under a TOP or a LIMIT that stops at its first rows, in index order).
     pub fn reads_table_whole(&self) -> bool {
-        if self.kind != NodeKind::Scan || self.object.is_none() || self.props.contains_key(NOT_READ_IN_FULL) {
+        if self.kind != NodeKind::Scan || self.object.is_none() || self.facts().partition_pruning.is_some() {
             return false;
         }
         match (self.rows_read, self.table_rows) {
@@ -221,7 +235,7 @@ impl PlanNode {
 
     /// Whether the operator reads a BRIN index, by the catalog's mark ([`INDEX_KIND`]).
     pub fn reads_brin(&self) -> bool {
-        self.props.get(INDEX_KIND).is_some_and(|k| k.eq_ignore_ascii_case("brin"))
+        self.facts().index_method.as_ref().is_some_and(|k| k.eq_ignore_ascii_case("brin"))
     }
 
     /// How far off the estimate was for the executions that happened, as a factor ≥ 1, signed: positive means more
@@ -271,8 +285,10 @@ impl PlanNode {
                 && [op.as_str(), detail.as_str()].iter().any(|t| t.contains("semi") || t.contains("anti"));
             let last = n.children.len().saturating_sub(1);
             for (i, child) in n.children.iter().enumerate() {
-                let subquery =
-                    child.props.get("Parent Relationship").is_some_and(|r| r == "SubPlan" || r == "InitPlan");
+                let subquery = matches!(
+                    child.facts().parent_relationship.as_ref(),
+                    Some(crate::PlanParentRelationship::SubPlan | crate::PlanParentRelationship::InitPlan)
+                );
                 // A hash join builds its first input (SQL Server) or its Hash child (PostgreSQL, MySQL) in full.
                 let reads_to_the_end = n.kind == NodeKind::Sort || op == "hash" || (op == "hash match" && i == 0);
                 let child_stopped = if subquery || limits || op.contains("merge join") || (semi && i == last && i > 0) {
@@ -337,9 +353,12 @@ pub struct Plan {
     pub warnings: Vec<PlanWarning>,
     pub index_hints: Vec<PlanIndexHint>,
     pub props: Properties,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facts: Option<crate::PlanFacts>,
     pub raw: Option<String>,
-    /// Structural observations, with catalog and workload context when attached to a scan. Recomputed when a saved
-    /// report is read; absent in older files.
+    // Structural observations, with catalog and workload context when attached to a scan. Recomputed when a saved
+    // report is read; absent in older files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub insights: Option<PlanInsights>,
@@ -350,6 +369,18 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn facts(&self) -> std::borrow::Cow<'_, crate::PlanFacts> {
+        self.facts
+            .as_ref()
+            .map(std::borrow::Cow::Borrowed)
+            .unwrap_or_else(|| std::borrow::Cow::Owned(crate::PlanFacts::from_legacy_properties(&self.props)))
+    }
+    pub fn facts_mut(&mut self) -> &mut crate::PlanFacts {
+        if self.facts.is_none() {
+            self.facts = Some(crate::PlanFacts::from_legacy_properties(&self.props));
+        }
+        self.facts.as_mut().unwrap()
+    }
     pub fn nodes(&self) -> Vec<&PlanNode> {
         let mut out = Vec::new();
         self.root.walk(&mut out);
@@ -410,14 +441,14 @@ impl Plan {
     /// Whether any step of the plan was planned on a default guess for a parameter: then what the plan costs in all, and
     /// whether it is cheap, rests on that guess too.
     pub fn has_guess(&self) -> bool {
-        self.nodes().iter().any(|n| n.props.contains_key(crate::GUESSED_SELECTIVITY))
+        self.nodes().iter().any(|n| n.facts().selectivity_guess.is_some())
     }
 
     /// Every step whose cost rests on a guess, with how ([`Plan::guess`]).
     pub fn guesses(&self) -> Vec<(u32, Guess)> {
         // Planned on the guess: the step itself, or any step below it.
         fn mark(n: &PlanNode, planned: &mut Vec<u32>) -> bool {
-            let mut any = n.props.contains_key(crate::GUESSED_SELECTIVITY);
+            let mut any = n.facts().selectivity_guess.is_some();
             for child in &n.children {
                 any |= mark(child, planned);
             }
@@ -436,7 +467,10 @@ impl Plan {
             let mut earlier_guessed = false;
             for (i, child) in n.children.iter().enumerate() {
                 // An InitPlan (a CTE among them) runs once for the statement, whatever its parent repeats.
-                let once = child.props.get("Parent Relationship").is_some_and(|r| r == "InitPlan" || r == "CTE");
+                let once = matches!(
+                    child.facts().parent_relationship.as_ref(),
+                    Some(crate::PlanParentRelationship::InitPlan | crate::PlanParentRelationship::Cte)
+                );
                 // A nested loop's later inputs run once for each row of the earlier ones; so does any input the plan
                 // counts more runs for than its parent (a MySQL join's later tables, a correlated subplan).
                 let per_row = !once && i > 0 && (nested_loop || child.est_executions > n.est_executions.max(1.0));

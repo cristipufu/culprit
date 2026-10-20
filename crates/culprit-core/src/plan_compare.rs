@@ -119,7 +119,7 @@ pub(crate) fn scenarios(
         });
     }
 
-    let ce = |p: &Plan| p.props.get("CardinalityEstimationModelVersion").cloned();
+    let ce = |p: &Plan| p.facts().cardinality_estimator.map(|v| v.to_string());
     if let (Some(x), Some(y)) = (ce(a), ce(b))
         && x != y
     {
@@ -137,7 +137,7 @@ pub(crate) fn scenarios(
         });
     }
 
-    let params = |p: &Plan| p.props.get("Parameters").cloned();
+    let params = |p: &Plan| p.facts().compiled_parameters.clone();
     let parameters_differ = matches!((params(a), params(b)), (Some(x), Some(y)) if x != y);
     if let (Some(x), Some(y)) = (params(a), params(b))
         && x != y
@@ -186,12 +186,20 @@ pub(crate) fn scenarios(
     }
 
     let converts = |p: &Plan| {
-        p.props.get("PlanAffectingConvert").cloned().or_else(|| {
-            p.nodes()
-                .into_iter()
-                .filter(|n| n.warnings.contains(&PlanWarning::ImplicitConversion))
-                .find_map(|n| n.predicate.clone().or_else(|| n.seek_predicate.clone()))
-        })
+        p.facts()
+            .conversions
+            .iter()
+            .find(|c| !crate::insights::current_conversions(p, &c.expression).is_empty())
+            .map(|c| c.text())
+            .or_else(|| {
+                p.nodes()
+                    .into_iter()
+                    .filter(|n| n.warnings.contains(&PlanWarning::ImplicitConversion))
+                    .flat_map(|n| [n.predicate.as_ref(), n.seek_predicate.as_ref()])
+                    .flatten()
+                    .find(|text| !crate::insights::current_conversions(p, text).is_empty())
+                    .cloned()
+            })
     };
     let (ca, cb) = (converts(a), converts(b));
     if ca.is_some() != cb.is_some() {
@@ -219,7 +227,7 @@ pub(crate) fn scenarios(
     if pa.is_some() != pb.is_some() {
         let (yes, no, plan_no, dop) =
             if let Some(d) = pa { (name_a, name_b, b, d) } else { (name_b, name_a, a, pb.unwrap_or(0)) };
-        let reason = plan_no.props.get("NonParallelPlanReason").map(|r| humanize(r));
+        let reason = plan_no.facts().parallelism_blocker.as_ref().map(|r| humanize(r));
         let dop = if dop > 1 { format!(" ({dop} threads)") } else { String::new() };
         out.push(Scenario {
             kind: ScenarioKind::Parallelism,
@@ -235,9 +243,7 @@ pub(crate) fn scenarios(
         });
     }
 
-    let grant = |p: &Plan| {
-        p.props.get("MemoryGrantedKB").or(p.props.get("MemoryDesiredKB")).and_then(|v| v.parse::<f64>().ok())
-    };
+    let grant = |p: &Plan| p.facts().memory_granted_kb.or(p.facts().memory_desired_kb);
     if let (Some(ga), Some(gb)) = (grant(a), grant(b))
         && ga.max(gb) >= MEMORY_MIN_KB
         && ratio(ga, gb) >= MEMORY_FACTOR
@@ -433,7 +439,7 @@ fn shape(sql: &str, engine: Engine) -> String {
 
 /// Threads when the plan runs in parallel: SQL Server's DegreeOfParallelism, or parallelism operators (Gather).
 fn parallel(plan: &Plan) -> Option<u32> {
-    let dop = plan.props.get("DegreeOfParallelism").and_then(|d| d.parse::<u32>().ok());
+    let dop = plan.facts().degree_of_parallelism;
     if let Some(d) = dop {
         return (d > 1).then_some(d);
     }
@@ -514,6 +520,7 @@ mod tests {
         children: Vec<PlanNode>,
     ) -> PlanNode {
         PlanNode {
+            facts: None,
             id: 0,
             op: op.into(),
             kind,
@@ -540,6 +547,7 @@ mod tests {
 
     fn plan(root: PlanNode, props: &[(&str, &str)]) -> Plan {
         let mut plan = Plan {
+            facts: None,
             view: None,
             engine: Engine::Mssql,
             kind: PlanKind::Estimated,

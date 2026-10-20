@@ -179,7 +179,7 @@ pub fn parameter_sensitive(snapshot: &Snapshot) -> Vec<Finding> {
 fn compiled(plan: &PlanVariant, q: &QueryStat) -> Option<String> {
     let raw = plan.compiled.clone().or_else(|| {
         let dominant = q.plans.first()?;
-        (dominant.id == plan.id).then(|| q.plan.as_ref()?.props.get("Parameters").cloned()).flatten()
+        (dominant.id == plan.id).then(|| q.plan.as_ref()?.facts().compiled_parameters.clone()).flatten()
     })?;
     let tidy = tidy_parameters(&raw);
     (!tidy.is_empty()).then_some(tidy)
@@ -392,7 +392,7 @@ pub(crate) fn mssql_fix(snapshot: &Snapshot, q: &QueryStat, fast: Option<&PlanVa
         .costs
         .as_ref()
         .and_then(|c| Some(c.plan_ms? / c.plans.filter(|n| *n > 0.0)?))
-        .or_else(|| q.plan.as_ref()?.props.get("CompileTime")?.trim().parse::<f64>().ok())
+        .or_else(|| q.plan.as_ref()?.facts().compile_ms)
         .filter(|ms| *ms > 0.0);
     let recompile_ms = compile_ms.map(|ms| ms * q.executions);
     let costly = recompile_ms.is_some_and(|total| slow_extra_ms > 0.0 && total >= slow_extra_ms);

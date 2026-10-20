@@ -91,8 +91,7 @@ pub(super) fn misestimate(cx: &Cx) -> Vec<Draft> {
                     String::new()
                 }
             );
-            let mysql_histograms = !cx
-                .prop("server_version")
+            let mysql_histograms = !cx.plan.facts().server_version.as_deref()
                 .is_some_and(|v| !v.contains("MariaDB") && !crate::version_at_least(v, [8, 0, 0]));
             let (fix, sql) = match (cx.engine(), &table) {
                 // Table variables have no statistics, and a temporary table's belong to the session that filled it:
@@ -164,7 +163,7 @@ pub(super) fn missing_statistics(cx: &Cx) -> Vec<Draft> {
         .filter(|n| warns_of_no_statistics(n))
         .take(1)
         .map(|n| {
-            let cols = n.props.get("ColumnsWithNoStatistics").cloned();
+            let cols = (!n.facts().columns_without_statistics.is_empty()).then(|| n.facts().columns_without_statistics.join(", "));
             let mut d = Draft::new("missing-statistics", InsightArea::Statistics, cx.subtree(n), vec![n.id]);
             d.cap = Severity::Low;
             d.title = format!(
@@ -212,13 +211,8 @@ pub fn stale_index_statistics(plan: &Plan) -> Option<StaleIndexStatistics> {
 
 fn keys_without_statistics(cx: &Cx, n: &PlanNode) -> Option<StaleIndexStatistics> {
     let table = n.object.clone()?;
-    let columns: Vec<String> = n
-        .props
-        .get("ColumnsWithNoStatistics")?
-        .split(", ")
-        .map(|c| c.trim().to_string())
-        .filter(|c| !c.is_empty())
-        .collect();
+    let columns: Vec<String> =
+        n.facts().columns_without_statistics.iter().map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
     if columns.is_empty() {
         return None;
     }

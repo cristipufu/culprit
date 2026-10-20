@@ -49,10 +49,15 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
     root.flag_misestimates();
     let mut props = Properties::new();
     // The root's time is the statement's: the same name every engine uses.
-    if let Some(ms) = root.act_time_ms.or_else(|| root.children.iter().filter_map(|c| c.act_time_ms).reduce(f64::max)) {
+    let elapsed_ms = root.act_time_ms.or_else(|| root.children.iter().filter_map(|c| c.act_time_ms).reduce(f64::max));
+    if let Some(ms) = elapsed_ms {
         props.insert("ElapsedMs".into(), ms.to_string());
     }
     let mut plan = Plan {
+        facts: Some(culprit_core::PlanFacts {
+            elapsed_ms: elapsed_ms.and_then(culprit_core::plan_facts::nonnegative),
+            ..Default::default()
+        }),
         view: None,
         engine: Engine::Mysql,
         kind: PlanKind::Actual,
@@ -103,6 +108,7 @@ fn build(
 
 fn blank(id: u32, op: &str, kind: NodeKind) -> PlanNode {
     PlanNode {
+        facts: Some(Default::default()),
         id,
         op: op.to_string(),
         kind,
@@ -265,6 +271,18 @@ fn fill_missing_costs(node: &mut PlanNode) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_synthetic_root_keeps_measured_duration_without_display_properties() {
+        let tree = "-> Table scan on orders  (cost=10 rows=100) (actual time=0.01..0.04 rows=100 loops=1)\n-> Table scan on items  (cost=20 rows=200) (actual time=0.02..0.08 rows=200 loops=1)";
+        let mut plan = parse(tree, None, Some("shop")).unwrap();
+        assert_eq!(plan.root.op, "Query");
+        assert_eq!(plan.root.act_time_ms, None);
+        plan.props.clear();
+        let actual = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!(actual.elapsed_ms, Some(0.08));
+        assert_eq!(actual.cpu_ms, None);
+    }
 
     const TREE: &str = "-> Sort: o.total DESC  (cost=50352 rows=4973) (actual time=180..181 rows=12 loops=1)
     -> Filter: (o.promo_code = 'SPRING')  (cost=50352 rows=4973) (actual time=0.9..179 rows=12 loops=1)

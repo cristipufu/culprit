@@ -139,7 +139,7 @@ pub(crate) fn sql_text(text: &str, engine: Engine, options: &ExportOptions) -> S
 /// of a fixed set of names: a plan opened from a file can carry any `flavor`, and this text goes into HTML pages.
 pub(crate) fn plan_engine_label(plan: &Plan) -> &'static str {
     let mariadb =
-        plan.engine == Engine::Mysql && plan.props.get("flavor").is_some_and(|f| f.eq_ignore_ascii_case("mariadb"));
+        plan.engine == Engine::Mysql && plan.facts().flavor.as_ref().is_some_and(|f| f.eq_ignore_ascii_case("mariadb"));
     if mariadb { "MariaDB" } else { plan.engine.label() }
 }
 

@@ -84,7 +84,7 @@ pub(crate) fn is_empty(xml: &str) -> bool {
 /// one taken today would: the same statement of the document (by the `QueryHash` the saved plan carries). `None` when
 /// the plan kept no XML, or this parser can't read it.
 pub fn reparse(saved: &Plan) -> Option<Plan> {
-    parse_statement(saved.raw.as_deref()?, saved.props.get("QueryHash").map(String::as_str)).ok()
+    parse_statement(saved.raw.as_deref()?, saved.facts().query_hash.as_deref()).ok()
 }
 
 /// Parse the statement whose `QueryHash` matches (a batch or procedure plan holds every statement), or the most
@@ -185,6 +185,7 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
     }
 
     let mut plan = Plan {
+        facts: Some(statement_facts(statement, query_plan)),
         view: None,
         engine: Engine::Mssql,
         kind: if is_actual { PlanKind::Actual } else { PlanKind::Estimated },
@@ -199,6 +200,64 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
     };
     plan.compute_self_costs();
     Ok(plan)
+}
+
+fn statement_facts(statement: Node, plan: Node) -> culprit_core::PlanFacts {
+    use culprit_core::plan_facts::{count, nonnegative};
+    let number = |node: Node, key: &str| node.attribute(key).and_then(|v| v.parse::<f64>().ok()).and_then(nonnegative);
+    let grant = child(plan, "MemoryGrantInfo");
+    let memory = |key: &str| grant.and_then(|n| number(n, key));
+    let time = child(plan, "QueryTimeStats");
+    let timing = |key: &str| time.and_then(|n| number(n, key));
+    culprit_core::PlanFacts {
+        query_hash: statement.attribute("QueryHash").map(str::to_string),
+        parallelism_blocker: plan.attribute("NonParallelPlanReason").map(str::to_string),
+        optimization_early_abort: statement
+            .attribute("StatementOptmEarlyAbortReason")
+            .or_else(|| plan.attribute("StatementOptmEarlyAbortReason"))
+            .map(str::to_string),
+        compiled_parameters: child(plan, "ParameterList").and_then(|params| {
+            let list: Vec<String> = children(params, "ColumnReference")
+                .map(|p| {
+                    let name = p.attribute("Column").unwrap_or("?");
+                    p.attribute("ParameterCompiledValue").map_or_else(|| name.into(), |v| format!("{name} = {v}"))
+                })
+                .collect();
+            (!list.is_empty()).then(|| list.join(", "))
+        }),
+        conversions: child(plan, "Warnings")
+            .map(|w| {
+                children(w, "PlanAffectingConvert")
+                    .map(|w| culprit_core::PlanConversion {
+                        issue: culprit_core::PlanConversionIssue::from_source(
+                            w.attribute("ConvertIssue").unwrap_or("Convert"),
+                        ),
+                        expression: w.attribute("Expression").unwrap_or("").into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        memory_grant_warning: child(plan, "Warnings")
+            .and_then(|w| child(w, "MemoryGrantWarning"))
+            .and_then(|g| g.attribute("GrantWarningKind"))
+            .map(str::to_string),
+        elapsed_ms: timing("ElapsedTime"),
+        cpu_ms: timing("CpuTime"),
+        compile_ms: number(plan, "CompileTime"),
+        compile_cpu_ms: number(plan, "CompileCPU"),
+        compile_memory_kb: number(plan, "CompileMemory"),
+        degree_of_parallelism: number(plan, "DegreeOfParallelism").and_then(count),
+        used_threads: child(plan, "ThreadStat").and_then(|n| number(n, "UsedThreads")).and_then(count),
+        cardinality_estimator: number(statement, "CardinalityEstimationModelVersion").and_then(count),
+        memory_desired_kb: memory("SerialDesiredMemory"),
+        memory_requested_kb: memory("RequestedMemory"),
+        memory_granted_kb: memory("GrantedMemory"),
+        memory_max_used_kb: memory("MaxUsedMemory"),
+        memory_grant_wait_ms: memory("GrantWaitTime").and_then(|seconds| nonnegative(seconds * 1000.0)),
+        udf_elapsed_ms: timing("UdfElapsedTime"),
+        udf_cpu_ms: timing("UdfCpuTime"),
+        ..Default::default()
+    }
 }
 
 fn parse_relop(relop: Node) -> PlanNode {
@@ -292,10 +351,47 @@ fn parse_relop(relop: Node) -> PlanNode {
     let est_executions = 1.0 + attr_f64(relop, "EstimateRebinds") + attr_f64(relop, "EstimateRewinds");
     let table_rows = relop.attribute("TableCardinality").and_then(|v| v.parse().ok());
 
-    let (act_rows, act_executions, act_time_ms, mut runtime) = match child(relop, "RunTimeInformation") {
-        Some(rt) => runtime_counters(rt, &mut props),
-        None => (None, None, None, None),
+    let mut facts = culprit_core::PlanNodeFacts {
+        estimated_row_bytes: relop
+            .attribute("AvgRowSize")
+            .and_then(|v| v.parse::<f64>().ok())
+            .and_then(culprit_core::plan_facts::nonnegative),
+        output_columns: child(relop, "OutputList").map(|o| {
+            children(o, "ColumnReference").filter_map(|c| c.attribute("Column")).map(str::to_string).collect()
+        }),
+        storage: operator.and_then(|o| o.attribute("Storage")).map(str::to_string),
+        conversions: child(relop, "Warnings")
+            .map(|w| {
+                children(w, "PlanAffectingConvert")
+                    .map(|w| culprit_core::PlanConversion {
+                        issue: culprit_core::PlanConversionIssue::from_source(
+                            w.attribute("ConvertIssue").unwrap_or("Convert"),
+                        ),
+                        expression: w.attribute("Expression").unwrap_or("").into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        many_to_many: operator.and_then(|o| o.attribute("ManyToMany")).map(is_true),
+        table_alias: operator.and_then(|o| child(o, "Object")).and_then(|o| o.attribute("Alias")).map(unbracket),
+        user_functions: calls.iter().map(|(name, _)| name.clone()).collect(),
+        functions_in_seek_only: (!calls.is_empty()).then(|| calls.iter().all(|(_, seek)| *seek)),
+        columns_without_statistics: child(relop, "Warnings")
+            .and_then(|w| child(w, "ColumnsWithNoStatistics"))
+            .map(|cols| children(cols, "ColumnReference").map(column_name).map(|c| unbracket(&c)).collect())
+            .unwrap_or_default(),
+        estimated_execution_mode: relop
+            .attribute("EstimatedExecutionMode")
+            .map(culprit_core::PlanExecutionMode::from_source),
+        estimated_rows_without_goal: relop
+            .attribute("EstimateRowsWithoutRowGoal")
+            .and_then(|v| v.parse::<f64>().ok())
+            .and_then(culprit_core::plan_facts::nonnegative),
+        exchange_spill: child(relop, "Warnings").and_then(|w| child(w, "ExchangeSpillDetails")).map(|_| true),
+        ..Default::default()
     };
+    let Counters { rows: act_rows, executions: act_executions, elapsed_ms: act_time_ms, rows_read, mut runtime } =
+        child(relop, "RunTimeInformation").map(|rt| runtime_counters(rt, &mut props, &mut facts)).unwrap_or_default();
     // Sort/hash/exchange spill details say how many pages went to tempdb.
     let spilled: f64 = child(relop, "Warnings")
         .map(|w| {
@@ -314,6 +410,7 @@ fn parse_relop(relop: Node) -> PlanNode {
     let estimated_read = relop.attribute("EstimatedRowsRead").and_then(|v| v.parse::<f64>().ok());
 
     let mut node = PlanNode {
+        facts: Some(facts),
         id: relop.attribute("NodeId").and_then(|v| v.parse().ok()).unwrap_or(0),
         kind: node_kind(&op, &logical),
         detail: (!logical.is_empty() && logical != physical && logical != op).then_some(logical),
@@ -338,11 +435,7 @@ fn parse_relop(relop: Node) -> PlanNode {
     };
     // Rows read across every execution, like `act_rows`: counted by SQL Server when it did (ActualRowsRead), else its
     // estimate per execution times the executions (the measured ones in an actual plan).
-    node.rows_read = node
-        .props
-        .get("ActualRowsRead")
-        .and_then(|v| v.parse::<f64>().ok())
-        .or_else(|| estimated_read.map(|per_run| per_run * node.runs()));
+    node.rows_read = rows_read.or_else(|| estimated_read.map(|per_run| per_run * node.runs()));
     let returned = node.act_rows.unwrap_or_else(|| node.est_rows_total());
     if node.predicate.is_some()
         && node
@@ -488,10 +581,17 @@ fn column_name(column_ref: Node) -> String {
     format!("[{}]", unbracket(column))
 }
 
-type Counters = (Option<f64>, Option<f64>, Option<f64>, Option<NodeRuntime>);
+#[derive(Default)]
+struct Counters {
+    rows: Option<f64>,
+    executions: Option<f64>,
+    elapsed_ms: Option<f64>,
+    rows_read: Option<f64>,
+    runtime: Option<NodeRuntime>,
+}
 
 /// Totals across threads: rows, executions, reads and CPU add up; elapsed is the slowest thread.
-fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
+fn runtime_counters(rt: Node, props: &mut Properties, facts: &mut culprit_core::PlanNodeFacts) -> Counters {
     let mut rows = 0.0;
     let mut executions = 0.0;
     // Where SQL Server counted it: a measured 0 (an empty table, a seek that found nothing) is a count, not a gap.
@@ -539,11 +639,12 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
             runtime.thread_rows.push(thread_rows);
         }
         if let Some(mode) = thread.attribute("ActualExecutionMode") {
+            facts.actual_execution_mode = Some(culprit_core::PlanExecutionMode::from_source(mode));
             props.insert("ActualExecutionMode".into(), mode.into());
         }
     }
     if !seen {
-        return (None, None, None, None);
+        return Counters::default();
     }
     if runtime.thread_rows.len() < 2 {
         runtime.thread_rows.clear();
@@ -557,6 +658,7 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
     if let Some(read) = rows_read {
         props.insert("ActualRowsRead".into(), read.to_string());
     }
+    facts.parallel_threads = culprit_core::plan_facts::thread_count(threads_run);
     if threads_run >= 2.0 {
         props.insert(PARALLEL_THREADS.into(), threads_run.to_string());
     }
@@ -565,7 +667,13 @@ fn runtime_counters(rt: Node, props: &mut Properties) -> Counters {
             props.insert(key.into(), v.to_string());
         }
     }
-    (Some(rows), Some(executions), elapsed, (!runtime.is_empty()).then_some(runtime))
+    Counters {
+        rows: Some(rows),
+        executions: Some(executions),
+        elapsed_ms: elapsed,
+        rows_read,
+        runtime: (!runtime.is_empty()).then_some(runtime),
+    }
 }
 
 /// `Seek Plan: CONVERT_IMPLICIT(nvarchar(255),[db].[dbo].[orders].[status],0)=[@P1]`, one per line.
@@ -866,6 +974,27 @@ mod tests {
     }
 
     #[test]
+    fn statement_compiler_and_output_facts_survive_removing_display_properties() {
+        let mut plan = parse(ESTIMATED).unwrap();
+        assert_eq!(plan.facts().compiled_parameters.as_deref(), Some("@p1 = N'abc'"));
+        assert_eq!(plan.facts().query_hash.as_deref(), Some("0xAB"));
+        assert_eq!(plan.root.children[1].facts().output_columns, Some(vec!["Body".into()]));
+        assert_eq!(plan.root.children[0].facts().output_columns, Some(vec![]));
+        assert_eq!(culprit_core::signals::plan_row_bytes(&plan), Some(100.0));
+        let expected = serde_json::to_value(culprit_core::insights::insights(&plan)).unwrap();
+        fn clear(n: &mut PlanNode) {
+            n.props.clear();
+            for c in &mut n.children {
+                clear(c);
+            }
+        }
+        clear(&mut plan.root);
+        plan.props.clear();
+        assert_eq!(serde_json::to_value(culprit_core::insights::insights(&plan)).unwrap(), expected);
+        assert_eq!(culprit_core::signals::plan_row_bytes(&plan), Some(100.0));
+    }
+
+    #[test]
     fn reads_runtime_counters_from_actual_plans() {
         let xml = r#"<ShowPlanXML xmlns="http://schemas.microsoft.com/sqlserver/2004/07/showplan"><BatchSequence><Batch><Statements>
           <StmtSimple StatementText="SELECT 1" StatementSubTreeCost="1" QueryHash="0xAB12">
@@ -888,7 +1017,7 @@ mod tests {
             </QueryPlan>
           </StmtSimple>
         </Statements></Batch></BatchSequence></ShowPlanXML>"#;
-        let plan = parse(xml).unwrap();
+        let mut plan = parse(xml).unwrap();
         assert_eq!(plan.kind, PlanKind::Actual);
         let sort = &plan.root;
         assert_eq!(sort.kind, NodeKind::Sort);
@@ -908,6 +1037,13 @@ mod tests {
         assert_eq!(plan.props.get("UsedThreads").map(String::as_str), Some("2"));
         let summary = culprit_core::actual_summary(&plan).unwrap();
         assert_eq!((summary.elapsed_ms, summary.cpu_ms, summary.spilled), (Some(61.0), Some(80.0), true));
+        assert_eq!(plan.root.facts().parallel_threads, Some(2));
+        plan.root.props.remove(PARALLEL_THREADS);
+        assert_eq!(plan.root.runs(), 1.0, "native thread facts normalize executions without the display property");
+        plan.props.clear();
+        let summary = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!((summary.elapsed_ms, summary.cpu_ms, summary.workers), (Some(61.0), Some(80.0), Some(2.0)));
+        assert_eq!((summary.memory_granted_kb, summary.memory_used_kb), (Some(1024.0), Some(1024.0)));
     }
 
     #[test]

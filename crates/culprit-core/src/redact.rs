@@ -450,15 +450,74 @@ fn redact_props(props: &Properties, engine: Engine) -> Properties {
     props.iter().map(|(k, v)| (k.clone(), if is_measurement(v) { v.clone() } else { redact_sql(v, engine) })).collect()
 }
 
+fn redact_plan_expression(text: &str) -> String {
+    let mut prefix = "__culprit_plan_reference_".to_string();
+    while text.contains(&prefix) {
+        prefix.push('_');
+    }
+    let mut mapped = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut refs = Vec::new();
+    while let Some(at) = rest.find("SubPlan ") {
+        let start = at + "SubPlan ".len();
+        let digits = rest[start..].chars().take_while(char::is_ascii_digit).count();
+        mapped.push_str(&rest[..at]);
+        if digits == 0 || rest[..at].chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            mapped.push_str("SubPlan ");
+            rest = &rest[start..];
+            continue;
+        }
+        let original = &rest[at..start + digits];
+        let token = format!("{prefix}{}END", refs.len());
+        mapped.push_str(&token);
+        refs.push((token, original.to_string()));
+        rest = &rest[start + digits..];
+    }
+    mapped.push_str(rest);
+    let mut masked = redact_sql(&mapped, Engine::Postgres);
+    for (token, original) in refs {
+        masked = masked.replace(&token, &original);
+    }
+    masked
+}
+
 /// The plan with literal values replaced in its statement, predicates and text properties. The original plan text
 /// (`raw`) is dropped; use [`redact_native`] for that.
 pub fn redact_plan(plan: &Plan) -> Plan {
     fn text(t: &str, engine: Engine) -> String {
-        let t = redact_sql(t, engine);
+        let t = if engine == Engine::Postgres { redact_plan_expression(t) } else { redact_sql(t, engine) };
         if engine == Engine::Mssql { strip_database(&t) } else { t }
     }
     fn node(n: &PlanNode, engine: Engine) -> PlanNode {
+        let facts = n.facts.as_ref().map(|facts| {
+            let mut f = facts.clone();
+            f.selectivity_guess = f.selectivity_guess.as_deref().map(|v| redact_prose(v, engine));
+            f.partition_pruning = f.partition_pruning.as_deref().map(|v| redact_prose(v, engine));
+            f.join_filter = f.join_filter.as_deref().map(|v| text(v, engine));
+            f.storage = f.storage.as_deref().map(|v| redact_strings(v, engine));
+            f.join_buffer = f.join_buffer.as_deref().map(|v| redact_strings(v, engine));
+            f.join_buffer_join_type = f.join_buffer_join_type.as_deref().map(|v| redact_strings(v, engine));
+            f.index_method = f.index_method.as_deref().map(|v| redact_strings(v, engine));
+            f.aggregate_strategy = f.aggregate_strategy.as_deref().map(|v| redact_strings(v, engine));
+            f.conditions = f.conditions.iter().map(|v| text(v, engine)).collect();
+            for c in &mut f.conversions {
+                c.expression = text(&c.expression, engine);
+                if let crate::PlanConversionIssue::Other(v) = &mut c.issue {
+                    *v = redact_strings(v, engine);
+                }
+            }
+            if let Some(crate::PlanParentRelationship::Other(v)) = &mut f.parent_relationship {
+                *v = redact_strings(v, engine);
+            }
+            for mode in [&mut f.actual_execution_mode, &mut f.estimated_execution_mode].into_iter().flatten() {
+                if let crate::PlanExecutionMode::Other(v) = mode {
+                    *v = redact_strings(v, engine);
+                }
+            }
+            f
+        });
         PlanNode {
+            facts,
             detail: n.detail.as_deref().map(|d| text(d, engine)),
             seek_predicate: n.seek_predicate.as_deref().map(|p| text(p, engine)),
             predicate: n.predicate.as_deref().map(|p| text(p, engine)),
@@ -480,6 +539,23 @@ pub fn redact_plan(plan: &Plan) -> Plan {
         insights: None,
         ..plan.clone()
     };
+    if let Some(f) = &mut redacted.facts {
+        f.flavor = f.flavor.as_deref().map(|v| redact_strings(v, plan.engine));
+        f.server_version = f.server_version.as_deref().map(|v| redact_strings(v, plan.engine));
+        f.memory_grant_warning = f.memory_grant_warning.as_deref().map(|v| redact_strings(v, plan.engine));
+        f.compiled_parameters = f.compiled_parameters.as_deref().map(|v| text(v, plan.engine));
+        for c in &mut f.conversions {
+            c.expression = text(&c.expression, plan.engine);
+            if let crate::PlanConversionIssue::Other(v) = &mut c.issue {
+                *v = redact_strings(v, plan.engine);
+            }
+        }
+        f.generic_plan_reason = f.generic_plan_reason.as_deref().map(|v| redact_prose(v, plan.engine));
+        f.cost_basis = f.cost_basis.as_deref().map(|v| redact_prose(v, plan.engine));
+        f.parallelism_blocker = f.parallelism_blocker.as_deref().map(|v| redact_strings(v, plan.engine));
+        f.optimization_early_abort = f.optimization_early_abort.as_deref().map(|v| redact_strings(v, plan.engine));
+        f.statistics_maintenance = f.statistics_maintenance.as_deref().map(|v| text(v, plan.engine));
+    }
     // Insights quote the predicates they were found in: worked out again from the redacted plan.
     if plan.insights.is_some() {
         crate::insights::annotate(&mut redacted);

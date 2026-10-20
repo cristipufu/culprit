@@ -84,16 +84,27 @@ pub(crate) async fn last_actual_plan(pool: &Pool, query_id: &str, plan_id: Optio
     if let Some(at) = row.str("last_run") {
         plan.props.insert("LastRunAt".into(), format!("{at}Z"));
     }
-    // Lightweight profiling keeps row counts for past runs, not time: drop the zeros rather than report "0 ms".
+    clear_unrecorded_times(&mut plan);
+    if let Some(n) = row.f64("execution_count") {
+        plan.props.insert("CachedExecutions".into(), n.to_string());
+    }
+    Ok(plan)
+}
+
+// Lightweight profiling keeps row counts for past runs, not time. Withdraw its placeholder zeros in both models.
+fn clear_unrecorded_times(plan: &mut Plan) {
+    let facts = plan.facts_mut();
+    if facts.elapsed_ms == Some(0.0) {
+        facts.elapsed_ms = None;
+    }
+    if facts.cpu_ms == Some(0.0) {
+        facts.cpu_ms = None;
+    }
     for key in ["ElapsedMs", "CpuMs"] {
         if plan.props.get(key).is_some_and(|v| v == "0") {
             plan.props.remove(key);
         }
     }
-    if let Some(n) = row.f64("execution_count") {
-        plan.props.insert("CachedExecutions".into(), n.to_string());
-    }
-    Ok(plan)
 }
 
 const REQUEST_SQL: &str = r#"
@@ -298,6 +309,28 @@ fn node_progress(profiles: &[Rec], plan: Option<&Plan>) -> Vec<NodeProgress> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lightweight_profile_zero_times_withdraw_typed_placeholders_and_keep_measured_fallbacks() {
+        let snapshot: culprit_core::Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.json")).unwrap();
+        let mut plan = snapshot.queries()[0].plan.as_ref().unwrap().clone();
+        plan.kind = PlanKind::Actual;
+        plan.root.children.clear();
+        plan.root.act_time_ms = Some(10.0);
+        plan.root.runtime = Some(culprit_core::NodeRuntime { cpu_ms: Some(2.0), ..Default::default() });
+        plan.facts_mut().elapsed_ms = Some(0.0);
+        plan.facts_mut().cpu_ms = Some(0.0);
+        plan.props.insert("ElapsedMs".into(), "0".into());
+        plan.props.insert("CpuMs".into(), "0".into());
+        clear_unrecorded_times(&mut plan);
+        let actual = culprit_core::actual_summary(&plan).unwrap();
+        assert_eq!((actual.elapsed_ms, actual.cpu_ms), (Some(10.0), Some(2.0)));
+        plan.facts_mut().elapsed_ms = Some(8.0);
+        plan.facts_mut().cpu_ms = Some(3.0);
+        clear_unrecorded_times(&mut plan);
+        assert_eq!((plan.facts().elapsed_ms, plan.facts().cpu_ms), (Some(8.0), Some(3.0)));
+    }
 
     fn counters(rows: f64, est: f64, end_of_scans: f64, replays: f64, elapsed: f64) -> Counters {
         Counters { rows, est, elapsed: Some(elapsed), cpu: None, reads: None, end_of_scans, replays, closed: false }

@@ -859,10 +859,9 @@ async fn attach_plans(
 /// only when it runs. Without a value the planner still estimates `= $n` from statistics (as an average value of the
 /// column); only a range or pattern on `$n` (a fixed share) and `ANY($n)` (an array of guessed length) are guesses.
 pub(crate) fn mark_generic(plan: &mut culprit_core::Plan) {
-    plan.props.insert(
-        "Generic Plan".into(),
-        "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.".into(),
-    );
+    let reason = "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.";
+    plan.facts_mut().generic_plan_reason = Some(reason.into());
+    plan.props.insert("Generic Plan".into(), reason.into());
 }
 
 /// Plan prop that says the plan is of the text pg_stat_statements kept, not of the statement the application sent.
@@ -874,10 +873,11 @@ pub(crate) const PLANNED_TEXT: &str = "Planned Text";
 /// the statement's: shown as it is, it reads as the plan of another statement. It is said instead, with what follows
 /// from it.
 pub(crate) fn mark_planned_text(plan: &mut culprit_core::Plan, statement_id: &str) {
-    let Some(planned) = plan.props.get("Query Identifier").filter(|id| id.trim() != statement_id.trim()).cloned()
+    let Some(planned) = plan.facts().query_identifier.as_ref().filter(|id| id.trim() != statement_id.trim()).cloned()
     else {
         return;
     };
+    plan.facts_mut().query_identifier = None;
     plan.props.remove("Query Identifier");
     plan.props.insert(
         PLANNED_TEXT.into(),

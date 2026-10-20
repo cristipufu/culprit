@@ -118,7 +118,7 @@ fn spilling_step(q: &QueryStat, temp_tables: bool) -> Option<u32> {
         } else {
             n.kind == NodeKind::Sort
                 || n.op == "Hash"
-                || n.props.get("Strategy").is_some_and(|s| s == "Hashed" || s == "Mixed")
+                || n.facts().aggregate_strategy.as_ref().is_some_and(|s| s == "Hashed" || s == "Mixed")
         }
     };
     let mut steps = nodes.iter().filter(can_spill);
@@ -453,6 +453,7 @@ pub(super) mod wording_tests {
     #[test]
     fn plan_steps_take_the_right_article() {
         let mut n = PlanNode {
+            facts: None,
             id: 1,
             op: "Index Scan".into(),
             kind: NodeKind::Scan,
@@ -476,6 +477,7 @@ pub(super) mod wording_tests {
             runtime: None,
         };
         let plan = |n: &PlanNode| Plan {
+            facts: None,
             view: None,
             engine: Engine::Postgres,
             kind: culprit_core::PlanKind::Estimated,
@@ -496,6 +498,7 @@ pub(super) mod wording_tests {
     #[test]
     fn rows_a_step_reads_are_said_as_measured_or_as_estimated() {
         let mut n = PlanNode {
+            facts: None,
             id: 1,
             op: "Index range scan".into(),
             kind: NodeKind::Seek,
@@ -519,6 +522,7 @@ pub(super) mod wording_tests {
             runtime: None,
         };
         let plan = |n: &PlanNode| Plan {
+            facts: None,
             view: None,
             engine: Engine::Mysql,
             kind: culprit_core::PlanKind::Estimated,

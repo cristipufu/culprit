@@ -413,7 +413,7 @@ pub(super) fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: 
         }
         let index = leading_index(snapshot, &schema, &table, &cols.equality, &columns)?;
         // Without the plan's output columns, coverage is unknown: count it as lookups.
-        let lookups = match node.props.get("OutputList") {
+        let lookups = match node.facts().output_columns.as_ref() {
             Some(list) => uncovered(snapshot, index, list),
             None => vec!["the columns it returns".to_string()],
         };
@@ -426,7 +426,7 @@ pub(super) fn seekable_scan<'a>(snapshot: &'a Snapshot, q: &QueryStat, plan_id: 
 
 /// Columns of a plan's output list the index doesn't hold: not a key, not included, and not the clustered key every
 /// nonclustered index carries.
-pub(super) fn uncovered(snapshot: &Snapshot, index: &IndexStat, output: &str) -> Vec<String> {
+pub(super) fn uncovered(snapshot: &Snapshot, index: &IndexStat, output: &[String]) -> Vec<String> {
     if index.is_clustered {
         return Vec::new();
     }
@@ -440,9 +440,9 @@ pub(super) fn uncovered(snapshot: &Snapshot, index: &IndexStat, output: &str) ->
         .map(|c| c.to_ascii_lowercase())
         .collect();
     output
-        .split(',')
-        .map(|c| c.trim().rsplit('.').next().unwrap_or_default().trim_matches(['[', ']', '"']).to_string())
+        .iter()
         .filter(|c| !c.is_empty() && !c.starts_with("Expr") && !held.contains(&c.to_ascii_lowercase()))
+        .cloned()
         .collect()
 }
 
@@ -1239,5 +1239,25 @@ pub(super) fn failure_hint(reason: &str) -> &'static str {
         "Compiling with the forced plan took too long."
     } else {
         ""
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    #[test]
+    fn captured_output_column_names_are_not_split_into_qualifiers_or_csv_fields() {
+        let mut snapshot: Snapshot =
+            serde_json::from_str(include_str!("../../../../../fixtures/mssql-demo.json")).unwrap();
+        let mut index = snapshot.indexes[0].clone();
+        index.is_clustered = false;
+        index.columns = vec!["id".into()];
+        index.include = vec!["odd.column".into(), "a, b".into(), "two words".into()];
+        snapshot.indexes = vec![index.clone()];
+        assert!(
+            uncovered(&snapshot, &index, &["id".into(), "odd.column".into(), "a, b".into(), "two words".into()])
+                .is_empty()
+        );
+        assert_eq!(uncovered(&snapshot, &index, &["uncovered.column".into()]), vec!["uncovered.column"]);
     }
 }

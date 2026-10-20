@@ -290,6 +290,21 @@ rebuilds it from the collected plan. In-flight plans retain their collected coun
 partial execution is not a completed measured run. TypeScript maps these facts to layout data without repeating the
 analysis. Browser fixtures are generated with these same Rust functions and checked against them.
 
+Plan calculations read `PlanFacts` and `PlanNodeFacts`, defined in `culprit-core/src/plan_facts.rs`. Providers populate
+them from native XML, JSON or SQLite plan text; display properties remain available for inspection. Timing, memory,
+worker counts, selectivity, execution modes, compiler verdicts, candidate indexes and output columns retain their
+units and precision without parsing display labels. Native collection and normalized-plan deserialization treat
+invalid numeric evidence as unknown; a measured zero stays distinct from a missing counter. SQL Server's lightweight profiling withdraws its unrecorded timing placeholders at
+its collection boundary.
+
+A missing facts object identifies an older normalized plan or a property-only external provider: one compatibility
+adapter recovers its inputs. A present object is authoritative, including unknown fields, and never inherits a
+conflicting raw property. Preparation updates typed facts and their inspection strings together, withdrawing stale
+derived annotations. Catalog enrichment requires an unambiguous table/index identity; an unqualified name shared by
+schemas cannot establish one. Column-type context retains schema and target type, and aliases resolve only where
+their physical table is known. Redacted exports mask SQL values in typed facts as well as in properties, while
+preserving measurements and PostgreSQL's structural SubPlan references.
+
 `dashboard::refresh` applies a live read to an existing dashboard and returns `DashboardLive` (dashboard, sessions,
 optional error). Desktop polling calls `Workspace::dashboard_live`, so grades, attention and headlines share the CLI's
 implementation. The cold dashboard is pinned to the displayed report, and a reply from a previous connection, report

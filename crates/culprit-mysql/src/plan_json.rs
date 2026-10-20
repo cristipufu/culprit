@@ -42,6 +42,7 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option
         props.insert("message".into(), message.into());
     }
     let mut plan = Plan {
+        facts: Some(Default::default()),
         view: None,
         engine: Engine::Mysql,
         kind,
@@ -84,6 +85,8 @@ pub fn reparse(saved: &Plan, schema: Option<&str>) -> Option<Plan> {
             clean.props.insert(key.to_string(), value.clone());
         }
     }
+    clean.facts_mut().server_version = saved.facts().server_version.clone();
+    clean.facts_mut().flavor = saved.facts().flavor.clone().or(clean.facts().flavor.clone());
     Some(clean)
 }
 
@@ -116,6 +119,7 @@ impl Context {
 
 pub(crate) fn new_node(id: &mut u32, op: &str, kind: NodeKind) -> PlanNode {
     let node = PlanNode {
+        facts: Some(Default::default()),
         id: *id,
         op: op.to_string(),
         kind,
@@ -166,6 +170,9 @@ fn query_block(block: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNo
                 if let Some(v) = sub.get(flag) {
                     child.props.insert(flag.into(), scalar_text(v));
                 }
+            }
+            if let Some(attrs) = sub.as_object() {
+                copy_node_facts(attrs, &mut child);
             }
             child.op = subquery_label(sub).into();
             root.subtree_cost = root.subtree_cost.max(children + child.subtree_cost);
@@ -230,7 +237,7 @@ fn wrapper(key: &str, map: &Map<String, Value>, cx: &Context, id: &mut u32) -> P
     let sort_cost = map.get("cost_info").and_then(|c| number(c, "sort_cost")).unwrap_or(0.0);
     node.subtree_cost = sort_cost + node.children.iter().map(|c| c.subtree_cost).sum::<f64>();
     node.est_rows = node.children.last().map(|c| c.est_rows).unwrap_or(0.0);
-    copy_scalars(map, &mut node.props);
+    copy_node_facts(map, &mut node);
     node
 }
 
@@ -245,8 +252,8 @@ fn nested_loop(value: &Value, cx: &Context, id: &mut u32) -> PlanNode {
     // block nested loop or hash join buffer, once per buffer fill (the plan doesn't say how many fills; count one).
     let mut prefix = 1.0;
     for child in node.children.iter_mut() {
-        let read_once = child.props.get("using_join_buffer").is_some_and(|b| !b.contains("Batched Key Access"));
-        if prefix > 1.0 && !read_once && child.props.contains_key("rows_produced_per_join") {
+        let read_once = child.facts().join_buffer.as_ref().is_some_and(|b| !b.contains("Batched Key Access"));
+        if prefix > 1.0 && !read_once && child.facts().rows_produced_per_join.is_some() {
             child.est_executions = prefix;
             child.est_rows /= prefix;
             child.rows_read = child.rows_read.map(|per_scan| per_scan * prefix);
@@ -316,6 +323,7 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
     node.rows_read = examined;
     node.est_rows = produced.or(examined).unwrap_or(0.0);
     let filtered = number_field(table, "filtered");
+    node.facts_mut().estimated_filtered_percent = filtered.and_then(culprit_core::plan_facts::percentage);
     // MySQL's fixed guesses for conditions it has no statistics on say nothing about how much the filter keeps.
     let conditions = node.predicate.as_deref().map_or(1, culprit_core::insights::condition_count);
     if kind == NodeKind::Scan
@@ -346,13 +354,16 @@ fn table_node(table: &Map<String, Value>, cx: &Context, id: &mut u32) -> PlanNod
                     child.props.insert(flag.into(), scalar_text(v));
                 }
             }
+            if let Some(attrs) = sub.as_object() {
+                copy_node_facts(attrs, &mut child);
+            }
             child.op = subquery_label(sub).into();
             children.push(child);
         }
     }
     node.subtree_cost = own + children.iter().map(|c| c.subtree_cost).sum::<f64>();
     node.children = children;
-    copy_scalars(table, &mut node.props);
+    copy_node_facts(table, &mut node);
     if let Some(cost) = table.get("cost_info").and_then(Value::as_object) {
         for (k, v) in cost {
             node.props.insert(k.clone(), scalar_text(v));
@@ -380,6 +391,32 @@ pub(crate) fn access_op(access: &str, table: &Map<String, Value>) -> (&'static s
 /// MySQL quotes every identifier in conditions; `\`shop\`.\`orders\`.\`status\`` reads better (and parses) without them.
 pub fn unquote(condition: &str) -> String {
     condition.replace('`', "")
+}
+
+pub(crate) fn copy_node_facts(map: &Map<String, Value>, node: &mut PlanNode) {
+    copy_scalars(map, &mut node.props);
+    let facts = node.facts_mut();
+    if let Some(value) = number_field(map, "rows_produced_per_join").and_then(culprit_core::plan_facts::nonnegative) {
+        facts.rows_produced_per_join = Some(value);
+    }
+    if let Some(value) = map.get("dependent").and_then(Value::as_bool) {
+        facts.dependent = Some(value);
+    }
+    if let Some(value) = map.get("cacheable").and_then(Value::as_bool) {
+        facts.cacheable = Some(value);
+    }
+    if let Some(value) = map.get("not_exists").and_then(Value::as_bool) {
+        facts.anti_join = Some(value);
+    }
+    if let Some(value) = map.get("using_join_buffer").and_then(Value::as_str) {
+        facts.join_buffer = Some(value.into());
+    }
+    if let Some(value) = map.get("table_name").and_then(Value::as_str) {
+        facts.table_alias = Some(value.into());
+    }
+    if let Some(values) = map.get("possible_keys").and_then(Value::as_array) {
+        facts.possible_index_names = values.iter().filter_map(Value::as_str).map(str::to_string).collect();
+    }
 }
 
 pub(crate) fn copy_scalars(map: &Map<String, Value>, props: &mut Properties) {
@@ -551,6 +588,55 @@ fn tokenize(sql: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structural_advice_survives_removing_raw_display_properties() {
+        let json = r#"{"query_block":{"nested_loop":[
+            {"table":{"table_name":"customers","access_type":"ALL","rows_examined_per_scan":2,"rows_produced_per_join":2,"filtered":100}},
+            {"table":{"table_name":"orders","access_type":"ALL","rows_examined_per_scan":100000,
+            "rows_produced_per_join":4,"filtered":0.004,"possible_keys":["ix, with, commas","ix_customer"],
+            "using_join_buffer":"hash join","not_exists":true,"attached_condition":"orders.customer_id = customers.id",
+            "cost_info":{"read_cost":"100","eval_cost":"10"}}}]}}"#;
+        let mut p = parse(json, PlanKind::Estimated, None, Some("shop")).unwrap();
+        let node = p.nodes().into_iter().find(|n| n.object.as_deref() == Some("shop.orders")).unwrap();
+        assert_eq!(node.facts().possible_index_names, vec!["ix, with, commas", "ix_customer"]);
+        let insights = culprit_core::insights::insights(&p);
+        assert!(insights.iter().any(|i| i.rule == "join-buffer"));
+        let expected = serde_json::to_value(insights).unwrap();
+        fn clear(n: &mut PlanNode) {
+            n.props.clear();
+            for c in &mut n.children {
+                clear(c);
+            }
+        }
+        clear(&mut p.root);
+        p.props.clear();
+        assert_eq!(serde_json::to_value(culprit_core::insights::insights(&p)).unwrap(), expected);
+    }
+
+    #[test]
+    fn native_mysql_and_mariadb_filter_facts_survive_display_property_changes() {
+        for json in [
+            r#"{"query_block":{"select_id":1,"table":{"table_name":"orders","access_type":"ALL","rows_examined_per_scan":10000,"rows_produced_per_join":1,"filtered":"0.004","attached_condition":"orders.state = 'open'"}}}"#,
+            r#"{"query_block":{"select_id":1,"table":{"table_name":"orders","access_type":"ALL","loops":1,"rows":10000,"filtered":0.004,"attached_condition":"orders.state = 'open'"}}}"#,
+        ] {
+            let mut plan =
+                parse(json, PlanKind::Estimated, Some("SELECT * FROM orders WHERE state = 'open'"), Some("shop"))
+                    .unwrap();
+            fn check(node: &mut PlanNode) -> bool {
+                if node.kind == NodeKind::Scan {
+                    assert_eq!(node.facts().estimated_filtered_percent, Some(0.004));
+                    let before = node.kept_share();
+                    assert_eq!(before, Some(0.004 / 100.0));
+                    node.props.insert("filtered".into(), "90".into());
+                    assert_eq!(node.kept_share(), before);
+                    return true;
+                }
+                node.children.iter_mut().any(check)
+            }
+            assert!(check(&mut plan.root));
+        }
+    }
 
     #[test]
     fn a_plan_without_tables_says_so() {

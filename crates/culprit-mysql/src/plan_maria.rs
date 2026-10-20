@@ -10,9 +10,7 @@
 use culprit_core::{Engine, NodeKind, NodeRuntime, Plan, PlanKind, PlanNode, PlanWarning, Properties, Result};
 use serde_json::{Map, Value};
 
-use crate::plan_json::{
-    Context, access_op, copy_scalars, flag, new_node, number_field, scalar_text, strings, text, unquote,
-};
+use crate::plan_json::{Context, access_op, flag, new_node, number_field, scalar_text, strings, text, unquote};
 
 /// Members only MariaDB writes; MySQL's version 1 JSON always has `cost_info` instead.
 const MARIADB_KEYS: [&str; 9] = [
@@ -87,6 +85,15 @@ pub fn parse(value: &Value, json: &str, kind: PlanKind, statement: Option<&str>,
         props.insert("optimization_ms".into(), ms.to_string());
     }
     let mut plan = Plan {
+        facts: Some(culprit_core::PlanFacts {
+            elapsed_ms: elapsed.and_then(culprit_core::plan_facts::nonnegative),
+            flavor: Some("MariaDB".into()),
+            cost_basis: (!costed).then(|| {
+                "Rows examined: this MariaDB version reports no optimizer costs, so the costs shown are row counts"
+                    .into()
+            }),
+            ..Default::default()
+        }),
         view: None,
         engine: Engine::Mysql,
         kind,
@@ -255,10 +262,11 @@ fn wrapper(op: &str, kind: NodeKind, map: &Map<String, Value>, cx: &Context, id:
         node.est_rows = node.est_rows.min(limit.max(1.0));
     }
     // A sort that needed merge passes didn't fit sort_buffer_size and went through temporary files.
+    node.facts_mut().sort_merge_passes = number_field(map, "r_sort_passes").and_then(culprit_core::plan_facts::count);
     if number_field(map, "r_sort_passes").is_some_and(|p| p > 0.0) {
         node.warnings.push(PlanWarning::Spill);
     }
-    copy_scalars(map, &mut node.props);
+    crate::plan_json::copy_node_facts(map, &mut node);
     node
 }
 
@@ -295,6 +303,8 @@ fn subquery(sub: &Value, cx: &Context, id: &mut u32, costed: bool) -> Option<Pla
     let mut node = query_block(block.as_object()?, cx, id, costed);
     node.op = if cache.is_some() { "Dependent subquery" } else { "Subquery" }.into();
     if let Some(cache) = cache.and_then(Value::as_object) {
+        node.facts_mut().dependent = Some(true);
+        node.facts_mut().expression_cache = cache.contains_key("state");
         node.props.insert("dependent".into(), "true".into());
         for key in ["state", "r_loops", "r_hit_ratio"] {
             if let Some(v) = cache.get(key) {
@@ -374,7 +384,9 @@ fn table_node(
     // or hash join buffer is read once per buffer fill (the plan doesn't say how many fills; count one).
     let loops = number_field(table, "loops").unwrap_or(1.0).max(1.0);
     let read = number_field(table, "rows");
-    let filtered = number_field(table, "filtered").unwrap_or(100.0);
+    let reported_filtered = number_field(table, "filtered");
+    node.facts_mut().estimated_filtered_percent = reported_filtered.and_then(culprit_core::plan_facts::percentage);
+    let filtered = reported_filtered.unwrap_or(100.0);
     let read_once = buffer.is_some_and(|b| !text(b, "join_type").is_some_and(|j| j.starts_with("BKA")));
     node.rows_read = read.map(|r| if read_once { r } else { r * loops });
     node.est_executions = loops;
@@ -437,8 +449,9 @@ fn table_node(
             }
         }
     }
-    copy_scalars(table, &mut node.props);
+    crate::plan_json::copy_node_facts(table, &mut node);
     if let Some(buffer) = buffer {
+        node.facts_mut().join_buffer_join_type = text(buffer, "join_type");
         for key in ["join_type", "buffer_type", "buffer_size", "r_loops", "r_filtered"] {
             if let Some(v) = buffer.get(key) {
                 node.props.insert(format!("join_buffer_{key}"), scalar_text(v));

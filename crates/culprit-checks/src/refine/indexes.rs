@@ -41,9 +41,20 @@ struct Decision {
 fn normal(name: &str) -> String {
     name.replace(['[', ']', '"', '`'], "").to_ascii_lowercase()
 }
-fn same_table(a: &str, b: &str) -> bool {
-    let (a, b) = (normal(a), normal(b));
-    a == b || ((!a.contains('.') || !b.contains('.')) && table_leaf(&a) == table_leaf(&b))
+fn same_table(s: &Snapshot, a: &str, b: &str) -> bool {
+    let resolve = |name: &str| {
+        let mut found =
+            s.tables.iter().filter(|t| culprit_core::insights::catalog_table_matches(name, &t.schema, &t.name));
+        let first = found.next();
+        (first, found.next().is_none())
+    };
+    match (resolve(a), resolve(b)) {
+        ((Some(a), true), (Some(b), true)) => {
+            a.schema.eq_ignore_ascii_case(&b.schema) && a.name.eq_ignore_ascii_case(&b.name)
+        }
+        ((None, true), (None, true)) => a.eq_ignore_ascii_case(b) && a.contains('.') && b.contains('.'),
+        _ => false,
+    }
 }
 
 fn decide(policy: Policy, s: &Snapshot, findings: &[Finding]) -> Vec<Decision> {
@@ -67,7 +78,7 @@ fn decide(policy: Policy, s: &Snapshot, findings: &[Finding]) -> Vec<Decision> {
                     .iter()
                     .map(|r| {
                         let plan = w.query(&r.id)?.plan.as_ref()?;
-                        let hint = plan.index_hints.iter().find(|h| same_table(&h.table, &f.subject.name))?;
+                        let hint = plan.index_hints.iter().find(|h| same_table(s, &h.table, &f.subject.name))?;
                         hint.equality.iter().chain(&hint.inequality).next().map(|k| normal(k))
                     })
                     .collect();
@@ -76,7 +87,7 @@ fn decide(policy: Policy, s: &Snapshot, findings: &[Finding]) -> Vec<Decision> {
                     .and_then(|leads| {
                         findings.iter().position(|g| {
                             matches!(g.check.as_str(), "missing-index" | "filtered-scan")
-                                && same_table(&g.subject.name, &f.subject.name)
+                                && same_table(s, &g.subject.name, &f.subject.name)
                                 && leads
                                     .iter()
                                     .all(|lead| g.facts.index_keys.first().is_some_and(|key| normal(key) == *lead))
@@ -101,14 +112,14 @@ fn decide(policy: Policy, s: &Snapshot, findings: &[Finding]) -> Vec<Decision> {
                             .find(|b| Some(b.node) == r.plan_node)?;
                         Some((
                             r.id.clone(),
-                            table_leaf(&b.table),
+                            b.table.clone(),
                             b.keys.iter().map(|k| k.to_ascii_lowercase()).collect::<Vec<_>>(),
                         ))
                     })
                     .collect();
                 let serves = |g: &Finding, table: &str, keys: &[String]| {
                     !g.facts.index_keys.is_empty()
-                        && table == table_leaf(&g.subject.name)
+                        && same_table(s, table, &g.subject.name)
                         && keys.len() >= g.facts.index_keys.len()
                         && keys.iter().zip(&g.facts.index_keys).all(|(a, b)| a.eq_ignore_ascii_case(b))
                 };
@@ -291,5 +302,26 @@ impl Refine for Rule {
             keep
         });
         trace
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn neither_direction_of_an_unqualified_ambiguous_name_establishes_one_table() {
+        let mut s: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/mssql-demo.json")).unwrap();
+        let mut table = s.tables[0].clone();
+        table.schema = "one".into();
+        table.name = "orders".into();
+        let mut other = table.clone();
+        other.schema = "two".into();
+        s.tables = vec![table, other];
+        assert!(!same_table(&s, "one.orders", "orders"));
+        assert!(!same_table(&s, "orders", "one.orders"));
+        assert!(!same_table(&s, "one.orders", "two.orders"));
+        assert!(same_table(&s, "one.orders", "one.orders"));
+        s.tables.pop();
+        assert!(same_table(&s, "one.orders", "orders"));
     }
 }

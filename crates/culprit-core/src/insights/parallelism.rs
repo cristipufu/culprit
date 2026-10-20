@@ -5,19 +5,17 @@ use super::*;
 /// What a spilling operator wrote to disk, when the plan says: tempdb pages (SQL Server), the sort's or hash
 /// aggregate's own disk use, or the temporary blocks the operator itself wrote (PostgreSQL with BUFFERS).
 pub(super) fn spilled_bytes(n: &PlanNode) -> Option<f64> {
-    let own_temp_pages = n.runtime.as_ref().and_then(|r| r.spill_pages).filter(|p| *p > 0.0);
-    let disk_kb = prop_f64(n, "Sort Space Used")
-        .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"))
-        .or_else(|| prop_f64(n, "Disk Usage").filter(|kb| *kb > 0.0));
-    disk_kb
-        .map(|kb| kb * 1024.0)
-        .or_else(|| prop_f64(n, "TempdbWritesPages").map(|p| p * 8192.0))
-        .or_else(|| own_temp_pages.map(|p| p * 8192.0))
+    let disk_kb = n
+        .facts()
+        .sort_space_kb
+        .filter(|_| n.facts().sort_on_disk == Some(true))
+        .or_else(|| n.facts().disk_usage_kb.filter(|kb| *kb > 0.0));
+    disk_kb.map(|kb| kb * 1024.0).or_else(|| crate::plan_facts::spill_pages(n).map(|p| p * 8192.0))
 }
 
 pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
-    for n in cx.nodes.iter().filter(|n| is_true(n.props.get(EXCHANGE_SPILL))) {
+    for n in cx.nodes.iter().filter(|n| n.facts().exchange_spill == Some(true)) {
         let mut d = Draft::new("spill", InsightArea::Parallelism, cx.share(n), vec![n.id]);
         d.title = match spilled_bytes(n) {
             Some(b) => format!(
@@ -51,10 +49,9 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
             // EXPLAIN QUERY PLAN reports no spills.
             Engine::Sqlite => continue,
             Engine::Postgres => {
-                let disk_kb = prop_f64(n, "Sort Space Used")
-                    .filter(|_| n.props.get("Sort Space Type").map(String::as_str) == Some("Disk"));
-                let batches = prop_f64(n, "Hash Batches").filter(|b| *b > 1.0);
-                let agg_batches = prop_f64(n, "HashAgg Batches").filter(|b| *b > 1.0);
+                let disk_kb = n.facts().sort_space_kb.filter(|_| n.facts().sort_on_disk == Some(true));
+                let batches = n.facts().hash_batches.map(f64::from).filter(|b| *b > 1.0);
+                let agg_batches = n.facts().hash_aggregate_batches.map(f64::from).filter(|b| *b > 1.0);
                 d.title = match (disk_kb, batches, agg_batches, spilled_bytes(n)) {
                     (Some(kb), _, _, _) => format!(
                         "The sort writes {} to disk because it didn't fit in work_mem",
@@ -93,7 +90,7 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
             }
             // MariaDB's ANALYZE counts a sort's merge passes: it didn't fit in sort_buffer_size.
             Engine::Mysql => {
-                let passes = prop_f64(n, "r_sort_passes").unwrap_or(1.0);
+                let passes = n.facts().sort_merge_passes.map(f64::from).unwrap_or(1.0);
                 d.title = format!(
                     "The sort needed {} through temporary files because it didn't fit in sort_buffer_size",
                     plural(passes, "merge pass", "merge passes")
@@ -108,7 +105,7 @@ pub(super) fn spill(cx: &Cx) -> Vec<Draft> {
                 d.verify = "Run ANALYZE again: r_sort_passes is 0.".into();
             }
             Engine::Mssql => {
-                d.title = match prop_f64(n, "TempdbWritesPages") {
+                d.title = match crate::plan_facts::spill_pages(n) {
                     Some(pages) => {
                         format!("{} ran out of memory and wrote {} to tempdb", n.op, format::bytes(pages * 8192.0))
                     }
@@ -138,9 +135,10 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
     // the 50 it's commonly raised to does running serially say much.
     const DEFAULT_THRESHOLD: f64 = 5.0;
     const COMMON_THRESHOLD: f64 = 50.0;
-    let Some(reason) = cx.prop("NonParallelPlanReason") else { return Vec::new() };
+    let facts = cx.plan.facts();
+    let Some(reason) = facts.parallelism_blocker.as_deref() else { return Vec::new() };
     let cost = cx.plan.total_cost;
-    let threshold = cx.prop(COST_THRESHOLD).and_then(|t| t.parse::<f64>().ok());
+    let threshold = facts.cost_threshold_for_parallelism;
     // A threshold still at its default is one Culprit's own advice raises to the common 50
     // (config:cost-threshold-for-parallelism): a plan under that would stay on one CPU once it is raised, so removing
     // what keeps it serial now is no advice to give beside it. One answer for both findings.
@@ -153,7 +151,6 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
         return Vec::new();
     }
     // Which MAXDOP is 1: the statement's own hint, or the database's or the server's setting as the snapshot read them.
-    let maxdop = |key: &str| cx.prop(key).and_then(|v| v.trim().parse::<f64>().ok());
     let statement = cx.statement();
     let hinted = statement.match_indices("maxdop").any(|(at, _)| {
         statement[at + 6..]
@@ -161,12 +158,12 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
             .strip_prefix('1')
             .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
     });
-    let (database, server) = (maxdop(DATABASE_MAXDOP), maxdop(SERVER_MAXDOP));
+    let (database, server) = (facts.database_maxdop, facts.server_maxdop);
     let maxdop_one = if hinted {
         "its statement says OPTION (MAXDOP 1)".to_string()
-    } else if database == Some(1.0) {
+    } else if database == Some(1) {
         "the database's MAXDOP setting is 1".to_string()
-    } else if database.is_none_or(|d| d == 0.0) && server == Some(1.0) {
+    } else if database.is_none_or(|d| d == 0) && server == Some(1) {
         "the server's max degree of parallelism is 1".to_string()
     } else if database.is_some() && server.is_some() {
         "MAXDOP is 1, though neither its statement nor the database's or server's setting says so now (a Query Store \
@@ -221,12 +218,12 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
         "MaxDOPSetToOne" if hinted => {
             "Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU.".into()
         }
-        "MaxDOPSetToOne" if database == Some(1.0) => {
+        "MaxDOPSetToOne" if database == Some(1) => {
             "Raise the database's MAXDOP (ALTER DATABASE SCOPED CONFIGURATION SET MAXDOP), or give this statement \
              OPTION (MAXDOP n) where it should run in parallel."
                 .into()
         }
-        "MaxDOPSetToOne" if server == Some(1.0) => {
+        "MaxDOPSetToOne" if server == Some(1) => {
             "Raise the server's max degree of parallelism, or set the database's MAXDOP (ALTER DATABASE SCOPED \
              CONFIGURATION SET MAXDOP), which overrides it for this database."
                 .into()
@@ -246,49 +243,10 @@ pub(super) fn parallelism_blocked(cx: &Cx) -> Vec<Draft> {
 pub(super) fn parallel_skew(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
     for n in &cx.nodes {
-        let rows: Vec<f64> = match cx.engine() {
-            Engine::Mssql => {
-                let (Some(threads), Some(max), Some(total)) =
-                    (prop_f64(n, "ThreadCount"), prop_f64(n, "ThreadRowsMax"), n.act_rows)
-                else {
-                    continue;
-                };
-                if threads < 2.0 {
-                    continue;
-                }
-                let others = (total - max).max(0.0) / (threads - 1.0);
-                let mut v = vec![max];
-                v.extend(std::iter::repeat_n(others, threads as usize - 1));
-                v
-            }
-            Engine::Postgres => {
-                let Some(workers) =
-                    n.props.get("Workers").and_then(|w| serde_json::from_str::<serde_json::Value>(w).ok())
-                else {
-                    continue;
-                };
-                let Some(list) = workers.as_array() else { continue };
-                let loops_rows: Vec<f64> = list
-                    .iter()
-                    .filter_map(|w| {
-                        let rows = w.get("Actual Rows")?.as_f64()?;
-                        let loops = w.get("Actual Loops").and_then(|l| l.as_f64()).unwrap_or(1.0).max(1.0);
-                        Some(rows * loops)
-                    })
-                    .collect();
-                if loops_rows.is_empty() {
-                    continue;
-                }
-                let leader = (n.act_rows.unwrap_or(0.0) - loops_rows.iter().sum::<f64>()).max(0.0);
-                let mut v = loops_rows;
-                v.push(leader);
-                v
-            }
-            Engine::Mysql | Engine::Sqlite => continue,
+        let Some((workers, total, max)) = crate::plan_facts::parallel_distribution(n, cx.engine()) else {
+            continue;
         };
-        let total: f64 = rows.iter().sum();
-        let max = rows.iter().cloned().fold(0.0, f64::max);
-        let avg = total / rows.len() as f64;
+        let avg = total / workers as f64;
         if total < 10_000.0 || avg <= 0.0 || max < 3.0 * avg {
             continue;
         }
@@ -297,8 +255,7 @@ pub(super) fn parallel_skew(cx: &Cx) -> Vec<Draft> {
         let mut d = Draft::new("parallel-skew", InsightArea::Parallelism, cx.share(n) * 0.3, vec![n.id]);
         d.cap = if has_top || total < 100_000.0 { Severity::Low } else { Severity::Medium };
         let who = if cx.engine() == Engine::Postgres { "process" } else { "thread" };
-        d.title =
-            format!("One {who} of {} handled {} of the rows in {}", rows.len(), format::percent(max / total), n.op);
+        d.title = format!("One {who} of {} handled {} of the rows in {}", workers, format::percent(max / total), n.op);
         d.detail = format!("Parallel work is only as fast as its busiest {who}; the others finished early and waited.");
         d.fix = "Uneven work usually means one key value holds most of the rows (check the distribution of the join or filter column) or a parallel scan over a small range; update statistics and consider filtering that value separately.".into();
         d.verify = format!("Run with actual rows: each {who} handles a similar share.");

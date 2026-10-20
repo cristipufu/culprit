@@ -72,8 +72,73 @@ fn names_in_scripts_cannot_break_out_of_their_quotes() {
 use super::*;
 use crate::model::Properties;
 
+#[test]
+fn lookup_advice_keeps_native_output_names_and_ignores_stale_display_columns() {
+    let mut lookup = node(1, "Key Lookup", NodeKind::Lookup);
+    lookup.object = Some("app.orders".into());
+    lookup.est_executions = 1500.0;
+    lookup.facts = Some(crate::PlanNodeFacts {
+        output_columns: Some(vec!["odd.column".into(), "a, b".into()]),
+        ..Default::default()
+    });
+    lookup.props.insert("OutputList".into(), "stale_column".into());
+    let advice = |n| insights(&plan(Engine::Mssql, n)).into_iter().find(|i| i.rule == "key-lookups").unwrap();
+    let first = advice(lookup.clone());
+    assert!(first.fix.contains("odd.column") && first.fix.contains("a, b"));
+    assert!(!first.fix.contains("stale_column"));
+    lookup.props.clear();
+    assert_eq!(advice(lookup.clone()).fix, first.fix);
+    lookup.facts_mut().output_columns = None;
+    assert!(advice(lookup).fix.contains("the looked-up columns"));
+}
+
+#[test]
+fn compilation_warning_context_uses_typed_statistics_columns() {
+    let mut seek = node(1, "Index Seek", NodeKind::Seek);
+    seek.object = Some("app.orders".into());
+    seek.index = Some("ix_orders_tenant".into());
+    seek.seek_predicate = Some("[tenant_id] = [@tenant]".into());
+    seek.warnings = vec![PlanWarning::MissingStatistics];
+    seek.facts =
+        Some(crate::PlanNodeFacts { columns_without_statistics: vec!["tenant_id".into()], ..Default::default() });
+    seek.props.insert("ColumnsWithNoStatistics".into(), "stale_column".into());
+    let context = stale_index_statistics(&plan(Engine::Mssql, seek.clone())).unwrap();
+    assert_eq!(context.columns, vec!["tenant_id"]);
+    assert_eq!(context.indexes, vec!["ix_orders_tenant"]);
+    seek.props.clear();
+    assert_eq!(stale_index_statistics(&plan(Engine::Mssql, seek.clone())), Some(context));
+    seek.facts_mut().columns_without_statistics.clear();
+    assert!(stale_index_statistics(&plan(Engine::Mssql, seek)).is_none());
+}
+
+#[test]
+fn hashed_membership_uses_captured_conditions_without_display_properties() {
+    let mut scan = node(1, "Seq Scan", NodeKind::Scan);
+    scan.object = Some("public.orders".into());
+    scan.est_rows = 500_000.0;
+    scan.self_cost = 10_000.0;
+    scan.facts = Some(crate::PlanNodeFacts {
+        conditions: vec!["(ANY (customer_id = (hashed SubPlan 1).col1))".into()],
+        ..Default::default()
+    });
+    let mut sub = node(2, "Seq Scan", NodeKind::Scan);
+    sub.object = Some("public.customers".into());
+    sub.facts = Some(crate::PlanNodeFacts {
+        parent_relationship: Some(crate::PlanParentRelationship::SubPlan),
+        subplan_name: Some("SubPlan 1".into()),
+        ..Default::default()
+    });
+    scan.children = vec![sub];
+    let mut p = plan(Engine::Postgres, scan);
+    assert!(!rules(&p).contains(&"correlated-subquery".to_string()));
+    p.root.facts_mut().conditions = vec!["total > (SubPlan 1)".into()];
+    p.root.props.insert("Filter".into(), "hashed SubPlan 1".into());
+    assert!(rules(&p).contains(&"correlated-subquery".to_string()));
+}
+
 fn node(id: u32, op: &str, kind: NodeKind) -> PlanNode {
     PlanNode {
+        facts: None,
         id,
         op: op.into(),
         kind,
@@ -100,6 +165,7 @@ fn node(id: u32, op: &str, kind: NodeKind) -> PlanNode {
 
 fn plan(engine: Engine, root: PlanNode) -> Plan {
     let mut p = Plan {
+        facts: None,
         view: None,
         engine,
         kind: PlanKind::Estimated,
@@ -1304,9 +1370,17 @@ fn a_brin_bitmap_scan_is_no_misestimate() {
     let mut btree = scan.clone();
     btree.index = Some("events_at".into());
     assert!(scan.misestimate().is_some());
-    mark_index_kinds(&mut scan, &[("events".into(), "events_at_brin".into(), "brin".into())]);
+    let mut catalog: Snapshot = serde_json::from_str(include_str!("../../../../fixtures/postgres-demo.json")).unwrap();
+    let mut index = catalog.indexes.remove(0);
+    index.schema = "public".into();
+    index.table = "events".into();
+    index.name = "events_at_brin".into();
+    index.kind = "brin".into();
+    mark_index_kinds(&mut scan, &[index.clone()], None);
     assert_eq!(scan.misestimate(), None);
-    mark_index_kinds(&mut btree, &[("events".into(), "events_at".into(), "btree".into())]);
+    index.name = "events_at".into();
+    index.kind = "btree".into();
+    mark_index_kinds(&mut btree, &[index], None);
     assert!(btree.misestimate().is_some());
 }
 
@@ -1619,9 +1693,17 @@ fn scan_filter_advice_says_what_the_catalog_has() {
 #[test]
 fn scans_are_marked_with_their_tables_indexes() {
     let tables = vec![
-        ("public".to_string(), "orders".to_string(), "orders_pkey=id".to_string()),
-        ("public".to_string(), "items".to_string(), String::new()),
-        ("archive".to_string(), "items".to_string(), "items_pkey=id".to_string()),
+        CatalogTable {
+            schema: "public".into(),
+            name: "orders".into(),
+            indexes: vec![crate::PlanIndexColumns { name: "orders_pkey".into(), columns: vec!["id".into()] }],
+        },
+        CatalogTable { schema: "public".into(), name: "items".into(), indexes: vec![] },
+        CatalogTable {
+            schema: "archive".into(),
+            name: "items".into(),
+            indexes: vec![crate::PlanIndexColumns { name: "items_pkey".into(), columns: vec!["id".into()] }],
+        },
     ];
     let marked = |object: &str| {
         let mut n = node(1, "Seq Scan", NodeKind::Scan);

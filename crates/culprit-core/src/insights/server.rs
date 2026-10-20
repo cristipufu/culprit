@@ -8,8 +8,8 @@ pub(super) fn workers_short(cx: &Cx) -> Vec<Draft> {
         // A Gather that never ran launched no workers because it never asked for any.
         .filter(|n| n.act_executions.is_none_or(|runs| runs > 0.0))
         .filter_map(|n| {
-            let planned = prop_f64(n, "Workers Planned")?;
-            let launched = prop_f64(n, "Workers Launched")?;
+            let planned = n.facts().workers_planned.map(f64::from)?;
+            let launched = n.facts().workers_launched.map(f64::from)?;
             (launched < planned).then_some((n, planned, launched))
         })
         .take(1)
@@ -31,7 +31,7 @@ pub(super) fn heap_fetches(cx: &Cx) -> Vec<Draft> {
         .iter()
         .filter(|n| n.op == "Index Only Scan")
         .filter_map(|n| {
-            let fetches = prop_f64(n, "Heap Fetches")?;
+            let fetches = n.facts().heap_fetches?;
             (fetches >= 1_000.0 && fetches >= 0.1 * rows_out(n)).then_some((n, fetches))
         })
         .take(1)
@@ -53,10 +53,11 @@ pub(super) fn jit(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Postgres {
         return Vec::new();
     }
-    let Some(raw) = cx.prop("JIT") else { return Vec::new() };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else { return Vec::new() };
-    let Some(total) = value.pointer("/Timing/Total").and_then(|v| v.as_f64()) else { return Vec::new() };
-    let execution = cx.prop("Execution Time").and_then(|v| v.parse::<f64>().ok());
+    let facts = cx.plan.facts();
+    let Some(total) = facts.jit_time_ms else {
+        return Vec::new();
+    };
+    let execution = facts.elapsed_ms;
     if total < 10.0 || execution.is_some_and(|e| total < 0.2 * e) {
         return Vec::new();
     }

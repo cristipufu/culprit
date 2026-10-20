@@ -2326,6 +2326,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "mysql",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "flavor": "MariaDB",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -2375,6 +2381,43 @@
                           "detail": null,
                           "est_executions": 1.0,
                           "est_rows": 500000.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_filtered_percent": 100.0,
+                            "expression_cache": false,
+                            "possible_index_names": [],
+                            "table_alias": "orders",
+                            "table_indexes": [
+                              {
+                                "columns": [
+                                  "id"
+                                ],
+                                "name": "PRIMARY"
+                              },
+                              {
+                                "columns": [
+                                  "customer_id"
+                                ],
+                                "name": "fk_orders_customer"
+                              },
+                              {
+                                "columns": [
+                                  "status"
+                                ],
+                                "name": "ix_orders_status"
+                              },
+                              {
+                                "columns": [
+                                  "status",
+                                  "created_at"
+                                ],
+                                "name": "ix_orders_status_created"
+                              }
+                            ],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "scan",
@@ -2400,6 +2443,14 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 500000.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "expression_cache": false,
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "other",
@@ -2419,6 +2470,14 @@
                   "detail": "sum(orders.total) desc",
                   "est_executions": 1.0,
                   "est_rows": 500000.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -2440,6 +2499,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 500000.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -2633,6 +2700,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "mysql",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "flavor": "MariaDB",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -2656,6 +2729,35 @@
                   "detail": "covering index",
                   "est_executions": 1.0,
                   "est_rows": 14154.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_filtered_percent": 100.0,
+                    "expression_cache": false,
+                    "index_method": "btree",
+                    "possible_index_columns": [
+                      {
+                        "columns": [
+                          "status"
+                        ],
+                        "name": "ix_orders_status"
+                      },
+                      {
+                        "columns": [
+                          "status",
+                          "created_at"
+                        ],
+                        "name": "ix_orders_status_created"
+                      }
+                    ],
+                    "possible_index_names": [
+                      "ix_orders_status",
+                      "ix_orders_status_created"
+                    ],
+                    "table_alias": "orders",
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": "ix_orders_status_created",
                   "kind": "seek",
@@ -2686,6 +2788,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 14154.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -2838,6 +2948,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "mysql",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "flavor": "MariaDB",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -2866,6 +2982,43 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 500000.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_filtered_percent": 100.0,
+                        "expression_cache": false,
+                        "possible_index_names": [],
+                        "table_alias": "o",
+                        "table_indexes": [
+                          {
+                            "columns": [
+                              "id"
+                            ],
+                            "name": "PRIMARY"
+                          },
+                          {
+                            "columns": [
+                              "customer_id"
+                            ],
+                            "name": "fk_orders_customer"
+                          },
+                          {
+                            "columns": [
+                              "status"
+                            ],
+                            "name": "ix_orders_status"
+                          },
+                          {
+                            "columns": [
+                              "status",
+                              "created_at"
+                            ],
+                            "name": "ix_orders_status_created"
+                          }
+                        ],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "scan",
@@ -2891,6 +3044,14 @@
                   "detail": "o.total desc",
                   "est_executions": 1.0,
                   "est_rows": 500000.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -2912,6 +3073,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 500000.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -3133,6 +3302,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "mysql",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "flavor": "MariaDB",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -3161,6 +3336,27 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 3.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_filtered_percent": 100.0,
+                        "expression_cache": false,
+                        "index_method": "btree",
+                        "possible_index_columns": [
+                          {
+                            "columns": [
+                              "customer_id"
+                            ],
+                            "name": "fk_orders_customer"
+                          }
+                        ],
+                        "possible_index_names": [
+                          "fk_orders_customer"
+                        ],
+                        "table_alias": "orders",
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": "fk_orders_customer",
                       "kind": "seek",
@@ -3191,6 +3387,14 @@
                   "detail": "orders.created_at desc",
                   "est_executions": 1.0,
                   "est_rows": 3.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -3212,6 +3416,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 3.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -3384,6 +3596,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "mysql",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "flavor": "MariaDB",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -3412,6 +3630,34 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_filtered_percent": 100.0,
+                        "expression_cache": false,
+                        "index_method": "btree",
+                        "possible_index_columns": [
+                          {
+                            "columns": [
+                              "order_id"
+                            ],
+                            "name": "fk_items_order"
+                          },
+                          {
+                            "columns": [
+                              "product_id"
+                            ],
+                            "name": "fk_items_product"
+                          }
+                        ],
+                        "possible_index_names": [
+                          "fk_items_order",
+                          "fk_items_product"
+                        ],
+                        "table_alias": "oi",
+                        "user_functions": []
+                      },
                       "id": 1,
                       "index": "fk_items_order",
                       "kind": "seek",
@@ -3446,6 +3692,27 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_filtered_percent": 100.0,
+                        "expression_cache": false,
+                        "index_method": "btree",
+                        "possible_index_columns": [
+                          {
+                            "columns": [
+                              "id"
+                            ],
+                            "name": "PRIMARY"
+                          }
+                        ],
+                        "possible_index_names": [
+                          "PRIMARY"
+                        ],
+                        "table_alias": "p",
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": "PRIMARY",
                       "kind": "seek",
@@ -3476,6 +3743,14 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 3,
                   "index": null,
                   "kind": "join",
@@ -3495,6 +3770,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",

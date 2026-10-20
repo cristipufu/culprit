@@ -187,7 +187,7 @@ pub fn changes_schema(plan: &Plan) -> bool {
 
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
-    if plan.kind != PlanKind::Actual && (plan.kind == PlanKind::Generic || plan.props.contains_key("Generic Plan")) {
+    if plan.kind != PlanKind::Actual && (plan.kind == PlanKind::Generic || plan.facts().generic_plan_reason.is_some()) {
         if plan.engine == Engine::Sqlite {
             return Some("Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.".into());
         }
@@ -227,7 +227,7 @@ pub fn coverage_note(plan: &Plan) -> Option<String> {
         ),
         // EXPLAIN ANALYZE arrived in MySQL 8.0.18: older servers can't add actual rows at all.
         (Engine::Mysql, false)
-            if plan.props.get("server_version").is_some_and(|v| !crate::version_at_least(v, [8, 0, 18])) =>
+            if plan.facts().server_version.as_ref().is_some_and(|v| !crate::version_at_least(v, [8, 0, 18])) =>
         {
             Some("MySQL's EXPLAIN has no actual rows, spills, memory or threads, and this version can't measure a run (EXPLAIN ANALYZE arrived in MySQL 8.0.18).".into())
         }
@@ -296,12 +296,12 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
             let mut insight = d.finish(&cx);
             // An index for a table that is gone: nothing to create, whatever the plan read.
             if insight.area == InsightArea::Index
-                && let Some(table) = insight.nodes.iter().find_map(|id| cx.node(*id)?.props.get(TABLE_GONE))
+                && let Some(table) = insight.nodes.iter().find_map(|id| cx.node(*id)?.facts().table_missing.clone())
             {
                 insight.fix = format!(
                     "Nothing to create: {} isn't in the database's catalog any more, so it was dropped or renamed \
                      since this plan was captured.",
-                    table_leaf(table)
+                    table_leaf(&table)
                 );
                 insight.fix_sql = None;
                 insight.verify = "Nothing to check while the table is gone.".into();
@@ -315,7 +315,7 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
 
 fn updates_statistics(plan: &Plan) -> bool {
     plan.engine == Engine::Mssql
-        && (plan.props.contains_key(STATISTICS_MAINTENANCE)
+        && (plan.facts().statistics_maintenance.is_some()
             || plan.statement.as_deref().and_then(|s| statistics_maintenance_note(plan.engine, s)).is_some())
 }
 
@@ -329,8 +329,10 @@ pub fn statistics_maintenance_note(engine: Engine, statement: &str) -> Option<&'
 }
 
 pub fn mark_query(plan: &mut Plan, statement: &str) {
+    plan.facts_mut().statistics_maintenance = None;
     plan.props.remove(STATISTICS_MAINTENANCE);
     if statistics_maintenance_note(plan.engine, statement).is_some() {
+        plan.facts_mut().statistics_maintenance = Some("UPDATE STATISTICS".into());
         plan.props.insert(STATISTICS_MAINTENANCE.into(), "UPDATE STATISTICS".into());
     }
 }
@@ -476,10 +478,6 @@ impl<'a> Cx<'a> {
 
     fn parent(&self, n: &PlanNode) -> Option<&'a PlanNode> {
         self.parent.get(&n.id).copied()
-    }
-
-    fn prop(&self, key: &str) -> Option<&'a str> {
-        self.plan.props.get(key).map(String::as_str)
     }
 
     fn statement(&self) -> String {
@@ -717,11 +715,8 @@ pub fn working_step(plan: &Plan) -> Option<&PlanNode> {
 
 /// The statement's measured run time, when the plan has one.
 fn elapsed_ms(plan: &Plan) -> Option<f64> {
-    let prop = |key: &str| {
-        plan.props.get(key).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0)
-    };
-    prop("ElapsedMs")
-        .or_else(|| prop("Execution Time"))
+    plan.facts()
+        .elapsed_ms
         .or_else(|| plan.root.act_time_ms.filter(|_| plan.kind == PlanKind::Actual))
         .filter(|ms| ms.is_finite() && *ms >= 0.0 && (*ms > 0.0 || crate::actual::self_times(plan).is_some()))
 }
@@ -737,7 +732,7 @@ fn cheap_below(plan: &Plan) -> f64 {
         // seq_page_cost is 1: about 100 pages plus the per-row CPU of 10K rows.
         Engine::Postgres => 250.0,
         // MariaDB before 11 reports no costs; Culprit counts rows examined instead.
-        Engine::Mysql if is_mariadb(plan) && plan.props.contains_key("cost_basis") => MANY_ROWS,
+        Engine::Mysql if is_mariadb(plan) && plan.facts().cost_basis.is_some() => MANY_ROWS,
         // MariaDB 11's costs are close to milliseconds: about 0.1 per thousand rows scanned.
         Engine::Mysql if is_mariadb(plan) => 1.0,
         // MySQL costs about 0.1 per row evaluated.
@@ -747,8 +742,8 @@ fn cheap_below(plan: &Plan) -> f64 {
 
 /// MariaDB's own plan reader sets the flavor; plans of logged statements carry the server's version instead.
 fn is_mariadb(plan: &Plan) -> bool {
-    plan.props.get("flavor").is_some_and(|f| f == "MariaDB")
-        || plan.props.get("server_version").is_some_and(|v| v.contains("MariaDB"))
+    plan.facts().flavor.as_ref().is_some_and(|f| f.eq_ignore_ascii_case("MariaDB"))
+        || plan.facts().server_version.as_ref().is_some_and(|v| v.contains("MariaDB"))
 }
 
 /// Rows an operator handles: what it reads, returns, or takes from its inputs.
@@ -766,14 +761,6 @@ fn rows_out(n: &PlanNode) -> f64 {
 /// Rows an operator read (see `PlanNode::rows_read_total`), else what it returned.
 fn rows_read(n: &PlanNode) -> f64 {
     n.rows_read_total().unwrap_or_else(|| rows_out(n))
-}
-
-fn prop_f64(n: &PlanNode, key: &str) -> Option<f64> {
-    n.props.get(key).and_then(|v| v.trim().parse::<f64>().ok())
-}
-
-fn is_true(v: Option<&String>) -> bool {
-    v.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true"))
 }
 
 /// `shop.orders` → "shop.orders"; falls back to the operator name.
@@ -1195,8 +1182,8 @@ fn filter_keeps(cx: &Cx, n: &PlanNode) -> Option<f64> {
 /// the join in. The join-buffer rule speaks for it.
 fn index_could_pay(cx: &Cx, n: &PlanNode) -> bool {
     n.kind == NodeKind::Scan
-        && !n.props.get("Storage").is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
-        && !n.props.contains_key("using_join_buffer")
+        && !n.facts().storage.as_ref().is_some_and(|s| s.eq_ignore_ascii_case("ColumnStore"))
+        && !n.facts().join_buffer.is_some()
         && rows_read(n) >= MANY_ROWS
         && !conditions(n).to_ascii_lowercase().contains("probe(")
         && filter_keeps(cx, n).is_some_and(|k| k <= INDEX_KEEPS_AT_MOST)
@@ -1227,8 +1214,8 @@ fn blocker(cx: &Cx, n: &PlanNode, filter: &str) -> Option<Blocker> {
 /// join column isn't taken for one on the filter; on a plan the catalog didn't mark, when its name carries a filtered
 /// column (`ix_orders_promo_code` for `promo_code`).
 fn possible_keys_for_filter(cx: &Cx, n: &PlanNode) -> Vec<String> {
-    let Some(keys) = n.props.get("possible_keys") else { return Vec::new() };
-    let keys: Vec<String> = keys.split(", ").map(str::trim).filter(|k| !k.is_empty()).map(str::to_string).collect();
+    let facts = n.facts();
+    let keys = facts.possible_index_names.clone();
     let mut up = cx.parent(n);
     let mut joined = false;
     while let Some(p) = up {
@@ -1240,11 +1227,10 @@ fn possible_keys_for_filter(cx: &Cx, n: &PlanNode) -> Vec<String> {
     }
     let columns: Vec<String> =
         n.predicate.as_deref().map(filter_columns).unwrap_or_default().iter().map(|c| c.to_ascii_lowercase()).collect();
-    if let Some(described) = n.props.get(POSSIBLE_KEY_COLUMNS) {
+    if let Some(described) = &facts.possible_index_columns {
         let leading: HashMap<&str, String> = described
-            .lines()
-            .filter_map(|line| line.split_once('='))
-            .map(|(key, cols)| (key, cols.split(',').next().unwrap_or("").to_ascii_lowercase()))
+            .iter()
+            .map(|i| (i.name.as_str(), i.columns.first().map_or(String::new(), |c| c.to_ascii_lowercase())))
             .collect();
         return keys
             .into_iter()
@@ -1333,64 +1319,137 @@ pub const CHANGED_SINCE_CAPTURE: &str = "Columns changed since capture";
 /// `plan` was captured before they changed (see `CHANGED_SINCE_CAPTURE`): the mismatches the database still has.
 /// `CONVERT_IMPLICIT(nvarchar(64),[db].[s].[jobs].[name],0)=[@p1]` → [("jobs.name", "nvarchar(64)")].
 pub fn current_conversions(plan: &Plan, text: &str) -> Vec<(String, String)> {
-    let changed: Vec<String> = plan
-        .props
-        .get(CHANGED_SINCE_CAPTURE)
-        .map(|v| v.lines().filter_map(|l| l.split_whitespace().next()).map(str::to_ascii_lowercase).collect())
-        .unwrap_or_default();
+    let facts = plan.facts();
     convert_calls(text)
         .into_iter()
         .filter(|(_, operand)| is_column_operand(operand))
-        .filter_map(|(target, operand)| Some((column_label(operand)?, target.to_string())))
-        .filter(|(label, _)| !changed.contains(&label.to_ascii_lowercase()))
+        .filter_map(|(target, operand)| {
+            let reference = column_reference(plan, operand)?;
+            let changed = facts.changed_columns.iter().any(|c| {
+                reference.table.as_deref().is_some_and(|table| c.table.eq_ignore_ascii_case(table))
+                    && c.column.eq_ignore_ascii_case(&reference.column)
+                    && same_type(&c.data_type, target)
+                    && c.schema
+                        .as_deref()
+                        .is_none_or(|s| reference.schema.as_deref().is_some_and(|other| s.eq_ignore_ascii_case(other)))
+            });
+            (!changed).then(|| (reference.label, target.to_string()))
+        })
         .collect()
 }
 
-/// Mark the columns `plan` converts that `columns` (the catalog now) says already have the converted-to type (see
-/// `CHANGED_SINCE_CAPTURE`). SQL Server never converts a column to its own type, and compares text of any length without
-/// converting it, so such a conversion is from before the column changed.
-pub fn mark_changed_columns(plan: &mut Plan, columns: &[ColumnInfo]) {
-    if plan.engine != Engine::Mssql || columns.is_empty() {
-        return;
-    }
-    let mut texts: Vec<String> = plan.props.get("PlanAffectingConvert").map(|v| vec![v.clone()]).unwrap_or_default();
-    texts.extend(plan.nodes().into_iter().map(conditions));
-    let mut changed: Vec<String> = Vec::new();
-    for text in &texts {
-        for (target, operand) in convert_calls(text).into_iter().filter(|(_, operand)| is_column_operand(operand)) {
-            let parts: Vec<String> = operand.split('.').map(clean_identifier).collect();
-            let [.., schema, table, column] = parts.as_slice() else {
-                if let [table, column] = parts.as_slice() {
-                    mark_if_same(&mut changed, columns, None, table, column, target);
+struct ColumnReference {
+    label: String,
+    schema: Option<String>,
+    table: Option<String>,
+    column: String,
+}
+fn column_reference(plan: &Plan, operand: &str) -> Option<ColumnReference> {
+    // Showplan can append `as [alias].[column]` to its physical column. An AS inside a delimited name is a name.
+    let mut quote = None;
+    let mut end = operand.len();
+    let mut chars = operand.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        if let Some(close) = quote {
+            if c == close {
+                if chars.peek().is_some_and(|(_, next)| *next == close) {
+                    chars.next();
+                } else {
+                    quote = None;
                 }
-                continue;
+            }
+        } else if operand.get(at..at + 4).is_some_and(|part| part.eq_ignore_ascii_case(" as ")) {
+            end = at;
+            break;
+        } else {
+            quote = match c {
+                '[' => Some(']'),
+                '"' => Some('"'),
+                '`' => Some('`'),
+                _ => None,
             };
-            mark_if_same(&mut changed, columns, Some(schema), table, column, target);
         }
     }
-    if !changed.is_empty() {
-        plan.props.insert(CHANGED_SINCE_CAPTURE.into(), changed.join("\n"));
+    let parts = identifier_parts(&operand[..end])?;
+    let column = parts.last()?.clone();
+    let label = match parts.as_slice() {
+        [.., table, column] => format!("{table}.{column}"),
+        [column] => column.clone(),
+        _ => return None,
+    };
+    let (mut schema, mut table) = match parts.as_slice() {
+        [.., schema, table, _] => (Some(schema.clone()), Some(table.clone())),
+        [table, _] => (None, Some(table.clone())),
+        _ => (None, None),
+    };
+    if let [alias, _] = parts.as_slice() {
+        let aliases: Vec<_> = plan
+            .nodes()
+            .into_iter()
+            .filter(|n| n.facts().table_alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(alias)))
+            .collect();
+        if !aliases.is_empty() {
+            let objects: Option<Vec<_>> = aliases.iter().map(|n| identifier_parts(n.object.as_deref()?)).collect();
+            let unique =
+                objects.as_ref().and_then(|all| all.first().filter(|first| all.iter().all(|other| other == *first)));
+            match unique.map(Vec::as_slice) {
+                Some([s, t]) => {
+                    schema = Some(s.clone());
+                    table = Some(t.clone());
+                }
+                Some([t]) => {
+                    schema = None;
+                    table = Some(t.clone());
+                }
+                _ => {
+                    schema = None;
+                    table = None;
+                }
+            }
+        }
     }
+    Some(ColumnReference { label, schema, table, column })
 }
 
-fn mark_if_same(
-    changed: &mut Vec<String>,
-    columns: &[ColumnInfo],
-    schema: Option<&String>,
-    table: &str,
-    column: &str,
-    converted_to: &str,
-) {
-    let now = columns.iter().find(|c| {
-        c.table.eq_ignore_ascii_case(table)
-            && c.name.eq_ignore_ascii_case(column)
-            && schema.is_none_or(|s| c.schema.eq_ignore_ascii_case(s))
-    });
-    let Some(now) = now.filter(|c| same_type(&c.data_type, converted_to)) else { return };
-    let line = format!("{table}.{column} {}", now.data_type);
-    if !changed.contains(&line) {
-        changed.push(line);
+/// Recompute catalog-backed conversion context. A qualified operand never inherits another schema's column type.
+pub fn mark_changed_columns(plan: &mut Plan, columns: &[ColumnInfo]) {
+    if plan.engine != Engine::Mssql {
+        return;
     }
+    let mut texts: Vec<String> = plan.facts().conversions.iter().map(|c| c.expression.clone()).collect();
+    texts.extend(plan.nodes().into_iter().map(conditions));
+    let mut changed: Vec<crate::PlanChangedColumn> = Vec::new();
+    for text in &texts {
+        for (target, operand) in convert_calls(text).into_iter().filter(|(_, o)| is_column_operand(o)) {
+            let Some(reference) = column_reference(plan, operand) else { continue };
+            let Some(table) = reference.table.as_deref() else { continue };
+            let mut candidates = columns.iter().filter(|c| {
+                c.table.eq_ignore_ascii_case(table)
+                    && c.name.eq_ignore_ascii_case(&reference.column)
+                    && reference.schema.as_deref().is_none_or(|s| c.schema.eq_ignore_ascii_case(s))
+            });
+            let (Some(now), None) = (candidates.next(), candidates.next()) else { continue };
+            if same_type(&now.data_type, target) {
+                let fact = crate::PlanChangedColumn {
+                    schema: Some(now.schema.clone()),
+                    table: now.table.clone(),
+                    column: now.name.clone(),
+                    data_type: now.data_type.clone(),
+                };
+                if !changed.contains(&fact) {
+                    changed.push(fact);
+                }
+            }
+        }
+    }
+    plan.props.remove(CHANGED_SINCE_CAPTURE);
+    if !changed.is_empty() {
+        plan.props.insert(
+            CHANGED_SINCE_CAPTURE.into(),
+            changed.iter().map(|c| format!("{}.{} {}", c.table, c.column, c.data_type)).collect::<Vec<_>>().join("\n"),
+        );
+    }
+    plan.facts_mut().changed_columns = changed;
 }
 
 /// Whether a column of type `now` needs no conversion to `converted_to`: the same type, or text of the same kind.
@@ -1452,8 +1511,10 @@ fn partition_parents(tables: &[crate::TableStat]) -> HashMap<String, Option<Stri
 }
 
 fn mark_partitions(node: &mut PlanNode, parents: &HashMap<String, Option<String>>) {
+    node.facts_mut().partition_parent = None;
     node.props.remove("Partition Of");
     if let Some(parent) = node.object.as_deref().and_then(|name| parents.get(name)).and_then(Option::as_ref) {
+        node.facts_mut().partition_parent = Some(parent.clone());
         node.props.insert("Partition Of".into(), parent.clone());
     }
     for child in &mut node.children {
@@ -1498,32 +1559,106 @@ fn parallel_settings(snapshot: &Snapshot) -> Vec<(&'static str, String)> {
 
 /// Stamps the server's parallelism settings ([`COST_THRESHOLD`], [`SERVER_MAXDOP`], [`DATABASE_MAXDOP`]) on a plan.
 pub fn mark_parallel_settings(plan: &mut Plan, settings: &[(&'static str, String)]) {
+    use crate::plan_facts::{count, nonnegative};
+    let facts = plan.facts_mut();
+    facts.cost_threshold_for_parallelism = None;
+    facts.server_maxdop = None;
+    facts.database_maxdop = None;
+    for key in [COST_THRESHOLD, SERVER_MAXDOP, DATABASE_MAXDOP] {
+        plan.props.remove(key);
+    }
     for (key, value) in settings {
+        let number = value.trim().parse::<f64>().ok().and_then(nonnegative);
+        match *key {
+            COST_THRESHOLD => plan.facts_mut().cost_threshold_for_parallelism = number,
+            SERVER_MAXDOP => plan.facts_mut().server_maxdop = number.and_then(count),
+            DATABASE_MAXDOP => plan.facts_mut().database_maxdop = number.and_then(count),
+            _ => {}
+        }
         plan.props.insert((*key).to_string(), value.clone());
     }
 }
 
 /// Each table of the catalog (lower-cased `schema`, `name`) with its enabled indexes as [`TABLE_INDEXES`] writes them.
 /// Empty without a catalog of indexes, which would make every table look like it has none.
-fn scanned_table_indexes(snapshot: &Snapshot) -> Vec<(String, String, String)> {
+#[derive(Clone)]
+struct CatalogTable {
+    schema: String,
+    name: String,
+    indexes: Vec<crate::PlanIndexColumns>,
+}
+fn scanned_table_indexes(snapshot: &Snapshot) -> Vec<CatalogTable> {
     if snapshot.indexes.is_empty() {
         return Vec::new();
     }
     snapshot
         .tables
         .iter()
-        .map(|t| {
-            let lines: Vec<String> = snapshot
+        .map(|t| CatalogTable {
+            schema: t.schema.clone(),
+            name: t.name.clone(),
+            indexes: snapshot
                 .indexes
                 .iter()
                 .filter(|i| {
                     i.schema.eq_ignore_ascii_case(&t.schema) && i.table.eq_ignore_ascii_case(&t.name) && !i.is_disabled
                 })
-                .map(|i| format!("{}={}", i.name, i.key_names().join(",")))
-                .collect();
-            (t.schema.to_ascii_lowercase(), t.name.to_ascii_lowercase(), lines.join("\n"))
+                .map(|i| crate::PlanIndexColumns {
+                    name: i.name.clone(),
+                    columns: i.key_names().into_iter().map(str::to_string).collect(),
+                })
+                .collect(),
         })
         .collect()
+}
+
+/// Match a name to one catalog candidate. Callers must reject multiple matches: an unqualified name does not
+/// establish a schema, and an unquoted display name can be ambiguous when identifiers themselves contain dots.
+pub fn catalog_table_matches(object: &str, schema: &str, table: &str) -> bool {
+    if object.eq_ignore_ascii_case(&format!("{schema}.{table}")) || object.eq_ignore_ascii_case(table) {
+        return true;
+    }
+    let Some(parts) = identifier_parts(object) else { return false };
+    match parts.as_slice() {
+        [name] => name.eq_ignore_ascii_case(table),
+        [s, name] => s.eq_ignore_ascii_case(schema) && name.eq_ignore_ascii_case(table),
+        _ => false,
+    }
+}
+fn identifier_parts(value: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut quoted = None;
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        part.push(c);
+        if let Some(close) = quoted {
+            if c == close {
+                if chars.peek() == Some(&close) {
+                    part.push(chars.next()?);
+                } else {
+                    quoted = None;
+                }
+            }
+        } else {
+            match c {
+                '[' => quoted = Some(']'),
+                '"' => quoted = Some('"'),
+                '`' => quoted = Some('`'),
+                '.' => {
+                    part.pop();
+                    parts.push(clean_identifier(&part));
+                    part.clear();
+                }
+                _ => {}
+            }
+        }
+    }
+    if quoted.is_some() {
+        return None;
+    }
+    parts.push(clean_identifier(&part));
+    (!parts.iter().any(String::is_empty)).then_some(parts)
 }
 
 /// Where [`mark_table_indexes`] marks an operator whose table the catalog no longer lists in any schema: it was dropped
@@ -1534,41 +1669,44 @@ pub const TABLE_GONE: &str = "Table not in the catalog";
 /// names one table of the catalog: by its schema when the plan says it, else by a name only one schema has. In the plan
 /// of a statement that stopped running (`stopped`), an operator on a table the catalog lists in no schema is marked
 /// [`TABLE_GONE`]; not one the plan names without a schema (SQLite names a table by its alias) or a derived table.
-fn mark_table_indexes(n: &mut PlanNode, tables: &[(String, String, String)], stopped: bool) {
-    if let Some(object) = n.object.as_deref().filter(|o| !o.starts_with(['@', '#']) && !tables.is_empty()) {
-        let parts: Vec<String> = object.split('.').map(|p| clean_identifier(p).to_ascii_lowercase()).collect();
-        let (schema, name) = match parts.as_slice() {
-            [.., schema, name] => (Some(schema.as_str()), name.as_str()),
-            [name] => (None, name.as_str()),
-            [] => (None, ""),
-        };
-        let gone = !tables.iter().any(|(_, t, _)| t == name);
-        if gone && stopped && schema.is_some() && !name.starts_with('<') && !is_system_object(object) {
-            n.props.insert(TABLE_GONE.into(), object.to_string());
-        } else if !gone && n.kind == NodeKind::Scan {
-            let mut found = tables.iter().filter(|(s, t, _)| t == name && schema.is_none_or(|schema| schema == s));
-            if let (Some((_, _, lines)), None) = (found.next(), found.next()) {
-                n.props.insert(TABLE_INDEXES.into(), lines.clone());
+fn mark_table_indexes(n: &mut PlanNode, tables: &[CatalogTable], stopped: bool) {
+    n.facts_mut().table_indexes = None;
+    n.facts_mut().table_missing = None;
+    n.props.remove(TABLE_INDEXES);
+    n.props.remove(TABLE_GONE);
+    if let Some(object) = n.object.clone().filter(|o| !o.starts_with(['@', '#']) && !tables.is_empty()) {
+        let mut candidates = tables.iter().filter(|t| catalog_table_matches(&object, &t.schema, &t.name));
+        let first = candidates.next();
+        if let (Some(table), None) = (first, candidates.next()) {
+            if n.kind == NodeKind::Scan {
+                let indexes = table.indexes.clone();
+                n.props.insert(
+                    TABLE_INDEXES.into(),
+                    indexes
+                        .iter()
+                        .map(|i| format!("{}={}", i.name, i.columns.join(",")))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                n.facts_mut().table_indexes = Some(indexes);
             }
+        } else if first.is_none()
+            && stopped
+            && identifier_parts(&object).is_some_and(|p| p.len() == 2)
+            && !object.starts_with('<')
+            && !is_system_object(&object)
+        {
+            n.facts_mut().table_missing = Some(object.clone());
+            n.props.insert(TABLE_GONE.into(), object);
         }
     }
-    for c in &mut n.children {
-        mark_table_indexes(c, tables, stopped);
+    for child in &mut n.children {
+        mark_table_indexes(child, tables, stopped);
     }
 }
 
-/// The indexes [`mark_table_indexes`] found on a scan's table, as (name, key columns); `None` where it found none to say.
 fn table_indexes(n: &PlanNode) -> Option<Vec<(String, Vec<String>)>> {
-    let lines = n.props.get(TABLE_INDEXES)?;
-    Some(
-        lines
-            .lines()
-            .filter_map(|line| {
-                let (name, keys) = line.split_once('=')?;
-                Some((name.to_string(), keys.split(',').filter(|k| !k.is_empty()).map(str::to_string).collect()))
-            })
-            .collect(),
-    )
+    n.facts().table_indexes.as_ref().map(|v| v.iter().map(|i| (i.name.clone(), i.columns.clone())).collect())
 }
 
 /// Where [`mark_possible_keys`] keeps each possible key's columns: `name=col,col` per key, one per line.
@@ -1578,64 +1716,78 @@ const POSSIBLE_KEY_COLUMNS: &str = "possible_keys_columns";
 /// index on the filtered column can be told from one on the join column ([`possible_keys_for_filter`]). A key the
 /// catalog doesn't show, or shows on two tables of that name, leaves the scan unmarked.
 pub fn mark_possible_keys(plan: &mut Plan, indexes: &[IndexStat]) {
-    if plan.engine != Engine::Mysql || indexes.is_empty() {
+    if plan.engine != Engine::Mysql {
         return;
     }
-    fn walk(node: &mut PlanNode, indexes: &[IndexStat]) {
-        if let (Some(keys), Some(object)) = (node.props.get("possible_keys"), node.object.as_deref()) {
-            let table = table_leaf(object);
-            let described: Option<Vec<String>> = keys
-                .split(", ")
-                .map(str::trim)
-                .filter(|k| !k.is_empty())
+    fn walk(n: &mut PlanNode, indexes: &[IndexStat]) {
+        n.facts_mut().possible_index_columns = None;
+        n.props.remove(POSSIBLE_KEY_COLUMNS);
+        if let Some(object) = n.object.clone() {
+            let described: Option<Vec<crate::PlanIndexColumns>> = n
+                .facts()
+                .possible_index_names
+                .iter()
                 .map(|key| {
-                    let mut found = indexes.iter().filter(|i| i.table.eq_ignore_ascii_case(&table) && i.name == key);
-                    let index = found.next()?;
-                    let same = found.all(|other| other.columns == index.columns);
-                    same.then(|| format!("{key}={}", index.columns.join(",")))
+                    let mut found = indexes.iter().filter(|i| {
+                        !i.is_disabled
+                            && i.name.eq_ignore_ascii_case(key)
+                            && catalog_table_matches(&object, &i.schema, &i.table)
+                    });
+                    let (Some(index), None) = (found.next(), found.next()) else { return None };
+                    Some(crate::PlanIndexColumns {
+                        name: key.clone(),
+                        columns: index.key_names().into_iter().map(str::to_string).collect(),
+                    })
                 })
                 .collect();
-            if let Some(described) = described.filter(|d| !d.is_empty()) {
-                node.props.insert(POSSIBLE_KEY_COLUMNS.into(), described.join("\n"));
+            if let Some(described) = described.filter(|v| !v.is_empty()) {
+                n.props.insert(
+                    POSSIBLE_KEY_COLUMNS.into(),
+                    described
+                        .iter()
+                        .map(|i| format!("{}={}", i.name, i.columns.join(",")))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                n.facts_mut().possible_index_columns = Some(described);
             }
         }
-        for child in &mut node.children {
+        for child in &mut n.children {
             walk(child, indexes);
         }
     }
     walk(&mut plan.root, indexes);
 }
 
-/// [`mark_possible_keys`] on every plan in a snapshot, against its catalog.
-/// Mark every operator that reads an index with the index's kind from the catalog ([`crate::plan::INDEX_KIND`]):
-/// the rules that read a bitmap scan's rows or a lossy bitmap need to know a BRIN index from a B-tree.
 pub fn mark_snapshot_index_kinds(snapshot: &mut Snapshot) {
-    let kinds: Vec<(String, String, String)> = snapshot
-        .indexes
-        .iter()
-        .map(|i| (i.table.to_ascii_lowercase(), i.name.to_ascii_lowercase(), i.kind.to_ascii_lowercase()))
-        .collect();
+    let indexes = &snapshot.indexes;
     let Some(workload) = snapshot.workload.as_mut() else { return };
     for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
-        mark_index_kinds(&mut plan.root, &kinds);
+        mark_index_kinds(&mut plan.root, indexes, None);
     }
 }
-
-fn mark_index_kinds(n: &mut PlanNode, kinds: &[(String, String, String)]) {
-    if let Some(index) = n.index.as_deref().map(|i| table_leaf(i).to_ascii_lowercase()) {
-        let table = n.object.as_deref().map(|o| table_leaf(o).to_ascii_lowercase());
-        // By name, on the operator's table where the plan says it (an index name is unique per schema).
-        let found = kinds
-            .iter()
-            .filter(|(_, name, _)| *name == index)
-            .find(|(t, _, _)| table.as_deref().is_none_or(|table| table == t))
-            .or_else(|| kinds.iter().find(|(_, name, _)| *name == index));
-        if let Some((_, _, kind)) = found.filter(|(_, _, k)| !k.is_empty()) {
-            n.props.insert(crate::plan::INDEX_KIND.into(), kind.clone());
+fn mark_index_kinds(n: &mut PlanNode, indexes: &[IndexStat], bitmap_table: Option<&str>) {
+    n.facts_mut().index_method = None;
+    n.props.remove(crate::plan::INDEX_KIND);
+    let object = n.object.as_deref().or(bitmap_table);
+    if let Some(index_name) = n.index.as_deref() {
+        let index_name = table_leaf(index_name);
+        let mut found = indexes.iter().filter(|i| {
+            i.name.eq_ignore_ascii_case(&index_name)
+                && object.is_none_or(|o| catalog_table_matches(o, &i.schema, &i.table))
+        });
+        if let (Some(index), None) = (found.next(), found.next())
+            && !index.kind.is_empty()
+        {
+            n.facts_mut().index_method = Some(index.kind.to_ascii_lowercase());
+            n.props.insert(crate::plan::INDEX_KIND.into(), index.kind.to_ascii_lowercase());
         }
     }
-    for c in &mut n.children {
-        mark_index_kinds(c, kinds);
+    let object = n.object.clone().or_else(|| bitmap_table.map(str::to_string));
+    let inherited =
+        matches!(n.op.as_str(), "Bitmap Heap Scan" | "BitmapAnd" | "BitmapOr").then_some(object.as_deref()).flatten();
+    for child in &mut n.children {
+        mark_index_kinds(child, indexes, inherited);
     }
 }
 
@@ -1697,16 +1849,6 @@ fn is_column_operand(op: &str) -> bool {
 /// share.
 pub fn converts_column(text: &str) -> bool {
     convert_operands(text).into_iter().any(is_column_operand)
-}
-
-/// `[db].[dbo].[Users].[Email]` → "Users.Email".
-fn column_label(op: &str) -> Option<String> {
-    let parts: Vec<&str> = op.split('.').map(|p| p.trim_matches(|c| c == '[' || c == ']' || c == '"')).collect();
-    match parts.as_slice() {
-        [.., table, column] if !column.is_empty() => Some(format!("{table}.{column}")),
-        [column] if !column.is_empty() => Some((*column).to_string()),
-        _ => None,
-    }
 }
 
 /// Functions that hide a column from its index when wrapped around it.
@@ -1879,21 +2021,14 @@ pub fn engine_built_indexes(plan: &Plan) -> Vec<EngineBuiltIndex> {
     nodes
         .into_iter()
         .filter_map(|n| {
-            let on = n.props.get("Automatic Index")?;
-            let (named, columns) = on.split_once('(')?;
-            let table = n.object.clone().unwrap_or_else(|| named.trim().to_string());
+            let facts = n.facts();
+            let built = facts.automatic_index.as_ref()?;
+            let table = n.object.clone().unwrap_or_else(|| built.table.clone());
             let leaf = table_leaf(&table).to_ascii_lowercase();
             if table.trim_start().starts_with('(') || transient.contains(&leaf) {
                 return None;
             }
-            let keys: Vec<String> = columns
-                .trim_end_matches(')')
-                .split(',')
-                .filter_map(|c| {
-                    let name: String = c.trim().chars().take_while(|ch| ch.is_alphanumeric() || *ch == '_').collect();
-                    (!name.is_empty()).then_some(name)
-                })
-                .collect();
+            let keys = built.columns.clone();
             Some(EngineBuiltIndex { node: n.id, table, keys })
         })
         .collect()

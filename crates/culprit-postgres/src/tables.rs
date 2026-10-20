@@ -58,7 +58,7 @@ pub async fn fill(client: &Client, plan: &mut Plan) {
     }
     // The names are bound as one text[] parameter, never spliced into the SQL.
     let Ok(rows) = client.query(tagged(SIZES_SQL).as_str(), &[&names]).await else { return };
-    let mut sizes: HashMap<String, Size> = HashMap::new();
+    let mut collected: HashMap<String, Option<Size>> = HashMap::new();
     for row in rows {
         let (Ok(qualified), Ok(name), Ok(count)) =
             (row.try_get::<_, String>(0), row.try_get::<_, String>(1), row.try_get::<_, f64>(2))
@@ -69,9 +69,11 @@ pub async fn fill(client: &Client, plan: &mut Plan) {
         let pages = row.try_get::<_, f64>(4).ok();
         let indexed = row.try_get::<_, Vec<String>>(5).ok();
         let size = Size { rows: counted_rows(count, pages), partition, indexed };
-        sizes.entry(name).or_insert_with(|| size.clone());
-        sizes.insert(qualified, size);
+        for key in [name, qualified] {
+            collected.entry(key).and_modify(|known| *known = None).or_insert_with(|| Some(size.clone()));
+        }
     }
+    let sizes = collected.into_iter().filter_map(|(key, size)| Some((key, size?))).collect();
     apply(&mut plan.root, &sizes, false);
 }
 
@@ -86,7 +88,7 @@ pub(crate) fn refill(plan: &mut Plan, saved: &Plan, tables: &[TableStat], indexe
         // A count of 0 where the planner expects rows is one the catalog never made (`counted_rows`): unknown, not 0.
         let counted = n.table_rows.filter(|rows| *rows > 0.0 || n.est_rows <= 1.0);
         if let (Some(object), Some(rows)) = (n.object.as_ref(), counted) {
-            let partition = n.props.contains_key(culprit_core::NOT_READ_IN_FULL);
+            let partition = n.facts().partition_pruning.is_some();
             let size = sizes.entry(object.clone()).or_insert(Size { rows: Some(rows), partition, indexed: None });
             size.partition |= partition;
         }
@@ -94,8 +96,8 @@ pub(crate) fn refill(plan: &mut Plan, saved: &Plan, tables: &[TableStat], indexe
     for n in plan.nodes() {
         let Some(object) = n.object.as_ref() else { continue };
         let (schema, name) = object.rsplit_once('.').unwrap_or(("", object));
-        let table = tables.iter().find(|t| t.name == name && (schema.is_empty() || t.schema == schema));
-        let Some(table) = table else { continue };
+        let mut matching = tables.iter().filter(|t| t.name == name && (schema.is_empty() || t.schema == schema));
+        let (Some(table), None) = (matching.next(), matching.next()) else { continue };
         let indexed: Vec<String> = indexes
             .iter()
             .filter(|i| i.schema == table.schema && i.table == table.name)
@@ -139,7 +141,16 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
     // Rows a run measured aren't a guess, whatever the plan was planned with.
     let guessed = node.act_rows.is_none()
         && [node.predicate.as_deref(), node.seek_predicate.as_deref()].into_iter().flatten().any(guessed_selectivity);
-    if let Some(size) = node.object.as_ref().and_then(|o| sizes.get(o)) {
+    let size = node.object.as_ref().and_then(|o| sizes.get(o));
+    if node.act_rows.is_some() || (!guessed && (node.predicate.is_some() || node.seek_predicate.is_some())) {
+        node.facts_mut().selectivity_guess = None;
+        node.props.remove(culprit_core::GUESSED_SELECTIVITY);
+    }
+    if node.act_rows.is_some() || size.is_some_and(|s| !under_append || !s.partition) {
+        node.facts_mut().partition_pruning = None;
+        node.props.remove(culprit_core::NOT_READ_IN_FULL);
+    }
+    if let Some(size) = size {
         if size.rows.is_some() {
             node.table_rows = size.rows;
         }
@@ -149,11 +160,13 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
             && node.act_rows.is_none()
         {
             if under_append && size.partition {
+                node.facts_mut().partition_pruning = Some(UNPRUNED.into());
                 node.props.insert(culprit_core::NOT_READ_IN_FULL.into(), UNPRUNED.into());
             } else if guessed {
                 // A note never promises an index the table doesn't have.
                 let filter = node.predicate.as_deref().unwrap_or_default();
                 let text = if index_may_serve(filter, size.indexed.as_deref()) { GUESSED } else { GUESSED_STEP };
+                node.facts_mut().selectivity_guess = Some(text.into());
                 node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), text.into());
             } else if let Some(rows) = size.rows {
                 // A total over its runs: a scan on a nested loop's inner side reads the table once per outer row.
@@ -161,7 +174,8 @@ fn apply(node: &mut PlanNode, sizes: &HashMap<String, Size>, under_append: bool)
             }
         }
     }
-    if guessed && !node.props.contains_key(culprit_core::GUESSED_SELECTIVITY) {
+    if guessed && node.facts().selectivity_guess.is_none() {
+        node.facts_mut().selectivity_guess = Some(GUESSED_STEP.into());
         node.props.insert(culprit_core::GUESSED_SELECTIVITY.into(), GUESSED_STEP.into());
     }
     let append = under_append || node.op.ends_with("Append");
@@ -280,6 +294,34 @@ mod tests {
     use super::*;
     use culprit_core::PlanKind;
 
+    #[test]
+    fn measured_rows_withdraw_saved_generic_pruning_and_default_guess_annotations() {
+        let json = r#"[{"Plan":{"Node Type":"Seq Scan","Relation Name":"orders","Schema":"public",
+            "Plan Rows":10,"Total Cost":100,"Filter":"(created_at > $1)"}}]"#;
+        let mut plan = crate::plan_json::parse(json, PlanKind::Generic, None).unwrap();
+        apply(&mut plan.root, &sizes(&[("public.orders", 100000.0, true)]), true);
+        assert!(plan.root.facts().partition_pruning.is_some());
+        assert!(plan.root.facts().selectivity_guess.is_some());
+        plan.kind = PlanKind::Actual;
+        plan.root.act_rows = Some(10.0);
+        plan.root.act_executions = Some(1.0);
+        apply(&mut plan.root, &sizes(&[("public.orders", 100000.0, true)]), true);
+        assert_eq!(plan.root.facts().partition_pruning, None);
+        assert_eq!(plan.root.facts().selectivity_guess, None);
+        assert!(!plan.root.props.contains_key(culprit_core::NOT_READ_IN_FULL));
+        assert!(!plan.root.props.contains_key(culprit_core::GUESSED_SELECTIVITY));
+    }
+
+    #[test]
+    fn an_unqualified_saved_plan_does_not_borrow_an_arbitrary_schemas_table_size() {
+        let json = r#"[{"Plan":{"Node Type":"Seq Scan","Relation Name":"orders","Plan Rows":10,"Total Cost":100}}]"#;
+        let mut plan = crate::plan_json::parse(json, PlanKind::Estimated, None).unwrap();
+        let saved = plan.clone();
+        refill(&mut plan, &saved, &[table("public", "orders", 100.0), table("archive", "orders", 1000000.0)], &[]);
+        assert_eq!(plan.root.table_rows, None);
+        assert_eq!(plan.root.rows_read_total(), None);
+    }
+
     fn sizes(entries: &[(&str, f64, bool)]) -> HashMap<String, Size> {
         entries
             .iter()
@@ -383,7 +425,7 @@ mod tests {
         let mut plan = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
         apply(&mut plan.root, &sizes(&[("public.orders", 2_000_000.0, false)]), false);
         assert_eq!(plan.root.rows_read, None);
-        assert!(plan.root.props.contains_key(culprit_core::GUESSED_SELECTIVITY));
+        assert!(plan.root.facts().selectivity_guess.is_some());
     }
 
     // Aptabase EU P7: `= ANY($1)` in a generic plan rests on a guessed array length (10 values): the bitmap scan's 10
@@ -398,7 +440,7 @@ mod tests {
         apply(&mut plan.root, &sizes(&[("public.apps", 6_285.0, false)]), false);
         let index_scan = &plan.root.children[0];
         assert!(index_scan.props[culprit_core::GUESSED_SELECTIVITY].contains("10 values for ANY"));
-        assert!(plan.root.props.contains_key(culprit_core::GUESSED_SELECTIVITY));
+        assert!(plan.root.facts().selectivity_guess.is_some());
         assert_eq!(plan.step_share(index_scan), None);
         assert_eq!(plan.step_share(&plan.root), None);
         // An equality on a parameter is estimated from statistics: no mark.
@@ -406,7 +448,7 @@ mod tests {
             "Index Name": "PK_apps", "Total Cost": 8.3, "Plan Rows": 1, "Index Cond": "((id)::text = $1)"}}]"#;
         let mut plan = crate::plan_json::parse(json, PlanKind::Generic, Some("SELECT 1")).unwrap();
         apply(&mut plan.root, &sizes(&[("public.apps", 6_285.0, false)]), false);
-        assert!(!plan.root.props.contains_key(culprit_core::GUESSED_SELECTIVITY));
+        assert!(plan.root.facts().selectivity_guess.is_none());
     }
 
     // Saved scans re-read by a newer parser get the sizes the scan looked up back from the saved plan, with the marks

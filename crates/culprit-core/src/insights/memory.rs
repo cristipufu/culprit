@@ -6,10 +6,10 @@ pub(super) fn memory_grant(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Mssql {
         return Vec::new();
     }
-    let kb = |key: &str| cx.prop(key).and_then(|v| v.parse::<f64>().ok());
+    let facts = cx.plan.facts();
     let mut out = Vec::new();
     let root = cx.plan.root.id;
-    if let (Some(granted), Some(used)) = (kb("MemoryGrantedKB"), kb("MemoryMaxUsedKB"))
+    if let (Some(granted), Some(used)) = (facts.memory_granted_kb, facts.memory_max_used_kb)
         && has_actuals(cx.plan)
         && granted >= 10.0 * 1024.0
         && used < 0.25 * granted
@@ -25,12 +25,12 @@ pub(super) fn memory_grant(cx: &Cx) -> Vec<Draft> {
         );
         d.detail = format!(
             "The grant is sized from row estimates before the query runs; when they're too high, memory sits reserved and other queries wait for it (RESOURCE_SEMAPHORE).{}",
-            cx.prop("MemoryGrantWarning").map(|w| format!(" SQL Server flags it too: {w}.")).unwrap_or_default()
+            facts.memory_grant_warning.as_ref().map(|w| format!(" SQL Server flags it too: {w}.")).unwrap_or_default()
         );
         d.fix = "Fix the estimates (update statistics, avoid functions on filtered columns). SQL Server 2019+ shrinks grants on later runs (memory grant feedback); as a last resort cap it with OPTION (MAX_GRANT_PERCENT = 5).".into();
         d.verify = "Run with an actual plan: GrantedMemory is close to MaxUsedMemory.".into();
         out.push(d);
-    } else if let Some(desired) = kb("MemoryDesiredKB")
+    } else if let Some(desired) = facts.memory_desired_kb
         && !has_actuals(cx.plan)
         && desired >= 1024.0 * 1024.0
     {
@@ -47,7 +47,7 @@ pub(super) fn memory_grant(cx: &Cx) -> Vec<Draft> {
         d.verify = "Explain again: the desired memory is lower.".into();
         out.push(d);
     }
-    if let Some(wait) = kb("MemoryGrantWaitMs").filter(|w| *w >= 100.0) {
+    if let Some(wait) = facts.memory_grant_wait_ms.filter(|w| *w >= 100.0) {
         let mut d = Draft::new("memory-grant", InsightArea::Memory, 0.2, vec![root]);
         d.fixed_weight = true;
         d.cost_ms = Some(wait);
@@ -73,15 +73,15 @@ pub(super) fn lossy_bitmap(cx: &Cx) -> Vec<Draft> {
     cx.nodes
         .iter()
         .filter_map(|n| {
-            let lossy = prop_f64(n, "Lossy Heap Blocks")?;
+            let lossy = n.facts().lossy_heap_blocks?;
             // A BRIN index only ever gives lossy pages: no exact ones means nothing was lost for want of work_mem.
-            let exact = prop_f64(n, "Exact Heap Blocks").unwrap_or(0.0);
+            let exact = n.facts().exact_heap_blocks.unwrap_or(0.0);
             (lossy > 0.0 && exact > 0.0).then_some((n, lossy))
         })
         .take(1)
         .map(|(n, lossy)| {
             // PostgreSQL gives it per loop, like its actual rows.
-            let rechecked = prop_f64(n, "Rows Removed by Index Recheck").unwrap_or(0.0)
+            let rechecked = n.facts().rows_removed_by_recheck.unwrap_or(0.0)
                 * n.act_executions.unwrap_or(1.0).max(1.0);
             // A BRIN index only ever gives pages: one in the bitmap (the catalog marks its kind) explains lossy pages
             // with work_mem to spare. Bitmaps combined (BitmapOr, BitmapAnd) on a plan the catalog didn't mark may hold
@@ -93,7 +93,7 @@ pub(super) fn lossy_bitmap(cx: &Cx) -> Vec<Draft> {
             let mut below = Vec::new();
             walk(n, &mut below);
             let index_scans: Vec<&&PlanNode> = below.iter().filter(|x| x.op == "Bitmap Index Scan").collect();
-            let marked = !index_scans.is_empty() && index_scans.iter().all(|x| x.props.contains_key(crate::plan::INDEX_KIND));
+            let marked = !index_scans.is_empty() && index_scans.iter().all(|x| x.facts().index_method.is_some());
             let combined = below.iter().any(|x| matches!(x.op.as_str(), "BitmapOr" | "BitmapAnd"));
             let maybe_brin = if marked { index_scans.iter().any(|x| x.reads_brin()) } else { combined };
             let mut d = Draft::new("lossy-bitmap", InsightArea::Memory, cx.share(n), vec![n.id]);

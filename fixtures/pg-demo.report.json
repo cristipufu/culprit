@@ -2911,6 +2911,12 @@
           "physical_reads": 226021.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -2941,6 +2947,44 @@
                       "detail": "Parallel",
                       "est_executions": 1.0,
                       "est_rows": 666664.7999999999,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [
+                          "(orders.created_at > (now() - $1))"
+                        ],
+                        "conversions": [],
+                        "estimated_row_bytes": 74.0,
+                        "estimated_rows_per_process": 277777.0,
+                        "expression_cache": false,
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "selectivity_guess": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): with a real value the planner may well use an index instead.",
+                        "table_alias": "orders",
+                        "table_indexes": [
+                          {
+                            "columns": [
+                              "id"
+                            ],
+                            "name": "orders_pkey"
+                          },
+                          {
+                            "columns": [
+                              "status"
+                            ],
+                            "name": "orders_status_idx"
+                          },
+                          {
+                            "columns": [
+                              "status",
+                              "created_at"
+                            ],
+                            "name": "orders_status_created_idx"
+                          }
+                        ],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "scan",
@@ -2972,6 +3016,19 @@
                   "detail": "sort key: orders.note",
                   "est_executions": 1.0,
                   "est_rows": 666664.7999999999,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 74.0,
+                    "estimated_rows_per_process": 277777.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -3000,6 +3057,16 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 666665.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 74.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": [],
+                "workers_planned": 2
+              },
               "id": 0,
               "index": null,
               "kind": "parallelism",
@@ -3191,6 +3258,12 @@
           "physical_reads": 14001597.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -3241,6 +3314,43 @@
                           "detail": "Parallel",
                           "est_executions": 1.0,
                           "est_rows": 12.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [
+                              "(orders.customer_id = $1)"
+                            ],
+                            "conversions": [],
+                            "estimated_row_bytes": 29.0,
+                            "estimated_rows_per_process": 5.0,
+                            "expression_cache": false,
+                            "parent_relationship": {
+                              "kind": "outer"
+                            },
+                            "possible_index_names": [],
+                            "table_alias": "orders",
+                            "table_indexes": [
+                              {
+                                "columns": [
+                                  "id"
+                                ],
+                                "name": "orders_pkey"
+                              },
+                              {
+                                "columns": [
+                                  "status"
+                                ],
+                                "name": "orders_status_idx"
+                              },
+                              {
+                                "columns": [
+                                  "status",
+                                  "created_at"
+                                ],
+                                "name": "orders_status_created_idx"
+                              }
+                            ],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "scan",
@@ -3271,6 +3381,19 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 11.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_row_bytes": 29.0,
+                        "expression_cache": false,
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "user_functions": [],
+                        "workers_planned": 2
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "parallelism",
@@ -3299,6 +3422,18 @@
                   "detail": "sort key: orders.created_at DESC",
                   "est_executions": 1.0,
                   "est_rows": 11.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 29.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -3326,6 +3461,15 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 29.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -3544,6 +3688,12 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -3563,6 +3713,15 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 4.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "compute",
@@ -3713,6 +3872,12 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -3737,6 +3902,22 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "(products.id = $1)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 18.0,
+                    "expression_cache": false,
+                    "index_method": "btree",
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "table_alias": "products",
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": "products_pkey",
                   "kind": "seek",
@@ -3767,6 +3948,16 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 0.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "table_alias": "products",
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "modify",
@@ -3939,6 +4130,12 @@
           "physical_reads": 2469131.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -3989,6 +4186,30 @@
                           "detail": "Parallel",
                           "est_executions": 1.0,
                           "est_rows": 100.8,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [
+                              "(order_items.product_id = $1)"
+                            ],
+                            "conversions": [],
+                            "estimated_row_bytes": 10.0,
+                            "estimated_rows_per_process": 42.0,
+                            "expression_cache": false,
+                            "parent_relationship": {
+                              "kind": "outer"
+                            },
+                            "possible_index_names": [],
+                            "table_alias": "order_items",
+                            "table_indexes": [
+                              {
+                                "columns": [
+                                  "id"
+                                ],
+                                "name": "order_items_pkey"
+                              }
+                            ],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "scan",
@@ -4019,6 +4240,20 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 2.4,
+                      "facts": {
+                        "aggregate_strategy": "Plain",
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_row_bytes": 40.0,
+                        "estimated_rows_per_process": 1.0,
+                        "expression_cache": false,
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "aggregate",
@@ -4048,6 +4283,19 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 2.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 40.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": [],
+                    "workers_planned": 2
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "parallelism",
@@ -4076,6 +4324,16 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "aggregate_strategy": "Plain",
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 40.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",
@@ -4296,6 +4554,12 @@
           "physical_reads": 37450.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -4335,6 +4599,44 @@
                               "detail": "Parallel",
                               "est_executions": 1.0,
                               "est_rows": 666664.7999999999,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [
+                                  "(orders.created_at > (now() - $1))"
+                                ],
+                                "conversions": [],
+                                "estimated_row_bytes": 13.0,
+                                "estimated_rows_per_process": 277777.0,
+                                "expression_cache": false,
+                                "parent_relationship": {
+                                  "kind": "outer"
+                                },
+                                "possible_index_names": [],
+                                "selectivity_guess": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): with a real value the planner may well use an index instead.",
+                                "table_alias": "orders",
+                                "table_indexes": [
+                                  {
+                                    "columns": [
+                                      "id"
+                                    ],
+                                    "name": "orders_pkey"
+                                  },
+                                  {
+                                    "columns": [
+                                      "status"
+                                    ],
+                                    "name": "orders_status_idx"
+                                  },
+                                  {
+                                    "columns": [
+                                      "status",
+                                      "created_at"
+                                    ],
+                                    "name": "orders_status_created_idx"
+                                  }
+                                ],
+                                "user_functions": []
+                              },
                               "id": 4,
                               "index": null,
                               "kind": "scan",
@@ -4366,6 +4668,20 @@
                           "detail": "Hashed · group key: orders.status",
                           "est_executions": 1.0,
                           "est_rows": 12.0,
+                          "facts": {
+                            "aggregate_strategy": "Hashed",
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_row_bytes": 47.0,
+                            "estimated_rows_per_process": 5.0,
+                            "expression_cache": false,
+                            "parent_relationship": {
+                              "kind": "outer"
+                            },
+                            "possible_index_names": [],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "aggregate",
@@ -4397,6 +4713,19 @@
                       "detail": "sort key: orders.status",
                       "est_executions": 1.0,
                       "est_rows": 12.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_row_bytes": 47.0,
+                        "estimated_rows_per_process": 5.0,
+                        "expression_cache": false,
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "sort",
@@ -4425,6 +4754,19 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 12.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 47.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": [],
+                    "workers_planned": 2
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "parallelism",
@@ -4452,6 +4794,16 @@
               "detail": "Sorted · group key: orders.status",
               "est_executions": 1.0,
               "est_rows": 5.0,
+              "facts": {
+                "aggregate_strategy": "Sorted",
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 47.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",
@@ -4685,6 +5037,12 @@
           "physical_reads": 7902.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -4714,6 +5072,22 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 2.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [
+                          "(events.customer_id = $1)"
+                        ],
+                        "conversions": [],
+                        "estimated_row_bytes": 6.0,
+                        "expression_cache": false,
+                        "index_method": "btree",
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "table_alias": "events",
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": "events_customer_idx",
                       "kind": "seek",
@@ -4744,6 +5118,18 @@
                   "detail": "sort key: events.kind",
                   "est_executions": 1.0,
                   "est_rows": 2.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 6.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "sort",
@@ -4771,6 +5157,16 @@
               "detail": "Sorted · group key: events.kind",
               "est_executions": 1.0,
               "est_rows": 2.0,
+              "facts": {
+                "aggregate_strategy": "Sorted",
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 14.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",
@@ -4964,6 +5360,12 @@
           "physical_reads": 15782.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -4983,6 +5385,19 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [
+                  "(customers.id = $1)"
+                ],
+                "conversions": [],
+                "estimated_row_bytes": 37.0,
+                "expression_cache": false,
+                "index_method": "btree",
+                "possible_index_names": [],
+                "table_alias": "customers",
+                "user_functions": []
+              },
               "id": 0,
               "index": "customers_pkey",
               "kind": "seek",
@@ -5192,6 +5607,12 @@
           "physical_reads": 10.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -5216,6 +5637,22 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "(products.id = $1)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 13.0,
+                    "expression_cache": false,
+                    "index_method": "btree",
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "table_alias": "products",
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": "products_pkey",
                   "kind": "seek",
@@ -5246,6 +5683,16 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 0.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "table_alias": "products",
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "modify",
@@ -5396,6 +5843,13 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "query_identifier": "-6576252161252119529",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -5415,6 +5869,15 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 8.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "compute",
@@ -5543,6 +6006,12 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -5567,6 +6036,22 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 5.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "(pg_stat_statements.query ~~ $1)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 8.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "selectivity_guess": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
+                    "table_alias": "pg_stat_statements",
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "scan",
@@ -5598,6 +6083,16 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "aggregate_strategy": "Plain",
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 40.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",
@@ -5748,6 +6243,13 @@
           "physical_reads": 0.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
+              "query_identifier": "2169115237613314459",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -5767,6 +6269,15 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 4.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "compute",
@@ -6061,6 +6572,12 @@
           "physical_reads": 11093.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "query_identifier": "-1927887502173443338",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -6084,6 +6601,35 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 225.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "((wide.id % $2) = $3)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 10.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "table_alias": "wide",
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "id"
+                        ],
+                        "name": "wide_pkey"
+                      },
+                      {
+                        "columns": [
+                          "touched"
+                        ],
+                        "name": "wide_touched"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "scan",
@@ -6113,6 +6659,16 @@
               "detail": "Update",
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 0.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "table_alias": "wide",
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "modify",
@@ -6273,6 +6829,12 @@
           "physical_reads": 15.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "query_identifier": "-6887183319640168245",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -6346,6 +6908,22 @@
                                                           "detail": null,
                                                           "est_executions": 1.0,
                                                           "est_rows": 1.0,
+                                                          "facts": {
+                                                            "columns_without_statistics": [],
+                                                            "conditions": [
+                                                              "(o1.id = $1)"
+                                                            ],
+                                                            "conversions": [],
+                                                            "estimated_row_bytes": 8.0,
+                                                            "expression_cache": false,
+                                                            "index_method": "btree",
+                                                            "parent_relationship": {
+                                                              "kind": "outer"
+                                                            },
+                                                            "possible_index_names": [],
+                                                            "table_alias": "o1",
+                                                            "user_functions": []
+                                                          },
                                                           "id": 11,
                                                           "index": "orders_pkey",
                                                           "kind": "seek",
@@ -6380,6 +6958,22 @@
                                                           "detail": null,
                                                           "est_executions": 1.0,
                                                           "est_rows": 1.0,
+                                                          "facts": {
+                                                            "columns_without_statistics": [],
+                                                            "conditions": [
+                                                              "(o2.id = $1)"
+                                                            ],
+                                                            "conversions": [],
+                                                            "estimated_row_bytes": 8.0,
+                                                            "expression_cache": false,
+                                                            "index_method": "btree",
+                                                            "parent_relationship": {
+                                                              "kind": "inner"
+                                                            },
+                                                            "possible_index_names": [],
+                                                            "table_alias": "o2",
+                                                            "user_functions": []
+                                                          },
                                                           "id": 12,
                                                           "index": "orders_pkey",
                                                           "kind": "seek",
@@ -6410,6 +7004,18 @@
                                                       "detail": "Inner join",
                                                       "est_executions": 1.0,
                                                       "est_rows": 1.0,
+                                                      "facts": {
+                                                        "columns_without_statistics": [],
+                                                        "conditions": [],
+                                                        "conversions": [],
+                                                        "estimated_row_bytes": 8.0,
+                                                        "expression_cache": false,
+                                                        "parent_relationship": {
+                                                          "kind": "outer"
+                                                        },
+                                                        "possible_index_names": [],
+                                                        "user_functions": []
+                                                      },
                                                       "id": 10,
                                                       "index": null,
                                                       "kind": "join",
@@ -6442,6 +7048,22 @@
                                                       "detail": null,
                                                       "est_executions": 1.0,
                                                       "est_rows": 1.0,
+                                                      "facts": {
+                                                        "columns_without_statistics": [],
+                                                        "conditions": [
+                                                          "(o3.id = $1)"
+                                                        ],
+                                                        "conversions": [],
+                                                        "estimated_row_bytes": 8.0,
+                                                        "expression_cache": false,
+                                                        "index_method": "btree",
+                                                        "parent_relationship": {
+                                                          "kind": "inner"
+                                                        },
+                                                        "possible_index_names": [],
+                                                        "table_alias": "o3",
+                                                        "user_functions": []
+                                                      },
                                                       "id": 13,
                                                       "index": "orders_pkey",
                                                       "kind": "seek",
@@ -6472,6 +7094,18 @@
                                                   "detail": "Inner join",
                                                   "est_executions": 1.0,
                                                   "est_rows": 1.0,
+                                                  "facts": {
+                                                    "columns_without_statistics": [],
+                                                    "conditions": [],
+                                                    "conversions": [],
+                                                    "estimated_row_bytes": 8.0,
+                                                    "expression_cache": false,
+                                                    "parent_relationship": {
+                                                      "kind": "outer"
+                                                    },
+                                                    "possible_index_names": [],
+                                                    "user_functions": []
+                                                  },
                                                   "id": 9,
                                                   "index": null,
                                                   "kind": "join",
@@ -6504,6 +7138,22 @@
                                                   "detail": null,
                                                   "est_executions": 1.0,
                                                   "est_rows": 1.0,
+                                                  "facts": {
+                                                    "columns_without_statistics": [],
+                                                    "conditions": [
+                                                      "(o4.id = $1)"
+                                                    ],
+                                                    "conversions": [],
+                                                    "estimated_row_bytes": 8.0,
+                                                    "expression_cache": false,
+                                                    "index_method": "btree",
+                                                    "parent_relationship": {
+                                                      "kind": "inner"
+                                                    },
+                                                    "possible_index_names": [],
+                                                    "table_alias": "o4",
+                                                    "user_functions": []
+                                                  },
                                                   "id": 14,
                                                   "index": "orders_pkey",
                                                   "kind": "seek",
@@ -6534,6 +7184,18 @@
                                               "detail": "Inner join",
                                               "est_executions": 1.0,
                                               "est_rows": 1.0,
+                                              "facts": {
+                                                "columns_without_statistics": [],
+                                                "conditions": [],
+                                                "conversions": [],
+                                                "estimated_row_bytes": 8.0,
+                                                "expression_cache": false,
+                                                "parent_relationship": {
+                                                  "kind": "outer"
+                                                },
+                                                "possible_index_names": [],
+                                                "user_functions": []
+                                              },
                                               "id": 8,
                                               "index": null,
                                               "kind": "join",
@@ -6566,6 +7228,22 @@
                                               "detail": null,
                                               "est_executions": 1.0,
                                               "est_rows": 1.0,
+                                              "facts": {
+                                                "columns_without_statistics": [],
+                                                "conditions": [
+                                                  "(o5.id = $1)"
+                                                ],
+                                                "conversions": [],
+                                                "estimated_row_bytes": 8.0,
+                                                "expression_cache": false,
+                                                "index_method": "btree",
+                                                "parent_relationship": {
+                                                  "kind": "inner"
+                                                },
+                                                "possible_index_names": [],
+                                                "table_alias": "o5",
+                                                "user_functions": []
+                                              },
                                               "id": 15,
                                               "index": "orders_pkey",
                                               "kind": "seek",
@@ -6596,6 +7274,18 @@
                                           "detail": "Inner join",
                                           "est_executions": 1.0,
                                           "est_rows": 1.0,
+                                          "facts": {
+                                            "columns_without_statistics": [],
+                                            "conditions": [],
+                                            "conversions": [],
+                                            "estimated_row_bytes": 8.0,
+                                            "expression_cache": false,
+                                            "parent_relationship": {
+                                              "kind": "outer"
+                                            },
+                                            "possible_index_names": [],
+                                            "user_functions": []
+                                          },
                                           "id": 7,
                                           "index": null,
                                           "kind": "join",
@@ -6628,6 +7318,22 @@
                                           "detail": null,
                                           "est_executions": 1.0,
                                           "est_rows": 1.0,
+                                          "facts": {
+                                            "columns_without_statistics": [],
+                                            "conditions": [
+                                              "(o6.id = $1)"
+                                            ],
+                                            "conversions": [],
+                                            "estimated_row_bytes": 8.0,
+                                            "expression_cache": false,
+                                            "index_method": "btree",
+                                            "parent_relationship": {
+                                              "kind": "inner"
+                                            },
+                                            "possible_index_names": [],
+                                            "table_alias": "o6",
+                                            "user_functions": []
+                                          },
                                           "id": 16,
                                           "index": "orders_pkey",
                                           "kind": "seek",
@@ -6658,6 +7364,18 @@
                                       "detail": "Inner join",
                                       "est_executions": 1.0,
                                       "est_rows": 1.0,
+                                      "facts": {
+                                        "columns_without_statistics": [],
+                                        "conditions": [],
+                                        "conversions": [],
+                                        "estimated_row_bytes": 8.0,
+                                        "expression_cache": false,
+                                        "parent_relationship": {
+                                          "kind": "outer"
+                                        },
+                                        "possible_index_names": [],
+                                        "user_functions": []
+                                      },
                                       "id": 6,
                                       "index": null,
                                       "kind": "join",
@@ -6690,6 +7408,22 @@
                                       "detail": null,
                                       "est_executions": 1.0,
                                       "est_rows": 1.0,
+                                      "facts": {
+                                        "columns_without_statistics": [],
+                                        "conditions": [
+                                          "(o7.id = $1)"
+                                        ],
+                                        "conversions": [],
+                                        "estimated_row_bytes": 8.0,
+                                        "expression_cache": false,
+                                        "index_method": "btree",
+                                        "parent_relationship": {
+                                          "kind": "inner"
+                                        },
+                                        "possible_index_names": [],
+                                        "table_alias": "o7",
+                                        "user_functions": []
+                                      },
                                       "id": 17,
                                       "index": "orders_pkey",
                                       "kind": "seek",
@@ -6720,6 +7454,18 @@
                                   "detail": "Inner join",
                                   "est_executions": 1.0,
                                   "est_rows": 1.0,
+                                  "facts": {
+                                    "columns_without_statistics": [],
+                                    "conditions": [],
+                                    "conversions": [],
+                                    "estimated_row_bytes": 8.0,
+                                    "expression_cache": false,
+                                    "parent_relationship": {
+                                      "kind": "outer"
+                                    },
+                                    "possible_index_names": [],
+                                    "user_functions": []
+                                  },
                                   "id": 5,
                                   "index": null,
                                   "kind": "join",
@@ -6752,6 +7498,22 @@
                                   "detail": null,
                                   "est_executions": 1.0,
                                   "est_rows": 1.0,
+                                  "facts": {
+                                    "columns_without_statistics": [],
+                                    "conditions": [
+                                      "(o8.id = $1)"
+                                    ],
+                                    "conversions": [],
+                                    "estimated_row_bytes": 8.0,
+                                    "expression_cache": false,
+                                    "index_method": "btree",
+                                    "parent_relationship": {
+                                      "kind": "inner"
+                                    },
+                                    "possible_index_names": [],
+                                    "table_alias": "o8",
+                                    "user_functions": []
+                                  },
                                   "id": 18,
                                   "index": "orders_pkey",
                                   "kind": "seek",
@@ -6782,6 +7544,18 @@
                               "detail": "Inner join",
                               "est_executions": 1.0,
                               "est_rows": 1.0,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [],
+                                "conversions": [],
+                                "estimated_row_bytes": 8.0,
+                                "expression_cache": false,
+                                "parent_relationship": {
+                                  "kind": "outer"
+                                },
+                                "possible_index_names": [],
+                                "user_functions": []
+                              },
                               "id": 4,
                               "index": null,
                               "kind": "join",
@@ -6814,6 +7588,22 @@
                               "detail": null,
                               "est_executions": 1.0,
                               "est_rows": 1.0,
+                              "facts": {
+                                "columns_without_statistics": [],
+                                "conditions": [
+                                  "(o9.id = $1)"
+                                ],
+                                "conversions": [],
+                                "estimated_row_bytes": 8.0,
+                                "expression_cache": false,
+                                "index_method": "btree",
+                                "parent_relationship": {
+                                  "kind": "inner"
+                                },
+                                "possible_index_names": [],
+                                "table_alias": "o9",
+                                "user_functions": []
+                              },
                               "id": 19,
                               "index": "orders_pkey",
                               "kind": "seek",
@@ -6844,6 +7634,18 @@
                           "detail": "Inner join",
                           "est_executions": 1.0,
                           "est_rows": 1.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [],
+                            "conversions": [],
+                            "estimated_row_bytes": 8.0,
+                            "expression_cache": false,
+                            "parent_relationship": {
+                              "kind": "outer"
+                            },
+                            "possible_index_names": [],
+                            "user_functions": []
+                          },
                           "id": 3,
                           "index": null,
                           "kind": "join",
@@ -6876,6 +7678,22 @@
                           "detail": null,
                           "est_executions": 1.0,
                           "est_rows": 1.0,
+                          "facts": {
+                            "columns_without_statistics": [],
+                            "conditions": [
+                              "(o10.id = $1)"
+                            ],
+                            "conversions": [],
+                            "estimated_row_bytes": 8.0,
+                            "expression_cache": false,
+                            "index_method": "btree",
+                            "parent_relationship": {
+                              "kind": "inner"
+                            },
+                            "possible_index_names": [],
+                            "table_alias": "o10",
+                            "user_functions": []
+                          },
                           "id": 20,
                           "index": "orders_pkey",
                           "kind": "seek",
@@ -6906,6 +7724,18 @@
                       "detail": "Inner join",
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [],
+                        "conversions": [],
+                        "estimated_row_bytes": 8.0,
+                        "expression_cache": false,
+                        "parent_relationship": {
+                          "kind": "outer"
+                        },
+                        "possible_index_names": [],
+                        "user_functions": []
+                      },
                       "id": 2,
                       "index": null,
                       "kind": "join",
@@ -6938,6 +7768,22 @@
                       "detail": null,
                       "est_executions": 1.0,
                       "est_rows": 1.0,
+                      "facts": {
+                        "columns_without_statistics": [],
+                        "conditions": [
+                          "(o11.id = $1)"
+                        ],
+                        "conversions": [],
+                        "estimated_row_bytes": 8.0,
+                        "expression_cache": false,
+                        "index_method": "btree",
+                        "parent_relationship": {
+                          "kind": "inner"
+                        },
+                        "possible_index_names": [],
+                        "table_alias": "o11",
+                        "user_functions": []
+                      },
                       "id": 21,
                       "index": "orders_pkey",
                       "kind": "seek",
@@ -6968,6 +7814,18 @@
                   "detail": "Inner join",
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "estimated_row_bytes": 8.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "join",
@@ -7000,6 +7858,22 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 1.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "(o12.id = $1)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 15.0,
+                    "expression_cache": false,
+                    "index_method": "btree",
+                    "parent_relationship": {
+                      "kind": "inner"
+                    },
+                    "possible_index_names": [],
+                    "table_alias": "o12",
+                    "user_functions": []
+                  },
                   "id": 22,
                   "index": "orders_pkey",
                   "kind": "seek",
@@ -7030,6 +7904,15 @@
               "detail": "Inner join",
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 7.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "join",
@@ -7610,6 +8493,12 @@
           "physical_reads": 78.0,
           "plan": {
             "engine": "postgres",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "query_identifier": "2902286614177922249",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -7633,6 +8522,42 @@
                   "detail": null,
                   "est_executions": 1.0,
                   "est_rows": 3333.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [
+                      "(products.price > $2)"
+                    ],
+                    "conversions": [],
+                    "estimated_row_bytes": 19.0,
+                    "expression_cache": false,
+                    "parent_relationship": {
+                      "kind": "outer"
+                    },
+                    "possible_index_names": [],
+                    "selectivity_guess": "Planned with a default selectivity for its parameter (a fixed share of the rows for a range or a pattern, 10 values for ANY): the rows it expects, and the cost of the steps above it, rest on that guess, not on the column's statistics.",
+                    "table_alias": "products",
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "id"
+                        ],
+                        "name": "products_pkey"
+                      },
+                      {
+                        "columns": [
+                          "sku"
+                        ],
+                        "name": "products_sku_key"
+                      },
+                      {
+                        "columns": [
+                          "sku"
+                        ],
+                        "name": "products_sku_idx"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 1,
                   "index": null,
                   "kind": "scan",
@@ -7663,6 +8588,16 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 1.0,
+              "facts": {
+                "aggregate_strategy": "Plain",
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "estimated_row_bytes": 44.0,
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "aggregate",

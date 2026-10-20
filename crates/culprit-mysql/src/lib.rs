@@ -53,6 +53,7 @@ impl MysqlProvider {
     /// The plan, tagged with the server's version so its notes can say what this version can and can't measure.
     fn versioned(&self, mut plan: Plan) -> Plan {
         if let Some(version) = self.connector.version() {
+            plan.facts_mut().server_version = Some(version.to_string());
             plan.props.insert("server_version".into(), version.to_string());
         }
         plan
@@ -196,6 +197,7 @@ impl Provider for MysqlProvider {
     async fn explain(&self, sql: &str, mode: ExplainMode) -> Result<Plan> {
         let mut plan = self.explain_statement(sql, mode).await.map_err(parameter_error)?;
         if self.connector.flavor() == Flavor::Mariadb {
+            plan.facts_mut().flavor = Some("MariaDB".into());
             plan.props.insert("flavor".into(), "MariaDB".into());
         }
         Ok(plan)

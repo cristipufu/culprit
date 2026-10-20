@@ -9,10 +9,10 @@ pub(super) fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     }
     // Only the warnings about a converted column the table still has (see `current_conversions`); older scans flagged
     // every conversion, and a plan captured before a column changed type still shows its old conversion.
-    let plan_lines: Vec<String> = cx
-        .prop("PlanAffectingConvert")
-        .map(|v| v.lines().filter(|l| !current_conversions(cx.plan, l).is_empty()).map(str::to_string).collect())
-        .unwrap_or_default();
+    let plan_facts = cx.plan.facts();
+    let conversions: Vec<&crate::PlanConversion> =
+        plan_facts.conversions.iter().filter(|c| !current_conversions(cx.plan, &c.expression).is_empty()).collect();
+    let plan_lines: Vec<String> = conversions.iter().map(|c| c.text()).collect();
     let node = cx
         .nodes
         .iter()
@@ -23,9 +23,9 @@ pub(super) fn implicit_conversion(cx: &Cx) -> Vec<Draft> {
     if plan_lines.is_empty() && node.is_none() {
         return Vec::new();
     }
-    let seek_line = plan_lines.iter().find(|l| l.starts_with("Seek Plan"));
+    let seek_line = conversions.iter().find(|c| c.issue == crate::PlanConversionIssue::SeekPlan).map(|c| c.text());
     let text =
-        seek_line.cloned().or_else(|| plan_lines.first().cloned()).or_else(|| node.map(conditions)).unwrap_or_default();
+        seek_line.clone().or_else(|| plan_lines.first().cloned()).or_else(|| node.map(conditions)).unwrap_or_default();
     // What the conversion costs is SQL Server's own verdict, never inferred from the plan's shape: a scan may have no
     // index on the column to seek, or be the right plan for a small table. "Seek Plan" means it kept SQL Server from
     // seeking an index; "Cardinality Estimate" that it swayed the row estimates; no warning, that it changed nothing.
@@ -230,9 +230,9 @@ pub(super) fn cross_joins(cx: &Cx) -> Vec<u32> {
             // Anywhere under the inner side: a LATERAL subquery's condition sits below its Limit and Sort
             // (Limit → Sort → Index Scan with the Index Cond).
             fn conditioned(n: &PlanNode) -> bool {
-                !conditions(n).is_empty() || n.props.contains_key("Join Filter") || n.children.iter().any(conditioned)
+                !conditions(n).is_empty() || n.facts().join_filter.is_some() || n.children.iter().any(conditioned)
             }
-            let no_condition = !conditioned(inner) && !n.props.contains_key("Join Filter");
+            let no_condition = !conditioned(inner) && !n.facts().join_filter.is_some();
             let product = n.children[0].est_rows * inner.est_rows.max(1.0);
             if no_condition && n.est_rows >= 0.5 * product && product >= 100.0 {
                 ids.push(n.id);
@@ -244,7 +244,7 @@ pub(super) fn cross_joins(cx: &Cx) -> Vec<u32> {
             cx.nodes
                 .iter()
                 .filter(|n| {
-                    (n.props.contains_key("using_join_buffer") && n.predicate.is_none() && n.seek_predicate.is_none())
+                    (n.facts().join_buffer.is_some() && n.predicate.is_none() && n.seek_predicate.is_none())
                         || n.op.to_ascii_lowercase().contains("(no condition)")
                 })
                 .map(|n| n.id),
@@ -280,7 +280,9 @@ pub(super) fn not_in_work<'a>(cx: &Cx<'a>, n: &'a PlanNode) -> Option<Vec<&'a Pl
             let subplans: Vec<&PlanNode> = n
                 .children
                 .iter()
-                .filter(|c| c.props.get("Parent Relationship").is_some_and(|r| r == "SubPlan"))
+                .filter(|c| {
+                    matches!(c.facts().parent_relationship.as_ref(), Some(crate::PlanParentRelationship::SubPlan))
+                })
                 .collect();
             (per_row && says_not_in).then_some(subplans)
         }
@@ -289,7 +291,7 @@ pub(super) fn not_in_work<'a>(cx: &Cx<'a>, n: &'a PlanNode) -> Option<Vec<&'a Pl
             let negated = l.contains("<not>(<in_optimizer>") || l.contains("not(<in_optimizer>");
             // `<exists>` is the subquery run for each row; `<materialize>` is built once and looked up.
             let per_row = negated && l.contains("<exists>") && !l.contains("<materialize>");
-            (per_row && says_not_in && !is_true(n.props.get("not_exists"))).then(|| n.children.iter().collect())
+            (per_row && says_not_in && n.facts().anti_join != Some(true)).then(|| n.children.iter().collect())
         }
     }
 }
@@ -329,17 +331,18 @@ pub(super) fn scalar_udf(cx: &Cx) -> Vec<Draft> {
     if cx.engine() != Engine::Mssql {
         return Vec::new();
     }
-    let blocks_parallel = cx.prop("NonParallelPlanReason") == Some("TSQLUserDefinedFunctionsNotParallelizable");
+    let blocks_parallel =
+        cx.plan.facts().parallelism_blocker.as_deref() == Some("TSQLUserDefinedFunctionsNotParallelizable");
     let mut out = Vec::new();
     // Time spent in scalar functions, measured apart from the plan's costs (SQL Server 2016 SP2+ actual plans).
-    let measured = match (cx.prop("UdfElapsedMs"), elapsed_ms(cx.plan)) {
-        (Some(udf), Some(total)) if total > 0.0 => udf.parse::<f64>().ok().map(|u| (u, (u / total).min(1.0))),
+    let measured = match (cx.plan.facts().udf_elapsed_ms, elapsed_ms(cx.plan)) {
+        (Some(udf), Some(total)) if total > 0.0 => Some((udf, (udf / total).min(1.0))),
         _ => None,
     };
-    for n in cx.nodes.iter().filter(|n| n.props.contains_key("UserDefinedFunctions")) {
-        let names = n.props["UserDefinedFunctions"].clone();
+    for n in cx.nodes.iter().filter(|n| !n.facts().user_functions.is_empty()) {
+        let names = n.facts().user_functions.join(", ");
         // In a seek's keys a function is worked out once per seek, not per row.
-        let in_seek = is_true(n.props.get(crate::plan::UDF_IN_SEEK_ONLY));
+        let in_seek = n.facts().functions_in_seek_only == Some(true);
         let calls = if in_seek { n.runs() } else { rows_out(n).max(n.children.first().map_or(0.0, rows_out)) };
         // The plan's costs leave the function's body out, so its own share says little: the measured time does, and
         // without it the number of calls is the evidence.
@@ -438,8 +441,7 @@ pub(super) fn nested_loops(cx: &Cx) -> Vec<Draft> {
         // MariaDB's (`block-nl-join`), is no repeat: the table is read once per buffer fill, not once per row.
         let mut inner_nodes = Vec::new();
         inner.walk(&mut inner_nodes);
-        let buffered =
-            |x: &PlanNode| x.props.contains_key("using_join_buffer") || x.props.contains_key("join_buffer_join_type");
+        let buffered = |x: &PlanNode| x.facts().join_buffer.is_some() || x.facts().join_buffer_join_type.is_some();
         if inner.kind == NodeKind::Lookup
             || inner_nodes.iter().any(|x| x.op == "Row Count Spool" || buffered(x))
             || cross.contains(&n.id)
@@ -599,7 +601,7 @@ pub(super) fn no_join_predicate(cx: &Cx) -> Vec<Draft> {
         .filter(|n| {
             // Under a TOP, SQL Server estimates each side for the rows it expects to need; the side itself is bigger.
             let per_run = |c: &PlanNode| {
-                (rows_out(c) / c.runs().max(1.0)).max(prop_f64(c, "EstimateRowsWithoutRowGoal").unwrap_or(0.0))
+                (rows_out(c) / c.runs().max(1.0)).max(c.facts().estimated_rows_without_goal.unwrap_or(0.0))
             };
             let sides: Vec<f64> = if n.children.len() >= 2 {
                 n.children.iter().map(per_run).collect()
@@ -633,8 +635,9 @@ pub(super) fn no_join_predicate(cx: &Cx) -> Vec<Draft> {
 
 pub(super) fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
     let mut out = Vec::new();
+    let facts = cx.plan.facts();
     if let Some(reason) =
-        cx.prop("StatementOptmEarlyAbortReason").filter(|r| matches!(*r, "TimeOut" | "MemoryLimitExceeded"))
+        facts.optimization_early_abort.as_deref().filter(|r| matches!(*r, "TimeOut" | "MemoryLimitExceeded"))
     {
         let mut d = Draft::new("optimizer-timeout", InsightArea::Query, 0.1, vec![cx.plan.root.id]);
         // The optimizer says it stopped searching, not that the plan it kept is a bad one: Low on its word alone.
@@ -654,7 +657,7 @@ pub(super) fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
         d.verify = "Explain again: StatementOptmEarlyAbortReason is gone.".into();
         out.push(d);
     }
-    if cx.prop("CardinalityEstimationModelVersion") == Some("70") {
+    if cx.plan.facts().cardinality_estimator == Some(70) {
         let mut d = Draft::new("legacy-ce", InsightArea::Server, 0.02, vec![cx.plan.root.id]);
         d.fixed_weight = true;
         d.subtree = true;
@@ -670,11 +673,8 @@ pub(super) fn optimizer_limits(cx: &Cx) -> Vec<Draft> {
 
 pub(super) fn slow_compile(cx: &Cx) -> Vec<Draft> {
     let (planning, running) = match cx.engine() {
-        Engine::Mssql => (cx.prop("CompileTime").and_then(|v| v.parse::<f64>().ok()), None),
-        Engine::Postgres => (
-            cx.prop("Planning Time").and_then(|v| v.parse::<f64>().ok()),
-            cx.prop("Execution Time").and_then(|v| v.parse::<f64>().ok()),
-        ),
+        Engine::Mssql => (cx.plan.facts().compile_ms, None),
+        Engine::Postgres => (cx.plan.facts().planning_ms, cx.plan.facts().elapsed_ms),
         Engine::Mysql | Engine::Sqlite => (None, None),
     };
     let Some(planning) = planning else { return Vec::new() };
@@ -757,13 +757,20 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
         let mut at_most = false;
         let (runs, outer, impact) = match cx.engine() {
             Engine::Postgres => {
-                if n.props.get("Parent Relationship").map(String::as_str) != Some("SubPlan") {
+                if !matches!(n.facts().parent_relationship.as_ref(), Some(crate::PlanParentRelationship::SubPlan)) {
                     continue;
                 }
                 // A hashed SubPlan runs once and is probed per row: `(hashed SubPlan 1)` in the parent's condition.
-                let name = n.props.get("Subplan Name").map_or("subplan".to_string(), |s| s.to_ascii_lowercase());
-                let parent_text =
-                    parent.props.values().chain(parent.predicate.iter()).cloned().collect::<Vec<_>>().join(" ");
+                let name = n.facts().subplan_name.as_ref().map_or("subplan".to_string(), |s| s.to_ascii_lowercase());
+                let parent_text = parent
+                    .facts()
+                    .conditions
+                    .iter()
+                    .chain(parent.predicate.iter())
+                    .chain(parent.seek_predicate.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if parent_text.to_ascii_lowercase().contains(&format!("hashed {name}")) {
                     continue;
                 }
@@ -782,10 +789,10 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
                 (runs, first_object(parent), (cx.share(parent) + cx.subtree(n)).min(1.0))
             }
             Engine::Mysql => {
-                if !is_true(n.props.get("dependent")) || is_true(n.props.get("cacheable")) {
+                if n.facts().dependent != Some(true) || n.facts().cacheable == Some(true) {
                     continue;
                 }
-                let runs = if n.props.contains_key("cache_state") {
+                let runs = if n.facts().expression_cache {
                     // MariaDB's expression cache answers repeated outer values: only measured misses are runs.
                     let Some(runs) = n.act_executions else { continue };
                     runs
@@ -844,11 +851,11 @@ pub(super) fn correlated_subquery(cx: &Cx) -> Vec<Draft> {
 /// Whether one of a PostgreSQL operator's conditions runs the SubPlan `name` ("subplan 1", lowercase): `(total >
 /// (SubPlan 1))` in its Filter, never `SubPlan 12`.
 fn names_subplan(n: &PlanNode, name: &str) -> bool {
-    const CONDITIONS: [&str; 6] = ["Filter", "Join Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond"];
+    let facts = n.facts();
     [n.predicate.as_deref(), n.seek_predicate.as_deref()]
         .into_iter()
-        .chain(CONDITIONS.iter().map(|k| n.props.get(*k).map(String::as_str)))
         .flatten()
+        .chain(facts.conditions.iter().map(String::as_str))
         .any(|text| {
             let text = text.to_ascii_lowercase();
             text.match_indices(name).any(|(at, _)| !text[at + name.len()..].starts_with(|c: char| c.is_ascii_digit()))

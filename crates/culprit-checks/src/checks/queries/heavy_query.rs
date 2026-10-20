@@ -1674,11 +1674,13 @@ fn closes_at_end(text: &str) -> bool {
 
 /// The step of a plan that reads the table a condition calls `name`: by its alias (PostgreSQL's), or by its name.
 fn table_named<'a>(plan: &'a Plan, name: &str) -> Option<&'a PlanNode> {
-    plan.nodes().into_iter().find(|n| {
+    let mut matches = plan.nodes().into_iter().filter(|n| {
         let Some(object) = n.object.as_deref() else { return false };
         let leaf = object.rsplit('.').next().unwrap_or(object).trim_matches(['[', ']', '"', '`']);
-        n.props.get("Alias").is_some_and(|a| a.eq_ignore_ascii_case(name)) || leaf.eq_ignore_ascii_case(name)
-    })
+        n.facts().table_alias.as_ref().is_some_and(|a| a.eq_ignore_ascii_case(name)) || leaf.eq_ignore_ascii_case(name)
+    });
+    let first = matches.next()?;
+    matches.all(|n| n.object == first.object).then_some(first)
 }
 
 /// The steps above the one with `id`, nearest first.
@@ -1791,6 +1793,7 @@ mod tests {
 
     fn node(id: u32, op: &str, kind: NodeKind, children: Vec<PlanNode>) -> PlanNode {
         PlanNode {
+            facts: None,
             id,
             op: op.into(),
             kind,
@@ -1836,6 +1839,7 @@ mod tests {
         let mut root = node(0, "Sort", NodeKind::Sort, vec![join]);
         (root.est_rows, root.self_cost, root.subtree_cost) = (11.0, 0.21, 286.19);
         Plan {
+            facts: None,
             view: None,
             engine: Engine::Postgres,
             kind: PlanKind::Generic,

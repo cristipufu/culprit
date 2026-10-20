@@ -1032,6 +1032,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "sqlite",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -1055,6 +1061,28 @@
                   "detail": "SCAN orders",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "status"
+                        ],
+                        "name": "ix_orders_status_again"
+                      },
+                      {
+                        "columns": [
+                          "status"
+                        ],
+                        "name": "ix_orders_status"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 6,
                   "index": null,
                   "kind": "scan",
@@ -1080,6 +1108,14 @@
                   "detail": "USE TEMP B-TREE FOR ORDER BY",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 24,
                   "index": null,
                   "kind": "sort",
@@ -1101,6 +1137,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -1244,6 +1288,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "sqlite",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -1267,6 +1317,15 @@
                   "detail": "SEARCH orders USING INDEX ix_orders_status_again (status=?)",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "index_method": "btree",
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 7,
                   "index": "ix_orders_status_again",
                   "kind": "seek",
@@ -1292,6 +1351,14 @@
                   "detail": "USE TEMP B-TREE FOR ORDER BY",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 30,
                   "index": null,
                   "kind": "sort",
@@ -1313,6 +1380,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -1456,6 +1531,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "sqlite",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [
@@ -1495,6 +1576,22 @@
                   "detail": "SCAN customers",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "table_indexes": [
+                      {
+                        "columns": [
+                          "email"
+                        ],
+                        "name": "sqlite_autoindex_customers_1"
+                      }
+                    ],
+                    "user_functions": []
+                  },
                   "id": 7,
                   "index": null,
                   "kind": "scan",
@@ -1520,6 +1617,14 @@
                   "detail": "BLOOM FILTER ON orders (customer_id=?)",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 13,
                   "index": null,
                   "kind": "other",
@@ -1543,6 +1648,20 @@
                   "detail": "SEARCH orders USING AUTOMATIC COVERING INDEX (customer_id=?) LEFT-JOIN",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "automatic_index": {
+                      "columns": [
+                        "customer_id"
+                      ],
+                      "table": "orders"
+                    },
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 22,
                   "index": "automatic index",
                   "kind": "seek",
@@ -1565,6 +1684,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -1736,6 +1863,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "sqlite",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -1759,6 +1892,14 @@
                   "detail": "SEARCH customers USING INTEGER PRIMARY KEY (rowid=?)",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 5,
                   "index": "integer primary key",
                   "kind": "seek",
@@ -1778,6 +1919,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
@@ -1901,6 +2050,12 @@
           "physical_reads": null,
           "plan": {
             "engine": "sqlite",
+            "facts": {
+              "changed_columns": [],
+              "conversions": [],
+              "generic_plan_reason": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them.",
+              "trigger_timings": []
+            },
             "index_hints": [],
             "insights": {
               "items": [],
@@ -1924,6 +2079,14 @@
                   "detail": "SEARCH order_items USING PRIMARY KEY (order_id=?)",
                   "est_executions": 1.0,
                   "est_rows": 0.0,
+                  "facts": {
+                    "columns_without_statistics": [],
+                    "conditions": [],
+                    "conversions": [],
+                    "expression_cache": false,
+                    "possible_index_names": [],
+                    "user_functions": []
+                  },
                   "id": 33,
                   "index": "primary key",
                   "kind": "seek",
@@ -1943,6 +2106,14 @@
               "detail": null,
               "est_executions": 1.0,
               "est_rows": 0.0,
+              "facts": {
+                "columns_without_statistics": [],
+                "conditions": [],
+                "conversions": [],
+                "expression_cache": false,
+                "possible_index_names": [],
+                "user_functions": []
+              },
               "id": 0,
               "index": null,
               "kind": "other",
