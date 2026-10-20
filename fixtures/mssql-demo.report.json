@@ -550,8 +550,8 @@
       "title": "order_items is searched by order_id without a supporting index",
       "verification_basis": "rescan",
       "verify": [
-        "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
-        "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
+        "Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.",
+        "Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost."
       ]
     },
     {
@@ -779,8 +779,8 @@
       "title": "orders is searched by shipped_at without a supporting index",
       "verification_basis": "rescan",
       "verify": [
-        "Create the index, let the workload run, then re-scan: this suggestion should disappear.",
-        "The queries listed here should show an Index Seek on the new index and far fewer reads per execution."
+        "Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.",
+        "Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost."
       ]
     },
     {
@@ -3817,6 +3817,26 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "query",
+                  "detail": "The value it's compared with has a different type, so SQL Server converts customers.email to nvarchar(200) on every row (`CONVERT_IMPLICIT(nvarchar(200),email,0) = @P1`) and, by its own warning, can't seek the index.",
+                  "fix": "Make the types match: send the value as non-Unicode text (SqlDbType.VarChar in .NET, sql.VarChar in Node's mssql, a non-Unicode mapping in your ORM), or, if your schema keeps text as Unicode, change customers.email to nvarchar(200). Changing a column rewrites it and the indexes on it.",
+                  "fix_sql": null,
+                  "fixed_weight": false,
+                  "impact": 0.88,
+                  "nodes": [
+                    2
+                  ],
+                  "rule": "implicit-conversion",
+                  "severity": "high",
+                  "title": "A type mismatch on customers.email stops SQL Server from seeking an index",
+                  "verify": "Explain again: no CONVERT_IMPLICIT in the plan, and the scan became a seek."
+                }
+              ],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "32",
@@ -4104,6 +4124,35 @@
                 "table": "shop.order_items"
               }
             ],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
+                  "fix": "Create an index on order_id.",
+                  "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
+                  "fixed_weight": false,
+                  "impact": 0.979,
+                  "index_hint": {
+                    "equality": [
+                      "order_id"
+                    ],
+                    "impact_pct": 99.4743,
+                    "include": [],
+                    "inequality": [],
+                    "table": "shop.order_items"
+                  },
+                  "nodes": [
+                    1
+                  ],
+                  "rule": "missing-index-hint",
+                  "severity": "high",
+                  "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 99% cheaper",
+                  "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+                }
+              ],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "24",
@@ -4350,6 +4399,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "32",
@@ -4640,6 +4693,37 @@
                 "table": "shop.orders"
               }
             ],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.",
+                  "fix": "Create an index on shipped_at, including total.",
+                  "fix_sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
+                  "fixed_weight": false,
+                  "impact": 0.974,
+                  "index_hint": {
+                    "equality": [],
+                    "impact_pct": 80.9966,
+                    "include": [
+                      "total"
+                    ],
+                    "inequality": [
+                      "shipped_at"
+                    ],
+                    "table": "shop.orders"
+                  },
+                  "nodes": [
+                    1
+                  ],
+                  "rule": "missing-index-hint",
+                  "severity": "high",
+                  "title": "SQL Server estimates an index on shop.orders (shipped_at) would make this 81% cheaper",
+                  "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+                }
+              ],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "24",
@@ -4902,6 +4986,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "24",
@@ -5085,6 +5173,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "32",
@@ -5380,6 +5472,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "16",
@@ -5642,6 +5738,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "32",
@@ -5937,6 +6037,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "16",
@@ -6084,6 +6188,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "24",
@@ -6309,6 +6417,35 @@
                 "table": "shop.order_items"
               }
             ],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
+                  "fix": "Create an index on order_id.",
+                  "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
+                  "fixed_weight": false,
+                  "impact": 0.491,
+                  "index_hint": {
+                    "equality": [
+                      "order_id"
+                    ],
+                    "impact_pct": 50.0039,
+                    "include": [],
+                    "inequality": [],
+                    "table": "shop.order_items"
+                  },
+                  "nodes": [
+                    12
+                  ],
+                  "rule": "missing-index-hint",
+                  "severity": "high",
+                  "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 50% cheaper",
+                  "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+                }
+              ],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "88",
@@ -7071,6 +7208,10 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "32",
@@ -7293,6 +7434,42 @@
           "plan": {
             "engine": "mssql",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "query",
+                  "detail": "The Table Spool reads order_items once and replays its 999 rows for each row of order_items; the join then checks `Expr1003 = Expr1004` on every pair. 100% of this plan's work. The query forces a loop join, so the optimizer didn't weigh a hash or merge join.",
+                  "fix": "The query forces a loop join (LOOP JOIN / OPTION (LOOP JOIN)); remove the hint and let the optimizer choose.",
+                  "fix_sql": null,
+                  "fixed_weight": false,
+                  "impact": 0.999,
+                  "nodes": [
+                    1,
+                    4
+                  ],
+                  "rule": "nested-loops",
+                  "severity": "medium",
+                  "title": "Compares each of 1.5M rows of order_items with 999 rows the Table Spool replays (1.5B pairs)",
+                  "verify": "Explain again without the hint: a hash or merge join instead of the loop."
+                },
+                {
+                  "area": "parallelism",
+                  "detail": "Its estimated cost is 7152, above this server's cost threshold for parallelism (5) and the 50 it's commonly raised to, so SQL Server would consider a parallel plan for it either way; the whole run happens on a single core instead.",
+                  "fix": "Remove OPTION (MAXDOP 1) from the statement, unless something needs it to run on one CPU.",
+                  "fix_sql": null,
+                  "fixed_weight": true,
+                  "impact": 0.1,
+                  "nodes": [
+                    0
+                  ],
+                  "rule": "parallelism-blocked",
+                  "severity": "medium",
+                  "title": "This plan runs on one CPU because its statement says OPTION (MAXDOP 1)",
+                  "verify": "Explain again: no NonParallelPlanReason, and Parallelism operators appear."
+                }
+              ],
+              "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+            },
             "kind": "estimated",
             "props": {
               "CachedPlanSize": "48",

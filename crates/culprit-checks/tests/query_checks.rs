@@ -1481,7 +1481,7 @@ fn pages_read_by_a_residual_lookup_establish_no_row_count_or_statistics_fix() {
 }
 
 #[test]
-fn a_cheap_read_waiting_for_storage_is_told_its_pages_dont_stay_in_memory_not_to_cache() {
+fn storage_wait_share_does_not_diagnose_eviction_or_insufficient_memory() {
     // An idempotency check: 1 row in 3K runs of a few pages each, 86% of the time waiting for storage.
     let mut s = point_lookup(1.0, 0.0066);
     let q = query(&mut s, "7");
@@ -1496,14 +1496,13 @@ fn a_cheap_read_waiting_for_storage_is_told_its_pages_dont_stay_in_memory_not_to
     assert!(!f.summary.contains("the share comes from how often it runs"), "{}", f.summary);
     assert!(f.summary.contains("Its plan is cheap: each run reads about 6 pages"), "{}", f.summary);
     // What the change shortens is the wait, not the six pages a run reads.
-    assert_eq!(
-        f.verify,
-        vec![
-            "After the change ships, re-scan: this query's share of database time should drop, with less of its time spent waiting for storage (86% now)."
-        ]
-    );
+    assert!(f.verify.iter().any(|v| v.contains("equivalent") && v.contains("per run")), "{:?}", f.verify);
     let fix = f.fix.unwrap().summary;
-    assert!(fix.contains("they don't stay in memory between runs") && fix.contains("more memory"), "{fix}");
+    assert!(
+        fix.contains("physical reads and storage latency") && fix.contains("independent cache-pressure evidence"),
+        "{fix}"
+    );
+    assert!(fix.contains("does not establish eviction or insufficient memory"), "{fix}");
     assert!(!fix.contains("cache the result") && !fix.contains("result cached"), "{fix}");
     assert!(fix.contains("a duplicate or idempotency check"), "{fix}");
     // One row in 3K runs reads as what it is, not as "0.0" rows a run.
@@ -1756,6 +1755,55 @@ fn statistics_maintenance_is_not_told_to_batch_application_updates() {
     assert!(fix.summary.contains("scheduled maintenance"));
     assert!(fix.sql.is_none());
     assert!(!f.verify.iter().any(|v| v.contains("pages read")));
+}
+
+#[test]
+fn heavy_counter_advice_preserves_compound_updates_on_all_engines_and_windows() {
+    use culprit_core::Engine;
+    for (engine, sql) in [
+        (
+            Engine::Mssql,
+            "UPDATE shop.counters SET n = n + 1, updated_at = SYSUTCDATETIME() OUTPUT INSERTED.n WHERE id = @id",
+        ),
+        (Engine::Postgres, "UPDATE shop.counters SET n = n + 1, updated_at = now() WHERE id = $1 RETURNING n"),
+        (Engine::Mysql, "UPDATE shop.counters SET n = LAST_INSERT_ID(n + 1), updated_at = NOW() WHERE id = ?"),
+        (Engine::Sqlite, "UPDATE counters SET n = n + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING n"),
+    ] {
+        for hours in [1.0, 24.0, 168.0, 720.0] {
+            let mut s = snapshot("mssql-demo.json");
+            s.server.engine = engine;
+            let w = s.workload.as_mut().unwrap();
+            let mut q = w.queries[0].clone();
+            q.text = sql.into();
+            q.id = "compound-counter".into();
+            q.object_name = None;
+            q.plan = None;
+            q.plans.clear();
+            q.waits.clear();
+            q.trend = None;
+            q.first_seen = None;
+            q.last_seen = None;
+            q.executions = 100_000.0;
+            q.mean_time_ms = 1.0;
+            q.total_time_ms = 100_000.0;
+            q.rows = Some(q.executions);
+            q.logical_reads = Some(3.0 * q.executions);
+            w.windowed = true;
+            w.window_hours = hours;
+            w.hourly_time_ms = None;
+            w.total_time_ms = q.total_time_ms;
+            w.total_executions = q.executions;
+            w.queries = vec![q];
+            let found = heavy_queries(&s);
+            let f = found.iter().find(|f| f.id == "heavy-query:compound-counter").unwrap();
+            let fix = &f.fix.as_ref().unwrap().summary;
+            assert!(
+                fix.contains("preserve every assignment, returned value, row filter and transaction guarantee"),
+                "{engine:?}/{hours}: {fix}"
+            );
+            assert!(f.verify.iter().any(|v| v.contains("numbering") && v.contains("metadata")), "{:?}", f.verify);
+        }
+    }
 }
 
 #[test]

@@ -78,6 +78,11 @@ pub struct PlanInsight {
     pub fix_sql: Option<String>,
     /// How to tell the fix worked.
     pub verify: String,
+    // The exact optimizer request: several requests can share a table/operator. Never infer keys from the node
+    // or the human title. Kept last so ts-rs exports it with the existing final field on one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub index_hint: Option<crate::plan::PlanIndexHint>,
 }
 
 /// Insights for one plan plus what this plan can't tell (an estimated plan has no actual rows; MySQL keeps no memory
@@ -166,6 +171,9 @@ pub fn changes_schema(plan: &Plan) -> bool {
 
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
+    if updates_statistics(plan) {
+        return Some(STATISTICS_NOTE.into());
+    }
     if changes_schema(plan) {
         return Some(
             "This plan builds an index or changes the schema: reading and sorting the table is the work it's for, so \
@@ -216,7 +224,7 @@ fn has_actuals(plan: &Plan) -> bool {
 
 /// Every insight for this plan, most important first. None for a plan that changes the schema ([`changes_schema`]).
 pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
-    if changes_schema(plan) {
+    if changes_schema(plan) || updates_statistics(plan) {
         return Vec::new();
     }
     let cx = Cx::new(plan);
@@ -279,6 +287,28 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(b.impact.total_cmp(&a.impact)));
     out
+}
+
+fn updates_statistics(plan: &Plan) -> bool {
+    plan.engine == Engine::Mssql
+        && (plan.props.contains_key(STATISTICS_MAINTENANCE)
+            || plan.statement.as_deref().and_then(|s| statistics_maintenance_note(plan.engine, s)).is_some())
+}
+
+const STATISTICS_MAINTENANCE: &str = "Statistics maintenance";
+const STATISTICS_NOTE: &str = "This plan updates optimizer statistics. Reading and sorting samples is maintenance work, so ordinary query index, ORDER BY and parallelism advice does not apply. Review its frequency and sampling only if measured maintenance cost warrants it.";
+
+/// The recorded operation is authoritative when SQL Server captures its internal SELECT/sort instead of the
+/// enclosing UPDATE STATISTICS. A user SELECT with a similar shape establishes no maintenance operation.
+pub fn statistics_maintenance_note(engine: Engine, statement: &str) -> Option<&'static str> {
+    (engine == Engine::Mssql && crate::sql::mssql_statistics_target(statement).is_some()).then_some(STATISTICS_NOTE)
+}
+
+pub fn mark_query(plan: &mut Plan, statement: &str) {
+    plan.props.remove(STATISTICS_MAINTENANCE);
+    if statistics_maintenance_note(plan.engine, statement).is_some() {
+        plan.props.insert(STATISTICS_MAINTENANCE.into(), "UPDATE STATISTICS".into());
+    }
 }
 
 /// Whether an insight advises an index, a rewrite or statistics for nothing but the engine's own objects: a monitoring
@@ -440,6 +470,7 @@ struct Draft {
     cap: Severity,
     impact: f64,
     nodes: Vec<u32>,
+    index_hint: Option<crate::plan::PlanIndexHint>,
     /// The insight is about everything below its first operator (the whole plan, a parallel branch): the materiality
     /// gate counts the rows of the busiest operator there.
     subtree: bool,
@@ -464,6 +495,7 @@ impl Draft {
             cap: Severity::High,
             impact,
             nodes,
+            index_hint: None,
             subtree: false,
             cost_ms: None,
             fixed_weight: false,
@@ -499,6 +531,7 @@ impl Draft {
             impact: (self.impact * 1000.0).round() / 1000.0,
             fixed_weight: self.fixed_weight,
             nodes: self.nodes,
+            index_hint: self.index_hint,
             title: self.title,
             detail: self.detail,
             fix: self.fix,
@@ -1232,7 +1265,7 @@ fn convert_calls(text: &str) -> Vec<(&str, &str)> {
         if let Some(start) = start {
             let operand = &after[start..];
             let (mut depth, mut bracket, mut quote) = (0i32, false, false);
-            let mut end = operand.len();
+            let mut end = None;
             for (j, ch) in operand.char_indices() {
                 match ch {
                     '[' if !quote => bracket = true,
@@ -1241,19 +1274,23 @@ fn convert_calls(text: &str) -> Vec<(&str, &str)> {
                     '(' if !bracket && !quote => depth += 1,
                     ')' if !bracket && !quote => {
                         if depth == 0 {
-                            end = j;
+                            end = Some(j);
                             break;
                         }
                         depth -= 1;
                     }
                     ',' if depth == 0 && !bracket && !quote => {
-                        end = j;
+                        end = Some(j);
                         break;
                     }
                     _ => {}
                 }
             }
-            out.push((after[..start - 1].trim(), operand[..end].trim()));
+            // An incomplete saved expression is not a column name. Older parsers shortened predicates in the
+            // middle of operands; retain no advice from those fragments when the raw plan is unavailable.
+            if let Some(end) = end {
+                out.push((after[..start - 1].trim(), operand[..end].trim()));
+            }
         }
         rest = after;
     }
@@ -1354,6 +1391,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
                 _ => false,
             };
             let Some(plan) = q.plan.as_mut() else { continue };
+            mark_query(plan, &q.text);
             mark_changed_columns(plan, columns);
             mark_table_indexes(&mut plan.root, &tables, quiet);
             if plan.engine == Engine::Mssql {

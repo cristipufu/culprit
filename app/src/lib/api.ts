@@ -71,17 +71,17 @@ export interface Api {
   scan(name: string, windowMinutes: number | null): Promise<Report>;
   brief(name: string, findingId: string, windowMinutes: number | null): Promise<string>;
   explain(name: string, sql: string, mode: ExplainMode, confirmed: boolean): Promise<Plan>;
-  queryPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
+  queryPlan(name: string, queryId: string, planId: string | null, reportId?: string): Promise<Plan>;
   /** The actual plan of the query's last run as the engine kept it (SQL Server 2019+); never runs the query. */
-  lastActualPlan(name: string, queryId: string, planId: string | null): Promise<Plan>;
+  lastActualPlan(name: string, queryId: string, planId: string | null, reportId?: string): Promise<Plan>;
   /** How far along a session's running statement is; `withPlan` asks for the plan too. */
   queryProgress(name: string, session: string, withPlan: boolean): Promise<QueryProgress>;
   /** What differs between the latest scans of two connections of the same engine. */
   drift(a: string, b: string): Promise<Drift>;
   /** The dashboard for the latest report with this window (no live read; the app polls sessions itself). */
   dashboard(name: string, windowMinutes: number | null): Promise<Dashboard>;
-  /** The index advisor's plan from the latest report: indexes to add, to clean up, and tables to look at. */
-  indexAdvice(name: string): Promise<IndexAdvice>;
+  /** The index advisor for the displayed report: indexes to add, to clean up, and tables to look at. */
+  indexAdvice(name: string, reportId: string): Promise<IndexAdvice>;
   parsePlan(text: string): Promise<Plan>;
   /** `connection`: where the plans came from, so scenarios can use its latest scan's statistics. */
   diffPlans(a: Plan, b: Plan, nameA: string, nameB: string, connection?: string | null): Promise<PlanDiff>;
@@ -180,11 +180,11 @@ async function desktopApi(): Promise<Api> {
     scan: (name, windowMinutes) => invoke("scan", { name, windowMinutes }),
     brief: (name, findingId, windowMinutes) => invoke("brief", { name, findingId, windowMinutes }),
     explain: (name, sql, mode, confirmed) => invoke("explain", { name, sql, mode, confirmed }),
-    queryPlan: (name, queryId, planId) => invoke("query_plan", { name, queryId, planId }),
-    lastActualPlan: (name, queryId, planId) => invoke("last_actual_plan", { name, queryId, planId }),
+    queryPlan: (name, queryId, planId, reportId) => invoke("query_plan", { name, queryId, planId, reportId }),
+    lastActualPlan: (name, queryId, planId, reportId) => invoke("last_actual_plan", { name, queryId, planId, reportId }),
     queryProgress: (name, session, withPlan) => invoke("query_progress", { name, session, withPlan }),
     drift: (a, b) => invoke("drift", { a, b }),
-    indexAdvice: (name) => invoke("index_advice", { name }),
+    indexAdvice: (name, reportId) => invoke("index_advice", { name, reportId }),
     dashboard: (name, windowMinutes) => invoke("dashboard", { name, windowMinutes }),
     parsePlan: (text) => invoke("parse_plan", { text }),
     diffPlans: (a, b, nameA, nameB, connection) =>

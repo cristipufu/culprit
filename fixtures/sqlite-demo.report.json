@@ -856,6 +856,10 @@
           "plan": {
             "engine": "sqlite",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+            },
             "kind": "estimated",
             "props": {
               "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
@@ -969,6 +973,10 @@
           "plan": {
             "engine": "sqlite",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+            },
             "kind": "estimated",
             "props": {
               "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
@@ -1082,6 +1090,26 @@
           "plan": {
             "engine": "sqlite",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "No index on orders fits this join, so SQLite builds one on customer_id for each run and throws it away.",
+                  "fix": "Create that index once, so the work happens one time instead of on every run.",
+                  "fix_sql": "CREATE INDEX IF NOT EXISTS \"ix_orders_customer_id\"\n    ON \"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
+                  "fixed_weight": true,
+                  "impact": 1.0,
+                  "nodes": [
+                    22
+                  ],
+                  "rule": "automatic-index",
+                  "severity": "low",
+                  "title": "SQLite builds a temporary index on orders every time this runs",
+                  "verify": "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index."
+                }
+              ],
+              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+            },
             "kind": "estimated",
             "props": {
               "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
@@ -1219,6 +1247,10 @@
           "plan": {
             "engine": "sqlite",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+            },
             "kind": "estimated",
             "props": {
               "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."
@@ -1305,6 +1337,10 @@
           "plan": {
             "engine": "sqlite",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+            },
             "kind": "estimated",
             "props": {
               "Generic Plan": "Planned without parameter values: with statistics that hold value distributions, the chosen index can depend on them."

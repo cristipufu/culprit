@@ -120,14 +120,12 @@ fn add_discovered(ws: Ws, items: Vec<DiscoveredDatabase>) -> Result<Vec<Connecti
 }
 
 /// The UI never shows raw plan XML/JSON, and on busy databases it is most of a report's size; keep it on disk only.
-fn for_ui(mut report: Report) -> Report {
+fn for_ui(report: Report) -> Report {
     // Reports saved before plans were checked against the catalog: mark them too.
-    culprit_core::insights::mark_snapshot(&mut report.snapshot);
+    let mut report = culprit_engine::reading::for_reading(report);
     if let Some(workload) = report.snapshot.workload.as_mut() {
         for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
             plan.raw = None;
-            // Saved reports don't carry insights; the UI shows them on every plan.
-            culprit_core::insights::annotate(plan);
         }
     }
     report
@@ -184,16 +182,28 @@ async fn explain(ws: Ws<'_>, name: String, sql: String, mode: ExplainMode, confi
 }
 
 #[tauri::command]
-async fn query_plan(ws: Ws<'_>, name: String, query_id: String, plan_id: Option<String>) -> Result<Plan> {
-    let mut plan = ws.query_plan(&name, &query_id, plan_id.as_deref()).await?;
+async fn query_plan(
+    ws: Ws<'_>,
+    name: String,
+    query_id: String,
+    plan_id: Option<String>,
+    report_id: Option<String>,
+) -> Result<Plan> {
+    let mut plan = ws.query_plan_at(&name, &query_id, plan_id.as_deref(), report_id.as_deref()).await?;
     plan.raw = None;
     Ok(plan)
 }
 
 /// The actual plan of a query's last run as the engine kept it; never runs the query.
 #[tauri::command]
-async fn last_actual_plan(ws: Ws<'_>, name: String, query_id: String, plan_id: Option<String>) -> Result<Plan> {
-    let mut plan = ws.last_actual_plan(&name, &query_id, plan_id.as_deref()).await?;
+async fn last_actual_plan(
+    ws: Ws<'_>,
+    name: String,
+    query_id: String,
+    plan_id: Option<String>,
+    report_id: Option<String>,
+) -> Result<Plan> {
+    let mut plan = ws.last_actual_plan_at(&name, &query_id, plan_id.as_deref(), report_id.as_deref()).await?;
     plan.raw = None;
     Ok(plan)
 }
@@ -293,10 +303,13 @@ fn drift(ws: Ws, a: String, b: String) -> Result<Drift> {
     ws.drift(&a, &b)
 }
 
-/// The index advisor's plan from the connection's latest report.
+/// The index advisor's plan for the displayed scan (older clients may omit the id).
 #[tauri::command]
-fn index_advice(ws: Ws, name: String) -> Result<culprit_core::IndexAdvice> {
-    ws.index_advice(&name)
+fn index_advice(ws: Ws, name: String, report_id: Option<String>) -> Result<culprit_core::IndexAdvice> {
+    match report_id {
+        Some(id) => ws.index_advice_at(&name, &id),
+        None => ws.index_advice(&name),
+    }
 }
 
 /// The dashboard from the connection's latest report for the window; the app reads sessions itself, every few seconds.

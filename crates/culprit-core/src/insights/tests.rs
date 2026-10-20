@@ -67,6 +67,44 @@ fn rules(p: &Plan) -> Vec<String> {
 }
 
 #[test]
+fn statistics_sample_sorts_are_maintenance_not_application_tuning() {
+    let mut sort = node(1, "Sort", NodeKind::Sort);
+    sort.est_rows = 400_000.0;
+    sort.self_cost = 90.0;
+    let mut p = plan(Engine::Mssql, sort);
+    p.statement = Some("SELECT id FROM dbo.orders ORDER BY id".into());
+    assert!(rules(&p).contains(&"big-sort".to_string()));
+    for sql in [
+        "UPDATE STATISTICS dbo.orders WITH FULLSCAN",
+        "/* scheduled */ UPDATE STATISTICS [dbo].[orders] WITH SAMPLE 20 PERCENT, MAXDOP = 2",
+    ] {
+        p.statement = Some(sql.into());
+        assert!(insights(&p).is_empty(), "{sql}");
+        assert!(coverage_note(&p).unwrap().contains("maintenance work"));
+    }
+    p.statement = Some("UPDATE dbo.statistics SET n = n + 1 WHERE id = @id".into());
+    assert!(rules(&p).contains(&"big-sort".to_string()), "a table named statistics is ordinary SQL");
+    p.statement =
+        Some("SELECT StatMan([SC0]) FROM (SELECT role AS SC0 FROM dbo.orders) AS samples ORDER BY SC0".into());
+    assert!(rules(&p).contains(&"big-sort".to_string()), "the outer operation is not yet known");
+    mark_query(&mut p, "UPDATE STATISTICS dbo.orders WITH FULLSCAN");
+    assert!(insights(&p).is_empty(), "the recorded operation identifies internal sample work");
+    mark_query(&mut p, "SELECT id FROM dbo.orders ORDER BY id");
+    assert!(rules(&p).contains(&"big-sort".to_string()), "a stale context mark must clear");
+}
+
+#[test]
+fn incomplete_saved_conversion_operands_are_not_column_names() {
+    for text in ["CONVERT_IMPLICIT(nvarchar(40),[dbo].[orders].[ori…", "CONVERT_IMPLICIT(nvarchar(40),…"] {
+        assert!(convert_operands(text).is_empty(), "{text}");
+    }
+    assert_eq!(
+        convert_operands("CONVERT_IMPLICIT(nvarchar(40),[dbo].[orders].[origin],0)"),
+        vec!["[dbo].[orders].[origin]"]
+    );
+}
+
+#[test]
 fn a_temporary_table_on_the_grouping_differs_from_sorting_the_groups() {
     let scan = || {
         let mut t = node(3, "Table scan", NodeKind::Scan);
@@ -1602,6 +1640,7 @@ fn a_cheap_plan_states_no_share() {
         severity: Severity::Low,
         impact: 0.15,
         fixed_weight: false,
+        index_hint: None,
         nodes: vec![1],
         title: String::new(),
         detail: String::new(),

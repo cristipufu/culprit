@@ -32,19 +32,18 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
     }
     let mut groups: HashMap<String, Group> = HashMap::new();
     let mut flagged = 0;
+    let mut observations = 0;
     let mut note = None;
     for q in &with_plans {
         let Some(plan) = &q.plan else { continue };
         // What the plan-insights check reports: an insight capped at Low (a cheap plan, a small spill) isn't a fix.
-        let found: Vec<_> = match &plan.insights {
-            Some(i) => i.items.clone(),
-            None => insights(plan),
+        let reading = crate::query_plan_insights(s, q, plan);
+        if !reading.items.is_empty() {
+            observations += 1;
         }
-        .into_iter()
-        .filter(|i| i.severity > Severity::Low)
-        .collect();
+        let found: Vec<_> = reading.items.into_iter().filter(|i| i.severity > Severity::Low).collect();
         if note.is_none() {
-            note = plan.insights.as_ref().and_then(|i| i.note.clone()).or_else(|| coverage_note(plan));
+            note = reading.note;
         }
         if found.is_empty() {
             continue;
@@ -71,6 +70,13 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
     let mut ranked: Vec<(String, Group)> = groups.into_iter().collect();
     ranked.sort_by(|a, b| b.1.severity.cmp(&a.1.severity).then(b.1.share.total_cmp(&a.1.share)).then(a.0.cmp(&b.0)));
     let (status, takeaway) = match ranked.first() {
+        None if observations > 0 => (
+            TileStatus::Info,
+            format!(
+                "No urgent plan change is established in this workload; {} retain structural observations to review as the data or workload changes.",
+                plural(observations, "captured plan", "captured plans")
+            ),
+        ),
         None => (
             TileStatus::Good,
             format!("None of the {} shows a known problem.", plural(captured, "captured plan", "captured plans")),

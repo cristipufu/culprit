@@ -42,8 +42,8 @@ type State =
  * The actual run of a query: SQL Server's kept last actual plan when it has one, otherwise a calm explanation of why not
  * and the safe ways to get one (turn the setting on, measure once, or open it in the editor with real values).
  */
-export function LastActualRun(props: { connection: string; engine: Engine; query: QueryStat; planId: string | null; look: PlanLook }) {
-  const { connection, engine, query, planId, look } = props;
+export function LastActualRun(props: { connection: string; engine: Engine; query: QueryStat; planId: string | null; reportId?: string; look: PlanLook }) {
+  const { connection, engine, query, planId, reportId, look } = props;
   const product = useStore((s) => currentReport(s)?.snapshot.server.product);
   const [state, setRun] = useState<State>({ status: "loading" });
   const [copied, setCopied] = useState(false);
@@ -52,13 +52,13 @@ export function LastActualRun(props: { connection: string; engine: Engine; query
     let cancelled = false;
     setRun({ status: "loading" });
     api()
-      .then((client) => client.lastActualPlan(connection, query.id, planId))
+      .then((client) => client.lastActualPlan(connection, query.id, planId, reportId))
       .then((plan) => !cancelled && setRun({ status: "ready", plan, measured: false }))
       .catch((e) => !cancelled && setRun({ status: "missing", error: errorMessage(e) }));
     return () => {
       cancelled = true;
     };
-  }, [connection, query.id, planId]);
+  }, [connection, query.id, planId, reportId]);
 
   const measure = async () => {
     setRun({ status: "measuring" });

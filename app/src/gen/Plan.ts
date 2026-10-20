@@ -8,7 +8,7 @@ import type { PlanWarning } from "./PlanWarning";
 
 export type Plan = { engine: Engine, kind: PlanKind, statement: string | null, total_cost: number, root: PlanNode, warnings: Array<PlanWarning>, index_hints: Array<PlanIndexHint>, props: { [key in string]: string }, raw: string | null, 
 /**
- * Problems found in this plan, attached where plans leave the engine (`insights::annotate`). Absent in saved
- * reports and older files.
+ * Structural observations, with catalog and workload context when attached to a scan. Recomputed when a saved
+ * report is read; absent in older files.
  */
 insights?: PlanInsights, };

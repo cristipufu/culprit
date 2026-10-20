@@ -90,6 +90,7 @@ fn a_saved_statistics_warning_keeps_current_catalog_facts_separate() {
 
     let report = culprit_checks::analyze(s);
     let f = report.findings.iter().find(|f| f.id == "plan-warnings:10:missing-statistics").expect("the warning");
+    assert_eq!(f.actionability, culprit_core::Actionability::Information);
     assert!(f.title.contains("captured plan") && f.title.ends_with("statistics warning on priority"), "{}", f.title);
     assert!(
         f.summary.contains(

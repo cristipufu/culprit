@@ -314,7 +314,7 @@ pub enum Guess {
     Runs,
 }
 
-#[derive(Serialize, Deserialize, TS, Clone, Debug)]
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
 pub struct PlanIndexHint {
     pub table: String,
@@ -336,8 +336,8 @@ pub struct Plan {
     pub index_hints: Vec<PlanIndexHint>,
     pub props: Properties,
     pub raw: Option<String>,
-    /// Problems found in this plan, attached where plans leave the engine (`insights::annotate`). Absent in saved
-    /// reports and older files.
+    /// Structural observations, with catalog and workload context when attached to a scan. Recomputed when a saved
+    /// report is read; absent in older files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub insights: Option<PlanInsights>,

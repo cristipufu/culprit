@@ -78,19 +78,19 @@ brief:
 === finding filtered-scan:public.orders(customer_id)
 Needs attention · medium severity · high confidence · indexes
 title: orders is read in full to find rows by customer_id
-summary: 37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+summary: 37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 2.0M rows as its size basis; this scan's catalog reports 2.0M rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
 impact: 37.7 s of database time over the 5 hours since statistics were reset (24%) · 24.0% of database time
 metrics:
   - Share of DB time: 24%
-  - Rows scanned per run: 2.0M
+  - Captured scan size basis: 2.0M
   - Queries: 1
-fix: Create an index on customer_id so the query seeks instead of scanning.
+fix: Test an index on customer_id as a way for the query to find matching rows without a full scan.
   sql:
       CREATE INDEX CONCURRENTLY ix_orders_customer_id
           ON public.orders (customer_id);
 verify:
-  1. Explain the query again: the scan of orders should become an index seek/scan on the new index.
-  2. Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
+  1. Obtain a newly compiled plan for the query and check whether orders uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.
+  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost.
 queries:
   - 5308963031944094559: 24% of database time · plan step 3
 brief:
@@ -100,12 +100,12 @@ brief:
 
     ## What's happening
 
-    37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
+    37.7 s of database time over the 5 hours since statistics were reset (24%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 2.0M rows as its size basis; this scan's catalog reports 2.0M rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 24% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.
 
     ## Evidence
 
     - Share of DB time: 24%
-    - Rows scanned per run: 2.0M
+    - Captured scan size basis: 2.0M
     - Queries: 1
 
     ## Queries involved
@@ -120,7 +120,7 @@ brief:
 
     ## Suggested fix
 
-    Create an index on customer_id so the query seeks instead of scanning.
+    Test an index on customer_id as a way for the query to find matching rows without a full scan.
 
     ```sql
     CREATE INDEX CONCURRENTLY ix_orders_customer_id
@@ -129,8 +129,8 @@ brief:
 
     ## How to verify
 
-    - Explain the query again: the scan of orders should become an index seek/scan on the new index.
-    - Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop.
+    - Obtain a newly compiled plan for the query and check whether orders uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost.
 
     ## What to do in the codebase
 
@@ -192,19 +192,19 @@ brief:
 === finding filtered-scan:public.order_items(product_id)
 Optional improvement · low severity · high confidence · indexes
 title: order_items is read in full to find rows by product_id
-summary: 6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
+summary: 6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read public.order_items and keep only those matching `(order_items.product_id = $1)`. The captured scan uses 1.0M rows as its size basis; this scan's catalog reports 1.0M rows in the table. Captured estimates can predate the current table size. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
 impact: 6.8 s of database time over the 5 hours since statistics were reset (4%) · 4.3% of database time
 metrics:
   - Share of DB time: 4%
-  - Rows scanned per run: 1.0M
+  - Captured scan size basis: 1.0M
   - Queries: 1
-fix: Create an index on product_id so the query seeks instead of scanning.
+fix: Test an index on product_id as a way for the query to find matching rows without a full scan.
   sql:
       CREATE INDEX CONCURRENTLY ix_order_items_product_id
           ON public.order_items (product_id);
 verify:
-  1. Explain the query again: the scan of order_items should become an index seek/scan on the new index.
-  2. Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop.
+  1. Obtain a newly compiled plan for the query and check whether order_items uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.
+  2. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost.
 queries:
   - -3722457391793582113: 4% of database time · plan step 3
 brief:
@@ -214,12 +214,12 @@ brief:
 
     ## What's happening
 
-    6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
+    6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read public.order_items and keep only those matching `(order_items.product_id = $1)`. The captured scan uses 1.0M rows as its size basis; this scan's catalog reports 1.0M rows in the table. Captured estimates can predate the current table size. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.
 
     ## Evidence
 
     - Share of DB time: 4%
-    - Rows scanned per run: 1.0M
+    - Captured scan size basis: 1.0M
     - Queries: 1
 
     ## Queries involved
@@ -234,7 +234,7 @@ brief:
 
     ## Suggested fix
 
-    Create an index on product_id so the query seeks instead of scanning.
+    Test an index on product_id as a way for the query to find matching rows without a full scan.
 
     ```sql
     CREATE INDEX CONCURRENTLY ix_order_items_product_id
@@ -243,8 +243,8 @@ brief:
 
     ## How to verify
 
-    - Explain the query again: the scan of order_items should become an index seek/scan on the new index.
-    - Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there its time per run should drop.
+    - Obtain a newly compiled plan for the query and check whether order_items uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.
+    - pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes pg-demo --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost.
 
     ## What to do in the codebase
 
@@ -520,32 +520,32 @@ shares: No share is given for a step whose rows rest on the planner's default gu
 insight scan-filter · high severity · impact 98%
   title: Reads 2.0M rows of public.orders to keep 12
   detail: As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away. 98% of this plan's work.
-  fix: No index on orders starts with customer_id: one on customer_id lets the database go straight to the matching rows.
+  fix: Create an index on customer_id.
   sql:
       CREATE INDEX CONCURRENTLY ix_orders_customer_id
           ON public.orders (customer_id);
-  verify: Explain again: orders reads about as many rows as it keeps.
+  verify: Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure.
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
 
 === plan -8886085649470066503
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan is estimated to be cheap, yet its one run took 20.0 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan 4911431806993420100
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan is estimated to be cheap, yet its one run took 19.0 s: the time isn't in what it costs, so no share of its cost is put on one step.
 
 === plan -3722457391793582113
 insight scan-filter · high severity · impact 93%
   title: Reads 1.0M rows of public.order_items to keep 101
   detail: As planned, the Seq Scan reads the rows and checks `(order_items.product_id = $1)` on each one, so most of the reading is thrown away. 93% of this plan's work.
-  fix: No index on order_items starts with product_id: one on product_id lets the database go straight to the matching rows.
+  fix: Create an index on product_id.
   sql:
       CREATE INDEX CONCURRENTLY ix_order_items_product_id
           ON public.order_items (product_id);
-  verify: Explain again: order_items reads about as many rows as it keeps.
+  verify: Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure.
 note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
 
 === plan 2004611025554862962
@@ -565,20 +565,20 @@ shares: The plan as a whole is cheap, so no share of its cost is put on one step
 
 === plan 8465053948014496855
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan -6576252161252119529
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan as a whole is cheap, so no share of its cost is put on one step.
 
 === plan 5306524445554315840
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan's costs rest on the planner's default guess for a parameter, so no share of them is put on one step.
 
 === plan 2169115237613314459
 no insights
-note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.
+note: Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns.
 shares: The plan as a whole is cheap, so no share of its cost is put on one step.

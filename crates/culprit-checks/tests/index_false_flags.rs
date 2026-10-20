@@ -735,7 +735,7 @@ fn a_table_that_is_gone_gets_no_index() {
         "{}",
         gone.summary
     );
-    assert!(gone.summary.starts_with("One query read every row of public.orders"), "{}", gone.summary);
+    assert!(gone.summary.starts_with("One query read public.orders"), "{}", gone.summary);
     assert!(gone.verify[0].starts_with("Nothing to check: the tables are gone"), "{:?}", gone.verify);
     let running = scan(false).expect("the scan's finding");
     assert!(running.fix.as_ref().unwrap().sql.is_some(), "{:?}", running.fix);
@@ -837,7 +837,7 @@ fn a_scan_of_a_table_that_is_gone_is_told_from_its_plan_in_the_past() {
         "{here}"
     );
     let gone = plant(true);
-    assert!(gone.contains("One query read every row of public.order_items (1.0M rows) and kept only"), "{gone}");
+    assert!(gone.contains("One query read public.order_items and kept only"), "{gone}");
     assert!(
         gone.contains("The plan it last ran with had no index starting with product_id to seek. It accounted for"),
         "{gone}"

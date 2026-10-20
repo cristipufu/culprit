@@ -69,31 +69,41 @@ function tableOf(item: Item): string {
  */
 export default function IndexAdvisor({ report, onOpenTable }: { report: Report; onOpenTable: (key: string) => void }) {
   const id = report.snapshot.id;
-  const [load, setLoad] = useState<Load>(() => (cache.has(id) ? { status: "ready", advice: cache.get(id)! } : { status: "loading" }));
+  const key = JSON.stringify([report.snapshot.connection, id]);
+  const [loaded, setLoaded] = useState<{ key: string; value: Load }>(() => ({ key, value: cache.has(key) ? { status: "ready", advice: cache.get(key)! } : { status: "loading" } }));
+  const load: Load = loaded.key === key ? loaded.value : cache.has(key) ? { status: "ready", advice: cache.get(key)! } : { status: "loading" };
   const [filter, setFilter] = useState<Section | null>(null);
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (cache.has(id)) return;
+    const ready = (advice: IndexAdvice) => {
+      setLoaded({ key, value: { status: "ready", advice } });
+      const first = advice.candidates[0] ? "add:0" : advice.cleanups[0] ? "cleanup:0" : null;
+      setOpen(new Set(first ? [first] : []));
+      setFocus(0);
+      setFilter(null);
+    };
+    const cached = cache.get(key);
+    if (cached) {
+      ready(cached);
+      return;
+    }
     let live = true;
-    setLoad({ status: "loading" });
+    setLoaded({ key, value: { status: "loading" } });
     api()
-      .then((client) => client.indexAdvice(report.snapshot.connection))
+      .then((client) => client.indexAdvice(report.snapshot.connection, id))
       .then((advice) => {
-        cache.set(id, advice);
+        cache.set(key, advice);
         if (!live) return;
-        setLoad({ status: "ready", advice });
-        // The most valuable item starts open, so the first screen already shows a reason and the DDL.
-        const first = advice.candidates[0] ? "add:0" : advice.cleanups[0] ? "cleanup:0" : null;
-        if (first) setOpen(new Set([first]));
+        ready(advice);
       })
-      .catch((e) => live && setLoad({ status: "error", error: errorMessage(e) }));
+      .catch((e) => live && setLoaded({ key, value: { status: "error", error: errorMessage(e) } }));
     return () => {
       live = false;
     };
-  }, [id, report.snapshot.connection]);
+  }, [id, key, report.snapshot.connection]);
 
   const advice = load.status === "ready" ? load.advice : null;
   const items = useMemo<Item[]>(() => {
@@ -246,7 +256,7 @@ function Header({ advice, report }: { advice: IndexAdvice | null; report: Report
     <header className="ia-head">
       <h2>Index advisor</h2>
       <p className="ia-sub">
-        {advice ? `Usage counted ${advice.counters}` : "Reading the latest scan…"} · scanned {ago(report.snapshot.taken_at)} · Culprit only suggests; it never changes indexes
+        {advice ? `Usage counted ${advice.counters}` : "Reading the selected scan…"} · scanned {ago(report.snapshot.taken_at)} · Culprit only suggests; it never changes indexes
       </p>
     </header>
   );

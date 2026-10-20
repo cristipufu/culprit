@@ -24,6 +24,23 @@ pub(crate) struct ScanGroup<'a> {
     pub(crate) queries: Vec<(&'a QueryStat, u32)>,
 }
 
+impl ScanGroup<'_> {
+    /// Keep compilation-time cardinality apart from the catalog collected for this scan. This value is a basis for
+    /// selectivity, not a measurement of every execution's reads (TOP, parameters and repeated scans can differ).
+    pub(crate) fn row_basis(&self, snapshot: &Snapshot) -> String {
+        let basis = format!("The captured scan uses {} rows as its size basis", format::count(self.rows));
+        match snapshot.table(&self.schema, &self.table).and_then(|t| t.rows) {
+            Some(rows) => format!(
+                "{basis}; this scan's catalog reports {} rows in the table. Captured estimates can predate the current table size.",
+                format::count(rows)
+            ),
+            None => format!(
+                "{basis}; the current table row count is unavailable. This is not a measured count of rows read on every execution."
+            ),
+        }
+    }
+}
+
 pub fn filtered_scan(snapshot: &Snapshot) -> Vec<Finding> {
     scan_groups(snapshot).into_iter().map(|g| filtered_scan_finding(snapshot, g)).collect()
 }
@@ -384,10 +401,10 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
         (said, _) => said.to_string(),
     };
     f.summary = format!(
-        "{reads} every row of {} ({} rows) and {keeps} only those matching `{}`. {}. {accounts} for {} of database time.{}",
+        "{reads} {} and {keeps} only those matching `{}`. {} {}. {accounts} for {} of database time.{}",
         table_name,
-        format::count(g.rows),
         g.predicate.trim(),
+        g.row_basis(snapshot),
         match disabled {
             Some(i) => format!(
                 "Only {}, which is disabled, starts with {key_text}, so the database {} no faster way in",
@@ -426,7 +443,7 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     if let Some(per_day_ms) = impact.per_day_ms {
         f.metrics.push(Metric::new("DB time per day", per_day_ms, Unit::Ms));
     }
-    f.metrics.push(Metric::new("Rows scanned per run", g.rows, Unit::Rows));
+    f.metrics.push(Metric::new("Captured scan size basis", g.rows, Unit::Rows));
     f.metrics.push(Metric::new("Queries", queries.len() as f64, Unit::Count));
     // A scan's own index request also says which returned columns the index must carry to avoid lookups. Keep those
     // columns when the filtered-scan finding absorbs the plan's request.
@@ -454,9 +471,9 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
             &include,
             &queries,
             format!(
-                "Create an index on {} so {} instead of scanning.",
+                "Test an index on {} as a way for {} to find matching rows without a full scan.",
                 key_text,
-                if one { "the query seeks" } else { "these queries seek" }
+                if one { "the query" } else { "these queries" }
             ),
         ),
     });
@@ -467,7 +484,7 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
     } else {
         vec![
             format!(
-                "Explain {} again: the scan of {} should become an index seek/scan on {}.",
+                "Obtain a newly compiled plan for {} and check whether {} uses {} to read fewer rows. A scan can remain appropriate for some parameter values.",
                 if one { "the query" } else { "one of the queries" },
                 g.table,
                 disabled.map_or("the new index".to_string(), |i| i.name.clone())
@@ -476,13 +493,10 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
             match crate::queries::what_changed_between_scans(
                 snapshot,
                 if one { "the query" } else { "the queries" },
-                if one { "its time per run should drop" } else { "their time per run should drop" },
+                if one { "compare its time per run under equivalent load" } else { "compare their time per run under equivalent load" },
             ) {
-                Some(between) => format!("Re-scan after the workload has run: this finding should be gone. {between}"),
-                None => format!(
-                    "Re-scan after the workload has run: this finding should be gone and {} share of database time lower.",
-                    if one { "the query's" } else { "the queries'" }
-                ),
+                Some(between) => format!("{between} Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost."),
+                None => "Re-scan after representative runs and compare reads and time per run with equivalent parameters and load. Include index storage and write cost; an old stored plan or a changing share of database time alone does not verify improvement.".into(),
             },
         ]
     };

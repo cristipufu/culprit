@@ -16,7 +16,7 @@ use crate::indexes::{
 };
 use crate::support::*;
 
-const MAX_INCLUDE: usize = 6;
+use crate::indexes::MAX_INCLUDE;
 
 /// An index the engine builds for itself (`culprit_core::insights::engine_built_indexes`), with the statements whose
 /// plans build it.
@@ -115,8 +115,10 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             ));
         }
         let mut verify = vec![
-            "Re-scan after the workload has run: the request disappears.".to_string(),
-            "The queries listed seek on the new index and read far fewer pages per run.".to_string(),
+            "Obtain a newly compiled plan after representative runs; an old stored request need not disappear."
+                .to_string(),
+            "Compare reads and time per run under equivalent parameters and load, including storage and write cost."
+                .to_string(),
         ];
         if let Some(note) = crate::indexes::drop_large_includes(s, &c.schema, &c.table, &mut c.include) {
             verify.push(note);
@@ -206,7 +208,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         // request, there is no list to look at.
         if parameterized.is_none() {
             verify[1] = format!(
-                "The queries listed seek on {} and read far fewer pages per run.",
+                "Check whether the queries listed use {} and compare reads and time per run under equivalent parameters and load.",
                 widens.as_deref().unwrap_or("the new index")
             );
         }
@@ -283,18 +285,17 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             include: Vec::new(),
             source: CandidateSource::PlanScan,
             reason: format!(
-                "{} {} every row of {} ({} rows) and keep{} only those matching {}; no index starts with {}.",
+                "{} {} and keep{} only those matching {}; no enabled index starts with {}. {}",
                 if group_queries.len() == 1 {
-                    "One query reads".to_string()
+                    "One captured query plan scans".to_string()
                 } else {
-                    format!("{} queries read", group_queries.len())
+                    format!("{} captured query plans scan", group_queries.len())
                 },
-                "",
                 table_name,
-                format::count(g.rows),
                 if group_queries.len() == 1 { "s" } else { "" },
                 g.predicate.trim(),
-                format::list(&g.keys)
+                format::list(&g.keys),
+                g.row_basis(s)
             )
             .replace("  ", " "),
             sql: match disabled {
@@ -307,12 +308,12 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             db_time_share: share,
             lookups: None,
             estimated_improvement: None,
-            table_rows: Some(g.rows),
+            table_rows: s.table(&g.schema, &g.table).and_then(|t| t.rows),
             writes_per_day: writes_per_day(s, &g.schema, &g.table),
             write_cost: write_cost(s, &g.schema, &g.table),
             verify: vec![
-                format!("Explain one of the queries again: the scan of {} becomes a seek on the new index.", g.table),
-                "Re-scan after the workload has run: the queries' share of database time drops.".into(),
+                format!("Obtain a newly compiled plan and check whether {} uses the candidate index to read fewer rows; a scan can still be appropriate for some parameters.", g.table),
+                "Compare reads and time per run after equivalent workload, including storage and write cost. Old saved plans and a changing share of database time alone do not verify improvement.".into(),
             ],
             finding_id: link(finding_id),
         });

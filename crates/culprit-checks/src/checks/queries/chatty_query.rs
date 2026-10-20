@@ -315,6 +315,13 @@ fn lock_waits(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
 
 /// Let the database hand out the numbers: each engine's sequence, without a row to lock; or the number assigned in the
 /// INSERT that uses it.
+pub(super) fn counter_advice(snapshot: &Snapshot, q: &QueryStat) -> Option<String> {
+    match WriteKind::of(&q.text, snapshot.server.engine) {
+        WriteKind::Counter { isolated, .. } => Some(counter_fix(snapshot, isolated)),
+        _ => None,
+    }
+}
+
 fn counter_fix(snapshot: &Snapshot, isolated: bool) -> String {
     if !isolated {
         return "The SQL does not establish an isolated counter-only operation: preserve every assignment, returned value, row filter and transaction guarantee. Check the caller before changing it. If it already has independent work that can safely share a call, consider batching that work; per-parent numbering and metadata updates may require this atomic UPDATE. A sequence is not a replacement for the whole statement.".into();

@@ -1867,6 +1867,26 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "The rows don't arrive in the order the GROUP BY / DISTINCT needs, so MySQL builds a temporary table (on disk once it outgrows tmp_table_size) and sorts the result.",
+                  "fix": "An index whose leading columns match the GROUP BY may let MySQL group in index order and reduce grouping work. An ORDER BY that differs from the grouping, especially an aggregate such as COUNT(*) DESC, can still need a temporary table and sort. Filter rows before grouping, or keep a pre-aggregated result, to reduce that work.",
+                  "fix_sql": null,
+                  "fixed_weight": false,
+                  "impact": 0.0,
+                  "nodes": [
+                    2
+                  ],
+                  "rule": "temp-table-sort",
+                  "severity": "low",
+                  "title": "Groups 499K rows in an internal temporary table, then sorts them (filesort)",
+                  "verify": "Explain again: look for grouping in index order or fewer rows entering the temporary table. A temporary table and sort for a different ORDER BY can remain; compare on-disk temporary tables on new runs to check the spill itself."
+                }
+              ],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "50940.20"
@@ -2101,6 +2121,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "50940.20"
@@ -2323,6 +2347,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "6088.66"
@@ -2574,6 +2602,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "1.00"
@@ -2845,6 +2877,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "2.14"
@@ -3082,6 +3118,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "4.36"
@@ -3365,6 +3405,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "1.00"
@@ -3652,6 +3696,10 @@
           "plan": {
             "engine": "mysql",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows."
+            },
             "kind": "estimated",
             "props": {
               "query_cost": "7859.91"

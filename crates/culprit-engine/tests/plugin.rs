@@ -197,6 +197,50 @@ async fn a_plan_opened_from_a_report_reads_with_the_reports_catalog() {
 }
 
 #[tokio::test]
+async fn advice_and_fetched_plans_follow_the_selected_report_not_the_latest_pointer() {
+    let home = temp_home("selected-report");
+    let ws = Workspace::open_in(&home)
+        .with_provider(Engine::Postgres, Arc::new(|_| Ok(Box::new(Explains) as Box<dyn Provider>)));
+    ws.add_connection(NewConnection {
+        name: "replayed".into(),
+        input: "postgres://reader@replay.invalid:5432/demo".into(),
+        auth: Some(AuthKind::None),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut snapshot = recorded();
+    snapshot.id = "20260828T120000.000Z".into();
+    snapshot.connection = "replayed".into();
+    let selected = culprit_checks::analyze(snapshot.clone());
+    let q = selected.snapshot.queries().iter().find(|q| q.plan.is_some() && q.executions > 1.0).unwrap();
+    let dir = ws.paths().reports_dir("replayed");
+    culprit_engine::reports::save(&dir, &selected).unwrap();
+    snapshot.id = "20260828T130000.000Z".into();
+    snapshot.workload = None;
+    let latest = culprit_checks::analyze(snapshot);
+    culprit_engine::reports::save(&dir, &latest).unwrap();
+    let actual = ws.index_advice_at("replayed", &selected.snapshot.id).unwrap();
+    let expected = ws.index_advice_for(selected.clone());
+    assert_eq!(serde_json::to_value(actual).unwrap(), serde_json::to_value(expected).unwrap());
+    assert_ne!(
+        serde_json::to_value(ws.index_advice("replayed").unwrap()).unwrap(),
+        serde_json::to_value(ws.index_advice_at("replayed", &selected.snapshot.id).unwrap()).unwrap()
+    );
+    let plan = ws.query_plan_at("replayed", &q.id, None, Some(&selected.snapshot.id)).await.unwrap();
+    assert!(plan.insights.is_some());
+    assert!(ws.query_plan("replayed", &q.id, None).await.is_err(), "latest has no such query");
+    assert!(
+        ws.query_plan_at("replayed", &q.id, Some("999999"), Some(&selected.snapshot.id)).await.is_err(),
+        "a missing requested variant must not be silently replaced"
+    );
+    for id in ["missing", "../latest", "../../other/20260828T120000.000Z"] {
+        assert!(ws.index_advice_at("replayed", id).is_err(), "{id}");
+    }
+    assert!(ws.index_advice_at("another-connection", &selected.snapshot.id).is_err());
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test]
 async fn reads_run_freely_and_production_writes_need_confirmation() {
     let home = temp_home("run");
     let ws = Workspace::open_in(&home)

@@ -25,7 +25,7 @@ pub use unused_index::*;
 pub(crate) const CHECKS: &[&dyn Check] =
     &[&MissingIndexCheck, &FilteredScanCheck, &UnusedIndexCheck, &DuplicateIndexCheck, &UnindexedFkCheck];
 
-const MAX_INCLUDE: usize = 6;
+pub(crate) const MAX_INCLUDE: usize = 6;
 
 /// What [`widen_index`] can do with an existing index.
 pub(crate) enum Widening {

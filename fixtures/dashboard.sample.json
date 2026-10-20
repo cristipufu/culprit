@@ -484,8 +484,8 @@
           }
         ],
         "next": null,
-        "status": "good",
-        "takeaway": "None of the 5 captured plans shows a known problem.",
+        "status": "info",
+        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {
@@ -2364,8 +2364,8 @@
           }
         ],
         "next": null,
-        "status": "good",
-        "takeaway": "None of the 8 captured plans shows a known problem.",
+        "status": "info",
+        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {
@@ -3577,8 +3577,8 @@
           }
         ],
         "next": null,
-        "status": "good",
-        "takeaway": "None of the 5 captured plans shows a known problem.",
+        "status": "info",
+        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {

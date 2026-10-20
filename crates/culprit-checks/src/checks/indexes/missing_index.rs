@@ -512,15 +512,15 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
     // A widen rebuilds an existing index under its own name: the queries seek that one, not a new one.
     let first = match (&fixed.widens, fixed.fix.sql.is_some()) {
         (Some(name), true) => {
-            format!("Rebuild {name} as above, let the workload run, then re-scan: this suggestion should disappear.")
+            format!("After testing the rebuild of {name}, capture a newly compiled plan under representative load. A stored suggestion can remain in old plan XML.")
         }
-        (Some(name), false) => format!("Once the queries use {name}, re-scan: this suggestion should disappear."),
-        (None, _) => "Create the index, let the workload run, then re-scan: this suggestion should disappear.".into(),
+        (Some(name), false) => format!("Check whether newly compiled plans use {name}; an old stored suggestion alone does not establish a current gap."),
+        (None, _) => "Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.".into(),
     };
     f.verify = vec![first];
     if !linked.is_empty() {
         f.verify.push(format!(
-            "The queries listed here should show an Index Seek on {} and far fewer reads per execution.",
+            "Check whether the queries listed here use {} and compare reads and execution time under equivalent parameters and load, including index storage and write cost.",
             fixed.widens.as_deref().unwrap_or("the new index")
         ));
     }

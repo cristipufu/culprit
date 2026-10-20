@@ -82,7 +82,7 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
       <div className="insights empty-insights">
         <CircleCheck size={16} className="ok" />
         <div>
-          <div className="ins-empty-title">No problems found in this plan</div>
+          <div className="ins-empty-title">No tuning change suggested by this plan</div>
           {note && <div className="ins-note">{note}</div>}
         </div>
       </div>

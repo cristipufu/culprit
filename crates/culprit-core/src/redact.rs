@@ -476,6 +476,38 @@ pub fn redact_plan(plan: &Plan) -> Plan {
     // Insights quote the predicates they were found in: worked out again from the redacted plan.
     if plan.insights.is_some() {
         crate::insights::annotate(&mut redacted);
+        // Recomputing from a redacted tree must not restore urgency or unsafe index SQL that the selected scan
+        // withheld. Keep primary redaction by deriving prose from the redacted tree; catalog-specific fixes can't
+        // be reconstructed from a standalone tree, so those require the original scan's catalog again.
+        if let (Some(source), Some(target)) = (&plan.insights, &mut redacted.insights) {
+            let original = crate::insights::insights(plan);
+            let mut contextual = source.note != crate::insights::coverage_note(plan);
+            for i in &mut target.items {
+                if let Some(before) =
+                    source.items.iter().find(|b| b.rule == i.rule && b.nodes == i.nodes && b.index_hint == i.index_hint)
+                {
+                    i.severity = i.severity.min(before.severity);
+                    i.fix_sql = before.fix_sql.as_deref().map(|sql| redact_sql(sql, plan.engine));
+                    if original.iter().any(|raw| {
+                        raw.rule == before.rule
+                            && raw.nodes == before.nodes
+                            && raw.index_hint == before.index_hint
+                            && raw.fix != before.fix
+                    }) {
+                        contextual = true;
+                        if i.area == crate::insights::InsightArea::Index {
+                            i.fix = "Check this observation against the selected scan's workload and current index definitions before changing an index. Prefer narrow projections and balance saved reads against storage and write cost; a full covering index is not automatically worthwhile.".into();
+                        }
+                        i.verify = "Compare a newly compiled plan, reads and time under equivalent parameters and load. Stored warnings and a changing share of database time alone do not verify improvement.".into();
+                    }
+                }
+            }
+            if contextual {
+                let context = "Workload priority and SQL restrictions from the selected scan are retained. Historical or cheap statements can still have structural scaling risks; consult the selected scan for catalog-specific advice.";
+                target.note =
+                    Some(target.note.as_deref().map_or_else(|| context.to_string(), |n| format!("{n} {context}")));
+            }
+        }
     }
     redacted
 }

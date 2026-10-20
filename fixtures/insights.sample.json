@@ -59,24 +59,33 @@
         {
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
-          "fix": "Create the index on order_id.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix": "Create an index on order_id.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
           "fixed_weight": false,
           "impact": 0.491,
+          "index_hint": {
+            "equality": [
+              "order_id"
+            ],
+            "impact_pct": 50.0039,
+            "include": [],
+            "inequality": [],
+            "table": "shop.order_items"
+          },
           "nodes": [
             12
           ],
           "rule": "missing-index-hint",
           "severity": "high",
           "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 50% cheaper",
-          "verify": "Explain again: the suggestion is gone and the read of order_items becomes a seek."
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
       "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
     },
     "255": {
       "items": [],
-      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
+      "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "263": {
       "items": [
@@ -151,17 +160,28 @@
         {
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.",
-          "fix": "Create the index on shipped_at and include total.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix": "Create an index on shipped_at, including total.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
           "fixed_weight": false,
           "impact": 0.974,
+          "index_hint": {
+            "equality": [],
+            "impact_pct": 80.9966,
+            "include": [
+              "total"
+            ],
+            "inequality": [
+              "shipped_at"
+            ],
+            "table": "shop.orders"
+          },
           "nodes": [
             1
           ],
           "rule": "missing-index-hint",
           "severity": "high",
           "title": "SQL Server estimates an index on shop.orders (shipped_at) would make this 81% cheaper",
-          "verify": "Explain again: the suggestion is gone and the read of orders becomes a seek."
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
       "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
@@ -171,17 +191,26 @@
         {
           "area": "index",
           "detail": "The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.",
-          "fix": "Create the index on order_id.",
-          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id]);\n-- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.",
+          "fix": "Create an index on order_id.",
+          "fix_sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
           "fixed_weight": false,
           "impact": 0.979,
+          "index_hint": {
+            "equality": [
+              "order_id"
+            ],
+            "impact_pct": 99.4743,
+            "include": [],
+            "inequality": [],
+            "table": "shop.order_items"
+          },
           "nodes": [
             1
           ],
           "rule": "missing-index-hint",
           "severity": "high",
           "title": "SQL Server estimates an index on shop.order_items (order_id) would make this 99% cheaper",
-          "verify": "Explain again: the suggestion is gone and the read of order_items becomes a seek."
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
       "note": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan."
@@ -244,7 +273,7 @@
         {
           "area": "index",
           "detail": "As planned, the Seq Scan reads the rows and checks `(order_items.product_id = $1)` on each one, so most of the reading is thrown away. 93% of this plan's work.",
-          "fix": "No index on order_items starts with product_id: one on product_id lets the database go straight to the matching rows.",
+          "fix": "Create an index on product_id.",
           "fix_sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
           "fixed_weight": false,
           "impact": 0.926,
@@ -254,22 +283,22 @@
           "rule": "scan-filter",
           "severity": "high",
           "title": "Reads 1.0M rows of public.order_items to keep 101",
-          "verify": "Explain again: order_items reads about as many rows as it keeps."
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
     },
     "-463560455567765064": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-6576252161252119529": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-8886085649470066503": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-967240904657798800": {
       "items": [],
@@ -281,7 +310,7 @@
     },
     "2169115237613314459": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "2885972271926804069": {
       "items": [],
@@ -293,18 +322,18 @@
     },
     "4911431806993420100": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "5306524445554315840": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "5308963031944094559": {
       "items": [
         {
           "area": "index",
           "detail": "As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away. 98% of this plan's work.",
-          "fix": "No index on orders starts with customer_id: one on customer_id lets the database go straight to the matching rows.",
+          "fix": "Create an index on customer_id.",
           "fix_sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
           "fixed_weight": false,
           "impact": 0.977,
@@ -314,7 +343,7 @@
           "rule": "scan-filter",
           "severity": "high",
           "title": "Reads 2.0M rows of public.orders to keep 12",
-          "verify": "Explain again: orders reads about as many rows as it keeps."
+          "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
       "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
@@ -325,7 +354,7 @@
     },
     "8465053948014496855": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "9065391607317686058": {
       "items": [],

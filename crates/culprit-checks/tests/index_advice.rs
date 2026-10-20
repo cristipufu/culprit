@@ -1026,8 +1026,8 @@ fn a_widen_is_verified_on_the_index_it_rebuilds() {
     assert_eq!(
         f.verify,
         vec![
-            "Rebuild ix_support_tickets_open as above, let the workload run, then re-scan: this suggestion should disappear.".to_string(),
-            "The queries listed here should show an Index Seek on ix_support_tickets_open and far fewer reads per execution.".to_string(),
+            "After testing the rebuild of ix_support_tickets_open, capture a newly compiled plan under representative load. A stored suggestion can remain in old plan XML.".to_string(),
+            "Check whether the queries listed here use ix_support_tickets_open and compare reads and execution time under equivalent parameters and load, including index storage and write cost.".to_string(),
         ]
     );
     let advice = index_advice(&report);
@@ -1035,7 +1035,7 @@ fn a_widen_is_verified_on_the_index_it_rebuilds() {
     assert!(
         c.verify
             .iter()
-            .any(|v| v == "The queries listed seek on ix_support_tickets_open and read far fewer pages per run."),
+            .any(|v| v == "Check whether the queries listed use ix_support_tickets_open and compare reads and time per run under equivalent parameters and load."),
         "{:?}",
         c.verify
     );

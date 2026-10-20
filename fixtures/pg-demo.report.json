@@ -75,7 +75,7 @@
       "fix": {
         "cost": "public.orders had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
-        "summary": "Create an index on customer_id so the query seeks instead of scanning."
+        "summary": "Test an index on customer_id as a way for the query to find matching rows without a full scan."
       },
       "id": "filtered-scan:public.orders(customer_id)",
       "impact": {
@@ -94,7 +94,7 @@
           "value": 0.23358130099961572
         },
         {
-          "label": "Rows scanned per run",
+          "label": "Captured scan size basis",
           "text": null,
           "unit": "rows",
           "value": 1999995.0
@@ -118,12 +118,12 @@
         "kind": "table",
         "name": "public.orders"
       },
-      "summary": "37.7 s of database time over the 5 hours since statistics were reset (23%). One query plans to read every row of public.orders (2.0M rows) and keep only those matching `(orders.customer_id = $1)`. No index starts with customer_id, so the database has no faster way in. It accounts for 23% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
+      "summary": "37.7 s of database time over the 5 hours since statistics were reset (23%). One query plans to read public.orders and keep only those matching `(orders.customer_id = $1)`. The captured scan uses 2.0M rows as its size basis; this scan's catalog reports 2.0M rows in the table. Captured estimates can predate the current table size. No index starts with customer_id, so the database has no faster way in. It accounts for 23% of database time. customer_id is also the foreign key to customers, so deletes there scan this table too.",
       "title": "orders is read in full to find rows by customer_id",
       "verification_basis": "rescan",
       "verify": [
-        "Explain the query again: the scan of orders should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
+        "Obtain a newly compiled plan for the query and check whether orders uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.",
+        "pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost."
       ]
     },
     {
@@ -370,7 +370,7 @@
       "fix": {
         "cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
-        "summary": "Create an index on product_id so the query seeks instead of scanning."
+        "summary": "Test an index on product_id as a way for the query to find matching rows without a full scan."
       },
       "id": "filtered-scan:public.order_items(product_id)",
       "impact": {
@@ -389,7 +389,7 @@
           "value": 0.042080061020187354
         },
         {
-          "label": "Rows scanned per run",
+          "label": "Captured scan size basis",
           "text": null,
           "unit": "rows",
           "value": 1000000.0
@@ -413,12 +413,12 @@
         "kind": "table",
         "name": "public.order_items"
       },
-      "summary": "6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read every row of public.order_items (1.0M rows) and keep only those matching `(order_items.product_id = $1)`. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.",
+      "summary": "6.8 s of database time over the 5 hours since statistics were reset (4%). One query plans to read public.order_items and keep only those matching `(order_items.product_id = $1)`. The captured scan uses 1.0M rows as its size basis; this scan's catalog reports 1.0M rows in the table. Captured estimates can predate the current table size. No index starts with product_id, so the database has no faster way in. It accounts for 4% of database time. product_id is also the foreign key to products, so deletes there scan this table too.",
       "title": "order_items is read in full to find rows by product_id",
       "verification_basis": "rescan",
       "verify": [
-        "Explain the query again: the scan of order_items should become an index seek/scan on the new index.",
-        "Re-scan after the workload has run: this finding should be gone. pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there its time per run should drop."
+        "Obtain a newly compiled plan for the query and check whether order_items uses the new index to read fewer rows. A scan can remain appropriate for some parameter values.",
+        "pg_stat_statements keeps running totals, so a later scan's runs, share and averages for the query still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`culprit changes <connection> --since <ship time>`): there compare its time per run under equivalent load. Use the scans' read-counter changes to compare reads per new run, accounting for resets; include index storage and write cost."
       ]
     },
     {
@@ -2201,6 +2201,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -2382,6 +2386,26 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "As planned, the Seq Scan reads the rows and checks `(orders.customer_id = $1)` on each one, so most of the reading is thrown away. 98% of this plan's work.",
+                  "fix": "Create an index on customer_id.",
+                  "fix_sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
+                  "fixed_weight": false,
+                  "impact": 0.977,
+                  "nodes": [
+                    3
+                  ],
+                  "rule": "scan-filter",
+                  "severity": "high",
+                  "title": "Reads 2.0M rows of public.orders to keep 12",
+                  "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+                }
+              ],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -2592,6 +2616,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -2702,6 +2730,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -2849,6 +2881,26 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [
+                {
+                  "area": "index",
+                  "detail": "As planned, the Seq Scan reads the rows and checks `(order_items.product_id = $1)` on each one, so most of the reading is thrown away. 93% of this plan's work.",
+                  "fix": "Create an index on product_id.",
+                  "fix_sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
+                  "fixed_weight": false,
+                  "impact": 0.926,
+                  "nodes": [
+                    3
+                  ],
+                  "rule": "scan-filter",
+                  "severity": "high",
+                  "title": "Reads 1.0M rows of public.order_items to keep 101",
+                  "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
+                }
+              ],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3063,6 +3115,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3313,6 +3369,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3493,6 +3553,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3661,6 +3725,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3786,6 +3854,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -3874,6 +3946,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -4000,6 +4076,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Generic Plan": "Planned without parameter values: = $n is estimated from statistics as an average value of the column, a range or pattern on $n by a fixed guess, ANY($n) by a guessed array length; partitions are pruned only when it runs.",
@@ -4251,6 +4331,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+            },
             "kind": "generic",
             "props": {
               "Query Identifier": "-1927887502173443338"
@@ -4384,6 +4468,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Query Identifier": "-6887183319640168245"
@@ -5222,6 +5310,10 @@
           "plan": {
             "engine": "postgres",
             "index_hints": [],
+            "insights": {
+              "items": [],
+              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+            },
             "kind": "generic",
             "props": {
               "Query Identifier": "2902286614177922249"

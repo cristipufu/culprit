@@ -230,7 +230,7 @@ fn parse_relop(relop: Node) -> PlanNode {
     if let Some(output) = child(relop, "OutputList") {
         let columns: Vec<&str> = children(output, "ColumnReference").filter_map(|c| c.attribute("Column")).collect();
         if !columns.is_empty() {
-            props.insert("OutputList".into(), truncate(columns.join(", ")));
+            props.insert("OutputList".into(), columns.join(", "));
         }
     }
 
@@ -279,7 +279,7 @@ fn parse_relop(relop: Node) -> PlanNode {
     if let Some(columns) = child(relop, "Warnings").and_then(|w| child(w, "ColumnsWithNoStatistics")) {
         let names: Vec<String> = children(columns, "ColumnReference").map(column_name).map(|c| unbracket(&c)).collect();
         if !names.is_empty() {
-            props.insert("ColumnsWithNoStatistics".into(), truncate(names.join(", ")));
+            props.insert("ColumnsWithNoStatistics".into(), names.join(", "));
         }
     }
 
@@ -455,9 +455,9 @@ fn seek_predicate_of(operator: Node) -> Option<String> {
         if fallback.is_empty() {
             return None;
         }
-        return Some(truncate(fallback.join(" AND ")));
+        return Some(fallback.join(" AND "));
     }
-    Some(truncate(parts.join(" AND ")))
+    Some(parts.join(" AND "))
 }
 
 fn predicate_of(operator: Node) -> Option<String> {
@@ -465,7 +465,8 @@ fn predicate_of(operator: Node) -> Option<String> {
         .or_else(|| child(operator, "ProbeResidual"))
         .or_else(|| child(operator, "Residual"))?;
     let scalar = element.descendants().find(|n| n.has_tag_name_local("ScalarOperator"))?;
-    scalar.attribute("ScalarString").map(|s| truncate(s.to_string()))
+    // Predicates feed semantic analysis; only display properties may be shortened.
+    scalar.attribute("ScalarString").map(str::to_string)
 }
 
 fn comparison(scan_type: &str) -> &'static str {
@@ -689,6 +690,21 @@ fn push_unique(list: &mut Vec<PlanWarning>, warning: PlanWarning) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn semantic_predicates_keep_conversions_after_long_prefixes() {
+        let prefix = (0..35).map(|i| format!("[m].[field_{i}]=[@p{i}] AND ")).collect::<String>();
+        let predicate = format!("{prefix}CONVERT_IMPLICIT(nvarchar(36),[m].[CustomerId],0)=[@p1]");
+        assert!(prefix.len() > 600);
+        let xml = ESTIMATED.replace(
+            "CONVERT_IMPLICIT(nvarchar(36),[shop].[dbo].[Orders].[CustomerId] as [m].[CustomerId],0)=[@p1]",
+            &predicate,
+        );
+        let p = super::parse(&xml).expect("plan");
+        let saved = p.nodes().into_iter().find_map(|n| n.predicate.as_deref()).expect("predicate");
+        assert_eq!(saved, predicate);
+        assert!(!saved.ends_with('…'));
+    }
 
     #[test]
     fn empty_maintenance_showplans_are_absent_data_not_parse_failures() {

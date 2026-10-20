@@ -122,8 +122,8 @@
         "table": "order_items",
         "table_rows": 1500000.0,
         "verify": [
-          "Re-scan after the workload has run: the request disappears.",
-          "The queries listed seek on the new index and read far fewer pages per run."
+          "Obtain a newly compiled plan after representative runs; an old stored request need not disappear.",
+          "Check whether the queries listed use the new index and compare reads and time per run under equivalent parameters and load."
         ],
         "widens": null,
         "write_cost": "shop.order_items had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
@@ -168,8 +168,8 @@
         "table": "orders",
         "table_rows": 1000000.0,
         "verify": [
-          "Re-scan after the workload has run: the request disappears.",
-          "The queries listed seek on the new index and read far fewer pages per run."
+          "Obtain a newly compiled plan after representative runs; an old stored request need not disappear.",
+          "Check whether the queries listed use the new index and compare reads and time per run under equivalent parameters and load."
         ],
         "widens": null,
         "write_cost": "shop.orders had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
@@ -435,7 +435,7 @@
             "text": "SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2"
           }
         ],
-        "reason": "One query reads every row of public.orders (2.0M rows) and keeps only those matching (orders.customer_id = $1); no index starts with customer_id.",
+        "reason": "One captured query plan scans public.orders and keeps only those matching (orders.customer_id = $1); no enabled index starts with customer_id. The captured scan uses 2.0M rows as its size basis; this scan's catalog reports 2.0M rows in the table. Captured estimates can predate the current table size.",
         "requests": [],
         "schema": "public",
         "source": "plan-scan",
@@ -443,8 +443,8 @@
         "table": "orders",
         "table_rows": 1999995.0,
         "verify": [
-          "Explain one of the queries again: the scan of orders becomes a seek on the new index.",
-          "Re-scan after the workload has run: the queries' share of database time drops."
+          "Obtain a newly compiled plan and check whether orders uses the candidate index to read fewer rows; a scan can still be appropriate for some parameters.",
+          "Compare reads and time per run after equivalent workload, including storage and write cost. Old saved plans and a changing share of database time alone do not verify improvement."
         ],
         "widens": null,
         "write_cost": "public.orders had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
@@ -467,7 +467,7 @@
             "text": "SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1"
           }
         ],
-        "reason": "One query reads every row of public.order_items (1.0M rows) and keeps only those matching (order_items.product_id = $1); no index starts with product_id.",
+        "reason": "One captured query plan scans public.order_items and keeps only those matching (order_items.product_id = $1); no enabled index starts with product_id. The captured scan uses 1.0M rows as its size basis; this scan's catalog reports 1.0M rows in the table. Captured estimates can predate the current table size.",
         "requests": [],
         "schema": "public",
         "source": "plan-scan",
@@ -475,8 +475,8 @@
         "table": "order_items",
         "table_rows": 1000000.0,
         "verify": [
-          "Explain one of the queries again: the scan of order_items becomes a seek on the new index.",
-          "Re-scan after the workload has run: the queries' share of database time drops."
+          "Obtain a newly compiled plan and check whether order_items uses the candidate index to read fewer rows; a scan can still be appropriate for some parameters.",
+          "Compare reads and time per run after equivalent workload, including storage and write cost. Old saved plans and a changing share of database time alone do not verify improvement."
         ],
         "widens": null,
         "write_cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",

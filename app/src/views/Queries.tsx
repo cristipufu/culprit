@@ -184,7 +184,7 @@ export function Queries({ report }: { report: Report }) {
           </table>
         </div>
       </div>
-      <div className="pane">{current ? <QueryDetail report={report} query={current} /> : <div className="empty">No queries match</div>}</div>
+      <div className="pane">{current ? <QueryDetail key={`${report.snapshot.connection}:${report.snapshot.id}:${current.id}`} report={report} query={current} /> : <div className="empty">No queries match</div>}</div>
     </div>
   );
 }
@@ -213,7 +213,7 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
   const related = report.findings.filter((f) => f.queries.some((r) => r.id === query.id));
   const focus = related.flatMap((f) => f.queries.filter((r) => r.id === query.id).map((r) => r.plan_node)).find((n) => n != null) ?? null;
   const [tab, setTab] = useState<DetailTab>(rememberedTab);
-  const [planId, setPlanId] = useState<string | null>(query.plans[0]?.id ?? null);
+  const [planId, setPlanId] = useState<string | null>(query.plan_id ?? query.plans[0]?.id ?? null);
   const insights = query.plan?.insights?.items ?? [];
   const worst = insights.find((i) => i.severity === "high") ? "high" : insights.find((i) => i.severity === "medium") ? "medium" : insights.length ? "low" : null;
 
@@ -388,13 +388,18 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
   const { report, query, focus, planId, setPlanId } = props;
   const variants = query.plans;
   const dominant = variants[0]?.id ?? null;
+  const capturedId = query.plan_id ?? (variants.length === 1 ? dominant : null);
   const [look, setLook] = useState<PlanLook>(rememberedLook);
   const [source, setSource] = useState<PlanSource>("plan");
-  const [state, setPlan] = useState<PlanState>(() => (query.plan ? { status: "ready", plan: query.plan } : { status: "idle" }));
   const connection = report.snapshot.connection;
+  const selection = JSON.stringify([connection, report.snapshot.id, query.id, planId]);
+  const captured = query.plan && (planId === capturedId || (planId === null && variants.length === 0));
+  const initial: PlanState = captured ? { status: "ready", plan: query.plan! } : { status: "loading" };
+  const [loaded, setLoaded] = useState<{ selection: string; state: PlanState }>({ selection, state: initial });
+  const state = loaded.selection === selection ? loaded.state : initial;
 
   useEffect(() => {
-    const captured = query.plan && (planId === dominant || planId === null);
+    const setPlan = (state: PlanState) => setLoaded({ selection, state });
     if (captured) {
       setPlan({ status: "ready", plan: query.plan! });
       return;
@@ -402,13 +407,13 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
     let cancelled = false;
     setPlan({ status: "loading" });
     api()
-      .then((client) => client.queryPlan(connection, query.id, planId))
+      .then((client) => client.queryPlan(connection, query.id, planId, report.snapshot.id))
       .then((plan) => !cancelled && setPlan({ status: "ready", plan }))
       .catch((e) => !cancelled && setPlan({ status: "error", error: errorMessage(e) }));
     return () => {
       cancelled = true;
     };
-  }, [planId, query, dominant, connection]);
+  }, [planId, query, capturedId, connection, variants.length, report.snapshot.id, selection, captured]);
 
   const chooseLook = (next: PlanLook) => {
     setLook(next);
@@ -416,6 +421,11 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
   };
   const best = variants.length > 1 ? Math.min(...variants.map((v) => v.mean_time_ms)) : null;
   const [comparing, setComparing] = useState(false);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const origin = `${connection} · query ${query.id}`;
   const nameOf = (id: string | null) => (id ? `Plan ${id}` : `Query ${query.id}`);
 
@@ -427,8 +437,9 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
     try {
       const client = await api();
       const load = (id: string) =>
-        id === dominant && query.plan ? Promise.resolve(query.plan) : state.status === "ready" && id === planId ? Promise.resolve(state.plan) : client.queryPlan(connection, query.id, id);
+        id === capturedId && query.plan ? Promise.resolve(query.plan) : state.status === "ready" && id === planId ? Promise.resolve(state.plan) : client.queryPlan(connection, query.id, id, report.snapshot.id);
       const [first, second] = await Promise.all([load(dominant), load(other)]);
+      if (!mounted.current) return;
       // The faster plan is the baseline, so the comparison reads "the slow plan does X where the fast one does Y".
       const speed = (id: string) => variants.find((v) => v.id === id)?.mean_time_ms ?? 0;
       const a = { plan: first, name: nameOf(dominant), origin, source: { connection, queryId: query.id, planId: dominant }, query: { ...query, plan_id: dominant } };
@@ -489,7 +500,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
           ))}
         </div>
       )}
-      {source === "actual" && <LastActualRun connection={connection} engine={report.snapshot.server.engine} query={query} planId={planId} look={look} />}
+      {source === "actual" && <LastActualRun connection={connection} engine={report.snapshot.server.engine} query={query} planId={planId} reportId={report.snapshot.id} look={look} />}
       {source === "plan" && state.status === "loading" && (
         <div className="empty" style={{ padding: 30 }}>
           <div className="spinner" />
@@ -504,7 +515,7 @@ function QueryPlans(props: { report: Report; query: QueryStat; focus: number | n
           </div>
         </div>
       )}
-      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} query={{ ...query, plan_id: planId }} focus={planId === dominant ? focus : null} look={look} />}
+      {source === "plan" && state.status === "ready" && <PlanSurface key={`${query.id}-${planId}`} plan={state.plan} query={{ ...query, plan_id: planId }} focus={planId === capturedId ? focus : null} look={look} />}
     </section>
   );
 }

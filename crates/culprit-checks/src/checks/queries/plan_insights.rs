@@ -1,7 +1,7 @@
 //! Plan insights as findings: the plan-level problems in queries that matter, beyond what `plan-warnings`,
 //! `filtered-scan` and `missing-index` already report. One finding per problem and table, however many queries share it.
 
-use culprit_core::insights::{PlanInsight, insights};
+use culprit_core::insights::PlanInsight;
 use culprit_core::{
     Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, PlanKind, QueryRef, QueryStat, Severity,
     Snapshot, SubjectKind, Unit, format,
@@ -43,7 +43,7 @@ pub fn plan_insights(snapshot: &Snapshot) -> Vec<Finding> {
         if impact.share < MIN_SHARE {
             continue;
         }
-        for i in insights(plan) {
+        for i in crate::views::plan_advice::catalog_insights(snapshot, q, plan) {
             let weighed_here = WEIGHED_BY_THE_STATEMENT.contains(&i.rule.as_str());
             if COVERED.contains(&i.rule.as_str()) || (i.severity == Severity::Low && !weighed_here) {
                 continue;

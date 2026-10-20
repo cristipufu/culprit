@@ -878,6 +878,21 @@ impl Workspace {
         culprit_checks::index_advice(&self.reread(report.snapshot))
     }
 
+    /// Advice for the exact scan displayed by a client, including its workload window. Never falls back to a
+    /// different scan; ids must belong to this connection's report directory.
+    pub fn index_advice_at(&self, name: &str, report_id: &str) -> Result<culprit_core::IndexAdvice> {
+        let report = self.report_at(name, report_id)?;
+        Ok(culprit_checks::index_advice(&report))
+    }
+
+    fn report_at(&self, name: &str, report_id: &str) -> Result<Report> {
+        let dir = self.paths.reports_dir(name);
+        if !reports::report_ids(&dir).iter().any(|id| id == report_id) {
+            return Err(Error::not_found(format!("No saved report '{report_id}' for '{name}'")));
+        }
+        self.analyze_file(&dir.join(format!("{report_id}.json")))
+    }
+
     /// The dashboard for a connection's latest report (the one scanned with a window of `window_minutes`, when given).
     /// With `live`, sessions are read once too; if that fails, the "right now" tile says why and the rest still comes
     /// back.
@@ -955,8 +970,20 @@ impl Workspace {
     /// The actual plan of a query's last run as the engine kept it (SQL Server 2019+ with LAST_QUERY_PLAN_STATS).
     /// Never runs the query; other engines say why they can't and how to measure it instead.
     pub async fn last_actual_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
+        self.last_actual_plan_at(name, query_id, plan_id, None).await
+    }
+
+    pub async fn last_actual_plan_at(
+        &self,
+        name: &str,
+        query_id: &str,
+        plan_id: Option<&str>,
+        report_id: Option<&str>,
+    ) -> Result<Plan> {
+        let report = self.plan_report(name, report_id)?;
         let provider = self.provider(name).await?;
-        self.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)
+        let plan = self.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)?;
+        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id))
     }
 
     /// How far along a session's running statement is: per-operator progress on SQL Server, the estimated plan with
@@ -973,37 +1000,73 @@ impl Workspace {
     }
 
     pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
-        let mut plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id).await)?;
-        // Query Store keeps a plan's first XML: check its conversions against the latest scan's catalog, and word it
-        // with the same catalog marks as the report's own plans (the indexes on a table it scans, the parallelism
-        // settings).
-        if let Ok(Some(report)) = self.latest_report(name, None) {
-            culprit_core::insights::mark_changed_columns(&mut plan, &report.snapshot.columns);
-            culprit_core::insights::mark_plan(&mut plan, &report.snapshot);
-            culprit_core::insights::mark_possible_keys(&mut plan, &report.snapshot.indexes);
-        }
-        culprit_core::insights::annotate(&mut plan);
-        Ok(plan)
+        self.query_plan_at(name, query_id, plan_id, None).await
     }
 
-    async fn query_plan_from(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
-        let provider = self.provider(name).await?;
-        if let Some(plan_id) = plan_id
-            && let Some(plan) = provider.stored_plan(query_id, plan_id).await?
-        {
-            return Ok(plan);
+    /// Fetch a plan using the exact report/window the caller is displaying.
+    pub async fn query_plan_at(
+        &self,
+        name: &str,
+        query_id: &str,
+        plan_id: Option<&str>,
+        report_id: Option<&str>,
+    ) -> Result<Plan> {
+        let report = self.plan_report(name, report_id)?;
+        let plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id, report.as_ref()).await)?;
+        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id))
+    }
+
+    fn plan_report(&self, name: &str, report_id: Option<&str>) -> Result<Option<Report>> {
+        match report_id {
+            Some(id) => self.report_at(name, id).map(Some),
+            None => self.latest_report(name, None),
         }
-        let report =
-            self.latest_report(name, None)?.ok_or_else(|| Error::not_found(format!("No report for {name}")))?;
+    }
+
+    fn contextual_plan(mut plan: Plan, snapshot: Option<&culprit_core::Snapshot>, query_id: &str) -> Plan {
+        if let Some(snapshot) = snapshot {
+            culprit_core::insights::mark_changed_columns(&mut plan, &snapshot.columns);
+            culprit_core::insights::mark_plan(&mut plan, snapshot);
+            culprit_core::insights::mark_possible_keys(&mut plan, &snapshot.indexes);
+            if let Some(q) = snapshot.queries().iter().find(|q| q.id == query_id) {
+                culprit_core::insights::mark_query(&mut plan, &q.text);
+                plan.insights = Some(culprit_checks::query_plan_insights(snapshot, q, &plan));
+                return plan;
+            }
+        }
+        let mut items = culprit_core::insights::insights(&plan);
+        for i in &mut items {
+            i.severity = culprit_core::Severity::Low;
+            i.fix_sql = None;
+        }
+        plan.insights = Some(culprit_core::insights::PlanInsights { items, note: Some("No matching statement was measured in the selected workload. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence.".into()) });
+        plan
+    }
+
+    async fn query_plan_from(
+        &self,
+        name: &str,
+        query_id: &str,
+        plan_id: Option<&str>,
+        report: Option<&Report>,
+    ) -> Result<Plan> {
+        let provider = self.provider(name).await?;
+        if let Some(plan_id) = plan_id {
+            return provider
+                .stored_plan(query_id, plan_id)
+                .await?
+                .ok_or_else(|| Error::not_found(format!("No stored plan {plan_id} for query {query_id}")));
+        }
         let query = report
+            .ok_or_else(|| Error::not_found(format!("No report for {name}")))?
             .snapshot
             .workload
             .as_ref()
             .and_then(|w| w.query(query_id))
-            .ok_or_else(|| Error::not_found(format!("No query {query_id} in the latest report for {name}")))?;
-        if let Some(plan_id) = query.plans.first().map(|p| p.id.clone())
+            .ok_or_else(|| Error::not_found(format!("No query {query_id} in the selected report for {name}")))?;
+        if let Some(plan_id) = query.plan_id.as_ref().or_else(|| query.plans.first().map(|p| &p.id))
             && plan_id.chars().all(|c| c.is_ascii_digit())
-            && let Some(plan) = provider.stored_plan(query_id, &plan_id).await?
+            && let Some(plan) = provider.stored_plan(query_id, plan_id).await?
         {
             return Ok(plan);
         }

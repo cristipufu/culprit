@@ -146,6 +146,7 @@ pub(super) fn missing_index_hint(cx: &Cx) -> Vec<Draft> {
             let include: Vec<String> = h.include.iter().map(|c| clean_identifier(c)).collect();
             let impact = node.map_or(0.0, |n| cx.share(n)).max(h.impact_pct / 100.0 * 0.5);
             let mut d = Draft::new("missing-index-hint", InsightArea::Index, impact, node.map(|n| vec![n.id]).unwrap_or_default());
+            d.index_hint = Some(h.clone());
             d.title = format!(
                 "SQL Server estimates an index on {} ({}) would make this {} cheaper",
                 h.table,

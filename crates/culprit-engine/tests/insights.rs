@@ -205,7 +205,7 @@ fn write_demo_sidecar() {
         let mut by_query = serde_json::Map::new();
         for q in report.snapshot.workload.iter().flat_map(|w| &w.queries) {
             if let Some(plan) = &q.plan {
-                let set = culprit_core::insights::PlanInsights { items: insights(plan), note: coverage_note(plan) };
+                let set = culprit_checks::query_plan_insights(&report.snapshot, q, plan);
                 by_query.insert(q.id.clone(), serde_json::to_value(set).unwrap());
             }
         }

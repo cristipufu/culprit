@@ -275,15 +275,12 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
                 (None, Some((WaitKind::Storage, wait_share, _)))
                     if matches!(kind, StatementKind::Read | StatementKind::Aggregate) =>
                 {
-                    Expect::Storage(if *wait_share >= 1.0 {
-                        "most of it".to_string()
-                    } else {
-                        format::percent(*wait_share)
-                    })
+                    Expect::Storage(if *wait_share >= 1.0 { "most".to_string() } else { format::percent(*wait_share) })
                 }
                 _ if culprit_core::sql::is_session_statement(&q.text) => Expect::Session,
                 // A fix that cuts runs leaves what one run reads as it was (or more, once the cheap runs are skipped
                 // or a batch carries more rows): what moves is how often it runs, and its time with it.
+                _ if super::chatty_query::counter_advice(snapshot, q).is_some() => Expect::Counter,
                 _ if lever == Shows::FewerRuns => Expect::FewerRuns,
                 _ => Expect::CheaperRuns,
             };
@@ -310,6 +307,8 @@ enum Expect {
     /// A fix that cuts runs (a cache, a skipped or batched call, a rarer poll): fewer runs and less time in all, while
     /// what one run reads and takes stays, or rises.
     FewerRuns,
+    /// A counter's calls may be required to allocate numbers and return state atomically.
+    Counter,
     /// A statement the pool or the driver sends: it runs far less often, or not at all.
     Session,
     /// Its average run, toward what its reads take (a wait taken away).
@@ -336,6 +335,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
         }
         Expect::CheaperRuns => Shows::CheaperRuns.between().to_string(),
         Expect::FewerRuns => Shows::FewerRuns.between().to_string(),
+        Expect::Counter => "compare time and avoidable calls for equivalent work, preserving numbering, metadata updates, returned values and transaction guarantees".into(),
         Expect::Session => "it should run far less often, or not at all".to_string(),
         Expect::Average => "its time per run should drop toward what its reads take".to_string(),
         Expect::TimeOrStops => "its time should drop, or it should stop running".to_string(),
@@ -347,7 +347,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
     match expect {
         Expect::Measure => unreachable!(),
         Expect::Storage(now) => format!(
-            "After the change ships, re-scan: this query's share of {time} should drop, with less of its time spent waiting for storage ({now} now)."
+            "Compare equivalent runs before and after a justified change: time per run and storage wait time per run should fall ({now} of elapsed time was storage waiting). If the change avoids calls instead, compare total runs and total database time for the same useful work."
         ),
         Expect::CheaperRuns => format!(
             "After the change ships, re-scan: this query's {reads} and time per run should drop, and its share of {time} with them."
@@ -355,6 +355,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
         Expect::FewerRuns => format!(
             "After the change ships, re-scan: this query should run fewer times and take a smaller share of {time}, while what one run reads and takes can stay as it is, or rise."
         ),
+        Expect::Counter => "Compare time and any avoidable calls under equivalent workload, checking that numbering, metadata updates, returned values and transaction guarantees remain correct. Required atomic calls need not decrease.".into(),
         Expect::Session => {
             "After the change, re-scan: this statement should run far less often, or not at all.".to_string()
         }
@@ -935,13 +936,12 @@ fn heavy_fix_and_lever(
         };
         // A covering index or a sorted index only where the plan's own rule says the step is worth it: covering a
         // seek that finds a row or two copies the selected columns into the index for nothing.
-        if culprit_core::insights::has_insight(plan, "key-lookups", node) {
-            return (
-                advice(format!(
-                    "{most} is looking rows up in the table after finding them in an index. Including the selected columns in that index (a covering index) removes the lookups."
-                )),
-                Shows::CheaperRuns,
-            );
+        if culprit_core::insights::has_insight(plan, "key-lookups", node)
+            && let Some(i) = crate::views::plan_advice::catalog_insights(snapshot, q, plan)
+                .into_iter()
+                .find(|i| i.rule == "key-lookups" && i.nodes.contains(&node.id))
+        {
+            return (Fix { summary: i.fix, sql: i.fix_sql, cost: None }, Shows::CheaperRuns);
         }
         if culprit_core::insights::has_insight(plan, "big-sort", node) {
             return (
@@ -952,7 +952,7 @@ fn heavy_fix_and_lever(
             );
         }
     }
-    // Runs that wait for storage most of their time: the pages they read don't stay in memory.
+    // Storage waiting is observed; whether it comes from cache pressure, cold pages or latency is not established.
     if matches!(kind, StatementKind::Read | StatementKind::Aggregate)
         && let Some((WaitKind::Storage, ..)) = dominant_wait(snapshot, q)
     {
@@ -981,7 +981,7 @@ fn heavy_fix_and_lever(
         );
     }
     let fix = advice(match kind {
-        StatementKind::Write => "Find this statement in the application and check that it finds the rows it changes through an index, and changes no more rows per run than it needs (split large updates into batches).".into(),
+        StatementKind::Write => super::chatty_query::counter_advice(snapshot,q).unwrap_or_else(|| "Find this statement in the application and check that it finds the rows it changes through an index, and changes no more rows per run than it needs (split large updates into batches).".into()),
         StatementKind::Locking => "Find this statement in the application: it locks the rows it finds until its transaction ends. Check that it locks only the rows the transaction goes on to change, and that the transaction commits soon after.".into(),
         // A result worth keeping up to date is one that folds many rows into each it returns, not a few-row lookup
         // that groups.
@@ -1231,6 +1231,9 @@ fn rows_a_run(rows: f64) -> String {
 /// unless another transaction can insert the same key (holding it longer makes that one wait longer); and dropping an
 /// index only where the table has one no read uses.
 fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
+    if let Some(advice) = super::chatty_query::counter_advice(snapshot, q) {
+        return advice;
+    }
     let engine = snapshot.server.engine;
     let (_, verb) = write_verbs(q);
     let table = write_targets(q, engine)
@@ -1353,31 +1356,23 @@ fn finds_nothing_mostly(q: &QueryStat, kind: StatementKind) -> bool {
     kind == StatementKind::Read && q.rows_per_execution().is_some_and(|r| r < 0.5)
 }
 
-/// The fix for a read whose runs spend most of their time waiting for pages to come from storage: the pages don't stay
-/// in memory, because there is too little of it for what the workload reads, or because reads of whole tables and
-/// large rows push them out. Cheap runs read few pages, so the memory is the lever; others read less first.
+/// The fix for a read whose runs spend most of their time waiting for storage. Waiting alone cannot distinguish
+/// cache pressure, cold pages or storage latency; preserve that uncertainty before suggesting more memory.
 fn storage_fix(snapshot: &Snapshot, q: &QueryStat, kind: StatementKind, cheap_plan: bool) -> String {
     let engine = snapshot.server.engine;
     let (verb, unit) = if engine == Engine::Mysql { ("examines", "rows") } else { ("reads", "pages") };
     let reads = q.reads_per_execution().map(|r| format::count(r.round().max(1.0)));
     let opening = match (cheap_plan, reads) {
-        (true, Some(reads)) => format!(
-            "Each run {verb} only about {reads} {unit}, but most of its time is spent waiting for them to come from storage: they don't stay in memory between runs."
-        ),
-        (_, Some(reads)) => format!(
-            "Most of its time is spent waiting for what it reads (about {reads} {unit} a run) to come from storage: it doesn't stay in memory between runs. Reading less (only the rows and columns it needs) helps first."
-        ),
-        (_, None) => "Most of its time is spent waiting for what it reads to come from storage: it doesn't stay in memory between runs.".to_string(),
-    };
-    let memory = match snapshot.server.platform() {
-        Some(p) if p.is_azure_sql_database() => {
-            format!(" (on {}, the memory that comes with its service tier)", p.label(engine))
+        (true, Some(reads)) => {
+            format!("Each run {verb} about {reads} {unit} in total, and most of its elapsed time is storage waiting.")
         }
-        Some(p) => format!(" (on {}, the memory that comes with its instance size)", p.label(engine)),
-        None => String::new(),
+        (_, Some(reads)) => format!(
+            "Each run {verb} about {reads} {unit} in total, and most of its elapsed time is storage waiting. Check whether it reads unnecessary rows or columns."
+        ),
+        (_, None) => "Most of its elapsed time is storage waiting.".to_string(),
     };
     let mut fix = format!(
-        "{opening} Either the database has too little memory for what the workload reads{memory}, or other statements that read whole tables or large rows push these pages out: make those read less first, and if they already read little, more memory keeps these pages cached."
+        "{opening} Compare physical reads and storage latency under representative load to distinguish slow I/O, a cold cache and repeated cache misses. The wait share alone does not establish eviction or insufficient memory. Check independent cache-pressure evidence before considering a memory or service-tier change."
     );
     if finds_nothing_mostly(q, kind) {
         fix.push(' ');

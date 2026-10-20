@@ -244,6 +244,7 @@ pub(super) fn plan_warning_finding(
             }
         }
         PlanWarning::MissingStatistics => {
+            f.informational();
             f.title = format!("The captured plan for {handle} reported a statistics warning");
             f.summary = "SQL Server reported unavailable statistics at compilation time. The saved warning alone does not establish missing or stale statistics now, or a slow plan.".into();
             f.severity = Severity::Low;

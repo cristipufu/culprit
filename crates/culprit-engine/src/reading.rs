@@ -30,11 +30,7 @@ pub fn open(path: &Path) -> Result<Report> {
 /// A report as the app shows it: plans marked against the snapshot's catalog, each with its insights.
 pub fn for_reading(mut report: Report) -> Report {
     culprit_core::insights::mark_snapshot(&mut report.snapshot);
-    if let Some(workload) = report.snapshot.workload.as_mut() {
-        for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
-            culprit_core::insights::annotate(plan);
-        }
-    }
+    culprit_checks::annotate_plans(&mut report.snapshot);
     report
 }
 

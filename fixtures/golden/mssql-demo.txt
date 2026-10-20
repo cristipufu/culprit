@@ -185,8 +185,8 @@ fix: Create an index on order_id.
           ON [shop].[order_items] ([order_id])
           WITH (ONLINE = ON);
 verify:
-  1. Create the index, let the workload run, then re-scan: this suggestion should disappear.
-  2. The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+  1. Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.
+  2. Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost.
 caveats:
   - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
 queries:
@@ -229,8 +229,8 @@ brief:
 
     ## How to verify
 
-    - Create the index, let the workload run, then re-scan: this suggestion should disappear.
-    - The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+    - Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.
+    - Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost.
 
     ## Caveats
 
@@ -312,8 +312,8 @@ fix: Create an index on shipped_at, including total.
           INCLUDE ([total])
           WITH (ONLINE = ON);
 verify:
-  1. Create the index, let the workload run, then re-scan: this suggestion should disappear.
-  2. The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+  1. Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.
+  2. Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost.
 caveats:
   - Missing-index suggestions are per-query and ignore the cost of maintaining the index; review overlapping suggestions together.
 queries:
@@ -357,8 +357,8 @@ brief:
 
     ## How to verify
 
-    - Create the index, let the workload run, then re-scan: this suggestion should disappear.
-    - The queries listed here should show an Index Seek on the new index and far fewer reads per execution.
+    - Test the candidate index with representative parameters and load, then capture a newly compiled plan. Old stored suggestions need not disappear.
+    - Check whether the queries listed here use the new index and compare reads and execution time under equivalent parameters and load, including index storage and write cost.
 
     ## Caveats
 
@@ -683,12 +683,12 @@ note: Estimated plan: misestimates, spills, unused memory grants and uneven thre
 insight missing-index-hint · high severity · impact 98%
   title: SQL Server estimates an index on shop.order_items (order_id) would make this 99% cheaper
   detail: The optimizer noticed it had to read shop.order_items without a fitting index (1.5M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on order_items.
-  fix: Create the index on order_id.
+  fix: Create an index on order_id.
   sql:
       CREATE NONCLUSTERED INDEX [IX_order_items_order_id]
-          ON [shop].[order_items] ([order_id]);
-      -- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.
-  verify: Explain again: the suggestion is gone and the read of order_items becomes a seek.
+          ON [shop].[order_items] ([order_id])
+          WITH (ONLINE = ON);
+  verify: Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure.
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
 
 === plan 10
@@ -699,13 +699,13 @@ note: Estimated plan: misestimates, spills, unused memory grants and uneven thre
 insight missing-index-hint · high severity · impact 97%
   title: SQL Server estimates an index on shop.orders (shipped_at) would make this 81% cheaper
   detail: The optimizer noticed it had to read shop.orders without a fitting index (1.0M rows read by Clustered Index Scan). Its estimate is a guide, not a promise: check the columns against the other queries on orders.
-  fix: Create the index on shipped_at and include total.
+  fix: Create an index on shipped_at, including total.
   sql:
       CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]
           ON [shop].[orders] ([shipped_at])
-          INCLUDE ([total]);
-      -- Add WITH (ONLINE = ON) on Enterprise or Azure SQL to keep the table available while it builds.
-  verify: Explain again: the suggestion is gone and the read of orders becomes a seek.
+          INCLUDE ([total])
+          WITH (ONLINE = ON);
+  verify: Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure.
 note: Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.
 
 === plan 6

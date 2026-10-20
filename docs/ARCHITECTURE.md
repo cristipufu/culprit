@@ -167,7 +167,11 @@ behind it), a fix that is safe to run, a way to verify it, a severity, a confide
 Cumulative findings declare `VerificationBasis::CounterChange`: losing their counters is unknown, not proof of a fix, and exports ask for comparisons under representative load. This contract applies to built-in and embedded checks alike.
 
 Plan insights (`culprit-core/src/insights.rs`) are rules over one plan, shown in the plan viewer; the `plan-insights`
-check promotes the ones that matter to findings.
+check promotes the ones that matter to findings. `views/plan_advice.rs` applies the selected scan's workload and
+catalog to captured and fetched plans: the shared history/materiality rules set urgency, and the index checks'
+coverage, filtered-index, INCLUDE and safe-rebuild helpers choose changes. Structural observations remain visible
+when cheap or historical; small-table scans keep growth guidance. The adviser and fetched plan variants use the
+displayed report's id, and a captured plan is reused only for its recorded `plan_id`.
 
 ### The evidence rules: what keeps a finding from being a false flag
 
