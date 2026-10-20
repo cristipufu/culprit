@@ -4,7 +4,7 @@
 
 Key facts:
 
-- Finds slow queries, plan regressions, missing and unused indexes, N+1 query loops, parameter-sensitive plans, lock waits, blocking chains, deadlocks, spills and stale statistics: 52 checks, ranked by share of database time.
+- Finds slow queries, plan regressions, missing and unused indexes, repeated-query patterns, parameter-sensitive plans, lock waits, blocking chains, deadlocks, spills and stale statistics: __CHECK_COUNT__ checks, ranked by evidence, urgency and measured impact. Repetition alone does not prove an N+1 bug.
 - Explains execution plans in plain words, draws them, and compares any two plans with a one-sentence reason why one is slower.
 - `culprit mcp` serves 25 tools (dashboard, findings, query plans and insights, what changed, blocking, waits, index advice, verify, read-only queries the person approves) to Claude Code, Codex, Cursor and any MCP client. Every CLI command also prints JSON.
 - Safe on production: scans read statistics and catalog views only; statements run as reads only when Culprit can prove they only read; anything else on production asks first; fixes are shown, never applied.

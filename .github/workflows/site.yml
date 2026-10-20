@@ -4,7 +4,15 @@ name: Website
 on:
   push:
     branches: [main]
-    paths: ["site/**", "docs/**", "README.md", "dev/site.sh", ".github/workflows/site.yml"]
+    paths:
+      - "site/**"
+      - "docs/**"
+      - "README.md"
+      - "dev/site.sh"
+      - "dev/site-build.py"
+      - "Cargo.toml"
+      - "fixtures/checks.sample.json"
+      - ".github/workflows/site.yml"
   workflow_dispatch:
 
 permissions:

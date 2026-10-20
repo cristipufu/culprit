@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="__CONTENT_SECURITY_POLICY__">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Culprit SQL Studio: Find Slow Queries in SQL Server &amp; Postgres</title>
   <meta name="description" content="Find slow queries in SQL Server, PostgreSQL, MySQL, MariaDB and SQLite and get the fix in one sentence. Free, open-source desktop app, CLI and MCP server.">
@@ -38,7 +40,7 @@
     "url":"https://culpritsql.com/","image":"https://culpritsql.com/og.jpg",
     "screenshot":["https://culpritsql.com/images/dashboard-light@2x.webp","https://culpritsql.com/images/finding-light@2x.webp","https://culpritsql.com/images/compare-light@2x.webp","https://culpritsql.com/images/blocking-light@2x.webp"],
     "applicationCategory":"DeveloperApplication","applicationSubCategory":"Database performance tuning",
-    "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"0.3.0","fileSize":"14MB",
+    "operatingSystem":"macOS 11 or later, Windows 10, Windows 11, Linux","softwareVersion":"__VERSION__",
     "downloadUrl":"https://github.com/cristipufu/culprit-sql-studio/releases/latest","releaseNotes":"https://github.com/cristipufu/culprit-sql-studio/releases",
     "softwareHelp":"https://github.com/cristipufu/culprit-sql-studio/blob/main/docs/guide.md",
     "featureList":["Slow query detection ranked by share of database time","Execution plan insights and plan comparison","Missing, unused and duplicate index advice","Plan regression detection with Query Store","Live blocking trees and deadlock analysis","Wait statistics in plain language","MCP server with 25 tools for Claude Code, Cursor and Codex","CLI with JSON output"],
@@ -50,11 +52,7 @@
   </script>
   <script src="/main.js" defer></script>
   <!-- Privacy-friendly analytics by Plausible -->
-  <script async src="https://plausible.io/js/pa-r5EkaWqkhpILeZH2bizcF.js"></script>
-  <script>
-    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
-    plausible.init()
-  </script>
+  <script defer src="https://plausible.io/js/pa-r5EkaWqkhpILeZH2bizcF.js"></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
@@ -104,7 +102,7 @@
         <figure class="window">
           <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i><span>Culprit SQL Studio — mssql-demo</span></div>
           <picture>
-            <source media="(prefers-color-scheme: dark)" srcset="/images/dashboard-dark@0.5x.webp 695w, /images/dashboard-dark@1x.webp 1389w, /images/dashboard-dark@2x.webp 2778w" sizes="(max-width: 1220px) calc(100vw - 40px), 1180px">
+            <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/dashboard-dark@0.5x.webp 695w, /images/dashboard-dark@1x.webp 1389w, /images/dashboard-dark@2x.webp 2778w" sizes="(max-width: 1220px) calc(100vw - 40px), 1180px">
             <img src="/images/dashboard-light@1x.webp" srcset="/images/dashboard-light@0.5x.webp 695w, /images/dashboard-light@1x.webp 1389w, /images/dashboard-light@2x.webp 2778w" sizes="(max-width: 1220px) calc(100vw - 40px), 1180px" width="1389" height="868" fetchpriority="high" decoding="async"
                  alt="Culprit SQL Studio dashboard for a SQL Server database: database time over five hours with a plan change on its timeline, findings ranked by severity, top queries, wait statistics and a blocked session">
           </picture>
@@ -128,7 +126,7 @@
           </dl>
         </article>
         <ul class="stats" aria-label="At a glance">
-          <li><b>50</b><span>checks for what costs time</span></li>
+          <li><b>__CHECK_COUNT__</b><span>checks for performance and health</span></li>
           <li><b>25</b><span>MCP tools for coding agents</span></li>
           <li><b>0 bytes</b><span>leave your machine</span></li>
           <li><b>&lt;1 s</b><span>to open; 10 ms per CLI call</span></li>
@@ -146,8 +144,8 @@
           </div>
           <figure class="shot">
             <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="/images/finding-dark@1x.webp 660w, /images/finding-dark@2x.webp 1320w" sizes="(max-width: 980px) calc(100vw - 40px), 660px">
-              <img src="/images/finding-light@1x.webp" srcset="/images/finding-light@1x.webp 660w, /images/finding-light@2x.webp 1320w" sizes="(max-width: 980px) calc(100vw - 40px), 660px" width="660" height="828" loading="lazy" decoding="async"
+              <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/finding-dark@1x.webp 660w, /images/finding-dark@2x.webp 1320w" sizes="(max-width: 700px) calc(100vw - 40px), (max-width: 980px) 660px, (max-width: 1220px) calc(58.333vw - 56px), 656px">
+              <img src="/images/finding-light@1x.webp" srcset="/images/finding-light@1x.webp 660w, /images/finding-light@2x.webp 1320w" sizes="(max-width: 700px) calc(100vw - 40px), (max-width: 980px) 660px, (max-width: 1220px) calc(58.333vw - 56px), 656px" width="660" height="828" loading="lazy" decoding="async"
                    alt="A finding: a query repeats its read of order_items 1.5 million times because it forces a loop join, with its share of database time, the evidence, the plan's key step, the fix and how to verify it">
             </picture>
           </figure>
@@ -160,8 +158,8 @@
           </div>
           <figure class="shot">
             <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="/images/compare-dark@1x.webp 869w, /images/compare-dark@2x.webp 1738w" sizes="(max-width: 980px) calc(100vw - 40px), 660px">
-              <img src="/images/compare-light@1x.webp" srcset="/images/compare-light@1x.webp 869w, /images/compare-light@2x.webp 1738w" sizes="(max-width: 980px) calc(100vw - 40px), 660px" width="869" height="541" loading="lazy" decoding="async"
+              <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/compare-dark@1x.webp 869w, /images/compare-dark@2x.webp 1738w" sizes="(max-width: 909px) calc(100vw - 40px), (max-width: 980px) 869px, (max-width: 1220px) calc(58.333vw - 56px), 656px">
+              <img src="/images/compare-light@1x.webp" srcset="/images/compare-light@1x.webp 869w, /images/compare-light@2x.webp 1738w" sizes="(max-width: 909px) calc(100vw - 40px), (max-width: 980px) 869px, (max-width: 1220px) calc(58.333vw - 56px), 656px" width="869" height="541" loading="lazy" decoding="async"
                    alt="Two PostgreSQL execution plans compared: plan 13 is estimated 3.5 thousand times more expensive because it scans orders where plan 12 seeks an index, with the six changed steps">
             </picture>
           </figure>
@@ -174,8 +172,8 @@
           </div>
           <figure class="shot">
             <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="/images/what-changed-dark@1x.webp 660w, /images/what-changed-dark@2x.webp 1320w" sizes="(max-width: 980px) calc(100vw - 40px), 660px">
-              <img src="/images/what-changed-light@1x.webp" srcset="/images/what-changed-light@1x.webp 660w, /images/what-changed-light@2x.webp 1320w" sizes="(max-width: 980px) calc(100vw - 40px), 660px" width="660" height="640" loading="lazy" decoding="async"
+              <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/what-changed-dark@1x.webp 660w, /images/what-changed-dark@2x.webp 1320w" sizes="(max-width: 700px) calc(100vw - 40px), (max-width: 980px) 660px, (max-width: 1220px) calc(58.333vw - 56px), 656px">
+              <img src="/images/what-changed-light@1x.webp" srcset="/images/what-changed-light@1x.webp 660w, /images/what-changed-light@2x.webp 1320w" sizes="(max-width: 700px) calc(100vw - 40px), (max-width: 980px) 660px, (max-width: 1220px) calc(58.333vw - 56px), 656px" width="660" height="640" loading="lazy" decoding="async"
                    alt="What changed between two periods: one query got 293 times slower after a plan switch, seven new queries, and the deploy and statistics update around them">
             </picture>
           </figure>
@@ -188,8 +186,8 @@
           </div>
           <figure class="shot">
             <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="/images/blocking-dark@1x.webp 1169w, /images/blocking-dark@2x.webp 2338w" sizes="(max-width: 1220px) calc(100vw - 40px), 1169px">
-              <img src="/images/blocking-light@1x.webp" srcset="/images/blocking-light@1x.webp 1169w, /images/blocking-light@2x.webp 2338w" sizes="(max-width: 1220px) calc(100vw - 40px), 1169px" width="1169" height="298" loading="lazy" decoding="async"
+              <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/blocking-dark@1x.webp 1169w, /images/blocking-dark@2x.webp 2338w" sizes="(max-width: 1209px) calc(100vw - 40px), 1169px">
+              <img src="/images/blocking-light@1x.webp" srcset="/images/blocking-light@1x.webp 1169w, /images/blocking-light@2x.webp 2338w" sizes="(max-width: 1209px) calc(100vw - 40px), 1169px" width="1169" height="298" loading="lazy" decoding="async"
                    alt="A blocking tree: session 71 has been idle in an open transaction for 22 seconds and two sessions wait behind it">
             </picture>
           </figure>
@@ -234,8 +232,8 @@
           </ul>
           <figure class="shot approval-shot">
             <picture>
-              <source media="(prefers-color-scheme: dark)" srcset="/images/approval-dark@1x.webp 697w, /images/approval-dark@2x.webp 1394w" sizes="(max-width: 980px) calc(100vw - 40px), 560px">
-              <img src="/images/approval-light@1x.webp" srcset="/images/approval-light@1x.webp 697w, /images/approval-light@2x.webp 1394w" sizes="(max-width: 980px) calc(100vw - 40px), 560px" width="697" height="368" loading="lazy" decoding="async"
+              <source type="image/webp" media="(prefers-color-scheme: dark)" srcset="/images/approval-dark@1x.webp 697w, /images/approval-dark@2x.webp 1394w" sizes="(max-width: 600px) calc(100vw - 40px), (max-width: 980px) 560px, (max-width: 1220px) calc(50vw - 48px), 560px">
+              <img src="/images/approval-light@1x.webp" srcset="/images/approval-light@1x.webp 697w, /images/approval-light@2x.webp 1394w" sizes="(max-width: 600px) calc(100vw - 40px), (max-width: 980px) 560px, (max-width: 1220px) calc(50vw - 48px), 560px" width="697" height="368" loading="lazy" decoding="async"
                    alt="An approval dialog: claude-code wants to run a SELECT on a development connection; checked as read-only, rolled back, capped at 200 rows and 30 seconds; Deny or Run once">
             </picture>
           </figure>

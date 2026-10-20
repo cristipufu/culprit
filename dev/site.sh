@@ -31,6 +31,9 @@ cp docs/DESIGN.md _site/docs/design.md
 lastmod=$(git log -1 --format=%cs -- site docs README.md 2>/dev/null || date -u +%F)
 sed "s/__LASTMOD__/${lastmod:-$(date -u +%F)}/" site/sitemap.xml > _site/sitemap.xml
 
+# Content-derived asset URLs and script hashes, using the standard library only (also runs in Pages CI).
+python3 dev/site-build.py
+
 echo "built _site/ ($(du -sh _site | cut -f1))"
 if [[ "${1:-}" == "serve" ]]; then
   python3 -m http.server 4321 --directory _site

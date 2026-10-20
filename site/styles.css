@@ -170,6 +170,7 @@ code {
 
 .brand {
   display: inline-flex;
+  min-height: 44px;
   flex-shrink: 0;
   align-items: center;
   gap: 10px;
@@ -195,6 +196,10 @@ code {
 }
 
 .nav-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 44px;
   color: var(--text-2);
 }
 
@@ -224,7 +229,8 @@ code {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 42px;
+  min-width: 44px;
+  height: 44px;
   padding: 0 18px;
   border-radius: 11px;
   font: 600 var(--fs-15) / 1 var(--font);
@@ -241,7 +247,7 @@ code {
 }
 
 .btn.small {
-  height: 36px;
+  height: 44px;
   padding: 0 14px;
   font-size: 14px;
 }
@@ -392,7 +398,10 @@ h1 br {
   font-weight: 700;
 }
 
-.other-os {
+.other-os:not([hidden]) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   margin: 0;
   font-size: 14px;
 }
@@ -754,6 +763,8 @@ section {
 }
 
 .terminal .term-bar {
+  flex-wrap: wrap;
+  padding-block: 4px;
   background: color-mix(in srgb, #fff 5%, var(--code-bg));
   border-bottom-color: color-mix(in srgb, #fff 8%, transparent);
   color: #a29e95;
@@ -765,12 +776,14 @@ section {
 
 .tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin-left: 12px;
 }
 
 .tabs button {
-  min-height: 28px;
+  min-height: 44px;
+  min-width: 44px;
   padding: 0 10px;
   border: 0;
   border-radius: 7px;
@@ -823,7 +836,8 @@ section {
 
 .copy {
   margin-left: auto;
-  min-height: 28px;
+  min-height: 44px;
+  min-width: 44px;
   padding: 0 12px;
   border: 1px solid color-mix(in srgb, #fff 16%, transparent);
   border-radius: 7px;
@@ -1001,6 +1015,8 @@ section {
 }
 
 .faq summary {
+  min-height: 44px;
+  align-items: center;
   cursor: pointer;
   font: 600 var(--fs-17) / 1.4 var(--font);
   letter-spacing: -0.01em;
@@ -1065,11 +1081,15 @@ section {
 .foot-row nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 18px;
+  gap: 4px 18px;
   font-size: var(--fs-15);
 }
 
 .foot-row nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 44px;
   color: var(--text-2);
 }
 
@@ -1077,6 +1097,15 @@ section {
   margin: 0 0 0 auto;
   font-size: 14px;
   color: var(--text-3);
+}
+
+.not-found {
+  padding-block: 120px;
+  text-align: center;
+}
+
+.not-found h1 {
+  font-size: var(--fs-title);
 }
 
 /* ───────── small screens ───────── */
@@ -1114,7 +1143,7 @@ section {
   }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 940px) {
   .nav-links {
     display: none;
   }
@@ -1131,7 +1160,7 @@ section {
   }
 
   .nav-cta .gh {
-    width: 36px;
+    width: 44px;
     padding: 0;
   }
 
@@ -1163,6 +1192,28 @@ section {
   }
 
   .muted {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .nav-row {
+    gap: 12px;
+  }
+
+  .nav .brand b {
+    display: none;
+  }
+
+  .nav-cta {
+    gap: 8px;
+  }
+
+  .terminal .term-bar > .dots {
+    display: none;
+  }
+
+  .tabs {
     margin-left: 0;
   }
 }

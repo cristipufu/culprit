@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="__CONTENT_SECURITY_POLICY__">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Page not found · Culprit SQL Studio</title>
   <meta name="robots" content="noindex">
@@ -9,17 +11,13 @@
   <link rel="icon" href="/favicon.ico" sizes="32x32">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
-  <!-- Privacy-friendly analytics by Plausible -->
-  <script async src="https://plausible.io/js/pa-r5EkaWqkhpILeZH2bizcF.js"></script>
-  <script>
-    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
-    plausible.init()
-  </script>
+  <script src="/main.js" defer></script>
+  <script defer src="https://plausible.io/js/pa-r5EkaWqkhpILeZH2bizcF.js"></script>
 </head>
 <body>
-  <main class="wrap narrow" style="padding: 120px 0; text-align: center">
+  <main class="wrap narrow not-found">
     <p class="section-kicker">404</p>
-    <h1 style="font-size: var(--fs-title)">This page doesn't exist.</h1>
+    <h1>This page doesn't exist.</h1>
     <p class="section-lede center">Go to <a href="/">Culprit SQL Studio</a>, or <a href="/#download">download it</a>.</p>
   </main>
 </body>

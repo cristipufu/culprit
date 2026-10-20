@@ -2,6 +2,11 @@
 // count, switches the agent setup tabs and wires the copy buttons. The page works without it.
 
 (() => {
+  // Deferred scripts run in document order: queue initialization before Plausible loads, without inline JavaScript.
+  window.plausible = window.plausible || function () { (window.plausible.q = window.plausible.q || []).push(arguments); };
+  window.plausible.init = window.plausible.init || function (options) { window.plausible.o = options || {}; };
+  window.plausible.init();
+
   const RELEASE = "https://github.com/cristipufu/culprit-sql-studio/releases/latest/download/";
   // Fixed icons, defined here; nothing from the network or the URL is ever inserted as markup.
   const PLATFORMS = {
@@ -41,17 +46,19 @@
   }
 
   // The star count, when GitHub answers; nothing is shown otherwise.
-  fetch("https://api.github.com/repos/cristipufu/culprit-sql-studio", { headers: { Accept: "application/vnd.github+json" } })
-    .then((r) => (r.ok ? r.json() : null))
-    .then((repo) => {
-      const n = repo && Number(repo.stargazers_count);
-      const el = document.querySelector("[data-stars]");
-      // A handful of stars reads as "nobody uses this": show the count once it says something.
-      if (!el || !Number.isFinite(n) || n < 25) return;
-      el.textContent = `★ ${n >= 1000 ? (n / 1000).toFixed(1) + "k" : n}`;
-      el.hidden = false;
-    })
-    .catch(() => {});
+  const stars = document.querySelector("[data-stars]");
+  if (stars) {
+    fetch("https://api.github.com/repos/cristipufu/culprit-sql-studio", { headers: { Accept: "application/vnd.github+json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((repo) => {
+        const n = repo && Number(repo.stargazers_count);
+        // A handful of stars reads as "nobody uses this": show the count once it says something.
+        if (!Number.isFinite(n) || n < 25) return;
+        stars.textContent = `★ ${n >= 1000 ? (n / 1000).toFixed(1) + "k" : n}`;
+        stars.hidden = false;
+      })
+      .catch(() => {});
+  }
 
   // Agent setup tabs.
   const tabs = [...document.querySelectorAll('[role="tab"][data-tab]')];
