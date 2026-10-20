@@ -21,7 +21,7 @@ pub struct DatabaseIdentity {
     pub engine: Engine,
     pub database: String,
     pub location: DatabaseLocation,
-    /// An engine-provided incarnation, when available. Never inferred from a database name or server start time.
+    // An engine-provided incarnation, when available. Never inferred from a database name or server start time.
     pub incarnation: Option<String>,
 }
 

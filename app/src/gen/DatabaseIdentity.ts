@@ -2,8 +2,4 @@
 import type { DatabaseLocation } from "./DatabaseLocation";
 import type { Engine } from "./Engine";
 
-export type DatabaseIdentity = { engine: Engine, database: string, location: DatabaseLocation, 
-/**
- * An engine-provided incarnation, when available. Never inferred from a database name or server start time.
- */
-incarnation: string | null, };
+export type DatabaseIdentity = { engine: Engine, database: string, location: DatabaseLocation, incarnation: string | null, };
