@@ -174,3 +174,24 @@ fn a_total_wait_reads_to_the_second_as_its_title_says_it() {
     let html = finding_html(&report, &finding, &options);
     assert!(html.contains("2 min 32 s"), "{html}");
 }
+
+#[test]
+fn text_metrics_keep_their_label_and_full_escaped_evidence() {
+    let (mut report, id) = report_quoting_values();
+    let finding = report.findings.iter_mut().find(|f| f.id == id).expect("finding");
+    let evidence = format!("{}\n<img src=x onerror=alert(1)> & details", "long_identifier_".repeat(30));
+    finding.metrics = vec![
+        culprit_core::Metric::new("Rows", 486_000.0, culprit_core::Unit::Rows),
+        culprit_core::Metric::text("Evidence <label>", &evidence),
+    ];
+    let finding = finding.clone();
+    let options = ExportOptions { redact: false, ..Default::default() };
+    for html in [finding_html(&report, &finding, &options), report_html(&report, &options)] {
+        assert!(html.contains(r#"<div class="fig"><div class="v">486K</div><div class="l">Rows</div>"#));
+        assert!(html.contains(&format!(
+            r#"<div class="fig metric-text"><div class="l">Evidence &lt;label&gt;</div><div class="v">{}</div>"#,
+            super::svg::escape(&evidence)
+        )));
+        assert!(!html.contains("<img src=x") && !html.contains("Evidence <label>"));
+    }
+}

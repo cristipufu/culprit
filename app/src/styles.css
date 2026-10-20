@@ -1006,9 +1006,11 @@ button.update-item:hover {
 
 /* Dividers drawn by each cell, so a short last row leaves blank space instead of a grey block. */
 .metric {
+  min-width: 0;
   background: var(--surface);
   padding: 10px 12px 11px;
   box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border);
+  overflow-wrap: anywhere;
 }
 
 .metric .value {
@@ -1022,6 +1024,33 @@ button.update-item:hover {
   color: var(--text-3);
   font-size: var(--fs-ui-sm);
   margin-top: 1px;
+}
+
+.metrics.finding-metrics {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.finding-metrics > .metric {
+  flex: 1 1 136px;
+}
+
+.finding-metrics > .metric-text {
+  flex-basis: 100%;
+}
+
+.metric-text .label {
+  margin: 0 0 4px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.metric-text .value {
+  font-size: var(--fs-body);
+  font-weight: 400;
+  line-height: 1.6;
+  letter-spacing: normal;
+  white-space: pre-wrap;
 }
 
 .qcard {

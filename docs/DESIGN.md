@@ -118,6 +118,8 @@ Verify             how to confirm: re-scan after deploy, what-if plan, run on al
 
 **Copy for agent** produces a self-contained markdown brief (problem, evidence, fix, verification) to paste into a coding agent, which then writes the migration in the codebase.
 
+Numeric metrics remain compact tiles. Text evidence, such as statistics names or an error message, uses a full-width row with its label above readable, selectable text that wraps without clipping. The app and HTML exports use the metric's unit to choose the layout.
+
 ### Queries
 
 - Dense table: share of DB time (bar), total time, executions, average, max, rows/exec, reads/exec, CPU, plan count. Sort by any column, `/` to filter.

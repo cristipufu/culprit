@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use culprit_core::{ChangeKind, Finding, Plan, PlanDiff, PlanKind, PlanNode, Report, ScenarioKind, Severity, format};
+use culprit_core::{
+    ChangeKind, Finding, Plan, PlanDiff, PlanKind, PlanNode, Report, ScenarioKind, Severity, Unit, format,
+};
 
 use super::markdown::metric_text;
 use super::svg::{Mark, diagram, escape, heat_class};
@@ -86,7 +88,11 @@ table.steps{width:100%;border-collapse:separate;border-spacing:0;border:1px soli
 .warnings{color:var(--warn);font-size:12px}
 pre{margin:0;padding:12px 14px;border-radius:10px;background:var(--code-bg);border:1px solid var(--border);font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
 code{font-family:var(--mono);font-size:12px;background:var(--code-bg);padding:1px 5px;border-radius:4px}
-.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}
+.metrics{display:flex;flex-wrap:wrap;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}
+.metrics>.fig{flex:1 1 170px;min-width:0;overflow-wrap:anywhere}
+.metrics>.metric-text{flex-basis:100%}
+.metric-text .l{font-weight:600;margin-bottom:4px}
+.metric-text .v{font-size:13px;font-weight:400;line-height:1.6;letter-spacing:normal;white-space:pre-wrap}
 .callout{border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;padding:12px 14px;background:var(--surface)}
 ol.verify{margin:0;padding-left:20px}ol.verify li{padding:2px 0}
 .sev{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px}
@@ -517,6 +523,15 @@ fn finding_body(
     if !finding.metrics.is_empty() {
         out.push_str(r#"<div class="metrics">"#);
         for m in &finding.metrics {
+            if matches!(m.unit, Unit::Text) {
+                let _ = write!(
+                    out,
+                    r#"<div class="fig metric-text"><div class="l">{}</div><div class="v">{}</div></div>"#,
+                    escape(&m.label),
+                    escape(&metric_text(m))
+                );
+                continue;
+            }
             let _ = write!(
                 out,
                 r#"<div class="fig"><div class="v">{}</div><div class="l">{}</div></div>"#,

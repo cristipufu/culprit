@@ -78,11 +78,12 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
 
         {finding.metrics.length > 0 && (
           <section>
-            <div className="metrics">
+            <div className="metrics finding-metrics">
               {finding.metrics.slice(0, 6).map((m) => (
-                <div className="metric" key={m.label}>
-                  <div className="value">{findingMetric(m)}</div>
-                  <div className="label">{m.label}</div>
+                <div className={`metric ${m.unit === "text" ? "metric-text" : ""}`} key={m.label}>
+                  {m.unit === "text" && <div className="label">{m.label}</div>}
+                  <div className={`value ${m.unit === "text" ? "selectable" : ""}`}>{findingMetric(m)}</div>
+                  {m.unit !== "text" && <div className="label">{m.label}</div>}
                 </div>
               ))}
             </div>
