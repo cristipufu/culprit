@@ -239,7 +239,7 @@ function WaitsView({
         <div className="detail-head">
           <i className="swatch big" style={{ background: waitColor(current.key) }} />
           <h3>{current.label}</h3>
-          <span className="pill">{percent(current.share)} of waiting</span>
+          <span className="pill">{percent(current.share)} of recorded time</span>
           <span className="muted mono small">{current.top_wait}</span>
         </div>
         <p className="meaning">{current.meaning}</p>
@@ -265,7 +265,7 @@ function WaitsView({
                 <span className="wq-text mono">{q.text}</span>
                 <span className="wq-meta">
                   {/* Waits of a parallel query's threads add up, so they can exceed its elapsed time: per run is always true. */}
-                  waits {duration(q.executions > 0 ? q.wait_ms / q.executions : q.wait_ms)} per run
+                  {report.engine === "postgres" && current.key === "other" ? "recorded time" : "waits"} {duration(q.executions > 0 ? q.wait_ms / q.executions : q.wait_ms)} per run
                   {q.share_of_query < 0.95 ? ` (${percent(q.share_of_query)} of its time)` : ""} · {count(q.executions)} {q.executions === 1 ? "run" : "runs"}
                   {q.rows_per_run != null ? ` · ${count(q.rows_per_run)} ${q.rows_per_run === 1 ? "row" : "rows"} per run` : ""}
                 </span>

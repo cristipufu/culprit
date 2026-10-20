@@ -461,7 +461,7 @@ fn an_unstable_insert_says_what_its_foreign_keys_lock() {
 }
 
 // The aptabase-us reading: a stopped insert was told to "find what the slow runs wait for while they happen", and
-// storage was a cause though its data-file reads and writes took 86 ms against 19 s of slow runs.
+// Historical outliers do not prove a problem in the replacement. Small recorded I/O doesn't rule storage out.
 #[test]
 fn a_stopped_unstable_insert_points_at_what_runs_now() {
     let (mean, sd, max, n) = spread_of(&[(2.0, 9_900.0), (5000.0, 100.0)]);
@@ -486,19 +486,22 @@ fn a_stopped_unstable_insert_points_at_what_runs_now() {
     assert!(f.inactive, "it stopped");
     let fix = &f.fix.as_ref().unwrap().summary;
     assert!(
-        fix.starts_with("This statement no longer runs. Query 2885972271926804069, an insert into events too, still does: if it replaced this one, its runs can wait the same way"),
+        fix.starts_with("This statement no longer runs. Query 2885972271926804069, an insert into events too, still runs and may have replaced it"),
         "{fix}"
     );
-    assert!(!fix.contains("Find what the slow runs wait for") && !fix.contains("on storage"), "{fix}");
-    assert!(f.summary.contains("Its data-file reads and writes took 86 ms in all"), "{}", f.summary);
-    assert!(f.summary.contains("storage reads weren't it"), "{}", f.summary);
-    assert!(f.summary.contains(", or on writing WAL"), "{}", f.summary);
+    assert!(fix.contains("do not establish a current problem in its replacement or justify a logging change"), "{fix}");
+    assert!(!fix.contains("Set log_") && f.fix.as_ref().unwrap().sql.is_none(), "{fix}");
+    assert!(f.summary.contains("recorded data-file I/O took 86 ms in all"), "{}", f.summary);
+    assert!(f.summary.contains("does not rule out storage delays"), "{}", f.summary);
+    assert!(f.summary.contains("Triggers and other work absent from this plan"));
+    assert!(f.summary.contains("storage"), "{}", f.summary);
     // Nothing else writes the table: it no longer runs, and that's what it says.
     query(&mut s, "2885972271926804069").text =
         "SELECT kind, count(*) FROM events WHERE customer_id = $1 GROUP BY kind".into();
     let report = analyze(s);
     let fix = report.findings.iter().find(|f| f.check == "unstable-query").unwrap().fix.clone().unwrap().summary;
-    assert!(fix.starts_with("This statement no longer runs, so there is nothing to watch now"), "{fix}");
+    assert!(fix.starts_with("This statement no longer runs."), "{fix}");
+    assert!(!fix.contains("2885972271926804069") && fix.contains("If slow runs recur"), "{fix}");
 }
 
 // SQL Server's Query Store times an autocommit statement's commit with it: its log flush stays among the waits.
@@ -1314,11 +1317,20 @@ fn an_upsert_is_said_to_insert_or_update_and_a_get_or_create_is_fixed_as_one() {
     let fix = f.fix.unwrap().summary;
     assert!(fix.contains("It is a get-or-create: its DO UPDATE sets a column to the value it has"), "{fix}");
     assert!(
-        fix.contains(
-            "insert with ON CONFLICT DO NOTHING RETURNING and read the row with a SELECT only when that returns nothing"
-        ),
+        fix.contains("evaluate ON CONFLICT DO NOTHING RETURNING followed by a separate SELECT when no row is returned"),
         "{fix}"
     );
+    for safeguard in [
+        "not an equivalent atomic replacement",
+        "transaction isolation",
+        "concurrent deletion",
+        "serialization failures",
+        "locking or retries",
+        "UPDATE-trigger effects",
+        "keep the atomic upsert",
+    ] {
+        assert!(fix.contains(safeguard), "{fix}");
+    }
     assert!(!fix.contains("several rows per statement"), "{fix}");
     let upsert =
         "INSERT INTO products (sku, name) VALUES ($1, $2) ON CONFLICT (sku) DO UPDATE SET name = EXCLUDED.name";

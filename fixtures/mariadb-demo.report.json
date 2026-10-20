@@ -46,7 +46,7 @@
         "kind": "query",
         "name": "375c64398248650e"
       },
-      "summary": "The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.",
+      "summary": "The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs. Latest activity: 60 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.",
       "title": "A read from orders builds an on-disk temporary table about once per run",
       "verification_basis": "rescan",
       "verify": [
@@ -101,7 +101,7 @@
         "kind": "query",
         "name": "a92bb0be330ac53a"
       },
-      "summary": "587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.",
+      "summary": "587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip. Latest activity: 90K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.",
       "title": "A read from products runs 30K times in 1 minute, one key at a time",
       "verification_basis": "rescan",
       "verify": [
@@ -166,7 +166,7 @@
         "kind": "query",
         "name": "decf59629e790076"
       },
-      "summary": "3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.",
+      "summary": "3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run. Latest activity: 6.0K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.",
       "title": "A read from orders takes 3.2 s of database time over the 1 minute since statistics were reset (6%)",
       "verification_basis": "rescan",
       "verify": [
@@ -1193,6 +1193,7 @@
           "read_bytes": 22806528.0,
           "read_ms": 30.31880907,
           "reads": 1392.0,
+          "scope": "server",
           "write_bytes": 74891264.0,
           "write_ms": 136.151442735,
           "writes": 4571.0
@@ -1204,6 +1205,7 @@
           "read_bytes": 89260032.0,
           "read_ms": 40.54917273,
           "reads": 5448.0,
+          "scope": "server",
           "write_bytes": 63438848.0,
           "write_ms": 77.026663395,
           "writes": 3872.0
@@ -1215,6 +1217,7 @@
           "read_bytes": 17580032.0,
           "read_ms": 46.082931675,
           "reads": 1073.0,
+          "scope": "server",
           "write_bytes": 20561920.0,
           "write_ms": 26.243035995,
           "writes": 1255.0
@@ -1226,6 +1229,7 @@
           "read_bytes": 2703360.0,
           "read_ms": 6.107669205,
           "reads": 36.0,
+          "scope": "server",
           "write_bytes": 9388032.0,
           "write_ms": 4.440373905,
           "writes": 58.0
@@ -1237,6 +1241,7 @@
           "read_bytes": 2359296.0,
           "read_ms": 6.1256613,
           "reads": 144.0,
+          "scope": "server",
           "write_bytes": 2048000.0,
           "write_ms": 4.175209665,
           "writes": 125.0
@@ -1248,6 +1253,7 @@
           "read_bytes": 4489216.0,
           "read_ms": 1.73033025,
           "reads": 274.0,
+          "scope": "server",
           "write_bytes": 8044544.0,
           "write_ms": 8.511763755,
           "writes": 491.0
@@ -1259,6 +1265,7 @@
           "read_bytes": 2249981.0,
           "read_ms": 6.132632715,
           "reads": 587.0,
+          "scope": "server",
           "write_bytes": 90160.0,
           "write_ms": 1.758675105,
           "writes": 368.0
@@ -1270,6 +1277,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 131377.0,
           "write_ms": 7.107127995,
           "writes": 369.0
@@ -1281,6 +1289,7 @@
           "read_bytes": 458752.0,
           "read_ms": 6.40167924,
           "reads": 56.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1292,6 +1301,7 @@
           "read_bytes": 1310720.0,
           "read_ms": 0.33663168,
           "reads": 80.0,
+          "scope": "server",
           "write_bytes": 655360.0,
           "write_ms": 2.689338135,
           "writes": 40.0
@@ -1303,6 +1313,7 @@
           "read_bytes": 802816.0,
           "read_ms": 0.204592245,
           "reads": 49.0,
+          "scope": "server",
           "write_bytes": 2211840.0,
           "write_ms": 2.410147575,
           "writes": 135.0
@@ -1314,6 +1325,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 2146304.0,
           "write_ms": 1.68850176,
           "writes": 131.0
@@ -1325,6 +1337,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 307496.0,
           "write_ms": 0.65355972,
           "writes": 167.0
@@ -1336,6 +1349,7 @@
           "read_bytes": 1640.0,
           "read_ms": 0.527030625,
           "reads": 2.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1347,6 +1361,7 @@
           "read_bytes": 134.0,
           "read_ms": 0.376080705,
           "reads": 2.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1358,6 +1373,7 @@
           "read_bytes": 4667.0,
           "read_ms": 0.352786995,
           "reads": 6.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1369,6 +1385,7 @@
           "read_bytes": 134.0,
           "read_ms": 0.234732135,
           "reads": 2.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1380,6 +1397,7 @@
           "read_bytes": 944.0,
           "read_ms": 0.21749145,
           "reads": 4.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1391,6 +1409,7 @@
           "read_bytes": 1048.0,
           "read_ms": 0.200250765,
           "reads": 4.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1402,6 +1421,7 @@
           "read_bytes": 804.0,
           "read_ms": 0.16188711,
           "reads": 2.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1413,6 +1433,7 @@
           "read_bytes": 81920.0,
           "read_ms": 0.056314005,
           "reads": 5.0,
+          "scope": "server",
           "write_bytes": 49152.0,
           "write_ms": 0.102316995,
           "writes": 3.0
@@ -1424,6 +1445,7 @@
           "read_bytes": 65536.0,
           "read_ms": 0.046044735,
           "reads": 4.0,
+          "scope": "server",
           "write_bytes": 49152.0,
           "write_ms": 0.072594555,
           "writes": 3.0
@@ -1435,6 +1457,7 @@
           "read_bytes": 163840.0,
           "read_ms": 0.101148135,
           "reads": 7.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1446,6 +1469,7 @@
           "read_bytes": 140.0,
           "read_ms": 0.011062425,
           "reads": 4.0,
+          "scope": "server",
           "write_bytes": 315.0,
           "write_ms": 0.084283155,
           "writes": 9.0
@@ -2798,7 +2822,104 @@
     "headline": "8 opportunities. The top ones touch 53.7 s of database time over the 1 minute since statistics were reset (95%).",
     "no_workload": null,
     "opportunities": 8,
-    "over_scans": [],
+    "over_scans": [
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 60.0,
+          "time_ms": 142911.23
+        },
+        "counted": 60.0,
+        "mean_ms": 2498.19707065,
+        "over": null,
+        "query": "375c64398248650e",
+        "runs": "60 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.8855883790586936,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 6000.0,
+          "time_ms": 9621.76
+        },
+        "counted": 6000.0,
+        "mean_ms": 1.5836492085,
+        "over": null,
+        "query": "decf59629e790076",
+        "runs": "6.0K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.05613893923861639,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 180.0,
+          "time_ms": 6810.19
+        },
+        "counted": 180.0,
+        "mean_ms": 37.56775795,
+        "over": null,
+        "query": "258e3c9b580f1ecc",
+        "runs": "180 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.03995229630841756,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 90000.0,
+          "time_ms": 1804.12
+        },
+        "counted": 90000.0,
+        "mean_ms": 0.019573826366666665,
+        "over": null,
+        "query": "a92bb0be330ac53a",
+        "runs": "90K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.010408117938943744,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 12000.0,
+          "time_ms": 764.57
+        },
+        "counted": 12000.0,
+        "mean_ms": 0.058405757,
+        "over": null,
+        "query": "46db559fdff712fd",
+        "runs": "12K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.00414086304695475,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+          "runs": 12000.0,
+          "time_ms": 686.69
+        },
+        "counted": 12000.0,
+        "mean_ms": 0.0531946425,
+        "over": null,
+        "query": "d1f45c9664edccf9",
+        "runs": "12K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC",
+        "runs_per_day": null,
+        "share": 0.0037714044083739665,
+        "totals": null
+      }
+    ],
     "runs_said": [],
     "top_share": 0.9521354362362536
   }

@@ -6,7 +6,7 @@ findings: 8
 === finding temp-spill:375c64398248650e
 Optional improvement · low severity · high confidence · queries
 title: A read from orders builds an on-disk temporary table about once per run
-summary: The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+summary: The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs. Latest activity: 60 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 impact: 89% of DB time · 88.6% of database time
 metrics:
   - On-disk temporary tables per run: 1
@@ -27,7 +27,7 @@ brief:
 
     ## What's happening
 
-    The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs.
+    The associated statements used 50.0 s of database time over the 1 minute since statistics were reset (89%). The temporary table behind a GROUP BY, DISTINCT or ORDER BY in this statement outgrows the in-memory limit (16.0 MB, the smaller of tmp_table_size and max_heap_table_size) and moves to disk, which is many times slower: 20 on-disk tables in 20 runs. Latest activity: 60 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 
     ## Evidence
 
@@ -36,7 +36,7 @@ brief:
 
     ## Queries involved
 
-    Query `375c64398248650e` — 89% of DB time, 20 runs over the 1 minute since statistics were reset, 2.5 s average:
+    Query `375c64398248650e` — 89% of DB time, 60 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC, 2.5 s average (share and average over the 1 minute since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT `customer_id` , CHANNEL , SUM ( `total` ) AS `spent` , COUNT ( * ) AS `orders` FROM `orders` GROUP BY `customer_id` , CHANNEL ORDER BY `spent` DESC LIMIT ?
@@ -66,7 +66,7 @@ brief:
 === finding chatty-query:a92bb0be330ac53a
 Optional improvement · low severity · medium confidence · queries
 title: A read from products runs 30K times in 1 minute, one key at a time
-summary: 587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
+summary: 587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip. Latest activity: 90K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 impact: 587 ms of database time over the 1 minute since statistics were reset (1%) · 1.0% of database time
 metrics:
   - Share of executions: 75%
@@ -85,7 +85,7 @@ brief:
 
     ## What's happening
 
-    587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip.
+    587 ms of database time over the 1 minute since statistics were reset (1%). Its runs are 75% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (1% of database time in all), but each call can add a network round trip. Latest activity: 90K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 
     ## Evidence
 
@@ -94,7 +94,7 @@ brief:
 
     ## Queries involved
 
-    Query `a92bb0be330ac53a` — 1% of DB time, 30K runs over the 1 minute since statistics were reset, 0.02 ms average:
+    Query `a92bb0be330ac53a` — 1% of DB time, 90K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC, 0.02 ms average (share and average over the 1 minute since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT ID , NAME , `price` FROM `products` WHERE ID = ?
@@ -119,7 +119,7 @@ brief:
 === finding heavy-query:decf59629e790076
 Optional improvement · low severity · high confidence · queries
 title: A read from orders takes 3.2 s of database time over the 1 minute since statistics were reset (6%)
-summary: 3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+summary: 3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run. Latest activity: 6.0K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 impact: 3.2 s of database time over the 1 minute since statistics were reset (6%) · 5.6% of database time
 metrics:
   - Share of DB time: 6%
@@ -138,7 +138,7 @@ brief:
 
     ## What's happening
 
-    3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run.
+    3.2 s of database time over the 1 minute since statistics were reset (6%). It ran 2.0K times in 1 minute at 1.6 ms on average: 6% of all database time in the 1 minute since statistics were reset. 100% of its estimated cost is an index range scan of shop.orders that examines 11K rows a run. Latest activity: 6.0K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC. This count is shown without extrapolating a daily rate.
 
     ## Evidence
 
@@ -149,7 +149,7 @@ brief:
 
     ## Queries involved
 
-    Query `decf59629e790076` — 6% of DB time, 2.0K runs over the 1 minute since statistics were reset, 1.6 ms average:
+    Query `decf59629e790076` — 6% of DB time, 6.0K runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC, 1.6 ms average (share and average over the 1 minute since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT COUNT ( * ) FROM `orders` WHERE STATUS = ? AND `created_at` >= ?
@@ -204,7 +204,7 @@ brief:
 
     ## Queries involved
 
-    Query `258e3c9b580f1ecc` — 4% of DB time, 60 runs over the 1 minute since statistics were reset, 38 ms average:
+    Query `258e3c9b580f1ecc` — 4% of DB time, 180 runs observed over 16 minutes of Culprit's scans on Oct 11, 15:49–16:05 UTC, 38 ms average (share and average over the 1 minute since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT `o` . `id` , `o` . `customer_id` , `o` . `total` FROM `orders` `o` WHERE `o` . `promo_code` = ? ORDER BY `o` . `total` DESC LIMIT ?

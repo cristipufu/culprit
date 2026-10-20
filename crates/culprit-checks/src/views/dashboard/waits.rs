@@ -83,12 +83,23 @@ pub(super) fn waits(s: &Snapshot) -> Tile {
     let lead = if top.key == "other" { named.unwrap_or(top) } else { top };
     // Totals since startup cover a different stretch than database time: say which, rather than set them side by side.
     let since_start = r.scope == WaitScope::SinceStartup;
-    tile.detail = if since_start {
+    tile.detail = if s.server.engine == Engine::Postgres {
+        Some(format!(
+            "{}. This is recorded statement execution time, including CPU and unclassified time; it is not a measurement of time spent waiting.",
+            r.source
+        ))
+    } else if since_start {
         Some(format!("{}.", r.source.trim_end_matches('.')))
     } else {
         lead.detail.clone().or_else(|| first_sentence(&lead.meaning))
     };
-    let label = if since_start { "Waiting since start" } else { "Waiting" };
+    let label = if s.server.engine == Engine::Postgres {
+        "Statement execution time"
+    } else if since_start {
+        "Waiting since start"
+    } else {
+        "Waiting"
+    };
     tile.metrics = vec![TileMetric::new("total", label, Some(r.total_ms), format::duration(r.total_ms))];
     tile.items = r
         .categories

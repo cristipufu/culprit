@@ -1,6 +1,7 @@
 //! The `slow-storage` check: Average read and write latency per database file since startup: sys.dm_io_virtual_file_stats, pg_stat_io (16+, with track_io_timing), performance_schema file I/O.
 
 use super::*;
+use std::collections::BTreeSet;
 
 pub fn slow_storage_info() -> CheckInfo {
     CheckInfo {
@@ -133,6 +134,7 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
         .map(|g| {
             let (avg, ops, write) = (g.avg_ms(), g.ops, g.write);
             let label = file_label(snapshot, &g);
+            let operation = if write && g.files.iter().all(|f| f.write_label() == "flush") { "flush" } else { "write" };
             let what = match g.files.as_slice() {
                 [one] => one.name.clone(),
                 _ => format!("{} files", match g.kind {
@@ -141,12 +143,13 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                     _ => "data",
                 }),
             };
+            let coverage = g.files.iter().map(|f| f.coverage(snapshot)).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>().join("; ");
             let key = format!("{}:{what}", g.database.as_deref().unwrap_or(""));
             let mut f = finding("slow-storage", &key, Category::Configuration, subject(SubjectKind::Database, &label));
             // Only reads come in bulk sizes that slow each one down; a log is judged on its commits.
             let bulk = !write && g.bulk();
             f.title = match (write, bulk) {
-                (true, _) => format!("Recorded log writes to {label} averaged {}", format::duration(avg)),
+                (true, _) => format!("Recorded log {} to {label} averaged {}", if operation == "flush" { "flushes" } else { "writes" }, format::duration(avg)),
                 (false, false) => format!("Recorded reads from {label} averaged {}", format::duration(avg)),
                 (false, true) => format!(
                     "Recorded reads from {label} averaged {}, mostly large reads of {}",
@@ -162,13 +165,13 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
             // The label starts with a database name: never capitalize it, lead with the operation instead.
             f.summary = format!(
                 "{} {} took {} on average across {} {} {}. Healthy SSD storage answers in a few milliseconds{}; when it happens during a query it can delay reads that miss memory{}. This historical average does not establish a delay now.{}",
-                if write { "Writes to" } else { "Reads from" },
+                if write && operation == "flush" { "Flushes to" } else if write { "Writes to" } else { "Reads from" },
                 label,
                 format::duration(avg),
                 format::count(ops),
-                if write { "writes" } else { "reads" },
-                since_start(snapshot),
-                if write { " and log writes in under 2 ms" } else { "" },
+                if write && operation == "flush" { "flushes" } else if write { "writes" } else { "reads" },
+                if snapshot.server.engine == Engine::Postgres { format!("({coverage})") } else { since_start(snapshot) },
+                if write && operation == "flush" { " and log flushes in under 2 ms" } else if write { " and log writes in under 2 ms" } else { "" },
                 if write { " and every commit" } else { "" },
                 cache_note
             );
@@ -187,11 +190,11 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 Severity::Low
             } else { Severity::Medium };
             severity_score(&mut f);
-            f.impact.label = format!("{} per {}", format::duration(avg), if write { "write" } else { "read" });
+            f.impact.label = format!("{} per {}", format::duration(avg), if write { operation } else { "read" });
             f.confidence = Confidence::Medium;
             f.metrics = vec![
-                Metric::new(if write { "Average write" } else { "Average read" }, avg, Unit::Ms),
-                Metric::new(if write { "Writes" } else { "Reads" }, ops, Unit::Count),
+                Metric::new(if write && operation == "flush" { "Average flush" } else if write { "Average write" } else { "Average read" }, avg, Unit::Ms),
+                Metric::new(if write && operation == "flush" { "Flushes" } else if write { "Writes" } else { "Reads" }, ops, Unit::Count),
                 Metric::text(
                     if g.files.len() == 1 { "File" } else { "Files" },
                     g.files.iter().map(|f| f.name.clone()).collect::<Vec<_>>().join(", "),
@@ -201,14 +204,10 @@ pub fn slow_storage(snapshot: &Snapshot) -> Vec<Finding> {
                 f.metrics.push(Metric::new("Average read size", b, Unit::Bytes));
             }
             f.fix = Some(Fix { summary: storage_fix(snapshot).into(), sql: None, cost: None });
-            f.verify = vec![if write {
-                "Re-scan after the change: average log write time should be under 5 ms.".into()
-            } else {
-                "Re-scan after the change: average read time should be under 10 ms.".into()
-            }];
-            f.caveats.push("Averages since startup: a slow hour long ago still counts.".into());
+            f.verify = vec![format!("Compare two readings after the change with the same source and reset period: divide the additional {} time by the additional operation count. Measure during representative load; the cumulative average includes older operations.", if write { operation } else { "read" })];
+            f.caveats.push("Historical averages: a slow hour long ago still counts, and a later scan does not isolate new operations without comparing counter differences.".into());
             if shared {
-                f.caveats.push("These file statistics cover shared storage or the whole server; they do not establish that this database's queries are slow.".into());
+                f.caveats.push("Historical file statistics do not establish that this database's queries are slow now; check the stated source scope and measure recent operations alongside query waits.".into());
             }
             f
         })

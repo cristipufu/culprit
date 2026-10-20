@@ -200,7 +200,9 @@ function avg(ms: number | null, n: number): number | null {
 }
 
 function fileName(f: FileIo): string {
-  return f.database && !f.name.startsWith(f.database) ? `${f.database} · ${f.name}` : f.name;
+  const name = f.database && !f.name.startsWith(f.database) ? `${f.database} · ${f.name}` : f.name;
+  const scope = f.scope === "server" ? "whole server" : f.scope === "database" ? (f.database ?? "this database") : "scope not recorded";
+  return scope ? `${name} (${scope})` : name;
 }
 
 function storageLead(files: FileIo[], engine: Engine, report: Report): { text: string; status: Status } {
@@ -218,7 +220,7 @@ function storageLead(files: FileIo[], engine: Engine, report: Report): { text: s
   }
   const reads = files.filter((f) => f.kind !== "log" && f.read_ms != null).reduce((a, f) => ({ ms: a.ms + (f.read_ms ?? 0), n: a.n + f.reads }), { ms: 0, n: 0 });
   const logs = files.filter((f) => f.kind === "log" && f.write_ms != null).reduce((a, f) => ({ ms: a.ms + (f.write_ms ?? 0), n: a.n + f.writes }), { ms: 0, n: 0 });
-  const sentence = [reads.n > 0 ? `reads average ${latency(reads.ms / reads.n)}` : null, logs.n > 0 ? `log writes ${latency(logs.ms / logs.n)}` : null]
+  const sentence = [reads.n > 0 ? `reads average ${latency(reads.ms / reads.n)}` : null, logs.n > 0 ? `log ${files.some((f) => f.kind === "log" && f.write_operation === "flush") ? "flushes" : "writes"} ${latency(logs.ms / logs.n)}` : null]
     .filter(Boolean)
     .join(" and ");
   return { text: sentence ? `${sentence[0]!.toUpperCase()}${sentence.slice(1)} over the recorded history.` : "No timed operations in this scan.", status: "info" };
@@ -239,13 +241,16 @@ function Latency({ ms, n, label }: { ms: number | null; n: number; label: string
 export function StorageLatency({ files, engine, report, compact }: { files: FileIo[]; engine: Engine; report: Report; compact?: boolean }) {
   if (files.length === 0) return null;
   const lead = storageLead(files, engine, report);
+  const written = files.filter((f) => f.writes > 0);
+  const hasFlushes = written.some((f) => f.write_operation === "flush");
+  const writeHeading = hasFlushes ? (written.every((f) => f.write_operation === "flush") ? "Flushes" : "Writes / flushes") : "Writes";
   return (
     <section className="io-panel">
       {!compact && (
         <div className="io-head">
           <h4>Storage</h4>
           <span className="muted">
-            average per read and write over recorded history · {engine === "postgres" ? "whole server, including reads the OS cache served" : engine === "mysql" ? "whole server, by file" : "by database file"}
+            recorded average per operation · each row states its scope{engine === "postgres" ? "; reads include those the OS cache served" : ""}
           </span>
         </div>
       )}
@@ -254,19 +259,19 @@ export function StorageLatency({ files, engine, report, compact }: { files: File
         <div className="io-row io-th" role="row">
           <span role="columnheader">File</span>
           <span role="columnheader">Reads</span>
-          <span role="columnheader">Writes</span>
+          <span role="columnheader">{writeHeading}</span>
         </div>
         {files.slice(0, compact ? 8 : 12).map((f) => (
           <div key={`${f.database ?? ""}:${f.name}`} className="io-row" role="row">
             <span className="io-name" role="cell">
               <i className={`sig-dot ${storageStatus(report, f)}`} aria-hidden />
-              <span className="io-file" title={fileName(f)}>
+              <span className="io-file" title={`${fileName(f)} · ${f.stats_reset ? `statistics since ${f.stats_reset}` : "statistics period not recorded"}`}>
                 {fileName(f)}
               </span>
               <span className={`io-kind ${f.kind}`}>{KIND_LABEL[f.kind]}</span>
             </span>
             <Latency ms={f.read_ms} n={f.reads} label="reads" />
-            <Latency ms={f.write_ms} n={f.writes} label={f.kind === "log" && engine === "postgres" ? "flushes" : "writes"} />
+            <Latency ms={f.write_ms} n={f.writes} label={f.write_operation === "flush" ? "flushes" : "writes"} />
           </div>
         ))}
       </div>

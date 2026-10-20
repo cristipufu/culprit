@@ -80,8 +80,9 @@ fn index_changes_need_work(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
                 fix.summary
             );
             fix.sql = None;
+            fix.cost = None;
         }
-        f.verify = vec!["Measure comparable query runs and their total time in a later window before choosing an index. A historical optimizer request can remain after the relevant workload has changed.".into()];
+        f.verify = vec!["Compare representative plans, reads, execution time and write maintenance before choosing an index. Recheck the access path as the table or call volume grows; an old plan or optimizer request does not establish current benefit.".into()];
     }
 }
 
@@ -109,6 +110,17 @@ fn absolute_query_cost(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             if matches!(f.check.as_str(), "heavy-query" | "chatty-query" | "missing-index" | "filtered-scan") {
                 f.impact.label = cost;
             }
+        }
+        if f.subject.kind == SubjectKind::Query
+            && let [q] = queries.as_slice()
+            && let Some(activity) = snapshot.workload.as_ref().and_then(|w| w.observed_activity(q))
+        {
+            let coverage = if activity.incomplete {
+                "Missing entries prevent a complete share or average for this interval."
+            } else {
+                "This count is shown without extrapolating a daily rate."
+            };
+            f.summary.push_str(&format!(" Latest activity: {}. {coverage}", activity.runs_phrase()));
         }
     }
 }

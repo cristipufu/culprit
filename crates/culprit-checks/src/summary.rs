@@ -86,7 +86,11 @@ pub fn summarize(snapshot: &Snapshot, findings: &[Finding]) -> Summary {
 /// What Culprit's scans measured of the statements they did (`Summary::over_scans`), as every surface states it.
 fn over_scans(snapshot: &Snapshot) -> Vec<culprit_core::StatementCost> {
     let Some(w) = snapshot.workload.as_ref() else { return Vec::new() };
-    w.queries.iter().filter(|q| w.scans_of(q).is_some()).map(|q| w.cost_of(q)).collect()
+    w.queries
+        .iter()
+        .filter(|q| w.scans_of(q).is_some() || w.observed_activity(q).is_some())
+        .map(|q| w.cost_of(q))
+        .collect()
 }
 
 /// The statements whose runs a rate a day would misstate (`Summary::runs_said`), said as the brief says them: a burst

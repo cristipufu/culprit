@@ -12,7 +12,7 @@ use culprit_core::{
     SignalStatus, SignalUnit, Snapshot, Tile, TileItem, TileKey, TileMetric, TileStatus, WaitScope, Workload, format,
 };
 
-use crate::support::{app_queries, query_handle, since_phrase, statement_handle, top_findings_share, window_phrase};
+use crate::support::{app_queries, query_handle, statement_handle, top_findings_share, window_phrase};
 
 mod database_time;
 mod deadlocks;

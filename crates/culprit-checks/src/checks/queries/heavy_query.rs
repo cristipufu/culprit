@@ -292,6 +292,14 @@ pub(super) fn heavy_query_finding(snapshot: &Snapshot, q: &QueryStat) -> Finding
         f.fix = Some(advice("Check whether this was an automatic refresh or scheduled maintenance. Keep necessary statistics current; review an unnecessarily frequent schedule or full scan only with evidence of its cost.".into()));
         f.verify = vec!["Compare the frequency and duration of subsequent statistics refreshes under comparable load, together with query performance. A completed maintenance operation can remain in Query Store's history after any scheduling change.".into()];
     }
+    if let Some(rewrite) = q.plan.as_ref().and_then(|p| late_filter_rewrite(snapshot, q, p)) {
+        plan_node = rewrite.nodes.first().copied();
+        f.fix = Some(advice(rewrite.fix));
+        f.verify = vec![rewrite.verify];
+        if !index_work_is_material(snapshot, &[q]) {
+            f.actionability = culprit_core::Actionability::Information;
+        }
+    }
     f.queries = vec![QueryRef { id: q.id.clone(), plan_node, note: None }];
     f
 }
@@ -309,7 +317,7 @@ enum Expect {
     FewerRuns,
     /// A counter's calls may be required to allocate numbers and return state atomically.
     Counter,
-    /// A statement the pool or the driver sends: it runs far less often, or not at all.
+    /// A session statement: evaluate avoidable overhead without removing required session or transaction work.
     Session,
     /// Its average run, toward what its reads take (a wait taken away).
     Average,
@@ -336,7 +344,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
         Expect::CheaperRuns => Shows::CheaperRuns.between().to_string(),
         Expect::FewerRuns => Shows::FewerRuns.between().to_string(),
         Expect::Counter => "compare time and avoidable calls for equivalent work, preserving numbering, metadata updates, returned values and transaction guarantees".into(),
-        Expect::Session => "it should run far less often, or not at all".to_string(),
+        Expect::Session => "compare avoidable session-call overhead for equivalent useful work, preserving transaction guarantees and session isolation; required calls need not decrease".to_string(),
         Expect::Average => "its time per run should drop toward what its reads take".to_string(),
         Expect::TimeOrStops => "its time should drop, or it should stop running".to_string(),
     };
@@ -357,7 +365,7 @@ fn verify_line(snapshot: &Snapshot, q: &QueryStat, expect: Expect) -> String {
         ),
         Expect::Counter => "Compare time and any avoidable calls under equivalent workload, checking that numbering, metadata updates, returned values and transaction guarantees remain correct. Required atomic calls need not decrease.".into(),
         Expect::Session => {
-            "After the change, re-scan: this statement should run far less often, or not at all.".to_string()
+            "Compare avoidable session-call overhead for equivalent useful work. Verify transaction guarantees and session isolation; required calls need not decrease.".to_string()
         }
         Expect::Average => "Re-scan after the change: its average duration drops toward what its reads take.".into(),
         Expect::TimeOrStops => "Re-scan after the change: this statement's time drops or it stops running.".into(),
@@ -1262,7 +1270,7 @@ fn write_fix(snapshot: &Snapshot, q: &QueryStat) -> String {
     let lever = match (upsert(q), runs_changing_nothing(q)) {
         // A get-or-create rewrites the row it finds on every run that finds one: the levers are not sending it when
         // the application has the row, and not rewriting it when it is there.
-        (Upsert::GetOrCreate, _) => "It is a get-or-create: its DO UPDATE sets a column to the value it has only so that RETURNING gives back the row already there, and that still writes a new version of the row (and its WAL) on every run that finds one. Skip the call where the application already has the row (it read or created it earlier and keeps it), or insert with ON CONFLICT DO NOTHING RETURNING and read the row with a SELECT only when that returns nothing.".to_string(),
+        (Upsert::GetOrCreate, _) => "It is a get-or-create: its DO UPDATE sets a column to the value it has only so that RETURNING gives back the row already there, and that still writes a new version of the row (and its WAL) on every run that finds one. Skip the call where the application already has the row (it read or created it earlier and keeps it), or evaluate ON CONFLICT DO NOTHING RETURNING followed by a separate SELECT when no row is returned. That is not an equivalent atomic replacement: account for the transaction isolation level, concurrent deletion, a missing row and serialization failures with appropriate locking or retries. Preserve any required UPDATE-trigger effects; keep the atomic upsert if the application depends on them.".to_string(),
         (Upsert::Update, _) => "On a conflict it updates the row it finds, writing a new version of it even when the values are the same: give its DO UPDATE a WHERE that updates only a row whose values differ (`WHERE t.c IS DISTINCT FROM EXCLUDED.c`), and skip the call where the application knows nothing changed.".to_string(),
         (Upsert::No, Some((share, exact))) => {
             let skip = if verb == "insert" {
@@ -1483,7 +1491,7 @@ fn index_leading_with<'a>(
 fn narrowed_later_fix(
     snapshot: &Snapshot,
     plan: &Plan,
-    q: &QueryStat,
+    _q: &QueryStat,
     table: &str,
     kept: f64,
     returned: f64,
@@ -1502,25 +1510,7 @@ fn narrowed_later_fix(
         format::percent(kept)
     );
     match narrowing {
-        Some(condition) if or_across_tables(condition) => {
-            let start = format!(
-                "{start}, by `{}`, an OR across two tables that no index can serve. Written as a UNION of two queries, one for each side of the OR,",
-                super::plan_warnings::truncate(condition, 140)
-            );
-            match union_sides(snapshot, plan, q, condition, returned) {
-                Some((sides, sql)) => Fix {
-                    summary: format!(
-                        "{start} each side can be read through an index on the column it compares instead of reading all of {table}: {}.",
-                        sides.join("; ")
-                    ),
-                    sql,
-                    cost: None,
-                },
-                None => advice(format!(
-                    "{start} each side can be read through an index on the column it compares, where its table has one, instead of reading all of {table}."
-                )),
-            }
-        }
+        Some(condition) if or_across_tables(condition) => or_rewrite_fix(snapshot, plan, condition, &start),
         Some(condition) => advice(format!(
             "{start}, by `{}`. Where that condition can be applied to {table} itself, an index on the columns it compares lets the plan read only the rows needed.",
             super::plan_warnings::truncate(condition, 140)
@@ -1531,20 +1521,23 @@ fn narrowed_later_fix(
     }
 }
 
-/// Each side of an OR across tables, written as a UNION: the index its table has that leads with the column it
-/// compares, or that it has none, with the SQL for one where the index rules allow it (a column an index can seek on,
-/// a statement that keeps running, and runs that return a small share of the table's rows). None when a side's table
-/// or column can't be told from the plan.
-fn union_sides(
-    snapshot: &Snapshot,
-    plan: &Plan,
-    q: &QueryStat,
-    condition: &str,
-    returned: f64,
-) -> Option<(Vec<String>, Option<String>)> {
-    let history = crate::query_is_history(snapshot, q);
+fn or_rewrite_fix(snapshot: &Snapshot, plan: &Plan, condition: &str, start: &str) -> Fix {
+    let sides = union_sides(snapshot, plan, condition)
+        .map(|sides| format!(" Existing coverage: {}.", sides.join("; ")))
+        .unwrap_or_default();
+    advice(format!(
+        "{start}, by `{}`. This OR spans different tables, so a single index on the scan's filter does not address it. Evaluate a UNION rewrite or an equivalent EXISTS form that lets each branch use its own access path. Preserve the original joins, permission checks, duplicate handling, NULL behavior, grouping and ordering. Compare representative rewritten plans and reads before deciding whether a branch needs another index.{sides} Keep this structural risk under review as table size or call volume grows.",
+        super::plan_warnings::truncate(condition, 140)
+    ))
+}
+
+/// Existing index coverage for each branch. Returned rows after joins do not establish a branch's selectivity,
+/// so a rewrite must be evaluated before recommending any new index.
+fn union_sides(snapshot: &Snapshot, plan: &Plan, condition: &str) -> Option<Vec<String>> {
+    if snapshot.notes.iter().any(|n| n.collector == "indexes") && !snapshot.server.has(Capability::IndexUsage) {
+        return None;
+    }
     let mut sides = Vec::new();
-    let mut sql = Vec::new();
     for branch in or_branches(condition) {
         let mut tables = qualifiers(&unquoted(branch));
         tables.sort();
@@ -1554,23 +1547,73 @@ fn union_sides(
         let column = cols.equality.first().or(cols.range.first())?;
         let node = table_named(plan, qualifier)?;
         let (schema, table) = crate::indexes::split_object(node.object.as_deref()?)?;
-        match index_leading_with(snapshot, &schema, &table, column) {
-            Some(index) => sides.push(format!("{} on {schema}.{table} leads with {column}", index.name)),
-            None => {
-                let rows = node.table_rows.or_else(|| snapshot.table(&schema, &table).and_then(|t| t.rows));
-                let keeps_few = rows.is_some_and(|rows| returned <= rows * culprit_core::INDEX_KEEPS_AT_MOST);
-                if keeps_few && !history {
-                    sql.push(create_index_sql(snapshot, &schema, &table, std::slice::from_ref(column), &[]));
-                    sides.push(format!(
-                        "{schema}.{table} has no index that leads with {column} yet, and the SQL below adds one"
-                    ));
-                } else {
-                    sides.push(format!("{schema}.{table} has no index that leads with {column}"));
-                }
-            }
-        }
+        sides.push(match index_leading_with(snapshot, &schema, &table, column) {
+            Some(index) => format!(
+                "{} on {schema}.{table} leads with {column}{}",
+                index.name,
+                index
+                    .filter
+                    .as_deref()
+                    .map(|f| format!(" (partial index: verify the branch implies {f})"))
+                    .unwrap_or_default()
+            ),
+            None => format!("{schema}.{table} has no index that leads with {column}"),
+        });
     }
-    (sides.len() >= 2).then(|| (sides, (!sql.is_empty()).then(|| sql.join("\n\n"))))
+    (sides.len() >= 2).then_some(sides)
+}
+
+/// One rewrite observation shared by Findings, Plans and the advisor, independent of today's table size.
+pub(crate) fn late_filter_rewrite(
+    snapshot: &Snapshot,
+    q: &QueryStat,
+    plan: &Plan,
+) -> Option<culprit_core::insights::PlanInsight> {
+    if is_monitoring_query(q)
+        || !matches!(kind_of(q), StatementKind::Read | StatementKind::Aggregate)
+        || plan.nodes().iter().any(|n| n.kind == NodeKind::Modify)
+    {
+        return None;
+    }
+    let returned = q.rows_handled_per_execution();
+    let mut scans: Vec<_> = plan
+        .nodes()
+        .into_iter()
+        .filter(|n| {
+            n.kind == NodeKind::Scan
+                && n.reads_table_whole()
+                && n.object.as_deref().is_some_and(|o| !culprit_core::insights::is_system_object(o))
+        })
+        .collect();
+    scans.sort_by(|a, b| b.table_rows.unwrap_or(0.0).total_cmp(&a.table_rows.unwrap_or(0.0)));
+    for node in scans {
+        let Some(kept) = node.kept_share().filter(|k| *k > culprit_core::INDEX_KEEPS_AT_MOST) else { continue };
+        let Some(condition) =
+            ancestors(plan, node.id).into_iter().filter_map(|n| n.predicate.as_deref()).find(|p| or_across_tables(p))
+        else {
+            continue;
+        };
+        let table = node.object.as_deref()?;
+        let fix = match returned {
+            Some(returned) => narrowed_later_fix(snapshot, plan, q, table, kept, returned, Some(condition)),
+            None => or_rewrite_fix(
+                snapshot,
+                plan,
+                condition,
+                &format!("The captured plan reads {table} before a filter across tables is applied"),
+            ),
+        };
+        return Some(culprit_core::insights::PlanInsight {
+            rule: "cross-table-or".into(), area: culprit_core::insights::InsightArea::Query,
+            severity: Severity::Low, impact: 0.0, fixed_weight: true, nodes: vec![node.id],
+            title: "A filter across tables can require a whole-table read".into(),
+            detail: format!("The captured plan scans {table} before an OR across tables narrows its rows. This structure can become expensive as the tables grow; the plan does not measure the benefit or semantics of a rewrite."),
+            fix: fix.summary, fix_sql: None,
+            verify: "Compare results, representative parameters, plans, reads and execution time for the original and rewritten query. Preserve permission checks and duplicate/NULL behavior. Evaluate index keys only from the rewritten branch predicates and measured selectivity.".into(),
+            index_hint: None,
+        });
+    }
+    None
 }
 
 /// The branches of a condition's top-level OR, outer parentheses taken off: `((a.x = $1) OR (s.y = $2))` →
@@ -1709,7 +1752,7 @@ fn session_fix(engine: Engine, text: &str) -> String {
     let pool = "The driver or the connection pool sends this around the application's statements, not the application's own code";
     match first_keyword(text).as_str() {
         // PostgreSQL's poolers reset a session with DISCARD ALL (or RESET ALL) between one use and the next.
-        "discard" | "reset" if engine == Engine::Postgres => "The connection pool sends this to reset a pooled connection each time the application takes it again, not the application's own code. If the application leaves nothing in a session the next user mustn't inherit (temporary tables, session settings, advisory locks), turn the reset off: `No Reset On Close=true` in an Npgsql connection string, or the pool's reset query setting elsewhere (PgBouncer's server_reset_query).".into(),
+        "discard" | "reset" if engine == Engine::Postgres => "This resets session state and is commonly sent by a driver or connection pool; the statement statistics do not identify its caller or pooling mode. Inspect the application's connection lifecycle and the driver or pool configuration, and benchmark any change against the measured absolute cost shown here. Keep resets that prevent session state leaking between users. Npgsql arranges its reset on close and sends it on reuse; PgBouncer normally resets on release in session pooling, and normally does not in transaction pooling. Consider changing reset behavior only after verifying that every caller safely handles retained session state.".into(),
         "begin" | "start" | "commit" | "rollback" | "end" | "savepoint" | "release" => format!(
             "{pool}: check whether it wraps every statement in a transaction of its own (each commit waits for the log to reach disk), and run the statements that belong together in one transaction."
         ),
@@ -1841,7 +1884,7 @@ mod tests {
         let fix = scan_fix(2.0);
         assert!(!fix.contains("too many for an index"), "{fix}");
         assert!(fix.contains("returns about 2 rows a run: they are narrowed later in the plan"), "{fix}");
-        assert!(fix.contains("an OR across two tables") && fix.contains("UNION of two queries"), "{fix}");
+        assert!(fix.contains("OR spans different tables") && fix.contains("UNION rewrite"), "{fix}");
         // Runs that return about what the scan keeps need those rows: no index serves them.
         let fix = scan_fix(5_000.0);
         assert!(fix.contains("keeps about 94% of the rows, too many for an index to help"), "{fix}");
@@ -1852,6 +1895,60 @@ mod tests {
 
     // The fresh PostgreSQL demo: `SELECT … FOR UPDATE` that waited 38 s for a row lock was a read, told to read fewer
     // rows. A read that locks what it finds waits as a write does.
+    #[test]
+    fn rewrite_observation_is_shared_without_premature_index_sql() {
+        let s = postgres_demo();
+        let mut q = s.queries()[0].clone();
+        q.text = APPS_QUERY.into();
+        q.executions = 1000.0;
+        q.rows = Some(2000.0);
+        q.total_time_ms = 1.0;
+        q.mean_time_ms = 0.001;
+        q.plan = Some(apps_plan());
+        let p = q.plan.as_ref().unwrap();
+        let insight =
+            crate::query_plan_insights(&s, &q, p).items.into_iter().find(|i| i.rule == "cross-table-or").unwrap();
+        assert_eq!(insight.area, culprit_core::insights::InsightArea::Query);
+        assert_eq!(insight.severity, Severity::Low);
+        assert!(insight.fix_sql.is_none());
+        assert!(insight.fix.contains("permission checks") && insight.verify.contains("selectivity"));
+        let f = heavy_query_finding(&s, &q);
+        assert_eq!(f.actionability, culprit_core::Actionability::Information);
+        assert!(f.fix.unwrap().sql.is_none());
+        assert_eq!(f.queries[0].plan_node, insight.nodes.first().copied());
+        for text in [format!("{APPS_QUERY} FOR UPDATE"), "UPDATE apps SET name = $1".into()] {
+            let mut writes = q.clone();
+            writes.text = text;
+            assert!(
+                late_filter_rewrite(&s, &writes, p).is_none(),
+                "read rewrites do not change locking or write semantics"
+            );
+        }
+        let mut with_query = s.clone();
+        with_query.workload.as_mut().unwrap().queries = vec![q.clone()];
+        let report = crate::analyze(with_query);
+        let advisor = crate::index_advice(&report);
+        assert!(advisor.notes.iter().any(|note| note.contains("Query rewrites to evaluate") && note.contains(&q.id)));
+        // Larger tables keep the structural concern, without claiming that a rewrite has measured benefit.
+        let mut large = p.clone();
+        large.root.children[0].children[1].children[0].table_rows = Some(6_285_000.0);
+        large.root.children[0].children[1].children[0].rows_read = Some(6_285_000.0);
+        large.root.children[0].children[1].children[0].est_rows = 5_880_000.0;
+        assert!(late_filter_rewrite(&s, &q, &large).is_some());
+        let mut without_rows = q.clone();
+        without_rows.rows = None;
+        let observation = late_filter_rewrite(&s, &without_rows, &large).unwrap();
+        assert!(!observation.fix.contains("statement returns"), "no invented row count");
+        // Engine-owned objects are never candidates for a rewrite or index change.
+        for n in &mut large.root.children[0].children {
+            n.object = Some("pg_catalog.pg_class".into());
+            for c in &mut n.children {
+                c.object = Some("pg_catalog.pg_class".into());
+            }
+        }
+        assert!(late_filter_rewrite(&s, &q, &large).is_none());
+    }
+
     #[test]
     fn a_read_that_locks_its_rows_is_a_locking_statement() {
         for text in [
@@ -1892,16 +1989,16 @@ mod tests {
         let fix = scan_fix_on(&snapshot, 2.0);
         assert!(!fix.summary.contains("an index of its own"), "{}", fix.summary);
         assert!(fix.summary.contains("idx_apps_owner on public.apps leads with owner_id"), "{}", fix.summary);
-        assert!(
-            fix.summary
-                .contains("public.app_shares has no index that leads with email yet, and the SQL below adds one"),
-            "{}",
-            fix.summary
-        );
-        assert_eq!(
-            fix.sql.as_deref(),
-            Some("CREATE INDEX CONCURRENTLY ix_app_shares_email\n    ON public.app_shares (email);")
-        );
+        assert!(fix.summary.contains("public.app_shares has no index that leads with email"), "{}", fix.summary);
+        assert!(fix.sql.is_none(), "measure branch selectivity after a rewrite before proposing DDL");
+        assert!(fix.summary.contains("Preserve the original joins, permission checks"));
+        let mut unavailable = snapshot.clone();
+        unavailable.server.capabilities.retain(|c| *c != Capability::IndexUsage);
+        unavailable
+            .notes
+            .push(culprit_core::CollectorNote { collector: "indexes".into(), message: "unavailable".into() });
+        let unknown = scan_fix_on(&unavailable, 2.0);
+        assert!(!unknown.summary.contains("has no index"), "unavailable definitions do not prove absence");
         // With an index on email too, each side names its own and there is nothing to create.
         snapshot.indexes.push(index(&snapshot, "app_shares", "app_shares_email_idx", &["email"]));
         let fix = scan_fix_on(&snapshot, 2.0);
@@ -1925,7 +2022,7 @@ mod tests {
         let id = q.id.clone();
         let f = heavy_query(&snapshot).into_iter().find(|f| f.queries[0].id == id).expect("the heavy query");
         let fix = f.fix.expect("a fix");
-        assert!(fix.summary.contains("UNION of two queries"), "{}", fix.summary);
+        assert!(fix.summary.contains("UNION rewrite"), "{}", fix.summary);
         assert!(!fix.summary.contains("kept up to date"), "{}", fix.summary);
         assert!(!f.summary.contains("of its estimated cost"), "no share under the bar: {}", f.summary);
         // The summary names the scan the fix is about.
@@ -1976,9 +2073,15 @@ mod tests {
     fn a_pools_statements_get_the_pools_own_lever() {
         // PostgreSQL's DISCARD ALL is the pool's reset: its setting, not transactions or pings.
         let discard = session_fix(Engine::Postgres, "DISCARD ALL");
-        assert!(discard.contains("`No Reset On Close=true`") && discard.contains("reset query setting"), "{discard}");
+        assert!(
+            discard.contains("do not identify its caller or pooling mode") && discard.contains("Keep resets"),
+            "{discard}"
+        );
         assert!(!discard.contains("sp_reset_connection"), "{discard}");
-        assert!(!discard.contains("transaction") && !discard.contains("alive"), "{discard}");
+        assert!(
+            discard.contains("Npgsql") && discard.contains("PgBouncer") && discard.contains("benchmark"),
+            "{discard}"
+        );
         // sp_reset_connection is SQL Server's.
         let set = session_fix(Engine::Mssql, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
         assert!(set.contains("sp_reset_connection"), "{set}");

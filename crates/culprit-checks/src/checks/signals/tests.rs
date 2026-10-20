@@ -197,6 +197,9 @@ fn slow_tempdb_and_log() {
         writes,
         write_ms: Some(write_ms),
         write_bytes: None,
+        scope: None,
+        stats_reset: None,
+        write_operation: None,
     };
     let s = with_pressure(Engine::Mssql, |p| {
         p.files = vec![

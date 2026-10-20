@@ -1,4 +1,5 @@
 import type { QueryStat } from "../gen/QueryStat";
+import type { StatementActivity } from "../gen/StatementActivity";
 import type { Report } from "../gen/Report";
 import type { Workload } from "../gen/Workload";
 import type { WorkloadKind } from "../gen/WorkloadKind";
@@ -79,6 +80,7 @@ export type Figures = {
   /** The totals since the source began counting, where they differ twofold from the scans': "about 214 runs a day over
    * the 1295 days since statistics were reset". */
   totals: string | null;
+  activity: StatementActivity | null;
 };
 
 /** What `report` states of statement `q` (culprit-core's `Workload::cost_of`): on a source of running totals, what
@@ -94,8 +96,10 @@ export function figures(report: Report, q: QueryStat): Figures {
   const mean = scans?.mean_ms ?? q.mean_time_ms;
   const over = scans?.over ?? null;
   const totals = scans?.totals ?? null;
+  const activity = scans?.activity ?? null;
+  if (activity) return { share, runs: activity.runs, perDay: false, said: scans!.runs, mean, over, totals, activity };
   // A burst, or fewer runs than days: the count, never a rate.
-  if (said != null) return { share, runs: scans?.counted ?? q.executions, perDay: false, said, mean, over, totals };
-  if (scans?.runs_per_day != null) return { share, runs: scans.runs_per_day, perDay: true, said, mean, over, totals };
-  return { share, runs: rates.value(q.executions), perDay: rates.perDay, said, mean, over, totals };
+  if (said != null) return { share, runs: scans?.counted ?? q.executions, perDay: false, said, mean, over, totals, activity };
+  if (scans?.runs_per_day != null) return { share, runs: scans.runs_per_day, perDay: true, said, mean, over, totals, activity };
+  return { share, runs: rates.value(q.executions), perDay: rates.perDay, said, mean, over, totals, activity };
 }

@@ -9,6 +9,22 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
     let with_plans: Vec<&QueryStat> =
         app_queries(s).filter(|q| q.plan.is_some() && !crate::query_is_history(s, q)).collect();
     if with_plans.is_empty() {
+        let total = app_queries(s).filter(|q| q.plan.is_some()).count();
+        if total > 0 {
+            let mut tile = Tile::new(
+                TileKey::Plans,
+                TileStatus::Info,
+                format!(
+                    "{total} application queries have plans, all historical or once-only; there is no current plan assessment."
+                ),
+            );
+            tile.metrics = vec![
+                TileMetric::new("captured", "Current plans", Some(0.0), "0"),
+                TileMetric::new("all", "All queries with plans", Some(total as f64), total.to_string()),
+            ];
+            tile.detail = Some("Historical plans remain available under Queries; recheck their structural observations if the workload returns.".into());
+            return tile;
+        }
         let reason = [Capability::QueryPlans, Capability::Showplan, Capability::GenericPlans]
             .into_iter()
             .find_map(|c| missing_reason(s, c))
@@ -73,13 +89,17 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
         None if observations > 0 => (
             TileStatus::Info,
             format!(
-                "No urgent plan change is established in this workload; {} retain structural observations to review as the data or workload changes.",
-                plural(observations, "captured plan", "captured plans")
+                "No urgent plan change is established in this workload; {} {} structural observations to review as the data or workload changes.",
+                plural(observations, "current query plan", "current query plans"),
+                if observations == 1 { "retains" } else { "retain" }
             ),
         ),
         None => (
             TileStatus::Good,
-            format!("None of the {} shows a known problem.", plural(captured, "captured plan", "captured plans")),
+            format!(
+                "None of the {} shows a known problem.",
+                plural(captured, "current query plan", "current query plans")
+            ),
         ),
         Some((rule, g)) => {
             // Worth watching where the plan-insights check would raise it: a share of database time behind it.
@@ -95,15 +115,15 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
             let takeaway = if flagged == 1 {
                 format!(
                     "One of the {} has something to fix: {what} ({share} of database time).",
-                    plural(captured, "captured plan", "captured plans")
+                    plural(captured, "current query plan", "current query plans")
                 )
             } else if g.plans == 1 {
                 format!(
-                    "{flagged} of {captured} captured plans have something to fix; the costliest is {what} ({share} of database time)."
+                    "{flagged} of {captured} current query plans have something to fix; the costliest is {what} ({share} of database time)."
                 )
             } else {
                 format!(
-                    "{flagged} of {captured} captured plans have something to fix; {what} shows up in {} ({share} of database time).",
+                    "{flagged} of {captured} current query plans have something to fix; {what} shows up in {} ({share} of database time).",
                     plural(g.plans, "plan", "plans")
                 )
             };
@@ -111,9 +131,17 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
         }
     };
     let mut tile = Tile::new(TileKey::Plans, status, takeaway);
-    tile.detail = note;
+    let total = app_queries(s).filter(|q| q.plan.is_some()).count();
+    let excluded = total - captured;
+    let coverage = format!(
+        "{captured} current application queries have plans; {total} application queries have plans in all. {excluded} historical or once-only queries are excluded from the current assessment."
+    );
+    tile.detail = Some(match note {
+        Some(note) => format!("{coverage} {note}"),
+        None => coverage,
+    });
     tile.metrics = vec![
-        TileMetric::new("captured", "Captured", Some(captured as f64), captured.to_string()),
+        TileMetric::new("captured", "Current plans", Some(captured as f64), captured.to_string()),
         TileMetric::new("flagged", "With problems", Some(flagged as f64), flagged.to_string()),
     ];
     tile.items = ranked
@@ -134,6 +162,7 @@ pub(super) fn plans(s: &Snapshot) -> Tile {
 /// A rule as a few words for a sentence: "a large sort", "key lookups".
 pub(super) fn short_rule(rule: &str) -> String {
     match rule {
+        "cross-table-or" => "a filter across tables after a scan",
         "key-lookups" => "key lookups",
         "scan-filter" => "a scan reading far more rows than it keeps",
         "missing-index-hint" => "a missing index",

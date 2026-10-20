@@ -398,6 +398,9 @@ fn file(name: &str, db: &str, kind: FileKind, reads: (f64, f64, f64), writes: (f
         writes: writes.0,
         write_ms: Some(writes.1),
         write_bytes: None,
+        scope: None,
+        stats_reset: None,
+        write_operation: None,
     }
 }
 

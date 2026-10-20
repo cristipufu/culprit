@@ -755,6 +755,15 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     let mut notes = Vec::new();
     // Where candidates come from on this engine, as the engine says it (no missing-index requests, no history…).
     notes.extend(engine.spec().index_advice_sources(&s.server, s.workload.is_some()));
+    let rewrites: Vec<_> = app_queries(s)
+        .filter(|q| !crate::query_is_history(s, q))
+        .filter(|q| q.plan.as_ref().is_some_and(|p| crate::queries::late_filter_rewrite(s, q, p).is_some()))
+        .map(|q| q.id.as_str())
+        .collect();
+    if !rewrites.is_empty() {
+        notes.push(format!("Query rewrites to evaluate before adding indexes: {}. Their plans filter an OR across tables after a scan. Compare equivalent UNION or EXISTS forms and representative branch plans first; these are structural observations, not indexes to create.", rewrites.join(", ")));
+    }
+
     if !s.server.has(Capability::IndexUsage) {
         notes.push(
             "Index usage counters aren't readable: unused indexes and the runtime impact of overlaps are unknown. \

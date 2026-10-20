@@ -216,6 +216,9 @@ async fn files(conn: &mut Conn) -> culprit_core::Result<Vec<FileIo>> {
                 writes,
                 write_ms: timed(r.number("write_ps"), writes),
                 write_bytes: r.number("write_bytes"),
+                scope: None,
+                stats_reset: None,
+                write_operation: None,
             }
         })
         .collect())

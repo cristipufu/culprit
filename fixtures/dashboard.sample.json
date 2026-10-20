@@ -465,14 +465,14 @@
         "title": "Indexes"
       },
       {
-        "detail": "MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.",
+        "detail": "5 current application queries have plans; 5 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. MariaDB's EXPLAIN has no actual rows or timings; ANALYZE adds them, with pages read and sort spills.",
         "fix_sql": null,
         "items": [],
         "key": "plans",
         "metrics": [
           {
             "key": "captured",
-            "label": "Captured",
+            "label": "Current plans",
             "text": "5",
             "value": 5.0
           },
@@ -485,11 +485,11 @@
         ],
         "next": null,
         "status": "info",
-        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
+        "takeaway": "No urgent plan change is established in this workload; 1 current query plan retains structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {
-        "detail": "Averages since the server started or its performance_schema counters were last reset.",
+        "detail": "shop/order_items.ibd: whole server, over the recorded history; shop/orders.ibd: whole server, over the recorded history; shop/customers.ibd: whole server, over the recorded history; mysql/ibdata1: whole server, over the recorded history; mysql/undo002: whole server, over the recorded history; mysql/undo003: whole server, over the recorded history; mysql/undo001: whole server, over the recorded history; shop/products.ibd: whole server, over the recorded history; mysql/innodb_index_stats.ibd: whole server, over the recorded history; mysql/innodb_table_stats.ibd: whole server, over the recorded history; mysql/transaction_registry.ibd: whole server, over the recorded history",
         "fix_sql": null,
         "items": [
           {
@@ -497,7 +497,7 @@
             "finding_id": null,
             "id": ":shop/customers.ibd",
             "kind": "signal",
-            "label": "shop/customers.ibd",
+            "label": "shop/customers.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -508,7 +508,7 @@
             "finding_id": null,
             "id": ":shop/order_items.ibd",
             "kind": "signal",
-            "label": "shop/order_items.ibd",
+            "label": "shop/order_items.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -519,7 +519,7 @@
             "finding_id": null,
             "id": ":shop/orders.ibd",
             "kind": "signal",
-            "label": "shop/orders.ibd",
+            "label": "shop/orders.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -606,7 +606,7 @@
           },
           {
             "key": "plans",
-            "label": "With plans",
+            "label": "All queries with plans",
             "text": "5",
             "value": 5.0
           },
@@ -1166,7 +1166,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.",
+        "detail": "12 current application queries have plans; 13 application queries have plans in all. 1 historical or once-only queries are excluded from the current assessment. Estimated plan: misestimates, spills, unused memory grants and uneven threads need an actual plan.",
         "fix_sql": null,
         "items": [
           {
@@ -1218,7 +1218,7 @@
         "metrics": [
           {
             "key": "captured",
-            "label": "Captured",
+            "label": "Current plans",
             "text": "12",
             "value": 12.0
           },
@@ -1231,11 +1231,11 @@
         ],
         "next": "culprit explain mssql-demo --query-id 249",
         "status": "watch",
-        "takeaway": "5 of 12 captured plans have something to fix; a missing index shows up in 3 plans (8% of database time).",
+        "takeaway": "5 of 12 current query plans have something to fix; a missing index shows up in 3 plans (8% of database time).",
         "title": "Plans"
       },
       {
-        "detail": "Averages in the hour since the server last restarted.",
+        "detail": "culprit_demo log: this database, over the recorded history; culprit_demo: this database, over the recorded history; tempdb log: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history; tempdb: tempdb, over the recorded history",
         "fix_sql": null,
         "items": [
           {
@@ -1243,7 +1243,7 @@
             "finding_id": null,
             "id": "culprit_demo:culprit_demo_log",
             "kind": "signal",
-            "label": "culprit_demo log",
+            "label": "culprit_demo log (this database)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -1254,7 +1254,7 @@
             "finding_id": null,
             "id": "culprit_demo:culprit_demo",
             "kind": "signal",
-            "label": "culprit_demo",
+            "label": "culprit_demo (this database)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -1394,7 +1394,7 @@
           },
           {
             "key": "plans",
-            "label": "With plans",
+            "label": "All queries with plans",
             "text": "13",
             "value": 13.0
           },
@@ -2345,14 +2345,14 @@
         "title": "Indexes"
       },
       {
-        "detail": "MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.",
+        "detail": "8 current application queries have plans; 8 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. MySQL's EXPLAIN has no actual rows, spills, memory or threads; EXPLAIN ANALYZE adds actual rows.",
         "fix_sql": null,
         "items": [],
         "key": "plans",
         "metrics": [
           {
             "key": "captured",
-            "label": "Captured",
+            "label": "Current plans",
             "text": "8",
             "value": 8.0
           },
@@ -2365,11 +2365,11 @@
         ],
         "next": null,
         "status": "info",
-        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
+        "takeaway": "No urgent plan change is established in this workload; 1 current query plan retains structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {
-        "detail": "Averages since the server started or its performance_schema counters were last reset.",
+        "detail": "#innodb_temp/temp_10.ibt: whole server, over the recorded history; shop/orders.ibd: whole server, over the recorded history; shop/products.ibd: whole server, over the recorded history; shop/order_items.ibd: whole server, over the recorded history; mysql/mysql.ibd: whole server, over the recorded history; mysql/binlog.000002: whole server, over the recorded history; mysql/undo_001: whole server, over the recorded history; mysql/ibtmp1: whole server, over the recorded history; mysql/undo_002: whole server, over the recorded history; shop/customers.ibd: whole server, over the recorded history; mysql/ibdata1: whole server, over the recorded history; #innodb_temp/temp_9.ibt: whole server, over the recorded history; sys/sys_config.ibd: whole server, over the recorded history",
         "fix_sql": null,
         "items": [
           {
@@ -2377,7 +2377,7 @@
             "finding_id": null,
             "id": ":shop/products.ibd",
             "kind": "signal",
-            "label": "shop/products.ibd",
+            "label": "shop/products.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -2388,7 +2388,7 @@
             "finding_id": null,
             "id": ":shop/order_items.ibd",
             "kind": "signal",
-            "label": "shop/order_items.ibd",
+            "label": "shop/order_items.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -2399,7 +2399,7 @@
             "finding_id": null,
             "id": ":shop/orders.ibd",
             "kind": "signal",
-            "label": "shop/orders.ibd",
+            "label": "shop/orders.ibd (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -2410,7 +2410,7 @@
             "finding_id": null,
             "id": ":mysql/binlog.000002",
             "kind": "signal",
-            "label": "mysql/binlog.000002",
+            "label": "mysql/binlog.000002 (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -2539,7 +2539,7 @@
           },
           {
             "key": "plans",
-            "label": "With plans",
+            "label": "All queries with plans",
             "text": "8",
             "value": 8.0
           },
@@ -2767,7 +2767,7 @@
         "title": "Top queries"
       },
       {
-        "detail": "An update of wide accounts for <1% of it, reading 11K pages from disk per run.",
+        "detail": "Statement timing from pg_stat_statements, the 5 hours since statistics were reset. This is recorded statement execution time, including CPU and unclassified time; it is not a measurement of time spent waiting.",
         "fix_sql": null,
         "items": [
           {
@@ -2797,7 +2797,7 @@
         "metrics": [
           {
             "key": "total",
-            "label": "Waiting",
+            "label": "Statement execution time",
             "text": "4 min",
             "value": 249580.2417549999
           }
@@ -3059,7 +3059,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.",
+        "detail": "8 current application queries have plans; 12 application queries have plans in all. 4 historical or once-only queries are excluded from the current assessment. Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.",
         "fix_sql": null,
         "items": [
           {
@@ -3078,7 +3078,7 @@
         "metrics": [
           {
             "key": "captured",
-            "label": "Captured",
+            "label": "Current plans",
             "text": "8",
             "value": 8.0
           },
@@ -3091,11 +3091,11 @@
         ],
         "next": "culprit explain pg-demo --query-id 5308963031944094559",
         "status": "watch",
-        "takeaway": "2 of 8 captured plans have something to fix; a scan reading far more rows than it keeps shows up in 2 plans (28% of database time).",
+        "takeaway": "2 of 8 current query plans have something to fix; a scan reading far more rows than it keeps shows up in 2 plans (28% of database time).",
         "title": "Plans"
       },
       {
-        "detail": "Averages in the 7 hours since the server last restarted.",
+        "detail": "tables and indexes: whole server, over an unknown statistics period",
         "fix_sql": null,
         "items": [
           {
@@ -3103,7 +3103,7 @@
             "finding_id": null,
             "id": ":Tables and indexes",
             "kind": "signal",
-            "label": "tables and indexes",
+            "label": "tables and indexes (whole server)",
             "query_id": null,
             "share": null,
             "status": "info",
@@ -3224,7 +3224,7 @@
           },
           {
             "key": "plans",
-            "label": "With plans",
+            "label": "All queries with plans",
             "text": "12",
             "value": 12.0
           },
@@ -3558,14 +3558,14 @@
         "title": "Indexes"
       },
       {
-        "detail": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.",
+        "detail": "5 current application queries have plans; 5 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.",
         "fix_sql": null,
         "items": [],
         "key": "plans",
         "metrics": [
           {
             "key": "captured",
-            "label": "Captured",
+            "label": "Current plans",
             "text": "5",
             "value": 5.0
           },
@@ -3578,7 +3578,7 @@
         ],
         "next": null,
         "status": "info",
-        "takeaway": "No urgent plan change is established in this workload; 1 captured plan retain structural observations to review as the data or workload changes.",
+        "takeaway": "No urgent plan change is established in this workload; 1 current query plan retains structural observations to review as the data or workload changes.",
         "title": "Plans"
       },
       {
@@ -3639,7 +3639,7 @@
           },
           {
             "key": "plans",
-            "label": "With plans",
+            "label": "All queries with plans",
             "text": "5",
             "value": 5.0
           },

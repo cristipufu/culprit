@@ -1196,6 +1196,7 @@
           "read_bytes": 16552706048.0,
           "read_ms": 4633.460286191,
           "reads": 1010297.0,
+          "scope": "server",
           "write_bytes": 16975446016.0,
           "write_ms": 16947.915834894,
           "writes": 1035938.0
@@ -1207,6 +1208,7 @@
           "read_bytes": 4681138176.0,
           "read_ms": 1428.480307001,
           "reads": 285722.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1218,6 +1220,7 @@
           "read_bytes": 214106112.0,
           "read_ms": 108.767717476,
           "reads": 13068.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1229,6 +1232,7 @@
           "read_bytes": 210337792.0,
           "read_ms": 85.940506674,
           "reads": 12838.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1240,6 +1244,7 @@
           "read_bytes": 10698752.0,
           "read_ms": 13.024932041,
           "reads": 650.0,
+          "scope": "server",
           "write_bytes": 5259264.0,
           "write_ms": 20.715680667,
           "writes": 321.0
@@ -1251,6 +1256,7 @@
           "read_bytes": 4194304.0,
           "read_ms": 1.785344913,
           "reads": 1.0,
+          "scope": "server",
           "write_bytes": 17448960.0,
           "write_ms": 18.983087519,
           "writes": 44.0
@@ -1262,6 +1268,7 @@
           "read_bytes": 53037460.0,
           "read_ms": 17.069678835,
           "reads": 6476.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1273,6 +1280,7 @@
           "read_bytes": 11157504.0,
           "read_ms": 5.070591394,
           "reads": 678.0,
+          "scope": "server",
           "write_bytes": 3932160.0,
           "write_ms": 10.027881171,
           "writes": 240.0
@@ -1284,6 +1292,7 @@
           "read_bytes": 4276224.0,
           "read_ms": 1.741392059,
           "reads": 261.0,
+          "scope": "server",
           "write_bytes": 14729216.0,
           "write_ms": 11.525614287,
           "writes": 143.0
@@ -1295,6 +1304,7 @@
           "read_bytes": 11796480.0,
           "read_ms": 5.687766194,
           "reads": 718.0,
+          "scope": "server",
           "write_bytes": 933888.0,
           "write_ms": 4.423433575,
           "writes": 57.0
@@ -1306,6 +1316,7 @@
           "read_bytes": 11943936.0,
           "read_ms": 6.744469534,
           "reads": 729.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1317,6 +1328,7 @@
           "read_bytes": 327680.0,
           "read_ms": 0.321473009,
           "reads": 17.0,
+          "scope": "server",
           "write_bytes": 507904.0,
           "write_ms": 6.180838818,
           "writes": 31.0
@@ -1328,6 +1340,7 @@
           "read_bytes": 12582912.0,
           "read_ms": 5.138897632,
           "reads": 1.0,
+          "scope": "server",
           "write_bytes": 147456.0,
           "write_ms": 0.319179454,
           "writes": 2.0
@@ -1339,6 +1352,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 1531904.0,
           "write_ms": 3.892538144,
           "writes": 387.0
@@ -1350,6 +1364,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 3532800.0,
           "write_ms": 2.267158267,
           "writes": 748.0
@@ -1361,6 +1376,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 3648000.0,
           "write_ms": 2.231378809,
           "writes": 695.0
@@ -1372,6 +1388,7 @@
           "read_bytes": 32768.0,
           "read_ms": 0.049832695,
           "reads": 2.0,
+          "scope": "server",
           "write_bytes": 983040.0,
           "write_ms": 1.844977343,
           "writes": 20.0
@@ -1383,6 +1400,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 3469312.0,
           "write_ms": 1.804694177,
           "writes": 629.0
@@ -1394,6 +1412,7 @@
           "read_bytes": 68096.0,
           "read_ms": 0.052418157,
           "reads": 6.0,
+          "scope": "server",
           "write_bytes": 468480.0,
           "write_ms": 1.545105452,
           "writes": 150.0
@@ -1405,6 +1424,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 1810638.0,
           "write_ms": 1.347651217,
           "writes": 235.0
@@ -1416,6 +1436,7 @@
           "read_bytes": 8192.0,
           "read_ms": 1.115251544,
           "reads": 1.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1427,6 +1448,7 @@
           "read_bytes": 0.0,
           "read_ms": 0.0,
           "reads": 0.0,
+          "scope": "server",
           "write_bytes": 360448.0,
           "write_ms": 0.394032749,
           "writes": 10.0
@@ -1438,6 +1460,7 @@
           "read_bytes": 16384.0,
           "read_ms": 0.224851792,
           "reads": 1.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0
@@ -1449,6 +1472,7 @@
           "read_bytes": 412771.0,
           "read_ms": 0.076521335,
           "reads": 3.0,
+          "scope": "server",
           "write_bytes": 0.0,
           "write_ms": 0.0,
           "writes": 0.0

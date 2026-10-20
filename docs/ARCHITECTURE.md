@@ -214,6 +214,17 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | An event session a fix starts is one session for every finding that asks for it: created only where it isn't defined, started only where it isn't running, and the SQL says how to drop it. | `signals::event_session_sql`, `event_session_drop` |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 
+Cumulative query evidence keeps its dates. `Workload::over_scans` uses complete intervals for shares and averages;
+when those intervals have gaps or end before the latest scan, `ScanSpan::phrase` dates them explicitly. A more recent
+interval with known query-counter growth but incomplete database totals is separate `StatementActivity`: observed
+calls (a lower bound after evictions), never an inferred daily rate, average or share. The UI and briefs read this
+same `StatementCost` rather than dividing a new entry's calls by years since the global reset.
+
+Storage counters carry their own `FileIo::scope`, `stats_reset` and `write_operation`. PostgreSQL before 16 measures
+data reads per database, while `pg_stat_io` and WAL are shared server sources. WAL syncs are flushes, not writes.
+Older scans can recover scope and operation from their provider/version, but an unknown source reset remains unknown.
+A reset of database, background-writer or archiver statistics never supplies the WAL source's period.
+
 Health counters follow these rules in `checks/pressure/health.rs`: preparation corrects saved and fresh counters, honors `Snapshot::options` for dated samples, and keeps shared or descriptive ratios ungraded. Azure CPU/I/O/log/worker assessments require 30 minutes of actual 15-second samples with at least 80% coverage per dimension; allocated cache memory is contextual. After refinement, queue and cleanup colors come from final findings. The app's query/table/storage/replica colors also use those findings instead of independent thresholds. Query Store compilation history is exact and separate (`QueryCosts::compile_history`); an old prorated compilation estimate is withdrawn on reread. Cloud episode assessments require contiguous timestamps, preserve the actual fetch period, and are cached per database and period.
 
 ### Views built on a report

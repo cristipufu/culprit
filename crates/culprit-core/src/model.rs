@@ -473,6 +473,9 @@ impl Workload {
     /// hours of Culprit's scans (about 388 a day over the 1277 days since statistics were reset)"), except for a recent
     /// entry, whose totals are mostly those runs, diluted by the time before it began ([`ScanSpan::is_recent`]).
     pub fn how_often_of(&self, q: &QueryStat) -> String {
+        if let Some(activity) = self.observed_activity(q) {
+            return activity.runs_phrase();
+        }
         let cadence = self.cadence(q);
         if let Some(s) = self.scans_of(q).filter(|_| !matches!(cadence, Cadence::Burst { .. })) {
             let now = s.runs_phrase();
@@ -629,6 +632,9 @@ impl Workload {
     /// they measured it on a source of running totals ([`Workload::scans_of`]), over the window, or over the stretch
     /// it ran in. `None` for a burst, for fewer runs than days, and under a day of window.
     pub fn runs_per_day_of(&self, q: &QueryStat) -> Option<f64> {
+        if self.scans_of(q).is_none() && self.observed_activity(q).is_some() {
+            return None;
+        }
         let cadence = self.cadence(q);
         if !matches!(cadence, Cadence::Burst { .. })
             && let Some(s) = self.scans_of(q)
@@ -670,7 +676,9 @@ impl Workload {
         let timeline = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && !self.windowed)?;
         let trend = q.trend.as_ref()?;
         let at = |s: &str| crate::format::epoch_seconds(s);
-        let mut span = ScanSpan { hours: 0.0, runs: 0.0, time_ms: 0.0, workload_time_ms: 0.0, workload_runs: 0.0 };
+        let mut span =
+            ScanSpan { hours: 0.0, runs: 0.0, time_ms: 0.0, workload_time_ms: 0.0, workload_runs: 0.0, period: None };
+        let (mut first, mut last) = (None, None);
         for i in 0..timeline.len() {
             let (from, to) = timeline.bounds(i);
             let (Some(from), Some(to)) = (at(from), at(to)) else { continue };
@@ -681,8 +689,44 @@ impl Workload {
             span.time_ms += time;
             span.workload_time_ms += all_time;
             span.workload_runs += timeline.executions.get(i).copied().unwrap_or(0.0);
+            first = first.or(Some(from));
+            last = Some(to);
+        }
+        // An older subset is not the latest N hours. Date it whenever the scans leave gaps or end earlier.
+        if let (Some(first), Some(last), Some(end)) = (first, last, at(&timeline.end))
+            && (end - last > 1.0 || last - first - span.hours * 3600.0 > 1.0)
+        {
+            span.period = Some((first, last));
         }
         (span.hours >= PER_DAY_MIN_HOURS).then_some(span)
+    }
+
+    /// The latest scan interval's observed calls, separately from a complete workload share. Evictions can make
+    /// database totals incomplete while an entry's growing counters still establish a lower bound on its activity.
+    /// Never infer an average, share or daily rate from those possibly incomplete differences.
+    pub fn observed_activity(&self, q: &QueryStat) -> Option<StatementActivity> {
+        let t = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && !self.windowed)?;
+        let i = t.len().checked_sub(1)?;
+        let trend = q.trend.as_ref()?;
+        if self.scans_of(q).is_some() && t.statement_bucket(trend, i).is_some() {
+            return None;
+        }
+        let (time_ms, runs) = ((*trend.time_ms.get(i)?)?, (*trend.executions.get(i)?)?);
+        if !time_ms.is_finite() || !runs.is_finite() || time_ms < 0.0 || runs <= 0.0 {
+            return None;
+        }
+        // In a complete bucket an entry cannot outrun the database. Unknown buckets have no usable denominator.
+        if !t.is_unknown(i) && t.statement_bucket(trend, i).is_none() {
+            return None;
+        }
+        let (from, to) = t.bounds(i);
+        let hours = (crate::format::epoch_seconds(to)? - crate::format::epoch_seconds(from)?) / 3600.0;
+        (hours > 0.0).then(|| StatementActivity {
+            runs,
+            time_ms,
+            incomplete: t.is_unknown(i),
+            over: format!("{} of Culprit's scans {}", span_words(hours), span_when(from, to)),
+        })
     }
 
     /// What Culprit's own scans measured of statement `q` where that is what a person reads of it and what grades it:
@@ -732,6 +776,7 @@ impl Workload {
     /// totals since the source began counting beside them where those differ twofold.
     pub fn cost_of(&self, q: &QueryStat) -> StatementCost {
         let scans = self.scans_of(q);
+        let activity = self.observed_activity(q);
         let (runs, counted) = match &scans {
             Some(s) if !matches!(self.cadence(q), Cadence::Burst { .. }) => (s.runs_phrase(), s.runs),
             _ => (self.how_often_of(q), q.executions),
@@ -739,12 +784,13 @@ impl Workload {
         StatementCost {
             query: q.id.clone(),
             share: self.statement_share(q),
-            runs,
-            runs_per_day: self.runs_per_day_of(q),
-            counted,
+            runs: activity.as_ref().map_or(runs, StatementActivity::runs_phrase),
+            runs_per_day: if activity.is_some() { None } else { self.runs_per_day_of(q) },
+            counted: activity.as_ref().map_or(counted, |a| a.runs),
             mean_ms: self.statement_mean_ms(q),
             over: scans.map(|s| s.phrase()),
             totals: scans.and_then(|s| self.totals_beside(q, &s)),
+            activity,
         }
     }
 
@@ -877,6 +923,8 @@ pub struct ScanSpan {
     pub workload_time_ms: f64,
     /// The whole database's runs in the same steps.
     pub workload_runs: f64,
+    /// Dates for a subset that has gaps or does not reach the latest scan.
+    pub period: Option<(f64, f64)>,
 }
 
 impl ScanSpan {
@@ -897,7 +945,13 @@ impl ScanSpan {
 
     /// "72 hours of Culprit's scans": the steps, as sentences name them (they need not be every scan's).
     pub fn phrase(&self) -> String {
-        format!("{} of Culprit's scans", self.length())
+        let dates = self
+            .period
+            .map(|(from, to)| {
+                format!(" {}", span_when(&crate::format::iso_from_epoch(from), &crate::format::iso_from_epoch(to)))
+            })
+            .unwrap_or_default();
+        format!("{} of Culprit's scans{dates}", self.length())
     }
 
     /// How long the steps cover: hours under four days (89 hours are not "4 days"), days to a tenth after.
@@ -977,7 +1031,7 @@ pub struct StatementCost {
     pub runs: String,
     /// Its runs a day where its runs came that way ([`Workload::runs_per_day_of`]).
     pub runs_per_day: Option<f64>,
-    /// The runs `runs` counts where it says no rate a day (a burst, a few runs): over Culprit's scans where they
+    /// The runs `runs` counts where it says no rate a day (observed activity, a burst, a few runs): over Culprit's scans where they
     /// measured it, otherwise over the window.
     pub counted: f64,
     /// Its average run ([`Workload::statement_mean_ms`]).
@@ -987,6 +1041,33 @@ pub struct StatementCost {
     pub over: Option<String>,
     /// The totals since the source began counting, where they differ twofold ([`Workload::totals_beside`]).
     pub totals: Option<String>,
+    /// More recent observed calls whose interval cannot supply a complete workload share. The share and average
+    /// above retain their own period; this count is never divided by the lifetime reset window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub activity: Option<StatementActivity>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct StatementActivity {
+    pub runs: f64,
+    pub time_ms: f64,
+    /// Evictions mean these differences are lower bounds, not complete counts or a basis for an average.
+    pub incomplete: bool,
+    pub over: String,
+}
+
+impl StatementActivity {
+    pub fn runs_phrase(&self) -> String {
+        format!(
+            "{}{} {} observed over {}",
+            if self.incomplete { "at least " } else { "" },
+            crate::format::count(self.runs),
+            runs_noun(self.runs),
+            self.over
+        )
+    }
 }
 
 /// When runs came, from `from` to `to` (ISO 8601): "on Oct 11 at 13:58 UTC" for one moment, "on Oct 11, 15:51–15:55
@@ -2032,6 +2113,33 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn evictions_keep_recent_observed_calls_separate_from_complete_shares() {
+        let (mut w, mut q) = running_totals(800.0, 3000.0);
+        w.timeline.as_mut().unwrap().unknown = Some(vec![false, false, true]);
+        let cost = w.cost_of(&q);
+        assert!(cost.over.as_ref().unwrap().contains("between"));
+        assert!(cost.over.as_ref().unwrap().contains("Oct"));
+        assert_eq!(cost.activity.as_ref().unwrap().runs, 800.0);
+        assert!(cost.activity.as_ref().unwrap().incomplete);
+        assert_eq!(cost.runs_per_day, None);
+        assert!(cost.runs.starts_with("at least 800 runs observed"));
+        assert!((cost.share - 0.3).abs() < 1e-9);
+        // A newly tracked entry has no complete interval, but its latest calls must not be diluted over years.
+        q.trend.as_mut().unwrap().executions = vec![None, None, Some(825.0)];
+        q.trend.as_mut().unwrap().time_ms = vec![None, None, Some(700.0)];
+        let cost = w.cost_of(&q);
+        assert_eq!(cost.counted, 825.0);
+        assert_eq!(w.runs_per_day_of(&q), None);
+        assert_eq!(cost.runs_per_day, None);
+        assert!(w.how_often_of(&q).contains("825 runs observed"));
+        // A missing or invalid query difference is not an observed zero.
+        q.trend.as_mut().unwrap().time_ms[2] = None;
+        assert!(w.observed_activity(&q).is_none());
+        q.trend.as_mut().unwrap().time_ms[2] = Some(-1.0);
+        assert!(w.observed_activity(&q).is_none());
+    }
 
     #[test]
     fn server_versions_compare_by_number() {

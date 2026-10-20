@@ -13,7 +13,7 @@ use culprit_core::{
 use tokio_postgres::Client;
 
 use crate::collect::{Probe, StatementsAccess};
-use crate::rows::{Row, query, query_one};
+use crate::rows::{Row, iso, query, query_one};
 use crate::sources;
 
 /// Collect every signal into `snapshot`, each source read through `Coverage::read` (`crate::sources`): these add
@@ -354,12 +354,13 @@ async fn files(client: &Client, version_num: u32) -> culprit_core::Result<Vec<Fi
         } else {
             ("sum(reads * op_bytes)", "sum((writes + extends) * op_bytes)")
         };
-        let sql = format!(
-            "SELECT object, sum(reads) AS reads, sum(read_time) AS read_ms, {} AS read_bytes,
+        let sql =
+            format!(
+            "SELECT object, {reset} AS stats_reset, sum(reads) AS reads, sum(read_time) AS read_ms, {} AS read_bytes,
                     sum(writes + extends) AS writes, sum(write_time + extend_time) AS write_ms, {} AS write_bytes,
                     sum(fsyncs) AS fsyncs, sum(fsync_time) AS fsync_ms
                FROM pg_stat_io GROUP BY object",
-            bytes.0, bytes.1
+            bytes.0, bytes.1, reset = iso("min(stats_reset)")
         );
         for r in query(client, &sql).await? {
             let object = r.string("object");
@@ -391,12 +392,18 @@ async fn files(client: &Client, version_num: u32) -> culprit_core::Result<Vec<Fi
                 writes,
                 write_ms: timed(write_ms),
                 write_bytes: r.number("write_bytes"),
+                scope: Some(culprit_core::FileScope::Server),
+                stats_reset: r.text("stats_reset"),
+                write_operation: (kind == FileKind::Log).then_some(culprit_core::FileWriteOperation::Flush),
             });
         }
     } else {
-        let sql = "SELECT blks_read, blk_read_time, current_setting('block_size')::float8 AS bs
-                     FROM pg_stat_database WHERE datname = current_database()";
-        if let Some(r) = query_one(client, sql).await?
+        let sql = format!(
+            "SELECT blks_read, blk_read_time, {} AS stats_reset, current_setting('block_size')::float8 AS bs
+                     FROM pg_stat_database WHERE datname = current_database()",
+            iso("stats_reset")
+        );
+        if let Some(r) = query_one(client, &sql).await?
             && let Some(reads) = r.number("blks_read").filter(|n| *n > 0.0)
         {
             out.push(FileIo {
@@ -409,12 +416,22 @@ async fn files(client: &Client, version_num: u32) -> culprit_core::Result<Vec<Fi
                 writes: 0.0,
                 write_ms: None,
                 write_bytes: None,
+                scope: Some(culprit_core::FileScope::Database),
+                stats_reset: r.text("stats_reset"),
+                write_operation: None,
             });
         }
     }
     // WAL flushes before 18 live in pg_stat_wal (14+), timed with track_wal_io_timing.
     if (140_000..180_000).contains(&version_num)
-        && let Some(r) = query_one(client, "SELECT wal_sync, wal_sync_time, wal_bytes FROM pg_stat_wal").await?
+        && let Some(r) = query_one(
+            client,
+            &format!(
+                "SELECT wal_sync, wal_sync_time, wal_bytes, {} AS stats_reset FROM pg_stat_wal",
+                iso("stats_reset")
+            ),
+        )
+        .await?
         && let Some(syncs) = r.number("wal_sync").filter(|n| *n > 0.0)
     {
         out.push(FileIo {
@@ -427,6 +444,9 @@ async fn files(client: &Client, version_num: u32) -> culprit_core::Result<Vec<Fi
             writes: syncs,
             write_ms: r.number("wal_sync_time").filter(|ms| *ms > 0.0),
             write_bytes: r.number("wal_bytes"),
+            scope: Some(culprit_core::FileScope::Server),
+            stats_reset: r.text("stats_reset"),
+            write_operation: Some(culprit_core::FileWriteOperation::Flush),
         });
     }
     Ok(out)

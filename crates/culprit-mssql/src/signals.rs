@@ -329,6 +329,9 @@ fn file_io(r: &Rec, database: Option<String>, kind: FileKind) -> FileIo {
         writes: r.f64_or_zero("writes"),
         write_ms: r.f64("write_ms"),
         write_bytes: r.f64("write_bytes"),
+        scope: None,
+        stats_reset: None,
+        write_operation: None,
     }
 }
 

@@ -63,7 +63,7 @@ export function WaitsVital({ report, onOpen }: { report: Report; onOpen: OpenWai
   return (
     <div className="vital waits-vital" role="button" tabIndex={0} onClick={() => onOpen("waits", top.key)} onKeyDown={(e) => activate(e, () => onOpen("waits", top.key))} title="See where the time goes, and the queries behind each part">
       <div className="label">Where time goes</div>
-      <div className="value waits-value" title={`${top.label}: ${percent(top.share)} of waiting`}>
+      <div className="value waits-value" title={`${top.label}: ${percent(top.share)} of recorded time`}>
         <span className="full">{top.label}</span>
         <span className="short">{SHORT[top.key] ?? top.label}</span>
       </div>

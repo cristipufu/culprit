@@ -2408,6 +2408,7 @@
           "read_bytes": 26447872.0,
           "read_ms": 3.0,
           "reads": 104.0,
+          "scope": "database",
           "write_bytes": 372588544.0,
           "write_ms": 16454.0,
           "writes": 26035.0
@@ -2419,6 +2420,7 @@
           "read_bytes": 341606400.0,
           "read_ms": 124.0,
           "reads": 3080.0,
+          "scope": "database",
           "write_bytes": 348225536.0,
           "write_ms": 256.0,
           "writes": 1164.0
@@ -2430,6 +2432,7 @@
           "read_bytes": 1015808.0,
           "read_ms": 0.0,
           "reads": 8.0,
+          "scope": "database",
           "write_bytes": 7221248.0,
           "write_ms": 330.0,
           "writes": 148.0
@@ -2441,6 +2444,7 @@
           "read_bytes": 5890048.0,
           "read_ms": 3.0,
           "reads": 96.0,
+          "scope": "database",
           "write_bytes": 4022272.0,
           "write_ms": 5.0,
           "writes": 84.0
@@ -2452,6 +2456,7 @@
           "read_bytes": 4128768.0,
           "read_ms": 1.0,
           "reads": 66.0,
+          "scope": "database",
           "write_bytes": 3989504.0,
           "write_ms": 3.0,
           "writes": 63.0
@@ -2463,6 +2468,7 @@
           "read_bytes": 4087808.0,
           "read_ms": 1.0,
           "reads": 65.0,
+          "scope": "database",
           "write_bytes": 3948544.0,
           "write_ms": 3.0,
           "writes": 62.0
@@ -2474,6 +2480,7 @@
           "read_bytes": 4153344.0,
           "read_ms": 1.0,
           "reads": 67.0,
+          "scope": "database",
           "write_bytes": 4014080.0,
           "write_ms": 3.0,
           "writes": 63.0
@@ -2485,6 +2492,7 @@
           "read_bytes": 4087808.0,
           "read_ms": 1.0,
           "reads": 65.0,
+          "scope": "database",
           "write_bytes": 3956736.0,
           "write_ms": 3.0,
           "writes": 63.0
@@ -2496,6 +2504,7 @@
           "read_bytes": 4153344.0,
           "read_ms": 1.0,
           "reads": 66.0,
+          "scope": "database",
           "write_bytes": 4014080.0,
           "write_ms": 2.0,
           "writes": 63.0
@@ -2507,6 +2516,7 @@
           "read_bytes": 3956736.0,
           "read_ms": 1.0,
           "reads": 63.0,
+          "scope": "database",
           "write_bytes": 3817472.0,
           "write_ms": 2.0,
           "writes": 60.0
@@ -2518,6 +2528,7 @@
           "read_bytes": 3956736.0,
           "read_ms": 1.0,
           "reads": 63.0,
+          "scope": "database",
           "write_bytes": 3817472.0,
           "write_ms": 2.0,
           "writes": 60.0

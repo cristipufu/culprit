@@ -41,7 +41,7 @@ pub async fn history_waits(
 /// Statement time split into disk I/O and the rest. Nothing else PostgreSQL times is part of statement time per
 /// category: CPU, locks and untimed waits stay together, never guessed apart.
 fn breakdown(statements_ms: f64, statements_io_ms: f64) -> Vec<WaitStat> {
-    if statements_io_ms <= 0.0 {
+    if statements_io_ms <= 0.0 || statements_io_ms > statements_ms {
         return Vec::new();
     }
     let other = (statements_ms - statements_io_ms).max(0.0);
@@ -454,6 +454,7 @@ mod tests {
         assert!(waits.iter().all(|w| !w.wait_type.as_deref().unwrap_or_default().contains("WAL")));
         // Nothing timed per category: no breakdown, rather than all of it as "Other".
         assert!(breakdown(100_000.0, 0.0).is_empty(), "nothing timed, nothing to break down");
+        assert!(breakdown(100.0, 150.0).is_empty(), "overlapping I/O time is not a partition of execution time");
     }
 
     #[test]

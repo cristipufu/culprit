@@ -35,7 +35,7 @@ pub(super) fn latency(ms: f64) -> String {
 /// The latency a file is waited on for (reads of data, writes of the log) and how many operations it averages.
 pub(super) fn waited_latency(f: &FileIo) -> Option<(f64, f64, &'static str)> {
     if f.kind == FileKind::Log {
-        f.avg_write_ms().map(|avg| (avg, f.writes, "write"))
+        f.avg_write_ms().map(|avg| (avg, f.writes, f.write_label()))
     } else {
         f.avg_read_ms().map(|avg| (avg, f.reads, "read"))
     }
@@ -81,7 +81,15 @@ pub(super) fn storage(report: &Report) -> Tile {
                 parts.push(format!("reads average {}", latency(avg)));
             }
             if let Some(avg) = log {
-                parts.push(format!("log writes {}", latency(avg)));
+                parts.push(format!(
+                    "log {} {}",
+                    if files.iter().any(|f| f.kind == FileKind::Log && f.write_label() == "flush") {
+                        "flushes"
+                    } else {
+                        "writes"
+                    },
+                    latency(avg)
+                ));
             }
             if parts.is_empty() {
                 (TileStatus::Info, "Too little I/O since startup to judge storage speed.".to_string())
@@ -95,7 +103,16 @@ pub(super) fn storage(report: &Report) -> Tile {
         t.metrics.push(TileMetric::new("read-ms", "Avg read", Some(avg), latency(avg)));
     }
     if let Some(avg) = log {
-        t.metrics.push(TileMetric::new("log-write-ms", "Avg log write", Some(avg), latency(avg)));
+        t.metrics.push(TileMetric::new(
+            "log-write-ms",
+            if files.iter().any(|f| f.kind == FileKind::Log && f.write_label() == "flush") {
+                "Avg log flush"
+            } else {
+                "Avg log write"
+            },
+            Some(avg),
+            latency(avg),
+        ));
     }
     // The slowest files, each by what it's waited on for.
     let mut rows: Vec<(f64, TileItem)> = files
@@ -106,6 +123,14 @@ pub(super) fn storage(report: &Report) -> Tile {
                 let id = format!("{}:{}", f.database.as_deref().unwrap_or(""), f.name);
                 let mut item = TileItem::new(ItemKind::Signal, id, file_name(s, f));
                 item.value = Some(format!("{} per {what}", latency(avg)));
+                if f.scope == Some(culprit_core::FileScope::Server) {
+                    item.label.push_str(" (whole server)");
+                }
+                if f.scope == Some(culprit_core::FileScope::Database)
+                    && f.database.as_deref().is_none_or(|db| db == s.server.database)
+                {
+                    item.label.push_str(" (this database)");
+                }
                 let prefix = format!("slow-storage:{}:", f.database.as_deref().unwrap_or(""));
                 item.status = Some(
                     report
@@ -131,7 +156,8 @@ pub(super) fn storage(report: &Report) -> Tile {
     rows.sort_by(|a, b| b.0.total_cmp(&a.0));
     t.items = rows.into_iter().map(|(_, i)| i).take(4).collect();
     // The counters' own window, worded like every other one (a statistics reset on PostgreSQL, else the restart).
-    t.detail = Some(format!("Averages {}.", since_phrase(s)));
+    t.detail =
+        Some(files.iter().map(|f| format!("{}: {}", file_name(s, f), f.coverage(s))).collect::<Vec<_>>().join("; "));
     t
 }
 
@@ -449,7 +475,7 @@ pub(super) fn statistics(report: &Report) -> Tile {
             }
             t.metrics = vec![
                 TileMetric::new("queries", "Queries", Some(w.query_count), format::count(w.query_count)),
-                TileMetric::new("plans", "With plans", Some(planned as f64), planned.to_string()),
+                TileMetric::new("plans", "All queries with plans", Some(planned as f64), planned.to_string()),
                 TileMetric::new("window-hours", "Covers", Some(w.window_hours), span(w.window_hours)),
             ];
             t.items = stats_findings

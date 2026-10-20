@@ -125,7 +125,7 @@ fn top_queries_and_plans_link_to_queries() {
     let ids: Vec<&str> = r.snapshot.workload.as_ref().unwrap().queries.iter().map(|q| q.id.as_str()).collect();
     assert!(top.items.iter().all(|i| ids.contains(&i.query_id.as_deref().unwrap())));
     let plans = tile(&d, TileKey::Plans);
-    assert!(plans.takeaway.contains("captured plans have something to fix"), "{}", plans.takeaway);
+    assert!(plans.takeaway.contains("current query plans have something to fix"), "{}", plans.takeaway);
     assert!(plans.items.iter().all(|i| i.query_id.is_some()));
     // The one query that switched plans in the window shows on the database time tile.
     let db = tile(&d, TileKey::DbTime);
@@ -338,6 +338,9 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
             writes: 0.0,
             write_ms: None,
             write_bytes: None,
+            scope: None,
+            stats_reset: None,
+            write_operation: None,
         },
         FileIo {
             name: "wal".into(),
@@ -349,6 +352,9 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
             writes: 20_000.0,
             write_ms: Some(20_000.0 * 40.0),
             write_bytes: None,
+            scope: None,
+            stats_reset: None,
+            write_operation: None,
         },
     ];
     p.replicas = vec![Replica {
@@ -365,7 +371,11 @@ fn storage_connections_replication_and_failures_say_what_they_saw() {
     r = culprit_checks::analyze(r.snapshot);
     let d = dashboard(&r);
     let storage = tile(&d, TileKey::Storage);
-    assert_eq!(storage.items.first().map(|i| i.label.as_str()), Some("WAL"), "the slowest file first");
+    assert_eq!(
+        storage.items.first().map(|i| i.label.as_str()),
+        Some("WAL (whole server)"),
+        "the slowest file first, with its scope"
+    );
     assert_eq!(storage.items[0].status, Some(TileStatus::Info), "a shared historical average is context");
     assert!(storage.metric("log-write-ms").is_some());
     let replication = tile(&d, TileKey::Replication);
@@ -480,5 +490,76 @@ fn the_headline_counts_statements_that_stopped_not_findings() {
              changed them."
         ),
         "{headline}"
+    );
+}
+
+#[test]
+fn postgres_storage_waits_and_plan_counts_keep_their_own_meaning() {
+    use culprit_core::{FileIo, FileKind, FileScope, FileWriteOperation};
+    let mut r = report("pg-demo");
+    r.snapshot.server.version = "15.17".into();
+    let f = |name: &str, kind, reset: &str| FileIo {
+        name: name.into(),
+        kind,
+        database: None,
+        reads: 2000.0,
+        read_ms: Some(1000.0),
+        read_bytes: None,
+        writes: 2000.0,
+        write_ms: Some(6000.0),
+        write_bytes: None,
+        scope: None,
+        stats_reset: Some(reset.into()),
+        write_operation: None,
+    };
+    r.snapshot.pressure.get_or_insert_with(Default::default).files = vec![
+        f("Tables and indexes", FileKind::Data, "2026-10-19T00:00:00Z"),
+        f("WAL", FileKind::Log, "2026-10-18T00:00:00Z"),
+    ];
+    let r = culprit_checks::analyze(r.snapshot);
+    let files = &r.snapshot.pressure.as_ref().unwrap().files;
+    assert_eq!(files[0].scope, Some(FileScope::Database));
+    assert_eq!(files[1].scope, Some(FileScope::Server));
+    assert_eq!(files[1].write_operation, Some(FileWriteOperation::Flush));
+    let d = dashboard(&r);
+    let storage = tile(&d, TileKey::Storage);
+    let coverage = storage.detail.as_ref().unwrap();
+    assert!(coverage.contains("this database") && coverage.contains("whole server"), "{coverage}");
+    assert!(coverage.contains("2026-10-19") && coverage.contains("2026-10-18"), "{coverage}");
+    assert!(storage.items.iter().any(|i| i.value.as_deref().is_some_and(|v| v.contains("per flush"))));
+    let waits = tile(&d, TileKey::Waits);
+    assert!(waits.metrics.iter().any(|m| m.label == "Statement execution time"));
+    assert!(waits.detail.as_deref().unwrap().contains("not a measurement of time spent waiting"));
+    assert!(tile(&d, TileKey::Plans).detail.as_deref().unwrap().contains("historical or once-only"));
+    assert!(tile(&d, TileKey::Statistics).metrics.iter().any(|m| m.label == "All queries with plans"));
+    // From PostgreSQL 16, pg_stat_io's data timing is also server-wide.
+    let mut s = r.snapshot;
+    s.server.version = "16.5".into();
+    s.pressure.as_mut().unwrap().files[0].scope = None;
+    assert_eq!(culprit_checks::analyze(s).snapshot.pressure.unwrap().files[0].scope, Some(FileScope::Server));
+}
+
+#[test]
+fn saved_postgres_io_that_exceeds_execution_time_is_not_an_exclusive_share() {
+    use culprit_core::{Capability, WaitStat};
+    let mut s = report("pg-demo").snapshot;
+    let w = s.workload.as_mut().unwrap();
+    w.total_time_ms = 100.0;
+    w.queries[0].waits = vec![WaitStat {
+        category: "IO".into(),
+        wait_type: Some("data file reads and writes".into()),
+        wait_ms: 150.0,
+        tasks: None,
+    }];
+    s.waits = w.queries[0].waits.clone();
+    let r = culprit_checks::analyze(s);
+    assert!(r.snapshot.waits.is_empty());
+    assert!(!r.snapshot.server.capabilities.contains(&Capability::WaitStats));
+    assert_eq!(r.snapshot.workload.as_ref().unwrap().queries[0].waits[0].wait_ms, 150.0);
+    assert!(
+        r.snapshot
+            .notes
+            .iter()
+            .any(|n| n.collector == "waits" && n.message.contains("exceeds statement execution time"))
     );
 }

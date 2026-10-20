@@ -372,6 +372,10 @@ pub async fn snapshot(
     }
     // PostgreSQL keeps no wait history: time by category comes from statement and WAL timing, when they are on.
     let waits_out = crate::pressure::history_waits(&primary, &probe, statements_ms, statements_io_ms).await;
+    if statements_io_ms > statements_ms {
+        coverage.note("waits", "Recorded I/O time exceeds statement execution time; parallel or differently covered timing cannot be shown as exclusive shares of execution time. Per-query I/O totals remain available.");
+    }
+
     if waits_out.is_empty() {
         coverage.withdraw(Capability::WaitStats);
     } else {

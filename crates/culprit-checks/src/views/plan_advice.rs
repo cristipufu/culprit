@@ -25,6 +25,9 @@ pub fn query_plan_insights(snapshot: &Snapshot, query: &QueryStat, plan: &Plan) 
         return PlanInsights { items: Vec::new(), note: Some(note.into()) };
     }
     let mut items = catalog_insights(snapshot, query, plan);
+    if let Some(rewrite) = crate::queries::late_filter_rewrite(snapshot, query, plan) {
+        items.push(rewrite);
+    }
     let history = crate::query_is_history(snapshot, query);
     let material = index_work_is_material(snapshot, &[query]);
     let context = if history {

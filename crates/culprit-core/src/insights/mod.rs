@@ -96,6 +96,11 @@ pub struct PlanInsights {
 
 /// Every rule, for docs and `culprit checks`-style listings: (id, engines, one line).
 pub const RULES: &[(&str, &[Engine], &str)] = &[
+    (
+        "cross-table-or",
+        ALL,
+        "A filter across tables after a scan; evaluate a semantics-preserving rewrite before indexing",
+    ),
     ("key-lookups", &[Engine::Mssql], "Thousands of key or RID lookups back into the table"),
     ("scan-filter", ALL, "A scan reads far more rows than its filter keeps"),
     ("missing-index-hint", &[Engine::Mssql], "The optimizer's own index suggestion"),
@@ -371,7 +376,7 @@ pub fn whole_read_matters(plan: &Plan, n: &PlanNode) -> bool {
 /// Whether a plan's object is the engine's own, its catalog and statistics: SQL Server's `sys` schema (Query Store's
 /// `plan_persist_*` tables among them) and resource database, the standard `INFORMATION_SCHEMA`, PostgreSQL's
 /// `pg_catalog` and `pg_toast`, MySQL's `mysql` and `performance_schema` databases, and SQLite's `sqlite_*` tables.
-fn is_system_object(object: &str) -> bool {
+pub fn is_system_object(object: &str) -> bool {
     let parts: Vec<String> = object.split('.').map(|p| clean_identifier(p).to_ascii_lowercase()).collect();
     let schema = parts.len().checked_sub(2).and_then(|at| parts.get(at)).map(String::as_str);
     matches!(schema, Some("sys" | "information_schema" | "pg_catalog" | "pg_toast" | "performance_schema" | "mysql"))

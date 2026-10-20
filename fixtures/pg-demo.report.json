@@ -58,7 +58,7 @@
         "kind": "query",
         "name": "9065391607317686058"
       },
-      "summary": "The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.",
+      "summary": "The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too. Latest activity: 25 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.",
       "title": "A read from orders writes about 19.9 MB of temp files per run",
       "verification_basis": "rescan",
       "verify": [
@@ -354,7 +354,7 @@
         "kind": "query",
         "name": "3432126458605143571"
       },
-      "summary": "129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.",
+      "summary": "129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip. Latest activity: 739 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.",
       "title": "A read from customers runs 8.2K times in 5 hours, one key at a time",
       "verification_basis": "rescan",
       "verify": [
@@ -1593,8 +1593,10 @@
           "read_bytes": 90112.0,
           "read_ms": null,
           "reads": 11.0,
+          "scope": "server",
           "write_bytes": null,
           "write_ms": null,
+          "write_operation": "flush",
           "writes": 1370.0
         },
         {
@@ -1604,6 +1606,7 @@
           "read_bytes": 632516337664.0,
           "read_ms": 41507.15700000001,
           "reads": 16531698.0,
+          "scope": "server",
           "write_bytes": 2945155072.0,
           "write_ms": 1396.134,
           "writes": 359406.0
@@ -5494,7 +5497,104 @@
     "headline": "14 opportunities. The top ones touch 2 min of database time over the 5 hours since statistics were reset (67%).",
     "no_workload": null,
     "opportunities": 14,
-    "over_scans": [],
+    "over_scans": [
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 25.0,
+          "time_ms": 8973.88
+        },
+        "counted": 25.0,
+        "mean_ms": 331.8799853551402,
+        "over": null,
+        "query": "9065391607317686058",
+        "runs": "25 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.44029066258942773,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 105.0,
+          "time_ms": 3987.32
+        },
+        "counted": 105.0,
+        "mean_ms": 44.22357407042247,
+        "over": null,
+        "query": "5308963031944094559",
+        "runs": "105 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.23358130099961572,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 46.0,
+          "time_ms": 863.54
+        },
+        "counted": 46.0,
+        "mean_ms": 17.097838652392948,
+        "over": null,
+        "query": "-3722457391793582113",
+        "runs": "46 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.042080061020187354,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 27.0,
+          "time_ms": 287.3
+        },
+        "counted": 27.0,
+        "mean_ms": 11.650515877450973,
+        "over": null,
+        "query": "2004611025554862962",
+        "runs": "27 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.014733976173058787,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 172.0,
+          "time_ms": 14.46
+        },
+        "counted": 172.0,
+        "mean_ms": 0.07471679056386649,
+        "over": null,
+        "query": "2885972271926804069",
+        "runs": "172 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.0008050310297120781,
+        "totals": null
+      },
+      {
+        "activity": {
+          "incomplete": false,
+          "over": "32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+          "runs": 739.0,
+          "time_ms": 11.71
+        },
+        "counted": 739.0,
+        "mean_ms": 0.015752548394971234,
+        "over": null,
+        "query": "3432126458605143571",
+        "runs": "739 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC",
+        "runs_per_day": null,
+        "share": 0.0008000892165181061,
+        "totals": null
+      }
+    ],
     "runs_said": [
       {
         "query": "-8886085649470066503",

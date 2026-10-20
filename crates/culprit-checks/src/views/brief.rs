@@ -45,13 +45,21 @@ pub fn agent_brief(report: &Report, finding: &Finding) -> String {
             // measured it, with the totals beside where those differ twofold; when it ran as well as how often, a
             // burst on its day and a rate a day only where its runs came that way.
             let Some(cost) = s.workload.as_ref().map(|w| w.cost_of(q)) else { continue };
+            let period_note = cost
+                .activity
+                .as_ref()
+                .map(|_| {
+                    let basis = cost.over.clone().unwrap_or_else(|| s.workload.as_ref().unwrap().window_phrase());
+                    format!(" (share and average over {basis}; the observed calls have their own period)")
+                })
+                .unwrap_or_default();
             // One run or two far apart: what they took, never an average that hides it (`QueryStat::few_runs`).
             let took = q
                 .few_runs_took()
                 .map_or_else(|| format!("{} average", format::duration(cost.mean_ms)), |t| format!("which took {t}"));
             let _ = writeln!(
                 out,
-                "Query `{}`{} — {} of DB time, {}, {took}{}{}:\n",
+                "Query `{}`{} — {} of DB time, {}, {took}{period_note}{}{}:\n",
                 q.id,
                 q.object_name.as_deref().map(|o| format!(" in `{o}`")).unwrap_or_default(),
                 format::percent(cost.share),

@@ -66,8 +66,8 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
             f.impact.score = score_for_share(slow_share);
             f.impact.label = format!("{} of {} in slow runs", format::percent(slow_share), time_label(snapshot));
             f.confidence = Confidence::Medium;
-            // A plan that reads no table (an INSERT of the values it is given) does about the same work whatever the
-            // values: its slow runs most likely waited, and nothing about parameters or statistics applies.
+            // A visible values-only write narrows the diagnostic possibilities. Waits, triggers and constraints
+            // can do work absent from this plan, so it does not prove that every slow run was waiting.
             let waited = (snapshot.server.engine.has_server() && q.plan.as_ref().is_some_and(writes_without_reading))
                 .then(|| WriteWaits::read(snapshot, q, excess));
             // A statement that stopped running is told in the past.
@@ -159,7 +159,7 @@ pub fn unstable_query(snapshot: &Snapshot) -> Vec<Finding> {
                     let LockHolder { lead, sql } = find_lock_holder(snapshot, q, Some(fewest));
                     Fix {
                         summary: format!(
-                            "{lead} Keep the transactions that hold those rows short: commit sooner, and don't wait for a user or another service inside a transaction. Neither a different plan nor finer statistics changes it."
+                            "{lead} Keep the transactions that hold those rows short: commit sooner, and don't wait for a user or another service inside a transaction. Inspect the blocking transaction and any trigger or constraint work before deciding whether a query, index or transaction change will help."
                         ),
                         sql,
                         cost: None,
@@ -251,8 +251,8 @@ struct WriteWaits<'a> {
     successor: Option<&'a QueryStat>,
 }
 
-/// Data-file time under this share of the slow runs' extra time can't be why they were slow.
-const IO_RULED_OUT: f64 = 0.1;
+/// A small recorded I/O total is context, not proof that every historical run was timed.
+const SMALL_RECORDED_IO: f64 = 0.1;
 
 impl<'a> WriteWaits<'a> {
     fn read(snapshot: &'a Snapshot, q: &QueryStat, excess: f64) -> Self {
@@ -293,7 +293,7 @@ impl<'a> WriteWaits<'a> {
             .filter(|w| w.category == "IO")
             .map(|w| w.wait_ms)
             .reduce(|a, b| a + b)
-            .filter(|io| *io < excess * IO_RULED_OUT);
+            .filter(|io| *io < excess * SMALL_RECORDED_IO);
         let stopped = crate::query_stopped(snapshot, q).is_some();
         let successor = stopped.then(|| crate::refine::query_successor(snapshot, q)).flatten();
         WriteWaits {
@@ -338,7 +338,7 @@ impl<'a> WriteWaits<'a> {
                 if engine == Engine::Postgres { " (FOR KEY SHARE)" } else { "" }
             )
         });
-        let same_work = "so no value makes one run do much more work than another";
+        let same_work = "the captured plan does not show all work in triggers, constraints or called functions";
         let mut reads = match (self.key_index, checks) {
             (None, None) => format!("Its plan reads no table (it writes the values it is given), {same_work}."),
             (None, Some(checks)) => {
@@ -361,7 +361,7 @@ impl<'a> WriteWaits<'a> {
             .io_ms
             .map(|io| {
                 format!(
-                    " Its data-file reads and writes took {} in all, against at least {} of extra time in the slow runs: storage reads weren't it.",
+                    " Its recorded data-file I/O took {} in all, against at least {} of extra time in the slow runs. I/O timing may not cover every historical run, so this does not rule out storage delays.",
                     format::duration(io),
                     format::duration(self.excess)
                 )
@@ -377,18 +377,19 @@ impl<'a> WriteWaits<'a> {
         waits.push("for a lock on the table (a migration's, say)".into());
         waits.push(self.storage(engine).into());
         let last = waits.pop().unwrap_or_default();
-        format!("{reads}{io} The slow runs may have been waiting {}, or {last}.", waits.join(", "))
+        format!(
+            "{reads}{io} The slow runs may have been waiting {}, or {last}. Triggers and other work absent from this plan can also vary between runs; measure a slow run before choosing a cause.",
+            waits.join(", ")
+        )
     }
 
     /// The storage a run can wait on, as this engine times a statement. PostgreSQL's statement time is the executor's:
     /// an autocommit statement's commit, and the WAL flush it waits for, come after it. SQL Server's Query Store and
     /// MySQL's statement events time an autocommit statement's commit with it.
     fn storage(&self, engine: Engine) -> &'static str {
-        match (engine, self.io_ms.is_some()) {
-            (Engine::Postgres, false) => "on storage (writing WAL or data pages while a checkpoint runs)",
-            (Engine::Postgres, true) => "on writing WAL (while a checkpoint runs, say)",
-            (_, false) => "on storage (the log flush at commit, when it commits on its own, or a checkpoint)",
-            (_, true) => "on the log flush at commit (when it commits on its own)",
+        match engine {
+            Engine::Postgres => "on storage (writing WAL or data pages while a checkpoint runs)",
+            _ => "on storage (the log flush at commit, when it commits on its own, or a checkpoint)",
         }
     }
 
@@ -437,47 +438,40 @@ impl<'a> WriteWaits<'a> {
     /// What to do: watch the waits while it runs, have the next slow runs logged where they are too rare to watch,
     /// or, once it stopped, what took its place.
     fn fix(&self, snapshot: &Snapshot) -> Fix {
+        if self.stopped {
+            let successor = self
+                .successor
+                .map(|q| {
+                    let measured = q
+                        .max_time_ms
+                        .map(|ms| format!(" Its slowest recorded run took {}.", format::duration(ms)))
+                        .unwrap_or_default();
+                    format!(" Query {}, {} too, still runs and may have replaced it.{measured}", q.id, query_handle(q))
+                })
+                .unwrap_or_default();
+            return Fix {
+                summary: format!(
+                    "This statement no longer runs.{successor} These historical outliers do not establish a current problem in its replacement or justify a logging change. If slow runs recur, collect their durations and waits and inspect trigger and constraint work before choosing a fix."
+                ),
+                sql: None,
+                cost: None,
+            };
+        }
         let engine = snapshot.server.engine;
         let watch = "Live shows each session's wait and any blocking chain";
         let rare = self
             .too_rare_to_watch(snapshot)
-            .filter(|_| !self.stopped)
             .and_then(|(fewest, window)| Some((fewest, window, self.record_slow_runs(snapshot, self.mean_ms)?)));
         let mut sql = None;
-        let lead = match (self.stopped, self.successor, rare) {
-            (false, _, Some((fewest, window, (record, record_sql)))) => {
+        let lead = match rare {
+            Some((fewest, window, (record, record_sql))) => {
                 sql = record_sql;
                 format!(
                     "The extra time can come from as few as {} slow runs in {window}, too few to count on catching one while it happens. {record}",
                     format::count(fewest)
                 )
             }
-            (false, _, None) => format!("Find what the slow runs wait for while they happen ({watch})."),
-            // The statement that took its place has runs of its own to catch: Live only where its slow ones are there
-            // to be seen, which a slowest run near its average says they aren't.
-            (true, Some(next), _) => {
-                // A slow run is a second or more (`unstable_excess_ms`): none of its runs has been one.
-                let slowest = next.max_time_ms.filter(|max| *max < 1_000.0);
-                let replaced = format!(
-                    "This statement no longer runs. Query {}, {} too, still does: if it replaced this one, its runs can wait the same way",
-                    next.id,
-                    query_handle(next)
-                );
-                match (slowest, self.record_slow_runs(snapshot, next.mean_time_ms)) {
-                    // The settings are said, not given as this finding's SQL: a finding on a statement that stopped
-                    // runs nothing for it (refine's `stopped_statements_get_nothing_created`).
-                    (Some(max), Some((record, _))) => {
-                        format!(
-                            "{replaced}, though its slowest run so far took {}, so there is no slow run of it to catch while it happens. {record}",
-                            format::duration(max)
-                        )
-                    }
-                    _ => format!("{replaced}, so watch them ({watch})."),
-                }
-            }
-            (true, None, _) => format!(
-                "This statement no longer runs, so there is nothing to watch now; if it comes back, find what its slow runs wait for while they happen ({watch})."
-            ),
+            None => format!("Find what the slow runs wait for while they happen ({watch})."),
         };
         let referenced = self.referenced(engine);
         let holds = "holds this one until it commits or rolls back";
@@ -491,12 +485,12 @@ impl<'a> WriteWaits<'a> {
         };
         let storage = match (self.io_ms.is_some(), engine) {
             (true, _) => "",
-            (false, Engine::Postgres) => " Waits on storage slow every write at once and point at the storage.",
-            (false, _) => " Waits on the log or on storage slow every write at once and point at the storage.",
+            (false, Engine::Postgres) => " Compare storage timing during a slow run with its other work.",
+            (false, _) => " Compare log and storage timing during a slow run with its other work.",
         };
         Fix {
             summary: format!(
-                "{lead} {blockers}: keep those transactions short.{storage} Neither a different plan nor finer statistics changes it."
+                "{lead} {blockers}: keep those transactions short.{storage} Inspect the blocking transaction and any trigger or constraint work before deciding whether a query, index or transaction change will help."
             ),
             sql,
             cost: None,
@@ -614,8 +608,8 @@ fn values_rows(text: &str) -> Option<usize> {
     (rows > 0).then_some(rows)
 }
 
-/// Whether the plan writes without reading any table or index: an INSERT of the values it is given (a modification over
-/// a Result or a Constant Scan). Its values can't make it read more, so a run slower than the rest waited.
+/// Whether the visible plan writes supplied values without a table/index read. Triggers, constraints and called
+/// functions can do additional work that an estimated plan does not show; this narrows possibilities, not the cause.
 fn writes_without_reading(plan: &Plan) -> bool {
     let nodes = plan.nodes();
     nodes.iter().any(|n| n.kind == NodeKind::Modify)
@@ -757,7 +751,7 @@ mod tests {
     // insert, whose slowest run so far took 88 ms: there is nothing to catch live, and its next slow runs are logged,
     // the way unstable-query logs any too rare to watch.
     #[test]
-    fn the_statement_that_replaced_a_stopped_one_has_its_slow_runs_logged() {
+    fn historical_outliers_do_not_change_logging_for_a_fast_replacement() {
         let mut s = unstable_insert(SKIPS_EXISTING);
         let w = s.workload.as_mut().unwrap();
         w.window_hours = 48.0;
@@ -772,14 +766,10 @@ mod tests {
         let f = unstable(s);
         assert!(f.inactive, "it stopped");
         let fix = f.fix.unwrap();
-        assert!(
-            fix.summary.starts_with(
-                "This statement no longer runs. Query 2885972271926804069, an insert into order_items too, still does: if it replaced this one, its runs can wait the same way, though its slowest run so far took 88 ms, so there is no slow run of it to catch while it happens. Have the next ones logged instead. Set log_lock_waits to on and log_min_duration_statement to 100ms"
-            ),
-            "{}",
-            fix.summary
-        );
-        assert!(!fix.summary.contains("Live shows"), "{}", fix.summary);
+        assert!(fix.summary.contains("This statement no longer runs."), "{}", fix.summary);
+        assert!(fix.summary.contains("2885972271926804069") && fix.summary.contains("88 ms"));
+        assert!(fix.summary.contains("do not establish a current problem"));
+        assert!(!fix.summary.contains("Set log_") && !fix.summary.contains("Have the next ones logged"));
         assert_eq!(fix.sql, None, "a finding on a statement that stopped runs nothing for it");
     }
 

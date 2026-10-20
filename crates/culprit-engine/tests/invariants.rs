@@ -909,10 +909,18 @@ fn scans_rule_holds(name: &str, report: &Report) -> usize {
                 read += 1;
                 // A burst is said by when it ran, as `cost_of` says it, the scans' buckets included.
                 assert!(
-                    w.cadence(q).is_burst() || cost.runs.contains(&s.phrase()),
+                    w.cadence(q).is_burst() || cost.activity.is_some() || cost.runs.contains(&s.phrase()),
                     "{name} {}: {id}'s runs aren't the scans': {line}",
                     f.id
                 );
+                if let Some(activity) = &cost.activity {
+                    assert!(
+                        cost.runs.contains(&activity.over) && line.contains(&s.phrase()),
+                        "{name} {}: observed calls and complete share need separate periods: {line}",
+                        f.id
+                    );
+                    assert!(cost.runs_per_day.is_none(), "observed calls are not a daily extrapolation");
+                }
             }
         }
         let first = f.queries.first().and_then(|r| w.query(&r.id));

@@ -104,6 +104,22 @@ pub enum FileKind {
     Other,
 }
 
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum FileScope {
+    Database,
+    Server,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum FileWriteOperation {
+    Write,
+    Flush,
+}
+
 /// Reads and writes against one database file (or, on PostgreSQL, one kind of I/O), since the server started or
 /// its statistics were reset. Latency is time per operation as the engine measured it.
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
@@ -121,6 +137,16 @@ pub struct FileIo {
     pub writes: f64,
     pub write_ms: Option<f64>,
     pub write_bytes: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scope: Option<FileScope>,
+    /// This source's own reset timestamp; another source's reset is not its measurement period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stats_reset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub write_operation: Option<FileWriteOperation>,
 }
 
 /// Log files of the same database as one: MySQL 8.0.30+ spreads redo over many `#ib_redo*` files, each too quiet on
@@ -132,7 +158,13 @@ pub fn merge_logs(files: &[FileIo]) -> Vec<FileIo> {
             out.push(f.clone());
             continue;
         }
-        match out.iter_mut().find(|o| o.kind == FileKind::Log && o.database == f.database) {
+        match out.iter_mut().find(|o| {
+            o.kind == FileKind::Log
+                && o.database == f.database
+                && o.scope == f.scope
+                && o.stats_reset == f.stats_reset
+                && o.write_operation == f.write_operation
+        }) {
             Some(log) => {
                 // Unknown timing or bytes for part of the log cannot become a zero and dilute its average.
                 let sum = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| a + b);
@@ -153,6 +185,28 @@ pub fn merge_logs(files: &[FileIo]) -> Vec<FileIo> {
 }
 
 impl FileIo {
+    pub fn write_label(&self) -> &'static str {
+        if self.write_operation == Some(FileWriteOperation::Flush) { "flush" } else { "write" }
+    }
+
+    pub fn coverage(&self, snapshot: &Snapshot) -> String {
+        let scope = match self.scope {
+            Some(FileScope::Server) => "whole server",
+            Some(FileScope::Database) => {
+                self.database.as_deref().filter(|db| *db != snapshot.server.database).unwrap_or("this database")
+            }
+            None => "recorded file statistics",
+        };
+        let period = self.stats_reset.as_deref().map(|at| format!("since {at}")).unwrap_or_else(|| {
+            if snapshot.server.engine == crate::Engine::Postgres {
+                "over an unknown statistics period".into()
+            } else {
+                "over the recorded history".into()
+            }
+        });
+        format!("{scope}, {period}")
+    }
+
     pub fn avg_read_ms(&self) -> Option<f64> {
         self.read_ms.filter(|_| self.reads > 0.0).map(|ms| ms / self.reads)
     }
@@ -633,6 +687,9 @@ mod merge_tests {
             writes,
             write_ms: Some(write_ms),
             write_bytes: None,
+            scope: None,
+            stats_reset: None,
+            write_operation: None,
         }
     }
 

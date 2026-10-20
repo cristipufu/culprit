@@ -137,7 +137,7 @@ export function Queries({ report }: { report: Report }) {
                     onClick={() => setSort(c.key)}
                     title={c.key === "runs" && !rates.perDay ? `Runs ${rates.suffix}` : undefined}
                   >
-                    {c.key === "runs" ? rates.runsHeader : c.label}
+                    {c.key === "runs" ? "Runs" : c.label}
                   </th>
                 ))}
               </tr>
@@ -166,11 +166,11 @@ export function Queries({ report }: { report: Report }) {
                     <td className="r">
                       {f.said != null ? (
                         <span className={rates.perDay ? "muted" : undefined} title={f.said}>
-                          {count(f.runs)}
-                          {rates.perDay ? " in all" : ""}
+                          {f.activity?.incomplete ? "≥ " : ""}{count(f.runs)}
+                          {f.activity ? " observed" : rates.perDay ? " in all" : ""}
                         </span>
                       ) : (
-                        <span title={f.over ? `Over ${f.over}` : undefined}>{count(f.runs)}</span>
+                        <span title={f.over ? `Over ${f.over}` : undefined}>{count(f.runs)}{f.perDay ? "/day" : ""}</span>
                       )}
                     </td>
                     <td className="r">{duration(f.mean)}</td>
@@ -264,7 +264,9 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
             <section style={{ marginTop: 4 }}>
               <div className="metrics">
                 <Metric value={percent(share)} label="of DB time" />
-                {ran != null ? (
+                {stated.activity ? (
+                  <Metric value={`${stated.activity.incomplete ? "≥ " : ""}${count(stated.runs)}`} label="runs observed in latest interval" />
+                ) : ran != null ? (
                   <Metric value={count(stated.runs)} label={ran} />
                 ) : stated.over ? (
                   <Metric value={count(stated.runs)} label={stated.perDay ? "runs per day" : rates.runsHeader.toLowerCase()} />
@@ -278,8 +280,14 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
               </div>
               {stated.over && (
                 <p className="muted">
-                  Share, runs and average over {stated.over}
+                  {stated.activity ? "Share and average" : "Share, runs and average"} over {stated.over}
                   {stated.totals ? ` (${stated.totals})` : ""}. Slowest run, rows and reads are counted over {windowPhrase(w)}.
+                </p>
+              )}
+              {stated.activity && (
+                <p className="muted">
+                  {stated.said}. {stated.activity.incomplete ? "Entries were evicted during this interval, so its complete workload share and average are unknown. " : "This interval is too short for a daily rate. "}
+                  {!stated.over && `Share and average retain their cumulative period: ${windowPhrase(w)}.`}
                 </p>
               )}
             </section>

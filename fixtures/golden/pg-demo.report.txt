@@ -6,7 +6,7 @@ findings: 16
 === finding temp-spill:9065391607317686058
 Needs attention · medium severity · high confidence · queries
 title: A read from orders writes about 19.9 MB of temp files per run
-summary: The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
+summary: The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too. Latest activity: 25 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.
 impact: 44% of DB time · 44.0% of database time
 metrics:
   - Temp written per run: 19.9 MB
@@ -33,7 +33,7 @@ brief:
 
     ## What's happening
 
-    The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too.
+    The associated statements used 1 min of database time over the 5 hours since statistics were reset (44%). A sort or hash in this statement needs more memory than work_mem (4MB in Culprit's session; a setting on the application's role or database can differ) and writes the overflow to temporary files: 4.2 GB over 214 runs. pg_stat_statements counts the total, so whether every run spills or only some is unknown. Writing temp files and reading them back is many times slower than sorting in memory. Each run also sends 247K rows (≈ 17.4 MB) to the application, and few screens or jobs need that many at once: returning fewer can keep the sort in memory too. Latest activity: 25 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.
 
     ## Evidence
 
@@ -44,7 +44,7 @@ brief:
 
     ## Queries involved
 
-    Query `9065391607317686058` — 44% of DB time, 214 runs over the 5 hours since statistics were reset, 332 ms average:
+    Query `9065391607317686058` — 44% of DB time, 25 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC, 332 ms average (share and average over the 5 hours since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT id, note FROM orders WHERE created_at > now() - interval $1 ORDER BY note
@@ -111,7 +111,7 @@ brief:
 
     ## Queries involved
 
-    Query `5308963031944094559` — 23% of DB time, 852 runs over the 5 hours since statistics were reset, 44 ms average:
+    Query `5308963031944094559` — 23% of DB time, 105 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC, 44 ms average (share and average over the 5 hours since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT id, status, total, created_at FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT $2
@@ -308,7 +308,7 @@ brief:
 === finding chatty-query:3432126458605143571
 Optional improvement · low severity · medium confidence · queries
 title: A read from customers runs 8.2K times in 5 hours, one key at a time
-summary: 129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+summary: 129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip. Latest activity: 739 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.
 impact: 129 ms of database time over the 5 hours since statistics were reset (<1%) · 0.1% of database time
 metrics:
   - Share of executions: 68%
@@ -327,7 +327,7 @@ brief:
 
     ## What's happening
 
-    129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip.
+    129 ms of database time over the 5 hours since statistics were reset (<1%). Its runs are 68% of all statement runs, and each run returns about 1 row. Repeated lookups can be per-request checks or a loop in application code (N+1). Each run is cheap (<1% of database time in all), but each call can add a network round trip. Latest activity: 739 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC. This count is shown without extrapolating a daily rate.
 
     ## Evidence
 
@@ -336,7 +336,7 @@ brief:
 
     ## Queries involved
 
-    Query `3432126458605143571` — <1% of DB time, 8.2K runs over the 5 hours since statistics were reset, 0.02 ms average:
+    Query `3432126458605143571` — <1% of DB time, 739 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC, 0.02 ms average (share and average over the 5 hours since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT name, email FROM customers WHERE id = $1
@@ -394,7 +394,7 @@ brief:
 
     ## Queries involved
 
-    Query `-3722457391793582113` — 4% of DB time, 397 runs over the 5 hours since statistics were reset, 17 ms average:
+    Query `-3722457391793582113` — 4% of DB time, 46 runs observed over 32 minutes of Culprit's scans on Oct 11, 11:22–11:54 UTC, 17 ms average (share and average over the 5 hours since statistics were reset; the observed calls have their own period):
 
     ```sql
     SELECT count(*), sum(quantity * price) FROM order_items WHERE product_id = $1
