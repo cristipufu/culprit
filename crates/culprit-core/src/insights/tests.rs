@@ -100,6 +100,7 @@ fn node(id: u32, op: &str, kind: NodeKind) -> PlanNode {
 
 fn plan(engine: Engine, root: PlanNode) -> Plan {
     let mut p = Plan {
+        view: None,
         engine,
         kind: PlanKind::Estimated,
         statement: None,

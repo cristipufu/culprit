@@ -1,9 +1,10 @@
 import { ChevronRight, Search, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { PlanInsight } from "../gen/PlanInsight";
+import type { Plan } from "../gen/Plan";
 import type { PlanNode } from "../gen/PlanNode";
 import { duration, percent } from "../lib/format";
-import { cost, estRowsForRuns, exact, misestimate, propValue } from "../lib/plan-format";
+import { cost, estRowsForRuns, exact, misestimate, operatorRuns, propValue } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
@@ -38,14 +39,15 @@ const SHOWN = new Set([
 ]);
 
 /** How far the actual rows were from the estimate; marked as bad only where the core flagged the operator. */
-function ratio(n: PlanNode) {
-  const factor = misestimate(n);
+function ratio(plan: Plan | undefined, n: PlanNode) {
+  const factor = misestimate(plan, n);
   if (factor == null || Math.abs(factor) < 2) return null;
   return <span className={`nd-ratio ${n.warnings.includes("misestimate") ? "bad" : ""}`}>{`×${exact(Math.round(Math.abs(factor)))} ${factor > 0 ? "more than expected" : "fewer than expected"}`}</span>;
 }
 
 /** One operator, explained: what it does, its rows and cost, what's wrong with it, then every raw property on demand. */
 export function NodeDetails({
+  plan,
   node,
   share,
   subtreeShare,
@@ -54,6 +56,7 @@ export function NodeDetails({
   estimates = true,
   actual = false,
 }: {
+  plan?: Plan;
   node: PlanNode;
   /** Its own share of the work; null where the plan can't state one (see `stepShare`). */
   share: number | null;
@@ -78,7 +81,7 @@ export function NodeDetails({
   const io = Number(node.props.EstimateIO ?? NaN);
   const split = Number.isFinite(cpu) && Number.isFinite(io) && cpu + io > 0 ? cpu / (cpu + io) : null;
   const removed = node.props["Rows Removed by Filter"];
-  const executions = node.act_executions ?? node.est_executions;
+  const executions = operatorRuns(plan, node) ?? 0;
 
   return (
     <div className="nd">
@@ -145,12 +148,12 @@ export function NodeDetails({
           <h4>Rows</h4>
           <dl>
             <dt>Estimated</dt>
-            <dd title={node.act_executions != null ? "Rows per run as estimated, times the runs that happened" : undefined}>{exact(estRowsForRuns(node))}</dd>
+            <dd title={node.act_executions != null ? "Rows per run as estimated, times the runs that happened" : undefined}>{exact(estRowsForRuns(plan, node))}</dd>
             {node.act_rows != null && (
               <>
                 <dt>Actual</dt>
                 <dd>
-                  {exact(node.act_rows)} {ratio(node)}
+                  {exact(node.act_rows)} {ratio(plan, node)}
                 </dd>
               </>
             )}

@@ -6,7 +6,7 @@ import type { QueryStat } from "../gen/QueryStat";
 import { planShares } from "../lib/actual";
 import { can } from "../lib/engines";
 import { duration, percent } from "../lib/format";
-import { allNodes, estRowsForRuns, findingNoShareReason, insightsByNode, misestimate, noShareReason, rows } from "../lib/plan-format";
+import { allNodes, estRowsForRuns, findingNoShareReason, insightsByNode, misestimate, noShareReason, operatorRuns, rows } from "../lib/plan-format";
 import { OpIcon } from "./OpIcon";
 import { shortPredicate } from "./PlanView";
 
@@ -51,7 +51,7 @@ export function PlanOperations({ plan, query: statement, focus, selectedId, onSe
     const out: Row[] = [];
     const visit = (n: PlanNode, depth: number) => {
       const list = flagged.get(n.id) ?? [];
-      const err = misestimate(n);
+      const err = misestimate(plan, n);
       out.push({
         node: n,
         depth,
@@ -76,13 +76,13 @@ export function PlanOperations({ plan, query: statement, focus, selectedId, onSe
         case "subtree":
           return r.subtree ?? -1;
         case "est":
-          return estRowsForRuns(r.node);
+          return estRowsForRuns(plan, r.node) ?? -1;
         case "act":
           return r.node.act_rows ?? -1;
         case "error":
           return r.error;
         case "runs":
-          return r.node.act_executions ?? r.node.est_executions;
+          return operatorRuns(plan, r.node) ?? -1;
         case "read":
           return r.node.rows_read ?? -1;
         case "time":
@@ -172,8 +172,8 @@ export function PlanOperations({ plan, query: statement, focus, selectedId, onSe
           <tbody ref={body}>
             {visible.map((r) => {
               const n = r.node;
-              const err = misestimate(n);
-              const runs = n.act_executions ?? n.est_executions;
+              const err = misestimate(plan, n);
+              const runs = operatorRuns(plan, n);
               return (
                 <tr key={n.id} className={`${n.id === selectedId ? "sel" : ""}`} onClick={() => onSelect(n.id)}>
                   <td className="ops-op">
@@ -210,10 +210,10 @@ export function PlanOperations({ plan, query: statement, focus, selectedId, onSe
                           </span>
                         ))}
                       {c.key === "subtree" && (r.subtree != null ? percent(r.subtree) : <span className="muted">—</span>)}
-                      {c.key === "est" && rows(estRowsForRuns(n))}
+                      {c.key === "est" && rows(estRowsForRuns(plan, n))}
                       {c.key === "act" && (n.act_rows != null ? rows(n.act_rows) : "—")}
                       {c.key === "error" && (err != null && Math.abs(err) >= 2 ? <span className={`ops-err ${n.warnings.includes("misestimate") ? "bad" : ""}`}>{`×${rows(Math.abs(err))} ${err > 0 ? "more" : "fewer"}`}</span> : <span className="muted">—</span>)}
-                      {c.key === "runs" && (runs > 1 ? rows(runs) : <span className="muted">1</span>)}
+                      {c.key === "runs" && (runs == null ? "—" : runs > 1 ? rows(runs) : <span className="muted">{rows(runs)}</span>)}
                       {c.key === "read" && (n.rows_read != null ? rows(n.rows_read) : <span className="muted">—</span>)}
                       {c.key === "time" && (n.act_time_ms != null ? duration(n.act_time_ms) : <span className="muted">—</span>)}
                       {c.key === "issues" && (r.issues > 0 ? <span className={`ops-issues ${r.worst ?? ""}`}>{r.issues}</span> : <span className="muted">—</span>)}

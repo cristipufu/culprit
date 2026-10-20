@@ -7,7 +7,7 @@ fn signal(s: &Signal) -> Value {
     json!({
         "key": s.key,
         "label": s.label,
-        "value": (s.value * 100.0).round() / 100.0,
+        "value": s.value,
         "unit": s.unit,
         "scope": s.scope,
         "status": s.status,
@@ -95,4 +95,40 @@ pub fn sample(s: &WaitSample) -> Value {
         "signals": s.signals.iter().map(signal).collect::<Vec<_>>(),
         "notes": s.notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use culprit_core::{Engine, SignalScope, SignalUnit};
+
+    #[test]
+    fn waits_consumers_receive_the_measured_value_without_display_rounding() {
+        let mut report_data: Report =
+            serde_json::from_str(include_str!("../../../fixtures/mssql-demo.report.json")).unwrap();
+        for (value, unit) in [
+            (0.004, SignalUnit::Percent),
+            (0.000_001, SignalUnit::PerSecond),
+            (0.004, SignalUnit::Milliseconds),
+            (1e308, SignalUnit::Bytes),
+        ] {
+            let measured = Signal::new("measured", "Measured signal", value, unit, SignalScope::Sampled);
+            report_data.snapshot.pressure.as_mut().unwrap().signals = vec![measured.clone()];
+            let sampled = WaitSample {
+                engine: Engine::Mssql,
+                taken_at: report_data.snapshot.taken_at.clone(),
+                seconds: 30.0,
+                method: "Two counter readings".into(),
+                total_ms: 0.0,
+                categories: vec![],
+                signals: vec![measured],
+                active_sessions: None,
+                notes: vec![],
+            };
+            for response in [report(&report_data), sample(&sampled)] {
+                assert_eq!(response["signals"][0]["value"].as_f64(), Some(value));
+                assert_eq!(response["signals"][0]["unit"], serde_json::to_value(unit).unwrap());
+            }
+        }
+    }
 }

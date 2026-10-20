@@ -216,7 +216,9 @@ pub fn self_times(plan: &Plan) -> Option<std::collections::HashMap<u32, f64>> {
     if timed == 0 || timed * 2 < nodes.len() {
         return None;
     }
-    Some(own_times(&plan.root, &|n| n.act_time_ms))
+    let times = own_times(&plan.root, &|n| n.act_time_ms);
+    let total: f64 = nodes.iter().filter_map(|n| times.get(&n.id)).sum();
+    (total.is_finite() && total > 0.0).then_some(times)
 }
 
 /// The headline numbers of an actual plan, for the CLI and agents.
@@ -239,6 +241,43 @@ pub struct ActualSummary {
     /// The operator whose row count was furthest from the estimate (×, signed like `PlanNode::misestimate`).
     pub worst_estimate_node: Option<u32>,
     pub worst_estimate: Option<f64>,
+    #[serde(default)]
+    pub timed: bool,
+    pub operator_time_ms: Option<f64>,
+    pub spill_pages: Option<f64>,
+    pub skew: Option<WorkerSkew>,
+    pub last_run_at: Option<String>,
+    pub workers: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct WorkerSkew {
+    pub node: u32,
+    pub busiest: f64,
+    pub threads: usize,
+}
+
+/// A descriptive actual-run callout; detector urgency additionally weighs the amount and shape of work.
+pub fn worker_skew(plan: &Plan) -> Option<WorkerSkew> {
+    let mut found: Option<WorkerSkew> = None;
+    for node in plan.nodes() {
+        let Some(runtime) = &node.runtime else { continue };
+        let rows = &runtime.thread_rows;
+        if rows.len() < 2 || rows.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            continue;
+        }
+        let total: f64 = rows.iter().sum();
+        if !total.is_finite() || total < 10_000.0 {
+            continue;
+        }
+        let busiest = rows.iter().copied().fold(0.0, f64::max) / total;
+        if busiest >= 0.5 && busiest > 1.8 / rows.len() as f64 && found.as_ref().is_none_or(|old| busiest > old.busiest)
+        {
+            found = Some(WorkerSkew { node: node.id, busiest, threads: rows.len() });
+        }
+    }
+    found
 }
 
 pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
@@ -246,13 +285,22 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
         return None;
     }
     let nodes = plan.nodes();
-    let prop = |k: &str| plan.props.get(k).and_then(|v| v.parse::<f64>().ok());
+    let prop = |k: &str| plan.props.get(k).and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0);
     let sum = |f: &dyn Fn(&PlanNode) -> Option<f64>| {
-        let values: Vec<f64> = nodes.iter().filter_map(|n| f(n)).collect();
-        (!values.is_empty()).then(|| values.iter().sum::<f64>())
+        let values: Vec<f64> = nodes.iter().filter_map(|n| f(n)).filter(|v| v.is_finite() && *v >= 0.0).collect();
+        (!values.is_empty()).then(|| values.iter().sum::<f64>()).filter(|v| v.is_finite())
     };
     let own = self_times(plan);
-    let slowest = own.as_ref().and_then(|t| t.iter().max_by(|a, b| a.1.total_cmp(b.1)).map(|(id, ms)| (*id, *ms)));
+    // Tree order makes ties deterministic, matching the operator the UI opens rather than HashMap iteration.
+    let slowest = own.as_ref().and_then(|times| {
+        nodes.iter().filter_map(|n| times.get(&n.id).map(|ms| (n.id, *ms))).fold(
+            None,
+            |best: Option<(u32, f64)>, current| {
+                if best.is_some_and(|b| b.1 >= current.1) { best } else { Some(current) }
+            },
+        )
+    });
+    let known = |value: Option<f64>| value.filter(|v| v.is_finite() && *v >= 0.0 && (*v != 0.0 || own.is_some()));
     // Misestimates by the rule behind the Misestimate warning (`PlanNode::misestimates`): an operator a Limit stopped
     // early read fewer rows than its estimate for a full run, which is no misestimate. A bad estimate repeats in every
     // operator above the one where it starts; report where it starts (the deepest operator within a factor of two of
@@ -269,8 +317,8 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
     let worst = (!found.is_empty()).then(|| origin(&plan.root, largest / 2.0, &factor)).flatten();
     Some(ActualSummary {
         triggers: trigger_timings(plan),
-        elapsed_ms: prop("ElapsedMs").or(plan.root.act_time_ms),
-        cpu_ms: prop("CpuMs").or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms))),
+        elapsed_ms: known(prop("ElapsedMs").or(plan.root.act_time_ms)),
+        cpu_ms: known(prop("CpuMs").or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms)))),
         logical_reads: sum(&|n| n.runtime.as_ref().and_then(|r| r.logical_reads)),
         physical_reads: sum(&|n| n.runtime.as_ref().and_then(|r| r.physical_reads)),
         rows: plan.root.act_rows,
@@ -282,6 +330,12 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
         slowest_ms: slowest.map(|s| s.1),
         worst_estimate_node: worst.map(|w| w.0),
         worst_estimate: worst.map(|w| w.1),
+        timed: own.is_some(),
+        operator_time_ms: own.as_ref().map(|times| nodes.iter().filter_map(|n| times.get(&n.id)).sum()),
+        spill_pages: sum(&|n| n.runtime.as_ref().and_then(|r| r.spill_pages)),
+        skew: worker_skew(plan),
+        last_run_at: plan.props.get("LastRunAt").cloned(),
+        workers: prop("UsedThreads"),
     })
 }
 
@@ -353,6 +407,7 @@ mod tests {
 
     fn plan(root: PlanNode) -> Plan {
         Plan {
+            view: None,
             engine: Engine::Postgres,
             kind: PlanKind::Actual,
             statement: None,
@@ -443,5 +498,56 @@ mod tests {
         let pct = progress.percent.unwrap();
         assert!((pct - 0.45).abs() < 0.01, "{pct}");
         assert_eq!(progress.hot_node, Some(1), "the scan does the work; the root only waits on it");
+    }
+
+    #[test]
+    fn rows_only_actuals_do_not_report_unknown_timings_as_zero() {
+        let mut p = plan(node(0, 0.0, 1.0, 1.0, 1.0, vec![]));
+        p.props.insert("CpuMs".into(), "0".into());
+        p.props.insert("MemoryGrantedKB".into(), "1024".into());
+        let actual = actual_summary(&p).unwrap();
+        assert!(!actual.timed);
+        assert_eq!((actual.elapsed_ms, actual.cpu_ms, actual.slowest_node), (None, None, None));
+        assert_eq!(actual.rows, Some(1.0));
+        assert_eq!((actual.memory_granted_kb, actual.memory_used_kb), (Some(1024.0), None));
+        assert_eq!(actual.spill_pages, None);
+        p.root.act_time_ms = Some(10.0);
+        assert_eq!(actual_summary(&p).unwrap().cpu_ms, Some(0.0), "a timed run can measure zero CPU");
+    }
+
+    #[test]
+    fn actual_summary_ties_follow_tree_order_and_keep_trigger_time_separate() {
+        let mut p = plan(node(
+            0,
+            10.0,
+            1.0,
+            1.0,
+            1.0,
+            vec![node(2, 5.0, 1.0, 1.0, 1.0, vec![]), node(1, 5.0, 1.0, 1.0, 1.0, vec![])],
+        ));
+        p.props.insert("Triggers".into(), r#"[{"Trigger Name":"audit","Time":120.5,"Calls":10},{"Time":-1}]"#.into());
+        for _ in 0..10 {
+            let actual = actual_summary(&p).unwrap();
+            assert_eq!(actual.slowest_node, Some(2));
+            assert_eq!(actual.operator_time_ms, Some(10.0));
+            assert_eq!(actual.elapsed_ms, Some(10.0));
+            assert_eq!(actual.triggers.len(), 1);
+            assert_eq!(actual.triggers[0].time_ms, 120.5);
+        }
+    }
+
+    #[test]
+    fn actual_worker_distribution_requires_real_nonnegative_counts() {
+        let mut p = plan(node(0, 10.0, 1.0, 1.0, 1.0, vec![]));
+        p.root.runtime = Some(NodeRuntime { thread_rows: vec![95_000.0, 5_000.0], ..Default::default() });
+        let skew = actual_summary(&p).unwrap().skew.unwrap();
+        assert_eq!((skew.node, skew.threads, skew.busiest), (0, 2, 0.95));
+        p.root.runtime.as_mut().unwrap().thread_rows[1] = -1.0;
+        assert!(actual_summary(&p).unwrap().skew.is_none());
+        p.props.insert("ElapsedMs".into(), "NaN".into());
+        p.props.insert("CpuMs".into(), "inf".into());
+        let actual = actual_summary(&p).unwrap();
+        assert_eq!(actual.elapsed_ms, Some(10.0));
+        assert_eq!(actual.cpu_ms, None);
     }
 }

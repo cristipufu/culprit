@@ -185,6 +185,7 @@ pub fn parse_statement(xml: &str, query_hash: Option<&str>) -> Result<Plan> {
     }
 
     let mut plan = Plan {
+        view: None,
         engine: Engine::Mssql,
         kind: if is_actual { PlanKind::Actual } else { PlanKind::Estimated },
         statement: statement.attribute("StatementText").map(|s| s.trim().to_string()),

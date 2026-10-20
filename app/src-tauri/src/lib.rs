@@ -319,13 +319,26 @@ async fn dashboard(
     name: String,
     window_minutes: Option<u32>,
     window_days: Option<u32>,
+    report_id: Option<String>,
 ) -> Result<culprit_core::Dashboard> {
+    if let Some(report_id) = report_id {
+        return ws.dashboard_for_report(&name, &report_id);
+    }
     ws.dashboard(&name, requested_window(window_minutes, window_days), false).await
 }
 
 #[tauri::command]
 async fn live(ws: Ws<'_>, name: String) -> Result<LiveState> {
     ws.live(&name).await
+}
+
+#[tauri::command]
+async fn dashboard_live(
+    ws: Ws<'_>,
+    name: String,
+    dashboard: culprit_core::Dashboard,
+) -> Result<culprit_core::DashboardLive> {
+    ws.dashboard_live(&name, dashboard).await
 }
 
 /// Where the latest scan's database time went, by wait category with the queries behind each.
@@ -665,6 +678,7 @@ pub fn run_app() -> std::result::Result<(), Box<dyn std::error::Error>> {
             unmark,
             index_advice,
             dashboard,
+            dashboard_live,
             parse_plan,
             diff_plans,
             export_plan,

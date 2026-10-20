@@ -42,6 +42,7 @@ pub fn parse(json: &str, kind: PlanKind, statement: Option<&str>, schema: Option
         props.insert("message".into(), message.into());
     }
     let mut plan = Plan {
+        view: None,
         engine: Engine::Mysql,
         kind,
         statement: statement.map(str::to_string),

@@ -717,10 +717,13 @@ pub fn working_step(plan: &Plan) -> Option<&PlanNode> {
 
 /// The statement's measured run time, when the plan has one.
 fn elapsed_ms(plan: &Plan) -> Option<f64> {
-    let prop = |key: &str| plan.props.get(key).and_then(|v| v.trim().parse::<f64>().ok());
+    let prop = |key: &str| {
+        plan.props.get(key).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v >= 0.0)
+    };
     prop("ElapsedMs")
         .or_else(|| prop("Execution Time"))
         .or_else(|| plan.root.act_time_ms.filter(|_| plan.kind == PlanKind::Actual))
+        .filter(|ms| ms.is_finite() && *ms >= 0.0 && (*ms > 0.0 || crate::actual::self_times(plan).is_some()))
 }
 
 /// The estimated cost of reading about `MANY_ROWS` rows, in each engine's own units: a plan estimated below it is cheap

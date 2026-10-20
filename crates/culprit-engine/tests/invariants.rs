@@ -51,8 +51,8 @@ fn browser_demo_outputs_match_current_analysis() {
         let connection = &current.snapshot.connection;
         let context = format!("{name}: {refresh}");
         assert_browser_json(
-            &serde_json::json!([saved.findings, saved.summary, saved.locked]),
-            &serde_json::json!([current.findings, current.summary, current.locked]),
+            &serde_json::json!([saved.findings, saved.summary, saved.locked, saved.assessments]),
+            &serde_json::json!([current.findings, current.summary, current.locked, current.assessments]),
             &context,
         );
         // CLI navigation commands are added by the CLI, while the desktop uses tile keys.
@@ -73,7 +73,7 @@ fn browser_demo_outputs_match_current_analysis() {
 }
 
 /// Ignore only floating-point round-trip noise; report the first different field instead of pages of JSON.
-fn assert_browser_json(saved: &serde_json::Value, current: &serde_json::Value, path: &str) {
+pub(crate) fn assert_browser_json(saved: &serde_json::Value, current: &serde_json::Value, path: &str) {
     use serde_json::Value;
     match (saved, current) {
         (Value::Object(a), Value::Object(b)) => {

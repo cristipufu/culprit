@@ -143,7 +143,7 @@ export function PlanView({ plan, query, focus, compact, selectedId, onSelect }: 
         {rows.map(({ node, depth }) => {
           const share = shareOf(node);
           // Shown as off only where the core flagged it (10× on 100+ rows, not an operator stopped early).
-          const mis = node.warnings.includes("misestimate") ? misestimate(node) : null;
+          const mis = node.warnings.includes("misestimate") ? misestimate(plan, node) : null;
           return (
             <button
               key={node.id}
@@ -199,11 +199,11 @@ export function PlanView({ plan, query, focus, compact, selectedId, onSelect }: 
               <span className="rows">
                 {node.act_rows != null ? (
                   <>
-                    {rowsText(estRowsForRuns(node))} <span className="arrow">→</span> {rowsText(node.act_rows)}
+                    {rowsText(estRowsForRuns(plan, node))} <span className="arrow">→</span> {rowsText(node.act_rows)}
                     {mis != null && <span className="mis">×{count(Math.abs(mis))}{mis < 0 ? " over" : " under"}</span>}
                   </>
                 ) : (
-                  weighed && rowsText(estRows(node))
+                  weighed && rowsText(estRows(plan, node))
                 )}
               </span>
               <span className="cost">
@@ -228,6 +228,7 @@ export function PlanView({ plan, query, focus, compact, selectedId, onSelect }: 
       {weighed && note && <div className="muted" style={{ fontSize: 12, padding: "6px 10px" }}>— {note}</div>}
       {selectedNode && (
         <NodeDetails
+          plan={plan}
           estimates={weighed}
           actual={plan.kind === "actual"}
           node={selectedNode}

@@ -8,6 +8,7 @@ import type { ApprovalRequest } from "../gen/ApprovalRequest";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Deadlock } from "../gen/Deadlock";
 import type { Dashboard } from "../gen/Dashboard";
+import type { DashboardLive } from "../gen/DashboardLive";
 import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
@@ -79,7 +80,9 @@ export interface Api {
   /** What differs between the latest scans of two connections of the same engine. */
   drift(a: string, b: string): Promise<Drift>;
   /** The dashboard for the latest report with this window (no live read; the app polls sessions itself). */
-  dashboard(name: string, windowMinutes: number | null): Promise<Dashboard>;
+  dashboard(name: string, windowMinutes: number | null, reportId?: string): Promise<Dashboard>;
+  /** Refresh sessions and their assessment while retaining this report's selected window. */
+  dashboardLive(name: string, dashboard: Dashboard): Promise<DashboardLive>;
   /** The index advisor for the displayed report: indexes to add, to clean up, and tables to look at. */
   indexAdvice(name: string, reportId: string): Promise<IndexAdvice>;
   parsePlan(text: string): Promise<Plan>;
@@ -185,7 +188,8 @@ async function desktopApi(): Promise<Api> {
     queryProgress: (name, session, withPlan) => invoke("query_progress", { name, session, withPlan }),
     drift: (a, b) => invoke("drift", { a, b }),
     indexAdvice: (name, reportId) => invoke("index_advice", { name, reportId }),
-    dashboard: (name, windowMinutes) => invoke("dashboard", { name, windowMinutes }),
+    dashboard: (name, windowMinutes, reportId) => invoke("dashboard", { name, windowMinutes, reportId }),
+    dashboardLive: (name, dashboard) => invoke("dashboard_live", { name, dashboard }),
     parsePlan: (text) => invoke("parse_plan", { text }),
     diffPlans: (a, b, nameA, nameB, connection) =>
       invoke("diff_plans", { a: { ...a, raw: null }, b: { ...b, raw: null }, nameA, nameB, connection: connection ?? null }),

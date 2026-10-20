@@ -14,7 +14,7 @@ import type { Report } from "../gen/Report";
 import { api } from "../lib/api";
 import { ago, count, duration, findingMetric, percent, rowCount } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
-import { ABOUT_THE_PLAN, doesRealWork, estRows, findingNoShareReason, findingStepShare, hottestStep, rowsOut, rowsRead, stepShare } from "../lib/plan-format";
+import { aboutThePlan, doesRealWork, estRows, findingNoShareReason, findingStepShare, hottestStep, rowsOut, rowsRead, stepShare } from "../lib/plan-format";
 import { figures, honest } from "../lib/rates";
 import { setState, toast, toggleDismissed, useStore, windowMinutesOf } from "../lib/store";
 import { copyAndTell } from "../lib/clipboard";
@@ -106,7 +106,7 @@ export function FindingDetail({ report, finding }: { report: Report; finding: Fi
                   plan={firstWithPlan.query.plan}
                   query={firstWithPlan.query}
                   focus={firstWithPlan.ref.plan_node}
-                  aboutThePlan={ABOUT_THE_PLAN.has(finding.check)}
+                  aboutThePlan={aboutThePlan(firstWithPlan.query.plan, finding.check)}
                   weighed={can(firstWithPlan.query.plan.engine, "plan_estimates") || firstWithPlan.query.plan.kind === "actual"}
                 />
                 <button className="btn ghost" style={{ marginTop: 8 }} onClick={() => setShowPlan((v) => !v)}>
@@ -349,10 +349,10 @@ function HotNode({ plan, query, focus, weighed, aboutThePlan }: { plan: Plan; qu
   // A share only where the plan can state one, in a plan that does real work; otherwise why not.
   const share = findingStepShare(plan, node);
   const why = share == null ? findingNoShareReason(plan, node, query) : null;
-  const read = rowsRead(node);
+  const read = rowsRead(plan, node);
   // Counted only by an actual plan whose engine reported it; otherwise the optimizer's estimate or the table's size.
   const counted = plan.kind === "actual" && node.rows_read != null;
-  const returned = node.act_rows != null ? count(node.act_rows) : `~${count(Math.max(1, Math.round(rowsOut(node))))}`;
+  const returned = node.act_rows != null ? count(node.act_rows) : `~${count(Math.max(1, Math.round(rowsOut(plan, node))))}`;
   return (
     <div className="hotnode">
       <Flame size={16} color="var(--heat-4)" style={{ marginTop: 1, flexShrink: 0 }} />
@@ -363,7 +363,7 @@ function HotNode({ plan, query, focus, weighed, aboutThePlan }: { plan: Plan; qu
           {share != null && <span className="muted"> · {percent(share)} of the plan's cost</span>}
         </div>
         <div className="muted" style={{ marginTop: 2 }}>
-          {read != null ? `${counted ? "Reads" : "Expected to read"} ${rowCount(read)} to return ${returned}` : node.act_rows != null ? `Returns ${rowCount(node.act_rows)}` : `Estimates ${rowCount(estRows(node))}`}
+          {read != null ? `${counted ? "Reads" : "Expected to read"} ${rowCount(read)} to return ${returned}` : node.act_rows != null ? `Returns ${rowCount(node.act_rows)}` : `Estimates ${rowCount(estRows(plan, node))}`}
           {node.predicate ? ` · filter ${shortPredicate(node.predicate)}` : ""}
         </div>
         {why && (

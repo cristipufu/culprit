@@ -35,6 +35,15 @@ impl Dashboard {
     }
 }
 
+/// A live refresh of an existing dashboard. The scan's identity, window and other tiles stay together.
+#[derive(Serialize, TS, Clone, Debug)]
+#[ts(export)]
+pub struct DashboardLive {
+    pub dashboard: Dashboard,
+    pub live: Option<crate::LiveState>,
+    pub error: Option<crate::Error>,
+}
+
 #[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 #[ts(export)]

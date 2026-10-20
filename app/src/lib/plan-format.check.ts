@@ -1,79 +1,37 @@
-// The same evidence cases as the core's cheap-plan tests: a plan's own measured runs, large values, outliers and a
-// finding on a small whole-table read. Run with typecheck so changes to the viewer keep these explanations honest.
-import fixture from "../../../fixtures/mssql-demo.json";
+import samples from "../../../fixtures/plan-view.sample.json";
+import type { Plan } from "../gen/Plan";
 import type { QueryStat } from "../gen/QueryStat";
 import { findingNoShareReason, noShareReason, sharesNote } from "./plan-format";
 import { addPlan, getPlans, removePlan } from "./plans";
 
-function check(ok: boolean, message: string): void {
-  if (!ok) throw new Error(message);
+function check(ok: boolean, message: string): void { if (!ok) throw new Error(message); }
+function sample(name: string): { plan: Plan; query: QueryStat } {
+  const value = samples.find((c) => c.name === name)!;
+  return structuredClone(value) as unknown as { plan: Plan; query: QueryStat };
 }
+const read = sample("wide-read");
+check(sharesNote(read.plan, read.query)!.includes("72 pages a run"), "The renderer lost the captured read evidence");
+const slow = sample("slow-variant");
+const fast = sample("fast-variant");
+check(sharesNote(slow.plan, slow.query)!.includes("322 pages a run"), "The selected variant's evidence was lost");
+check(!sharesNote(fast.plan, fast.query)!.includes("322 pages"), "Another variant's measurements leaked in");
+check(sharesNote(slow.plan, fast.query)!.includes("different statement or plan measurements"), "Mismatched variant context must not reuse an explanation");
+const outlier = sample("outlier");
+check(sharesNote(outlier.plan, outlier.query)!.includes("4 runs took 2.4 s in all"), "The renderer lost the outlier-aware wording");
+const small = sample("small-scan");
+check(noShareReason(small.plan, small.plan.root, small.query)!.includes("as a whole is cheap"), "The general size bar still holds");
+check(findingNoShareReason(small.plan, small.plan.root, small.query)!.includes("all 3.9K rows"), "A finding's explicit whole-table evidence must stay visible");
 
-const query = structuredClone(fixture.workload.queries[0]) as unknown as QueryStat;
-const plan = query.plan!;
-plan.root.children = [];
-plan.root.kind = "seek";
-plan.root.object = null;
-plan.root.props = {};
-plan.root.est_rows = 1;
-plan.root.self_cost = plan.root.subtree_cost = plan.total_cost = 0.001;
-query.plans = [];
-query.executions = query.rows = 100;
-query.logical_reads = 7200;
-query.mean_time_ms = 1;
-query.total_time_ms = 100;
-let note = sharesNote(plan, query)!;
-check(note.includes("72 pages a run") && !note.includes("costs rest on an estimate of 1 row"), note);
-
-const variant = (id: string, mean: number, reads: number): QueryStat["plans"][number] => ({
-  id, executions: 10, mean_time_ms: mean, total_time_ms: mean * 10, logical_reads: reads * 10,
-  first_seen: null, last_seen: null, is_forced: false, min_time_ms: null, max_time_ms: null,
-  stddev_time_ms: null, compiled: null, variant_query: null, cpu_time_ms: null,
-});
-query.plans = [variant("fast", 1, 2), variant("slow", 20, 322)];
-query.plan_id = "slow";
-note = sharesNote(plan, query)!;
-check(note.includes("322 pages a run"), note);
-query.plan_id = "fast";
-note = sharesNote(plan, query)!;
-check(!note.includes("322 pages") && !note.includes("20 ms"), note);
-query.plans[1]!.logical_reads = 20;
-query.plan_id = "slow";
-note = sharesNote(plan, query)!;
-check(note.includes("averaged 20 ms"), note);
-
-query.plans = [];
-query.plan_id = null;
-query.executions = query.rows = query.logical_reads = 4;
-query.total_time_ms = 2404;
-query.mean_time_ms = 601;
-query.max_time_ms = 2400;
-note = sharesNote(plan, query)!;
-check(note.includes("4 runs took 2.4 s in all, with the slowest taking 2.4 s") && !note.includes("601 ms"), note);
-
-query.mean_time_ms = 1;
-plan.root.kind = "scan";
-plan.root.object = "shop.widgets";
-plan.root.table_rows = plan.root.rows_read = 3900;
-check(noShareReason(plan, plan.root, query)!.includes("as a whole is cheap"), "the general size bar still holds");
-note = findingNoShareReason(plan, plan.root, query)!;
-check(note.includes("all 3.9K rows of shop.widgets"), note);
-
-// A retained plan keeps the measurements it was opened with, across later scans and connection switches.
-plan.root.kind = "seek";
-plan.root.object = null;
-const opened = addPlan(plan, "Captured plan", "Demo query", { show: false, query });
+const old = sample("retained-old");
+const opened = addPlan(old.plan, "Captured plan", "Demo query", { show: false, query: old.query });
 const saved = getPlans().items.find((p) => p.id === opened)!;
 const original = sharesNote(saved.plan, saved.query);
-query.logical_reads = query.executions * 750;
-query.mean_time_ms = 50;
-query.total_time_ms = query.executions * query.mean_time_ms;
-check(sharesNote(saved.plan, saved.query) === original, "a later scan changed the retained plan's measurements");
-const reopened = addPlan(structuredClone(plan), "Captured plan", "Demo query", { show: false, query });
-check(reopened !== opened, "opening a newer plan with the same name silently reused the old scan");
-const latest = getPlans().items.find((p) => p.id === reopened)!;
-check(sharesNote(latest.plan, latest.query)!.includes("750 pages a run"), "the newer plan lost its own measurements");
-check(addPlan(plan, "Captured plan", "Demo query", { show: false, query }) === opened, "the same plan object opened twice is duplicated");
-removePlan(opened);
-removePlan(reopened);
-console.log("Plan explanations keep their measurement basis and finding context");
+old.query.logical_reads = 75_000;
+old.query.mean_time_ms = 50;
+check(sharesNote(saved.plan, saved.query) === original, "A later scan changed retained evidence");
+const latest = sample("retained-new");
+const reopened = addPlan(latest.plan, "Captured plan", "Demo query", { show: false, query: latest.query });
+check(reopened !== opened && sharesNote(latest.plan, latest.query)!.includes("750 pages a run"), "A newer plan lost its own evidence");
+check(addPlan(old.plan, "Captured plan", "Demo query", { show: false, query: old.query }) === opened, "The same plan object was duplicated");
+removePlan(opened); removePlan(reopened);
+console.log("Plan renderer preserves Rust's explanations, variants and retained measurements");

@@ -1,24 +1,21 @@
-import { actualFacts } from "./actual";
+import samples from "../../../fixtures/plan-view.sample.json";
 import type { Plan } from "../gen/Plan";
-import { nowTile } from "./dashboard";
-import type { LiveState } from "../gen/LiveState";
+import { actualFacts, planShares } from "./actual";
 
 const check = (condition: boolean, message: string) => { if (!condition) throw new Error(message); };
-const plan = {
-  engine: "postgres", kind: "actual", props: { MemoryGrantedKB: "1024", Triggers: JSON.stringify([
-    { "Trigger Name": "audit", Relation: "items", Time: 120.5, Calls: 10 },
-    { "Trigger Name": "invalid", Time: -1 },
-  ]) }, total_cost: 1, warnings: [], root: {
-    id: 1, op: "Update", kind: "modify", props: {}, warnings: [], children: [],
-    est_rows: 1, est_executions: 1, self_cost: 1, subtree_cost: 1, act_rows: 1, act_time_ms: 10, act_executions: 1,
-  },
-} as unknown as Plan;
-const facts = actualFacts(plan)!;
-check(facts.usedKb === null, "Missing memory usage must remain unknown");
-check(facts.grantedKb === 1024, "The known grant remains visible");
-check(facts.triggers.length === 1 && facts.triggers[0]?.ms === 120.5, "Trigger timing remains separate and rejects invalid data");
-check(facts.elapsedMs === 10, "Trigger timing must not be added to operator elapsed time");
-const tile = nowTile({ taken_at: "2026-10-20T12:00:00Z", notes: ["Lock instrumentation unavailable"], sessions: [], blocking: null } as unknown as LiveState);
-check(tile.status === "info" && tile.takeaway.includes("incomplete"), "An incomplete lock read cannot appear healthy");
-check(tile.metrics.find((m) => m.key === "blocked")?.value === null, "An incomplete lock read cannot claim zero blocked sessions");
-console.log("Actual-plan and incomplete-lock evidence regressions passed");
+const plan = (name: string) => samples.find((c) => c.name === name)!.plan as unknown as Plan;
+const trigger = actualFacts(plan("triggers"))!;
+check(trigger.usedKb === null && trigger.grantedKb === 1024, "Unknown memory use must remain unknown");
+check(trigger.triggers.length === 1 && trigger.triggers[0]?.ms === 120.5, "Trigger timings retain Rust's validation");
+check(trigger.elapsedMs === 10, "Trigger time must not be added to operator elapsed time");
+const rows = actualFacts(plan("rows-only"))!;
+check(rows.elapsedMs === null && rows.cpuMs === null && !rows.timed, "Rows-only plans cannot claim zero elapsed or CPU time");
+check(planShares(plan("rows-only")).basis === "cost", "Rows-only plans use the cost projection");
+const batch = planShares(plan("batch-mode"));
+check(batch.basis === "time" && batch.total === 47 && batch.ms.get(2) === 15, "Batch operators must not double-count their inputs");
+check(batch.stated.get(1) == null && batch.ms.get(1) == null, "An untimed operator must not display zero measured work");
+const estimate = actualFacts(plan("estimate-origin"))!;
+check(estimate.worstEstimate?.node.id === 1 && estimate.worstEstimate.factor === 5000, "The row-estimate callout must name the origin, not its parent");
+const progress = plan("in-progress");
+check(actualFacts(progress) === null && planShares(progress).basis === "cost", "Partial execution cannot appear as a completed actual run");
+console.log("Actual-plan renderer consumes shared Rust facts without losing missing measurements");

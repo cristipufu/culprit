@@ -540,6 +540,7 @@ mod tests {
 
     fn plan(root: PlanNode, props: &[(&str, &str)]) -> Plan {
         let mut plan = Plan {
+            view: None,
             engine: Engine::Mssql,
             kind: PlanKind::Estimated,
             statement: Some("SELECT * FROM orders WHERE status = @p1".into()),

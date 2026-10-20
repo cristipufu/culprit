@@ -306,7 +306,9 @@ impl PlanNode {
 }
 
 /// How a step's cost rests on a default guess for a parameter ([`Plan::guess`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[ts(export)]
 pub enum Guess {
     /// The step, or a step below it, was planned on the guess: the rows it works on are the guess.
     Rows,
@@ -341,6 +343,10 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub insights: Option<PlanInsights>,
+    // A current analysis projection, never trusted from saved/imported JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::plan_view::output")]
+    #[ts(as = "Option<crate::plan_view::PlanView>", optional)]
+    pub view: Option<crate::plan_view::PlanView>,
 }
 
 impl Plan {
@@ -380,8 +386,7 @@ impl Plan {
     /// `None` where the plan states no shares at all ([`Plan::states_shares`]: a plan without costs, a cheap plan, a
     /// plan beside whose steps one doing work carries no cost), for a step with no cost of its own, and for a step whose
     /// cost rests on a default guess for a parameter rather than on statistics ([`Plan::guess`]). `culprit_checks::
-    /// no_share_reason` says why there is none, and the app mirrors this rule (`stepShare` in
-    /// `app/src/lib/plan-format.ts`).
+    /// no_share_reason` says why there is none; the app reads the resulting `Plan.view` projection.
     pub fn step_share(&self, node: &PlanNode) -> Option<f64> {
         (self.states_shares() && node.self_cost > 0.0 && self.guess(node).is_none()).then(|| self.cost_share(node))
     }

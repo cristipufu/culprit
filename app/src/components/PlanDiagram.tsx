@@ -252,7 +252,7 @@ export function PlanDiagram(props: {
     [plan.root, total, expanded, keep, estimates, shares],
   );
   const byId = new Map(boxes.map((b) => [b.node.id, b]));
-  const maxRows = Math.max(1, ...nodes.map(rowsOut));
+  const maxRows = Math.max(1, ...nodes.map((node) => rowsOut(plan, node)));
   const stroke = (r: number) => 1.5 + 4.5 * (Math.log10(r + 1) / Math.log10(maxRows + 1));
   const selectedNode = nodes.find((n) => n.id === selected) ?? null;
 
@@ -297,7 +297,7 @@ export function PlanDiagram(props: {
   boxes.forEach((b) => {
     const parent = parentOf.get(b.node.id);
     const to = parent != null ? byId.get(parent) : undefined;
-    if (to) edges.push({ from: b, to, rows: rowsOut(b.node), hot: hot.has(b.node.id) && hot.has(to.node.id), key: `${to.node.id}-${b.node.id}`, via: b.via });
+    if (to) edges.push({ from: b, to, rows: rowsOut(plan, b.node), hot: hot.has(b.node.id) && hot.has(to.node.id), key: `${to.node.id}-${b.node.id}`, via: b.via });
   });
   folds.forEach((f) => {
     const parent = byId.get(f.parent);
@@ -387,6 +387,7 @@ export function PlanDiagram(props: {
               </div>
               {boxes.map((b) => (
                 <PlanCard
+                  plan={plan}
                   key={b.node.id}
                   estimates={estimates}
                   node={b.node}
@@ -426,6 +427,7 @@ export function PlanDiagram(props: {
       </div>
       {selectedNode && props.showProps !== false && (
         <NodeDetails
+          plan={plan}
           estimates={estimates}
           actual={plan.kind === "actual"}
           node={selectedNode}
@@ -460,6 +462,7 @@ function ZoomControls({ zoom, setZoom, fit }: { zoom: number; setZoom: (f: (z: n
 }
 
 function PlanCard(props: {
+  plan: Plan;
   node: PlanNode;
   /** Its own share; null where the plan can't state one. */
   share: number | null;
@@ -479,10 +482,10 @@ function PlanCard(props: {
   estimates: boolean;
   onSelect: () => void;
 }) {
-  const { node, x, y, hot, hottest, selected, mark, insights, tint, ownMs, estimates, onSelect, noShare } = props;
+  const { plan, node, x, y, hot, hottest, selected, mark, insights, tint, ownMs, estimates, onSelect, noShare } = props;
   const share = props.share ?? 0;
   // Shown as off only where the core flagged it (10× on 100+ rows, not an operator stopped early).
-  const mis = node.warnings.includes("misestimate") ? misestimate(node) : null;
+  const mis = node.warnings.includes("misestimate") ? misestimate(plan, node) : null;
   const table = node.object?.split(".").pop();
   const worst = insights?.[0];
   const tip = [
@@ -521,7 +524,7 @@ function PlanCard(props: {
       <span className="pc-rows">
         {node.act_rows != null ? (
           <>
-            {rows(estRowsForRuns(node))} → <b>{rows(node.act_rows)}</b>
+            {rows(estRowsForRuns(plan, node))} → <b>{rows(node.act_rows)}</b>
             {mis != null && <span className="mis">×{rows(Math.abs(mis))}</span>}
           </>
         ) : estimates ? (

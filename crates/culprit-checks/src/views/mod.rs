@@ -8,4 +8,5 @@ pub mod dashboard;
 pub(crate) mod digest;
 pub mod drift;
 pub(crate) mod plan_advice;
+pub mod plan_view;
 pub mod waits;

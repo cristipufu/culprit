@@ -131,6 +131,21 @@ pub fn without_now(d: &mut Dashboard, reason: &str) {
     summarize(d);
 }
 
+/// One shared projection for desktop polling, CLI reads and offline/demo consumers.
+pub fn refresh(mut dashboard: Dashboard, result: culprit_core::Result<LiveState>) -> culprit_core::DashboardLive {
+    let (live, error) = match result {
+        Ok(live) => {
+            with_now(&mut dashboard, &live);
+            (Some(live), None)
+        }
+        Err(error) => {
+            without_now(&mut dashboard, &error.message);
+            (None, Some(error))
+        }
+    };
+    culprit_core::DashboardLive { dashboard, live, error }
+}
+
 fn summarize(d: &mut Dashboard) {
     // Without query statistics, turning them on comes first: only a problem happening right now is more urgent.
     let no_workload = d.tiles.iter().any(|t| t.key == TileKey::DbTime && t.status == TileStatus::Unavailable);

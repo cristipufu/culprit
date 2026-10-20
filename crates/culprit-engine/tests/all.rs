@@ -2,12 +2,14 @@
 //! binary) for all of them, where a binary per file relinks every one after each change. A new file in `tests/` is
 //! listed here, or `every_test_file_is_listed` fails.
 
+mod dashboard;
 mod escalations;
 mod file_pickers;
 mod golden;
 mod insights;
 mod invariants;
 mod measurement;
+mod plan_view;
 mod plans;
 mod plugin;
 mod share;

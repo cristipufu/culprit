@@ -24,6 +24,7 @@ pub mod operations;
 pub mod plan;
 pub mod plan_compare;
 pub mod plan_diff;
+pub mod plan_view;
 pub mod platform;
 pub mod provider;
 pub mod redact;
@@ -41,7 +42,7 @@ pub use check::{Check, CheckAssessment, CheckEvidence, CheckStatus};
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
 pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, expand_home, is_local_host};
 pub use coverage::{Coverage, Source, SourceOutcome, SourceState};
-pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};
+pub use dashboard::{Dashboard, DashboardLive, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,
 };
@@ -62,6 +63,7 @@ pub use plan_compare::{CompareContext, Scenario, ScenarioKind};
 pub use plan_diff::{
     ChangeKind, NodeMatch, PlanChange, PlanDiff, PlanRegion, plan_cost_basis, plan_diff, plan_diff_in, plan_diff_named,
 };
+pub use plan_view::{PlanInsightShare, PlanOperatorView, PlanView};
 pub use platform::Platform;
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
 pub use signals::{

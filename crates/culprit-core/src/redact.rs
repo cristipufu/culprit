@@ -472,6 +472,7 @@ pub fn redact_plan(plan: &Plan) -> Plan {
         }
     }
     let mut redacted = Plan {
+        view: None,
         statement: plan.statement.as_deref().map(|s| redact_sql(s, plan.engine)),
         root: node(&plan.root, plan.engine),
         props: redact_props(&plan.props, plan.engine),

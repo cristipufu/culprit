@@ -165,7 +165,7 @@ fn plan_line(out: &mut String, finding: &Finding, r: &QueryRef, q: &QueryStat, p
 /// when the finding names none. A finding about something else (a result's size, how often a statement runs, what it
 /// waits for, its locks, a table's rows) names its step itself or has none, and so does a plan insight: one that names
 /// no step is about the whole plan (it runs on one CPU, the optimizer gave up, its compile).
-const ABOUT_THE_PLAN: &[&str] = &[
+pub(crate) const ABOUT_THE_PLAN: &[&str] = &[
     "heavy-query",
     "regression",
     "plan-regression",
@@ -216,7 +216,7 @@ const GUESSED_RUNS: &str = "It runs once for each row of a step whose rows rest 
 /// than its runs handle isn't "cheap", and nor is one that reads a whole table big enough to matter on every run (a
 /// catalog's or a small table's whole read is no reason, and isn't said). Every surface that says
 /// why a step has no share (the brief, the exports, the plan viewer, the CLI's tree) says it from here; the app
-/// mirrors it (`noShareReason` in `app/src/lib/plan-format.ts`).
+/// consumes it through `Plan.view`.
 pub fn no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> Option<String> {
     if !plan.weighed() || plan.step_share(node).is_some() {
         return None;
@@ -241,7 +241,7 @@ pub fn no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> O
 /// Why a finding's step states no share ([`finding_step_share`]): [`no_share_reason`], except that a step the finding
 /// is about which reads its table whole on a cheap plan is said as that read, whatever the table's size. The finding is
 /// what shows that read matters; the size bar of `insights::whole_read_matters` is for plans no finding points at.
-/// Where its runs measured a misestimate, that stays the reason. Mirrored by the app's `findingNoShareReason`.
+/// Where its runs measured a misestimate, that stays the reason. Included in the app's `Plan.view` projection.
 pub fn finding_no_share_reason(plan: &Plan, node: &PlanNode, q: Option<&QueryStat>) -> Option<String> {
     use culprit_core::insights::CheapPlanRuns;
     let why = no_share_reason(plan, node, q)?;

@@ -99,6 +99,7 @@ pub fn plan_from_rows(statement: &str, rows: &[(i64, i64, String)]) -> Plan {
     let aliases = culprit_core::sql::table_aliases(statement, Engine::Sqlite);
     resolve_aliases(&mut root, &aliases);
     Plan {
+        view: None,
         engine: Engine::Sqlite,
         kind: PlanKind::Estimated,
         statement: Some(statement.to_string()),

@@ -866,6 +866,7 @@ mod tests {
 
     fn plan(engine: Engine, root: PlanNode) -> Plan {
         let mut plan = Plan {
+            view: None,
             engine,
             kind: PlanKind::Estimated,
             statement: None,

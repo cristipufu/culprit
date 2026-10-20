@@ -96,6 +96,7 @@ function OperationsPanel({ plan, query, focus, selected, onSelect }: { plan: Pla
       <PlanOperations plan={plan} query={query} focus={focus} selectedId={current?.id ?? null} onSelect={onSelect} />
       {current && (
         <NodeDetails
+          plan={plan}
           estimates={can(plan.engine, "plan_estimates")}
           actual={plan.kind === "actual"}
           node={current}

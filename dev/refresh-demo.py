@@ -41,6 +41,8 @@ def main():
         })
     run("cargo", "test", "-p", "culprit-engine", "--test", "all", "insights::write_demo_sidecar", "--", "--ignored")
     run("cargo", "run", "-p", "culprit-engine", "--example", "share_sample")
+    run("cargo", "run", "-p", "culprit-engine", "--example", "dashboard_live_sample")
+    run("cargo", "run", "-p", "culprit-engine", "--example", "plan_view_sample")
 
 
 if __name__ == "__main__":

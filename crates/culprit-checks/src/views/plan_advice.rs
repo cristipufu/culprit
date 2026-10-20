@@ -7,12 +7,22 @@ use culprit_core::{Plan, QueryStat, Severity, Snapshot};
 use crate::{indexes::*, support::*};
 
 pub fn annotate_plans(snapshot: &mut Snapshot) {
-    let readings: Vec<_> =
-        snapshot.queries().iter().map(|q| q.plan.as_ref().map(|p| query_plan_insights(snapshot, q, p))).collect();
+    let readings: Vec<_> = snapshot
+        .queries()
+        .iter()
+        .map(|q| {
+            q.plan.as_ref().map(|p| {
+                let insights = query_plan_insights(snapshot, q, p);
+                let view = super::plan_view::with_insights(p, Some(q), Some(&insights));
+                (insights, view)
+            })
+        })
+        .collect();
     if let Some(w) = &mut snapshot.workload {
         for (q, reading) in w.queries.iter_mut().zip(readings) {
-            if let Some(p) = &mut q.plan {
-                p.insights = reading;
+            if let (Some(p), Some((insights, view))) = (&mut q.plan, reading) {
+                p.insights = Some(insights);
+                p.view = Some(view);
             }
         }
     }

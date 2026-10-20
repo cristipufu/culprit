@@ -38,6 +38,7 @@ pub use pipeline::{Pipeline, Prepare, Refine};
 pub(crate) use refine::{all_stopped, query_is_history, query_stopped, ran_once, without_database};
 pub use summary::summarize;
 pub use views::plan_advice::{annotate_plans, query_plan_insights};
+pub use views::plan_view::{plan_view, present_plan, present_progress_plan};
 
 /// Every built-in check: each area's own list (`checks::AREAS`), in the order they run.
 pub fn all() -> Vec<Box<dyn Check>> {

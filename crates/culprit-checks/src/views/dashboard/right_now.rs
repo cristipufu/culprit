@@ -27,8 +27,8 @@ pub(super) fn running(s: &culprit_core::Session) -> bool {
     s.state != "idle" && s.state != "sleeping" && !s.state.starts_with("idle in transaction")
 }
 
-/// Sessions right now: blocking first, then an idle open transaction, then what runs. The app words its polled tile the
-/// same way (`app/src/lib/dashboard.ts`).
+/// Sessions right now: blocking first, then an idle open transaction, then what runs. Desktop polling consumes this
+/// same assessment through `Workspace::dashboard_live`.
 pub fn now(live: &LiveState) -> Tile {
     let active: Vec<&culprit_core::Session> = live.sessions.iter().filter(|s| running(s)).collect();
     let blocked = live.sessions.iter().filter(|s| s.blocked_by.is_some()).count();

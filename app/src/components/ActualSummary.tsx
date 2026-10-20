@@ -54,7 +54,7 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
   if (f.worstEstimate) {
     const n = f.worstEstimate.node;
     // The estimate for the runs that happened: what the factor compares the actual rows with.
-    const expected = estRowsForRuns(n);
+    const expected = estRowsForRuns(plan, n);
     callouts.push({
       key: "estimate",
       tone: "warn",

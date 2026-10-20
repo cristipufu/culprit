@@ -3,6 +3,7 @@ import type { ChangeEvent } from "../gen/ChangeEvent";
 import type { Changes } from "../gen/Changes";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Dashboard } from "../gen/Dashboard";
+import type { DashboardLive } from "../gen/DashboardLive";
 import type { DeadlockReport } from "../gen/DeadlockReport";
 import type { DiscoveredDatabase } from "../gen/DiscoveredDatabase";
 import type { Drift } from "../gen/Drift";
@@ -61,6 +62,11 @@ const dashboardSample: () => Promise<Record<string, Dashboard>> = import.meta.en
 const liveSample: () => Promise<Record<string, LiveState> | null> = import.meta.env.DEV
   ? () => import("../../../fixtures/live.sample.json").then((m) => m.default as unknown as Record<string, LiveState>)
   : async () => null;
+
+/** Rust-produced dashboard updates for every subset of the demo's planted sessions. */
+const dashboardLiveSample: () => Promise<Record<string, Record<string, DashboardLive>>> = import.meta.env.DEV
+  ? () => import("../../../fixtures/dashboard-live.sample.json").then((m) => m.default as unknown as Record<string, Record<string, DashboardLive>>)
+  : async () => ({});
 
 /** Deadlocks captured from the demo databases (and a key-lookup graph), per engine. */
 const deadlockSample: () => Promise<Record<string, DeadlockReport> | null> = import.meta.env.DEV
@@ -295,6 +301,25 @@ export async function demoApi(): Promise<Api> {
   const demoMarks = new Map<string, Mark[]>();
   const reportName = (name: string) => aliases.get(name) ?? name;
   const byConnection = (name: string) => all.find((r) => r?.snapshot.connection === reportName(name)) ?? null;
+  const liveView = async (name: string): Promise<DashboardLive> => {
+    const connection = connections.find((x) => x.name === name);
+    if (connection && !can(connection.engine, "sessions")) return Promise.reject(refusal(connection.engine, "sessions"));
+    const captured = (await liveSample())?.[connection?.engine ?? "postgres"];
+    const ended = endedSessions.get(name) ?? new Set<string>();
+    const key = JSON.stringify((captured?.sessions ?? []).filter((s) => !ended.has(s.id)).map((s) => s.id).sort());
+    const view = (await dashboardLiveSample())[reportName(name)]?.[key];
+    if (!view?.live) return unsupported();
+    const production = connection?.environment === "production";
+    return {
+      ...view,
+      live: {
+        ...view.live,
+        taken_at: new Date().toISOString(),
+        session_actions: production || !connection ? [] : sessionActions(connection.engine),
+        session_actions_note: production ? "Production connection: Culprit doesn't cancel or end sessions here." : null,
+      },
+    };
+  };
   const sampleFor = async (cloud: "azure" | "aws", terms: string[]) => {
     await new Promise((r) => setTimeout(r, 400));
     const sample = await discoverSample();
@@ -467,6 +492,14 @@ export async function demoApi(): Promise<Api> {
       if (sample) return { ...sample, connection: name };
       return Promise.reject({ code: "not_found", message: `No saved report for '${name}'`, hint: "Scan it first." });
     },
+    dashboardLive: async (name, dashboard) => {
+      const view = await liveView(name);
+      const now = view.dashboard.tiles.find((t) => t.key === "now")!;
+      return {
+        ...view,
+        dashboard: { ...dashboard, headline: view.dashboard.headline, attention: view.dashboard.attention, tiles: dashboard.tiles.map((t) => t.key === "now" ? now : t) },
+      };
+    },
     indexAdvice: async (name) => {
       const sample = (await adviceSample())[reportName(name)];
       if (sample) return { ...sample, connection: name };
@@ -530,28 +563,7 @@ export async function demoApi(): Promise<Api> {
       return name;
     },
     screenshot: () => desktopOnly("Screenshots of the window are taken by the desktop app."),
-    live: async (name) => {
-      const c = connections.find((x) => x.name === name);
-      // Answered as the engine does (its facts): one without sessions refuses with its own reason.
-      if (c && !can(c.engine, "sessions")) return Promise.reject(refusal(c.engine, "sessions"));
-      const production = c?.environment === "production";
-      const ended = endedSessions.get(name) ?? new Set<string>();
-      const captured = (await liveSample())?.[c?.engine ?? "postgres"];
-      // Ending the head blocker releases everyone behind it, as on a real server.
-      const chains = (captured?.blocking?.chains ?? []).filter((chain) => !ended.has(chain.head));
-      const state: LiveState = {
-        notes: captured?.notes ?? [],
-        taken_at: new Date().toISOString(),
-        sessions: (captured?.sessions ?? [])
-          .filter((s) => !ended.has(s.id))
-          .map((s) => (s.blocked_by && (ended.has(s.blocked_by) || (captured && !chains.length)) ? { ...s, blocked_by: null, wait: null, wait_ms: null } : s)),
-        waits: [],
-        blocking: chains.length ? { chains, waiting: chains.reduce((n, ch) => n + ch.waiters, 0) } : null,
-        session_actions: production || !c ? [] : sessionActions(c.engine),
-        session_actions_note: production ? "Production connection: Culprit doesn't cancel or end sessions here." : null,
-      };
-      return state;
-    },
+    live: async (name) => (await liveView(name)).live!,
     interruptSession: async (name, session) => {
       await new Promise((r) => setTimeout(r, 300));
       endedSessions.set(name, new Set([...(endedSessions.get(name) ?? []), session]));

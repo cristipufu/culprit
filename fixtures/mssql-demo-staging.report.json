@@ -158,7 +158,7 @@
     },
     {
       "check": "held-cleanup",
-      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "reason": "The available evidence does not establish complete coverage of this check.",
       "status": "insufficient-evidence",
       "title": "A long open transaction holds cleanup back"
     },
@@ -260,7 +260,7 @@
     },
     {
       "check": "replica-lag",
-      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "reason": "The available evidence does not establish complete coverage of this check.",
       "status": "insufficient-evidence",
       "title": "Replicas that fall behind"
     },

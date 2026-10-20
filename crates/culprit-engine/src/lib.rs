@@ -911,14 +911,36 @@ impl Workspace {
                 .with_hint(format!("Run `culprit scan {name}` first"))
         })?;
         let mut dashboard = culprit_checks::dashboard(&report);
+        dashboard.connection = name.into();
         // An engine without sessions (SQLite) has none to read; its tile says so already.
         if live && report.snapshot.server.engine.abilities().sessions {
-            match self.live(name).await {
-                Ok(state) => culprit_checks::dashboard::with_now(&mut dashboard, &state),
-                Err(e) => culprit_checks::dashboard::without_now(&mut dashboard, &e.message),
-            }
+            return Ok(self.dashboard_live(name, dashboard).await?.dashboard);
         }
         Ok(dashboard)
+    }
+
+    /// The dashboard for the report already displayed by the caller, even if a newer scan was saved in the meantime.
+    pub fn dashboard_for_report(&self, name: &str, report_id: &str) -> Result<culprit_core::Dashboard> {
+        self.connection(name)?;
+        let mut dashboard = culprit_checks::dashboard(&self.report_at(name, report_id)?);
+        dashboard.connection = name.into();
+        Ok(dashboard)
+    }
+
+    /// Refresh sessions without reloading another report or selected window. One read, with Rust's shared assessment.
+    pub async fn dashboard_live(
+        &self,
+        name: &str,
+        dashboard: culprit_core::Dashboard,
+    ) -> Result<culprit_core::DashboardLive> {
+        let connection = self.connection(name)?;
+        if dashboard.connection != name || dashboard.engine != connection.engine {
+            return Err(Error::invalid("The live refresh belongs to another connection or database engine."));
+        }
+        if !connection.engine.abilities().sessions {
+            return Ok(culprit_core::DashboardLive { dashboard, live: None, error: None });
+        }
+        Ok(culprit_checks::dashboard::refresh(dashboard, self.live(name).await))
     }
 
     /// What differs between the latest scans of two connections: tables, columns, indexes, settings, version.
@@ -966,6 +988,7 @@ impl Workspace {
         }
         let mut plan = self.forget_rejected(name, provider.explain(sql, mode).await)?;
         culprit_core::insights::annotate(&mut plan);
+        culprit_checks::present_plan(&mut plan, None);
         Ok(plan)
     }
 
@@ -987,7 +1010,7 @@ impl Workspace {
         let report = self.plan_report(name, report_id)?;
         let provider = self.provider(name).await?;
         let plan = self.forget_rejected(name, provider.last_actual_plan(query_id, plan_id).await)?;
-        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id))
+        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id, plan_id))
     }
 
     /// How far along a session's running statement is: per-operator progress on SQL Server, the estimated plan with
@@ -1000,7 +1023,11 @@ impl Workspace {
     ) -> Result<culprit_core::QueryProgress> {
         culprit_core::session_number(session)?;
         let provider = self.provider(name).await?;
-        self.forget_rejected(name, provider.query_progress(session, with_plan).await)
+        let mut progress = self.forget_rejected(name, provider.query_progress(session, with_plan).await)?;
+        if let Some(plan) = &mut progress.plan {
+            culprit_checks::present_progress_plan(plan);
+        }
+        Ok(progress)
     }
 
     pub async fn query_plan(&self, name: &str, query_id: &str, plan_id: Option<&str>) -> Result<Plan> {
@@ -1017,7 +1044,7 @@ impl Workspace {
     ) -> Result<Plan> {
         let report = self.plan_report(name, report_id)?;
         let plan = self.forget_rejected(name, self.query_plan_from(name, query_id, plan_id, report.as_ref()).await)?;
-        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id))
+        Ok(Self::contextual_plan(plan, report.as_ref().map(|r| &r.snapshot), query_id, plan_id))
     }
 
     fn plan_report(&self, name: &str, report_id: Option<&str>) -> Result<Option<Report>> {
@@ -1027,15 +1054,27 @@ impl Workspace {
         }
     }
 
-    fn contextual_plan(mut plan: Plan, snapshot: Option<&culprit_core::Snapshot>, query_id: &str) -> Plan {
+    fn contextual_plan(
+        mut plan: Plan,
+        snapshot: Option<&culprit_core::Snapshot>,
+        query_id: &str,
+        plan_id: Option<&str>,
+    ) -> Plan {
         if let Some(snapshot) = snapshot {
             culprit_core::insights::mark_changed_columns(&mut plan, &snapshot.columns);
             culprit_core::insights::mark_plan(&mut plan, snapshot);
             culprit_core::insights::mark_possible_keys(&mut plan, &snapshot.indexes);
             if let Some(q) = snapshot.queries().iter().find(|q| q.id == query_id) {
                 culprit_core::insights::mark_query(&mut plan, &q.text);
-                plan.insights = Some(culprit_checks::query_plan_insights(snapshot, q, &plan));
-                return plan;
+                if plan_id.is_none_or(|id| q.plan_id.as_deref() == Some(id) || q.plans.iter().any(|p| p.id == id)) {
+                    let mut measured = q.clone();
+                    if let Some(id) = plan_id {
+                        measured.plan_id = Some(id.into());
+                    }
+                    plan.insights = Some(culprit_checks::query_plan_insights(snapshot, &measured, &plan));
+                    culprit_checks::present_plan(&mut plan, Some(&measured));
+                    return plan;
+                }
             }
         }
         let mut items = culprit_core::insights::insights(&plan);
@@ -1043,7 +1082,8 @@ impl Workspace {
             i.severity = culprit_core::Severity::Low;
             i.fix_sql = None;
         }
-        plan.insights = Some(culprit_core::insights::PlanInsights { items, note: Some("No matching statement was measured in the selected workload. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence.".into()) });
+        plan.insights = Some(culprit_core::insights::PlanInsights { items, note: Some("No matching measurements for this plan were identified in the selected workload. Structural observations remain useful for growth planning; current urgency and an index change require workload and catalog evidence.".into()) });
+        culprit_checks::present_plan(&mut plan, None);
         plan
     }
 

@@ -89,6 +89,7 @@ pub fn from_value(value: &Value, kind: PlanKind, statement: Option<&str>) -> Res
         props.insert("PlanningMs".into(), ms.to_string());
     }
     let mut plan = Plan {
+        view: None,
         engine: Engine::Postgres,
         kind,
         statement: statement.map(str::to_string),

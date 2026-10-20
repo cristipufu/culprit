@@ -4,6 +4,7 @@ import type { PlanIndexHint } from "./PlanIndexHint";
 import type { PlanInsights } from "./PlanInsights";
 import type { PlanKind } from "./PlanKind";
 import type { PlanNode } from "./PlanNode";
+import type { PlanView } from "./PlanView";
 import type { PlanWarning } from "./PlanWarning";
 
 export type Plan = { engine: Engine, kind: PlanKind, statement: string | null, total_cost: number, root: PlanNode, warnings: Array<PlanWarning>, index_hints: Array<PlanIndexHint>, props: { [key in string]: string }, raw: string | null, 
@@ -11,4 +12,4 @@ export type Plan = { engine: Engine, kind: PlanKind, statement: string | null, t
  * Structural observations, with catalog and workload context when attached to a scan. Recomputed when a saved
  * report is read; absent in older files.
  */
-insights?: PlanInsights, };
+insights?: PlanInsights, view?: PlanView, };

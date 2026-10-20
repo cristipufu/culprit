@@ -1836,6 +1836,7 @@ mod tests {
         let mut root = node(0, "Sort", NodeKind::Sort, vec![join]);
         (root.est_rows, root.self_cost, root.subtree_cost) = (11.0, 0.21, 286.19);
         Plan {
+            view: None,
             engine: Engine::Postgres,
             kind: PlanKind::Generic,
             statement: None,

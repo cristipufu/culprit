@@ -266,6 +266,20 @@ Health counters follow these rules in `checks/pressure/health.rs`: preparation c
 (`drift.rs`) and the waits explained (`waits.rs`) read a report and add no findings of their own; they follow the same
 evidence rules.
 
+Renderers consume derived views from Rust. `views/plan_view.rs` produces `Plan.view`: normalized executions and row
+comparisons, measured operator time, displayable shares, actual-run facts and explanations from the same helpers the
+briefs use. Scan preparation, imported plans, on-demand plans and live progress all attach it at their engine boundary.
+The projection is output only: deserialization ignores a saved projection, including an older schema, and analysis
+rebuilds it from the collected plan. In-flight plans retain their collected counters but get an estimated projection;
+partial execution is not a completed measured run. TypeScript maps these facts to layout data without repeating the
+analysis. Browser fixtures are generated with these same Rust functions and checked against them.
+
+`dashboard::refresh` applies a live read to an existing dashboard and returns `DashboardLive` (dashboard, sessions,
+optional error). Desktop polling calls `Workspace::dashboard_live`, so grades, attention and headlines share the CLI's
+implementation. The cold dashboard is pinned to the displayed report, and a reply from a previous connection, report
+or selected window is discarded. A failed read clears current measurements; incomplete visibility cannot establish
+zero blocked sessions. MCP returns the original numeric signal values, leaving display rounding to its consumer.
+
 ## Extending Culprit
 
 - **A check**: write `<name>_info()` and `<name>(&Snapshot)` in a file of its own in the area's directory under

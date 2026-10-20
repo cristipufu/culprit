@@ -87,6 +87,7 @@ pub fn parse(value: &Value, json: &str, kind: PlanKind, statement: Option<&str>,
         props.insert("optimization_ms".into(), ms.to_string());
     }
     let mut plan = Plan {
+        view: None,
         engine: Engine::Mysql,
         kind,
         statement: statement.map(str::to_string),

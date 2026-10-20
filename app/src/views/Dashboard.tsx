@@ -3,6 +3,7 @@ import { ChevronRight, Copy, FileText, GitCompareArrows, Radio, RefreshCw, Squar
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import type { ConnectionInfo } from "../gen/ConnectionInfo";
 import type { Dashboard as DashboardModel } from "../gen/Dashboard";
+import type { DashboardLive } from "../gen/DashboardLive";
 import type { LiveState } from "../gen/LiveState";
 import type { QueryStat } from "../gen/QueryStat";
 import type { Report } from "../gen/Report";
@@ -18,7 +19,7 @@ import type { WaitsTab } from "../components/Waits";
 import { api, errorMessage, type ApiError } from "../lib/api";
 import { can, serverName } from "../lib/engines";
 import { useEvents } from "../lib/events";
-import { attention, nowTile, nowUnavailable, STATUS_LABEL } from "../lib/dashboard";
+import { STATUS_LABEL } from "../lib/dashboard";
 import { ago, duration, percent, when } from "../lib/format";
 import { useHotkeys } from "../lib/hotkeys";
 import { querySummary } from "../lib/query-summary";
@@ -37,8 +38,8 @@ const REFRESH_MS = 5000;
 /** Five minutes of reads for the activity line. */
 const HISTORY = Math.round((5 * 60 * 1000) / REFRESH_MS);
 
-type Sample = { at: number; active: number; blocked: number };
-type Loaded = { status: "loading" } | { status: "ready"; model: DashboardModel } | { status: "error"; error: ApiError };
+type Sample = { at: number; active: number; blocked: number | null };
+type Loaded = { status: "loading" } | { status: "ready"; scope: string; model: DashboardModel } | { status: "error"; scope: string; error: ApiError };
 
 /** Open a query in Queries, on one of its tabs. */
 function openQuery(id: string, tab?: "summary" | "plan" | "history"): void {
@@ -63,25 +64,23 @@ export default function Dashboard({ report, connection }: { report: Report; conn
   const scanning = useStore((s) => s.report.status === "ready" && s.report.scanning);
   const [loaded, setLoaded] = useState<Loaded>({ status: "loading" });
   const [waits, setWaits] = useState<{ tab: WaitsTab; category?: string } | null>(null);
-  const live = useLiveNow(connection.name, can(connection.engine, "sessions"));
+  const scope = JSON.stringify([connection.name, windowMinutes, report.snapshot.id]);
+  const cold = loaded.status === "ready" && loaded.scope === scope ? loaded.model : null;
+  const live = useLiveNow(connection.name, can(connection.engine, "sessions"), cold, scope);
   const gridRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let current = true;
     api()
-      .then((client) => client.dashboard(connection.name, windowMinutes))
-      .then((model) => current && setLoaded({ status: "ready", model }))
-      .catch((e) => current && setLoaded({ status: "error", error: errorMessage(e) }));
+      .then((client) => client.dashboard(connection.name, windowMinutes, report.snapshot.id))
+      .then((model) => current && setLoaded({ status: "ready", scope, model }))
+      .catch((e) => current && setLoaded({ status: "error", scope, error: errorMessage(e) }));
     return () => {
       current = false;
     };
   }, [connection.name, windowMinutes, report.snapshot.id]);
 
-  const tiles = useMemo(() => {
-    if (loaded.status !== "ready") return null;
-    const now = live.state ? nowTile(live.state) : live.error ? nowUnavailable(live.error.message) : null;
-    return loaded.model.tiles.map((t) => (t.key === "now" && now ? now : t));
-  }, [loaded, live.state, live.error]);
+  const model = live.dashboard ?? cold;
 
   // From nowhere in particular, j or ↓ steps into the grid; inside it, the grid's own keys take over.
   const enter = () => {
@@ -91,7 +90,7 @@ export default function Dashboard({ report, connection }: { report: Report; conn
   const periods = can(connection.engine, "periods");
   useHotkeys({ ...(periods ? { v: () => setState({ view: "overview", changes: changeRequest() }) } : {}), j: enter, ArrowDown: enter }, !waits);
 
-  if (loaded.status === "error") {
+  if (loaded.status === "error" && loaded.scope === scope) {
     return (
       <div className="empty">
         <h3>Couldn't build the dashboard</h3>
@@ -103,10 +102,9 @@ export default function Dashboard({ report, connection }: { report: Report; conn
       </div>
     );
   }
-  if (!tiles || loaded.status !== "ready") return <DashboardSkeleton />;
+  if (!model) return <DashboardSkeleton />;
 
-  const model = loaded.model;
-  const { keys, headline } = attention(tiles);
+  const { tiles, headline, attention: keys } = model;
   // A dashboard built by an older Culprit lacks newer tiles: they say so instead of breaking the page.
   const tile = (key: TileKey): Tile =>
     tiles.find((t) => t.key === key) ?? {
@@ -549,15 +547,16 @@ function WaitsTile({ tile, onOpen, sample }: { tile: Tile; onOpen: (tab: WaitsTa
 
 // ───────── right now ─────────
 
-type LiveNow = { state: LiveState | null; error: ApiError | null; hidden: boolean; history: Sample[]; age: number | null };
+type LiveNow = { dashboard: DashboardModel | null; state: LiveState | null; error: ApiError | null; hidden: boolean; history: Sample[]; age: number | null };
 
 /** Sessions every few seconds while the dashboard is on screen; nothing while the window is hidden. */
 /** Sessions right now, read every few seconds while the window is visible; never for an engine without sessions. */
-function useLiveNow(connection: string, enabled: boolean): LiveNow {
-  const [state, setLive] = useState<LiveState | null>(null);
-  const [error, setError] = useState<ApiError | null>(null);
+function useLiveNow(connection: string, enabled: boolean, dashboard: DashboardModel | null, scope: string): LiveNow {
+  const [read, setRead] = useState<{ scope: string; view: DashboardLive | null; error: ApiError | null; history: Sample[] } | null>(null);
+  const current = read?.scope === scope ? read : null;
+  const state = current?.view?.live ?? null;
+  const error = current?.error ?? current?.view?.error ?? null;
   const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
-  const [history, setHistory] = useState<Sample[]>([]);
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -576,21 +575,25 @@ function useLiveNow(connection: string, enabled: boolean): LiveNow {
   hasRead.current = state !== null || error !== null;
   useEffect(() => {
     // The first read always happens, so the tile has something to say; after that, nothing while hidden.
-    if (!enabled || (hidden && hasRead.current)) return;
+    if (!enabled || !dashboard || (hidden && hasRead.current)) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       try {
-        const next = await (await api()).live(connection);
+        const next = await (await api()).dashboardLive(connection, dashboard);
         if (cancelled) return;
-        setLive(next);
-        setError(null);
-        const active = next.sessions.filter((s) => s.state !== "idle" && s.state !== "sleeping" && !s.state.startsWith("idle in transaction")).length;
-        const blocked = next.sessions.filter((s) => s.blocked_by).length;
-        setHistory((h) => [...h.slice(-(HISTORY - 1)), { at: Date.now(), active, blocked }]);
+        const tile = next.dashboard.tiles.find((t) => t.key === "now");
+        const active = tile?.metrics.find((m) => m.key === "active")?.value;
+        const blocked = tile?.metrics.find((m) => m.key === "blocked")?.value ?? null;
+        setRead((old) => {
+          const previous = old?.scope === scope ? old.history : [];
+          const history = next.live && active != null ? [...previous.slice(-(HISTORY - 1)), { at: Date.now(), active, blocked }] : previous;
+          return { scope, view: next, error: null, history };
+        });
+        if (next.error?.code === "unsupported") return;
       } catch (e) {
         const error = errorMessage(e);
-        if (!cancelled) setError(error);
+        if (!cancelled) setRead((old) => ({ scope, view: null, error, history: old?.scope === scope ? old.history : [] }));
         if (error.code === "unsupported") return;
       }
       if (!cancelled && !document.hidden) timer = setTimeout(tick, REFRESH_MS);
@@ -600,10 +603,10 @@ function useLiveNow(connection: string, enabled: boolean): LiveNow {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [connection, hidden, enabled]);
+  }, [connection, hidden, enabled, dashboard, scope]);
 
   const age = state ? Math.max(0, Math.round((now - Date.parse(state.taken_at)) / 1000)) : null;
-  return { state, error, hidden, history, age };
+  return { dashboard: current?.view?.dashboard ?? null, state, error, hidden, history: current?.history ?? [], age };
 }
 
 function NowTile({ tile, live, sessions }: { tile: Tile; live: LiveNow; sessions: boolean }) {
@@ -637,6 +640,11 @@ function NowTile({ tile, live, sessions }: { tile: Tile; live: LiveNow; sessions
         </div>
       </Frame>
     );
+  }
+  if (live.error && tile.status !== "unavailable") {
+    return <Frame tile={{ ...tile, status: "unavailable", takeaway: "Couldn't refresh sessions.", detail: null }} foot={foot}>
+      <p className="dash-detail">{live.error.message}</p>
+    </Frame>;
   }
   return (
     <Frame tile={tile} action={blocking.length ? "Blocking" : "Sessions"} onOpen={() => openLive("sessions")} foot={foot}>
@@ -681,9 +689,18 @@ function Activity({ samples }: { samples: Sample[] }) {
   // The newest read sits at the right edge; history grows leftward as it fills.
   const offset = HISTORY - samples.length;
   const y = (v: number) => h - 2 - (v / peak) * (h - 4);
-  const line = (key: "active" | "blocked") => samples.map((s, i) => `${i ? "L" : "M"}${x(i + offset).toFixed(1)},${y(s[key]).toFixed(1)}`).join("");
+  const line = (key: "active" | "blocked") => {
+    let connected = false;
+    return samples.map((s, i) => {
+      const value = s[key];
+      if (value == null) { connected = false; return ""; }
+      const command = connected ? "L" : "M";
+      connected = true;
+      return `${command}${x(i + offset).toFixed(1)},${y(value).toFixed(1)}`;
+    }).join("");
+  };
   const area = `${line("active")}L${x(HISTORY - 1)},${h}L${x(offset).toFixed(1)},${h}Z`;
-  const blocked = samples.some((s) => s.blocked > 0);
+  const blocked = samples.some((s) => s.blocked != null && s.blocked > 0);
   const minutes = Math.max(1, Math.round((samples.length * REFRESH_MS) / 60000));
   const filling = offset > 0;
   return (

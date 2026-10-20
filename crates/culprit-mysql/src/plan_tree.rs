@@ -53,6 +53,7 @@ pub fn parse(tree: &str, statement: Option<&str>, schema: Option<&str>) -> Resul
         props.insert("ElapsedMs".into(), ms.to_string());
     }
     let mut plan = Plan {
+        view: None,
         engine: Engine::Mysql,
         kind: PlanKind::Actual,
         statement: statement.map(str::to_string),

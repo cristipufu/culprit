@@ -476,6 +476,7 @@ pub(super) mod wording_tests {
             runtime: None,
         };
         let plan = |n: &PlanNode| Plan {
+            view: None,
             engine: Engine::Postgres,
             kind: culprit_core::PlanKind::Estimated,
             statement: None,
@@ -518,6 +519,7 @@ pub(super) mod wording_tests {
             runtime: None,
         };
         let plan = |n: &PlanNode| Plan {
+            view: None,
             engine: Engine::Mysql,
             kind: culprit_core::PlanKind::Estimated,
             statement: None,

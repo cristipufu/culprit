@@ -113,6 +113,7 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
         plan.raw = Some(block.to_string());
     }
     culprit_core::insights::annotate(&mut plan);
+    culprit_checks::present_plan(&mut plan, None);
     Ok(plan)
 }
 
@@ -173,6 +174,7 @@ fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<Plan>
     plan.kind = saved.kind;
     plan.statement = saved.statement.clone();
     plan.insights = None;
+    plan.view = None;
     Some(plan)
 }
 
