@@ -2,6 +2,18 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.8
+
+### Fixes
+
+- Query activity keeps its measurement period. Older complete scan intervals are dated explicitly; recent observed calls stay separate from lifetime totals and are shown as lower bounds when entries were evicted, without inventing a daily rate, average or workload share.
+- Findings, plan insights and Index Advisor use the selected workload and current catalog consistently. Cheap or historical queries retain structural scaling concerns while executable index changes require supporting evidence; existing keys and unavailable definitions are accounted for.
+- Cross-table OR filters share the same rewrite guidance across views. Rewrites preserve permissions, joins, duplicate handling and NULL behavior, and branch selectivity is checked before suggesting an index. Locking reads and writes are excluded from read-only rewrite advice.
+- Upsert alternatives explain concurrency, isolation, retries and trigger requirements. Pool-reset advice preserves required session isolation, and historical outliers no longer justify changing logging for a fast replacement query. Small recorded I/O totals do not rule out historical storage delays or hidden trigger work.
+- PostgreSQL storage distinguishes database data timing from server-wide WAL timing, records each source's own reset, and labels WAL syncs as flushes. Execution time is no longer labeled as measured waiting, overlapping timing is excluded from exclusive shares, and plan counts distinguish current queries from all captured history.
+- SQLite virtual tables remain visible with their original DDL while module-owned storage stays out of schema recommendations. Missing modules preserve the remaining catalog, and index cleanup explains when it uses definitions without usage counters.
+- Long text evidence, including statistics names, uses readable full-width rows in finding details and exports.
+
 ## 0.3.7
 
 ### Fixes
