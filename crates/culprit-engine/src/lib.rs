@@ -1375,7 +1375,7 @@ impl Workspace {
     pub async fn catalog(&self, name: &str) -> Result<catalog::Catalog> {
         let info = self.connection(name)?;
         let provider = self.provider(name).await?;
-        let columns = self.forget_rejected(name, provider.run(catalog::columns_sql(info.engine), 50_000).await)?;
+        let columns = self.forget_rejected(name, catalog::columns(provider.as_ref(), info.engine).await)?;
         let databases = provider.run(catalog::databases_sql(info.engine), 500).await.ok();
         Ok(catalog::fold(columns, databases))
     }

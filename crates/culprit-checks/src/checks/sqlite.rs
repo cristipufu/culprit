@@ -28,8 +28,9 @@ fn statistics(s: &Snapshot) -> Option<Finding> {
         return None;
     }
     // On tables this small (rows counted), a wrong guess costs nothing worth a finding.
-    let rows_known = !s.tables.is_empty() && s.tables.iter().all(|t| t.rows.is_some());
-    if rows_known && s.tables.iter().filter_map(|t| t.rows).fold(0.0, f64::max) < 10_000.0 {
+    let tables: Vec<_> = s.tables.iter().filter(|t| !t.is_virtual()).collect();
+    let rows_known = !tables.is_empty() && tables.iter().all(|t| t.rows.is_some());
+    if rows_known && tables.iter().filter_map(|t| t.rows).fold(0.0, f64::max) < 10_000.0 {
         return None;
     }
     let mut f = finding(

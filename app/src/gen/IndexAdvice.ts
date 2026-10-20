@@ -10,7 +10,7 @@ import type { TableAdvice } from "./TableAdvice";
  */
 export type IndexAdvice = { connection: string, engine: Engine | null, taken_at: string, 
 /**
- * "in the 6 days since the server last restarted": what the usage counters cover.
+ * "in the 6 days since the server last restarted": what the usage counters cover. Empty where unavailable.
  */
 counters: string, candidates: Array<IndexCandidate>, cleanups: Array<IndexCleanup>, tables: Array<TableAdvice>, 
 /**

@@ -134,3 +134,38 @@ fn the_statistics_finding_is_verified_by_sqlite_stat1() {
     assert!(f.verify.iter().any(|v| v.contains("sqlite_stat1")), "{:?}", f.verify);
     assert!(!f.verify.iter().any(|v| v.contains("row count")), "{:?}", f.verify);
 }
+
+#[test]
+fn definition_based_cleanup_does_not_claim_usage_counters() {
+    let mut s = demo();
+    s.workload = None;
+    let mut narrow = s.indexes.iter().find(|i| !i.is_primary_key && !i.is_unique).unwrap().clone();
+    narrow.name = "by_customer".into();
+    narrow.columns = vec!["customer_id".into()];
+    narrow.filter = None;
+    let mut wide = narrow.clone();
+    wide.name = "by_customer_date".into();
+    wide.columns.push("created_at".into());
+    s.indexes = vec![narrow, wide];
+    let advice = index_advice(&analyze(s));
+    assert_eq!(advice.cleanups.len(), 1);
+    assert_eq!(advice.cleanups[0].index, "by_customer");
+    assert!(advice.counters.is_empty());
+    assert!(advice.notes.iter().any(|n| n.contains("runtime impact of overlaps are unknown")));
+    assert!(advice.notes.iter().any(|n| n.contains("use the recorded definitions")));
+    assert!(!advice.notes.iter().any(|n| n.contains("overlapping indexes can't be judged")));
+}
+
+#[test]
+fn virtual_table_sizes_do_not_turn_a_small_files_statistics_into_a_warning() {
+    let mut s = demo();
+    for t in &mut s.tables {
+        t.rows = Some(100.0);
+    }
+    let mut virtual_table = s.tables[0].clone();
+    virtual_table.name = "search".into();
+    virtual_table.kind = Some("virtual".into());
+    virtual_table.rows = None;
+    s.tables.push(virtual_table);
+    assert!(!analyze(s).findings.iter().any(|f| f.id == "config:sqlite-statistics"));
+}

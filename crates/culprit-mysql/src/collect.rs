@@ -1134,6 +1134,8 @@ async fn tables(conn: &mut Conn, db: &str) -> Result<Vec<TableStat>> {
             let index = r.number("index_bytes");
             TableStat {
                 schema: db.to_string(),
+                kind: None,
+                definition: None,
                 rows: r.number("row_estimate"),
                 total_bytes: match (data, index) {
                     (None, None) => None,

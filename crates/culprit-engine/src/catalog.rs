@@ -1,7 +1,7 @@
 //! The live catalog for editor completion: databases, tables and views with their columns, read from the standard
 //! information schema through the read-only run path. Cheap, and it works on connections that were never scanned.
 
-use culprit_core::{Engine, ResultSet};
+use culprit_core::{Engine, Provider, Result, ResultSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -11,7 +11,7 @@ pub struct Catalog {
     /// Other databases on the server (schemas, for MySQL), for `database.` completion.
     pub databases: Vec<String>,
     pub tables: Vec<CatalogTable>,
-    /// The catalog stopped at the row cap; completion covers the first tables only.
+    /// The catalog reached its collection limit; completion may omit tables or columns.
     pub truncated: bool,
 }
 
@@ -55,12 +55,51 @@ pub(crate) fn columns_sql(engine: Engine) -> &'static str {
               ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION"
         }
         Engine::Sqlite => {
-            "SELECT 'main', m.name, CASE m.type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END, p.name, p.type
-               FROM sqlite_schema m JOIN pragma_table_info(m.name) p
-              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+            "/* culprit */ SELECT 'main', m.name, CASE m.type WHEN 'view' THEN 'VIEW' ELSE 'BASE TABLE' END, p.name, p.type
+               FROM main.sqlite_schema m
+               JOIN pragma_table_list t ON t.schema = 'main' AND t.name = m.name AND t.type <> 'shadow'
+               JOIN pragma_table_xinfo(CASE WHEN t.type = 'virtual' THEN NULL ELSE m.name END) p
+              WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND p.hidden <> 1
               ORDER BY m.name, p.cid"
         }
     }
+}
+
+/// Virtual tables can need modules linked only into the application. Read their columns separately so one missing
+/// module cannot lose completion for the rest of the file. Both the result size and the time spent listing them are
+/// bounded; every call goes through the provider's read-only, timed path.
+pub(crate) async fn columns(provider: &dyn Provider, engine: Engine) -> Result<ResultSet> {
+    const LIMIT: usize = 50_000;
+    let mut columns = provider.run(columns_sql(engine), LIMIT).await?;
+    if engine != Engine::Sqlite {
+        return Ok(columns);
+    }
+    let started = std::time::Instant::now();
+    let tables = provider
+        .run(
+            "/* culprit */ SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'virtual' ORDER BY name",
+            LIMIT,
+        )
+        .await?;
+    columns.truncated |= tables.truncated;
+    for row in tables.rows {
+        if columns.rows.len() >= LIMIT || started.elapsed() >= std::time::Duration::from_secs(2) {
+            columns.truncated = true;
+            break;
+        }
+        let Some(name) = row.first().and_then(serde_json::Value::as_str) else { continue };
+        let quoted = format!("'{}'", name.replace('\'', "''"));
+        let sql = format!(
+            "/* culprit */ SELECT 'main', {quoted}, 'BASE TABLE', name, type FROM pragma_table_xinfo({quoted}) WHERE hidden <> 1 ORDER BY cid"
+        );
+        if let Ok(part) = provider.run(&sql, LIMIT - columns.rows.len()).await {
+            columns.rows.extend(part.rows);
+            columns.truncated |= part.truncated;
+        }
+    }
+    // Folding expects all of a table's columns together, as the single catalog query returns on server engines.
+    columns.rows.sort_by(|a, b| a.get(1).and_then(|v| v.as_str()).cmp(&b.get(1).and_then(|v| v.as_str())));
+    Ok(columns)
 }
 
 pub(crate) fn databases_sql(engine: Engine) -> &'static str {

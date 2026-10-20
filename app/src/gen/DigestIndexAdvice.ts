@@ -16,7 +16,7 @@ create_total: number,
  */
 drop: Array<DigestIndexDrop>, drop_total: number, 
 /**
- * What the usage counters behind the advice cover: "in the 6 days since the server last restarted".
+ * What the usage counters behind the advice cover: "in the 6 days since the server last restarted". Empty where unavailable.
  */
 counters: string, 
 /**

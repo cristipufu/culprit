@@ -756,7 +756,11 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
     // Where candidates come from on this engine, as the engine says it (no missing-index requests, no history…).
     notes.extend(engine.spec().index_advice_sources(&s.server, s.workload.is_some()));
     if !s.server.has(Capability::IndexUsage) {
-        notes.push("Index usage counters aren't readable, so unused and overlapping indexes can't be judged.".into());
+        notes.push(
+            "Index usage counters aren't readable: unused indexes and the runtime impact of overlaps are unknown. \
+             Duplicate and prefix coverage checks use the recorded definitions."
+                .into(),
+        );
     } else if !crate::indexes::watched_long_enough(s) {
         let counted = crate::support::watched_days(s).map_or_else(
             || "for an unknown time".to_string(),
@@ -814,7 +818,7 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
         connection: s.connection.clone(),
         engine: Some(engine),
         taken_at: s.taken_at.clone(),
-        counters: since_phrase(s),
+        counters: if s.server.has(Capability::IndexUsage) { since_phrase(s) } else { String::new() },
         candidates,
         cleanups,
         tables,

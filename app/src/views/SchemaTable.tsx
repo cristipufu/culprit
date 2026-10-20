@@ -14,7 +14,6 @@ import { useHotkeys } from "../lib/hotkeys";
 import { indexKey, indexUsage, plannedQueryCount } from "../lib/index-usage";
 import { columnMembership, coveredBy, ddl, previewSql, referenceOf, relations, tableFindings, tableKey } from "../lib/schema-model";
 import { setState, toast } from "../lib/store";
-import { serverName } from "../lib/engines";
 
 type Tab = "columns" | "indexes" | "relations" | "data" | "ddl";
 
@@ -121,7 +120,7 @@ export function SchemaTable({ report, table, onOpenTable }: { report: Report; ta
         {tab === "indexes" && <Indexes report={report} table={table} indexes={indexes} links={links} />}
         {tab === "relations" && <Relations links={links} onOpenTable={onOpenTable} />}
         {tab === "data" && <Data report={report} table={table} />}
-        {tab === "ddl" && <Ddl text={ddl(engine, table, columns, indexes, links.outgoing)} />}
+        {tab === "ddl" && <Ddl text={ddl(engine, table, columns, indexes, links.outgoing)} original={table.definition != null} />}
       </div>
     </div>
   );
@@ -151,7 +150,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
       label: "No clustered index",
       why: "Rows live in an unordered heap: scans read forwarded records and space isn't reclaimed well",
     });
-  if (!table.has_primary_key)
+  if (!table.has_primary_key && table.kind !== "virtual")
     health.push({
       label: "No primary key",
       why: "Nothing identifies a row uniquely; replication, ORMs and deduplication all suffer",
@@ -172,6 +171,7 @@ function Header({ report, table, findings }: { report: Report; table: TableStat;
           <span className="td-schema">{table.schema}.</span>
           {table.name}
         </h2>
+        {table.kind === "virtual" && <span className="tag">Virtual table</span>}
         <button className="btn ghost icon" title="Copy the qualified name" onClick={() => copy(tableKey(table), "the table name")}>
           <Copy size={13} />
         </button>
@@ -278,7 +278,10 @@ function Columns({
   onOpenTable: (key: string) => void;
 }) {
   const columns = report.snapshot.columns.filter((c) => c.schema === table.schema && c.table === table.name).sort((a, b) => a.ordinal - b.ordinal);
-  if (columns.length === 0) return <div className="notice">This scan has no column metadata. Re-scan to collect it.</div>;
+  if (columns.length === 0) {
+    const note = report.snapshot.notes.find((n) => n.collector === "catalog" && n.message.startsWith(`Columns of ${tableKey(table)} are unavailable:`));
+    return <div className="notice">{note?.message ?? "This scan has no column metadata. Re-scan to collect it."}</div>;
+  }
   return (
     <div className="td-grid-wrap" role="region" aria-label="Columns" tabIndex={0}>
       <table className="grid td-grid columns-grid">
@@ -383,6 +386,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
   const [open, setOpen] = useState<string | null>(null);
   const planned = plannedQueryCount(report);
   const since = report.snapshot.server.started_at;
+  const hasUsage = report.snapshot.server.capabilities.includes("index-usage");
   const sinceText = since ? `since ${when(since).short}` : "since the last restart";
   // An index that may be less than a week old hasn't had time to be read: the checks don't call it unused yet.
   const takenAt = Date.parse(report.snapshot.taken_at);
@@ -396,7 +400,11 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
     return (
       <div className="notice">
         <div>
-          <b>No indexes.</b> Every lookup on {table.name} reads the whole table.
+          {table.kind === "virtual" ? (
+            <><b>Indexes are managed by the virtual table's module.</b> Ordinary CREATE INDEX does not apply to this table.</>
+          ) : (
+            <><b>No index definitions in this scan.</b> Explain the queries that read this table to check their access paths.</>
+          )}
         </div>
       </div>
     );
@@ -416,7 +424,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
               <th>Index</th>
               <th>Keys</th>
               <th>Used by</th>
-              <th title={`Reads and writes ${sinceText}`}>Reads · writes</th>
+              <th title={hasUsage ? `Reads and writes ${sinceText}` : "Index usage counters are unavailable in this scan"}>Reads · writes</th>
               <th className="r">Size</th>
             </tr>
           </thead>
@@ -595,9 +603,9 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
       </div>
       <p className="td-foot">
         “Used by” comes from the plans of the {planned} heaviest queries;{" "}
-        {report.snapshot.server.capabilities.includes("index-usage")
+        {hasUsage
           ? `reads and writes count all activity ${sinceText}.`
-          : `${serverName(report.snapshot.server.engine, report.snapshot.server.product)} keeps no read or write counters for indexes.`}
+          : "Index read and write counters are unavailable in this scan."}
       </p>
     </>
   );
@@ -727,11 +735,11 @@ function Data({ report, table }: { report: Report; table: TableStat }) {
   );
 }
 
-function Ddl({ text }: { text: string }) {
+function Ddl({ text, original }: { text: string; original: boolean }) {
   return (
     <div className="ddl">
       <div className="data-bar">
-        <span className="muted">Rebuilt from catalog metadata. Check it against the database before running it anywhere.</span>
+        <span className="muted">{original ? "Table definition captured from the database." : "Rebuilt from catalog metadata."} Check it against the database before running it anywhere.</span>
         <span className="spacer" />
         <button className="btn" onClick={() => copy(text, "the DDL")}>
           <Copy size={12} /> Copy

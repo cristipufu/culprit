@@ -90,7 +90,7 @@ pub struct DigestIndexAdvice {
     /// Indexes to drop or fold into another, capped the same way.
     pub drop: Vec<DigestIndexDrop>,
     pub drop_total: u32,
-    /// What the usage counters behind the advice cover: "in the 6 days since the server last restarted".
+    /// What the usage counters behind the advice cover: "in the 6 days since the server last restarted". Empty where unavailable.
     pub counters: String,
     /// What this engine or login can't tell the advisor.
     pub notes: Vec<String>,

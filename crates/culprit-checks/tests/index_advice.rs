@@ -28,6 +28,16 @@ fn setting(name: &str, value: &str, scope: &str) -> Setting {
     Setting { name: name.into(), value: value.into(), default_value: None, scope: scope.into() }
 }
 
+#[test]
+fn unavailable_index_usage_never_claims_a_counter_period() {
+    for name in ["mssql-demo.json", "postgres-demo.json", "mysql-demo.json"] {
+        let mut s = snapshot(name);
+        s.server.capabilities.retain(|c| *c != culprit_core::Capability::IndexUsage);
+        let advice = index_advice(&analyze(s));
+        assert!(advice.counters.is_empty(), "{name}: {}", advice.counters);
+    }
+}
+
 fn ids(s: Snapshot) -> Vec<String> {
     analyze(s).findings.into_iter().map(|f| f.id).collect()
 }

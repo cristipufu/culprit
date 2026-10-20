@@ -131,7 +131,7 @@ pub struct IndexAdvice {
     pub connection: String,
     pub engine: Option<Engine>,
     pub taken_at: String,
-    /// "in the 6 days since the server last restarted": what the usage counters cover.
+    /// "in the 6 days since the server last restarted": what the usage counters cover. Empty where unavailable.
     pub counters: String,
     pub candidates: Vec<IndexCandidate>,
     pub cleanups: Vec<IndexCleanup>,

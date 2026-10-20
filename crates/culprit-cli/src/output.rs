@@ -922,7 +922,14 @@ impl Out {
         println!(
             "{}  {}",
             self.paint(BOLD, &format!("Index advisor · {}", a.connection)),
-            self.paint(DIM, &format!("usage counted {}", a.counters))
+            self.paint(
+                DIM,
+                &if a.counters.is_empty() {
+                    "index usage counters unavailable".to_string()
+                } else {
+                    format!("usage counted {}", a.counters)
+                },
+            )
         );
         if a.candidates.is_empty() && a.cleanups.is_empty() && a.tables.is_empty() {
             println!("\nNothing to add or clean up.");

@@ -125,6 +125,9 @@ fn collapse_parameters(span: String) -> String {
 pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     let engine = snapshot.server.engine;
     let mut s = snapshot.clone();
+    for table in &mut s.tables {
+        table.definition = table.definition.as_deref().map(|sql| redact_sql(sql, engine));
+    }
     if let Some(w) = &mut s.workload {
         for q in &mut w.queries {
             q.text = redact_sql(&q.text, engine);
@@ -686,6 +689,7 @@ mod tests {
         let text = std::fs::read_to_string(format!("{}/../../fixtures/mssql-demo.json", env!("CARGO_MANIFEST_DIR")))
             .expect("fixture");
         let mut snapshot: Snapshot = serde_json::from_str(&text).expect("snapshot");
+        snapshot.tables[0].definition = Some("CREATE TABLE example(value TEXT DEFAULT N'PLANTED-default')".into());
         let w = snapshot.workload.as_mut().expect("workload");
         for q in &mut w.queries {
             q.text = format!("{} AND x = N'PLANTED-text'", q.text);

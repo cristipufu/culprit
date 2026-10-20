@@ -1329,11 +1329,21 @@ pub struct TableStat {
     /// restored or failed over. What they count covers the time since then at least. `None`: as old as the server's.
     #[serde(default)]
     pub counters_since: Option<String>,
+    // The engine's table kind (SQLite: "table" or "virtual"). Absent in older scans and where not collected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    // The table's original CREATE statement, where collected. Virtual tables must keep their module and options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition: Option<String>,
 }
 
 impl TableStat {
     pub fn qualified(&self) -> String {
         format!("{}.{}", self.schema, self.name)
+    }
+
+    pub fn is_virtual(&self) -> bool {
+        self.kind.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("virtual"))
     }
 }
 

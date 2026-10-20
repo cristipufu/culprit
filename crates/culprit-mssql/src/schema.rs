@@ -337,6 +337,8 @@ fn table_of(r: &Rec) -> TableStat {
     TableStat {
         schema: r.string("schema_name"),
         name: r.string("table_name"),
+        kind: None,
+        definition: None,
         rows: r.f64("row_count"),
         total_bytes: r.f64("total_bytes"),
         data_bytes: r.f64("data_bytes"),

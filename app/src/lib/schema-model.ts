@@ -131,6 +131,8 @@ export function previewSql(engine: Engine, table: TableStat, limit: number): str
 
 /** Approximate DDL rebuilt from catalog metadata (columns, primary key, indexes, foreign keys). */
 export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], indexes: IndexStat[], outgoing: Relation[]): string {
+  const original = table.definition ? `${table.definition.trimEnd().replace(/;$/, "")};` : null;
+  if (table.kind === "virtual") return original ?? "-- The virtual table's original definition was not collected. Read it from the database before recreating it.";
   const q = (n: string) => quoteIdent(engine, n);
   const name = `${q(table.schema)}.${q(table.name)}`;
   const lines = columns.map((c) => {
@@ -147,9 +149,9 @@ export function ddl(engine: Engine, table: TableStat, columns: ColumnInfo[], ind
       `  CONSTRAINT ${q(fk.name)} FOREIGN KEY (${fk.columns.map(q).join(", ")}) REFERENCES ${q(fk.ref_schema)}.${q(fk.ref_table)} (${fk.ref_columns.map(q).join(", ")})`,
     ),
   );
-  const out = [`CREATE TABLE ${name} (\n${lines.join(",\n")}\n);`];
+  const out = [original ?? `CREATE TABLE ${name} (\n${lines.join(",\n")}\n);`];
   indexes
-    .filter((i) => !i.is_primary_key)
+    .filter((i) => !i.is_primary_key && (engine !== "sqlite" || i.definition != null))
     .forEach((i) => {
       if (i.definition && /^CREATE /i.test(i.definition)) {
         out.push(`${i.definition.replace(/;?\s*$/, "")};`);

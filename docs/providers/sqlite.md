@@ -12,7 +12,7 @@ beyond a read, and no long read where the application's writes would wait for it
 | Snapshot part | SQLite source | Notes |
 |---|---|---|
 | Server | `sqlite_version()`, `PRAGMA compile_options` | The library Culprit links, not the application's: settings that live in the file are what's reported |
-| Tables, columns | `sqlite_schema`, `PRAGMA table_xinfo` | `WITHOUT ROWID` and `STRICT` read from the schema |
+| Tables, columns | `sqlite_schema`, `PRAGMA table_list`, `PRAGMA table_xinfo` | Ordinary and virtual tables keep their original DDL. SQLite identifies module-owned shadow tables, which are excluded from ordinary table checks; virtual tables stay visible, without guessed rows or sizes. Hidden module columns are omitted; generated columns remain visible |
 | Row counts | Counted in the same `dbstat` pass as the sizes; `sqlite_stat1` (after `ANALYZE`) otherwise | Never `COUNT(*)`. A rowid table's rows are its leaf pages' cells, a `WITHOUT ROWID` table's every cell. Unknown, not zero, when neither source can be read |
 | Indexes | `PRAGMA index_list`, `PRAGMA index_xinfo` | Partial indexes keep their `WHERE`; no usage counters exist, so "never read" is never claimed |
 | Foreign keys | `PRAGMA foreign_key_list` | |

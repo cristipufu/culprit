@@ -7,6 +7,6 @@ export type Catalog = {
  */
 databases: Array<string>, tables: Array<CatalogTable>, 
 /**
- * The catalog stopped at the row cap; completion covers the first tables only.
+ * The catalog reached its collection limit; completion may omit tables or columns.
  */
 truncated: boolean, };

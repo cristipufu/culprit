@@ -36,4 +36,4 @@ partition_of: string | null,
  * since the scan before without the server restarting: a statistics reset for the table, a database taken offline,
  * restored or failed over. What they count covers the time since then at least. `None`: as old as the server's.
  */
-counters_since: string | null, };
+counters_since: string | null, kind?: string | null, definition?: string | null, };

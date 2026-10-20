@@ -979,6 +979,8 @@ async fn tables(client: &Client, version_num: u32) -> Result<Vec<TableStat>> {
         .map(|r| TableStat {
             schema: r.string("schema_name"),
             name: r.string("table_name"),
+            kind: None,
+            definition: None,
             rows: r.number("rows").map(|v| v.max(0.0)),
             total_bytes: r.number("total_bytes"),
             data_bytes: r.number("data_bytes"),

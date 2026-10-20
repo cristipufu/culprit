@@ -256,7 +256,7 @@ function Header({ advice, report }: { advice: IndexAdvice | null; report: Report
     <header className="ia-head">
       <h2>Index advisor</h2>
       <p className="ia-sub">
-        {advice ? `Usage counted ${advice.counters}` : "Reading the selected scan…"} · scanned {ago(report.snapshot.taken_at)} · Culprit only suggests; it never changes indexes
+        {advice ? (advice.counters ? `Usage counted ${advice.counters}` : "Index usage counters unavailable") : "Reading the selected scan…"} · scanned {ago(report.snapshot.taken_at)} · Culprit only suggests; it never changes indexes
       </p>
     </header>
   );

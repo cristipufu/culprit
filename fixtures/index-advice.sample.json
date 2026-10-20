@@ -656,11 +656,11 @@
       }
     ],
     "connection": "sqlite-demo",
-    "counters": "since the server last restarted",
+    "counters": "",
     "engine": "sqlite",
     "notes": [
       "SQLite doesn't record missing-index requests. Candidates come from the indexes it builds for itself on every run of the logged statements, and foreign keys.",
-      "Index usage counters aren't readable, so unused and overlapping indexes can't be judged."
+      "Index usage counters aren't readable: unused indexes and the runtime impact of overlaps are unknown. Duplicate and prefix coverage checks use the recorded definitions."
     ],
     "tables": [],
     "taken_at": "2026-10-16T21:01:15Z"

@@ -337,7 +337,7 @@ export function Schema({ report }: { report: Report }) {
                           {e.facts.findings}
                         </span>
                       )}
-                      {!e.table.has_primary_key && (
+                      {!e.table.has_primary_key && e.table.kind !== "virtual" && (
                         <span className="tl-flag" title="No primary key">
                           no pk
                         </span>

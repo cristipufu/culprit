@@ -50,6 +50,46 @@ fn add_file(ws: &Workspace, name: &str, path: &Path) -> culprit_core::Result<cul
     })
 }
 
+#[tokio::test]
+async fn a_virtual_tables_logged_statements_belong_to_the_database() {
+    let dir = app_folder("virtual-log");
+    let db = rusqlite::Connection::open(dir.join("app.db")).unwrap();
+    db.execute_batch(
+        "CREATE VIRTUAL TABLE search USING fts5(title);
+         PRAGMA writable_schema = ON;
+         INSERT INTO sqlite_schema(type, name, tbl_name, rootpage, sql)
+         VALUES('table', 'vectors', 'vectors', 0, 'CREATE VIRTUAL TABLE vectors USING module_not_installed(vector)');
+         PRAGMA writable_schema = OFF;",
+    )
+    .unwrap();
+    drop(db);
+    let log = dir.join("sql.log");
+    std::fs::write(
+        &log,
+        "{\"sql\":\"SELECT rowid FROM search WHERE search MATCH ?\",\"ms\":1.5,\"at\":\"2026-10-15T09:00:00Z\"}\n\
+         {\"sql\":\"SELECT rowid FROM search WHERE search MATCH ?\",\"ms\":2.5,\"at\":\"2026-10-15T10:00:00Z\"}\n",
+    )
+    .unwrap();
+    let ws = Workspace::open_in(dir.join("home"));
+    add_file(&ws, "app", &dir.join("app.db")).unwrap();
+    ws.set_query_log("app", Some(&log)).unwrap();
+    let report = ws.scan("app", &SnapshotOptions::default()).await.unwrap();
+    let workload = report.snapshot.workload.as_ref().unwrap();
+    assert_eq!(workload.total_executions, 2.0);
+    assert_eq!(workload.total_time_ms, 4.0);
+    assert_eq!(workload.queries.len(), 1);
+    assert!(report.snapshot.tables.iter().any(|t| t.name == "search" && t.is_virtual()));
+    assert!(!report.snapshot.tables.iter().any(|t| t.name == "search_data"));
+    assert!(!report.snapshot.notes.iter().any(|n| n.message.contains("log is shared with another database")));
+    let catalog = ws.catalog("app").await.unwrap();
+    let search = catalog.tables.iter().find(|t| t.name == "search").unwrap();
+    assert_eq!(search.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["title"]);
+    assert!(!catalog.tables.iter().any(|t| t.name == "search_data"));
+    assert!(catalog.tables.iter().any(|t| t.name == "orders"));
+    assert!(report.snapshot.tables.iter().any(|t| t.name == "vectors" && t.is_virtual()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // The database picker returns the file's path; a file without a SQLite extension is still read as SQLite.
 #[test]
 fn a_chosen_database_file_is_a_sqlite_connection_whatever_its_name() {

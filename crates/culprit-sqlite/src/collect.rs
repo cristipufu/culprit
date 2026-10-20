@@ -177,19 +177,39 @@ pub fn snapshot(
     let mut columns = Vec::new();
     let mut foreign_keys = Vec::new();
     for t in &schema.tables {
-        let table_columns = read_columns(conn, &t.name).map_err(|e| map_error(&e))?;
+        let virtual_table = t.kind == "virtual";
+        let table_columns = match read_columns(conn, &t.name) {
+            Ok(columns) => columns,
+            Err(error) if virtual_table => {
+                // The application can load a virtual-table module that Culprit's SQLite library doesn't include.
+                // Its CREATE statement remains useful; missing columns must not lose the rest of the database.
+                coverage.note(
+                    crate::sources::CATALOG.name,
+                    format!(
+                        "Columns of main.{} are unavailable: {}. The table's original definition is retained.",
+                        t.name,
+                        map_error(&error).message
+                    ),
+                );
+                Vec::new()
+            }
+            Err(error) => return Err(map_error(&error)),
+        };
         let primary_key: Vec<String> = {
             let mut pk: Vec<(i64, String)> =
                 table_columns.iter().filter(|c| c.pk > 0).map(|c| (c.pk, c.name.clone())).collect();
             pk.sort();
             pk.into_iter().map(|(_, n)| n).collect()
         };
-        let table_indexes =
-            read_indexes(conn, &t.name, t.without_rowid, &schema.index_sql, &sizes).map_err(|e| map_error(&e))?;
+        let table_indexes = if virtual_table {
+            Vec::new()
+        } else {
+            read_indexes(conn, &t.name, t.without_rowid, &schema.index_sql, &sizes).map_err(|e| map_error(&e))?
+        };
         let index_bytes = table_indexes.iter().filter_map(|i| i.size_bytes).fold(0.0, |a, b| a + b);
         let data_bytes = sizes.get(&t.name).copied();
         tables.push(table(t, rows.get(&t.name).copied(), data_bytes, index_bytes, !primary_key.is_empty()));
-        for c in &table_columns {
+        for c in table_columns.iter().filter(|c| c.hidden != 1) {
             columns.push(ColumnInfo {
                 schema: "main".into(),
                 table: t.name.clone(),
@@ -202,7 +222,9 @@ pub fn snapshot(
             });
         }
         indexes.extend(table_indexes);
-        foreign_keys.extend(read_foreign_keys(conn, &t.name).map_err(|e| map_error(&e))?);
+        if !virtual_table {
+            foreign_keys.extend(read_foreign_keys(conn, &t.name).map_err(|e| map_error(&e))?);
+        }
     }
 
     let settings = FILE_PRAGMAS
@@ -255,6 +277,8 @@ pub fn snapshot(
 struct SchemaTable {
     name: String,
     without_rowid: bool,
+    kind: String,
+    definition: Option<String>,
 }
 
 struct Schema {
@@ -265,23 +289,36 @@ struct Schema {
 
 fn read_schema(conn: &Connection) -> rusqlite::Result<Schema> {
     let mut stmt = conn.prepare(
-        "SELECT type, name, coalesce(sql, '') FROM sqlite_schema
-          WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-          ORDER BY name",
+        "/* culprit */ SELECT s.type, s.name, s.sql, t.type, t.wr
+           FROM main.sqlite_schema AS s
+           LEFT JOIN pragma_table_list AS t ON t.schema = 'main' AND t.name = s.name AND s.type = 'table'
+          WHERE s.type IN ('table', 'index') AND s.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+            AND coalesce(t.type, '') <> 'shadow'
+          ORDER BY s.name",
     )?;
     let mut tables = Vec::new();
     let mut index_sql = HashMap::new();
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, Option<bool>>(4)?,
+        ))
+    })?;
     for row in rows {
-        let (kind, name, sql) = row?;
+        let (kind, name, sql, table_kind, without_rowid) = row?;
         if kind == "table" {
-            // A virtual table (FTS5, R*Tree) is a module's storage, not rows the planner reads as a table.
-            if sql.to_ascii_uppercase().starts_with("CREATE VIRTUAL TABLE") {
-                continue;
-            }
-            let upper = sql.to_ascii_uppercase();
-            tables.push(SchemaTable { name, without_rowid: upper.contains("WITHOUT ROWID") });
-        } else {
+            // SQLite identifies module-owned storage itself. Keep the virtual table people query, not its shadow
+            // tables; names alone cannot distinguish an application's table from a module's internal storage.
+            tables.push(SchemaTable {
+                name,
+                without_rowid: without_rowid.unwrap_or(false),
+                kind: table_kind.unwrap_or_else(|| "table".into()),
+                definition: sql,
+            });
+        } else if let Some(sql) = sql {
             index_sql.insert(name, sql);
         }
     }
@@ -342,6 +379,8 @@ fn table(t: &SchemaTable, rows: Option<f64>, data: Option<f64>, index_bytes: f64
     TableStat {
         schema: "main".into(),
         name: t.name.clone(),
+        kind: Some(t.kind.clone()),
+        definition: t.definition.clone(),
         rows,
         total_bytes: data.map(|d| d + index_bytes),
         data_bytes: data,
@@ -601,6 +640,61 @@ pub fn run(conn: &Connection, sql: &str, limit: usize) -> Result<ResultSet> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unavailable_virtual_module_does_not_fail_the_scan() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Emulate a catalog written by an application with a module that this reader does not have.
+        conn.execute_batch(
+            "CREATE TABLE ordinary(id INTEGER PRIMARY KEY);
+             PRAGMA writable_schema = ON;
+             INSERT INTO sqlite_schema(type, name, tbl_name, rootpage, sql)
+             VALUES('table', 'vectors', 'vectors', 0, 'CREATE VIRTUAL TABLE vectors USING module_not_installed(vector)');
+             PRAGMA writable_schema = OFF;
+             PRAGMA schema_version = 100;",
+        )
+        .unwrap();
+        let s = snapshot(&conn, Path::new("demo.db"), "demo", Environment::Local, Instant::now()).unwrap();
+        assert!(s.tables.iter().any(|t| t.name == "ordinary" && t.rows == Some(0.0)));
+        assert!(s.tables.iter().any(|t| t.name == "vectors" && t.is_virtual() && t.definition.is_some()));
+        assert!(s.notes.iter().any(|n| n.collector == "catalog" && n.message.contains("module_not_installed")));
+    }
+
+    #[test]
+    fn virtual_tables_keep_their_schema_without_exposing_module_storage() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE documents (id INTEGER PRIMARY KEY, title TEXT UNIQUE);
+             CREATE INDEX documents_title ON documents(title);
+             CREATE VIRTUAL TABLE search USING fts5(title, tokenize = 'unicode61');
+             INSERT INTO search(title) VALUES ('sample document');
+             CREATE VIRTUAL TABLE bounds USING rtree(id, min_x, max_x, min_y, max_y);
+             INSERT INTO bounds VALUES (1, 0, 1, 0, 1);
+             CREATE TABLE other_content (id INTEGER PRIMARY KEY);
+             CREATE TABLE search_archive (id INTEGER PRIMARY KEY);
+             CREATE TABLE ordinary (id INTEGER PRIMARY KEY, note TEXT DEFAULT 'WITHOUT ROWID', doubled INTEGER GENERATED ALWAYS AS (id * 2) STORED);
+             ATTACH ':memory:' AS other;
+             CREATE TABLE other.documents (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        let s = snapshot(&conn, Path::new("demo.db"), "demo", Environment::Local, Instant::now()).unwrap();
+        let names: Vec<_> = s.tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["bounds", "documents", "ordinary", "other_content", "search", "search_archive"]);
+        for name in ["search", "bounds"] {
+            let t = s.tables.iter().find(|t| t.name == name).unwrap();
+            assert!(t.is_virtual());
+            assert!(t.definition.as_deref().unwrap().starts_with("CREATE VIRTUAL TABLE"));
+            assert_eq!((t.rows, t.total_bytes, t.data_bytes, t.index_bytes), (None, None, None, None));
+            assert!(!s.indexes.iter().any(|i| i.table == name));
+        }
+        let search_columns: Vec<_> =
+            s.columns.iter().filter(|c| c.table == "search").map(|c| c.name.as_str()).collect();
+        assert_eq!(search_columns, ["title"]);
+        assert!(s.columns.iter().any(|c| c.table == "ordinary" && c.name == "doubled" && c.generated));
+        assert!(s.columns.iter().all(|c| names.contains(&c.table.as_str())));
+        assert!(s.indexes.iter().all(|i| i.table == "documents"));
+        assert!(s.tables.iter().filter(|t| !t.is_virtual()).all(|t| t.rows == Some(0.0)));
+    }
 
     #[test]
     fn a_partial_index_keeps_its_filter() {
