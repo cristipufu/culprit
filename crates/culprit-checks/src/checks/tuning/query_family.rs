@@ -1,6 +1,7 @@
 //! The `query-family` check: The same statement sent many times with different literal values (or value-list lengths), so the database compiles and tracks each copy separately; and plan caches filled with single-use plans.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn query_family_info() -> CheckInfo {
     CheckInfo {
@@ -16,7 +17,7 @@ pub fn query_family_info() -> CheckInfo {
     }
 }
 
-check!(QueryFamilyCheck: query_family_info, query_family);
+check!(QueryFamilyCheck: query_family_info, query_family, &[Evidence::Query(QueryMeasure::Work)]);
 
 pub fn query_family(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;

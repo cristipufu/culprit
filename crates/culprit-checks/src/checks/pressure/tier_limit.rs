@@ -1,6 +1,7 @@
 //! Measured Azure SQL Database resource use near its tier's limit, over the available selected-period samples.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn tier_limit_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn tier_limit_info() -> CheckInfo {
     }
 }
 
-check!(TierLimitCheck: tier_limit_info, tier_limit);
+check!(
+    TierLimitCheck: tier_limit_info, tier_limit,
+    &[Evidence::Pressure { signal: None, timed_files: false, complete: false }]
+);
 
 pub fn tier_limit(snapshot: &Snapshot) -> Vec<Finding> {
     let samples = &snapshot.resources;

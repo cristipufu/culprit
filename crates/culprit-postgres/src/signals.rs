@@ -58,7 +58,7 @@ pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
     {
         pressure.replicas = replicas;
     }
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }
 
 // ── per statement ──────────────────────────────────────────────────────────────────────────────────

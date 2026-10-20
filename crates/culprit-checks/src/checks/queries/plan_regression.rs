@@ -1,6 +1,7 @@
 //! The `plan-regression` check: Queries whose current plan is much slower than a plan they used before.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn plan_regression_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn plan_regression_info() -> CheckInfo {
     }
 }
 
-check!(PlanRegressionCheck: plan_regression_info, plan_regression);
+check!(PlanRegressionCheck: plan_regression_info, plan_regression, &[Evidence::Query(QueryMeasure::PlanVariants)]);
 
 /// A plan with this many runs or more counts as one the query used.
 pub(super) const PLAN_MIN_RUNS: f64 = 5.0;

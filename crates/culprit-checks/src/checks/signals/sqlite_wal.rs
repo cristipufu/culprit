@@ -1,9 +1,10 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 use culprit_core::Actionability;
 pub fn sqlite_wal_info() -> CheckInfo {
     CheckInfo{id:"sqlite-wal".into(),title:"SQLite WAL file size and growth".into(),category:Category::Maintenance,engines:vec![Engine::Sqlite],requires:vec![],description:"Read-only WAL sidecar metadata and changes between scans; retained allocation is not inferred to be a checkpoint backlog or a blocked reader.".into()}
 }
-check!(SqliteWalCheck: sqlite_wal_info, sqlite_wal);
+check!(SqliteWalCheck: sqlite_wal_info, sqlite_wal, &[Evidence::Observed(Observation::WalSize, &["wal_file"])]);
 pub fn sqlite_wal(s: &Snapshot) -> Vec<Finding> {
     let Some(w) = s.operations.sqlite.as_ref() else { return vec![] };
     let Some(bytes) = w.wal_bytes.filter(|b| b.is_finite() && *b >= 0.0) else { return vec![] };

@@ -8,6 +8,7 @@ mod bursts;
 mod chatty;
 mod counter_age;
 mod dashboard;
+mod evidence_contracts;
 mod heap_tables;
 mod index_advice;
 mod index_false_flags;

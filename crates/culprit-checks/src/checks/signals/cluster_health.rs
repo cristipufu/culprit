@@ -1,9 +1,13 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 use culprit_core::Actionability;
 pub fn cluster_health_info() -> CheckInfo {
     CheckInfo {id:"cluster-health".into(),title:"Galera node readiness and flow control".into(),category:Category::Configuration,engines:vec![Engine::Mysql],requires:vec![],description:"The current readiness, connectivity and primary-component verdict reported by a Galera node; its historical flow-control fraction is context, not database-specific pressure.".into()}
 }
-check!(ClusterHealthCheck: cluster_health_info, cluster_health);
+check!(
+    ClusterHealthCheck: cluster_health_info, cluster_health,
+    &[Evidence::Observed(Observation::Cluster, &["cluster_health"])]
+);
 pub fn cluster_health(s: &Snapshot) -> Vec<Finding> {
     let Some(c) = s.operations.cluster.as_ref() else { return vec![] };
     let unavailable = c.ready == Some(false) || c.connected == Some(false) || c.primary_component == Some(false);

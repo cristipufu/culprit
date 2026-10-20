@@ -23,7 +23,7 @@ const PICOS_PER_MS: f64 = 1_000_000_000.0;
 pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapshot) {
     let mut coverage = Coverage::default();
     let Some(mut conn) = coverage.read(&sources::SIGNALS, connector.connect(Scope::Server).await) else {
-        snapshot.notes.extend(coverage.finish().2);
+        coverage.append_to(snapshot);
         return;
     };
     let mariadb = probe.version.to_ascii_lowercase().contains("mariadb");
@@ -77,7 +77,7 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
             scope: "server".into(),
         });
     }
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }
 
 // ── per statement ──────────────────────────────────────────────────────────────────────────────────

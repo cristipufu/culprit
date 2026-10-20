@@ -1,6 +1,7 @@
 //! The `dead-rows` check: Tables carrying many dead tuples, which bloat storage and slow scans.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn dead_rows_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn dead_rows_info() -> CheckInfo {
     }
 }
 
-check!(DeadRowsCheck: dead_rows_info, dead_rows);
+check!(DeadRowsCheck: dead_rows_info, dead_rows, &[Evidence::Unknown]);
 
 /// When autovacuum vacuums `t`: its own storage parameters, else the server's settings, else PostgreSQL's defaults
 /// (50 rows + 20% of the table). `None` when autovacuum is off for it (or for the server).

@@ -8,7 +8,7 @@
 //!   digest, index advice, drift, agent brief).
 
 mod checks;
-mod evidence;
+pub mod evidence;
 pub mod pipeline;
 mod refine;
 mod summary;

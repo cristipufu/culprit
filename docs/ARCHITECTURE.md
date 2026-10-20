@@ -42,6 +42,15 @@ it reads, with its name (what its notes carry), what it reads, and the capabilit
 own reason (a permission error says the login lacks it, with the grant as the fix). A source that delivers no
 capability adds detail some checks use; without it they say less, never something wrong.
 
+Each read also records a typed `SourceOutcome` in `Snapshot.sources`: `Collected`, `Empty`, `Partial`,
+`Unavailable`, or `NotApplicable`, with a reason where needed. `Coverage::read_rows` distinguishes a successful empty
+catalog from a failed read. Composite readers call `completed` after decoding, `partial` when some evidence could not
+be read, and `not_applicable` only after establishing that a source does not apply. Concurrent parts merge
+conservatively: one successful part cannot erase a failure. Detail collectors use `Coverage::append_to`; top-level
+collectors retain `outcomes()` before consuming the original `finish()` tuple. Informational `note`s do not change
+outcomes. Scans saved before outcomes existed retain their conservative note interpretation in one legacy adapter,
+`Snapshot::source_problem`.
+
 Each source either delivers a `Capability` or doesn't. A provider keeps that account in a `culprit_core::Coverage`,
 starting from what its probe found: `delivered`, `lacking` (with the reason and the fix), `lost` (the probe expected it,
 the source couldn't read it, with the source's own reason), `withdraw` (expected, but it held nothing), `failed` (a
@@ -157,8 +166,13 @@ A check looks for one kind of problem: `<name>_info()` (id, title, category, the
 capabilities it needs) and `<name>(&Snapshot) -> Vec<Finding>`. `check!(NameCheck: name_info, name)` makes it a type
 implementing `culprit_core::Check`, the same trait a plugged-in check implements, and the area lists it in its `CHECKS`
 (`all()` runs every area's, in the order of `checks::AREAS`; `tests/registry.rs` fails when a check is written but not
-listed). Every
-check has its own file, in a directory per area under `culprit-checks/src/checks/` (`queries/`, `indexes/`,
+listed). Each registration also declares its evidence contract, for example
+`check!(PlanningTimeCheck: planning_time_info, planning_time, &[Evidence::Query(QueryMeasure::Planning)])`, with
+`Evidence` imported as `crate::evidence::Requirement`. The reusable evaluator `evidence::assess` checks sources and
+measurements, never check IDs. External checks can call `culprit_checks::evidence::assess` in `Check::evidence` too.
+An undeclared contract stays insufficient, and an unavailable mandatory source wins regardless of requirement order.
+Partial evidence may still produce a positive finding; it cannot establish a clean assessment. Every check has its
+own file, in a directory per area under `culprit-checks/src/checks/` (`queries/`, `indexes/`,
 `signals/`, `pressure/`, `maintenance/`, `tuning/`…; `checks/mod.rs` maps them); what a few checks of one area share
 sits in that area's `mod.rs`, and what every check shares (the evidence rules) in `support.rs`. A
 finding has a stable id (`<check>:<subject>`), a title and a plain-language summary, evidence (metrics, the queries

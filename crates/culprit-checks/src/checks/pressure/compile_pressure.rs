@@ -1,6 +1,7 @@
 //! Instance-wide compilation context, only when this database also has literal query families to inspect.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn compile_pressure_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn compile_pressure_info() -> CheckInfo {
     }
 }
 
-check!(CompilePressureCheck: compile_pressure_info, compile_pressure);
+check!(
+    CompilePressureCheck: compile_pressure_info, compile_pressure,
+    &[Evidence::Pressure { signal: Some("compiles-per-batch"), timed_files: false, complete: false }]
+);
 
 pub fn compile_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(compiles) = pressure(snapshot).and_then(|p| p.signal("compiles-per-batch")) else { return Vec::new() };

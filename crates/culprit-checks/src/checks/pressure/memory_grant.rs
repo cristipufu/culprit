@@ -1,6 +1,7 @@
 //! The `memory-grant` check: Statements whose memory grant (reserved before they run, for sorts and hashes) is many times what they use, so other queries queue for memory.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn memory_grant_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn memory_grant_info() -> CheckInfo {
     }
 }
 
-check!(MemoryGrantCheck: memory_grant_info, memory_grant);
+check!(MemoryGrantCheck: memory_grant_info, memory_grant, &[Evidence::Query(QueryMeasure::Grants)]);
 
 pub fn memory_grant(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = pressure(snapshot) else { return Vec::new() };

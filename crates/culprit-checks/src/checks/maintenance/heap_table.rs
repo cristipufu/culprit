@@ -1,6 +1,7 @@
 //! The `heap-table` check: Heaps grow forwarded records and can't be read in key order; most OLTP tables should be clustered.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn heap_table_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +15,7 @@ pub fn heap_table_info() -> CheckInfo {
     }
 }
 
-check!(HeapTableCheck: heap_table_info, heap_table);
+check!(HeapTableCheck: heap_table_info, heap_table, &[Evidence::Unknown]);
 
 pub fn heap_table(snapshot: &Snapshot) -> Vec<Finding> {
     if snapshot.server.engine != Engine::Mssql {

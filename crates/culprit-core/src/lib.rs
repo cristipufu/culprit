@@ -39,7 +39,7 @@ pub use changes::{ChangeStatus, Changes, Period, PeriodStats, PlanSwitch, QueryC
 pub use check::{Check, CheckAssessment, CheckEvidence, CheckStatus};
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
 pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, expand_home, is_local_host};
-pub use coverage::{Coverage, Source};
+pub use coverage::{Coverage, Source, SourceOutcome, SourceState};
 pub use dashboard::{Dashboard, ItemKind, Tile, TileItem, TileKey, TileMetric, TileStatus};
 pub use deadlock::{
     Deadlock, DeadlockFix, DeadlockPattern, DeadlockProcess, DeadlockReport, DeadlockResource, LockHolder,

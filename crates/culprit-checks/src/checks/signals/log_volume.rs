@@ -1,6 +1,7 @@
 //! The `log-volume` check: Statements that write a large share of the WAL (PostgreSQL 13+) or transaction log (SQL Server 2017+), or many kilobytes of it per row changed. Log volume drives replication lag, backup size and checkpoints. MySQL keeps no redo bytes per statement.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn log_volume_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn log_volume_info() -> CheckInfo {
     }
 }
 
-check!(LogVolumeCheck: log_volume_info, log_volume);
+check!(LogVolumeCheck: log_volume_info, log_volume, &[Evidence::Query(QueryMeasure::LogBytes)]);
 
 pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
     let pg = snapshot.server.engine == Engine::Postgres;

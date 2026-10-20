@@ -21,6 +21,9 @@ use culprit_core::Check;
 /// an embedding application plugs in: a type implementing `Check`, listed in its area's `CHECKS`.
 macro_rules! check {
     ($ty:ident: $info:ident, $run:ident) => {
+        check!($ty: $info, $run, &[]);
+    };
+    ($ty:ident: $info:ident, $run:ident, $requirements:expr) => {
         #[doc = concat!("The `", stringify!($run), "` check, as a `culprit_core::Check`.")]
         pub struct $ty;
 
@@ -34,7 +37,7 @@ macro_rules! check {
             }
 
             fn evidence(&self, snapshot: &culprit_core::Snapshot) -> culprit_core::CheckEvidence {
-                crate::evidence::for_check(&$info().id, snapshot)
+                crate::evidence::assess($requirements, snapshot)
             }
         }
     };

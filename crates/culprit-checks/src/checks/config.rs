@@ -1,3 +1,4 @@
+use crate::evidence::Requirement as Evidence;
 use culprit_core::waits::category_key;
 use culprit_core::{
     Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, ServerInfo, Severity, Snapshot, SubjectKind, format,
@@ -22,7 +23,7 @@ pub fn config_info() -> CheckInfo {
     }
 }
 
-check!(ConfigCheck: config_info, config);
+check!(ConfigCheck: config_info, config, &[Evidence::Settings]);
 
 pub fn config(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {

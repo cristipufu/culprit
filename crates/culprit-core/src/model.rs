@@ -1675,6 +1675,9 @@ pub struct Snapshot {
     /// tells how fast a table grows. `None` without an earlier scan.
     #[serde(default)]
     pub sizes_before: Option<crate::signals::SizeBaseline>,
+    // Collection outcomes, separate from informational notes. Missing on scans saved by older versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::coverage::SourceOutcome>,
 }
 
 impl Snapshot {

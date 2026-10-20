@@ -1,6 +1,7 @@
 //! The `connection-churn` check: New connections per second since startup (SQL Server logins, PostgreSQL 14+ sessions, MySQL and MariaDB Connections), with how long sessions last and how many came from a pool where the engine says.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn connection_churn_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn connection_churn_info() -> CheckInfo {
     }
 }
 
-check!(ConnectionChurnCheck: connection_churn_info, connection_churn);
+check!(
+    ConnectionChurnCheck: connection_churn_info, connection_churn,
+    &[Evidence::Pressure { signal: None, timed_files: false, complete: false }]
+);
 
 pub fn connection_churn(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(p) = snapshot.pressure.as_ref() else { return Vec::new() };

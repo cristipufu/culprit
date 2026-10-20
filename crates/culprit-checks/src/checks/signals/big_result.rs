@@ -1,6 +1,7 @@
 //! The `big-result` check: Reads that send tens of thousands of rows to the application on every run, with an estimate in bytes from the plan's row width where the engine gives one.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn big_result_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn big_result_info() -> CheckInfo {
     }
 }
 
-check!(BigResultCheck: big_result_info, big_result);
+check!(BigResultCheck: big_result_info, big_result, &[Evidence::Query(QueryMeasure::Rows)]);
 
 /// What a statement's big result adds to the spill finding on it, which carries both (refine's "a spill carries the
 /// result it sorts"): one statement, one share, one finding. Its summary says the rows each run sends, its fix how to

@@ -1,179 +1,259 @@
-//! One account of whether a negative check result was actually assessed. Findings may still be produced from partial
-//! evidence, but an absent source, a short history or a missing measurement can never be called healthy.
+//! Declarative requirements for a negative check result. Partial evidence can still produce findings;
+//! it cannot establish that an unobserved problem is absent. Requirements live beside each check.
 
-use culprit_core::{CheckEvidence, Snapshot};
+use culprit_core::{CheckEvidence, Snapshot, SourceState};
 
-pub(crate) fn source_failed(s: &Snapshot, names: &[&str]) -> Option<String> {
-    s.notes.iter().find(|n| names.iter().any(|name| n.collector.replace(' ', "_") == *name)).map(|n| n.message.clone())
+/// Facts a source can contribute, independent of any check's identifier.
+#[derive(Clone, Copy, Debug)]
+pub enum Observation {
+    LogFailures,
+    RequestCounts,
+    Spaces,
+    Sequences,
+    Multixacts,
+    OperationalCounters,
+    Cluster,
+    WalSize,
 }
 
-pub(crate) fn index_catalog(s: &Snapshot) -> Option<String> {
-    source_failed(s, &["indexes", "foreign_keys", "columns"])
+#[derive(Clone, Copy, Debug)]
+pub enum QueryMeasure {
+    Work,
+    CapturedPlans,
+    Timeline,
+    PlanVariants,
+    Variance,
+    ParameterSpread,
+    Failures,
+    Planning,
+    Jit,
+    LogBytes,
+    Rows,
+    Histograms,
+    TempWrites,
+    Grants,
+    Waits,
 }
 
-pub(crate) fn for_check(id: &str, s: &Snapshot) -> CheckEvidence {
-    use CheckEvidence::*;
-    let insufficient = |why: &str| Insufficient(why.into());
-    let operational = match id {
-        "logged-errors" => Some((!s.operations.log_failures.is_empty(), &[][..])),
-        "repeated-request" => Some((s.queries().iter().any(|q| q.requests.is_some()), &[][..])),
-        "storage-capacity" => {
-            Some((!s.operations.spaces.is_empty(), &["log_capacity", "file_capacity", "temp_capacity"][..]))
-        }
-        "sequence-capacity" => Some((!s.operations.sequences.is_empty(), &["sequence_capacity"][..])),
-        "multixact-age" => Some((!s.operations.multixacts.is_empty(), &["multixacts"][..])),
-        "operational-errors" => Some((
-            !s.operations.counters.is_empty(),
-            &["archiver", "subscription_errors", "standby_conflicts", "redo_pressure"][..],
-        )),
-        "cluster-health" => Some((s.operations.cluster.is_some(), &["cluster_health"][..])),
-        "sqlite-wal" => Some((s.operations.sqlite.as_ref().is_some_and(|w| w.wal_bytes.is_some()), &["wal_file"][..])),
-        _ => None,
-    };
-    if let Some((known, sources)) = operational {
-        if let Some(reason) = source_failed(s, sources) {
-            return if known { Insufficient(reason) } else { Unavailable(reason) };
-        }
-        return if known {
-            Available
-        } else {
-            insufficient(
-                "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
-            )
-        };
-    }
-    if matches!(
-        id,
-        "unindexed-fk" | "duplicate-index" | "overlapping-index" | "over-indexed" | "filtered-scan" | "missing-index"
-    ) && let Some(reason) = index_catalog(s)
-    {
-        return Unavailable(format!("Current schema evidence was incomplete: {reason}"));
-    }
-    if id == "unindexed-fk" && s.foreign_keys.is_empty() {
-        return NotApplicable("No foreign keys were collected in this database.".into());
-    }
-    if id == "unused-index" && !crate::indexes::watched_long_enough(s) {
-        return insufficient(
-            "At least a week of comparable index-usage counters is needed to assess absence of reads.",
+/// A reusable evidence contract. Custom checks can use the same evaluator in `Check::evidence`.
+#[derive(Clone, Copy, Debug)]
+pub enum Requirement<'a> {
+    Observed(Observation, &'a [&'a str]),
+    Source(&'a str),
+    IndexCatalog,
+    ForeignKeys,
+    IndexHistory,
+    Query(QueryMeasure),
+    Pressure { signal: Option<&'a str>, timed_files: bool, complete: bool },
+    Settings,
+    Deadlocks,
+    Unknown,
+    Incomplete(&'a str),
+}
+
+pub fn source_failed(s: &Snapshot, names: &[&str]) -> Option<String> {
+    s.source_problem(names)
+}
+
+pub fn index_catalog(s: &Snapshot) -> Option<String> {
+    source_failed(s, &["tables", "indexes", "foreign_keys", "columns", "catalog"])
+}
+
+pub fn assess(requirements: &[Requirement<'_>], s: &Snapshot) -> CheckEvidence {
+    if requirements.is_empty() {
+        return CheckEvidence::Insufficient(
+            "This check does not declare the evidence needed to establish a negative result.".into(),
         );
     }
-    let query_check = matches!(
-        id,
-        "heavy-query"
-            | "chatty-query"
-            | "query-family"
-            | "plan-warnings"
-            | "plan-insights"
-            | "plan-regression"
-            | "regression"
-            | "unstable-query"
-            | "parameter-sensitive"
-            | "temp-spill"
-            | "memory-grant"
-            | "network-wait"
-            | "failing-query"
-            | "planning-time"
-            | "jit-overhead"
-            | "log-volume"
-            | "lock-time"
-            | "big-result"
-            | "missing-histogram"
-            | "deep-pagination"
-            | "partition-access"
-    );
-    if query_check {
-        let Some(w) = s.workload.as_ref() else {
-            if id == "memory-grant" && s.pressure.as_ref().is_some_and(|p| !p.grants.is_empty()) {
-                return insufficient("Current grant evidence is available, but statement history was not collected.");
+    let mut result = CheckEvidence::Available;
+    for requirement in requirements {
+        match requirement.assess(s) {
+            evidence @ CheckEvidence::Unavailable(_) => return evidence,
+            evidence @ CheckEvidence::NotApplicable(_) => result = evidence,
+            evidence @ CheckEvidence::Insufficient(_) if matches!(result, CheckEvidence::Available) => {
+                result = evidence
             }
-            return Unavailable(s.no_workload_reason().unwrap_or_else(|| "No statement history was collected.".into()));
-        };
-        if w.queries.is_empty() {
+            _ => {}
+        }
+    }
+    result
+}
+
+impl Requirement<'_> {
+    fn assess(&self, s: &Snapshot) -> CheckEvidence {
+        use CheckEvidence::*;
+        let insufficient = |why: &str| Insufficient(why.into());
+        match self {
+            Self::Observed(observation, sources) => {
+                let known = match observation {
+                    Observation::LogFailures => !s.operations.log_failures.is_empty(),
+                    Observation::RequestCounts => s.queries().iter().any(|q| q.requests.is_some()),
+                    Observation::Spaces => !s.operations.spaces.is_empty(),
+                    Observation::Sequences => !s.operations.sequences.is_empty(),
+                    Observation::Multixacts => !s.operations.multixacts.is_empty(),
+                    Observation::OperationalCounters => !s.operations.counters.is_empty(),
+                    Observation::Cluster => s.operations.cluster.is_some(),
+                    Observation::WalSize => s.operations.sqlite.as_ref().is_some_and(|w| w.wal_bytes.is_some()),
+                };
+                if let Some(reason) = source_failed(s, sources) {
+                    return if known { Insufficient(reason) } else { Unavailable(reason) };
+                }
+                if known {
+                    return Available;
+                }
+                if !sources.is_empty()
+                    && sources
+                        .iter()
+                        .all(|name| s.source_outcome(name).is_some_and(|o| o.state == SourceState::NotApplicable))
+                {
+                    return NotApplicable(
+                        s.source_outcome(sources[0])
+                            .and_then(|o| o.reason.clone())
+                            .unwrap_or_else(|| "This source does not apply to this database.".into()),
+                    );
+                }
+                insufficient(
+                    "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+                )
+            }
+            Self::Source(name) => match s.source_outcome(name) {
+                Some(o) => match o.state {
+                    SourceState::Collected | SourceState::Empty => Available,
+                    SourceState::Partial => {
+                        Insufficient(o.reason.clone().unwrap_or_else(|| format!("{name} was only partly collected.")))
+                    }
+                    SourceState::Unavailable => {
+                        Unavailable(o.reason.clone().unwrap_or_else(|| format!("{name} was unavailable.")))
+                    }
+                    SourceState::NotApplicable => NotApplicable(
+                        o.reason.clone().unwrap_or_else(|| format!("{name} does not apply to this database.")),
+                    ),
+                },
+                None => source_failed(s, &[*name]).map(Unavailable).unwrap_or_else(|| {
+                    insufficient("This scan did not record the required source's collection outcome.")
+                }),
+            },
+            Self::IndexCatalog => index_catalog(s)
+                .map(|reason| Unavailable(format!("Current schema evidence was incomplete: {reason}")))
+                .unwrap_or(Available),
+            Self::ForeignKeys if s.foreign_keys.is_empty() => {
+                if ["foreign_keys", "catalog"].iter().any(|name| {
+                    s.source_outcome(name).is_some_and(|o| {
+                        matches!(o.state, SourceState::Collected | SourceState::Empty | SourceState::NotApplicable)
+                    })
+                }) {
+                    NotApplicable("No foreign keys were collected in this database.".into())
+                } else {
+                    insufficient(
+                        "No foreign keys were recorded, but this scan does not establish a complete foreign-key catalog.",
+                    )
+                }
+            }
+            Self::ForeignKeys => Available,
+            Self::IndexHistory if !crate::indexes::watched_long_enough(s) => {
+                insufficient("At least a week of comparable index-usage counters is needed to assess absence of reads.")
+            }
+            Self::IndexHistory => Available,
+            Self::Query(measure) => query(*measure, s),
+            Self::Pressure { signal, timed_files, complete } => {
+                let Some(p) = &s.pressure else {
+                    return Unavailable(
+                        "The source measurements needed for this assessment were not collected.".into(),
+                    );
+                };
+                if signal.is_some_and(|key| p.signal(key).is_none()) {
+                    return insufficient("The required pressure measurement was not recorded by this scan.");
+                }
+                if signal
+                    .and_then(|key| p.signal(key))
+                    .is_some_and(|s| !s.value.is_finite() || s.status == culprit_core::SignalStatus::Info)
+                {
+                    return insufficient(
+                        "This pressure measurement's scope or observation period does not support a health assessment.",
+                    );
+                }
+                if *timed_files
+                    && !p.files.iter().any(|f| {
+                        f.avg_read_ms().into_iter().chain(f.avg_write_ms()).any(|ms| ms.is_finite() && ms >= 0.0)
+                    })
+                {
+                    return insufficient("Storage operations were not timed in this scan.");
+                }
+                if *complete {
+                    Available
+                } else {
+                    insufficient("The available evidence does not establish complete coverage of this check.")
+                }
+            }
+            Self::Settings if s.settings.is_empty() => insufficient("No settings were collected."),
+            Self::Deadlocks if s.deadlocks.is_none() => insufficient("No deadlock evidence was collected."),
+            Self::Settings | Self::Deadlocks => {
+                insufficient("The available evidence does not establish complete coverage of this check.")
+            }
+            Self::Unknown => insufficient("The available evidence does not establish complete coverage of this check."),
+            Self::Incomplete(reason) => insufficient(reason),
+        }
+    }
+}
+
+fn query(measure: QueryMeasure, s: &Snapshot) -> CheckEvidence {
+    use CheckEvidence::*;
+    let insufficient = |why: &str| Insufficient(why.into());
+    let Some(w) = &s.workload else {
+        if matches!(measure, QueryMeasure::Grants) && s.pressure.as_ref().is_some_and(|p| !p.grants.is_empty()) {
+            return insufficient("Current grant evidence is available, but statement history was not collected.");
+        }
+        return Unavailable(s.no_workload_reason().unwrap_or_else(|| "No statement history was collected.".into()));
+    };
+    if w.queries.is_empty() {
+        return insufficient("No statements were captured; this does not establish the absence of workload problems.");
+    }
+    if matches!(measure, QueryMeasure::CapturedPlans) {
+        if w.queries.iter().any(|q| q.plan.is_none()) {
             return insufficient(
-                "No statements were captured; this does not establish the absence of workload problems.",
+                "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
             );
         }
-        if matches!(id, "plan-warnings" | "plan-insights" | "deep-pagination" | "partition-access") {
-            let plans = w.queries.iter().filter(|q| q.plan.is_some()).count();
-            if plans < w.queries.len() {
-                return insufficient(
-                    "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
-                );
-            }
-            return insufficient(
-                "Captured plans were inspected. Actual rows, timing and runtime-only problems are assessed only where that plan records them.",
-            );
-        }
-        if id == "regression" && !w.timeline.as_ref().is_some_and(|t| t.len() >= 4) {
-            return insufficient("A comparable baseline and later workload are needed to assess regressions.");
-        }
-        if id == "plan-regression" && !w.queries.iter().any(|q| q.plans.len() > 1) {
-            return insufficient("No comparable earlier and later plan variants were recorded.");
-        }
-        let costs =
-            |f: fn(&culprit_core::QueryCosts) -> bool| w.queries.iter().all(|q| q.costs.as_ref().is_some_and(f));
-        let known = match id {
-            "unstable-query" => {
-                w.queries.iter().all(|q| q.stddev_time_ms.is_some() && q.max_time_ms.is_some() && q.executions >= 10.0)
-            }
-            "parameter-sensitive" => w.queries.iter().all(|q| q.plans.len() > 1 || q.spread.is_some()),
-            "failing-query" => costs(|c| c.failed.is_some() || c.aborted.is_some()),
-            "planning-time" => costs(|c| c.plan_ms.is_some()),
-            "jit-overhead" => costs(|c| c.jit_ms.is_some()),
-            "log-volume" => costs(|c| c.log_bytes.is_some()),
-            "big-result" => w.queries.iter().all(|q| q.rows_per_execution().is_some()),
-            "missing-histogram" => s.histograms.is_some(),
-            "temp-spill" => w.queries.iter().all(|q| {
-                q.temp_writes.is_some() || q.plan.as_ref().is_some_and(|p| p.kind == culprit_core::PlanKind::Actual)
-            }),
-            "memory-grant" => s.pressure.as_ref().is_some_and(|p| !p.grants.is_empty()),
-            "lock-time" | "network-wait" => w.queries.iter().any(|q| !q.waits.is_empty()),
-            _ => true,
-        };
-        if !known {
-            return insufficient("This scan did not record the measurements this check needs.");
-        }
-        return Available;
+        return insufficient(
+            "Captured plans were inspected. Actual rows, timing and runtime-only problems are assessed only where that plan records them.",
+        );
     }
-    let Some(p) = s.pressure.as_ref() else {
-        if matches!(
-            id,
-            "memory-queue"
-                | "compile-pressure"
-                | "worker-pressure"
-                | "held-cleanup"
-                | "tier-limit"
-                | "checkpoint-pressure"
-                | "row-lock-waits"
-                | "slow-storage"
-                | "connection-churn"
-                | "replica-lag"
-        ) {
-            return Unavailable("The source measurements needed for this assessment were not collected.".into());
+    if matches!(measure, QueryMeasure::Timeline) && !w.timeline.as_ref().is_some_and(|t| t.len() >= 4) {
+        return insufficient("A comparable baseline and later workload are needed to assess regressions.");
+    }
+    if matches!(measure, QueryMeasure::PlanVariants) && !w.queries.iter().any(|q| q.plans.len() > 1) {
+        return insufficient("No comparable earlier and later plan variants were recorded.");
+    }
+    let costs = |f: fn(&culprit_core::QueryCosts) -> bool| w.queries.iter().all(|q| q.costs.as_ref().is_some_and(f));
+    let known = match measure {
+        QueryMeasure::Variance => {
+            w.queries.iter().all(|q| q.stddev_time_ms.is_some() && q.max_time_ms.is_some() && q.executions >= 10.0)
         }
-        return insufficient("This scan does not establish complete coverage of this check.");
+        QueryMeasure::ParameterSpread => w.queries.iter().all(|q| q.plans.len() > 1 || q.spread.is_some()),
+        QueryMeasure::Failures => costs(|c| c.failed.is_some() || c.aborted.is_some()),
+        QueryMeasure::Planning => costs(|c| c.plan_ms.is_some()),
+        QueryMeasure::Jit => costs(|c| c.jit_ms.is_some()),
+        QueryMeasure::LogBytes => costs(|c| c.log_bytes.is_some()),
+        QueryMeasure::Rows => w.queries.iter().all(|q| q.rows_per_execution().is_some()),
+        QueryMeasure::Histograms => s.histograms.is_some(),
+        QueryMeasure::TempWrites => w.queries.iter().all(|q| {
+            q.temp_writes.is_some() || q.plan.as_ref().is_some_and(|p| p.kind == culprit_core::PlanKind::Actual)
+        }),
+        QueryMeasure::Grants => s.pressure.as_ref().is_some_and(|p| !p.grants.is_empty()),
+        QueryMeasure::Waits => w.queries.iter().any(|q| !q.waits.is_empty()),
+        _ => true,
     };
-    let key = match id {
-        "memory-queue" => Some("memory-grants-pending"),
-        "compile-pressure" => Some("compiles-per-batch"),
-        "worker-pressure" => Some("connections"),
-        "checkpoint-pressure" => Some("checkpoints-requested"),
-        "row-lock-waits" => Some("row-lock-avg"),
-        _ => None,
+    if !known {
+        return insufficient("This scan did not record the measurements this check needs.");
+    }
+    let source = match w.kind() {
+        Some(culprit_core::WorkloadKind::QueryStore) => "query_store",
+        Some(culprit_core::WorkloadKind::PlanCache) => "plan_cache",
+        Some(culprit_core::WorkloadKind::QueryLog) => "query_log",
+        _ => "workload",
     };
-    if key.is_some_and(|k| p.signal(k).is_none()) {
-        return insufficient("The required pressure measurement was not recorded by this scan.");
+    if let Some(reason) = source_failed(s, &[source]) {
+        return Insufficient(reason);
     }
-    match id {
-        "slow-storage" if !p.files.iter().any(|f| f.read_ms.is_some() || f.write_ms.is_some()) => {
-            insufficient("Storage operations were not timed in this scan.")
-        }
-        "held-cleanup" | "replica-lag" => insufficient(
-            "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
-        ),
-        "config" if s.settings.is_empty() => insufficient("No settings were collected."),
-        "deadlocks" if s.deadlocks.is_none() => insufficient("No deadlock evidence was collected."),
-        "memory-queue" | "worker-pressure" | "row-lock-waits" | "slow-storage" | "checkpoint-pressure" => Available,
-        _ => insufficient("The available evidence does not establish complete coverage of this check."),
-    }
+    Available
 }

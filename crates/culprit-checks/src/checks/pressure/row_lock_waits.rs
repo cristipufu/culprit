@@ -1,6 +1,7 @@
 //! The `row-lock-waits` check: InnoDB row-lock waits add up to real time (a minute an hour or more across the server), from long transactions or updates that scan instead of using an index.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn row_lock_waits_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn row_lock_waits_info() -> CheckInfo {
     }
 }
 
-check!(RowLockWaitsCheck: row_lock_waits_info, row_lock_waits);
+check!(
+    RowLockWaitsCheck: row_lock_waits_info, row_lock_waits,
+    &[Evidence::Pressure { signal: Some("row-lock-avg"), timed_files: false, complete: true }]
+);
 
 pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(avg_ms) = signal(snapshot, "row-lock-avg") else { return Vec::new() };

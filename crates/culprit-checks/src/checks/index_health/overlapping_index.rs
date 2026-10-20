@@ -1,6 +1,7 @@
 //! The `overlapping-index` check: Two indexes that lead with the same column where one is barely read and the other holds all its key columns: queries that use the first can seek the second and filter the rest there.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn overlapping_index_info() -> CheckInfo {
     CheckInfo {
@@ -15,7 +16,10 @@ pub fn overlapping_index_info() -> CheckInfo {
     }
 }
 
-check!(OverlappingIndexCheck: overlapping_index_info, overlapping_index);
+check!(
+    OverlappingIndexCheck: overlapping_index_info, overlapping_index,
+    &[Evidence::IndexCatalog, Evidence::Unknown]
+);
 
 /// Indexes that compete for the same leading column, as (rarely read, well used). The well-used one must hold every key
 /// column of the other as a key of its own: sharing only the first column says nothing when that column isn't

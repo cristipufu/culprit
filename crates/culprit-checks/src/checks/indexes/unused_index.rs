@@ -1,6 +1,7 @@
 //! The `unused-index` check: Indexes that are maintained on every write but no query has read since usage counters were reset. One that may be less than a week old (a scan saw it appear, or its table changed before Culprit's first scan) isn't called unused yet.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn unused_index_info() -> CheckInfo {
     CheckInfo {
@@ -17,7 +18,7 @@ pub fn unused_index_info() -> CheckInfo {
     }
 }
 
-check!(UnusedIndexCheck: unused_index_info, unused_index);
+check!(UnusedIndexCheck: unused_index_info, unused_index, &[Evidence::IndexHistory, Evidence::Unknown]);
 
 pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;

@@ -1,6 +1,7 @@
 //! The `temp-spill` check: Statements whose sorts, hashes or temporary tables outgrow memory and spill to disk.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn temp_spill_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn temp_spill_info() -> CheckInfo {
     }
 }
 
-check!(TempSpillCheck: temp_spill_info, temp_spill);
+check!(TempSpillCheck: temp_spill_info, temp_spill, &[Evidence::Query(QueryMeasure::TempWrites)]);
 
 pub fn temp_spill(snapshot: &Snapshot) -> Vec<Finding> {
     match snapshot.server.engine {

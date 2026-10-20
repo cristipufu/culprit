@@ -1,6 +1,7 @@
 //! The `worker-pressure` check: SQL Server sessions waiting for a worker thread (THREADPOOL), or PostgreSQL/MySQL connections close to max_connections.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn worker_pressure_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn worker_pressure_info() -> CheckInfo {
     }
 }
 
-check!(WorkerPressureCheck: worker_pressure_info, worker_pressure);
+check!(
+    WorkerPressureCheck: worker_pressure_info, worker_pressure,
+    &[Evidence::Pressure { signal: Some("connections"), timed_files: false, complete: true }]
+);
 
 pub fn worker_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let key = server_key(snapshot);

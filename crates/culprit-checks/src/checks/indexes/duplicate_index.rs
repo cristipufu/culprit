@@ -1,6 +1,7 @@
 //! The `duplicate-index` check: Indexes with the same keys as another index, or whose keys are a leading part of a wider one.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn duplicate_index_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +15,7 @@ pub fn duplicate_index_info() -> CheckInfo {
     }
 }
 
-check!(DuplicateIndexCheck: duplicate_index_info, duplicate_index);
+check!(DuplicateIndexCheck: duplicate_index_info, duplicate_index, &[Evidence::IndexCatalog, Evidence::Unknown]);
 
 pub fn duplicate_index(snapshot: &Snapshot) -> Vec<Finding> {
     let engine = snapshot.server.engine;

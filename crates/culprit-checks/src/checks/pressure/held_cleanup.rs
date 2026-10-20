@@ -1,6 +1,7 @@
 //! The `held-cleanup` check: The transaction that holds this database's cleanup back: one with uncommitted changes or row versions here (SQL Server), the oldest snapshot, replication slot or prepared transaction behind VACUUM's horizon (PostgreSQL), or the oldest read view behind InnoDB's purge (MySQL).
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn held_cleanup_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn held_cleanup_info() -> CheckInfo {
     }
 }
 
-check!(HeldCleanupCheck: held_cleanup_info, held_cleanup);
+check!(
+    HeldCleanupCheck: held_cleanup_info, held_cleanup,
+    &[Evidence::Pressure { signal: None, timed_files: false, complete: false }]
+);
 
 /// Transactions behind at which a replication slot's hold on VACUUM is worth a finding, and High.
 pub(super) const SLOT_BEHIND: f64 = 1_000_000.0;

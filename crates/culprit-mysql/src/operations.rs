@@ -30,12 +30,12 @@ pub async fn collect(conn: &mut Conn, probe: &Probe, snapshot: &mut Snapshot) {
         ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
         WHERE t.TABLE_SCHEMA = ? AND c.EXTRA LIKE '%auto_increment%' AND t.AUTO_INCREMENT IS NOT NULL";
     if let Some(rows) = coverage
-        .read(&sources::SEQUENCE_CAPACITY, query_with(conn, sql, vec![Value::from(probe.database.clone())]).await)
+        .read_rows(&sources::SEQUENCE_CAPACITY, query_with(conn, sql, vec![Value::from(probe.database.clone())]).await)
     {
         for r in rows {
             let Some((minimum, maximum)) = integer_bounds(&r.string("column_type")) else {
-                coverage.note(
-                    "sequence_capacity",
+                coverage.partial(
+                    &sources::SEQUENCE_CAPACITY,
                     "An auto-increment column has an unsupported numeric type; its allocation range was not assessed.",
                 );
                 continue;
@@ -54,18 +54,27 @@ pub async fn collect(conn: &mut Conn, probe: &Probe, snapshot: &mut Snapshot) {
         }
     }
     if probe.flavor == Flavor::Mariadb {
-        let enabled =
-            coverage.read(&sources::CLUSTER_HEALTH, vars::variables(conn, &["wsrep_on"]).await).is_some_and(|v| {
-                v.iter().any(|(n, v)| n == "wsrep_on" && matches!(v.to_ascii_uppercase().as_str(), "ON" | "1"))
-            });
+        let configuration = coverage.read(&sources::CLUSTER_HEALTH, vars::variables(conn, &["wsrep_on"]).await);
+        let enabled = configuration.as_ref().is_some_and(|v| {
+            v.iter().any(|(n, v)| n == "wsrep_on" && matches!(v.to_ascii_uppercase().as_str(), "ON" | "1"))
+        });
+        if configuration.is_some() && !enabled {
+            // Replace the successful configuration probe: there is no Galera cluster to assess.
+            coverage.not_applicable(&sources::CLUSTER_HEALTH, "Galera replication is not enabled on this server.");
+        }
         if enabled && let Some(rows) = coverage.read(&sources::CLUSTER_HEALTH, query(conn,
             "SHOW GLOBAL STATUS WHERE Variable_name IN ('wsrep_ready','wsrep_connected','wsrep_cluster_status','wsrep_local_state_comment','wsrep_flow_control_paused')").await) {
             let read = |name: &str| rows.iter().find(|r| r.string("variable_name").eq_ignore_ascii_case(name)).and_then(|r| r.text("value"));
             let flag = |name: &str| read(name).map(|v| matches!(v.to_ascii_uppercase().as_str(),"ON"|"1"|"TRUE"));
             snapshot.operations.cluster = Some(ClusterHealth { ready: flag("wsrep_ready"), connected: flag("wsrep_connected"), primary_component: read("wsrep_cluster_status").map(|v| v.eq_ignore_ascii_case("Primary")), local_state: read("wsrep_local_state_comment"), flow_control_paused: read("wsrep_flow_control_paused").and_then(|v| v.parse().ok()) });
         }
+    } else {
+        coverage.not_applicable(
+            &sources::CLUSTER_HEALTH,
+            "Galera health is available only where MariaDB Galera is enabled.",
+        );
     }
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }
 
 fn integer_bounds(column_type: &str) -> Option<(&'static str, &'static str)> {

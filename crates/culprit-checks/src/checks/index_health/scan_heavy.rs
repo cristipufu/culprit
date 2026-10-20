@@ -1,6 +1,7 @@
 //! The `scan-heavy` check: Large tables that queries read in full many times a day, from the table scan counters.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn scan_heavy_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn scan_heavy_info() -> CheckInfo {
     }
 }
 
-check!(ScanHeavyCheck: scan_heavy_info, scan_heavy);
+check!(ScanHeavyCheck: scan_heavy_info, scan_heavy, &[Evidence::Unknown]);
 
 /// Full-table reads and rows read without an index since the counters started, and the days that covers. A full read
 /// is the table's rows read once: PostgreSQL's `seq_scan` counts a scan once for every process that runs it (each

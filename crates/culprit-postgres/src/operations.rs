@@ -16,7 +16,7 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
  COALESCE((SELECT split_part(o, '=', 2)::float8 FROM unnest(c.reloptions) o WHERE o LIKE 'autovacuum_multixact_freeze_max_age=%'), current_setting('autovacuum_multixact_freeze_max_age')::float8)
  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
  WHERE c.relkind IN ('r', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg_temp_%'";
-    if let Some(rows) = coverage.read(&sources::MULTIXACTS, query(client, age_sql).await) {
+    if let Some(rows) = coverage.read_rows(&sources::MULTIXACTS, query(client, age_sql).await) {
         snapshot.operations.multixacts = rows
             .iter()
             .filter_map(|r| {
@@ -33,7 +33,7 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
         iso("stats_reset"),
         iso("last_failed_time")
     );
-    if let Some(rows) = coverage.read(&sources::ARCHIVER, query(client, &archive).await) {
+    if let Some(rows) = coverage.read_rows(&sources::ARCHIVER, query(client, &archive).await) {
         for r in rows {
             if let Some(count) = r.number("count") {
                 snapshot.operations.counters.push(OperationalCounter {
@@ -52,7 +52,7 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
         let sql = format!("SELECT sub.subname, st.apply_error_count::float8 AS apply_errors, st.sync_error_count::float8 AS sync_errors, {} AS since
  FROM pg_stat_subscription_stats st JOIN pg_subscription sub ON sub.oid = st.subid
  WHERE sub.subdbid = (SELECT oid FROM pg_database WHERE datname = current_database())", iso("st.stats_reset"));
-        if let Some(rows) = coverage.read(&sources::SUBSCRIPTION_ERRORS, query(client, &sql).await) {
+        if let Some(rows) = coverage.read_rows(&sources::SUBSCRIPTION_ERRORS, query(client, &sql).await) {
             for r in rows {
                 for (kind, column) in
                     [(Kind::SubscriptionApplyErrors, "apply_errors"), (Kind::SubscriptionSyncErrors, "sync_errors")]
@@ -71,11 +71,16 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
                 }
             }
         }
+    } else {
+        coverage.not_applicable(
+            &sources::SUBSCRIPTION_ERRORS,
+            "Subscription error counters require PostgreSQL 15 or later.",
+        );
     }
     let conflicts = format!("SELECT (c.confl_tablespace + c.confl_lock + c.confl_snapshot + c.confl_bufferpin + c.confl_deadlock)::float8 AS count, {} AS since
  FROM pg_stat_database_conflicts c JOIN pg_stat_database d ON d.datid = c.datid
  WHERE c.datname = current_database() AND pg_is_in_recovery()", iso("d.stats_reset"));
-    if let Some(rows) = coverage.read(&sources::STANDBY_CONFLICTS, query(client, &conflicts).await) {
+    if let Some(rows) = coverage.read_rows(&sources::STANDBY_CONFLICTS, query(client, &conflicts).await) {
         for r in rows {
             if let Some(count) = r.number("count") {
                 snapshot.operations.counters.push(OperationalCounter {
@@ -94,7 +99,7 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
         let seq = "SELECT schemaname || '.' || sequencename AS name, last_value::text AS current_value,
  increment_by::text AS step, min_value::text AS min_value, max_value::text AS max_value, cycle
  FROM pg_sequences WHERE last_value IS NOT NULL AND schemaname NOT IN ('pg_catalog', 'information_schema')";
-        if let Some(rows) = coverage.read(&sources::SEQUENCE_CAPACITY, query(client, seq).await) {
+        if let Some(rows) = coverage.read_rows(&sources::SEQUENCE_CAPACITY, query(client, seq).await) {
             for r in rows {
                 let (Some(current), Some(increment), Some(minimum), Some(maximum)) =
                     (r.text("current_value"), r.text("step"), r.text("min_value"), r.text("max_value"))
@@ -113,6 +118,11 @@ pub async fn collect(client: &Client, version: u32, snapshot: &mut Snapshot) {
                 });
             }
         }
+    } else {
+        coverage.not_applicable(
+            &sources::SEQUENCE_CAPACITY,
+            "Sequence allocation metadata requires PostgreSQL 10 or later.",
+        );
     }
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }

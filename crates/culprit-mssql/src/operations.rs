@@ -44,7 +44,7 @@ const SEQUENCES_SQL: &str = "SELECT s.name + '.' + q.name AS name, CAST(NULL AS 
 pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapshot) {
     let mut coverage = Coverage::default();
     if let Some(rows) =
-        sources::read(&mut coverage, &sources::LOG_CAPACITY, query(client, LOG_SQL).await, || probe.grant_hint())
+        sources::read_rows(&mut coverage, &sources::LOG_CAPACITY, query(client, LOG_SQL).await, || probe.grant_hint())
     {
         for r in rows {
             if let (Some(total), Some(used)) = (r.f64("total"), r.f64("used")) {
@@ -63,7 +63,9 @@ pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapsh
         }
     }
     if let Some(rows) =
-        sources::read(&mut coverage, &sources::FILE_CAPACITY, query(client, FILES_SQL).await, || probe.grant_hint())
+        sources::read_rows(&mut coverage, &sources::FILE_CAPACITY, query(client, FILES_SQL).await, || {
+            probe.grant_hint()
+        })
     {
         for r in rows {
             if let (Some(total), Some(used)) = (r.f64("total"), r.f64("used")) {
@@ -82,7 +84,7 @@ pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapsh
         }
     }
     if let Some(rows) =
-        sources::read(&mut coverage, &sources::TEMP_CAPACITY, query(client, TEMP_SQL).await, || probe.grant_hint())
+        sources::read_rows(&mut coverage, &sources::TEMP_CAPACITY, query(client, TEMP_SQL).await, || probe.grant_hint())
     {
         for r in rows {
             if let (Some(total), Some(used)) = (r.f64("total"), r.f64("used")) {
@@ -106,7 +108,7 @@ pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapsh
         }
     }
     if let Some(rows) =
-        sources::read(&mut coverage, &sources::SEQUENCE_CAPACITY, query(client, SEQUENCES_SQL).await, || {
+        sources::read_rows(&mut coverage, &sources::SEQUENCE_CAPACITY, query(client, SEQUENCES_SQL).await, || {
             probe.grant_hint()
         })
     {
@@ -128,5 +130,5 @@ pub async fn collect(client: &mut MsClient, probe: &Probe, snapshot: &mut Snapsh
             });
         }
     }
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }

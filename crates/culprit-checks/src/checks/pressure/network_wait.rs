@@ -1,6 +1,7 @@
 //! The `network-wait` check: Queries that spend much of their time waiting for the application to take results (ASYNC_NETWORK_IO), usually because they return large result sets.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn network_wait_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn network_wait_info() -> CheckInfo {
     }
 }
 
-check!(NetworkWaitCheck: network_wait_info, network_wait);
+check!(NetworkWaitCheck: network_wait_info, network_wait, &[Evidence::Query(QueryMeasure::Waits)]);
 
 pub fn network_wait(snapshot: &Snapshot) -> Vec<Finding> {
     let mut findings: Vec<Finding> = app_queries(snapshot)

@@ -1,8 +1,12 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 pub fn multixact_age_info() -> CheckInfo {
     CheckInfo { id:"multixact-age".into(),title:"MultiXact wraparound risk".into(),category:Category::Maintenance,engines:vec![Engine::Postgres],requires:vec![],description:"The independent PostgreSQL MultiXact age limit, which can reject row-locking writes even when ordinary transaction ID age is healthy.".into() }
 }
-check!(MultixactAgeCheck: multixact_age_info, multixact_age);
+check!(
+    MultixactAgeCheck: multixact_age_info, multixact_age,
+    &[Evidence::Observed(Observation::Multixacts, &["multixacts"])]
+);
 pub fn multixact_age(s: &Snapshot) -> Vec<Finding> {
     let Some(age) = s
         .operations

@@ -1,6 +1,7 @@
 //! The `hot-updates` check: Tables where few updates are HOT (heap-only): each other update writes a new entry in every index and leaves cleanup for VACUUM. Says whether pages are too full (fillfactor) or an indexed column changes (PostgreSQL 16+ tells them apart).
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn hot_updates_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn hot_updates_info() -> CheckInfo {
     }
 }
 
-check!(HotUpdatesCheck: hot_updates_info, hot_updates);
+check!(HotUpdatesCheck: hot_updates_info, hot_updates, &[Evidence::Unknown]);
 
 /// Non-HOT updates a day to one table that make hot-updates Medium.
 pub(super) const COLD_UPDATES_MEDIUM_PER_DAY: f64 = 1_000_000.0;

@@ -1,6 +1,7 @@
 //! The `filtered-scan` check: Heavy queries whose plan reads a large table in full and keeps only the rows matching a filter that no index supports.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn filtered_scan_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn filtered_scan_info() -> CheckInfo {
     }
 }
 
-check!(FilteredScanCheck: filtered_scan_info, filtered_scan);
+check!(FilteredScanCheck: filtered_scan_info, filtered_scan, &[Evidence::IndexCatalog, Evidence::Unknown]);
 
 pub(crate) struct ScanGroup<'a> {
     pub(crate) schema: String,

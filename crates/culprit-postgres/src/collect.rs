@@ -305,6 +305,7 @@ pub async fn snapshot(
     };
     let workload = match workload {
         Ok(Some(collected)) => {
+            coverage.completed(&sources::STATEMENTS, collected.workload.queries.len());
             if let Some(message) = collected.plan_note {
                 coverage.note("plans", message);
             }
@@ -319,15 +320,22 @@ pub async fn snapshot(
             }
             Some(collected.workload)
         }
-        Ok(None) => None,
+        Ok(None) => {
+            coverage.recorded(
+                &sources::STATEMENTS,
+                culprit_core::SourceState::Unavailable,
+                Some("Statement statistics are not enabled or available on this database.".into()),
+            );
+            None
+        }
         Err(e) => {
             coverage.source_failed(&sources::STATEMENTS, &e);
             None
         }
     };
     if !probe.privileged && probe.statements_usable() {
-        coverage.note(
-            "workload",
+        coverage.partial(
+            &sources::STATEMENTS,
             format!(
                 "Statements run by other roles show as <insufficient privilege>. GRANT pg_read_all_stats TO {}; to see them.",
                 quote_ident(&probe.user)
@@ -338,10 +346,10 @@ pub async fn snapshot(
     // Each source through `Coverage::read`: one that fails is a note and its capabilities locked (`sources`).
     let (tables_out, indexes_out, fks_out, columns_out) = match schema {
         Ok((tables, indexes, fks, cols)) => (
-            coverage.read(&sources::TABLES, tables).unwrap_or_default(),
-            coverage.read(&sources::INDEXES, indexes).unwrap_or_default(),
-            coverage.read(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
-            coverage.read(&sources::COLUMNS, cols).unwrap_or_default(),
+            coverage.read_rows(&sources::TABLES, tables).unwrap_or_default(),
+            coverage.read_rows(&sources::INDEXES, indexes).unwrap_or_default(),
+            coverage.read_rows(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
+            coverage.read_rows(&sources::COLUMNS, cols).unwrap_or_default(),
         ),
         // The connection they share failed: every one of them did.
         Err(e) => {
@@ -355,7 +363,7 @@ pub async fn snapshot(
     let (mut settings_out, pressure_out) = match misc {
         Ok((settings, (pressure, read))) => {
             coverage.merge(read);
-            (coverage.read(&sources::SETTINGS, settings).unwrap_or_default(), Some(pressure))
+            (coverage.read_rows(&sources::SETTINGS, settings).unwrap_or_default(), Some(pressure))
         }
         Err(e) => {
             coverage.source_failed(&sources::SETTINGS, &e);
@@ -384,6 +392,7 @@ pub async fn snapshot(
     } else {
         coverage.delivered(Capability::WaitStats);
     }
+    let sources = coverage.outcomes();
     let (have, missing, notes) = coverage.finish();
     server.capabilities = have;
     server.missing = missing;
@@ -403,6 +412,7 @@ pub async fn snapshot(
         .collect();
 
     let mut snapshot = Snapshot {
+        sources,
         format: SNAPSHOT_FORMAT,
         id: probe.now.replace(['-', ':'], ""),
         connection: connection.to_string(),

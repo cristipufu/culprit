@@ -1,8 +1,12 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 pub fn repeated_request_info() -> CheckInfo {
     CheckInfo{id:"repeated-request".into(),title:"Repeated statements within logged requests".into(),category:Category::Queries,engines:vec![Engine::Mssql,Engine::Postgres,Engine::Mysql,Engine::Sqlite],requires:vec![Capability::QueryLog],description:"Repeated SQL shapes correlated by explicit request_id in structured logs. Repetition identifies a caller to inspect; it does not prove an N+1 bug or removable work.".into()}
 }
-check!(RepeatedRequestCheck: repeated_request_info, repeated_request);
+check!(
+    RepeatedRequestCheck: repeated_request_info, repeated_request,
+    &[Evidence::Observed(Observation::RequestCounts, &[])]
+);
 pub fn repeated_request(s: &Snapshot) -> Vec<Finding> {
     s.queries().iter().filter_map(|q|{
         let r=q.requests.as_ref()?;if r.repeated_requests<3||r.most_calls<10{return None;}

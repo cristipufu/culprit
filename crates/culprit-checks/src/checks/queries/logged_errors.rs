@@ -1,9 +1,10 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 use culprit_core::Actionability;
 pub fn logged_errors_info() -> CheckInfo {
     CheckInfo{id:"logged-errors".into(),title:"SQL errors recorded by the application".into(),category:Category::Queries,engines:vec![Engine::Sqlite],requires:vec![Capability::QueryLog],description:"Recognized error codes in structured query logs, including errors with no duration. Counts describe log records, not failed business requests or zero-cost executions.".into()}
 }
-check!(LoggedErrorsCheck: logged_errors_info, logged_errors);
+check!(LoggedErrorsCheck: logged_errors_info, logged_errors, &[Evidence::Observed(Observation::LogFailures, &[])]);
 pub fn logged_errors(s: &Snapshot) -> Vec<Finding> {
     s.operations.log_failures.iter().filter(|e|e.count>0.0).map(|e|{
         let (why,fix)=match e.code.as_str(){

@@ -1,6 +1,7 @@
 //! The `heavy-query` check: Single queries that take a large share of database time, with what their plan spends it on.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn heavy_query_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +15,7 @@ pub fn heavy_query_info() -> CheckInfo {
     }
 }
 
-check!(HeavyQueryCheck: heavy_query_info, heavy_query);
+check!(HeavyQueryCheck: heavy_query_info, heavy_query, &[Evidence::Query(QueryMeasure::Work)]);
 
 pub fn heavy_query(snapshot: &Snapshot) -> Vec<Finding> {
     let Some(workload) = &snapshot.workload else {

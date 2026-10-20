@@ -1,6 +1,7 @@
 //! The `unindexed-fk` check: Foreign key columns with no index starting with them, which makes deletes on the parent and joins from the child slow.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn unindexed_fk_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn unindexed_fk_info() -> CheckInfo {
     }
 }
 
-check!(UnindexedFkCheck: unindexed_fk_info, unindexed_fk);
+check!(
+    UnindexedFkCheck: unindexed_fk_info, unindexed_fk,
+    &[Evidence::IndexCatalog, Evidence::ForeignKeys, Evidence::Unknown]
+);
 
 /// Whether an index can serve the foreign key: it leads with the key columns, isn't disabled, and covers every row the
 /// check can match. A filtered (partial) index can't, unless its filter only leaves out rows whose key is NULL (those

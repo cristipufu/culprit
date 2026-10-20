@@ -325,6 +325,7 @@ pub async fn snapshot(
     let mut source_waits = Vec::new();
     let workload = match workload {
         Ok(Some(collected)) => {
+            coverage.completed(&sources::STATEMENTS, collected.workload.queries.len());
             source_waits = collected.waits;
             for (collector, message) in collected.notes {
                 coverage.note(collector, message);
@@ -342,7 +343,14 @@ pub async fn snapshot(
             }
             Some(collected.workload)
         }
-        Ok(None) => None,
+        Ok(None) => {
+            coverage.recorded(
+                &sources::STATEMENTS,
+                culprit_core::SourceState::Unavailable,
+                Some("Statement statistics are not enabled or available on this database.".into()),
+            );
+            None
+        }
         // The digests' grant is the fix whatever the error said.
         Err(e) => {
             coverage.source_failed(&sources::STATEMENTS, &e.with_hint(format!("{PS_GRANT} {};", probe.grant_target())));
@@ -354,6 +362,7 @@ pub async fn snapshot(
     let (tables_out, columns_out, indexes_out, fks_out) = match schema {
         Ok((tables, columns, indexes, fks)) => {
             let indexes = coverage.read(&sources::INDEXES, indexes).map(|(i, usage_note)| {
+                coverage.completed(&sources::INDEXES, i.len());
                 // Read, but without usage counters: the indexes stand, the counters are locked with why.
                 if let Some(message) = usage_note {
                     coverage.note("index_usage", message.clone());
@@ -366,10 +375,10 @@ pub async fn snapshot(
                 i
             });
             (
-                coverage.read(&sources::TABLES, tables).unwrap_or_default(),
-                coverage.read(&sources::COLUMNS, columns).unwrap_or_default(),
+                coverage.read_rows(&sources::TABLES, tables).unwrap_or_default(),
+                coverage.read_rows(&sources::COLUMNS, columns).unwrap_or_default(),
                 indexes.unwrap_or_default(),
-                coverage.read(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
+                coverage.read_rows(&sources::FOREIGN_KEYS, fks).unwrap_or_default(),
             )
         }
         // The connection they share failed: every one of them did.
@@ -384,11 +393,11 @@ pub async fn snapshot(
     let (settings_out, mut waits_out, pressure_out) = match misc {
         Ok((settings, waits, (pressure, read))) => {
             coverage.merge(read);
-            let waits = coverage.read(&sources::WAITS, waits).unwrap_or_default();
+            let waits = coverage.read_rows(&sources::WAITS, waits).unwrap_or_default();
             if !waits.is_empty() {
                 coverage.delivered(Capability::WaitStats);
             }
-            (coverage.read(&sources::SETTINGS, settings).unwrap_or_default(), waits, Some(pressure))
+            (coverage.read_rows(&sources::SETTINGS, settings).unwrap_or_default(), waits, Some(pressure))
         }
         Err(e) => {
             coverage.source_failed(&sources::SETTINGS, &e);
@@ -399,11 +408,13 @@ pub async fn snapshot(
         waits_out = std::mem::take(&mut source_waits);
     }
 
+    let sources = coverage.outcomes();
     let (have, missing, notes) = coverage.finish();
     server.capabilities = have;
     server.missing = missing;
 
     let mut snapshot = Snapshot {
+        sources,
         format: SNAPSHOT_FORMAT,
         id: probe.now.replace(['-', ':'], ""),
         connection: connection.to_string(),

@@ -1,6 +1,7 @@
 //! The `lock-escalations` check: Tables where one statement took so many row or page locks that SQL Server replaced them with a lock on the whole table (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL never escalate row locks.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 /// The metric `lock-escalations` reports the escalations since the previous scan under, when there is one.
 pub(crate) const ESCALATIONS_SINCE_METRIC: &str = "Escalations since the previous scan";
@@ -24,7 +25,7 @@ pub fn lock_escalations_info() -> CheckInfo {
     }
 }
 
-check!(LockEscalationsCheck: lock_escalations_info, lock_escalations);
+check!(LockEscalationsCheck: lock_escalations_info, lock_escalations, &[Evidence::Unknown]);
 
 #[derive(Default)]
 pub(super) struct TableEscalations {

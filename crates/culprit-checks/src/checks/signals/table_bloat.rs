@@ -1,6 +1,7 @@
 //! The `table-bloat` check: Tables whose pages hold far fewer rows than they could, estimated from row counts and column widths in pg_stats (no extension needed). Every scan still reads the empty space.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn table_bloat_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn table_bloat_info() -> CheckInfo {
     }
 }
 
-check!(TableBloatCheck: table_bloat_info, table_bloat);
+check!(TableBloatCheck: table_bloat_info, table_bloat, &[Evidence::Unknown]);
 
 pub(super) fn table_heap_bytes(t: &TableStat) -> Option<f64> {
     t.data_bytes.or(t.total_bytes).filter(|b| *b > 0.0)

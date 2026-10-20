@@ -1,6 +1,7 @@
 //! The `large-rows` check: Tables whose rows average many kilobytes, most of it in large values kept apart from the rows (SQL Server's LOB pages, PostgreSQL's TOAST): every statement that reads whole rows pulls them in, every write that sets them writes them again. From the catalog's page counts; no data is read.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn large_rows_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn large_rows_info() -> CheckInfo {
     }
 }
 
-check!(LargeRowsCheck: large_rows_info, large_rows);
+check!(LargeRowsCheck: large_rows_info, large_rows, &[Evidence::Unknown]);
 
 /// A row this big on average is mostly a payload, not a record.
 pub(super) const LARGE_ROW_BYTES: f64 = 16.0 * 1024.0;

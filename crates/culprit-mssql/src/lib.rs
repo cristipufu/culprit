@@ -90,6 +90,10 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     let mut part = WorkloadPart::default();
     let dmv = probe.can_read_dmvs();
     if probe.query_store.is_none() {
+        part.outcome.not_applicable(
+            &sources::QUERY_STORE,
+            "Query Store requires SQL Server 2016 or later and a user database.",
+        );
         part.outcome.lacking(
             Capability::QueryStore,
             "Query Store is not available here; it needs SQL Server 2016 or later and a user database.",
@@ -99,6 +103,11 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     if let Some(qs) = &probe.query_store
         && !qs.readable()
     {
+        part.outcome.recorded(
+            &sources::QUERY_STORE,
+            culprit_core::SourceState::Unavailable,
+            Some(format!("Query Store is {} on this database.", qs.actual)),
+        );
         part.outcome.lacking(
             Capability::QueryStore,
             format!(
@@ -117,6 +126,7 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
             workload::from_query_store(client, options).await,
             grant,
         ) {
+            part.outcome.completed(&sources::QUERY_STORE, result.workload.queries.len());
             part.outcome.delivered(Capability::QueryStore);
             if result.plans_parsed > 0 {
                 part.outcome.delivered(Capability::QueryPlans);
@@ -134,6 +144,11 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     }
 
     if !dmv {
+        part.outcome.recorded(
+            &sources::PLAN_CACHE,
+            culprit_core::SourceState::Unavailable,
+            Some("This login cannot read plan cache statistics.".into()),
+        );
         part.outcome.lacking(
             Capability::PlanCache,
             "This login cannot read plan cache statistics.",
@@ -143,6 +158,7 @@ async fn collect_workload(client: &mut MsClient, probe: &Probe, options: &Snapsh
     }
     let plan_cache = workload::from_plan_cache(client, options).await;
     if let Some(result) = sources::read(&mut part.outcome, &sources::PLAN_CACHE, plan_cache, || probe.grant_hint()) {
+        part.outcome.completed(&sources::PLAN_CACHE, result.workload.queries.len());
         part.outcome.delivered(Capability::PlanCache);
         if result.plans_parsed > 0 {
             part.outcome.delivered(Capability::QueryPlans);
@@ -178,13 +194,14 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
     let dmv = probe.can_read_dmvs();
     let grant = || probe.grant_hint();
     let out = &mut part.outcome;
-    if let Some(tables) = sources::read(out, &sources::TABLES, schema::tables(client, dmv).await, grant) {
+    if let Some(tables) = sources::read_rows(out, &sources::TABLES, schema::tables(client, dmv).await, grant) {
         part.tables = tables;
         out.delivered(Capability::TableStats);
     }
     if let Some((indexes, with_usage)) =
         sources::read(out, &sources::INDEXES, schema::indexes(client, dmv).await, grant)
     {
+        out.completed(&sources::INDEXES, indexes.len());
         part.indexes = indexes;
         if with_usage {
             // Index usage is counted per database, from when it came online: no older than the server's start.
@@ -199,10 +216,10 @@ async fn collect_schema(client: &mut MsClient, probe: &Probe) -> SchemaPart {
             );
         }
     }
-    part.columns = sources::read(out, &sources::COLUMNS, schema::columns(client).await, grant).unwrap_or_default();
+    part.columns = sources::read_rows(out, &sources::COLUMNS, schema::columns(client).await, grant).unwrap_or_default();
     part.foreign_keys =
-        sources::read(out, &sources::FOREIGN_KEYS, schema::foreign_keys(client).await, grant).unwrap_or_default();
-    if let Some(stats) = sources::read(out, &sources::STATISTICS, schema::statistics(client).await, grant) {
+        sources::read_rows(out, &sources::FOREIGN_KEYS, schema::foreign_keys(client).await, grant).unwrap_or_default();
+    if let Some(stats) = sources::read_rows(out, &sources::STATISTICS, schema::statistics(client).await, grant) {
         part.statistics = stats;
         out.delivered(Capability::Statistics);
     }
@@ -215,12 +232,12 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
     let grant = || probe.grant_hint();
     if dmv {
         let missing = schema::missing_indexes(client).await;
-        if let Some(missing) = sources::read(&mut part.outcome, &sources::MISSING_INDEXES, missing, grant) {
+        if let Some(missing) = sources::read_rows(&mut part.outcome, &sources::MISSING_INDEXES, missing, grant) {
             part.missing_indexes = missing;
             part.outcome.delivered(Capability::MissingIndexes);
         }
         let waits = schema::waits(client, probe.is_azure_sql_database()).await;
-        if let Some(waits) = sources::read(&mut part.outcome, &sources::WAITS, waits, grant) {
+        if let Some(waits) = sources::read_rows(&mut part.outcome, &sources::WAITS, waits, grant) {
             part.waits = waits;
             part.outcome.delivered(Capability::WaitStats);
         }
@@ -238,7 +255,7 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
     }
     if probe.is_azure_sql_database() {
         let resources = schema::resources(client).await;
-        if let Some(resources) = sources::read(&mut part.outcome, &sources::RESOURCES, resources, grant) {
+        if let Some(resources) = sources::read_rows(&mut part.outcome, &sources::RESOURCES, resources, grant) {
             part.resources = resources;
             part.outcome.delivered(Capability::ResourceUsage);
         }
@@ -251,14 +268,14 @@ async fn collect_misc(client: &mut MsClient, probe: &Probe, options: &SnapshotOp
                 .unwrap_or_default();
         let query_store = probe.query_store_readable();
         let families = advice::query_families(client, options.window_in_minutes(), query_store).await;
-        part.query_families = sources::read(out, &sources::QUERY_FAMILIES, families, grant).unwrap_or_default();
+        part.query_families = sources::read_rows(out, &sources::QUERY_FAMILIES, families, grant).unwrap_or_default();
         part.plan_cache =
             sources::read(out, &sources::PLAN_CACHE_USE, advice::plan_cache(client).await, grant).flatten();
         part.tuning = sources::read(out, &sources::TUNING, advice::tuning(client, query_store).await, grant);
     }
     let query_store_options = probe.query_store.as_ref().map(|qs| &qs.options);
     let settings = schema::settings(client, probe.is_azure_sql_database(), query_store_options).await;
-    part.settings = sources::read(&mut part.outcome, &sources::SETTINGS, settings, grant).unwrap_or_default();
+    part.settings = sources::read_rows(&mut part.outcome, &sources::SETTINGS, settings, grant).unwrap_or_default();
     part
 }
 
@@ -335,9 +352,17 @@ impl Provider for MssqlProvider {
         outcome.merge(workload_part.outcome);
         outcome.merge(schema_part.outcome);
         outcome.merge(misc_part.outcome);
+        if let Some(note) = &schema_note {
+            for source in
+                [&sources::TABLES, &sources::INDEXES, &sources::COLUMNS, &sources::FOREIGN_KEYS, &sources::STATISTICS]
+            {
+                outcome.source_failed(source, &culprit_core::Error::internal(note.message.clone()));
+            }
+        }
         for note in schema_note.into_iter().chain(misc_note) {
             outcome.note(&note.collector, note.message);
         }
+        let sources = outcome.outcomes();
         let (have, missing, notes) = outcome.finish();
 
         let waits = if workload_part.waits.is_empty() { misc_part.waits } else { workload_part.waits };
@@ -346,6 +371,7 @@ impl Provider for MssqlProvider {
             t.forwarded_fetches = misc_part.forwarded.get(&(t.schema.to_lowercase(), t.name.to_lowercase())).copied();
         }
         let mut snapshot = Snapshot {
+            sources,
             format: SNAPSHOT_FORMAT,
             id: taken_at.format("%Y%m%dT%H%M%SZ").to_string(),
             connection: connection.to_string(),

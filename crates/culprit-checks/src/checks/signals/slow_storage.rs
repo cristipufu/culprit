@@ -1,6 +1,7 @@
 //! The `slow-storage` check: Average read and write latency per database file since startup: sys.dm_io_virtual_file_stats, pg_stat_io (16+, with track_io_timing), performance_schema file I/O.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 use std::collections::BTreeSet;
 
 pub fn slow_storage_info() -> CheckInfo {
@@ -14,7 +15,10 @@ pub fn slow_storage_info() -> CheckInfo {
     }
 }
 
-check!(SlowStorageCheck: slow_storage_info, slow_storage);
+check!(
+    SlowStorageCheck: slow_storage_info, slow_storage,
+    &[Evidence::Pressure { signal: None, timed_files: true, complete: true }]
+);
 
 /// Reads (or log writes) at least this large on average are bulk I/O: backups, CHECKDB, read-ahead of large scans. Each
 /// takes longer than the page-sized reads queries wait on, so their average says little about the storage.

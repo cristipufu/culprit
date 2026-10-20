@@ -1,5 +1,6 @@
 //! Deadlocks that keep happening: grouped by pattern and tables, explained, with the fix that removes them.
 
+use crate::evidence::Requirement as Evidence;
 use std::collections::BTreeMap;
 
 use culprit_core::format::friendly_date;
@@ -29,7 +30,7 @@ pub fn deadlocks_info() -> CheckInfo {
     }
 }
 
-check!(DeadlocksCheck: deadlocks_info, deadlocks);
+check!(DeadlocksCheck: deadlocks_info, deadlocks, &[Evidence::Deadlocks]);
 
 fn count_word(n: usize) -> String {
     match n {

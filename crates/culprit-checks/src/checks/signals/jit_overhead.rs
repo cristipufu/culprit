@@ -1,6 +1,7 @@
 //! The `jit-overhead` check: Statements where PostgreSQL's JIT compilation (pg_stat_statements jit_* columns, 15+) takes a large part of their run time.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn jit_overhead_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn jit_overhead_info() -> CheckInfo {
     }
 }
 
-check!(JitOverheadCheck: jit_overhead_info, jit_overhead);
+check!(JitOverheadCheck: jit_overhead_info, jit_overhead, &[Evidence::Query(QueryMeasure::Jit)]);
 
 pub fn jit_overhead(snapshot: &Snapshot) -> Vec<Finding> {
     let threshold = snapshot.setting("jit_above_cost").map(|s| s.value.clone());

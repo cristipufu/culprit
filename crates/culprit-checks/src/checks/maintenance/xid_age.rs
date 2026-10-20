@@ -1,6 +1,7 @@
 //! The `xid-age` check: Transaction ID age approaching the point where PostgreSQL stops accepting writes to protect data.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn xid_age_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +15,7 @@ pub fn xid_age_info() -> CheckInfo {
     }
 }
 
-check!(XidAgeCheck: xid_age_info, xid_age);
+check!(XidAgeCheck: xid_age_info, xid_age, &[Evidence::Unknown]);
 
 pub(super) const WRAPAROUND: f64 = 2_000_000_000.0;
 

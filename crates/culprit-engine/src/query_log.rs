@@ -11,6 +11,9 @@ use std::path::Path;
 use culprit_core::{Capability, CollectorNote, Error, ErrorCode, Provider, Result, Snapshot, SnapshotOptions};
 use culprit_querylog::{Aggregator, Reader};
 
+/// Shared source descriptor, independent of which database provider supplied the catalog.
+const QUERY_LOG_SOURCE: culprit_core::Source =
+    culprit_core::Source { name: "query log", reads: "the application's query log", delivers: &[Capability::QueryLog] };
 /// Lines read to tell the log's format.
 const SAMPLE_LINES: usize = 5_000;
 /// At most this much of a file is read to tell whether it's a query log, however long its lines.
@@ -88,6 +91,9 @@ pub async fn attach(
 ) -> Result<()> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "the log".into());
     if snapshot.workload.is_some() {
+        let mut coverage = culprit_core::Coverage::default();
+        coverage.not_applicable(&QUERY_LOG_SOURCE, "The database already provides statement history.");
+        coverage.append_to(snapshot);
         snapshot
             .notes
             .push(note(format!("{} keeps its own statement history, so {name} wasn't read.", snapshot.server.name())));
@@ -152,6 +158,9 @@ pub async fn attach(
             culprit_core::format::count(elsewhere as f64)
         )));
     }
+    let mut coverage = culprit_core::Coverage::default();
+    coverage.completed(&QUERY_LOG_SOURCE, workload.queries.len() + snapshot.operations.log_failures.len());
+    coverage.append_to(snapshot);
     snapshot.workload = Some(workload);
     Ok(())
 }

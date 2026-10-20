@@ -53,7 +53,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe, options: &Snap
         pressure.signals.extend(logins.unwrap_or_default());
     }
     pressure.replicas = replicas(client).await;
-    snapshot.notes.extend(coverage.finish().2);
+    coverage.append_to(snapshot);
 }
 
 // ── per query ──────────────────────────────────────────────────────────────────────────────────────

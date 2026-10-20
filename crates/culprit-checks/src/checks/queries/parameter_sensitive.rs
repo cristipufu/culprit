@@ -4,6 +4,7 @@
 //! MySQL's run-time histogram. A single plan with wildly varying run times (all engines, including Postgres's
 //! min/max/stddev) is `unstable-query`, which shares the fix ladders below.
 
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 use culprit_core::{
     Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, PlanVariant, QueryStat, Snapshot, SubjectKind, Unit,
     format,
@@ -34,7 +35,10 @@ pub fn parameter_sensitive_info() -> CheckInfo {
     }
 }
 
-check!(ParameterSensitiveCheck: parameter_sensitive_info, parameter_sensitive);
+check!(
+    ParameterSensitiveCheck: parameter_sensitive_info, parameter_sensitive,
+    &[Evidence::Query(QueryMeasure::ParameterSpread)]
+);
 
 /// How the slow calls show up in the data.
 #[derive(Debug)]

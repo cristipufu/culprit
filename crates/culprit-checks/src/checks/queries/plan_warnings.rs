@@ -1,6 +1,7 @@
 //! The `plan-warnings` check: Implicit conversions, spills, missing join predicates and missing statistics in the plans of heavy queries.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn plan_warnings_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn plan_warnings_info() -> CheckInfo {
     }
 }
 
-check!(PlanWarningsCheck: plan_warnings_info, plan_warnings);
+check!(PlanWarningsCheck: plan_warnings_info, plan_warnings, &[Evidence::Query(QueryMeasure::CapturedPlans)]);
 
 pub fn plan_warnings(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out = Vec::new();

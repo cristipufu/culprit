@@ -1,6 +1,7 @@
 //! The `tuning-advice` check: Plan-forcing and index recommendations from automatic tuning, forced plans (those that stopped applying, and those that scan where an index added since could seek), Query Store hints that stopped applying, and automatic plan correction left off.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn tuning_advice_info() -> CheckInfo {
     CheckInfo {
@@ -17,7 +18,7 @@ pub fn tuning_advice_info() -> CheckInfo {
     }
 }
 
-check!(TuningAdviceCheck: tuning_advice_info, tuning_advice);
+check!(TuningAdviceCheck: tuning_advice_info, tuning_advice, &[Evidence::Unknown]);
 
 /// A day or more between `last` and the end of the scan's data, as (seconds, `last`).
 pub(super) fn quiet_since<'a>(snapshot: &Snapshot, last: Option<&'a str>) -> Option<(f64, &'a str)> {

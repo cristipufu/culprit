@@ -129,3 +129,15 @@ pub(crate) fn read<T>(
         }),
     )
 }
+
+/// A catalog read also records whether it returned any rows.
+pub(crate) fn read_rows<T>(
+    coverage: &mut Coverage,
+    source: &Source,
+    result: tiberius::Result<Vec<T>>,
+    grant: impl FnOnce() -> String,
+) -> Option<Vec<T>> {
+    let rows = read(coverage, source, result, grant)?;
+    coverage.completed(source, rows.len());
+    Some(rows)
+}

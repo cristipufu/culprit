@@ -4,10 +4,58 @@
 //! account with a [`Coverage`], so "what this login can see" means the same thing on every engine and checks that need
 //! a missing capability are listed as locked instead of running on missing data.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error::{Error, ErrorCode};
 use crate::model::{Capability, CollectorNote, MissingCapability};
+
+/// What actually happened when a source was read. Notes are prose, never a success/failure protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum SourceState {
+    Collected,
+    Empty,
+    Partial,
+    Unavailable,
+    NotApplicable,
+}
+
+/// Source names are open identifiers so an embedding provider can declare its own sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SourceOutcome {
+    pub source: String,
+    pub state: SourceState,
+    pub reason: Option<String>,
+}
+
+fn same_source(a: &str, b: &str) -> bool {
+    a.replace(' ', "_") == b.replace(' ', "_")
+}
+
+impl SourceOutcome {
+    /// Combine independently read parts conservatively. A successful part cannot erase a failed part.
+    fn merge(&mut self, other: Self) {
+        use SourceState::*;
+        self.state = match (self.state, other.state) {
+            (a, b) if a == b => a,
+            (Collected, Empty) | (Empty, Collected) => Collected,
+            _ => Partial,
+        };
+        if let Some(reason) = other.reason {
+            match &mut self.reason {
+                Some(existing) if existing != &reason => {
+                    existing.push(' ');
+                    existing.push_str(&reason);
+                }
+                None => self.reason = Some(reason),
+                _ => {}
+            }
+        }
+    }
+}
 
 /// One source a provider reads from its engine: a statistics view, the catalog, a log. Each provider declares its
 /// sources in one list (`<provider>/src/sources.rs`), so what a scan reads on an engine is a table anyone can read, and
@@ -28,13 +76,89 @@ pub struct Coverage {
     have: Vec<Capability>,
     missing: Vec<MissingCapability>,
     notes: Vec<CollectorNote>,
+    sources: Vec<SourceOutcome>,
 }
 
 impl Coverage {
     /// Start from what a probe already found: the capabilities the login and server settings allow, and what they
     /// don't. Sources then confirm them, or [`Coverage::lost`] one they couldn't read after all.
     pub fn with(have: Vec<Capability>, missing: Vec<MissingCapability>) -> Self {
-        Coverage { have, missing, notes: Vec::new() }
+        Coverage { have, missing, ..Self::default() }
+    }
+
+    pub fn recorded(&mut self, source: &Source, state: SourceState, reason: Option<String>) {
+        self.record(SourceOutcome { source: source.name.into(), state, reason });
+    }
+
+    /// Finish decoding a successful read. A previous failure or partial result is never cleared by this update.
+    pub fn completed(&mut self, source: &Source, rows: usize) {
+        let state = if rows == 0 { SourceState::Empty } else { SourceState::Collected };
+        if let Some(existing) = self.sources.iter_mut().find(|s| same_source(&s.source, source.name))
+            && matches!(existing.state, SourceState::Collected | SourceState::Empty)
+        {
+            existing.state = state;
+        } else {
+            self.recorded(source, state, None);
+        }
+    }
+
+    fn record(&mut self, outcome: SourceOutcome) {
+        if let Some(existing) = self.sources.iter_mut().find(|s| same_source(&s.source, &outcome.source)) {
+            existing.merge(outcome);
+        } else {
+            self.sources.push(outcome);
+        }
+    }
+
+    /// Some objects or measurements could not be read, though the source delivered useful data.
+    pub fn partial(&mut self, source: &Source, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.note(source.name, reason.clone());
+        self.recorded(source, SourceState::Partial, Some(reason));
+    }
+
+    /// The engine or configuration does not have this source. This is different from an unreadable source.
+    pub fn not_applicable(&mut self, source: &Source, reason: impl Into<String>) {
+        let reason = reason.into();
+        if let Some(existing) = self.sources.iter_mut().find(|s| same_source(&s.source, source.name))
+            && matches!(existing.state, SourceState::Collected | SourceState::Empty)
+        {
+            // A successful configuration probe may establish that the source does not apply.
+            existing.state = SourceState::NotApplicable;
+            existing.reason = Some(reason);
+        } else {
+            self.recorded(source, SourceState::NotApplicable, Some(reason));
+        }
+    }
+
+    /// Source outcomes, including successful reads. `finish` retains its original public tuple contract.
+    pub fn outcomes(&self) -> Vec<SourceOutcome> {
+        self.sources.clone()
+    }
+
+    /// Attach a later collector's evidence and capability changes without losing the main collector's account.
+    pub fn append_to(mut self, snapshot: &mut crate::Snapshot) {
+        for outcome in std::mem::take(&mut self.sources) {
+            if let Some(existing) = snapshot.sources.iter_mut().find(|s| same_source(&s.source, &outcome.source)) {
+                existing.merge(outcome);
+            } else {
+                snapshot.sources.push(outcome);
+            }
+        }
+        let (have, missing, notes) = self.finish();
+        for capability in have {
+            if !snapshot.server.has(capability) {
+                snapshot.server.capabilities.push(capability);
+            }
+            snapshot.server.missing.retain(|m| m.capability != capability);
+        }
+        for missing in missing {
+            snapshot.server.capabilities.retain(|c| *c != missing.capability);
+            snapshot.server.missing.retain(|m| m.capability != missing.capability);
+            snapshot.server.missing.push(missing);
+        }
+        snapshot.server.capabilities.sort();
+        snapshot.notes.extend(notes);
     }
 
     /// A source delivered `capability`.
@@ -75,6 +199,11 @@ impl Coverage {
     /// Reading `source` failed: a note with the error, and `capability` locked with why. A permission error says the
     /// login lacks the permission, and `grant` (the statement that gives it) becomes the fix.
     pub fn failed(&mut self, source: &str, capability: Capability, error: &Error, grant: Option<String>) {
+        self.record(SourceOutcome {
+            source: source.into(),
+            state: SourceState::Unavailable,
+            reason: Some(error.message.clone()),
+        });
         self.note(source, error.message.clone());
         let denied = error.code == ErrorCode::PermissionDenied;
         let reason = if denied {
@@ -91,7 +220,24 @@ impl Coverage {
     /// says the login lacks the permission, and the error's hint, the statement that grants it, is the fix).
     pub fn read<T>(&mut self, source: &Source, result: Result<T, Error>) -> Option<T> {
         match result {
-            Ok(value) => Some(value),
+            Ok(value) => {
+                self.recorded(source, SourceState::Collected, None);
+                Some(value)
+            }
+            Err(error) => {
+                self.source_failed(source, &error);
+                None
+            }
+        }
+    }
+
+    /// A successful empty catalog is evidence too; a failed catalog is never an empty one.
+    pub fn read_rows<T>(&mut self, source: &Source, result: Result<Vec<T>, Error>) -> Option<Vec<T>> {
+        match result {
+            Ok(rows) => {
+                self.recorded(source, if rows.is_empty() { SourceState::Empty } else { SourceState::Collected }, None);
+                Some(rows)
+            }
             Err(error) => {
                 self.source_failed(source, &error);
                 None
@@ -101,6 +247,7 @@ impl Coverage {
 
     /// Record that reading `source` failed with `error` (see [`Coverage::read`]), for a source read in parts.
     pub fn source_failed(&mut self, source: &Source, error: &Error) {
+        self.recorded(source, SourceState::Unavailable, Some(error.message.clone()));
         self.note(source.name, error.message.clone());
         let reason = if error.code == ErrorCode::PermissionDenied {
             format!("This login lacks the permission to read {}.", source.reads)
@@ -114,6 +261,9 @@ impl Coverage {
 
     /// Take in what another part of the scan found (sources read on another connection, concurrently).
     pub fn merge(&mut self, other: Coverage) {
+        for outcome in other.sources {
+            self.record(outcome);
+        }
         for capability in other.have {
             self.delivered(capability);
         }
@@ -136,6 +286,24 @@ impl Coverage {
     }
 }
 
+impl crate::Snapshot {
+    pub fn source_outcome(&self, name: &str) -> Option<&SourceOutcome> {
+        self.sources.iter().find(|s| same_source(&s.source, name))
+    }
+
+    /// Read typed outcomes first. Old scans have only notes; their conservative interpretation stays in this adapter.
+    pub fn source_problem(&self, names: &[&str]) -> Option<String> {
+        names.iter().find_map(|name| {
+            if let Some(outcome) = self.source_outcome(name) {
+                return matches!(outcome.state, SourceState::Partial | SourceState::Unavailable).then(|| {
+                    outcome.reason.clone().unwrap_or_else(|| format!("{name} was not completely collected."))
+                });
+            }
+            self.notes.iter().find(|n| same_source(&n.collector, name)).map(|n| n.message.clone())
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +313,79 @@ mod tests {
         reads: "index statistics",
         delivers: &[Capability::IndexUsage, Capability::TableStats],
     };
+
+    #[test]
+    fn empty_success_and_failure_have_different_outcomes() {
+        let mut c = Coverage::default();
+        assert_eq!(c.read_rows::<u8>(&INDEXES, Ok(vec![])), Some(vec![]));
+        assert_eq!(c.outcomes()[0].state, SourceState::Empty);
+        c.note(INDEXES.name, "This source has no visible rows.");
+        assert_eq!(c.outcomes()[0].state, SourceState::Empty);
+        c.source_failed(&INDEXES, &Error::internal("timeout"));
+        assert_eq!(c.outcomes()[0].state, SourceState::Partial);
+        c.completed(&INDEXES, 5);
+        assert_eq!(c.outcomes()[0].state, SourceState::Partial, "a later successful part must not clear the failure");
+    }
+
+    #[test]
+    fn parallel_source_parts_merge_conservatively_in_either_order() {
+        for reverse in [false, true] {
+            let mut a = Coverage::default();
+            a.read_rows(&INDEXES, Ok(vec![1]));
+            let mut b = Coverage::default();
+            b.source_failed(&INDEXES, &Error::internal("timeout"));
+            let combined = if reverse {
+                b.merge(a);
+                b
+            } else {
+                a.merge(b);
+                a
+            };
+            assert_eq!(combined.outcomes().len(), 1);
+            assert_eq!(combined.outcomes()[0].state, SourceState::Partial);
+            assert_eq!(combined.outcomes()[0].reason.as_deref(), Some("timeout"));
+        }
+    }
+
+    #[test]
+    fn configuration_can_establish_inapplicability_but_a_failure_cannot() {
+        let mut c = Coverage::default();
+        c.read(&INDEXES, Ok(false));
+        c.not_applicable(&INDEXES, "Feature disabled");
+        assert_eq!(c.outcomes()[0].state, SourceState::NotApplicable);
+        let mut failed = Coverage::default();
+        failed.source_failed(&INDEXES, &Error::internal("permission denied"));
+        failed.not_applicable(&INDEXES, "Feature disabled");
+        assert_eq!(failed.outcomes()[0].state, SourceState::Partial);
+    }
+
+    #[test]
+    fn old_snapshots_load_and_detail_collectors_retain_their_source_account() {
+        let mut s: crate::Snapshot =
+            serde_json::from_str(include_str!("../../../fixtures/postgres-demo.json")).unwrap();
+        assert!(s.sources.is_empty());
+        assert!(serde_json::to_value(&s).unwrap().get("sources").is_none());
+        let mut main = Coverage::default();
+        main.read_rows(&INDEXES, Ok(vec![1]));
+        main.append_to(&mut s);
+        let mut detail = Coverage::default();
+        detail.source_failed(&INDEXES, &Error::internal("details timed out"));
+        detail.append_to(&mut s);
+        assert_eq!(s.source_outcome("indexes").unwrap().state, SourceState::Partial);
+        assert!(!s.server.has(Capability::IndexUsage));
+        assert!(!s.server.has(Capability::TableStats));
+        assert!(
+            s.server
+                .missing
+                .iter()
+                .any(|m| m.capability == Capability::IndexUsage && m.reason.contains("details timed out"))
+        );
+        assert_eq!(s.notes.len(), 1);
+        let saved = serde_json::to_string(&s).unwrap();
+        let loaded: crate::Snapshot = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.sources, s.sources);
+        assert_eq!(loaded.source_problem(&["indexes"]).as_deref(), Some("details timed out"));
+    }
 
     // One rule for every engine: a source that fails is a note and its capabilities locked with why, even ones the
     // probe expected, and the scan goes on.

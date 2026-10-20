@@ -1,6 +1,7 @@
 //! The `planning-time` check: Statements where planning (PostgreSQL, with pg_stat_statements.track_planning on) or compiling (SQL Server Query Store) takes a large part of their time, usually because the plan isn't reused.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn planning_time_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn planning_time_info() -> CheckInfo {
     }
 }
 
-check!(PlanningTimeCheck: planning_time_info, planning_time);
+check!(PlanningTimeCheck: planning_time_info, planning_time, &[Evidence::Query(QueryMeasure::Planning)]);
 
 pub fn planning_time(snapshot: &Snapshot) -> Vec<Finding> {
     let pg = snapshot.server.engine == Engine::Postgres;

@@ -1,6 +1,7 @@
 //! The `missing-index` check: Index suggestions recorded by SQL Server's optimizer, merged with each other and checked against existing indexes.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn missing_index_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn missing_index_info() -> CheckInfo {
     }
 }
 
-check!(MissingIndexCheck: missing_index_info, missing_index);
+check!(MissingIndexCheck: missing_index_info, missing_index, &[Evidence::IndexCatalog, Evidence::Unknown]);
 
 pub(crate) struct Candidate {
     pub(crate) schema: String,

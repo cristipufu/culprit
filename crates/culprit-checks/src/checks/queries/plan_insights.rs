@@ -1,6 +1,7 @@
 //! Plan insights as findings: the plan-level problems in queries that matter, beyond what `plan-warnings`,
 //! `filtered-scan` and `missing-index` already report. One finding per problem and table, however many queries share it.
 
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 use culprit_core::insights::PlanInsight;
 use culprit_core::{
     Capability, Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, PlanKind, QueryRef, QueryStat, Severity,
@@ -33,7 +34,7 @@ pub fn plan_insights_info() -> CheckInfo {
     }
 }
 
-check!(PlanInsightsCheck: plan_insights_info, plan_insights);
+check!(PlanInsightsCheck: plan_insights_info, plan_insights, &[Evidence::Query(QueryMeasure::CapturedPlans)]);
 
 pub fn plan_insights(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out: Vec<Finding> = Vec::new();

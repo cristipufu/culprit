@@ -1,6 +1,7 @@
 //! The `over-indexed` check: Tables with many secondary indexes that are written a lot: every insert updates each index.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn over_indexed_info() -> CheckInfo {
     CheckInfo {
@@ -14,7 +15,7 @@ pub fn over_indexed_info() -> CheckInfo {
     }
 }
 
-check!(OverIndexedCheck: over_indexed_info, over_indexed);
+check!(OverIndexedCheck: over_indexed_info, over_indexed, &[Evidence::IndexCatalog, Evidence::Unknown]);
 
 pub(crate) const MANY_INDEXES: usize = 7;
 

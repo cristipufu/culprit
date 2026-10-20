@@ -1,10 +1,14 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 use culprit_core::{Actionability, FileScope};
 
 pub fn storage_capacity_info() -> CheckInfo {
     CheckInfo { id: "storage-capacity".into(), title: "Files and logs near their allocation limits".into(), category: Category::Configuration, engines: vec![Engine::Mssql], requires: vec![], description: "Current database file and transaction-log capacity, log reuse reasons, and shared tempdb allocation. Autogrowth room is distinguished from a hard limit.".into() }
 }
-check!(StorageCapacityCheck: storage_capacity_info, storage_capacity);
+check!(
+    StorageCapacityCheck: storage_capacity_info, storage_capacity,
+    &[Evidence::Observed(Observation::Spaces, &["log_capacity", "file_capacity", "temp_capacity"])]
+);
 
 pub fn storage_capacity(s: &Snapshot) -> Vec<Finding> {
     s.operations.spaces.iter().filter_map(|space| {

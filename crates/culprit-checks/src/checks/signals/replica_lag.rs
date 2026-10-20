@@ -1,6 +1,7 @@
 //! The `replica-lag` check: Replicas far behind the primary or stopped, and PostgreSQL replication slots that keep WAL for a consumer that's gone: pg_stat_replication, availability group replica states, SHOW REPLICA STATUS.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn replica_lag_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn replica_lag_info() -> CheckInfo {
     }
 }
 
-check!(ReplicaLagCheck: replica_lag_info, replica_lag);
+check!(
+    ReplicaLagCheck: replica_lag_info, replica_lag,
+    &[Evidence::Pressure { signal: None, timed_files: false, complete: false }]
+);
 
 /// How a replica, a consumer or this server stands, as replica-lag reads it.
 #[derive(Debug, PartialEq)]

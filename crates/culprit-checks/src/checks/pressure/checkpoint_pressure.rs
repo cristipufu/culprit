@@ -1,6 +1,7 @@
 //! Requested checkpoints, with no inference of WAL pressure from the shared counter alone.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn checkpoint_pressure_info() -> CheckInfo {
     CheckInfo {
@@ -15,7 +16,10 @@ pub fn checkpoint_pressure_info() -> CheckInfo {
     }
 }
 
-check!(CheckpointPressureCheck: checkpoint_pressure_info, checkpoint_pressure);
+check!(
+    CheckpointPressureCheck: checkpoint_pressure_info, checkpoint_pressure,
+    &[Evidence::Pressure { signal: Some("checkpoints-requested"), timed_files: false, complete: true }]
+);
 
 pub fn checkpoint_pressure(snapshot: &Snapshot) -> Vec<Finding> {
     let (Some(requested), Some(total)) = (signal(snapshot, "checkpoints-requested"), signal(snapshot, "checkpoints"))

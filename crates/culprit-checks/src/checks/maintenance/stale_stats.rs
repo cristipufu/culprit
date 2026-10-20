@@ -1,6 +1,7 @@
 //! The `stale-stats` check: Tables whose optimizer statistics are far behind their data, which leads to bad row estimates and plans.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn stale_stats_info() -> CheckInfo {
     CheckInfo {
@@ -15,7 +16,7 @@ pub fn stale_stats_info() -> CheckInfo {
     }
 }
 
-check!(StaleStatsCheck: stale_stats_info, stale_stats);
+check!(StaleStatsCheck: stale_stats_info, stale_stats, &[Evidence::Unknown]);
 
 /// The metric counting the changes since the statistics were updated: SQL Server's modification counter and
 /// PostgreSQL's n_mod_since_analyze count changes (a row updated twice is two), not rows.

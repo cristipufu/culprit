@@ -1,6 +1,7 @@
 //! The `memory-queue` check: Waiting for memory takes a real amount of time (a minute an hour or more), or queries in this database were queueing for a memory grant when the scan ran.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn memory_queue_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn memory_queue_info() -> CheckInfo {
     }
 }
 
-check!(MemoryQueueCheck: memory_queue_info, memory_queue);
+check!(
+    MemoryQueueCheck: memory_queue_info, memory_queue,
+    &[Evidence::Pressure { signal: Some("memory-grants-pending"), timed_files: false, complete: true }]
+);
 
 pub fn memory_queue(snapshot: &Snapshot) -> Vec<Finding> {
     let total: f64 = snapshot.waits.iter().map(|w| w.wait_ms).sum();

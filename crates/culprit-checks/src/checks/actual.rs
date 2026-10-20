@@ -1,6 +1,7 @@
 //! Settings that decide whether Culprit can show what a query actually did: SQL Server's last actual plan per query and
 //! live per-operator progress.
 
+use crate::evidence::Requirement as Evidence;
 use culprit_core::{Category, CheckInfo, Confidence, Engine, Finding, Fix, Severity, Snapshot, SubjectKind};
 
 use culprit_core::Check;
@@ -23,7 +24,7 @@ pub fn last_actual_plans_info() -> CheckInfo {
     }
 }
 
-check!(LastActualPlansCheck: last_actual_plans_info, last_actual_plans);
+check!(LastActualPlansCheck: last_actual_plans_info, last_actual_plans, &[Evidence::Unknown]);
 
 fn off(snapshot: &Snapshot, name: &str) -> bool {
     snapshot.setting(name).is_some_and(|s| matches!(s.value.trim(), "0" | "OFF" | "off" | "false"))

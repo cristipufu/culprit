@@ -1,6 +1,7 @@
 //! The `unstable-query` check: Queries whose duration swings wildly between runs with the same plan, a sign of parameter sensitivity or blocking.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn unstable_query_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn unstable_query_info() -> CheckInfo {
     }
 }
 
-check!(UnstableQueryCheck: unstable_query_info, unstable_query);
+check!(UnstableQueryCheck: unstable_query_info, unstable_query, &[Evidence::Query(QueryMeasure::Variance)]);
 
 /// How far a statement's run times spread: the standard deviation over the average, and the slowest run over it.
 pub(super) const UNSTABLE_CV: f64 = 3.0;

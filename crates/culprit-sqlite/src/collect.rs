@@ -154,6 +154,7 @@ pub fn snapshot(
     let mut coverage = Coverage::default();
 
     let schema = read_schema(conn).map_err(|e| map_error(&e))?;
+    coverage.completed(&crate::sources::CATALOG, schema.tables.len());
     let without_rowid: HashSet<&str> =
         schema.tables.iter().filter(|t| t.without_rowid).map(|t| t.name.as_str()).collect();
     // Counted rows where the file was read whole; the planner's statistics otherwise.
@@ -161,7 +162,10 @@ pub fn snapshot(
         object_sizes(conn, &without_rowid, budget)
             .map_err(|e| format!("reading every page stopped ({})", map_error(&e).message.to_lowercase()))
     }) {
-        Ok((sizes, counted)) => (sizes, counted, Ok(())),
+        Ok((sizes, counted)) => {
+            coverage.completed(&crate::sources::SIZES, sizes.len());
+            (sizes, counted, Ok(()))
+        }
         Err(why) => {
             let error = culprit_core::Error::internal(format!("Table and index sizes are unknown: {why}."));
             coverage.source_failed(&crate::sources::SIZES, &error);
@@ -171,7 +175,8 @@ pub fn snapshot(
     let mut rows = table_rows(conn);
     rows.extend(counted);
     let (have, missing) = capabilities(conn, whole);
-    let statistics = if has_stat1(conn) {
+    let has_statistics = has_stat1(conn);
+    let statistics = if has_statistics {
         coverage.read(
             &crate::sources::PLANNER_STATISTICS,
             (|| {
@@ -181,8 +186,15 @@ pub fn snapshot(
             .map_err(|e| map_error(&e)),
         )
     } else {
+        coverage.not_applicable(
+            &crate::sources::PLANNER_STATISTICS,
+            "The file has no sqlite_stat1 table; ANALYZE has not recorded planner statistics.",
+        );
         Some(HashSet::new())
     };
+    if has_statistics && let Some(statistics) = &statistics {
+        coverage.completed(&crate::sources::PLANNER_STATISTICS, statistics.len());
+    }
 
     let mut tables = Vec::new();
     let mut indexes = Vec::new();
@@ -195,8 +207,8 @@ pub fn snapshot(
             Err(error) if virtual_table => {
                 // The application can load a virtual-table module that Culprit's SQLite library doesn't include.
                 // Its CREATE statement remains useful; missing columns must not lose the rest of the database.
-                coverage.note(
-                    crate::sources::CATALOG.name,
+                coverage.partial(
+                    &crate::sources::CATALOG,
                     format!(
                         "Columns of main.{} are unavailable: {}. The table's original definition is retained.",
                         t.name,
@@ -242,7 +254,7 @@ pub fn snapshot(
         }
     }
 
-    let settings = FILE_PRAGMAS
+    let settings: Vec<Setting> = FILE_PRAGMAS
         .iter()
         .filter_map(|name| {
             pragma(conn, name).map(|value| Setting {
@@ -254,6 +266,11 @@ pub fn snapshot(
         })
         .collect();
 
+    if settings.len() == FILE_PRAGMAS.len() {
+        coverage.completed(&crate::sources::SETTINGS, settings.len());
+    } else {
+        coverage.partial(&crate::sources::SETTINGS, "Some file pragmas were not available from this SQLite library.");
+    }
     let server = server_info(conn, path, have, missing);
     let mut operations = culprit_core::operations::OperationalStats::default();
     if pragma(conn, "journal_mode").is_some_and(|m| m.eq_ignore_ascii_case("wal")) {
@@ -268,8 +285,18 @@ pub fn snapshot(
         };
         let wal_bytes = coverage.read(&crate::sources::WAL_FILE, size);
         operations.sqlite = Some(culprit_core::operations::SqliteFileHealth { wal_bytes, before: None });
+    } else if settings.iter().any(|s| s.name == "journal_mode") {
+        coverage.not_applicable(&crate::sources::WAL_FILE, "The database is not using WAL journal mode.");
+    } else {
+        coverage.source_failed(
+            &crate::sources::WAL_FILE,
+            &culprit_core::Error::internal(
+                "The journal mode was unavailable, so WAL file health could not be assessed.",
+            ),
+        );
     }
-    Ok(Snapshot {
+    let mut snapshot = Snapshot {
+        sources: Vec::new(),
         format: SNAPSHOT_FORMAT,
         id: taken_at.replace(['-', ':'], ""),
         connection: connection.into(),
@@ -287,7 +314,7 @@ pub fn snapshot(
         waits: Vec::new(),
         resources: Vec::new(),
         settings,
-        notes: coverage.finish().2,
+        notes: Vec::new(),
         pressure: None,
         options: None,
         query_families: Vec::new(),
@@ -301,7 +328,9 @@ pub fn snapshot(
         evictions_before: None,
         sizes_before: None,
         operations,
-    })
+    };
+    coverage.append_to(&mut snapshot);
+    Ok(snapshot)
 }
 
 struct SchemaTable {

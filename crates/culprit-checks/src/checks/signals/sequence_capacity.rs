@@ -1,8 +1,12 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 pub fn sequence_capacity_info() -> CheckInfo {
     CheckInfo { id: "sequence-capacity".into(), title: "Identity and sequence allocation limits".into(), category: Category::Maintenance, engines: vec![Engine::Mssql,Engine::Postgres,Engine::Mysql], requires: vec![], description: "Non-cycling identities, sequences and auto-increment columns approaching their numeric bounds; cache allocation is not a forecast of remaining requests.".into() }
 }
-check!(SequenceCapacityCheck: sequence_capacity_info, sequence_capacity);
+check!(
+    SequenceCapacityCheck: sequence_capacity_info, sequence_capacity,
+    &[Evidence::Observed(Observation::Sequences, &["sequence_capacity"])]
+);
 pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
     s.operations.sequences.iter().filter_map(|seq| {
         let (remaining,total) = seq.remaining()?;

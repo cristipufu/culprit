@@ -1,6 +1,7 @@
 //! The `failing-query` check: Statements whose runs end in an error or are cancelled by the client (usually a command timeout): Query Store's aborted and exception runs, performance_schema's errors per digest. PostgreSQL keeps no per-statement error count.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn failing_query_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn failing_query_info() -> CheckInfo {
     }
 }
 
-check!(FailingQueryCheck: failing_query_info, failing_query);
+check!(FailingQueryCheck: failing_query_info, failing_query, &[Evidence::Query(QueryMeasure::Failures)]);
 
 /// A client command timeout: cancelled runs that last about as long as a common default (30 s, 60 s…).
 pub(super) fn looks_like_timeout(mean_ms: f64) -> Option<f64> {

@@ -1,6 +1,7 @@
 //! The `hot-rows` check: Indexes where sessions waited a long time for row and page locks, and where locks escalated to the whole table (sys.dm_db_index_operational_stats). MySQL, MariaDB and PostgreSQL keep no lock waits per table; see lock-time and Live.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn hot_rows_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn hot_rows_info() -> CheckInfo {
     }
 }
 
-check!(HotRowsCheck: hot_rows_info, hot_rows);
+check!(HotRowsCheck: hot_rows_info, hot_rows, &[Evidence::Unknown]);
 
 /// Lock waits a day on one table that make hot-rows High: ten minutes. A minute a day of waits a second or longer each
 /// is Medium.

@@ -1,6 +1,7 @@
 //! The `last-page-insert` check: Indexes keyed on an ever-increasing value (identity, sequence, insert time) where concurrent inserts wait for the latch on the last page (PAGELATCH_EX).
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn last_page_insert_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn last_page_insert_info() -> CheckInfo {
     }
 }
 
-check!(LastPageInsertCheck: last_page_insert_info, last_page_insert);
+check!(LastPageInsertCheck: last_page_insert_info, last_page_insert, &[Evidence::Unknown]);
 
 pub fn last_page_insert(snapshot: &Snapshot) -> Vec<Finding> {
     snapshot

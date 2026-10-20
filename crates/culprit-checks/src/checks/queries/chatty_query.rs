@@ -1,6 +1,7 @@
 //! The `chatty-query` check: Tiny queries executed so often that the round trips cost more than the work, typically a loop in application code.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn chatty_query_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn chatty_query_info() -> CheckInfo {
     }
 }
 
-check!(ChattyQueryCheck: chatty_query_info, chatty_query);
+check!(ChattyQueryCheck: chatty_query_info, chatty_query, &[Evidence::Query(QueryMeasure::Work)]);
 
 /// Round trips a day for a chatty statement to be Medium: at about a millisecond each, the minute a day
 /// ([`MEDIUM_MS_A_DAY`]) Medium asks of database time.

@@ -1,5 +1,6 @@
 //! Checks over the workload timeline: queries that got slower at a point in time.
 
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 use culprit_core::{
     Category, CheckInfo, Confidence, Engine, Finding, Fix, Metric, PlanVariant, QueryStat, QueryTrend, Severity,
     Snapshot, SubjectKind, Timeline, TimelineSource, Unit, format,
@@ -32,7 +33,7 @@ pub fn regression_info() -> CheckInfo {
     }
 }
 
-check!(RegressionCheck: regression_info, regression);
+check!(RegressionCheck: regression_info, regression, &[Evidence::Query(QueryMeasure::Timeline)]);
 
 /// Where a query's average duration stepped up and stayed up.
 #[derive(Debug, PartialEq)]

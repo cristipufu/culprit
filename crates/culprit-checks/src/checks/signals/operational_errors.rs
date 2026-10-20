@@ -1,10 +1,14 @@
 use super::*;
+use crate::evidence::{Observation, Requirement as Evidence};
 use culprit_core::operations::OperationalCounterKind as Kind;
 use culprit_core::{Actionability, FileScope};
 pub fn operational_errors_info() -> CheckInfo {
     CheckInfo {id:"operational-errors".into(),title:"Archive, replication and redo failures".into(),category:Category::Maintenance,engines:vec![Engine::Postgres,Engine::Mysql],requires:vec![],description:"WAL archive failures, logical subscription errors, standby recovery cancellations and InnoDB redo buffer waits. Counter history is kept separate from newly observed errors.".into()}
 }
-check!(OperationalErrorsCheck: operational_errors_info, operational_errors);
+check!(
+    OperationalErrorsCheck: operational_errors_info, operational_errors,
+    &[Evidence::Observed(Observation::OperationalCounters, &["archiver", "subscription_errors", "standby_conflicts", "redo_pressure"])]
+);
 pub fn operational_errors(s: &Snapshot) -> Vec<Finding> {
     s.operations.counters.iter().filter_map(|c| {
         if !c.count.is_finite() || c.count <= 0.0 {return None;}

@@ -1,6 +1,7 @@
 //! The `untrusted-constraint` check: SQL Server foreign keys and check constraints added or re-enabled WITH NOCHECK (or switched off), and PostgreSQL check constraints added NOT VALID. MySQL and MariaDB don't use constraints when planning.
 
 use super::*;
+use crate::evidence::Requirement as Evidence;
 
 pub fn untrusted_constraint_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,7 @@ pub fn untrusted_constraint_info() -> CheckInfo {
     }
 }
 
-check!(UntrustedConstraintCheck: untrusted_constraint_info, untrusted_constraint);
+check!(UntrustedConstraintCheck: untrusted_constraint_info, untrusted_constraint, &[Evidence::Unknown]);
 
 /// Whether PostgreSQL's planner reads these CHECK constraints at all: constraint exclusion looks at inheritance
 /// children only (constraint_exclusion = partition, the default), or at every table with constraint_exclusion = on.

@@ -1,6 +1,7 @@
 //! The `missing-histogram` check: Columns that heavy queries filter on with no index leading on them and no histogram (MySQL 8 COLUMN_STATISTICS, MariaDB mysql.column_stats), so the optimizer assumes a fixed share of rows match.
 
 use super::*;
+use crate::evidence::{QueryMeasure, Requirement as Evidence};
 
 pub fn missing_histogram_info() -> CheckInfo {
     CheckInfo {
@@ -13,7 +14,10 @@ pub fn missing_histogram_info() -> CheckInfo {
     }
 }
 
-check!(MissingHistogramCheck: missing_histogram_info, missing_histogram);
+check!(
+    MissingHistogramCheck: missing_histogram_info, missing_histogram,
+    &[Evidence::Query(QueryMeasure::Histograms)]
+);
 
 /// The columns a missing-histogram finding names, for de-duplication against index findings.
 pub(crate) fn histogram_columns(f: &Finding) -> Vec<String> {

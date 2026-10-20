@@ -133,6 +133,61 @@ mod tests {
     use culprit_core::{NewIndex, Online};
 
     #[test]
+    fn collection_outcomes_distinguish_empty_catalog_and_inapplicable_wal() {
+        let conn = Connection::open_in_memory().unwrap();
+        let read = || {
+            collect::snapshot(
+                &conn,
+                std::path::Path::new("example.sqlite"),
+                "example",
+                culprit_core::Environment::Local,
+                Instant::now(),
+            )
+            .unwrap()
+        };
+        let empty = read();
+        assert_eq!(empty.source_outcome("catalog").unwrap().state, culprit_core::SourceState::Empty);
+        assert_eq!(empty.source_outcome("wal_file").unwrap().state, culprit_core::SourceState::NotApplicable);
+        conn.execute_batch(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE INDEX items_name ON items(name);",
+        )
+        .unwrap();
+        let populated = read();
+        assert_eq!(populated.source_outcome("catalog").unwrap().state, culprit_core::SourceState::Collected);
+        assert!(populated.tables.iter().any(|t| t.name == "items"));
+        assert!(populated.indexes.iter().any(|i| i.name == "items_name"));
+        assert!(populated.source_problem(&["catalog"]).is_none());
+    }
+
+    #[test]
+    fn an_unreadable_statistics_source_locks_only_its_capability() {
+        use rusqlite::hooks::{AuthAction, Authorization};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE items (name TEXT); CREATE INDEX items_name ON items(name); ANALYZE;").unwrap();
+        conn.authorizer(Some(|context: rusqlite::hooks::AuthContext<'_>| {
+            if matches!(context.action, AuthAction::Read { table_name: "sqlite_stat1", .. }) {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }))
+        .unwrap();
+        let snapshot = collect::snapshot(
+            &conn,
+            std::path::Path::new("example.sqlite"),
+            "example",
+            culprit_core::Environment::Local,
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.source_outcome("statistics").unwrap().state, culprit_core::SourceState::Unavailable);
+        assert!(!snapshot.server.has(culprit_core::Capability::Statistics));
+        assert!(snapshot.server.has(culprit_core::Capability::TableStats));
+        assert!(snapshot.tables.iter().any(|t| t.name == "items"));
+        assert!(snapshot.server.missing.iter().any(|m| m.capability == culprit_core::Capability::Statistics));
+    }
+
+    #[test]
     fn index_fixes_execute_in_main_and_attached_schemas() {
         let conn = Connection::open_in_memory().unwrap();
         let dialect = Engine::Sqlite.dialect();
