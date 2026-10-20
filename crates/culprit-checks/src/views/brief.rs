@@ -794,7 +794,7 @@ fn verify_line(
     // Said once a brief: not where the finding's own *How to verify* says it already.
     let kept = |stay: &str| {
         workload
-            .filter(|w| !w.windowed && !says_running_totals(finding, w))
+            .filter(|w| !w.is_windowed() && !says_running_totals(finding, w))
             .map(|w| {
                 format!(
                     ": {} keeps running totals, so {stay} in them and their numbers move only as new runs add up",
@@ -814,7 +814,7 @@ fn verify_line(
     let (runs, does) = if one { ("it runs", "it does") } else { ("they run", "they do") };
     // The slowest run and the spread are kept since the reset whatever runs after it: a scan can't show the change.
     if finding.check == "unstable-query"
-        && let Some(w) = workload.filter(|w| !w.windowed)
+        && let Some(w) = workload.filter(|w| !w.is_windowed())
     {
         let kept = format!(
             "the slowest run and the spread behind `{id}` are kept by {} since its last reset, so they stay as they \
@@ -865,7 +865,7 @@ fn verify_line(
         {
             format!("After the change is live, run {scan}: `{id}` should be gone.")
         }
-        Some(w) if w.windowed && finding.verify.is_empty() => format!(
+        Some(w) if w.is_windowed() && finding.verify.is_empty() => format!(
             "After any change is live, run {scan} once its window covers only runs from after the change, and {how}."
         ),
         _ => format!("After any change is live, run {scan} and {how}{kept}."),

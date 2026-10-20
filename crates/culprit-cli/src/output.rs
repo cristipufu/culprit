@@ -345,7 +345,7 @@ impl Out {
         );
         if let Some(w) = &s.workload {
             // Under 20 hours of history a per-day figure would be an extrapolation: say what was measured, and over what.
-            let time = if w.window_hours < 20.0 {
+            let time = if w.measurement_hours() < 20.0 {
                 format!("{} of database time over {}", format::duration(w.total_time_ms), w.window_phrase())
             } else {
                 format!("{} of database time per day", format::duration(w.per_day(w.total_time_ms)))
@@ -475,11 +475,11 @@ impl Out {
         queries.truncate(limit);
         if self.format == Format::Json {
             let list: Vec<Value> = queries.iter().map(|q| query_json(report, q)).collect();
-            return self.json(&json!({ "source": w.source, "window_hours": w.window_hours, "queries": list }));
+            return self.json(&json!({ "source": w.source, "window_hours": w.measurement_hours(), "queries": list }));
         }
         // Under 20 hours of history, runs per day would be an extrapolation: show the runs counted, and over what.
-        let short_window = w.window_hours < 20.0;
-        let span = format::duration(w.window_hours * 3_600_000.0);
+        let short_window = w.measurement_hours() < 20.0;
+        let span = format::duration(w.measurement_hours() * 3_600_000.0);
         // On a source of running totals, what Culprit's scans measured of the statements they did, as every surface
         // states it; the source's totals for the rest.
         let scans = queries.iter().filter_map(|q| w.scans_of(q)).max_by(|a, b| a.hours.total_cmp(&b.hours));
@@ -1218,7 +1218,7 @@ fn query_json(report: &Report, q: &QueryStat) -> Value {
             None => w.runs_per_day_of(q),
         }),
         "how_often": w.map(|w| w.cost_of(q).runs),
-        "window_hours": w.map(|w| w.window_hours),
+        "window_hours": w.map(|w| w.measurement_hours()),
         "measured_over": w.and_then(|w| w.scans_of(q)).map(|s| s.phrase()),
         "totals": w.and_then(|w| w.cost_of(q).totals),
         "mean_time_ms": w.map_or(q.mean_time_ms, |w| w.statement_mean_ms(q)),
@@ -1276,7 +1276,7 @@ fn compact_report(report: &Report, path: &Path) -> Value {
         },
         "workload": s.workload.as_ref().map(|w| json!({
             "source": w.source,
-            "window_hours": w.window_hours,
+            "window_hours": w.measurement_hours(),
             "total_time_ms": w.total_time_ms,
             "query_count": w.query_count,
             "total_executions": w.total_executions,

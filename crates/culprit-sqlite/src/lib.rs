@@ -133,6 +133,41 @@ mod tests {
     use culprit_core::{NewIndex, Online};
 
     #[test]
+    fn file_identity_uses_the_canonical_path_and_detects_replacements() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("culprit-sqlite-identity-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("shop.sqlite");
+        let read = |path: &std::path::Path| {
+            let conn = open(&path.to_path_buf()).unwrap();
+            collect::snapshot(&conn, path, "shop", culprit_core::Environment::Local, Instant::now()).unwrap()
+        };
+        drop(Connection::open(&path).unwrap());
+        let first = read(&path);
+        let alias = read(&dir.join(".").join("shop.sqlite"));
+        assert!(first.identity.is_some());
+        assert!(first.same_database(&alias));
+        #[cfg(unix)]
+        {
+            let link = dir.join("alias.sqlite");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(first.same_database(&read(&link)));
+        }
+        let other = dir.join("other.sqlite");
+        drop(Connection::open(&other).unwrap());
+        assert!(!first.same_database(&read(&other)));
+        // Keep the old inode alive so the new file cannot reuse it.
+        std::fs::rename(&path, dir.join("original.sqlite")).unwrap();
+        drop(Connection::open(&path).unwrap());
+        let replacement = read(&path);
+        #[cfg(unix)]
+        assert!(!first.same_database(&replacement));
+        #[cfg(not(unix))]
+        assert!(first.same_database(&replacement), "only path identity is available on this platform");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn collection_outcomes_distinguish_empty_catalog_and_inapplicable_wal() {
         let conn = Connection::open_in_memory().unwrap();
         let read = || {

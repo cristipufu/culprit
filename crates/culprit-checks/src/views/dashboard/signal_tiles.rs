@@ -478,8 +478,8 @@ pub(super) fn statistics(report: &Report) -> Tile {
                     format!("Query Store is {} full; it stops recording when it fills.", format::percent(used / max));
             }
             // A log without timestamps covers a period nobody can say: not "thin", unknown.
-            let short = if w.log.is_some() { !w.window_unknown() } else { !w.windowed };
-            if short && w.window_hours < 1.0 {
+            let short = if w.log.is_some() { !w.window_unknown() } else { !w.is_windowed() };
+            if short && w.measurement_hours() < 1.0 {
                 status = status.max(TileStatus::Watch);
                 takeaway = if w.log.is_some() {
                     format!("Only {window}, so the numbers are thin: a longer log tells more.")
@@ -502,7 +502,7 @@ pub(super) fn statistics(report: &Report) -> Tile {
             t.metrics = vec![
                 TileMetric::new("queries", "Queries", Some(w.query_count), format::count(w.query_count)),
                 TileMetric::new("plans", "All queries with plans", Some(planned as f64), planned.to_string()),
-                TileMetric::new("window-hours", "Covers", Some(w.window_hours), span(w.window_hours)),
+                TileMetric::new("window-hours", "Covers", Some(w.measurement_hours()), span(w.measurement_hours())),
             ];
             t.items = stats_findings
                 .iter()

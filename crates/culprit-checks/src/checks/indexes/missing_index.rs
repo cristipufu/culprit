@@ -567,7 +567,7 @@ pub(super) fn wanted_before_window(snapshot: &Snapshot, c: &Candidate) -> Option
     let (end, start, window) = match &snapshot.workload {
         Some(w) => {
             let end = parse_epoch_seconds(w.window_end.as_deref().unwrap_or(&snapshot.taken_at))?;
-            (end, end - w.window_hours * 3600.0, w.window_phrase())
+            (end, end - w.measurement_hours() * 3600.0, w.window_phrase())
         }
         None => {
             let end = parse_epoch_seconds(&snapshot.taken_at)?;

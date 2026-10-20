@@ -658,7 +658,7 @@ fn query_quiet(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
     }
     let workload = snapshot.workload.as_ref()?;
     let end = workload.window_end.as_deref().and_then(support::parse_epoch_seconds)?;
-    let window_start = end - workload.window_hours * 3600.0;
+    let window_start = end - workload.measurement_hours() * 3600.0;
     let last_text = q.last_seen.clone()?;
     let last = support::parse_epoch_seconds(&last_text)?;
     let first = q.first_seen.as_deref().and_then(support::parse_epoch_seconds).unwrap_or(window_start);
@@ -678,7 +678,7 @@ fn query_quiet(snapshot: &Snapshot, q: &QueryStat) -> Option<(f64, String)> {
         })
         .unwrap_or(900.0);
     let began_inside = first - window_start > bucket.max(900.0);
-    if began_inside && (last - first) < workload.window_hours * 3600.0 * 0.5 && silence < DAILY_SECONDS {
+    if began_inside && (last - first) < workload.measurement_hours() * 3600.0 * 0.5 && silence < DAILY_SECONDS {
         return None;
     }
     // A query that runs in bursts (an eval run, a batch) is quiet between them: being silent no longer than a gap it
@@ -1019,7 +1019,7 @@ fn quiet_lately_caveat(
 /// then at the latest, and may have stopped long before (see `culprit_engine::trends::last_seen_from_scans`).
 pub(crate) fn last_ran_by_first_scan(workload: &culprit_core::Workload, last: &str) -> bool {
     let first = workload.timeline.as_ref().and_then(|t| t.starts.first()).and_then(|s| support::parse_epoch_seconds(s));
-    !workload.windowed
+    !workload.is_windowed()
         && first.zip(support::parse_epoch_seconds(last)).is_some_and(|(first, last)| (first - last).abs() < 1.0)
 }
 
@@ -1696,7 +1696,7 @@ fn one_lock_episode(snapshot: &Snapshot, findings: &mut Vec<Finding>) {
             .window_end
             .as_deref()
             .and_then(support::parse_epoch_seconds)
-            .map(|end| end - workload.window_hours * 3600.0);
+            .map(|end| end - workload.measurement_hours() * 3600.0);
         let when = match (gone.first_seen.as_deref(), gone.last_seen.as_deref(), span(gone), window_start) {
             (Some(first), Some(last), Some((from, _)), Some(start)) if from >= start => {
                 culprit_core::span_when(first, last)

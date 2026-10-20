@@ -375,8 +375,7 @@ impl ContentionBaseline {
 
     pub fn from_scan(previous: &Snapshot, current: &Snapshot) -> Option<Self> {
         if crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
-            || previous.server.engine != current.server.engine
-            || previous.server.database != current.server.database
+            || !previous.same_database(current)
             || restarted(previous.server.started_at.as_deref()?, current.server.started_at.as_deref()?)?
         {
             return None;
@@ -467,8 +466,18 @@ impl CountBaseline {
     /// of the same database, read. `None` when either scan didn't read it. It started over when it shrank, or when the
     /// workload's counting started again after `previous` (the statistics that keep it were reset).
     pub fn from_setting(previous: &Snapshot, current: &Snapshot, name: &str) -> Option<CountBaseline> {
+        if !previous.same_database(current)
+            || crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
+        {
+            return None;
+        }
         let read = |s: &Snapshot| s.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
         let (then, now) = (read(previous)?, read(current)?);
+        match (previous.captured_measurement(), current.captured_measurement()) {
+            (Some(a), Some(b)) => return Self::in_context(&previous.taken_at, then, now, &a, &b),
+            (None, None) => {}
+            _ => return None,
+        }
         let start = |s: &Snapshot| s.workload.as_ref().and_then(|w| w.window_start.clone());
         Some(CountBaseline::between(
             &previous.taken_at,
@@ -477,6 +486,25 @@ impl CountBaseline {
             start(previous).as_deref(),
             start(current).as_deref(),
         ))
+    }
+
+    /// Compare a source counter using its recorded clock. Shrinking totals without a reset remain unknown.
+    pub fn in_context(
+        taken_at: &str,
+        then: f64,
+        now: f64,
+        before: &crate::MeasurementContext,
+        after: &crate::MeasurementContext,
+    ) -> Option<Self> {
+        if !then.is_finite() || !now.is_finite() || then < 0.0 || now < 0.0 {
+            return None;
+        }
+        let restarted = match before.counter_transition(after) {
+            crate::CounterTransition::Reset => true,
+            crate::CounterTransition::Continued | crate::CounterTransition::Unmarked if now >= then => false,
+            _ => return None,
+        };
+        Some(Self { taken_at: taken_at.into(), count: if restarted { 0.0 } else { then }, restarted })
     }
 
     /// The count `then` an earlier scan taken at `taken_at` read, against `now`: it started over when it shrank, or
@@ -502,6 +530,11 @@ impl EscalationBaseline {
     /// What `previous`, an earlier scan of the same database, counted, to compare `current` with. `None` when it can't
     /// tell: either scan doesn't know when the server started, or `previous` has no lock counters.
     pub fn from_scan(previous: &Snapshot, current: &Snapshot) -> Option<EscalationBaseline> {
+        if !previous.same_database(current)
+            || crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
+        {
+            return None;
+        }
         if !previous.indexes.iter().any(|i| i.contention.is_some()) {
             return None;
         }
@@ -516,6 +549,11 @@ impl EscalationBaseline {
     /// The same from a previous digest, which keeps each lock-escalations finding's count: what a scheduled job keeps
     /// between runs instead of the scans. `None` for a digest that doesn't say when the server started.
     pub fn from_digest(previous: &Digest, current: &Snapshot) -> Option<EscalationBaseline> {
+        if !previous.database_comparison(current).allows_comparison()
+            || crate::format::epoch_seconds(&previous.taken_at)? > crate::format::epoch_seconds(&current.taken_at)?
+        {
+            return None;
+        }
         let restarted = restarted(previous.server_started_at.as_deref()?, current.server.started_at.as_deref()?)?;
         let tables = if restarted {
             BTreeMap::new()

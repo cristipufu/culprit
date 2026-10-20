@@ -176,8 +176,7 @@ pub struct ClusterHealth {
 }
 
 pub fn compare(previous: &Snapshot, current: &mut Snapshot) {
-    if previous.server.engine != current.server.engine
-        || previous.server.database != current.server.database
+    if !previous.same_database(current)
         || crate::format::epoch_seconds(&previous.taken_at)
             .zip(crate::format::epoch_seconds(&current.taken_at))
             .is_none_or(|(a, b)| a >= b)

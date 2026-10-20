@@ -412,6 +412,7 @@ pub async fn snapshot(
         .collect();
 
     let mut snapshot = Snapshot {
+        identity: None,
         sources,
         format: SNAPSHOT_FORMAT,
         id: probe.now.replace(['-', ':'], ""),
@@ -445,6 +446,13 @@ pub async fn snapshot(
         sizes_before: None,
         operations: Default::default(),
     };
+    snapshot.bind_identity(culprit_core::DatabaseIdentity::server(
+        Engine::Postgres,
+        &snapshot.server.database,
+        &connector.host,
+        connector.port,
+        None,
+    ));
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(snapshot)
@@ -595,6 +603,7 @@ async fn collect_with_base(
 
     Ok(Some(CollectedWorkload {
         workload: Workload {
+            measurement: None,
             source: "pg_stat_statements".into(),
             kind: Some(culprit_core::WorkloadKind::StatementStats),
             windowed: false,

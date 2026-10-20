@@ -266,6 +266,7 @@ impl Aggregator {
             })
             .collect();
         Workload {
+            measurement: None,
             source: format!("{format} log"),
             kind: Some(culprit_core::WorkloadKind::QueryLog),
             // A record of its own period: never running totals to subtract from a previous scan's.

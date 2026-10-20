@@ -275,6 +275,7 @@ pub fn workload(
     Collected {
         lock_ms: runs.iter().map(|r| r.lock_ms).sum(),
         workload: Workload {
+            measurement: None,
             source: SOURCE.into(),
             kind: Some(culprit_core::WorkloadKind::SlowLog),
             windowed: true,

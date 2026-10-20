@@ -38,8 +38,8 @@ fn pct(ratio: f64) -> f64 {
 fn window(w: &Workload) -> Value {
     json!({
         "source": w.source,
-        "hours": round(w.window_hours, 1),
-        "cumulative_since_stats_reset": !w.windowed,
+        "hours": round(w.measurement_hours(), 1),
+        "cumulative_since_stats_reset": !w.is_windowed(),
         "application_log": w.log,
         "start": w.window_start,
         "end": w.window_end,
@@ -154,7 +154,7 @@ fn query_row(w: &Workload, q: &QueryStat) -> Value {
         // How often it ran in words, as the brief says it: a burst by when it ran ("750 runs on Oct 11, 15:51–15:55
         // UTC"), never a rate a day.
         "how_often": cost.runs,
-        "window_hours": round(w.window_hours, 2),
+        "window_hours": round(w.measurement_hours(), 2),
         "measured_over": scans.map(|s| s.phrase()),
         "totals": cost.totals,
         "avg_ms": round(cost.mean_ms, 3),

@@ -52,7 +52,7 @@ pub(crate) fn result_of_a_spill(snapshot: &Snapshot, q: &QueryStat) -> Option<Re
                 lowercase_first(RETURN_WHAT_IS_USED)
             ),
             // On running totals the spill's own step names the two scans to compare and says why, once.
-            verify: Some(if snapshot.workload.as_ref().is_some_and(|w| !w.windowed) {
+            verify: Some(if snapshot.workload.as_ref().is_some_and(|w| !w.is_windowed()) {
                 format!(
                     "If it now returns fewer rows, the rows it returns per run between those two scans should drop to {USED}."
                 )

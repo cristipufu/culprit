@@ -7,6 +7,7 @@ mod file_pickers;
 mod golden;
 mod insights;
 mod invariants;
+mod measurement;
 mod plans;
 mod plugin;
 mod share;

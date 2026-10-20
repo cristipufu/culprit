@@ -157,6 +157,7 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
 /// oldest scan a day or more back ([`evictions_baseline`]), the baseline a scan taken now would use. Nothing changes
 /// without one, nor in a directory of no saved scans. Writes nothing.
 pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
+    snapshot.ensure_measurement();
     if let Some(baseline) = evictions_baseline(dir, snapshot) {
         snapshot.evictions_before = Some(baseline);
     }
@@ -204,7 +205,7 @@ pub fn rebuild_timeline(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     let evictions = trends::evictions(snapshot);
     let (database, taken_at) = (snapshot.server.database.clone(), snapshot.taken_at.clone());
     let Some(workload) = snapshot.workload.as_mut().filter(|w| {
-        !w.windowed && w.timeline.as_ref().is_some_and(|t| t.source == culprit_core::TimelineSource::Scans)
+        w.is_cumulative() && w.timeline.as_ref().is_some_and(|t| t.source == culprit_core::TimelineSource::Scans)
     }) else {
         return;
     };

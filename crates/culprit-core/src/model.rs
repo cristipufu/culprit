@@ -351,6 +351,9 @@ pub struct Workload {
     /// counts are of logged slow runs, not of everything the database ran. `None` when every run is counted.
     #[serde(default)]
     pub min_logged_ms: Option<f64>,
+    // Typed measurement context; legacy fields remain readable in older reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<crate::measurement::MeasurementContext>,
 }
 
 /// "7 days", "10 hours", "35 minutes": a window's length in words.
@@ -417,20 +420,20 @@ impl Workload {
     }
 
     pub fn per_day(&self, value: f64) -> f64 {
-        if self.window_hours <= 0.0 {
+        if self.measurement_hours() <= 0.0 {
             return value;
         }
-        value * 24.0 / self.window_hours
+        value * 24.0 / self.measurement_hours()
     }
 
     /// `value` per day, only when the window is long enough ([`PER_DAY_MIN_HOURS`]) to say so without extrapolating.
     pub fn per_day_measured(&self, value: f64) -> Option<f64> {
-        (self.window_hours >= PER_DAY_MIN_HOURS).then(|| self.per_day(value))
+        (self.measurement_hours() >= PER_DAY_MIN_HOURS).then(|| self.per_day(value))
     }
 
     /// `value` as a daily rate for comparing with a threshold, only over at least [`RATE_MIN_HOURS`] of data.
     pub fn rate_per_day(&self, value: f64) -> Option<f64> {
-        (self.window_hours >= RATE_MIN_HOURS).then(|| self.per_day(value))
+        (self.measurement_hours() >= RATE_MIN_HOURS).then(|| self.per_day(value))
     }
 
     /// "the last 7 days" for windowed history, "the 35 minutes since statistics were reset" for cumulative counters,
@@ -440,15 +443,19 @@ impl Workload {
             return if self.window_unknown() {
                 format!("the period the {log} log covers")
             } else {
-                format!("the {} the {log} log covers", span_words(self.window_hours))
+                format!("the {} the {log} log covers", span_words(self.measurement_hours()))
             };
         }
-        if self.windowed {
-            format!("the last {}", span_words(self.window_hours))
+        if self.is_windowed() {
+            if self.window_unknown() {
+                "the recorded workload window".into()
+            } else {
+                format!("the last {}", span_words(self.measurement_hours()))
+            }
         } else if self.window_unknown() {
             "the time since statistics were last reset".to_string()
         } else {
-            format!("the {} since statistics were reset", span_words(self.window_hours))
+            format!("the {} since statistics were reset", span_words(self.measurement_hours()))
         }
     }
 
@@ -543,10 +550,10 @@ impl Workload {
                 _ => Cadence::Counted(runs),
             };
         };
-        if self.window_unknown() || self.window_hours < RATE_MIN_HOURS {
+        if self.window_unknown() || self.measurement_hours() < RATE_MIN_HOURS {
             return Cadence::Counted(runs);
         }
-        let window = self.window_hours * 3600.0;
+        let window = self.measurement_hours() * 3600.0;
         let start = end - window;
         let first = q.first_seen.as_deref().and_then(crate::format::epoch_seconds);
         let last = match self.kind() {
@@ -577,7 +584,7 @@ impl Workload {
         {
             return Cadence::Burst { runs, from: iso(first), to: iso(last), days: Vec::new() };
         }
-        if self.window_hours < PER_DAY_MIN_HOURS {
+        if self.measurement_hours() < PER_DAY_MIN_HOURS {
             return Cadence::Counted(runs);
         }
         // Runs on a few days with silence between them: the buckets it ran in cover under half the time from its first
@@ -585,7 +592,10 @@ impl Workload {
         if let (Some(ran), Some(first), Some(last)) = (&ran, first, last) {
             let days = days_in(ran, first, last);
             let active: f64 = ran.iter().map(|(from, to)| to.min(last) - from.max(first)).filter(|s| *s > 0.0).sum();
-            if days.len() >= 2 && days.len() as f64 * 2.0 <= self.window_hours / 24.0 && active < (last - first) * 0.5 {
+            if days.len() >= 2
+                && days.len() as f64 * 2.0 <= self.measurement_hours() / 24.0
+                && active < (last - first) * 0.5
+            {
                 return Cadence::Burst { runs, from: iso(first), to: iso(last), days };
             }
         }
@@ -673,7 +683,7 @@ impl Workload {
     /// database, and no more for the statement than the database ran in a step (a counter misread in a saved scan, not
     /// a run). `None` under a day of such steps ([`PER_DAY_MIN_HOURS`]), so "a day" is never an extrapolation.
     pub fn over_scans(&self, q: &QueryStat) -> Option<ScanSpan> {
-        let timeline = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && !self.windowed)?;
+        let timeline = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && self.is_cumulative())?;
         let trend = q.trend.as_ref()?;
         let at = |s: &str| crate::format::epoch_seconds(s);
         let mut span =
@@ -705,7 +715,7 @@ impl Workload {
     /// database totals incomplete while an entry's growing counters still establish a lower bound on its activity.
     /// Never infer an average, share or daily rate from those possibly incomplete differences.
     pub fn observed_activity(&self, q: &QueryStat) -> Option<StatementActivity> {
-        let t = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && !self.windowed)?;
+        let t = self.timeline.as_ref().filter(|t| t.source == TimelineSource::Scans && self.is_cumulative())?;
         let i = t.len().checked_sub(1)?;
         let trend = q.trend.as_ref()?;
         if self.scans_of(q).is_some() && t.statement_bucket(trend, i).is_some() {
@@ -823,7 +833,10 @@ impl Workload {
     /// reset time, and its statistics outlive restarts), or its log has no timestamps: `window_hours` is 0 and no rate
     /// can be derived from it.
     pub fn window_unknown(&self) -> bool {
-        (!self.windowed || self.log.is_some()) && self.window_start.is_none() && self.window_hours <= 0.0
+        if let Some(context) = &self.measurement {
+            return context.period.hours().is_none();
+        }
+        (self.is_cumulative() || self.log.is_some()) && self.window_start.is_none() && self.measurement_hours() <= 0.0
     }
 
     pub fn share(&self, time_ms: f64) -> f64 {
@@ -1678,6 +1691,9 @@ pub struct Snapshot {
     // Collection outcomes, separate from informational notes. Missing on scans saved by older versions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<crate::coverage::SourceOutcome>,
+    // Endpoint identity captured with the scan, never borrowed from today's connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::measurement::DatabaseIdentity>,
 }
 
 impl Snapshot {
@@ -1863,6 +1879,7 @@ mod tests {
     #[test]
     fn how_often_never_extrapolates_a_short_window() {
         let w = |hours: f64, windowed: bool| Workload {
+            measurement: None,
             source: "Query Store".into(),
             kind: Some(WorkloadKind::QueryStore),
             windowed,

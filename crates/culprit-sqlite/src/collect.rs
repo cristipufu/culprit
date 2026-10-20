@@ -296,6 +296,7 @@ pub fn snapshot(
         );
     }
     let mut snapshot = Snapshot {
+        identity: None,
         sources: Vec::new(),
         format: SNAPSHOT_FORMAT,
         id: taken_at.replace(['-', ':'], ""),
@@ -330,6 +331,16 @@ pub fn snapshot(
         operations,
     };
     coverage.append_to(&mut snapshot);
+    if let Ok(path) = std::fs::canonicalize(path) {
+        let mut identity =
+            culprit_core::DatabaseIdentity::file(&snapshot.server.database, path.to_string_lossy().into_owned());
+        #[cfg(unix)]
+        if let Ok(metadata) = std::fs::metadata(&path) {
+            use std::os::unix::fs::MetadataExt;
+            identity.incarnation = Some(format!("{}:{}", metadata.dev(), metadata.ino()));
+        }
+        snapshot.bind_identity(identity);
+    }
     Ok(snapshot)
 }
 

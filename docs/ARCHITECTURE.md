@@ -228,6 +228,24 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | An event session a fix starts is one session for every finding that asks for it: created only where it isn't defined, started only where it isn't running, and the SQL says how to drop it. | `signals::event_session_sql`, `event_session_drop` |
 | Fix SQL must never damage what exists: rebuilding an index keeps its uniqueness, filter, key order and included columns, or there is no SQL. | per fix |
 
+`measurement.rs` gives measurements a typed contract: database identity, source, scope, period and reset marker.
+Providers record the observed database name and routing host/port (or socket directory), or SQLite's canonical file
+path and, on Unix, its device/inode. Routing identity does not establish a physical-server UUID: DNS aliases,
+proxies and a replacement database at the same endpoint remain limits unless the engine supplies an incarnation.
+Credentials never enter the identity. No new database queries are needed to capture it.
+
+Workload periods distinguish selected history, cumulative counters, observed scan intervals, samples and instants.
+The requested window does not invent source history; rates use the actual measured duration. A cumulative reading
+is dated by collection, not its last query execution. The oldest cache/digest entry is not a source-wide reset.
+`series_comparison`, `counter_transition` and `report_comparison` centrally decide which measurements can be compared;
+history, query activity, changes, baselines, verification and digests use these contracts. Different endpoints,
+sources, scopes or incompatible windows cannot establish a trend or verify a query finding's disappearance.
+
+Saved exports without these optional fields still load. Two older unidentified scans retain an explicit `Legacy`
+comparison using their original identity and clock semantics. An identified scan cannot borrow identity for an old
+one from today's connection: fresh comparable scans establish new trends. The legacy fields remain serialized for
+readers of older report formats; preparation mirrors the typed context into them when context is present.
+
 Cumulative query evidence keeps its dates. `Workload::over_scans` uses complete intervals for shares and averages;
 when those intervals have gaps or end before the latest scan, `ScanSpan::phrase` dates them explicitly. A more recent
 interval with known query-counter growth but incomplete database totals is separate `StatementActivity`: observed

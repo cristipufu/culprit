@@ -122,7 +122,7 @@ fn latest_usage_reset(table: &str, events: &[ChangeEvent]) -> Option<String> {
 /// Whether two scans are of the same database, so their counters and sizes can be compared: the same engine and
 /// database (a saved connection can be pointed at another).
 pub fn same_database(p: &Snapshot, c: &Snapshot) -> bool {
-    p.server.engine == c.server.engine && p.server.database.eq_ignore_ascii_case(&c.server.database)
+    p.same_database(c)
 }
 
 /// Hours a growth baseline must be behind the scan: under that, a size difference is noise turned into a rate.
@@ -732,7 +732,9 @@ fn usage_reset(p: &Snapshot, c: &Snapshot, (after, at): (&str, &str), out: &mut 
 
 /// pg_stat_statements says when it was last reset; other sources' windows are inferred and would raise false alarms.
 fn stats_reset(p: Option<&Snapshot>, c: &Snapshot, since: f64, out: &mut Vec<ChangeEvent>) {
-    let Some(w) = c.workload.as_ref().filter(|w| !w.windowed && c.server.engine == Engine::Postgres) else { return };
+    let Some(w) = c.workload.as_ref().filter(|w| !w.is_windowed() && c.server.engine == Engine::Postgres) else {
+        return;
+    };
     let Some(reset) = w.window_start.as_deref() else { return };
     let Some(t) = epoch(reset) else { return };
     let before = p.and_then(|p| p.workload.as_ref()).and_then(|w| w.window_start.as_deref()).and_then(epoch);

@@ -126,7 +126,7 @@ fn waits_capture_note(snapshot: &Snapshot) -> String {
 
 fn scope_and_source(snapshot: &Snapshot) -> (WaitScope, String) {
     let engine = snapshot.server.engine;
-    let window = snapshot.workload.as_ref().map(|w| span(w.window_hours)).unwrap_or_default();
+    let window = snapshot.workload.as_ref().map(|w| span(w.measurement_hours())).unwrap_or_default();
     let uptime = snapshot.pressure.as_ref().and_then(|p| p.uptime_hours).map(span);
     let attributed = app_queries(snapshot).any(|q| !q.waits.is_empty());
     match engine {

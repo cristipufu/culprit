@@ -601,7 +601,7 @@ pub fn counters_may_be_reset(snapshot: &Snapshot) -> bool {
 /// uptime, which a reset leaves as it was, says nothing about how long the counters have watched.
 pub fn watched_days(snapshot: &Snapshot) -> Option<f64> {
     if counters_may_be_reset(snapshot) {
-        return snapshot.workload.as_ref().map(|w| (w.window_hours / 24.0).max(0.0));
+        return snapshot.workload.as_ref().map(|w| (w.measurement_hours() / 24.0).max(0.0));
     }
     counter_days(snapshot)
 }
@@ -918,13 +918,13 @@ fn times(n: f64) -> String {
 /// misleads, and so does "0.2 times a day" for one run in six days.
 pub fn runs_phrase(snapshot: &Snapshot, executions: f64) -> String {
     match &snapshot.workload {
-        Some(w) if w.window_hours >= 20.0 && w.per_day(executions) < 1.0 => {
+        Some(w) if w.measurement_hours() >= 20.0 && w.per_day(executions) < 1.0 => {
             format!("{} in {}", times(executions), w.window_phrase())
         }
-        Some(w) if w.window_hours >= 20.0 => format!("about {} a day", times(w.per_day(executions))),
+        Some(w) if w.measurement_hours() >= 20.0 => format!("about {} a day", times(w.per_day(executions))),
         // A window nobody can date (a log without timestamps, counters with no reset time) isn't "1 minute".
         Some(w) if w.window_unknown() => format!("{} over {}", times(executions), w.window_phrase()),
-        Some(w) => format!("{} in {}", times(executions), culprit_core::span_words(w.window_hours)),
+        Some(w) => format!("{} in {}", times(executions), culprit_core::span_words(w.measurement_hours())),
         None => times(executions),
     }
 }
@@ -947,7 +947,7 @@ pub fn statement_runs(snapshot: &Snapshot, q: &QueryStat) -> (String, String) {
         }
         culprit_core::Cadence::Burst { runs, .. } => times(runs),
         // The window the sentence names holds them.
-        culprit_core::Cadence::Counted(runs) if w.window_hours >= culprit_core::PER_DAY_MIN_HOURS => times(runs),
+        culprit_core::Cadence::Counted(runs) if w.measurement_hours() >= culprit_core::PER_DAY_MIN_HOURS => times(runs),
         culprit_core::Cadence::Counted(runs) => runs_phrase(snapshot, runs),
     };
     (count, when)
@@ -982,7 +982,7 @@ pub fn runs_of_all(snapshot: &Snapshot, queries: &[&QueryStat]) -> String {
     match (queries, snapshot.workload.as_ref()) {
         ([q], _) => runs_of(snapshot, q),
         (_, Some(w))
-            if w.window_hours >= culprit_core::PER_DAY_MIN_HOURS
+            if w.measurement_hours() >= culprit_core::PER_DAY_MIN_HOURS
                 && queries.iter().any(|q| w.runs_per_day_of(q).is_none()) =>
         {
             format!("{} in {}", times(runs), w.window_phrase())
@@ -1097,11 +1097,14 @@ pub fn summary_window(snapshot: &Snapshot) -> Option<String> {
     let w = snapshot.workload.as_ref()?;
     let asked = snapshot.options.as_ref().map(|o| f64::from(o.window_in_minutes()) / 60.0);
     let Some(asked) = asked.filter(|a| {
-        w.windowed && snapshot.server.engine == Engine::Mssql && w.window_hours > *a && w.window_hours <= a + 1.5
+        w.is_windowed()
+            && snapshot.server.engine == Engine::Mssql
+            && w.measurement_hours() > *a
+            && w.measurement_hours() <= a + 1.5
     }) else {
         return Some(w.window_phrase());
     };
-    let (said, covered) = (culprit_core::span_words(asked), culprit_core::span_words(w.window_hours));
+    let (said, covered) = (culprit_core::span_words(asked), culprit_core::span_words(w.measurement_hours()));
     if said == covered {
         return Some(format!("the last {said}"));
     }
@@ -1155,7 +1158,7 @@ pub fn at_least_per_day_of(snapshot: &Snapshot, q: &QueryStat, total: f64, per_d
         return false;
     }
     rate_per_day_of(snapshot, &[q], total).is_some_and(|r| r >= per_day)
-        || (w.window_hours > 0.0 && w.window_hours <= 24.0 && total >= per_day)
+        || (w.measurement_hours() > 0.0 && w.measurement_hours() <= 24.0 && total >= per_day)
 }
 
 /// Days of cumulative counters (see [`counter_days`]) when they cover at least an hour
@@ -1977,8 +1980,8 @@ pub fn too_rare_to_catch(snapshot: &Snapshot, waits: f64) -> bool {
     snapshot
         .workload
         .as_ref()
-        .filter(|w| !w.window_unknown() && w.window_hours > 0.0)
-        .is_some_and(|w| waits.ceil() / w.window_hours < 1.0)
+        .filter(|w| !w.window_unknown() && w.measurement_hours() > 0.0)
+        .is_some_and(|w| waits.ceil() / w.measurement_hours() < 1.0)
 }
 
 /// What to find a lock wait's holder with ([`find_lock_holder`]), and the SQL that sets it up where that is SQL.

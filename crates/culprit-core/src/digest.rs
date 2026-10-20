@@ -50,6 +50,10 @@ pub struct Digest {
     /// The deadlocks the scan read, grouped by pattern; `count` is `None` when they couldn't be read (see `note`).
     #[serde(default)]
     pub deadlocks: Option<DigestDeadlocks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::measurement::DatabaseIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<crate::measurement::MeasurementContext>,
 }
 
 /// One of the queries that used the most database time. Its statement is redacted: literal values are placeholders.

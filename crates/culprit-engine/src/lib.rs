@@ -695,6 +695,7 @@ impl Workspace {
         snapshot.taken_at = taken_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         snapshot.connection = name.to_string();
         snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+        snapshot.ensure_measurement();
         let dir = self.paths.reports_dir(name);
         // What the database dated itself since the previous scan (schema, settings), for the change timeline.
         let previous = reports::latest_summary(&dir, None);
@@ -727,7 +728,7 @@ impl Workspace {
         history::set_aside_replica_usage(&mut snapshot);
         let same_database = previous.as_ref().filter(|p| history::same_database(p, &snapshot));
         let evictions = trends::evictions(&snapshot);
-        if let Some(workload) = snapshot.workload.as_mut().filter(|w| !w.windowed) {
+        if let Some(workload) = snapshot.workload.as_mut().filter(|w| w.is_cumulative()) {
             // A source that can't say when it started counting (pg_stat_statements before 14) gets its window from the
             // scan before.
             let before = same_database.and_then(|p| Some((p.workload.as_ref()?, p.taken_at.as_str())));
@@ -1157,7 +1158,7 @@ impl Workspace {
         if !info.engine.abilities().periods {
             return Err(info.engine.refused(culprit_core::Ability::Periods));
         }
-        let windowed = workload.map(|w| w.windowed).unwrap_or(info.engine == Engine::Mssql);
+        let windowed = workload.map(|w| w.is_windowed()).unwrap_or(info.engine == Engine::Mssql);
         if windowed {
             let since = workload.and_then(|w| w.window_start.as_deref()).and_then(culprit_core::changes::epoch);
             let (baseline, recent) = changes::resolve(request, (since.unwrap_or(now - 86_400.0), now))?;
@@ -1178,7 +1179,7 @@ impl Workspace {
         let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let history: Vec<trends::Counters> = reports::counters_history(&self.paths.reports_dir(name), &at)
             .into_iter()
-            .filter(|c| latest_counters.as_ref().is_none_or(|l| l.source == c.source && l.database == c.database))
+            .filter(|c| latest_counters.as_ref().is_none_or(|l| l.same_series(c)))
             .collect();
         let times: Vec<f64> = history.iter().filter_map(|c| culprit_core::changes::epoch(&c.taken_at)).collect();
         let first = times.iter().copied().fold(f64::INFINITY, f64::min);

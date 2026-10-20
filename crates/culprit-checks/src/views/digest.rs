@@ -9,7 +9,7 @@ use culprit_core::{
 /// What a report says, and what changed since `previous` (an earlier report of the same database). `top` caps every
 /// list of findings, index advice and deadlock patterns; `top_queries` is how many of the heaviest queries to list.
 pub fn digest(report: &Report, previous: Option<&Report>, top: usize, top_queries: usize) -> Digest {
-    let baseline = previous.map(|p| {
+    let baseline = previous.filter(|p| p.snapshot.report_comparison(&report.snapshot).allows_comparison()).map(|p| {
         let findings = p.findings.iter().filter(|f| !f.inactive).map(|f| item(f, None)).collect::<Vec<_>>();
         (p.snapshot.taken_at.clone(), findings)
     });
@@ -19,7 +19,11 @@ pub fn digest(report: &Report, previous: Option<&Report>, top: usize, top_querie
 /// The same, compared with a previous digest instead of a report: what a scheduled job keeps between runs, since a
 /// digest holds no statement text or parameter values and a report does.
 pub fn digest_since(report: &Report, previous: &Digest, top: usize, top_queries: usize) -> Digest {
-    build(report, Some((previous.taken_at.clone(), previous.findings.clone())), top, top_queries)
+    let baseline = previous
+        .comparison(&report.snapshot)
+        .allows_comparison()
+        .then(|| (previous.taken_at.clone(), previous.findings.clone()));
+    build(report, baseline, top, top_queries)
 }
 
 fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: usize, top_queries: usize) -> Digest {
@@ -73,6 +77,8 @@ fn build(report: &Report, baseline: Option<(String, Vec<DigestFinding>)>, top: u
         }
     });
     Digest {
+        identity: report.snapshot.identity.clone(),
+        measurement: report.snapshot.captured_measurement(),
         connection: report.snapshot.connection.clone(),
         server: board.product.clone(),
         database: board.database.clone(),

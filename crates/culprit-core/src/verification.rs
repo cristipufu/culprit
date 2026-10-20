@@ -57,9 +57,31 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
         ids.to_vec()
     };
     let find = |report: &'_ Report, id: &str| report.findings.iter().find(|f| f.id == id).cloned();
+    let identity = before.snapshot.database_comparison(&after.snapshot);
+    let measurement = before.snapshot.report_comparison(&after.snapshot);
     let mut findings = Vec::new();
     for id in &targets {
         let (was, now) = (find(before, id), find(after, id));
+        let query_evidence = was
+            .as_ref()
+            .or(now.as_ref())
+            .is_some_and(|f| !f.queries.is_empty() || f.subject.kind == crate::SubjectKind::Query);
+        let incompatible = identity.reason().or_else(|| {
+            (query_evidence && before.snapshot.workload.is_some() && after.snapshot.workload.is_some())
+                .then(|| measurement.reason())
+                .flatten()
+        });
+        if let Some(reason) = incompatible {
+            findings.push(VerifiedFinding {
+                id: id.clone(),
+                title: now.as_ref().or(was.as_ref()).map(|f| f.title.clone()).unwrap_or_else(|| id.clone()),
+                status: VerifyStatus::Unknown,
+                before: was.map(|f| f.impact.label),
+                after: now.map(|f| f.impact.label),
+                note: Some(reason.explanation().into()),
+            });
+            continue;
+        }
         let item = match (was, now) {
             (Some(was), Some(now)) => VerifiedFinding {
                 id: id.clone(),
@@ -133,7 +155,14 @@ pub fn compare_reports(before: &Report, after: &Report, ids: &[String]) -> Verif
     let new_findings: Vec<VerifiedFinding> = after
         .findings
         .iter()
-        .filter(|f| f.is_actionable() && !before.findings.iter().any(|b| b.id == f.id) && !targets.contains(&f.id))
+        .filter(|f| {
+            identity.allows_comparison()
+                && (measurement.allows_comparison()
+                    || (f.queries.is_empty() && f.subject.kind != crate::SubjectKind::Query))
+                && f.is_actionable()
+                && !before.findings.iter().any(|b| b.id == f.id)
+                && !targets.contains(&f.id)
+        })
         .map(|f| VerifiedFinding {
             id: f.id.clone(),
             title: f.title.clone(),
@@ -170,13 +199,13 @@ fn still_present_note(was: &Finding, now: &Finding, after: &Report) -> Option<St
     if !now.queries.is_empty()
         && let Some(w) = after.snapshot.workload.as_ref()
     {
-        let span = format::duration(w.window_hours * 3_600_000.0);
+        let span = format::duration(w.measurement_hours() * 3_600_000.0);
         return Some(if let Some(log) = &w.log {
             format!(
                 "It is measured from the {log} log Culprit read, which still includes runs from before the change. \
                  Scan again with a log written since."
             )
-        } else if w.windowed {
+        } else if w.is_windowed() {
             format!(
                 "It is measured over the last {span} of workload, which still includes runs from before the change. \
                  Check again once that window has moved past it, or scan with a shorter window."

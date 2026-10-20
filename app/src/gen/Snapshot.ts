@@ -5,6 +5,7 @@ import type { ColumnInfo } from "./ColumnInfo";
 import type { ConstraintIssue } from "./ConstraintIssue";
 import type { ContentionBaseline } from "./ContentionBaseline";
 import type { CountBaseline } from "./CountBaseline";
+import type { DatabaseIdentity } from "./DatabaseIdentity";
 import type { DeadlockReport } from "./DeadlockReport";
 import type { Environment } from "./Environment";
 import type { EscalationBaseline } from "./EscalationBaseline";
@@ -79,4 +80,4 @@ evictions_before: CountBaseline | null,
  * How big each table's data was at an earlier scan of the same database, set from the scans Culprit keeps: what
  * tells how fast a table grows. `None` without an earlier scan.
  */
-sizes_before: SizeBaseline | null, sources?: Array<SourceOutcome>, };
+sizes_before: SizeBaseline | null, sources?: Array<SourceOutcome>, identity?: DatabaseIdentity | null, };

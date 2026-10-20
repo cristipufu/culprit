@@ -11,7 +11,7 @@ use crate::value::Rec;
 
 pub(crate) type MsClient = Client<Compat<TcpStream>>;
 
-const DEFAULT_PORT: u16 = 1433;
+pub(crate) const DEFAULT_PORT: u16 = 1433;
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);

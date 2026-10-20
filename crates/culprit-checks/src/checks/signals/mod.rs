@@ -137,9 +137,9 @@ fn is_mariadb(snapshot: &Snapshot) -> bool {
 fn window_phrase(snapshot: &Snapshot) -> String {
     match snapshot.workload.as_ref() {
         Some(w) if w.log.is_some() => format!("over {}", w.window_phrase()),
-        Some(w) if w.windowed => format!("in the last {}", culprit_core::span_words(w.window_hours)),
-        Some(w) if w.window_hours > 0.0 => {
-            format!("since its statistics began {} ago", culprit_core::span_words(w.window_hours))
+        Some(w) if w.is_windowed() => format!("in the last {}", culprit_core::span_words(w.measurement_hours())),
+        Some(w) if w.measurement_hours() > 0.0 => {
+            format!("since its statistics began {} ago", culprit_core::span_words(w.measurement_hours()))
         }
         _ => "since its statistics began".into(),
     }
@@ -235,7 +235,7 @@ fn looks_like_export(snapshot: &Snapshot, q: &QueryStat) -> bool {
     let few_a_day = snapshot
         .workload
         .as_ref()
-        .filter(|w| w.window_hours >= culprit_core::PER_DAY_MIN_HOURS)
+        .filter(|w| w.measurement_hours() >= culprit_core::PER_DAY_MIN_HOURS)
         .and_then(|w| w.rate_per_day_of(q, q.executions))
         .is_some_and(|d| d <= 4.0);
     unfiltered && few_a_day
@@ -287,7 +287,7 @@ fn per_run(total: f64, runs: f64) -> f64 {
 fn window_start_unknown(snapshot: &Snapshot) -> bool {
     snapshot.server.engine == Engine::Postgres
         && !culprit_core::version_at_least(&snapshot.server.version, [14, 0, 0])
-        && snapshot.workload.as_ref().is_some_and(|w| !w.windowed)
+        && snapshot.workload.as_ref().is_some_and(|w| !w.is_windowed())
 }
 
 /// [`at_least_per_day_of`] for statement `q`'s `total` (at the rate it ran while it ran: a burst on its own total),
@@ -305,7 +305,8 @@ fn runs_at_least(snapshot: &Snapshot, queries: &[&QueryStat], per_day: f64) -> b
     }
     let runs: f64 = queries.iter().map(|q| q.executions).sum();
     let rate: Option<f64> = queries.iter().map(|q| w.rate_per_day_of(q, q.executions)).sum();
-    rate.is_some_and(|r| r >= per_day) || (w.window_hours > 0.0 && w.window_hours <= 24.0 && runs >= per_day)
+    rate.is_some_and(|r| r >= per_day)
+        || (w.measurement_hours() > 0.0 && w.measurement_hours() <= 24.0 && runs >= per_day)
 }
 
 /// [`rate_per_day_of`] statement `q`'s `value` for a threshold (a burst's own total, never extrapolated to a day),

@@ -128,7 +128,7 @@ pub(super) fn plan_changes<'a>(s: &'a Snapshot, w: &Workload) -> Vec<PlanChange<
 
 pub(super) fn db_time(s: &Snapshot) -> Tile {
     let Some(w) = &s.workload else { return no_workload(TileKey::DbTime, "database time isn't measured") };
-    let per_day = w.window_hours >= PER_DAY_MIN_HOURS;
+    let per_day = w.measurement_hours() >= PER_DAY_MIN_HOURS;
     let window = window_phrase(w);
     let mut metrics = Vec::new();
     if per_day {
@@ -149,7 +149,7 @@ pub(super) fn db_time(s: &Snapshot) -> Tile {
         let share = (cpu / w.total_time_ms).min(1.0);
         metrics.push(TileMetric::new("cpu-share", "On CPU", Some(share), format::percent(share)));
     }
-    metrics.push(TileMetric::new("window-hours", "Covers", Some(w.window_hours), span(w.window_hours)));
+    metrics.push(TileMetric::new("window-hours", "Covers", Some(w.measurement_hours()), span(w.measurement_hours())));
 
     let changes = plan_changes(s, w);
     let (status, takeaway) = match trend(w) {
@@ -211,7 +211,7 @@ pub(super) fn db_time(s: &Snapshot) -> Tile {
             query_handle(c.query),
             format::percent(c.share)
         )),
-        None if !w.windowed && w.timeline.as_ref().is_none_or(|t| t.starts.len() < 2) => Some(format!(
+        None if !w.is_windowed() && w.timeline.as_ref().is_none_or(|t| t.starts.len() < 2) => Some(format!(
             "{} keeps running totals only, so the trend comes from Culprit's own scans; it appears after the next scan.",
             w.source
         )),

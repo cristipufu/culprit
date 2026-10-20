@@ -38,13 +38,20 @@ use conn::{MsClient, Pool, SessionKind, connect};
 use probe::Probe;
 
 pub struct MssqlProvider {
+    endpoint_host: String,
+    endpoint_port: u16,
     environment: Environment,
     pool: Pool,
 }
 
 impl MssqlProvider {
     pub fn new(spec: &ConnectionSpec) -> Result<Self> {
-        Ok(MssqlProvider { environment: spec.environment, pool: Pool::new(conn::build_config(spec)?) })
+        Ok(MssqlProvider {
+            environment: spec.environment,
+            pool: Pool::new(conn::build_config(spec)?),
+            endpoint_host: spec.host.trim().into(),
+            endpoint_port: spec.port.unwrap_or(conn::DEFAULT_PORT),
+        })
     }
 
     async fn user_session(&self) -> Result<MsClient> {
@@ -371,6 +378,7 @@ impl Provider for MssqlProvider {
             t.forwarded_fetches = misc_part.forwarded.get(&(t.schema.to_lowercase(), t.name.to_lowercase())).copied();
         }
         let mut snapshot = Snapshot {
+            identity: None,
             sources,
             format: SNAPSHOT_FORMAT,
             id: taken_at.format("%Y%m%dT%H%M%SZ").to_string(),
@@ -412,6 +420,13 @@ impl Provider for MssqlProvider {
             }
             Err(err) => snapshot.notes.push(CollectorNote { collector: "signals".into(), message: err.message }),
         }
+        snapshot.bind_identity(culprit_core::DatabaseIdentity::server(
+            Engine::Mssql,
+            &snapshot.server.database,
+            &self.endpoint_host,
+            self.endpoint_port,
+            None,
+        ));
         snapshot.duration_ms = started.elapsed().as_secs_f64() * 1_000.0;
         Ok(snapshot)
     }

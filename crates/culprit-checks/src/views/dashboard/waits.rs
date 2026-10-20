@@ -6,7 +6,7 @@ use super::*;
 /// it. A sample taken just now needs a second of waiting in it.
 fn material(s: &Snapshot, scope: WaitScope, ms: f64) -> bool {
     let hours = match scope {
-        WaitScope::Window | WaitScope::Statements => s.workload.as_ref().map(|w| w.window_hours),
+        WaitScope::Window | WaitScope::Statements => s.workload.as_ref().map(|w| w.measurement_hours()),
         WaitScope::SinceStartup => s.pressure.as_ref().and_then(|p| p.uptime_hours),
         WaitScope::Sampled => return ms >= 1_000.0,
     };

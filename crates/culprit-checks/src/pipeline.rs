@@ -66,6 +66,7 @@ impl Refine for Step<fn(&Snapshot, &mut Vec<Finding>)> {
 fn preparation() -> Vec<Arc<dyn Prepare>> {
     let step = |name: &'static str, run: fn(&mut Snapshot)| Arc::new(Step { name, run }) as Arc<dyn Prepare>;
     vec![
+        step("measurement context identifies this database and its clock", measurement_context),
         step("index availability and maintenance follow the engine", |s| {
             for i in &mut s.indexes {
                 i.state = Some(if i.is_disabled {
@@ -92,6 +93,37 @@ fn preparation() -> Vec<Arc<dyn Prepare>> {
         step("MariaDB's lock time unknown where it counts the whole run", lock_time_that_counts_the_run),
         step("a scan's filter judged by what its runs measured", crate::indexes::mark_measured_kept),
     ]
+}
+
+fn measurement_context(snapshot: &mut Snapshot) {
+    use culprit_core::{MeasurementScope, MeasurementSource};
+    let Some(context) = snapshot.workload.as_ref().and_then(|w| w.measurement.clone()) else { return };
+    let reason = if context.scope != MeasurementScope::Database {
+        Some(
+            "The workload source does not isolate this database; its measurements cannot assess this database."
+                .to_string(),
+        )
+    } else if !snapshot.measurement_consistency().allows_comparison() {
+        Some("The workload's recorded database identity does not match this snapshot; its measurements were left unassessed.".to_string())
+    } else {
+        None
+    };
+    if let Some(message) = reason {
+        snapshot.workload = None;
+        snapshot.notes.push(CollectorNote { collector: "workload".into(), message });
+        return;
+    }
+    if let Some(workload) = &mut snapshot.workload {
+        workload.windowed = context.period.is_windowed();
+        workload.window_hours = context.period.hours().unwrap_or(0.0);
+        if let culprit_core::MeasurementPeriod::Window { span: Some(span), .. } = &context.period {
+            workload.window_start = Some(span.start.clone());
+            workload.window_end = Some(span.end.clone());
+        }
+        if let MeasurementSource::Workload(kind) = context.source {
+            workload.kind = Some(kind);
+        }
+    }
 }
 
 /// Older snapshots did not save these facts. Reconstruct only scope and operation kind; an unknown source reset

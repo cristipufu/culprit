@@ -104,7 +104,9 @@ pub fn resolve(request: &ChangeRequest, history: (f64, f64)) -> Result<(Period, 
 
 /// For sources compared through scans, the natural default: since the previous scan, against the gap before it.
 pub fn default_scan_periods(history: &[Counters]) -> Option<(Period, Period)> {
-    let mut times: Vec<f64> = history.iter().filter_map(|c| epoch(&c.taken_at)).collect();
+    let anchor = history.iter().filter_map(|c| Some((epoch(&c.taken_at)?, c))).max_by(|a, b| a.0.total_cmp(&b.0))?.1;
+    let mut times: Vec<f64> =
+        history.iter().filter(|c| c.same_series(anchor)).filter_map(|c| epoch(&c.taken_at)).collect();
     times.sort_by(f64::total_cmp);
     let n = times.len();
     (n >= 3).then(|| {
@@ -227,7 +229,18 @@ pub fn from_scans(history: &[Counters], baseline: &Period, recent: &Period) -> P
         recent: recent.clone(),
         ..Default::default()
     };
-    let mut points: Vec<(f64, &Counters)> = history.iter().filter_map(|c| Some((epoch(&c.taken_at)?, c))).collect();
+    let cutoff = epoch(&recent.end).unwrap_or(f64::NEG_INFINITY);
+    let anchor = history
+        .iter()
+        .filter_map(|c| Some((epoch(&c.taken_at)?, c)))
+        .filter(|(at, _)| *at <= cutoff)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, c)| c);
+    let mut points: Vec<(f64, &Counters)> = history
+        .iter()
+        .filter(|c| anchor.is_some_and(|a| c.same_series(a)))
+        .filter_map(|c| Some((epoch(&c.taken_at)?, c)))
+        .collect();
     points.sort_by(|a, b| a.0.total_cmp(&b.0));
     let at = |p: &Period| (epoch(&p.start).unwrap_or(0.0), epoch(&p.end).unwrap_or(0.0));
     let ((b0, _), (r0, r1)) = (at(baseline), at(recent));
@@ -410,6 +423,7 @@ mod tests {
 
     fn counters(at: &str, total: [f64; 2], queries: &[(&str, f64, f64, Option<&str>)]) -> Counters {
         Counters {
+            measurement: None,
             taken_at: at.into(),
             source: "pg_stat_statements".into(),
             database: "shop".into(),

@@ -183,7 +183,7 @@ pub(crate) fn verify_between_scans(snapshot: &Snapshot, q: &QueryStat, between: 
 /// [`verify_between_scans`] for a change that leaves the statements as they are (an index): `queries` names them
 /// ("this query", "these queries").
 pub(crate) fn what_changed_between_scans(snapshot: &Snapshot, queries: &str, between: &str) -> Option<String> {
-    let w = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+    let w = snapshot.workload.as_ref().filter(|w| !w.is_windowed())?;
     Some(format!(
         "{} keeps running totals, so a later scan's runs, share and averages for {queries} still hold every run from before the change. Scan when the change ships and again a day or more later, then compare the two in What changed, with Since at the ship time (`{WHAT_CHANGED_COMMAND}`): there {between}.",
         w.source
@@ -196,7 +196,7 @@ pub(crate) fn what_changed_between_scans(snapshot: &Snapshot, queries: &str, bet
 /// scan's ("4.2 GB over 214 runs"); the caller says what the difference shows once the change works. Without the
 /// sentence's final stop. `None` on a windowed source, whose next scan covers the runs since.
 pub(crate) fn verify_counts_between_scans(snapshot: &Snapshot, counted: &str, now: &str) -> Option<String> {
-    let w = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+    let w = snapshot.workload.as_ref().filter(|w| !w.is_windowed())?;
     Some(format!(
         "{} keeps running totals, so compare its {counted} in a scan taken once the change is live and one a day or more later ({now} in this scan)",
         w.source

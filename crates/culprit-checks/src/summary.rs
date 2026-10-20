@@ -101,7 +101,7 @@ fn runs_said(snapshot: &Snapshot) -> Vec<culprit_core::RunsSaid> {
         .iter()
         .filter(|q| {
             w.cadence(q).is_burst()
-                || (w.window_hours >= culprit_core::PER_DAY_MIN_HOURS && w.runs_per_day_of(q).is_none())
+                || (w.measurement_hours() >= culprit_core::PER_DAY_MIN_HOURS && w.runs_per_day_of(q).is_none())
         })
         .map(|q| culprit_core::RunsSaid { query: q.id.clone(), runs: w.cost_of(q).runs })
         .collect()

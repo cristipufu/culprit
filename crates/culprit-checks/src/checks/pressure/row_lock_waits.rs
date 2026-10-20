@@ -36,8 +36,8 @@ pub fn row_lock_waits(snapshot: &Snapshot) -> Vec<Finding> {
     let share = snapshot
         .workload
         .as_ref()
-        .filter(|w| w.window_hours >= culprit_core::RATE_MIN_HOURS && w.total_time_ms > 0.0)
-        .map(|w| per_hour_ms / (w.total_time_ms / w.window_hours));
+        .filter(|w| w.measurement_hours() >= culprit_core::RATE_MIN_HOURS && w.total_time_ms > 0.0)
+        .map(|w| per_hour_ms / (w.total_time_ms / w.measurement_hours()));
     let mut f = finding(
         "row-lock-waits",
         &server_key(snapshot),

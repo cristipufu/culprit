@@ -74,7 +74,7 @@ pub(crate) use health::{grade_findings, grade_on_evidence};
 fn waits_window(snapshot: &Snapshot) -> (Option<f64>, bool) {
     let windowed = snapshot.server.engine == Engine::Mssql && app_queries(snapshot).any(|q| !q.waits.is_empty());
     let hours = if windowed {
-        snapshot.workload.as_ref().map(|w| w.window_hours)
+        snapshot.workload.as_ref().map(|w| w.measurement_hours())
     } else {
         pressure(snapshot).and_then(|p| p.uptime_hours)
     };

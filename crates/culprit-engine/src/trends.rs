@@ -10,7 +10,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use culprit_core::{Plan, QueryTrend, Report, Timeline, TimelineSource, Workload};
+use culprit_core::{
+    Comparison, ComparisonReason, CounterTransition, MeasurementContext, Plan, QueryTrend, Report, Snapshot, Timeline,
+    TimelineSource, Workload,
+};
 use serde::{Deserialize, Serialize};
 
 /// Scans older than this don't shape the trend.
@@ -41,6 +44,8 @@ pub struct Counters {
     /// about 5% of the entries): when it grew between two scans, entries left and took their totals with them.
     #[serde(default)]
     pub evictions: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<MeasurementContext>,
 }
 
 /// The setting a pg_stat_statements scan reports its evictions in.
@@ -92,13 +97,55 @@ fn short_object(name: &str) -> String {
 impl Counters {
     /// `None` for windowed sources (Query Store keeps its own history).
     pub fn of(report: &Report) -> Option<Counters> {
-        let snapshot = &report.snapshot;
-        let workload = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
-        Some(Counters::of_workload(workload, &snapshot.server.database, &snapshot.taken_at, evictions(snapshot)))
+        Self::from_snapshot(&report.snapshot)
+    }
+
+    pub fn from_snapshot(snapshot: &Snapshot) -> Option<Counters> {
+        if !snapshot.measurement_consistency().allows_comparison() {
+            return None;
+        }
+        let workload = snapshot.workload.as_ref().filter(|w| w.is_cumulative())?;
+        let mut counters =
+            Counters::of_workload(workload, &snapshot.server.database, &snapshot.taken_at, evictions(snapshot));
+        if snapshot.identity.is_some() || workload.measurement.is_some() {
+            counters.measurement = snapshot.workload_measurement();
+        }
+        Some(counters)
+    }
+
+    /// Old counter files keep their original source/name correlation; known endpoints never borrow that identity.
+    pub fn comparison(&self, other: &Self) -> Comparison {
+        match (&self.measurement, &other.measurement) {
+            (Some(a), Some(b)) => {
+                if a.scope != culprit_core::MeasurementScope::Database
+                    || b.scope != culprit_core::MeasurementScope::Database
+                {
+                    return Comparison::Incompatible(ComparisonReason::DifferentScope);
+                }
+                if a.database.database != self.database || b.database.database != other.database {
+                    return Comparison::Incompatible(ComparisonReason::UnknownIdentity);
+                }
+                if !a.period.is_cumulative() || !b.period.is_cumulative() {
+                    return Comparison::Incompatible(ComparisonReason::DifferentPeriod);
+                }
+                a.series_comparison(b)
+            }
+            (None, None) if self.source != other.source => Comparison::Incompatible(ComparisonReason::DifferentSource),
+            (None, None) if self.database != other.database => {
+                Comparison::Incompatible(ComparisonReason::DifferentDatabase)
+            }
+            (None, None) => Comparison::Legacy,
+            _ => Comparison::Incompatible(ComparisonReason::UnknownIdentity),
+        }
+    }
+
+    pub fn same_series(&self, other: &Self) -> bool {
+        self.comparison(other).allows_comparison()
     }
 
     fn of_workload(workload: &Workload, database: &str, taken_at: &str, evictions: Option<f64>) -> Counters {
         Counters {
+            measurement: workload.measurement.clone(),
             taken_at: taken_at.to_string(),
             source: workload.source.clone(),
             database: database.to_string(),
@@ -141,16 +188,27 @@ pub fn evictions_baseline(
     snapshot: &culprit_core::Snapshot,
 ) -> Option<culprit_core::CountBaseline> {
     let now = evictions(snapshot)?;
-    let workload = snapshot.workload.as_ref().filter(|w| !w.windowed)?;
+    let workload = snapshot.workload.as_ref().filter(|w| w.is_cumulative())?;
+    let current = Counters::from_snapshot(snapshot)?;
     let at = epoch(&snapshot.taken_at)?;
     history
         .iter()
-        .filter(|c| c.source == workload.source && c.database == snapshot.server.database)
+        .filter(|c| c.same_series(&current))
         .filter_map(|c| Some((epoch(&c.taken_at)?, c, c.evictions?)))
         .filter(|(t, _, _)| *t <= at - culprit_core::PER_DAY_MIN_HOURS * 3600.0)
-        .map(|(t, c, then)| {
-            let start = (c.window_start.as_deref(), workload.window_start.as_deref());
-            (t, culprit_core::CountBaseline::between(&c.taken_at, then, now, start.0, start.1))
+        .filter_map(|(t, c, then)| {
+            let baseline = match (&c.measurement, &current.measurement) {
+                (Some(a), Some(b)) => culprit_core::CountBaseline::in_context(&c.taken_at, then, now, a, b)?,
+                (None, None) => culprit_core::CountBaseline::between(
+                    &c.taken_at,
+                    then,
+                    now,
+                    c.window_start.as_deref(),
+                    workload.window_start.as_deref(),
+                ),
+                _ => return None,
+            };
+            Some((t, baseline))
         })
         .filter(|(_, b)| !b.restarted)
         .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -174,8 +232,19 @@ pub enum StepKind {
 const SUM_JITTER_MS: f64 = 0.5;
 
 pub fn step_kind(ta: f64, a: &Counters, b: &Counters) -> StepKind {
-    if b.window_start.as_deref().and_then(epoch).is_some_and(|r| r > ta + 1.0) {
-        return StepKind::Reset;
+    if !a.same_series(b) {
+        return StepKind::Unknown;
+    }
+    match (&a.measurement, &b.measurement) {
+        (Some(before), Some(after)) => match before.counter_transition(after) {
+            CounterTransition::Reset => return StepKind::Reset,
+            CounterTransition::Incompatible(_) => return StepKind::Unknown,
+            _ => {}
+        },
+        (None, None) if b.window_start.as_deref().and_then(epoch).is_some_and(|r| r > ta + 1.0) => {
+            return StepKind::Reset;
+        }
+        _ => {}
     }
     let shrank = b.total_executions < a.total_executions || b.total_time_ms < a.total_time_ms - SUM_JITTER_MS;
     let evicted = matches!((a.evictions, b.evictions), (Some(x), Some(y)) if y > x);
@@ -193,6 +262,14 @@ pub fn query_step(
     id: &str,
     first_seen: Option<f64>,
 ) -> Option<[f64; 2]> {
+    if !a.same_series(b) {
+        return None;
+    }
+    if let (Some(before), Some(after)) = (&a.measurement, &b.measurement)
+        && matches!(before.counter_transition(after), CounterTransition::Incompatible(_))
+    {
+        return None;
+    }
     let after = *b.queries.get(id)?;
     if kind == StepKind::Reset {
         return Some(after);
@@ -271,7 +348,7 @@ pub fn from_scans(
     let Some(now) = epoch(taken_at) else { return };
     let mut points: Vec<(f64, &Counters)> = history
         .iter()
-        .filter(|c| c.source == current.source && c.database == current.database)
+        .filter(|c| c.same_series(&current))
         .filter_map(|c| Some((epoch(&c.taken_at)?, c)))
         .filter(|(t, _)| *t < now - 1.0 && *t >= now - HISTORY_DAYS * 86_400.0)
         .collect();
@@ -381,10 +458,10 @@ fn round(ms: f64) -> f64 {
 }
 
 /// Earlier scans of the same database and source, newest first, within [`HISTORY_DAYS`] before `now`.
-fn earlier<'a>(history: &'a [Counters], source: &str, database: &str, now: f64) -> Vec<(f64, &'a Counters)> {
+fn earlier<'a>(history: &'a [Counters], current: &Counters, now: f64) -> Vec<(f64, &'a Counters)> {
     let mut points: Vec<(f64, &Counters)> = history
         .iter()
-        .filter(|c| c.source == source && c.database == database)
+        .filter(|c| c.same_series(current))
         .filter_map(|c| Some((epoch(&c.taken_at)?, c)))
         .filter(|(t, _)| *t < now - 1.0 && *t >= now - HISTORY_DAYS * 86_400.0)
         .collect();
@@ -397,47 +474,47 @@ fn earlier<'a>(history: &'a [Counters], source: &str, database: &str, now: f64) 
 /// how long it has been quiet at least. A statement no earlier scan tracked, or whose entry started over, is left
 /// unknown; one that hasn't run since the oldest scan that tracked it last ran by then.
 pub fn last_seen_from_scans(workload: &mut Workload, database: &str, taken_at: &str, history: &[Counters]) {
-    if workload.windowed {
+    if !workload.is_cumulative() {
         return;
     }
     let Some(now) = epoch(taken_at) else { return };
-    let points = earlier(history, &workload.source, database, now);
+    let current = Counters::of_workload(workload, database, taken_at, None);
+    let points = earlier(history, &current, now);
     if points.is_empty() {
         return;
     }
-    let start_now = workload.window_start.clone();
     for q in workload.queries.iter_mut().filter(|q| q.last_seen.is_none()) {
-        q.last_seen = last_ran(&points, taken_at, start_now.as_deref(), &q.id, q.executions);
+        q.last_seen = last_ran(&points, &current, &q.id, q.executions);
     }
 }
 
-fn last_ran(
-    points: &[(f64, &Counters)],
-    taken_at: &str,
-    start_now: Option<&str>,
-    id: &str,
-    runs: f64,
-) -> Option<String> {
-    let (mut later_at, mut later_runs, mut later_start) = (taken_at, runs, start_now);
+fn last_ran(points: &[(f64, &Counters)], current: &Counters, id: &str, runs: f64) -> Option<String> {
+    let taken_at = current.taken_at.as_str();
+    let (mut later, mut later_runs) = (current, runs);
     for (t, c) in points {
-        // The counters started over after this scan: the statement ran since then, by the later scan.
-        if later_start.and_then(epoch).is_some_and(|r| r > t + 1.0) {
-            break;
+        match (&c.measurement, &later.measurement) {
+            (Some(before), Some(after)) => match before.counter_transition(after) {
+                CounterTransition::Incompatible(_) => return None,
+                CounterTransition::Reset => return (later_runs > 0.0).then(|| later.taken_at.clone()),
+                _ => {}
+            },
+            (None, None) if later.window_start.as_deref().and_then(epoch).is_some_and(|r| r > t + 1.0) => break,
+            _ => {}
         }
         let Some([_, before]) = c.queries.get(id).copied() else {
             // Not tracked then: it ran at some point since, unknown when, unless a later scan already said.
-            return (later_at != taken_at).then(|| later_at.to_string());
+            return (later.taken_at != taken_at).then(|| later.taken_at.clone());
         };
         if before < later_runs - 0.5 {
-            return Some(later_at.to_string());
+            return Some(later.taken_at.clone());
         }
         if before > later_runs + 0.5 {
             // Its entry started over (evicted and created again): unknown.
             return None;
         }
-        (later_at, later_runs, later_start) = (c.taken_at.as_str(), before, c.window_start.as_deref());
+        (later, later_runs) = (c, before);
     }
-    (later_at != taken_at).then(|| later_at.to_string())
+    (later.taken_at != taken_at).then(|| later.taken_at.clone())
 }
 
 /// pg_stat_statements before PostgreSQL 14 keeps no reset time, and its statistics outlive restarts, so the provider
@@ -445,12 +522,22 @@ fn last_ran(
 /// counting, these are the same counters and started when it said (still unknown if it didn't know); if they started
 /// over, they did after it, so its time is the earliest they can have started, and the window at most that long.
 pub fn infer_window(workload: &mut Workload, previous: Option<(&Workload, &str)>, taken_at: &str) {
-    if !workload.window_unknown() {
+    if !workload.is_cumulative() || !workload.window_unknown() {
         return;
     }
-    let Some((before, before_at)) = previous.filter(|(p, _)| !p.windowed && p.source == workload.source) else {
+    let Some((before, before_at)) = previous.filter(|(p, _)| p.is_cumulative() && p.source == workload.source) else {
         return;
     };
+    match (&before.measurement, &workload.measurement) {
+        (Some(a), Some(b)) => {
+            // Unknown cache-entry ages or dropped totals cannot establish a source-wide reset or a rate period.
+            if a.counter_transition(b) != CounterTransition::Continued {
+                return;
+            }
+        }
+        (None, None) => {}
+        _ => return,
+    }
     let start = if started_over(before, workload) { Some(before_at.to_string()) } else { before.window_start.clone() };
     if let Some(start) = start
         && let (Some(s), Some(n)) = (epoch(&start), epoch(taken_at))
@@ -458,6 +545,11 @@ pub fn infer_window(workload: &mut Workload, previous: Option<(&Workload, &str)>
     {
         workload.window_hours = (n - s) / 3600.0;
         workload.window_start = Some(start);
+        if let Some(context) = &mut workload.measurement
+            && let culprit_core::MeasurementPeriod::Cumulative { hours, .. } = &mut context.period
+        {
+            *hours = Some(workload.window_hours);
+        }
     }
 }
 
@@ -500,6 +592,7 @@ mod tests {
 
     fn workload(reset: &str, queries: Vec<QueryStat>) -> Workload {
         Workload {
+            measurement: None,
             source: "pg_stat_statements".into(),
             kind: Some(culprit_core::WorkloadKind::StatementStats),
             windowed: false,
@@ -713,7 +806,7 @@ mod tests {
         let mut w = unknown.clone();
         infer_window(&mut w, Some((&before, "2026-10-10T00:00:00Z")), "2026-10-11T00:00:00Z");
         assert_eq!(w.window_start.as_deref(), Some("2026-09-01T00:00:00Z"));
-        assert!((w.window_hours - 40.0 * 24.0).abs() < 1e-6);
+        assert!((w.measurement_hours() - 40.0 * 24.0).abs() < 1e-6);
 
         // The counters started over after the previous scan: the window is at most the time since it.
         let mut reset = workload("", vec![query("a", 5.0, 1.0)]);
