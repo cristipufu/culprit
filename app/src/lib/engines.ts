@@ -26,6 +26,8 @@ export function connectFacts(engine: Engine): EngineFacts["connect"] {
   return FACTS[engine].connect;
 }
 
+export function engineLimitations(engine: Engine): string[] { return FACTS[engine].limitations; }
+
 /** MariaDB is served by the MySQL engine; the server's product string (or a plan's flavor) tells them apart. */
 export function isMariadb(engine: Engine, product?: string | null): boolean {
   return engine === "mysql" && !!product?.startsWith("MariaDB");

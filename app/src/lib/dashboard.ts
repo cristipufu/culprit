@@ -24,6 +24,7 @@ export function nowTile(live: LiveState): Tile {
   const longest = active.filter((s) => !s.blocked_by).reduce<Session | null>((a, s) => ((s.elapsed_ms ?? 0) > (a?.elapsed_ms ?? 0) || !a ? s : a), null);
   const oldestIdle = idleTx.reduce<Session | null>((a, s) => ((s.transaction_ms ?? 0) > (a?.transaction_ms ?? 0) || !a ? s : a), null);
   const chains = live.blocking?.chains ?? [];
+  const incomplete = !!live.notes?.length || live.sessions.some((s) => !s.blocked_by && !!s.wait && (s.wait.toLowerCase().includes("lock") || s.wait.startsWith("LCK_")));
 
   let status: TileStatus;
   let takeaway: string;
@@ -38,6 +39,9 @@ export function nowTile(live: LiveState): Tile {
   } else if (oldestIdle && (oldestIdle.transaction_ms ?? 0) >= 600_000) {
     status = "watch";
     takeaway = `Session ${oldestIdle.id} is idle with a transaction opened ${duration(oldestIdle.transaction_ms ?? 0)} ago.`;
+  } else if (incomplete) {
+    status = "info";
+    takeaway = "No blocking chain was established; lock visibility is incomplete.";
   } else if (active.length === 0) {
     status = "good";
     takeaway = "Nothing is running right now.";
@@ -73,10 +77,10 @@ export function nowTile(live: LiveState): Tile {
     title: "Right now",
     status,
     takeaway,
-    detail: null,
+    detail: live.notes?.join(" ") || null,
     metrics: [
       metric("active", "Running", active.length),
-      metric("blocked", "Blocked", blocked),
+      { key: "blocked", label: "Identified blocked sessions", value: incomplete ? null : blocked, text: incomplete ? `at least ${blocked}` : String(blocked) },
       metric("idle-in-transaction", "Idle in transaction", idleTx.length),
       metric("long-idle-in-transaction", "Long open idle transactions", idleTx.filter((s) => (s.transaction_ms ?? 0) >= 600_000).length),
       metric("sessions", "Sessions", live.sessions.length),

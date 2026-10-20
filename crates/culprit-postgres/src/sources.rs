@@ -4,6 +4,14 @@
 //! wrong.
 
 use culprit_core::{Capability, Source};
+pub const MULTIXACTS: Source = Source { name: "multixacts", reads: "database and table MultiXact ages", delivers: &[] };
+pub const ARCHIVER: Source = Source { name: "archiver", reads: "shared WAL archive failure counters", delivers: &[] };
+pub const SUBSCRIPTION_ERRORS: Source =
+    Source { name: "subscription_errors", reads: "logical subscription error counters (15+)", delivers: &[] };
+pub const STANDBY_CONFLICTS: Source =
+    Source { name: "standby_conflicts", reads: "standby query cancellation counters", delivers: &[] };
+pub const SEQUENCE_CAPACITY: Source =
+    Source { name: "sequence_capacity", reads: "visible sequence allocation limits", delivers: &[] };
 
 /// Statement statistics: runs, time, rows and buffers per normalized statement.
 pub const STATEMENTS: Source =
@@ -23,6 +31,10 @@ pub const DATABASE_STATS: Source = Source { name: "database statistics", reads: 
 pub const CHECKPOINTS: Source = Source { name: "checkpoints", reads: "checkpoint counters", delivers: &[] };
 /// pg_stat_activity: the oldest transaction holding cleanup back.
 pub const OPEN_TRANSACTIONS: Source = Source { name: "open transactions", reads: "open transactions", delivers: &[] };
+pub const CLEANUP_SLOTS: Source =
+    Source { name: "cleanup slots", reads: "replication slots retaining row or catalog cleanup", delivers: &[] };
+pub const CLEANUP_PREPARED: Source =
+    Source { name: "cleanup prepared", reads: "prepared transactions retaining cleanup", delivers: &[] };
 /// Planning, JIT and WAL per statement (pg_stat_statements' newer columns).
 pub const QUERY_COSTS: Source = Source { name: "query costs", reads: "statement costs", delivers: &[] };
 /// HOT and new-page updates, fillfactor and the bloat estimate per table.
@@ -41,6 +53,11 @@ pub const REPLICATION: Source = Source { name: "replication", reads: "replicatio
 
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
+    MULTIXACTS,
+    ARCHIVER,
+    SUBSCRIPTION_ERRORS,
+    STANDBY_CONFLICTS,
+    SEQUENCE_CAPACITY,
     STATEMENTS,
     TABLES,
     INDEXES,
@@ -50,6 +67,8 @@ pub const ALL: &[Source] = &[
     DATABASE_STATS,
     CHECKPOINTS,
     OPEN_TRANSACTIONS,
+    CLEANUP_SLOTS,
+    CLEANUP_PREPARED,
     QUERY_COSTS,
     TABLE_STORAGE,
     CONSTRAINTS,

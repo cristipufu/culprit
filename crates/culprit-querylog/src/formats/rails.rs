@@ -35,7 +35,7 @@ impl Format for Rails {
         if let Some((cached, ms, sql)) = statement(&line)
             && !cached
         {
-            out.push(Entry { sql, ms, at: self.at });
+            out.push(Entry { sql, ms, at: self.at, ..Default::default() });
         }
     }
 }

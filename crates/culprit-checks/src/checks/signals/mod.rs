@@ -17,6 +17,7 @@ use culprit_core::Check;
 use crate::support::*;
 
 mod big_result;
+mod cluster_health;
 mod connection_churn;
 mod failing_query;
 mod hot_rows;
@@ -28,9 +29,13 @@ mod lock_escalations;
 mod lock_time;
 mod log_volume;
 mod missing_histogram;
+mod operational_errors;
 mod planning_time;
 mod replica_lag;
+mod sequence_capacity;
 mod slow_storage;
+mod sqlite_wal;
+mod storage_capacity;
 mod table_bloat;
 #[cfg(test)]
 mod tests;
@@ -56,6 +61,11 @@ pub use untrusted_constraint::*;
 
 /// The checks this area registers (`crate::all()` runs every area's), in the order their findings tie.
 pub(crate) const CHECKS: &[&dyn Check] = &[
+    &storage_capacity::StorageCapacityCheck,
+    &sequence_capacity::SequenceCapacityCheck,
+    &operational_errors::OperationalErrorsCheck,
+    &cluster_health::ClusterHealthCheck,
+    &sqlite_wal::SqliteWalCheck,
     &FailingQueryCheck,
     &PlanningTimeCheck,
     &JitOverheadCheck,

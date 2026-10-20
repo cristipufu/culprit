@@ -58,7 +58,12 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
             _ => format!("Session {} has kept a transaction open for {open}", t.session),
         },
         (Engine::Postgres, CleanupHolder::ReplicationSlot) => {
-            format!("Replication slot {} holds VACUUM back by {} transactions", t.session, format::count(behind))
+            format!(
+                "Replication slot {} holds {} back by {} transactions",
+                t.session,
+                if t.catalog_only { "system-catalog cleanup" } else { "VACUUM" },
+                format::count(behind)
+            )
         }
         (Engine::Postgres, CleanupHolder::PreparedTransaction) => format!(
             "Prepared transaction '{}' has waited {open} to be committed or rolled back, so VACUUM can't clean up behind it",
@@ -69,10 +74,9 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
             t.session,
             if idle { " doing nothing" } else { "" }
         ),
-        (Engine::Mysql, _) => format!(
-            "A transaction in session {} has been open for {open}, so InnoDB can't purge old row versions",
-            t.session
-        ),
+        (Engine::Mysql, _) => {
+            format!("A transaction in session {} has been open for {open}; check its locks and read view", t.session)
+        }
         (Engine::Sqlite, _) => format!("A transaction has been open for {open}"),
     };
     let program =
@@ -99,6 +103,10 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
             }
             format!("{}{program} Short transactions keep both small.", parts.join(" "))
         }
+        (Engine::Postgres, CleanupHolder::ReplicationSlot) if t.catalog_only => format!(
+            "This replication slot's catalog_xmin keeps old system-catalog row versions for logical decoding, {} transactions behind. It does not establish that this slot holds back cleanup of application-table rows. Check the consumer's progress and recovery requirements before changing or removing a slot.",
+            format::count(behind)
+        ),
         (Engine::Postgres, CleanupHolder::ReplicationSlot) => format!(
             "A replication slot with an xmin (a standby with hot_standby_feedback) keeps VACUUM from removing rows deleted or updated after it, in every database.{}",
             if t.state.as_deref() == Some("inactive slot") {
@@ -123,7 +131,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
                 })
                 .unwrap_or_default();
             format!(
-                "InnoDB keeps old versions of changed rows until the oldest read view that might need them closes, and purge is the whole server's: this transaction holds it back for every database.{history}{}{program}",
+                "InnoDB keeps old versions of changed rows until the oldest read view that might need them closes. Transaction age and isolation level do not establish whether this transaction has acquired that read view, or how much undo it retains. Inspect its read view and locks before attributing whole-server purge history to it.{history}{}{program}",
                 other_database.map(|d| format!(" It runs in database {d}.")).unwrap_or_default()
             )
         }
@@ -137,7 +145,7 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
     f.impact.score = base_score(f.severity);
     f.impact.label =
         if slot { format!("{} transactions behind", format::count(behind)) } else { format!("open {open}") };
-    f.confidence = Confidence::High;
+    f.confidence = if engine == Engine::Mysql { Confidence::Medium } else { Confidence::High };
     if !slot {
         f.metrics.push(Metric::new("Open for", t.seconds * 1000.0, Unit::Ms));
     }
@@ -149,9 +157,9 @@ pub fn held_cleanup(snapshot: &Snapshot) -> Vec<Finding> {
     }
     f.fix = Some(match holder {
         CleanupHolder::ReplicationSlot => Fix {
-            summary: "If the standby that used this slot is gone, drop the slot; if it is only disconnected, reconnect it so it moves on.".into(),
-            sql: Some(format!("SELECT pg_drop_replication_slot('{}');", t.session.replace('\'', "''"))),
-            cost: Some("A standby that still needs this slot can't resume from it and has to be rebuilt.".into()),
+            summary: "Identify the slot's physical standby or logical-decoding consumer and restore its progress. Confirm whether it is intentionally retained before any removal; removing a slot can require rebuilding the consumer and lose its ability to resume.".into(),
+            sql: None,
+            cost: Some("Preserve a slot needed by a consumer until recovery or replacement is planned.".into()),
         },
         CleanupHolder::PreparedTransaction => Fix {
             summary: "Find what prepared it (the transaction manager or application doing two-phase commit) and have it commit or roll back. If nothing will, a DBA can roll it back.".into(),

@@ -4,6 +4,13 @@
 //! detail some checks use; without it those checks say less, never something wrong.
 
 use culprit_core::{Capability, Coverage, ErrorCode, Source};
+pub const LOG_CAPACITY: Source =
+    Source { name: "log_capacity", reads: "database log space and log reuse reason", delivers: &[] };
+pub const FILE_CAPACITY: Source =
+    Source { name: "file_capacity", reads: "data file space and growth limits", delivers: &[] };
+pub const TEMP_CAPACITY: Source = Source { name: "temp_capacity", reads: "tempdb shared space", delivers: &[] };
+pub const SEQUENCE_CAPACITY: Source =
+    Source { name: "sequence_capacity", reads: "sequence and identity allocation limits", delivers: &[] };
 
 use crate::conn::{is_permission_error, map_error};
 
@@ -69,6 +76,10 @@ pub const LOGINS: Source = Source { name: "logins", reads: "login counters", del
 
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
+    LOG_CAPACITY,
+    FILE_CAPACITY,
+    TEMP_CAPACITY,
+    SEQUENCE_CAPACITY,
     QUERY_STORE,
     PLAN_CACHE,
     TABLES,

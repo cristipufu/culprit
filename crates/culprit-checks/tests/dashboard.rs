@@ -47,6 +47,7 @@ fn session(id: &str, state: &str) -> Session {
 fn live(sessions: Vec<Session>, engine: Engine) -> LiveState {
     let blocking = culprit_core::blocking::analyze(engine, &sessions, &[]);
     LiveState {
+        notes: Vec::new(),
         taken_at: "2026-10-11T12:00:00Z".into(),
         sessions,
         waits: vec![],

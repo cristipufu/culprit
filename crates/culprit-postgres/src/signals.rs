@@ -19,6 +19,7 @@ use crate::sources;
 /// Collect every signal into `snapshot`, each source read through `Coverage::read` (`crate::sources`): these add
 /// detail and lock nothing, so a failure is a note.
 pub async fn collect(client: &Client, probe: &Probe, snapshot: &mut Snapshot) {
+    crate::operations::collect(client, probe.version_num, snapshot).await;
     let mut coverage = Coverage::default();
     if let StatementsAccess::Usable { relation, .. } = &probe.statements
         && let Some(workload) = snapshot.workload.as_mut()

@@ -15,7 +15,46 @@ const FREE_SHARE_AT_LEAST: f64 = 0.25;
 
 /// The file's findings, under the `config` check.
 pub fn settings(snapshot: &Snapshot) -> Vec<Finding> {
-    [statistics(snapshot), free_space(snapshot)].into_iter().flatten().collect()
+    let mut out: Vec<Finding> = [statistics(snapshot), free_space(snapshot)].into_iter().flatten().collect();
+    if snapshot.server.has(Capability::Statistics) {
+        for t in snapshot.tables.iter().filter(|t| !t.is_virtual()) {
+            let missing: Vec<_> = snapshot
+                .indexes_on(&t.schema, &t.name)
+                .filter(|i| !i.is_primary_key && i.has_statistics == Some(false))
+                .collect();
+            if missing.is_empty() || t.rows.is_some_and(|r| r < 10_000.0) {
+                continue;
+            }
+            let mut f = finding(
+                "config",
+                &format!("sqlite-statistics:{}", t.qualified()),
+                Category::Maintenance,
+                subject(SubjectKind::Table, t.qualified()),
+            );
+            f.title = format!("{} has {} indexes without planner statistics", t.name, missing.len());
+            f.summary = "sqlite_stat1 exists, but these indexes have no entry. Other tables having statistics does not tell SQLite how selective these keys are. This can follow adding an index after maintenance; it does not by itself establish a slow query.".into();
+            f.severity = Severity::Low;
+            f.confidence = Confidence::High;
+            f.impact.score = base_score(Severity::Low);
+            f.impact.label = format!("{} indexes without statistics", missing.len());
+            f.metrics
+                .push(Metric::text("Indexes", missing.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", ")));
+            f.fix = Some(Fix {
+                summary: "Analyze this table, then run PRAGMA optimize periodically from the application.".into(),
+                sql: Some(format!(
+                    "ANALYZE {};",
+                    snapshot.server.engine.spec().dialect().qualified(&[&t.schema, &t.name])
+                )),
+                cost: Some(
+                    "Reads the table's indexes and writes planner statistics; schedule it around important writes."
+                        .into(),
+                ),
+            });
+            f.verify = vec!["Scan again and check the named indexes have sqlite_stat1 entries. Compare representative query plans and durations; an unchanged access path can be appropriate.".into()];
+            out.push(f);
+        }
+    }
+    out
 }
 
 /// No planner statistics while the planner has indexes to choose between.
@@ -41,7 +80,7 @@ fn statistics(s: &Snapshot) -> Option<Finding> {
     );
     f.title = "SQLite has no statistics to choose between this file's indexes".into();
     f.summary = format!(
-        "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With {secondary} secondary {} to choose from, a guess can pick the wrong one, or a full scan.{}",
+        "The file has no current sqlite_stat1 statistics, so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With {secondary} secondary {} to choose from, a guess can pick the wrong one, or a full scan.{}",
         if secondary == 1 { "index" } else { "indexes" },
         if rows_known { "" } else { " Culprit can't tell each table's size either." }
     );

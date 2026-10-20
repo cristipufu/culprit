@@ -3,6 +3,18 @@
 //! detail some checks use; without it those checks say less, never something wrong.
 
 use culprit_core::{Capability, Source};
+pub const LIVE_LOCKS: Source = Source { name: "live_locks", reads: "InnoDB lock relationships", delivers: &[] };
+pub const METADATA_LOCKS: Source = Source {
+    name: "metadata_locks",
+    reads: "sys.schema_table_lock_waits (metadata lock dependencies; sys schema and enabled metadata-lock instrumentation required)",
+    delivers: &[],
+};
+pub const REDO_PRESSURE: Source =
+    Source { name: "redo_pressure", reads: "shared InnoDB redo buffer wait counter", delivers: &[] };
+pub const CLUSTER_HEALTH: Source =
+    Source { name: "cluster_health", reads: "Galera readiness and flow control (where enabled)", delivers: &[] };
+pub const SEQUENCE_CAPACITY: Source =
+    Source { name: "sequence_capacity", reads: "auto-increment allocation limits", delivers: &[] };
 
 /// performance_schema's statement digests (or the slow query log table): runs, time, rows per statement.
 pub const STATEMENTS: Source = Source {
@@ -42,6 +54,11 @@ pub const REPLICATION: Source = Source { name: "replication", reads: "replica st
 
 /// Every source above, for listings (`culprit sources`).
 pub const ALL: &[Source] = &[
+    REDO_PRESSURE,
+    CLUSTER_HEALTH,
+    SEQUENCE_CAPACITY,
+    LIVE_LOCKS,
+    METADATA_LOCKS,
     STATEMENTS,
     TABLES,
     COLUMNS,

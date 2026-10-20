@@ -70,6 +70,7 @@ pub fn report(report: &Report) -> Value {
         "signals": snapshot.pressure.as_ref().map(|p| p.signals.iter().map(signal).collect::<Vec<_>>()).unwrap_or_default(),
         "storage": snapshot.pressure.as_ref().map(|p| p.files.iter().take(12).map(file).collect::<Vec<_>>()).unwrap_or_default(),
         "replication": snapshot.pressure.as_ref().map(|p| p.replicas.clone()).unwrap_or_default(),
+        "operations": snapshot.operations,
         "oldest_open_transaction": snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref()).map(|t| json!({
             "session": t.session, "open_for": format::duration(t.seconds * 1000.0), "state": t.state, "program": t.program,
         })),

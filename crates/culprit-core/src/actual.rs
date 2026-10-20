@@ -223,6 +223,8 @@ pub fn self_times(plan: &Plan) -> Option<std::collections::HashMap<u32, f64>> {
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
 #[ts(export)]
 pub struct ActualSummary {
+    #[serde(default)]
+    pub triggers: Vec<TriggerTiming>,
     pub elapsed_ms: Option<f64>,
     pub cpu_ms: Option<f64>,
     pub logical_reads: Option<f64>,
@@ -266,6 +268,7 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
     }
     let worst = (!found.is_empty()).then(|| origin(&plan.root, largest / 2.0, &factor)).flatten();
     Some(ActualSummary {
+        triggers: trigger_timings(plan),
         elapsed_ms: prop("ElapsedMs").or(plan.root.act_time_ms),
         cpu_ms: prop("CpuMs").or_else(|| sum(&|n| n.runtime.as_ref().and_then(|r| r.cpu_ms))),
         logical_reads: sum(&|n| n.runtime.as_ref().and_then(|r| r.logical_reads)),
@@ -280,6 +283,40 @@ pub fn actual_summary(plan: &Plan) -> Option<ActualSummary> {
         worst_estimate_node: worst.map(|w| w.0),
         worst_estimate: worst.map(|w| w.1),
     })
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq)]
+#[ts(export)]
+pub struct TriggerTiming {
+    pub name: String,
+    pub relation: Option<String>,
+    pub time_ms: f64,
+    pub calls: Option<f64>,
+}
+
+/// Trigger totals are separate from operator timings; BEFORE triggers overlap their modifying node's time.
+pub fn trigger_timings(plan: &Plan) -> Vec<TriggerTiming> {
+    if plan.engine != Engine::Postgres {
+        return vec![];
+    }
+    let Some(value) = plan.props.get("Triggers").and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()) else {
+        return vec![];
+    };
+    let Some(items) = value.as_array() else {
+        return vec![];
+    };
+    items
+        .iter()
+        .filter_map(|v| {
+            let time_ms = v.get("Time")?.as_f64().filter(|v| v.is_finite() && *v >= 0.0)?;
+            Some(TriggerTiming {
+                name: v.get("Trigger Name").and_then(|s| s.as_str()).unwrap_or("Trigger").into(),
+                relation: v.get("Relation").and_then(|s| s.as_str()).map(str::to_string),
+                time_ms,
+                calls: v.get("Calls").and_then(|v| v.as_f64()).filter(|v| v.is_finite() && *v >= 0.0),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

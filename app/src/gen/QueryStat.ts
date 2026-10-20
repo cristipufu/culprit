@@ -3,10 +3,11 @@ import type { Plan } from "./Plan";
 import type { PlanVariant } from "./PlanVariant";
 import type { QueryCosts } from "./QueryCosts";
 import type { QueryTrend } from "./QueryTrend";
+import type { RequestEvidence } from "./RequestEvidence";
 import type { Spread } from "./Spread";
 import type { WaitStat } from "./WaitStat";
 
-export type QueryStat = { 
+export type QueryStat = { requests: RequestEvidence | null, 
 /**
  * A CTE write's unambiguous base table, resolved by shared SQL analysis. Absent when unknown or unnecessary.
  */

@@ -20,6 +20,7 @@ mod plan_cache;
 mod plan_warnings;
 mod plugin;
 mod pressure_config_maintenance;
+mod provider_audit;
 mod query_checks;
 mod registry;
 mod signal_false_flags;

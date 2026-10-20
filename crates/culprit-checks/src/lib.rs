@@ -8,6 +8,7 @@
 //!   digest, index advice, drift, agent brief).
 
 mod checks;
+mod evidence;
 pub mod pipeline;
 mod refine;
 mod summary;
@@ -53,6 +54,10 @@ impl Check for Registered {
 
     fn run(&self, snapshot: &Snapshot) -> Vec<culprit_core::Finding> {
         self.0.run(snapshot)
+    }
+
+    fn evidence(&self, snapshot: &Snapshot) -> culprit_core::CheckEvidence {
+        self.0.evidence(snapshot)
     }
 }
 

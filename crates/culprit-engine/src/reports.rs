@@ -160,7 +160,10 @@ pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     if let Some(baseline) = evictions_baseline(dir, snapshot) {
         snapshot.evictions_before = Some(baseline);
     }
-    if snapshot.indexes.iter().any(|i| i.contention.is_some()) {
+    if snapshot.indexes.iter().any(|i| i.contention.is_some())
+        || !snapshot.operations.counters.is_empty()
+        || snapshot.operations.sqlite.is_some()
+    {
         let now = trends::epoch(&snapshot.taken_at);
         // Only a few adjacent scans are needed, and every candidate must precede this report. Reopening a saved
         // report never compares it with scans taken later or with another database. This path writes nothing.
@@ -179,6 +182,7 @@ pub fn rebase_on_scans(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
                 continue;
             }
             snapshot.escalations_before = culprit_core::EscalationBaseline::from_scan(&previous, snapshot);
+            culprit_core::operations::compare(&previous, snapshot);
             if let Some(baseline) = culprit_core::ContentionBaseline::from_scan(&previous, snapshot) {
                 snapshot.contention_before = Some(baseline);
             } else {

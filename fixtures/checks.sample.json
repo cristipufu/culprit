@@ -135,6 +135,33 @@
   },
   {
     "category": "queries",
+    "description": "Recognized error codes in structured query logs, including errors with no duration. Counts describe log records, not failed business requests or zero-cost executions.",
+    "engines": [
+      "sqlite"
+    ],
+    "id": "logged-errors",
+    "requires": [
+      "query-log"
+    ],
+    "title": "SQL errors recorded by the application"
+  },
+  {
+    "category": "queries",
+    "description": "Repeated SQL shapes correlated by explicit request_id in structured logs. Repetition identifies a caller to inspect; it does not prove an N+1 bug or removable work.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql",
+      "sqlite"
+    ],
+    "id": "repeated-request",
+    "requires": [
+      "query-log"
+    ],
+    "title": "Repeated statements within logged requests"
+  },
+  {
+    "category": "queries",
     "description": "Single queries that take a large share of database time, with what their plan spends it on.",
     "engines": [
       "mssql",
@@ -296,6 +323,16 @@
     "title": "Transaction ID wraparound risk"
   },
   {
+    "category": "maintenance",
+    "description": "The independent PostgreSQL MultiXact age limit, which can reject row-locking writes even when ordinary transaction ID age is healthy.",
+    "engines": [
+      "postgres"
+    ],
+    "id": "multixact-age",
+    "requires": [],
+    "title": "MultiXact wraparound risk"
+  },
+  {
     "category": "configuration",
     "description": "Database and server settings that commonly hurt performance or hide the data needed to diagnose it.",
     "engines": [
@@ -413,6 +450,59 @@
     "id": "row-lock-waits",
     "requires": [],
     "title": "Transactions waiting for row locks"
+  },
+  {
+    "category": "configuration",
+    "description": "Current database file and transaction-log capacity, log reuse reasons, and shared tempdb allocation. Autogrowth room is distinguished from a hard limit.",
+    "engines": [
+      "mssql"
+    ],
+    "id": "storage-capacity",
+    "requires": [],
+    "title": "Files and logs near their allocation limits"
+  },
+  {
+    "category": "maintenance",
+    "description": "Non-cycling identities, sequences and auto-increment columns approaching their numeric bounds; cache allocation is not a forecast of remaining requests.",
+    "engines": [
+      "mssql",
+      "postgres",
+      "mysql"
+    ],
+    "id": "sequence-capacity",
+    "requires": [],
+    "title": "Identity and sequence allocation limits"
+  },
+  {
+    "category": "maintenance",
+    "description": "WAL archive failures, logical subscription errors, standby recovery cancellations and InnoDB redo buffer waits. Counter history is kept separate from newly observed errors.",
+    "engines": [
+      "postgres",
+      "mysql"
+    ],
+    "id": "operational-errors",
+    "requires": [],
+    "title": "Archive, replication and redo failures"
+  },
+  {
+    "category": "configuration",
+    "description": "The current readiness, connectivity and primary-component verdict reported by a Galera node; its historical flow-control fraction is context, not database-specific pressure.",
+    "engines": [
+      "mysql"
+    ],
+    "id": "cluster-health",
+    "requires": [],
+    "title": "Galera node readiness and flow control"
+  },
+  {
+    "category": "maintenance",
+    "description": "Read-only WAL sidecar metadata and changes between scans; retained allocation is not inferred to be a checkpoint backlog or a blocked reader.",
+    "engines": [
+      "sqlite"
+    ],
+    "id": "sqlite-wal",
+    "requires": [],
+    "title": "SQLite WAL file size and growth"
   },
   {
     "category": "queries",

@@ -30,11 +30,14 @@ pub struct Moment {
 }
 
 /// One statement as the log recorded it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Entry {
     pub sql: String,
     pub ms: f64,
     pub at: Option<Moment>,
+    pub error_code: Option<&'static str>,
+    /// Consumed transiently and hashed; the original identifier never reaches a snapshot.
+    pub request_id: Option<String>,
 }
 
 /// A framework's log format: recognizes its lines and turns them into entries. A format whose entry spans several lines
@@ -75,6 +78,7 @@ pub struct Aggregator {
     first: Option<Moment>,
     last: Option<Moment>,
     entries: u64,
+    failures: HashMap<(String, String), culprit_core::operations::LoggedFailure>,
 }
 
 struct Shape {
@@ -85,15 +89,49 @@ struct Shape {
     max_ms: f64,
     first: Option<Moment>,
     last: Option<Moment>,
+    requests: HashMap<String, u32>,
+    requests_truncated: bool,
 }
 
 impl Aggregator {
     pub fn new(engine: Engine) -> Self {
-        Aggregator { engine, shapes: HashMap::new(), order: Vec::new(), first: None, last: None, entries: 0 }
+        Aggregator {
+            engine,
+            shapes: HashMap::new(),
+            order: Vec::new(),
+            first: None,
+            last: None,
+            entries: 0,
+            failures: HashMap::new(),
+        }
     }
 
     pub fn add(&mut self, entry: &Entry) {
         let print = fingerprint(&entry.sql, self.engine);
+        if !print.key.is_empty()
+            && let Some(code) = entry.error_code
+        {
+            let at = entry.at.filter(|a| a.zoned).map(|a| culprit_core::format::iso_from_epoch(a.epoch));
+            let failure = self.failures.entry((print.key.clone(), code.into())).or_insert_with(|| {
+                culprit_core::operations::LoggedFailure {
+                    query_id: id(&print.key),
+                    statement: print.display.clone(),
+                    code: code.into(),
+                    count: 0.0,
+                    first_at: at.clone(),
+                    last_at: at.clone(),
+                }
+            });
+            failure.count += 1.0;
+            if let Some(at) = at {
+                if failure.first_at.as_ref().is_none_or(|first| &at < first) {
+                    failure.first_at = Some(at.clone());
+                }
+                if failure.last_at.as_ref().is_none_or(|last| &at > last) {
+                    failure.last_at = Some(at);
+                }
+            }
+        }
         if print.key.is_empty() || !entry.ms.is_finite() || entry.ms < 0.0 {
             return;
         }
@@ -119,6 +157,8 @@ impl Aggregator {
             max_ms: 0.0,
             first: None,
             last: None,
+            requests: HashMap::new(),
+            requests_truncated: false,
         });
         shape.runs += 1.0;
         shape.total_ms += entry.ms;
@@ -126,6 +166,15 @@ impl Aggregator {
         shape.max_ms = shape.max_ms.max(entry.ms);
         shape.first = earliest(shape.first, entry.at);
         shape.last = latest(shape.last, entry.at);
+        if let Some(request) = &entry.request_id {
+            let hashed = id(request);
+            if shape.requests.contains_key(&hashed) || shape.requests.len() < 10_000 {
+                let count = shape.requests.entry(hashed).or_default();
+                *count = count.saturating_add(1);
+            } else {
+                shape.requests_truncated = true;
+            }
+        }
     }
 
     /// Statements read so far.
@@ -137,6 +186,7 @@ impl Aggregator {
     /// for an app's primary, cache and queue databases). Returns how many statements were left out; the totals and the
     /// workload are of the rest.
     pub fn retain(&mut self, keep: impl Fn(&str) -> bool) -> u64 {
+        self.failures.retain(|_, failure| keep(&failure.statement));
         let before = self.entries;
         self.shapes.retain(|_, shape| {
             let kept = keep(&shape.display);
@@ -147,6 +197,12 @@ impl Aggregator {
         });
         self.order.retain(|key| self.shapes.contains_key(key));
         before - self.entries
+    }
+
+    pub fn failures(&self) -> Vec<culprit_core::operations::LoggedFailure> {
+        let mut failures: Vec<_> = self.failures.values().cloned().collect();
+        failures.sort_by(|a, b| (&a.query_id, &a.code).cmp(&(&b.query_id, &b.code)));
+        failures
     }
 
     /// The workload of a log in `format` ("Rails"): every shape's runs and time, the `top` heaviest kept as statements
@@ -174,6 +230,12 @@ impl Aggregator {
                 let mean = s.total_ms / s.runs.max(1.0);
                 let variance = (s.squares / s.runs.max(1.0) - mean * mean).max(0.0);
                 QueryStat {
+                    requests: (!s.requests.is_empty()).then(|| culprit_core::operations::RequestEvidence {
+                        requests: s.requests.len() as u32,
+                        repeated_requests: s.requests.values().filter(|v| **v >= 10).count() as u32,
+                        most_calls: s.requests.values().copied().max().unwrap_or(0),
+                        sample_truncated: s.requests_truncated,
+                    }),
                     resolved_write_target: None,
                     id: id(&key),
                     query_hash: None,

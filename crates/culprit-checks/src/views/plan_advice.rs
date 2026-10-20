@@ -65,10 +65,7 @@ pub(crate) fn catalog_insights(snapshot: &Snapshot, query: &QueryStat, plan: &Pl
     }
     let mut found = culprit_core::insights::insights(plan);
     for i in &mut found {
-        if i.area == culprit_core::insights::InsightArea::Index
-            && !snapshot.server.has(culprit_core::Capability::IndexUsage)
-            && snapshot.notes.iter().any(|n| n.collector == "indexes")
-        {
+        if i.area == culprit_core::insights::InsightArea::Index && crate::evidence::index_catalog(snapshot).is_some() {
             i.severity = Severity::Low;
             i.fix_sql = None;
             i.fix = "Current index definitions were unavailable in this scan. Inspect the current keys, filters and included columns before choosing an index change; the captured structure can still pose a scaling risk.".into();

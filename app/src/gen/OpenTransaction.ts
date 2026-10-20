@@ -7,7 +7,7 @@ import type { CleanupHolder } from "./CleanupHolder";
  * snapshot or changes of its own (SQL Server, PostgreSQL), or one with a read view on a server whose undo history is
  * shared by every database (InnoDB).
  */
-export type OpenTransaction = { 
+export type OpenTransaction = { catalog_only: boolean, 
 /**
  * The session id; for a replication slot its name, for a prepared transaction its global id.
  */

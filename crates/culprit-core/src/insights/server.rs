@@ -40,10 +40,10 @@ pub(super) fn heap_fetches(cx: &Cx) -> Vec<Draft> {
             let mut d = Draft::new("heap-fetches", InsightArea::Server, cx.share(n), vec![n.id]);
             d.cap = Severity::Medium;
             d.title = format!("The index-only scan on {} still visits the table {} times", table_leaf(&table), rows_text(fetches));
-            d.detail = "PostgreSQL can only skip the table for pages the visibility map marks all-visible, which VACUUM maintains; this table hasn't been vacuumed since many of its rows changed.".into();
-            d.fix = format!("Vacuum {}, and check that autovacuum isn't turned off for it (ALTER TABLE … SET (autovacuum_enabled = true)).", table_leaf(&table));
+            d.detail = "PostgreSQL must visit table pages that the visibility map cannot certify as all-visible. Recent writes, an older snapshot or maintenance that has not yet caught up can explain this; heap fetches alone do not establish a vacuum failure.".into();
+            d.fix = format!("Check recent writes, vacuum activity and cleanup holders on {}. If vacuum can advance visibility and the saved reads justify it, test VACUUM; a frequently updated table can legitimately keep requiring heap fetches.", table_leaf(&table));
             d.fix_sql = Some(format!("VACUUM (ANALYZE) {};", qualified(Engine::Postgres, &table)));
-            d.verify = "Explain analyze again: Heap Fetches is close to 0.".into();
+            d.verify = "Compare heap fetches, buffers and execution time with equivalent parameters and write activity after maintenance. Fewer heap fetches may help; zero is not required on a table that keeps changing.".into();
             d
         })
         .collect()

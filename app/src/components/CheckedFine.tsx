@@ -1,60 +1,32 @@
-import { Check, ChevronRight } from "lucide-react";
-import { useEffect, useState } from "react";
-import type { CheckInfo } from "../gen/CheckInfo";
+import { Check, ChevronRight, Info } from "lucide-react";
+import { useState } from "react";
 import type { Report } from "../gen/Report";
-import { api } from "../lib/api";
+import { engineLimitations } from "../lib/engines";
 
-let cached: Promise<CheckInfo[]> | null = null;
-
-function allChecks(): Promise<CheckInfo[]> {
-  cached ??= api()
-    .then((client) => client.checks())
-    .catch(() => []);
-  return cached;
-}
-
-/**
- * The checks that ran on this database and found nothing, so "no findings" reads as an answer with evidence rather
- * than an empty screen. Open by default when there is little else to show.
- */
+/** The pipeline's evidence assessment. No finding alone never means fine. */
 export function CheckedFine({ report }: { report: Report }) {
-  const [checks, setChecks] = useState<CheckInfo[] | null>(null);
   const [open, setOpen] = useState(report.findings.length <= 3);
-
-  useEffect(() => {
-    let alive = true;
-    void allChecks().then((list) => alive && setChecks(list));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (!checks) return null;
-  const engine = report.snapshot.server.engine;
-  const locked = new Set(report.locked.map((l) => l.check.id));
-  const found = new Set(report.findings.map((f) => f.check));
-  const fine = checks.filter((c) => c.engines.includes(engine) && !locked.has(c.id) && !found.has(c.id));
-  if (fine.length === 0) return null;
-
+  const assessments = report.assessments ?? [];
+  const assessed = assessments.filter((c) => c.status === "assessed");
+  const limited = assessments.filter((c) => c.status === "insufficient-evidence" || c.status === "unavailable" || (c.status === "findings" && c.reason));
+  const inapplicable = assessments.filter((c) => c.status === "not-applicable");
+  if (!assessments.length) return <p className="muted">This saved report has no check coverage assessment. Scan again to see which problems could be assessed.</p>;
   return (
     <div className="checked-fine">
       <button className="checked-head" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         <ChevronRight size={13} className={open ? "turned" : ""} />
-        Checked and fine <span className="n">{fine.length}</span>
+        <span>Check coverage <span className="n">{assessed.length} assessed without a finding · {limited.length} limited</span></span>
       </button>
-      {open && (
-        <ul>
-          {fine.map((c) => (
-            <li key={c.id} title={c.description}>
-              <Check size={13} className="ok" />
-              <span>
-                <span className="t">{c.title}</span>
-                <span className="d">{c.description}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      {open && <>
+        {assessed.length > 0 && <ul>{assessed.map((c) => <li key={c.check}>
+          <Check size={13} className="ok" /><span><span className="t">{c.title}</span><span className="d">No finding from the measurements available in this scan.</span></span>
+        </li>)}</ul>}
+        {limited.length > 0 && <details><summary>Limited evidence · {limited.length}</summary><p className="muted">These checks could not establish a negative result. Any supported observations remain in Findings.</p><ul>{limited.map((c) => <li key={c.check}>
+          <Info size={13} /><span><span className="t">{c.title} · {c.status === "unavailable" ? "Unavailable" : "Insufficient evidence"}</span><span className="d">{c.reason}</span></span>
+        </li>)}</ul></details>}
+        {inapplicable.length > 0 && <details><summary>Not applicable · {inapplicable.length}</summary><ul>{inapplicable.map((c) => <li key={c.check}><span><span className="t">{c.title}</span><span className="d">{c.reason}</span></span></li>)}</ul></details>}
+        <details><summary>What these sources cannot establish</summary><ul>{engineLimitations(report.snapshot.server.engine).map((text) => <li key={text}><Info size={13} /><span>{text}</span></li>)}</ul></details>
+      </>}
     </div>
   );
 }

@@ -68,6 +68,8 @@ pub fn now(live: &LiveState) -> Tile {
                 format::duration(s.transaction_ms.unwrap_or(0.0))
             ),
         )
+    } else if live.blocking_incomplete() {
+        (TileStatus::Info, "No blocking chain was established; lock visibility is incomplete.".into())
     } else if active.is_empty() {
         (TileStatus::Good, "Nothing is running right now.".to_string())
     } else {
@@ -83,7 +85,12 @@ pub fn now(live: &LiveState) -> Tile {
     let mut tile = Tile::new(TileKey::Now, status, takeaway);
     tile.metrics = vec![
         TileMetric::new("active", "Running", Some(active.len() as f64), active.len().to_string()),
-        TileMetric::new("blocked", "Blocked", Some(blocked as f64), blocked.to_string()),
+        TileMetric::new(
+            "blocked",
+            "Identified blocked sessions",
+            (!live.blocking_incomplete()).then_some(blocked as f64),
+            if live.blocking_incomplete() { format!("at least {blocked}") } else { blocked.to_string() },
+        ),
         TileMetric::new(
             "idle-in-transaction",
             "Idle in transaction",
@@ -122,7 +129,7 @@ pub fn now(live: &LiveState) -> Tile {
         item
     }));
     tile.items = items;
-    tile.detail = Some(format!("Read {}.", culprit_core::changes::short_time(&live.taken_at)));
+    tile.detail = Some(format!("Read {}. {}", culprit_core::changes::short_time(&live.taken_at), live.notes.join(" ")));
     tile
 }
 

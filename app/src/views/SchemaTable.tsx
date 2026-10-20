@@ -448,7 +448,7 @@ function Indexes({ report, table, indexes, links }: { report: Report; table: Tab
               if (i.is_disabled)
                 notes.push({
                   tone: "medium",
-                  text: "Disabled: kept on disk but never used or maintained",
+                  text: i.state === "invisible" ? "Invisible to the optimizer; still maintained by writes" : i.state === "ignored" ? "Ignored by the optimizer; still maintained by writes" : i.state === "invalid" ? `Invalid: unavailable to the optimizer; ${i.maintained == null ? "maintenance state was not recorded" : i.maintained ? "still maintained by writes" : "not ready for write maintenance"}` : "Disabled: unavailable to the optimizer and not maintained",
                 });
               const serves = backs(i);
               if (neverRead && serves)

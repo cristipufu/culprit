@@ -310,6 +310,32 @@ pub(super) fn replication(report: &Report) -> Tile {
 /// Statements whose runs fail or are cancelled (timeouts), from the counts the engine keeps per statement.
 pub(super) fn failures(report: &Report) -> Tile {
     let s = &report.snapshot;
+    if !s.operations.log_failures.is_empty() {
+        let total: f64 = s.operations.log_failures.iter().map(|f| f.count).sum();
+        let found: Vec<_> = report.findings.iter().filter(|f| f.check == "logged-errors").collect();
+        let worst = found.iter().filter(|f| f.is_actionable()).max_by_key(|f| f.severity);
+        let mut tile = Tile::new(
+            TileKey::Failures,
+            worst.map_or(TileStatus::Info, |f| severity_status(f.severity)),
+            worst.map_or_else(
+                || format!("{} SQL error records in the supplied application log.", format::count(total)),
+                |f| f.title.clone(),
+            ),
+        );
+        tile.detail=Some("Counts are logged records, including possible retries and duplicates. Dates cover only records with a recorded time zone; missing durations are excluded from performance totals.".into());
+        tile.metrics.push(TileMetric::new("records", "Error log records", Some(total), format::count(total)));
+        tile.items = found
+            .iter()
+            .take(4)
+            .map(|f| {
+                let mut item = TileItem::new(ItemKind::Finding, f.id.clone(), f.title.clone());
+                item.finding_id = Some(f.id.clone());
+                item.status = Some(if f.is_actionable() { severity_status(f.severity) } else { TileStatus::Info });
+                item
+            })
+            .collect();
+        return tile;
+    }
     let family = family(&s.server);
     let Some(w) = &s.workload else { return no_workload(TileKey::Failures, "failed runs aren't counted") };
     let counted: Vec<(&QueryStat, f64)> =

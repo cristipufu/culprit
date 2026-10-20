@@ -60,7 +60,7 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
     for t in snapshot.tables.iter().filter(|t| t.partition_of.is_none()) {
         let secondary: Vec<&IndexStat> = snapshot
             .indexes_on(&t.schema, &t.name)
-            .filter(|i| !i.is_primary_key && !i.is_clustered && !i.is_disabled)
+            .filter(|i| !i.is_primary_key && !i.is_clustered && i.maintained.unwrap_or(!i.is_disabled))
             .collect();
         if secondary.len() < MANY_INDEXES {
             continue;

@@ -111,6 +111,10 @@ pub async fn attach(
         })
     };
     let read = aggregator.entries();
+    snapshot.operations.log_failures = aggregator.failures();
+    if !snapshot.operations.log_failures.is_empty() {
+        snapshot.notes.push(note("Recognized structured error records were retained without raw messages or values. An error without duration is absent from performance totals, not an instant execution. Counts are log records and can include retries or duplicate logging; dates describe only records that include a time zone.".into()));
+    }
     let mut workload = aggregator.workload(format, options.top_queries.max(1) as usize);
     // Each shape is planned as text someone else wrote (the application did), under the engine's rules for recorded
     // statements; SQLite plans `?` placeholders as NULL. One the engine can't plan stays unplanned.
@@ -141,6 +145,7 @@ pub async fn attach(
             ""
         }
     )));
+    snapshot.notes.push(note("Only statements logged by the application are visible. Table names filter unrelated statements but cannot distinguish databases with the same table names; use a log for this database. Explicit request IDs support bounded request-group counts, not distributed traces or proof of an N+1 bug.".into()));
     if elsewhere > 0 {
         snapshot.notes.push(note(format!(
             "Left out {} statements on tables this database doesn't have: the log is shared with another database.",

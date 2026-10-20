@@ -279,4 +279,6 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub locked: Vec<LockedCheck>,
     pub summary: Summary,
+    #[serde(default)]
+    pub assessments: Vec<crate::check::CheckAssessment>,
 }

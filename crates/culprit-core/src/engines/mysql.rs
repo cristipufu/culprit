@@ -7,6 +7,16 @@ use crate::model::Capability;
 pub(super) struct Mysql;
 
 impl EngineSpec for Mysql {
+    fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState {
+        if server.is_mariadb() { crate::IndexState::Ignored } else { crate::IndexState::Invisible }
+    }
+    fn limitations(&self) -> Vec<String> {
+        vec![
+        "Statement digests keep aggregate totals, not an application's request trace, transaction boundaries or the plan of every historical execution. Culprit compares only intervals its scans or the slow log record.".into(),
+        "InnoDB status keeps only the latest deadlock. A complete incident history requires the error log; an empty or old latest report does not prove that no other deadlocks happened.".into(),
+        "MySQL and MariaDB differ in plan details, instrumentation and syntax. Runtime measurements, metadata-lock visibility and replication diagnostics depend on the product, version and permissions.".into(),
+    ]
+    }
     fn label(&self) -> &'static str {
         "MySQL"
     }

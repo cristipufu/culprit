@@ -10,6 +10,7 @@ import { duration, percent, percentValue } from "../lib/format";
 import { findingStatus, worstFinding } from "../lib/health";
 import { SIGNAL_SCOPE, signalValue } from "../lib/waits";
 import { Replication, StorageLatency } from "./BeyondTime";
+import { OperationalHealth, hasOperationalHealth } from "./OperationalHealth";
 
 const RANK: Record<Signal["status"], number> = { bad: 0, watch: 1, good: 2, info: 3 };
 
@@ -42,7 +43,7 @@ function OpenTransactionCard({ t, status }: { t: OpenTransaction; status: Signal
         <div className="open-txn-title">
           {slot ? (
             <>
-              Replication slot <b>{t.session}</b> holds cleanup back by {Math.round(behind).toLocaleString()} transactions
+              Replication slot <b>{t.session}</b> holds {t.catalog_only ? "system-catalog cleanup" : "cleanup"} back by {Math.round(behind).toLocaleString()} transactions
             </>
           ) : (
             <>
@@ -78,7 +79,7 @@ export function HealthTab({
   engine?: Engine;
 }) {
   const signals = [...(pressure?.signals ?? [])].sort((a, b) => RANK[a.status] - RANK[b.status]);
-  if (!signals.length && !resources.length) {
+  if (!signals.length && !resources.length && !hasOperationalHealth(report)) {
     return (
       <div className="waits-empty">
         <h3>No health signals in this scan</h3>
@@ -118,6 +119,7 @@ export function HealthTab({
       {pressure?.oldest_transaction && <OpenTransactionCard t={pressure.oldest_transaction} status={findingStatus(worstFinding(report, (f) => f.check === "held-cleanup"))} />}
       {engine && <StorageLatency files={pressure?.files ?? []} engine={engine} report={report} />}
       <Replication replicas={pressure?.replicas ?? []} report={report} />
+      <OperationalHealth report={report} />
       {resources.length >= 4 && <ResourceCharts samples={resources} signals={signals} />}
     </div>
   );

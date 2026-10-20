@@ -419,6 +419,37 @@ fn hot_updates_are_not_index_upkeep() {
     );
 }
 
+#[test]
+fn invisible_and_invalid_but_ready_indexes_still_have_write_cost() {
+    for (name, template) in [("mysql-demo.json", "idx_orders_status"), ("postgres-demo.json", "orders_status_idx")] {
+        let mut s = counted_for_ten_days(snapshot(name));
+        // Choose a real secondary index rather than relying on a fixture's specific name.
+        let template = s
+            .indexes
+            .iter()
+            .find(|i| i.table == "orders" && !i.is_primary_key)
+            .map(|i| i.name.clone())
+            .unwrap_or_else(|| template.into());
+        many_indexes(&mut s, "orders", &template);
+        for i in s.indexes.iter_mut().filter(|i| i.table == "orders" && !i.is_primary_key) {
+            i.is_disabled = true;
+            i.maintained = Some(true);
+        }
+        let t = s.tables.iter_mut().find(|t| t.name == "orders").unwrap();
+        t.inserts = Some(10_000_000.0);
+        t.updates = Some(0.0);
+        t.deletes = Some(0.0);
+        for i in s.indexes.iter_mut().filter(|i| i.table == "orders" && (i.is_primary_key || i.is_clustered)) {
+            i.writes = Some(10_000_000.0);
+        }
+        let report = analyze(s);
+        assert!(
+            report.findings.iter().any(|f| f.check == "over-indexed"),
+            "{name}: hidden or invalid-ready indexes are maintained"
+        );
+    }
+}
+
 // I10: SQL Server counts write statements, not rows, and says so.
 #[test]
 fn sql_server_writes_are_counted_as_statements() {

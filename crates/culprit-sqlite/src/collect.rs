@@ -171,6 +171,18 @@ pub fn snapshot(
     let mut rows = table_rows(conn);
     rows.extend(counted);
     let (have, missing) = capabilities(conn, whole);
+    let statistics = if has_stat1(conn) {
+        coverage.read(
+            &crate::sources::PLANNER_STATISTICS,
+            (|| {
+                let mut query = conn.prepare("SELECT idx FROM sqlite_stat1 WHERE idx IS NOT NULL")?;
+                query.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<HashSet<String>>>()
+            })()
+            .map_err(|e| map_error(&e)),
+        )
+    } else {
+        Some(HashSet::new())
+    };
 
     let mut tables = Vec::new();
     let mut indexes = Vec::new();
@@ -201,11 +213,14 @@ pub fn snapshot(
             pk.sort();
             pk.into_iter().map(|(_, n)| n).collect()
         };
-        let table_indexes = if virtual_table {
+        let mut table_indexes = if virtual_table {
             Vec::new()
         } else {
             read_indexes(conn, &t.name, t.without_rowid, &schema.index_sql, &sizes).map_err(|e| map_error(&e))?
         };
+        for index in &mut table_indexes {
+            index.has_statistics = statistics.as_ref().map(|names| names.contains(&index.name));
+        }
         let index_bytes = table_indexes.iter().filter_map(|i| i.size_bytes).fold(0.0, |a, b| a + b);
         let data_bytes = sizes.get(&t.name).copied();
         tables.push(table(t, rows.get(&t.name).copied(), data_bytes, index_bytes, !primary_key.is_empty()));
@@ -240,6 +255,20 @@ pub fn snapshot(
         .collect();
 
     let server = server_info(conn, path, have, missing);
+    let mut operations = culprit_core::operations::OperationalStats::default();
+    if pragma(conn, "journal_mode").is_some_and(|m| m.eq_ignore_ascii_case("wal")) {
+        let mut wal = path.as_os_str().to_os_string();
+        wal.push("-wal");
+        let size = match std::fs::metadata(std::path::PathBuf::from(wal)) {
+            Ok(metadata) => Ok(metadata.len() as f64),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0.0),
+            Err(_) => {
+                Err(culprit_core::Error::internal("WAL file size could not be read; no file contents were inspected."))
+            }
+        };
+        let wal_bytes = coverage.read(&crate::sources::WAL_FILE, size);
+        operations.sqlite = Some(culprit_core::operations::SqliteFileHealth { wal_bytes, before: None });
+    }
     Ok(Snapshot {
         format: SNAPSHOT_FORMAT,
         id: taken_at.replace(['-', ':'], ""),
@@ -271,6 +300,7 @@ pub fn snapshot(
         contention_before: None,
         evictions_before: None,
         sizes_before: None,
+        operations,
     })
 }
 
@@ -497,6 +527,9 @@ fn read_indexes(
             // A WITHOUT ROWID table is stored in its primary key's b-tree.
             is_clustered: primary && without_rowid,
             is_disabled: false,
+            state: None,
+            maintained: None,
+            has_statistics: None,
             size_bytes: sizes.get(&name).copied(),
             // SQLite keeps no usage counters: unknown, never zero.
             reads: None,
@@ -703,6 +736,16 @@ mod tests {
             Some("deleted_at IS NULL")
         );
         assert_eq!(partial_filter("CREATE INDEX ix ON t (a)"), None);
+    }
+
+    #[test]
+    fn statistics_on_an_older_index_do_not_cover_an_index_added_later() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY, a TEXT, b TEXT); CREATE INDEX old_index ON items(a); INSERT INTO items(a,b) VALUES ('a','b'); ANALYZE; CREATE INDEX new_index ON items(b);").unwrap();
+        let s = snapshot(&conn, Path::new("demo.db"), "demo", Environment::Local, Instant::now()).unwrap();
+        assert!(s.server.has(Capability::Statistics));
+        assert_eq!(s.indexes.iter().find(|i| i.name == "old_index").unwrap().has_statistics, Some(true));
+        assert_eq!(s.indexes.iter().find(|i| i.name == "new_index").unwrap().has_statistics, Some(false));
     }
 
     // The false flags: two expression indexes were both "(expression)", and a NOCASE index the same as the plain one,

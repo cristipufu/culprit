@@ -129,7 +129,10 @@ fn postgres_shapes() {
     // Every customer's address ends in @example.com: PostgreSQL expects the filter to keep 199,980 of 200K rows, so a
     // trigram index wouldn't read fewer.
     assert!(rules_of(&with_table_size(load("pg-like.json"), "public.customers", 200_000.0)).is_empty());
-    assert!(find("pg-notin.json", "not-in").title.contains("anti-join"));
+    let not_in = find("pg-notin.json", "not-in");
+    assert!(not_in.title.contains("repeatedly searched"));
+    assert!(not_in.fix.contains("NOT IN and NOT EXISTS are not interchangeable"));
+    assert!(not_in.verify.contains("empty subquery"));
     assert!(!rules("pg-notin.json").contains(&"correlated-subquery".into()), "NOT IN's subplan isn't reported twice");
     assert!(find("pg-sort-spill.json", "spill").title.starts_with("The sort writes"));
     assert!(rules("pg-hash-batches.json").iter().filter(|r| *r == "spill").count() >= 2, "sort and hash both spill");

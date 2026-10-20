@@ -80,6 +80,20 @@ fn same_table(a_schema: &str, a_table: &str, b_schema: &str, b_table: &str) -> b
 
 pub fn index_advice(report: &Report) -> IndexAdvice {
     let s = &report.snapshot;
+    if let Some(reason) = crate::evidence::index_catalog(s) {
+        return IndexAdvice {
+            connection: s.connection.clone(),
+            engine: Some(s.server.engine),
+            taken_at: s.taken_at.clone(),
+            counters: String::new(),
+            candidates: vec![],
+            cleanups: vec![],
+            tables: vec![],
+            notes: vec![format!(
+                "Current index and schema definitions were incomplete: {reason}. No index changes can be chosen safely from this scan."
+            )],
+        };
+    }
     let engine = s.server.engine;
     let ids: HashSet<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
     let link = |id: String| ids.contains(id.as_str()).then_some(id);

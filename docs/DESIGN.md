@@ -120,6 +120,12 @@ Verify             how to confirm: re-scan after deploy, what-if plan, run on al
 
 Numeric metrics remain compact tiles. Text evidence, such as statistics names or an error message, uses a full-width row with its label above readable, selectable text that wraps without clipping. The app and HTML exports use the metric's unit to choose the layout.
 
+**Check coverage** distinguishes a measured negative result from missing or partial evidence. A check with no finding
+is never labeled healthy merely because it returned nothing. Reasons remain available beside the assessed count,
+with inapplicable checks and provider limitations folded separately. Health also shows current allocation and
+operational evidence, labeled with database/server scope and each counter's own dates. See
+[provider coverage](providers/coverage.md) for the measurements and their limits.
+
 ### Queries
 
 - Dense table: share of DB time (bar), total time, executions, average, max, rows/exec, reads/exec, CPU, plan count. Sort by any column, `/` to filter.

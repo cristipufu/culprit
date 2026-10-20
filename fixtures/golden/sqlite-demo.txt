@@ -188,7 +188,7 @@ brief:
 === finding config:sqlite-statistics
 Optional improvement · low severity · high confidence · maintenance
 title: SQLite has no statistics to choose between this file's indexes
-summary: The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
+summary: The file has no current sqlite_stat1 statistics, so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
 impact: No statistics
 metrics:
   - Secondary indexes: 3
@@ -205,7 +205,7 @@ brief:
 
     ## What's happening
 
-    The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
+    The file has no current sqlite_stat1 statistics, so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.
 
     ## Evidence
 
@@ -279,11 +279,11 @@ brief:
 
 === plan c1b0de997fac4faa
 no insights
-note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+note: Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.
 
 === plan 3c81e035bd6f73fa
 no insights
-note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+note: Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.
 
 === plan 500217f7b40055be
 insight automatic-index · low severity · impact a fixed weight
@@ -295,12 +295,12 @@ insight automatic-index · low severity · impact a fixed weight
           ON "orders" ("customer_id");
       -- SQLite builds an index under the database's write lock: writers wait until it finishes.
   verify: Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index.
-note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+note: Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.
 
 === plan 4971a2de8aecdcc6
 no insights
-note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+note: Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.
 
 === plan 84456a5661cab4aa
 no insights
-note: SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.
+note: Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.

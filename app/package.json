@@ -1,12 +1,12 @@
 {
   "name": "culprit-app",
   "private": true,
-  "version": "0.3.8",
+  "version": "0.3.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit && bun src/lib/rates.check.ts && bun src/lib/format.check.ts && bun src/lib/plan-format.check.ts && bun src/lib/health.check.ts && bun src/lib/query-summary.check.ts && bun src/lib/schema-model.check.ts",
+    "typecheck": "tsc --noEmit && bun src/lib/rates.check.ts && bun src/lib/format.check.ts && bun src/lib/plan-format.check.ts && bun src/lib/health.check.ts && bun src/lib/actual.check.ts && bun src/lib/query-summary.check.ts && bun src/lib/schema-model.check.ts",
     "tauri": "tauri"
   },
   "dependencies": {

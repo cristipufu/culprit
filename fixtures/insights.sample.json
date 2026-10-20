@@ -286,47 +286,47 @@
           "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "-463560455567765064": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-6576252161252119529": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-8886085649470066503": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "-967240904657798800": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "2004611025554862962": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "2169115237613314459": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "2885972271926804069": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "3432126458605143571": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "4911431806993420100": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "5306524445554315840": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "5308963031944094559": {
       "items": [
@@ -346,29 +346,29 @@
           "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
         }
       ],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "6425265648074738764": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     },
     "8465053948014496855": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
     },
     "9065391607317686058": {
       "items": [],
-      "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+      "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
     }
   },
   "sqlite-demo": {
     "3c81e035bd6f73fa": {
       "items": [],
-      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+      "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
     },
     "4971a2de8aecdcc6": {
       "items": [],
-      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+      "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
     },
     "500217f7b40055be": {
       "items": [
@@ -388,15 +388,15 @@
           "verify": "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index."
         }
       ],
-      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+      "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
     },
     "84456a5661cab4aa": {
       "items": [],
-      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+      "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
     },
     "c1b0de997fac4faa": {
       "items": [],
-      "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+      "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
     }
   }
 }

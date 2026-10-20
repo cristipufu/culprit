@@ -4,6 +4,7 @@ mod collect;
 mod connect;
 pub mod deadlocks;
 mod generic;
+mod operations;
 pub mod plan_json;
 mod pressure;
 mod progress;
@@ -261,6 +262,7 @@ impl Provider for PostgresProvider {
         }
         waits.sort_by(|a, b| b.tasks.unwrap_or(0.0).total_cmp(&a.tasks.unwrap_or(0.0)));
         Ok(LiveState {
+            notes: Vec::new(),
             taken_at: now,
             sessions,
             waits,

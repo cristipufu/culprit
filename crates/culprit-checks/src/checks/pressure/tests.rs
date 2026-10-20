@@ -213,7 +213,7 @@ fn open_transactions_are_explained_per_engine() {
     for (engine, held, needle) in [
         (Engine::Mssql, Some(3.0 * 1024.0 * 1024.0 * 1024.0), "this database's version store holds 3.0 GB"),
         (Engine::Postgres, None, "VACUUM can't clean up"),
-        (Engine::Mysql, None, "InnoDB can't purge old row versions"),
+        (Engine::Mysql, None, "check its locks and read view"),
     ] {
         let mut s = with_signals(engine, vec![]);
         s.pressure.as_mut().unwrap().oldest_transaction =
@@ -268,8 +268,10 @@ fn postgres_slots_and_prepared_transactions_get_their_own_fix() {
     let f = held_cleanup(&s);
     assert_eq!(f[0].title, "Replication slot standby_1 holds VACUUM back by 150.0M transactions");
     assert_eq!(f[0].severity, Severity::High);
-    let sql = f[0].fix.as_ref().unwrap().sql.clone().unwrap();
-    assert!(sql.contains("pg_drop_replication_slot('standby_1')"), "{sql}");
+    let fix = f[0].fix.as_ref().unwrap();
+    assert!(fix.sql.is_none());
+    assert!(fix.summary.contains("restore its progress"));
+    assert!(fix.summary.contains("rebuilding the consumer"));
     s.pressure.as_mut().unwrap().oldest_transaction = Some(OpenTransaction {
         session: "tx-17".into(),
         seconds: 7200.0,

@@ -4,7 +4,7 @@ import type { Session } from "./Session";
 import type { SessionAction } from "./SessionAction";
 import type { WaitStat } from "./WaitStat";
 
-export type LiveState = { taken_at: string, sessions: Array<Session>, waits: Array<WaitStat>, 
+export type LiveState = { notes: Array<string>, taken_at: string, sessions: Array<Session>, waits: Array<WaitStat>, 
 /**
  * What Live may do to other sessions on this connection; empty on production connections.
  */

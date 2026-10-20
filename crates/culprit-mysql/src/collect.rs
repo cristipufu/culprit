@@ -434,6 +434,7 @@ pub async fn snapshot(
         contention_before: None,
         evictions_before: None,
         sizes_before: None,
+        operations: Default::default(),
     };
     crate::signals::collect(connector, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -685,6 +686,7 @@ fn digest(r: &Rec, has_cpu: bool) -> Digest {
     Digest {
         stat: QueryStat {
             resolved_write_target: None,
+            requests: None,
             id: digest.chars().take(16).collect(),
             query_hash: Some(digest),
             text: r.string("digest_text"),
@@ -1322,6 +1324,9 @@ async fn indexes(conn: &mut Conn, db: &str, probe: &Probe) -> Result<(Vec<IndexS
             is_primary_key: primary,
             is_clustered: primary && innodb,
             is_disabled: first.text("visible").is_some_and(|v| v.eq_ignore_ascii_case("NO")),
+            state: None,
+            maintained: Some(true),
+            has_statistics: None,
             size_bytes: sizes.get(&key).copied(),
             // No row means the table hasn't been opened since the server started: usage is unknown, not zero.
             reads: used.and_then(|u| u.0),
@@ -1449,9 +1454,17 @@ const SETTINGS: [(&str, Option<&str>, Option<&str>); 23] = [
 /// read that status, it is read-only (how replicas and Aurora's readers run). Its usage counters count the reads run on
 /// it (and the replication applier's), not the primary's workload.
 async fn replica_role(conn: &mut Conn, probe: &Probe) -> Option<&'static str> {
-    let status = match query(conn, "SHOW REPLICA STATUS").await {
+    let status = match query(
+        conn,
+        if probe.flavor == Flavor::Mariadb { "SHOW ALL REPLICAS STATUS" } else { "SHOW REPLICA STATUS" },
+    )
+    .await
+    {
         Ok(rows) => Ok(rows),
-        Err(_) => query(conn, "SHOW SLAVE STATUS").await,
+        Err(_) => {
+            query(conn, if probe.flavor == Flavor::Mariadb { "SHOW ALL SLAVES STATUS" } else { "SHOW SLAVE STATUS" })
+                .await
+        }
     };
     match status {
         Ok(rows) if !rows.is_empty() => Some("replica"),
@@ -1522,6 +1535,7 @@ mod tests {
         Digest {
             stat: QueryStat {
                 resolved_write_target: None,
+                requests: None,
                 id: id.into(),
                 query_hash: None,
                 text: String::new(),

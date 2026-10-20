@@ -1,4 +1,276 @@
 {
+  "assessments": [
+    {
+      "check": "missing-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Missing indexes"
+    },
+    {
+      "check": "filtered-scan",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Scans an index would avoid"
+    },
+    {
+      "check": "unused-index",
+      "reason": "At least a week of comparable index-usage counters is needed to assess absence of reads.",
+      "status": "insufficient-evidence",
+      "title": "Unused indexes"
+    },
+    {
+      "check": "duplicate-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Duplicate and redundant indexes"
+    },
+    {
+      "check": "unindexed-fk",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Foreign keys without an index"
+    },
+    {
+      "check": "overlapping-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Overlapping indexes"
+    },
+    {
+      "check": "over-indexed",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Many indexes on write-heavy tables"
+    },
+    {
+      "check": "tuning-advice",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "SQL Server's own tuning advice"
+    },
+    {
+      "check": "query-family",
+      "reason": null,
+      "status": "assessed",
+      "title": "Statements with literals baked in"
+    },
+    {
+      "check": "repeated-request",
+      "reason": "QueryLog was not collected",
+      "status": "unavailable",
+      "title": "Repeated statements within logged requests"
+    },
+    {
+      "check": "heavy-query",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that dominate database time"
+    },
+    {
+      "check": "chatty-query",
+      "reason": null,
+      "status": "findings",
+      "title": "Chatty queries"
+    },
+    {
+      "check": "plan-warnings",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "findings",
+      "title": "Plan warnings"
+    },
+    {
+      "check": "plan-insights",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "findings",
+      "title": "Plan insights"
+    },
+    {
+      "check": "plan-regression",
+      "reason": null,
+      "status": "assessed",
+      "title": "Plan regressions"
+    },
+    {
+      "check": "regression",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries that got slower"
+    },
+    {
+      "check": "unstable-query",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Unstable queries"
+    },
+    {
+      "check": "parameter-sensitive",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that are fast for most calls and slow for some"
+    },
+    {
+      "check": "stale-stats",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Stale statistics"
+    },
+    {
+      "check": "heap-table",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Large tables without a clustered index"
+    },
+    {
+      "check": "config",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Configuration"
+    },
+    {
+      "check": "deadlocks",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Deadlocks"
+    },
+    {
+      "check": "memory-grant",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that reserve far more memory than they use"
+    },
+    {
+      "check": "memory-queue",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries waiting in line for memory"
+    },
+    {
+      "check": "compile-pressure",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Instance compilation context"
+    },
+    {
+      "check": "worker-pressure",
+      "reason": "The required pressure measurement was not recorded by this scan.",
+      "status": "insufficient-evidence",
+      "title": "Running out of workers or connections"
+    },
+    {
+      "check": "held-cleanup",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "insufficient-evidence",
+      "title": "A long open transaction holds cleanup back"
+    },
+    {
+      "check": "network-wait",
+      "reason": null,
+      "status": "assessed",
+      "title": "Results the application reads slowly"
+    },
+    {
+      "check": "tier-limit",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Resource use near the cloud tier's limits"
+    },
+    {
+      "check": "storage-capacity",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Files and logs near their allocation limits"
+    },
+    {
+      "check": "sequence-capacity",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Identity and sequence allocation limits"
+    },
+    {
+      "check": "failing-query",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "findings",
+      "title": "Queries that fail or time out"
+    },
+    {
+      "check": "planning-time",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Queries that spend their time being planned"
+    },
+    {
+      "check": "log-volume",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "findings",
+      "title": "Writes that produce most of the log"
+    },
+    {
+      "check": "lock-time",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that spend their time waiting for locks"
+    },
+    {
+      "check": "big-result",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries that return huge results"
+    },
+    {
+      "check": "hot-rows",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Rows that many sessions fight over"
+    },
+    {
+      "check": "lock-escalations",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Statements that lock a whole table"
+    },
+    {
+      "check": "last-page-insert",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Inserts that queue for the last page"
+    },
+    {
+      "check": "untrusted-constraint",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Constraints the optimizer can't rely on"
+    },
+    {
+      "check": "large-rows",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Tables whose rows are mostly large values"
+    },
+    {
+      "check": "slow-storage",
+      "reason": null,
+      "status": "assessed",
+      "title": "Storage that's slow to read or write"
+    },
+    {
+      "check": "connection-churn",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Applications that connect for every request"
+    },
+    {
+      "check": "replica-lag",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "insufficient-evidence",
+      "title": "Replicas that fall behind"
+    },
+    {
+      "check": "last-actual-plans",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Actual plans without re-running queries"
+    }
+  ],
   "findings": [
     {
       "actionability": "needs-attention",
@@ -1231,7 +1503,28 @@
       ]
     }
   ],
-  "locked": [],
+  "locked": [
+    {
+      "check": {
+        "category": "queries",
+        "description": "Repeated SQL shapes correlated by explicit request_id in structured logs. Repetition identifies a caller to inspect; it does not prove an N+1 bug or removable work.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql",
+          "sqlite"
+        ],
+        "id": "repeated-request",
+        "requires": [
+          "query-log"
+        ],
+        "title": "Repeated statements within logged requests"
+      },
+      "missing": [
+        "query-log"
+      ]
+    }
+  ],
   "snapshot": {
     "columns": [
       {
@@ -1819,6 +2112,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -1827,6 +2121,7 @@
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 600.0,
+        "maintained": true,
         "name": "pk_customers",
         "opclasses": null,
         "partition_of": null,
@@ -1835,6 +2130,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 17506304.0,
+        "state": "active",
         "table": "customers",
         "writes": 0.0
       },
@@ -1847,6 +2143,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1855,6 +2152,7 @@
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:36Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_customers_email",
         "opclasses": null,
         "partition_of": null,
@@ -1863,6 +2161,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 7413760.0,
+        "state": "active",
         "table": "customers",
         "writes": 0.0
       },
@@ -1875,6 +2174,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -1883,6 +2183,7 @@
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:25Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "pk_products",
         "opclasses": null,
         "partition_of": null,
@@ -1891,6 +2192,7 @@
         "schema": "shop",
         "seeks": 30000.0,
         "size_bytes": 1646592.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       },
@@ -1903,6 +2205,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1911,6 +2214,7 @@
         "kind": "nonclustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "uq_products_sku",
         "opclasses": null,
         "partition_of": null,
@@ -1919,6 +2223,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 663552.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       },
@@ -1931,6 +2236,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1939,6 +2245,7 @@
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_products_sku",
         "opclasses": null,
         "partition_of": null,
@@ -1947,6 +2254,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 663552.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       },
@@ -1971,6 +2279,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -1979,6 +2288,7 @@
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:40Z",
         "lookups": 2000.0,
+        "maintained": true,
         "name": "pk_orders",
         "opclasses": null,
         "partition_of": null,
@@ -1987,6 +2297,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 62070784.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -2000,6 +2311,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2008,6 +2320,7 @@
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:20Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_orders_customer_id",
         "opclasses": null,
         "partition_of": null,
@@ -2016,6 +2329,7 @@
         "schema": "shop",
         "seeks": 2000.0,
         "size_bytes": 24649728.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -2028,6 +2342,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2036,6 +2351,7 @@
         "kind": "nonclustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_orders_status",
         "opclasses": null,
         "partition_of": null,
@@ -2044,6 +2360,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 27795456.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -2057,6 +2374,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2065,6 +2383,7 @@
         "kind": "nonclustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_orders_status_created",
         "opclasses": null,
         "partition_of": null,
@@ -2073,6 +2392,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 33890304.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -2085,6 +2405,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2093,6 +2414,7 @@
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:19Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_orders_channel",
         "opclasses": null,
         "partition_of": null,
@@ -2101,6 +2423,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 22290432.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -2113,6 +2436,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -2121,6 +2445,7 @@
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:44Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "pk_order_items",
         "opclasses": null,
         "partition_of": null,
@@ -2129,6 +2454,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 64495616.0,
+        "state": "active",
         "table": "order_items",
         "writes": 0.0
       },
@@ -2141,6 +2467,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2149,6 +2476,7 @@
         "kind": "nonclustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_order_items_product_id",
         "opclasses": null,
         "partition_of": null,
@@ -2157,6 +2485,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 27729920.0,
+        "state": "active",
         "table": "order_items",
         "writes": 0.0
       },
@@ -2169,6 +2498,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -2177,6 +2507,7 @@
         "kind": "clustered",
         "last_read": "2026-10-11T12:13:47Z",
         "lookups": 2005.0,
+        "maintained": true,
         "name": "pk_support_tickets",
         "opclasses": null,
         "partition_of": null,
@@ -2185,6 +2516,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 27992064.0,
+        "state": "active",
         "table": "support_tickets",
         "writes": 0.0
       },
@@ -2197,6 +2529,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2205,6 +2538,7 @@
         "kind": "nonclustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_support_tickets_customer_id",
         "opclasses": null,
         "partition_of": null,
@@ -2213,6 +2547,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 4464640.0,
+        "state": "active",
         "table": "support_tickets",
         "writes": 0.0
       },
@@ -2237,6 +2572,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -2245,6 +2581,7 @@
         "kind": "nonclustered",
         "last_read": "2026-10-11T12:13:47Z",
         "lookups": 0.0,
+        "maintained": true,
         "name": "ix_support_tickets_priority",
         "opclasses": null,
         "partition_of": null,
@@ -2253,6 +2590,7 @@
         "schema": "shop",
         "seeks": 2005.0,
         "size_bytes": 3481600.0,
+        "state": "active",
         "table": "support_tickets",
         "writes": 0.0
       },
@@ -2265,6 +2603,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -2273,6 +2612,7 @@
         "kind": "clustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "pk_ticket_events",
         "opclasses": null,
         "partition_of": null,
@@ -2281,6 +2621,7 @@
         "schema": "shop",
         "seeks": 0.0,
         "size_bytes": 39460864.0,
+        "state": "active",
         "table": "ticket_events",
         "writes": 0.0
       },
@@ -2293,6 +2634,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -2301,6 +2643,7 @@
         "kind": "clustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "PK__child__3213E83F2BAF9907",
         "opclasses": null,
         "partition_of": null,
@@ -2309,6 +2652,7 @@
         "schema": "archive",
         "seeks": 0.0,
         "size_bytes": 0.0,
+        "state": "active",
         "table": "child",
         "writes": 0.0
       },
@@ -2333,6 +2677,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -2341,6 +2686,7 @@
         "kind": "clustered",
         "last_read": null,
         "lookups": 0.0,
+        "maintained": true,
         "name": "pk_hot",
         "opclasses": null,
         "partition_of": null,
@@ -2349,6 +2695,7 @@
         "schema": "archive",
         "seeks": 0.0,
         "size_bytes": 3743744.0,
+        "state": "active",
         "table": "hot",
         "writes": 128000.0
       }
@@ -2392,6 +2739,15 @@
       }
     ],
     "notes": [],
+    "operations": {
+      "cluster": null,
+      "counters": [],
+      "log_failures": [],
+      "multixacts": [],
+      "sequences": [],
+      "spaces": [],
+      "sqlite": null
+    },
     "options": {
       "plans": 25,
       "top_queries": 60,
@@ -4026,6 +4382,7 @@
             }
           ],
           "query_hash": "0xE9B9B9AEF7209B51",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1200.0,
           "rows_affected": null,
@@ -4293,6 +4650,7 @@
             }
           ],
           "query_hash": "0xBBCBE1D0C08154BC",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 906.0,
           "rows_affected": null,
@@ -4587,6 +4945,7 @@
             }
           ],
           "query_hash": "0xFEBD637132E1276E",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 3900000.0,
           "rows_affected": null,
@@ -4880,6 +5239,7 @@
             }
           ],
           "query_hash": "0x11CC33E7EA9F4952",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 984960.0,
           "rows_affected": null,
@@ -5092,6 +5452,7 @@
             }
           ],
           "query_hash": "0xBD30C1112C2A5560",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 60000.0,
           "rows_affected": null,
@@ -5399,6 +5760,7 @@
             }
           ],
           "query_hash": "0x1C16A4743BB078B3",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 20016.0,
           "rows_affected": null,
@@ -5576,6 +5938,7 @@
             }
           ],
           "query_hash": "0x80E844211996BFCC",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -5687,6 +6050,7 @@
             }
           ],
           "query_hash": "0x4139ABA55C1459B3",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 771.0,
           "rows_affected": null,
@@ -5992,6 +6356,7 @@
             }
           ],
           "query_hash": "0x2E60BD5F2B1B322C",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 4.0,
           "rows_affected": null,
@@ -6143,6 +6508,7 @@
             }
           ],
           "query_hash": "0xBFDD28B1F8A5DB44",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 3.0,
           "rows_affected": null,
@@ -6284,6 +6650,7 @@
             }
           ],
           "query_hash": "0x70DEB9137DC844BA",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 3.0,
           "rows_affected": null,
@@ -6358,6 +6725,7 @@
             }
           ],
           "query_hash": "0xDF29AECD4582DE17",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 150.0,
           "rows_affected": null,
@@ -7145,6 +7513,7 @@
             }
           ],
           "query_hash": "0xE5DE7151675598B3",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 300.0,
           "rows_affected": null,
@@ -7383,6 +7752,7 @@
             }
           ],
           "query_hash": "0xAC0F7C57637DD3EA",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 30000.0,
           "rows_affected": null,
@@ -7840,6 +8210,7 @@
             }
           ],
           "query_hash": "0xCE8A3BF747BC6C47",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -7920,6 +8291,7 @@
             }
           ],
           "query_hash": "0x5DA4E11A569A7C0C",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 500000.0,
           "rows_affected": null,

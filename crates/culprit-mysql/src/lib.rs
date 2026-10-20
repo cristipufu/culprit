@@ -6,6 +6,7 @@ mod connect;
 pub mod deadlocks;
 pub mod fingerprint;
 mod json_members;
+mod operations;
 pub mod plan_json;
 pub mod plan_maria;
 pub mod plan_tree;
@@ -284,7 +285,7 @@ impl Provider for MysqlProvider {
             ),
         )
         .await?;
-        let blockers = deadlocks::blockers(&mut conn, flavor).await;
+        let (blockers, locks, mut notes) = deadlocks::blocking_evidence(&mut conn, flavor).await;
         let last_statements = deadlocks::last_statements(&mut conn).await;
         let now = query_one(&mut conn, "SELECT DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%dT%H:%i:%sZ') AS now")
             .await?
@@ -331,19 +332,35 @@ impl Provider for MysqlProvider {
             .collect();
         let mut waits: Vec<WaitStat> = Vec::new();
         for session in sessions.iter().filter(|s| s.state == "active") {
-            let category = if session.blocked_by.is_some() { "Lock" } else { "Running" }.to_string();
+            let waiting = session.wait.as_deref().unwrap_or("").to_ascii_lowercase();
+            let category = if session.blocked_by.is_some() || waiting.contains("lock") {
+                "Lock"
+            } else if waiting.starts_with("waiting") {
+                "Waiting"
+            } else {
+                "Running"
+            }
+            .to_string();
             match waits.iter_mut().find(|w| w.category == category) {
                 Some(existing) => existing.tasks = Some(existing.tasks.unwrap_or(0.0) + 1.0),
                 None => waits.push(WaitStat { category, wait_type: None, wait_ms: 0.0, tasks: Some(1.0) }),
             }
         }
+        if sessions.iter().any(|s| {
+            s.blocked_by.is_none()
+                && s.wait.as_deref().is_some_and(|w| w.to_ascii_lowercase().contains("metadata lock"))
+        }) {
+            notes.push("A metadata-lock wait is visible but its holder could not be resolved. Check sys.schema_table_lock_waits, metadata-lock instrumentation and this login's visibility; an unresolved blocker is not an unblocked session.".into());
+        }
+        let blocking = culprit_core::blocking::analyze(Engine::Mysql, &sessions, &locks);
         Ok(LiveState {
+            notes,
             taken_at: now,
             sessions,
             waits,
             session_actions: Vec::new(),
             session_actions_note: None,
-            blocking: None,
+            blocking,
         })
     }
 

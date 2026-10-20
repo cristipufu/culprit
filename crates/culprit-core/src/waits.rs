@@ -204,6 +204,8 @@ pub enum CleanupHolder {
 #[derive(Serialize, Deserialize, TS, Clone, Debug, PartialEq, Default)]
 #[ts(export)]
 pub struct OpenTransaction {
+    #[serde(default)]
+    pub catalog_only: bool,
     /// The session id; for a replication slot its name, for a prepared transaction its global id.
     pub session: String,
     /// How long it has been open. Zero when the engine doesn't say (a replication slot).

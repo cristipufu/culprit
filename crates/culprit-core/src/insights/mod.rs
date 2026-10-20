@@ -16,6 +16,7 @@ use crate::format;
 use crate::model::{ColumnInfo, Engine, IndexStat, Snapshot};
 use crate::plan::{INDEX_KEEPS_AT_MOST, MISESTIMATE_FACTOR, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
 
+mod growth;
 mod index;
 mod memory;
 mod parallelism;
@@ -97,6 +98,16 @@ pub struct PlanInsights {
 /// Every rule, for docs and `culprit checks`-style listings: (id, engines, one line).
 pub const RULES: &[(&str, &[Engine], &str)] = &[
     (
+        "deep-pagination",
+        &[Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite],
+        "A literal OFFSET skips many matches before returning a later page",
+    ),
+    (
+        "partition-filtering",
+        &[Engine::Postgres],
+        "A measured run visits many partitions and filters most rows afterwards; inspect intended pruning",
+    ),
+    (
         "cross-table-or",
         ALL,
         "A filter across tables after a scan; evaluate a semantics-preserving rewrite before indexing",
@@ -176,6 +187,12 @@ pub fn changes_schema(plan: &Plan) -> bool {
 
 /// What this plan can't show, in one sentence, so an empty list isn't mistaken for a clean bill of health.
 pub fn coverage_note(plan: &Plan) -> Option<String> {
+    if plan.kind != PlanKind::Actual && (plan.kind == PlanKind::Generic || plan.props.contains_key("Generic Plan")) {
+        if plan.engine == Engine::Sqlite {
+            return Some("Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.".into());
+        }
+        return Some("This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.".into());
+    }
     if updates_statistics(plan) {
         return Some(STATISTICS_NOTE.into());
     }
@@ -234,6 +251,8 @@ pub fn insights(plan: &Plan) -> Vec<PlanInsight> {
     }
     let cx = Cx::new(plan);
     let rules: &[fn(&Cx) -> Vec<Draft>] = &[
+        growth::deep_pagination,
+        growth::partition_filtering,
         key_lookups,
         missing_index_hint,
         scan_filter,
@@ -1386,6 +1405,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
     let parallel = parallel_settings(snapshot);
     let tables = scanned_table_indexes(snapshot);
     let columns = &snapshot.columns;
+    let partitions = partition_parents(&snapshot.tables);
     if let Some(workload) = snapshot.workload.as_mut() {
         let end = workload.window_end.as_deref().and_then(format::epoch_seconds);
         for q in workload.queries.iter_mut() {
@@ -1398,6 +1418,7 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
             let Some(plan) = q.plan.as_mut() else { continue };
             mark_query(plan, &q.text);
             mark_changed_columns(plan, columns);
+            mark_partitions(&mut plan.root, &partitions);
             mark_table_indexes(&mut plan.root, &tables, quiet);
             if plan.engine == Engine::Mssql {
                 mark_parallel_settings(plan, &parallel);
@@ -1410,9 +1431,30 @@ pub fn mark_snapshot(snapshot: &mut Snapshot) {
 /// indexes on each table it scans, and on SQL Server the parallelism settings. Not [`TABLE_GONE`], which needs to know
 /// that the statement stopped running.
 pub fn mark_plan(plan: &mut Plan, snapshot: &Snapshot) {
+    mark_partitions(&mut plan.root, &partition_parents(&snapshot.tables));
     mark_table_indexes(&mut plan.root, &scanned_table_indexes(snapshot), false);
     if plan.engine == Engine::Mssql {
         mark_parallel_settings(plan, &parallel_settings(snapshot));
+    }
+}
+
+fn partition_parents(tables: &[crate::TableStat]) -> HashMap<String, Option<String>> {
+    let mut parents = HashMap::new();
+    for t in tables {
+        // An unquoted display name can be ambiguous when an identifier itself contains a dot.
+        // Do not attribute such an operator to either of two different catalog objects.
+        parents.entry(t.qualified()).and_modify(|parent| *parent = None).or_insert_with(|| t.partition_of.clone());
+    }
+    parents
+}
+
+fn mark_partitions(node: &mut PlanNode, parents: &HashMap<String, Option<String>>) {
+    node.props.remove("Partition Of");
+    if let Some(parent) = node.object.as_deref().and_then(|name| parents.get(name)).and_then(Option::as_ref) {
+        node.props.insert("Partition Of".into(), parent.clone());
+    }
+    for child in &mut node.children {
+        mark_partitions(child, parents);
     }
 }
 

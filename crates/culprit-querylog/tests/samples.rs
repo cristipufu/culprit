@@ -64,3 +64,46 @@ fn another_database_s_statements_leave_the_totals_too() {
     assert!(w.queries.iter().all(|q| !q.text.contains("\"color\"")));
     assert_eq!(w.total_executions, (before - 1) as f64);
 }
+
+#[test]
+fn structured_errors_without_durations_keep_evidence_without_inventing_fast_runs() {
+    let lines = [
+        r#"{"sql":"INSERT INTO items(name) VALUES ('private-value')", "error_code":5}"#,
+        r#"{"sql":"INSERT INTO items(name) VALUES ('other-private-value')", "error":{"code":"SQLITE_BUSY"}, "at":"2026-10-20T10:00:00Z"}"#,
+        r#"{"sql":"SELECT * FROM items", "ms":3, "error_code":0}"#,
+        r#"{"sql":"SELECT * FROM items", "ms":2, "error":false}"#,
+        r#"{"sql":"INSERT INTO items(name) VALUES ('secret')", "error_code":2067}"#,
+    ];
+    let (format, aggregator) = culprit_querylog::read(lines, Engine::Sqlite).unwrap();
+    let failures = aggregator.failures();
+    assert_eq!(failures.iter().map(|e| e.count).sum::<f64>(), 3.0);
+    let busy = failures.iter().find(|e| e.code == "SQLITE_BUSY").unwrap();
+    assert_eq!(busy.count, 2.0);
+    assert_eq!(busy.last_at.as_deref(), Some("2026-10-20T10:00:00Z"));
+    assert!(failures.iter().any(|e| e.code == "SQLITE_CONSTRAINT"));
+    let exported = serde_json::to_string(&failures).unwrap();
+    assert!(!exported.contains("private-value") && !exported.contains("secret"));
+    let w = aggregator.workload(format, 50);
+    assert_eq!((w.total_executions, w.total_time_ms), (2.0, 5.0));
+    assert_eq!(w.queries.len(), 1);
+}
+
+#[test]
+fn request_counts_need_explicit_nonempty_ids_and_never_export_them() {
+    let mut lines = Vec::new();
+    for group in 0..3 {
+        for value in 0..12 {
+            lines.push(format!(
+                r#"{{"sql":"SELECT * FROM items WHERE id = {value}","ms":1,"request_id":"private-request-{group}"}}"#
+            ));
+        }
+    }
+    for _ in 0..12 {
+        lines.push(r#"{"sql":"SELECT * FROM items WHERE id = 1","ms":1,"request_id":""}"#.into());
+    }
+    let (format, aggregator) = culprit_querylog::read(lines.iter().map(String::as_str), Engine::Sqlite).unwrap();
+    let w = aggregator.workload(format, 50);
+    let r = w.queries[0].requests.as_ref().unwrap();
+    assert_eq!((r.requests, r.repeated_requests, r.most_calls), (3, 3, 12));
+    assert!(!serde_json::to_string(&w).unwrap().contains("private-request"));
+}

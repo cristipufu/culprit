@@ -32,6 +32,10 @@ macro_rules! check {
             fn run(&self, snapshot: &culprit_core::Snapshot) -> Vec<culprit_core::Finding> {
                 $run(snapshot)
             }
+
+            fn evidence(&self, snapshot: &culprit_core::Snapshot) -> culprit_core::CheckEvidence {
+                crate::evidence::for_check(&$info().id, snapshot)
+            }
         }
     };
 }

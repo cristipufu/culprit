@@ -164,6 +164,9 @@ pub(crate) fn plan_reads_whole(snapshot: &Snapshot, q: &QueryStat, table: &str, 
 }
 
 pub(crate) fn unindexed_foreign_keys(snapshot: &Snapshot) -> Vec<(&culprit_core::ForeignKey, Option<f64>)> {
+    if crate::evidence::index_catalog(snapshot).is_some() {
+        return Vec::new();
+    }
     let keys = |fk: &culprit_core::ForeignKey| fk.columns.iter().map(|c| c.to_ascii_lowercase()).collect::<Vec<_>>();
     let same_table = |a: &culprit_core::ForeignKey, b: &culprit_core::ForeignKey| {
         a.schema.eq_ignore_ascii_case(&b.schema) && a.table.eq_ignore_ascii_case(&b.table)

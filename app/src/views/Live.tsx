@@ -207,7 +207,7 @@ function LiveSessions({ connection }: { connection: string }) {
         </div>
       ) : (
         <div className="live-calm good">
-          <span className="pulse" aria-hidden /> Nothing is blocked{state ? ` · ${activeNow} active ${activeNow === 1 ? "session" : "sessions"}` : ""}
+          <span className="pulse" aria-hidden /> {state?.sessions.some((s) => s.wait?.toLowerCase().includes("lock")) ? "Lock waits observed; no complete blocking chain was resolved" : state?.notes?.length ? "No blocking chain resolved; collection has limitations" : "No blocking observed"}{state ? ` · ${activeNow} active ${activeNow === 1 ? "session" : "sessions"}` : ""}
           {state?.session_actions_note && (
             <span className="muted live-note" title="Cancelling statements and ending sessions is only offered on non-production connections.">
               <Lock size={12} /> {state.session_actions_note}
@@ -215,6 +215,7 @@ function LiveSessions({ connection }: { connection: string }) {
           )}
         </div>
       )}
+      {state?.notes?.length ? <details className="notice"><summary>Live collection limitations · {state.notes.length}</summary>{state.notes.map((note) => <p key={note}>{note}</p>)}</details> : null}
       <div className="table-wrap" ref={tableRef} style={watching ? { flex: "0 1 auto", maxHeight: "34%" } : undefined}>
         <table className="grid">
           <thead>

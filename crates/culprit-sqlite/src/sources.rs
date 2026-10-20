@@ -4,6 +4,7 @@
 //! is listed as missing with why.
 
 use culprit_core::{Capability, Source};
+pub const WAL_FILE: Source = Source { name: "wal_file", reads: "WAL sidecar file size (metadata only)", delivers: &[] };
 
 /// sqlite_schema and the table, column, index and foreign key pragmas.
 pub const CATALOG: Source =
@@ -20,4 +21,4 @@ pub const QUERY_LOG: Source =
     Source { name: "query log", reads: "the application's query log", delivers: &[Capability::QueryLog] };
 
 /// Every source above, for listings (`culprit sources`).
-pub const ALL: &[Source] = &[CATALOG, PLANNER_STATISTICS, SIZES, SETTINGS, QUERY_LOG];
+pub const ALL: &[Source] = &[CATALOG, PLANNER_STATISTICS, SIZES, SETTINGS, QUERY_LOG, WAL_FILE];

@@ -1,4 +1,62 @@
 #[test]
+fn pagination_observations_require_literal_offsets_and_preserve_page_semantics() {
+    let mut p = plan(Engine::Postgres, node(1, "Limit", NodeKind::Other));
+    p.statement = Some("SELECT * FROM items ORDER BY id LIMIT 20 OFFSET 10000".into());
+    let found = insights(&p);
+    let d = found.iter().find(|d| d.rule == "deep-pagination").unwrap();
+    assert!(d.fix.contains("unique tie-breaker") && d.fix.contains("arbitrary page jumps"));
+    p.statement = Some("SELECT * FROM items LIMIT 20 OFFSET $1".into());
+    assert!(!rules(&p).contains(&"deep-pagination".into()));
+    p.statement = Some("SELECT 'OFFSET 10000' FROM items LIMIT 20".into());
+    assert!(!rules(&p).contains(&"deep-pagination".into()));
+}
+
+#[test]
+fn planned_partitions_are_not_reported_as_executed_and_filters_are_not_failed_pruning() {
+    let mut root = node(0, "Append", NodeKind::Other);
+    root.children = (1..=16)
+        .map(|id| {
+            let mut n = node(id, "Seq Scan", NodeKind::Scan);
+            n.object = Some(format!("public.events_{id}"));
+            n.props.insert("Partition Of".into(), "public.events".into());
+            n.predicate = Some("active = true".into());
+            n.act_executions = Some(1.0);
+            n.act_rows = Some(100.0);
+            n.rows_read = Some(10000.0);
+            n
+        })
+        .collect();
+    let mut p = plan(Engine::Postgres, root);
+    p.kind = PlanKind::Generic;
+    assert!(!rules(&p).contains(&"partition-filtering".into()));
+    p.kind = PlanKind::Actual;
+    let found = insights(&p);
+    let d = found.iter().find(|d| d.rule == "partition-filtering").unwrap();
+    assert!(d.detail.contains("not failed pruning"));
+    assert!(d.fix.contains("changes results"));
+    for c in &mut p.root.children {
+        c.act_executions = Some(0.0);
+    }
+    assert!(!rules(&p).contains(&"partition-filtering".into()));
+}
+
+#[test]
+fn separately_recorded_trigger_work_does_not_turn_unknown_memory_into_zero() {
+    let mut p = plan(Engine::Postgres, node(1, "Update", NodeKind::Other));
+    p.kind = PlanKind::Actual;
+    p.props.insert("MemoryGrantedKB".into(), "1024".into());
+    p.props.insert(
+        "Triggers".into(),
+        r#"[{"Trigger Name":"audit","Relation":"items","Time":120.5,"Calls":10},{"Trigger Name":"bad","Time":-1}]"#
+            .into(),
+    );
+    let s = crate::actual_summary(&p).unwrap();
+    assert_eq!(s.memory_used_kb, None);
+    assert_eq!(s.triggers.len(), 1);
+    assert_eq!((s.triggers[0].time_ms, s.triggers[0].calls), (120.5, Some(10.0)));
+}
+
+#[test]
 fn names_in_scripts_cannot_break_out_of_their_quotes() {
     assert_eq!(quote(Engine::Mssql, "a]; DROP TABLE t; --"), "[a]]; DROP TABLE t; --]");
     assert_eq!(quote(Engine::Mysql, "a`; DROP TABLE t; --"), "`a``; DROP TABLE t; --`");
@@ -617,6 +675,11 @@ fn index_advice_from_a_scan_needs_a_scan_that_an_index_would_shrink() {
     // A selective scan: now the function is what keeps the index out.
     let selective = scan("Clustered Index Scan", NodeKind::Scan, 2_000_000.0, 3_000.0, isnull);
     assert_eq!(rules(&selective), vec!["non-sargable"]);
+    let advice = insights(&selective);
+    assert!(
+        advice[0].fix.contains("fallback = wanted") && advice[0].fix.contains("unconditionally changes the result")
+    );
+    assert!(advice[0].verify.contains("identical results"));
     // SQL Server seeks through CONVERT(date, …): the scan needs an index, not a rewrite.
     let to_date = "CONVERT(date,[db].[dbo].[orders].[created_at],0)='2026-03-01'";
     assert_eq!(

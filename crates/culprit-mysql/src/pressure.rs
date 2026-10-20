@@ -362,7 +362,7 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
         p.signals.push(
             Signal::new(
                 "oldest-transaction",
-                "Oldest transaction holding purge",
+                "Oldest transaction to inspect for locks or a retained read view",
                 seconds,
                 SignalUnit::Seconds,
                 SignalScope::Now,

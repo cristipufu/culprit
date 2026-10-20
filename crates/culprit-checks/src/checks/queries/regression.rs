@@ -202,7 +202,7 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
         )),
         // Several plans, none new around the step: it didn't come with a plan change, which isn't "the plan never changed".
         None if q.plans.len() > 1 => summary.push_str(" No new plan started when it got slower, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
-        None => summary.push_str(" The plan Culprit sees did not change, so look at what else changed then: a deploy that changed this statement or its parameters, a jump in data volume, a statistics update, or new blocking."),
+        None => summary.push_str(" This scan does not establish which plan the earlier and later runs used, so a plan change remains possible. Compare plans and parameter values, and check for changed data volume, statistics, blocking or application code around that time."),
     }
     f.summary = summary;
     f.queries = query_refs(&[q]);

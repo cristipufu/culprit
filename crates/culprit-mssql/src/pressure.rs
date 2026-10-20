@@ -365,6 +365,7 @@ pub(crate) async fn collect(client: &mut MsClient, probe: &Probe) -> (Pressure, 
         })
     {
         p.oldest_transaction = rows.first().map(|r| OpenTransaction {
+            catalog_only: false,
             session: r.string("session_id"),
             seconds: r.f64_or_zero("seconds"),
             program: r.str("program_name").filter(|s| !s.trim().is_empty()),

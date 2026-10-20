@@ -50,9 +50,10 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
             let table_name = t.qualified();
             let ratio = dead / (live + dead).max(1.0);
             let last = t.last_vacuum.as_deref().and_then(|d| days_between(d, &snapshot.taken_at)).filter(|d| *d >= 0.0);
-            // Vacuumed within the hour and the dead rows stayed: vacuum ran but couldn't remove them, because something
-            // older holds the cleanup horizon (a long transaction, a replication slot, a prepared transaction).
-            let held = trigger.is_some() && last.is_some_and(|d| d * 24.0 < 1.0);
+            // A recent vacuum and a dead-row estimate do not prove a blocked horizon: writes may have followed it.
+            let recent_vacuum = last.is_some_and(|d| d * 24.0 < 1.0);
+            let holder = snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref());
+            let held = trigger.is_some() && holder.is_some_and(|h| !h.catalog_only && h.xid_age.is_some_and(|age| age > 0.0));
             let mut f = finding("dead-rows", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             f.title = format!("{} of {} is dead rows", format::percent(ratio), t.name);
             f.summary = format!(
@@ -60,7 +61,8 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 format::count(dead),
                 format::count(live),
                 match trigger {
-                    Some(_) if held => "Vacuum ran within the hour and they stayed: something older holds the cleanup horizon back (a long-running transaction, a replication slot or a prepared transaction), so vacuum can't remove them yet.".to_string(),
+                    Some(_) if held => "A cleanup holder was observed in this scan. It can prevent removal of some dead rows; this count does not establish how many it retains. Check the holder and vacuum progress before changing maintenance.".to_string(),
+                    Some(_) if recent_vacuum => "Vacuum ran within the last hour. These rows may have become dead afterwards, or an older snapshot may prevent removal; the scan does not establish which. Compare write activity and the next vacuum before treating this as failed cleanup.".to_string(),
                     Some(tr) => format!(
                         "Autovacuum should visit it at about {} dead rows; it has {:.1} times that, so it is behind.",
                         format::count(tr),
@@ -95,7 +97,13 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
             };
             f.fix = Some(if held {
                 Fix {
-                    summary: "Find what holds cleanup back and end it (Live shows long-running and idle-in-transaction sessions; the held-cleanup finding names the holder), then vacuum: until then vacuum can't remove these rows.".into(),
+                    summary: "Inspect the observed cleanup holder and vacuum progress. Finish a transaction only after checking its owner and purpose; a replication consumer or prepared transaction needs its own recovery procedure. Then measure whether vacuum removes the backlog under representative writes.".into(),
+                    sql: None,
+                    cost: None,
+                }
+            } else if recent_vacuum && trigger.is_some() {
+                Fix {
+                    summary: "Compare representative writes and the next autovacuum with the dead-row estimate. Inspect vacuum progress and any cleanup holders if the backlog persists. Change per-table maintenance only after establishing that its current settings cannot keep up.".into(),
                     sql: None,
                     cost: None,
                 }
@@ -110,7 +118,9 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
                 }
             });
             let when = if held {
-                "After ending the cleanup holder and running VACUUM (ANALYZE), re-scan"
+                "After safely resolving the cleanup hold and allowing VACUUM to complete, re-scan"
+            } else if recent_vacuum && trigger.is_some() {
+                "Compare the next completed vacuum under representative writes"
             } else {
                 "Re-scan after VACUUM (ANALYZE)"
             };

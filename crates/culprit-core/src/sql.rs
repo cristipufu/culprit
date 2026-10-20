@@ -1362,6 +1362,87 @@ pub fn has_limit(text: &str, engine: Engine) -> bool {
     after_limit(text, engine).is_some()
 }
 
+/// A literal top-level pagination offset, agreed by every SQL lexing mode. Parameter values and expressions remain
+/// unknown. Keywords in comments, strings, quoted names and nested subqueries cannot produce an offset.
+pub fn offset_count(text: &str, engine: Engine) -> Option<f64> {
+    fn literal(rest: &str) -> Option<f64> {
+        let rest = rest.trim_start();
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let n = rest.get(..digits)?.parse::<u64>().ok()?;
+        let tail = rest.get(digits..)?.trim_start();
+        if !tail.is_empty()
+            && !tail.starts_with([',', ';', ')'])
+            && !["row", "rows", "fetch"].iter().any(|word| {
+                tail.get(..word.len()).is_some_and(|s| s.eq_ignore_ascii_case(word))
+                    && tail.get(word.len()..).is_some_and(|s| s.chars().next().is_none_or(char::is_whitespace))
+            })
+        {
+            return None;
+        }
+        (n <= 1_000_000_000).then_some(n as f64)
+    }
+    let mut agreed = None;
+    for tokens in readings(text, engine).ok()? {
+        let mut depth = 0;
+        let mut value = None;
+        for token in tokens {
+            match token {
+                Token::Punct('(') => depth += 1,
+                Token::Punct(')') => depth -= 1,
+                Token::Word(w) if depth == 0 && w.eq_ignore_ascii_case("offset") => {
+                    let end = w.as_ptr() as usize - text.as_ptr() as usize + w.len();
+                    value = literal(text.get(end..)?);
+                }
+                _ => {}
+            }
+        }
+        if value.is_none()
+            && matches!(engine, Engine::Mysql | Engine::Sqlite)
+            && let Some(rest) = after_limit(text, engine)
+        {
+            let rest = rest.trim_start();
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if rest.get(digits..).is_some_and(|r| r.trim_start().starts_with(',')) {
+                value = literal(rest);
+            }
+        }
+        if let Some(previous) = agreed {
+            if previous != value {
+                return None;
+            }
+        } else {
+            agreed = Some(value);
+        }
+    }
+    agreed.flatten()
+}
+
+#[cfg(test)]
+mod offset_tests {
+    use super::*;
+    #[test]
+    fn literal_offsets_do_not_accept_expressions_identifiers_or_nested_queries() {
+        for engine in Engine::ALL {
+            assert_eq!(
+                offset_count("SELECT * FROM t OFFSET 12000 ROWS FETCH NEXT 10 ROWS ONLY", engine),
+                Some(12000.0)
+            );
+            for sql in [
+                "SELECT 'OFFSET 12000' FROM t",
+                "SELECT * FROM (SELECT * FROM t OFFSET 12000) q",
+                "SELECT * FROM t OFFSET 12000 + 1",
+                "SELECT * FROM t OFFSET :offset",
+                "SELECT * FROM t /* OFFSET 12000 */",
+                "SELECT * FROM t OFFSET 12000.5",
+            ] {
+                assert_eq!(offset_count(sql, engine), None, "{engine}: {sql}");
+            }
+        }
+        assert_eq!(offset_count("SELECT * FROM t LIMIT 12000,20", Engine::Mysql), Some(12000.0));
+        assert_eq!(offset_count("SELECT * FROM t LIMIT 12000,20", Engine::Sqlite), Some(12000.0));
+    }
+}
+
 /// The row count the statement's own LIMIT asks for, where its text writes it right after the keyword (`LIMIT 50`,
 /// MySQL's `LIMIT 10, 50`, `LIMIT 50 OFFSET 10`); `None` without a LIMIT, for a placeholder (`LIMIT ?`, `LIMIT $1`), for
 /// anything else between the keyword and the count, and for a count past [`MAX_LIMIT_ROWS`].

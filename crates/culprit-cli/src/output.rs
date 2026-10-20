@@ -377,7 +377,7 @@ impl Out {
     pub fn findings(&self, report: &Report, min: Severity) {
         let list: Vec<&Finding> = report.findings.iter().filter(|f| f.severity >= min).collect();
         if self.format == Format::Json {
-            return self.json(&json!({ "summary": report.summary, "findings": list, "locked": report.locked }));
+            return self.json(&json!({ "summary": report.summary, "findings": list, "locked": report.locked, "assessments": report.assessments }));
         }
         if self.format == Format::Md {
             return print!("{}", markdown_report(report));
@@ -405,6 +405,21 @@ impl Out {
             }
         }
         let list: Vec<&Finding> = active.iter().chain(stopped.iter()).copied().collect();
+        if !report.assessments.is_empty() {
+            let assessed =
+                report.assessments.iter().filter(|a| a.status == culprit_core::CheckStatus::Assessed).count();
+            let limited = report
+                .assessments
+                .iter()
+                .filter(|a| {
+                    matches!(
+                        a.status,
+                        culprit_core::CheckStatus::Unavailable | culprit_core::CheckStatus::InsufficientEvidence
+                    ) || (a.status == culprit_core::CheckStatus::Findings && a.reason.is_some())
+                })
+                .count();
+            println!("\n{}", self.paint(DIM, &format!("Check coverage: {assessed} assessed without a finding; {limited} limited by missing or incomplete evidence. JSON includes each check's reason.")));
+        }
         if !report.locked.is_empty() {
             println!();
             let names: Vec<String> = report.locked.iter().map(|l| l.check.title.clone()).collect();
@@ -527,7 +542,7 @@ impl Out {
                 if let Some(reads) = s.logical_reads {
                     parts.push(format!("{} reads", format::count(reads)));
                 }
-                parts.push("% = share of the time".into());
+                parts.push("% = share of timed operator work".into());
                 println!("{}", self.paint(DIM, &parts.join(" · ")));
                 if let (Some(granted), Some(used)) = (s.memory_granted_kb.filter(|g| *g > 0.0), s.memory_used_kb) {
                     println!("{}", self.paint(DIM, &format!("Memory: used {} of {} granted", kb(used), kb(granted))));
@@ -555,6 +570,26 @@ impl Out {
                 self.paint(DIM, &format!("{:?} plan · the access path only: no row or cost estimates", plan.kind))
             ),
             _ => println!("{}", self.paint(DIM, &format!("{:?} plan · total cost {:.2}", plan.kind, plan.total_cost))),
+        }
+        if let Some(s) = &summary {
+            if let Some(granted) = s.memory_granted_kb
+                && s.memory_used_kb.is_none()
+            {
+                println!("Memory granted: {}; memory used was not recorded.", kb(granted));
+            }
+            if !s.triggers.is_empty() {
+                println!(
+                    "Trigger work (BEFORE timing may overlap its modifying operator; do not sum with operator time):"
+                );
+                for t in &s.triggers {
+                    println!(
+                        "  {}: {}{}",
+                        t.name,
+                        format::duration(t.time_ms),
+                        t.calls.map(|c| format!(" across {} calls", format::count(c))).unwrap_or_default()
+                    );
+                }
+            }
         }
         let total_time = own.as_ref().map(|t| t.values().sum::<f64>()).filter(|t| *t > 0.0);
         let flagged: Vec<u32> = found.items.iter().filter_map(|i| i.nodes.first().copied()).collect();
@@ -815,13 +850,23 @@ impl Out {
         }
         let blocked: Vec<_> = live.sessions.iter().filter(|s| s.blocked_by.is_some()).collect();
         if blocked.is_empty() {
-            println!("{} Nothing is blocked.", self.paint(GREEN, "✓"));
+            println!(
+                "{}",
+                if live.blocking_incomplete() {
+                    "No blocker was identified; lock visibility is incomplete."
+                } else {
+                    "No blocking was observed."
+                }
+            );
         } else {
             println!(
                 "{} {} blocked",
                 self.paint(RED, "!"),
                 if blocked.len() == 1 { "1 session".to_string() } else { format!("{} sessions", blocked.len()) }
             );
+        }
+        for note in &live.notes {
+            println!("Collection limitation: {note}");
         }
         for s in &live.sessions {
             println!(
@@ -1239,6 +1284,8 @@ fn compact_report(report: &Report, path: &Path) -> Value {
         "summary": report.summary,
         "findings": report.findings,
         "locked": report.locked,
+        "assessments": report.assessments,
+        "engine_limitations": s.server.engine.spec().limitations(),
         "notes": s.notes,
         "next": report.findings.iter().take(3).map(|f| format!("culprit show {} '{}'", s.connection, f.id)).collect::<Vec<_>>(),
     })

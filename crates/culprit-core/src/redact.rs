@@ -125,6 +125,9 @@ fn collapse_parameters(span: String) -> String {
 pub fn redact_snapshot(snapshot: &Snapshot) -> Snapshot {
     let engine = snapshot.server.engine;
     let mut s = snapshot.clone();
+    for failure in &mut s.operations.log_failures {
+        failure.statement = redact_sql(&failure.statement, engine);
+    }
     for table in &mut s.tables {
         table.definition = table.definition.as_deref().map(|sql| redact_sql(sql, engine));
     }

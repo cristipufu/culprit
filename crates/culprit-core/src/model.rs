@@ -1118,6 +1118,8 @@ fn days_when(from: &str, to: Option<&str>) -> String {
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct QueryStat {
+    #[serde(default)]
+    pub requests: Option<crate::operations::RequestEvidence>,
     /// A CTE write's unambiguous base table, resolved by shared SQL analysis. Absent when unknown or unnecessary.
     #[serde(default)]
     pub resolved_write_target: Option<String>,
@@ -1442,6 +1444,15 @@ pub struct IndexStat {
     pub is_primary_key: bool,
     pub is_clustered: bool,
     pub is_disabled: bool,
+    /// Engine-specific availability. `is_disabled` remains the compatibility flag for optimizer unavailability.
+    #[serde(default)]
+    pub state: Option<IndexState>,
+    /// Whether writes maintain it; unknown for an old invalid PostgreSQL index without indisready evidence.
+    #[serde(default)]
+    pub maintained: Option<bool>,
+    /// Whether this index has a sqlite_stat1 entry; unknown on other engines or an unread catalog.
+    #[serde(default)]
+    pub has_statistics: Option<bool>,
     pub size_bytes: Option<f64>,
     pub reads: Option<f64>,
     pub writes: Option<f64>,
@@ -1486,6 +1497,17 @@ impl IndexStat {
     pub fn key_names(&self) -> Vec<&str> {
         self.columns.iter().map(|c| strip_direction(c)).collect()
     }
+}
+
+#[derive(Serialize, Deserialize, TS, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export)]
+pub enum IndexState {
+    Active,
+    Disabled,
+    Invalid,
+    Invisible,
+    Ignored,
 }
 
 pub fn strip_direction(column: &str) -> &str {
@@ -1592,6 +1614,8 @@ pub struct CollectorNote {
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub operations: crate::operations::OperationalStats,
     pub format: u32,
     pub id: String,
     pub connection: String,
@@ -1711,6 +1735,8 @@ pub struct Session {
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
 #[ts(export)]
 pub struct LiveState {
+    #[serde(default)]
+    pub notes: Vec<String>,
     pub taken_at: String,
     pub sessions: Vec<Session>,
     pub waits: Vec<WaitStat>,
@@ -1723,6 +1749,18 @@ pub struct LiveState {
     /// Who blocks whom, as chains under each head blocker, when anyone waits on a lock.
     #[serde(default)]
     pub blocking: Option<crate::blocking::Blocking>,
+}
+
+impl LiveState {
+    pub fn blocking_incomplete(&self) -> bool {
+        !self.notes.is_empty()
+            || self.sessions.iter().any(|s| {
+                s.blocked_by.is_none()
+                    && s.wait
+                        .as_deref()
+                        .is_some_and(|w| w.to_ascii_lowercase().contains("lock") || w.starts_with("LCK_"))
+            })
+    }
 }
 
 /// A numeric session id from `live()` (SQL Server spid, Postgres pid, MySQL thread id). Ids are spliced into `KILL`, so

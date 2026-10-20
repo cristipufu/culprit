@@ -439,6 +439,7 @@ fn to_query_stat(
     let (parameters, sql) = split_parameters(&text.map(|t| t.string("query_sql_text")).unwrap_or_default());
     QueryStat {
         resolved_write_target: None,
+        requests: None,
         id: q.query_id.clone(),
         query_hash: text.and_then(|t| t.str("query_hash")),
         text: sql,

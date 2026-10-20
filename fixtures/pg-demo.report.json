@@ -1,4 +1,234 @@
 {
+  "assessments": [
+    {
+      "check": "filtered-scan",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Scans an index would avoid"
+    },
+    {
+      "check": "unused-index",
+      "reason": "At least a week of comparable index-usage counters is needed to assess absence of reads.",
+      "status": "insufficient-evidence",
+      "title": "Unused indexes"
+    },
+    {
+      "check": "duplicate-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Duplicate and redundant indexes"
+    },
+    {
+      "check": "unindexed-fk",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Foreign keys without an index"
+    },
+    {
+      "check": "overlapping-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Overlapping indexes"
+    },
+    {
+      "check": "over-indexed",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Many indexes on write-heavy tables"
+    },
+    {
+      "check": "scan-heavy",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Tables read in full over and over"
+    },
+    {
+      "check": "query-family",
+      "reason": null,
+      "status": "assessed",
+      "title": "Statements with literals baked in"
+    },
+    {
+      "check": "repeated-request",
+      "reason": "QueryLog was not collected",
+      "status": "unavailable",
+      "title": "Repeated statements within logged requests"
+    },
+    {
+      "check": "heavy-query",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries that dominate database time"
+    },
+    {
+      "check": "chatty-query",
+      "reason": null,
+      "status": "findings",
+      "title": "Chatty queries"
+    },
+    {
+      "check": "plan-warnings",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "insufficient-evidence",
+      "title": "Plan warnings"
+    },
+    {
+      "check": "plan-insights",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "insufficient-evidence",
+      "title": "Plan insights"
+    },
+    {
+      "check": "regression",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that got slower"
+    },
+    {
+      "check": "unstable-query",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Unstable queries"
+    },
+    {
+      "check": "temp-spill",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries writing temp files"
+    },
+    {
+      "check": "stale-stats",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Stale statistics"
+    },
+    {
+      "check": "dead-rows",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Dead rows and lagging autovacuum"
+    },
+    {
+      "check": "xid-age",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Transaction ID wraparound risk"
+    },
+    {
+      "check": "multixact-age",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "MultiXact wraparound risk"
+    },
+    {
+      "check": "config",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Configuration"
+    },
+    {
+      "check": "deadlocks",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Deadlocks"
+    },
+    {
+      "check": "worker-pressure",
+      "reason": null,
+      "status": "assessed",
+      "title": "Running out of workers or connections"
+    },
+    {
+      "check": "held-cleanup",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "insufficient-evidence",
+      "title": "A long open transaction holds cleanup back"
+    },
+    {
+      "check": "checkpoint-pressure",
+      "reason": null,
+      "status": "assessed",
+      "title": "Requested checkpoints"
+    },
+    {
+      "check": "sequence-capacity",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Identity and sequence allocation limits"
+    },
+    {
+      "check": "operational-errors",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Archive, replication and redo failures"
+    },
+    {
+      "check": "planning-time",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "findings",
+      "title": "Queries that spend their time being planned"
+    },
+    {
+      "check": "jit-overhead",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "findings",
+      "title": "JIT compilation that takes much of a statement's time"
+    },
+    {
+      "check": "log-volume",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Writes that produce most of the log"
+    },
+    {
+      "check": "big-result",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that return huge results"
+    },
+    {
+      "check": "untrusted-constraint",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Constraints the optimizer can't rely on"
+    },
+    {
+      "check": "hot-updates",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Updates that rewrite every index"
+    },
+    {
+      "check": "table-bloat",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Tables that are mostly empty space"
+    },
+    {
+      "check": "large-rows",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Tables whose rows are mostly large values"
+    },
+    {
+      "check": "slow-storage",
+      "reason": null,
+      "status": "assessed",
+      "title": "Storage that's slow to read or write"
+    },
+    {
+      "check": "connection-churn",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Applications that connect for every request"
+    },
+    {
+      "check": "replica-lag",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "findings",
+      "title": "Replicas that fall behind"
+    }
+  ],
   "findings": [
     {
       "actionability": "needs-attention",
@@ -886,7 +1116,28 @@
       ]
     }
   ],
-  "locked": [],
+  "locked": [
+    {
+      "check": {
+        "category": "queries",
+        "description": "Repeated SQL shapes correlated by explicit request_id in structured logs. Repetition identifies a caller to inspect; it does not prove an N+1 bug or removable work.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql",
+          "sqlite"
+        ],
+        "id": "repeated-request",
+        "requires": [
+          "query-log"
+        ],
+        "title": "Repeated statements within logged requests"
+      },
+      "missing": [
+        "query-log"
+      ]
+    }
+  ],
   "snapshot": {
     "columns": [
       {
@@ -1218,6 +1469,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX customers_pkey ON public.customers USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1226,6 +1478,7 @@
         "kind": "btree",
         "last_read": "2026-10-11T07:02:20Z",
         "lookups": null,
+        "maintained": true,
         "name": "customers_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1234,6 +1487,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 4513792.0,
+        "state": "active",
         "table": "customers",
         "writes": null
       },
@@ -1246,6 +1500,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX products_pkey ON public.products USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1254,6 +1509,7 @@
         "kind": "btree",
         "last_read": "2026-10-11T07:03:36Z",
         "lookups": null,
+        "maintained": true,
         "name": "products_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1262,6 +1518,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 245760.0,
+        "state": "active",
         "table": "products",
         "writes": null
       },
@@ -1274,6 +1531,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX products_sku_key ON public.products USING btree (sku)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1282,6 +1540,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "products_sku_key",
         "opclasses": null,
         "partition_of": null,
@@ -1290,6 +1549,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 335872.0,
+        "state": "active",
         "table": "products",
         "writes": null
       },
@@ -1302,6 +1562,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX orders_pkey ON public.orders USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1310,6 +1571,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "orders_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1318,6 +1580,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 44941312.0,
+        "state": "active",
         "table": "orders",
         "writes": null
       },
@@ -1330,6 +1593,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX order_items_pkey ON public.order_items USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1338,6 +1602,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "order_items_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1346,6 +1611,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 22487040.0,
+        "state": "active",
         "table": "order_items",
         "writes": null
       },
@@ -1358,6 +1624,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX events_pkey ON public.events USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1366,6 +1633,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "events_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1374,6 +1642,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 17989632.0,
+        "state": "active",
         "table": "events",
         "writes": null
       },
@@ -1386,6 +1655,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX events_customer_idx ON public.events USING btree (customer_id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1394,6 +1664,7 @@
         "kind": "btree",
         "last_read": "2026-10-11T07:02:20Z",
         "lookups": null,
+        "maintained": true,
         "name": "events_customer_idx",
         "opclasses": null,
         "partition_of": null,
@@ -1402,6 +1673,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 14860288.0,
+        "state": "active",
         "table": "events",
         "writes": null
       },
@@ -1414,6 +1686,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX products_sku_idx ON public.products USING btree (sku)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1422,6 +1695,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "products_sku_idx",
         "opclasses": null,
         "partition_of": null,
@@ -1430,6 +1704,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 335872.0,
+        "state": "active",
         "table": "products",
         "writes": null
       },
@@ -1442,6 +1717,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX orders_status_idx ON public.orders USING btree (status)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1450,6 +1726,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "orders_status_idx",
         "opclasses": null,
         "partition_of": null,
@@ -1458,6 +1735,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 13975552.0,
+        "state": "active",
         "table": "orders",
         "writes": null
       },
@@ -1471,6 +1749,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX orders_status_created_idx ON public.orders USING btree (status, created_at)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1479,6 +1758,7 @@
         "kind": "btree",
         "last_read": "2026-10-11T07:02:20Z",
         "lookups": null,
+        "maintained": true,
         "name": "orders_status_created_idx",
         "opclasses": null,
         "partition_of": null,
@@ -1487,6 +1767,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 70361088.0,
+        "state": "active",
         "table": "orders",
         "writes": null
       },
@@ -1499,6 +1780,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX customers_region_idx ON public.customers USING btree (region)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1507,6 +1789,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "customers_region_idx",
         "opclasses": null,
         "partition_of": null,
@@ -1515,6 +1798,7 @@
         "schema": "public",
         "seeks": null,
         "size_bytes": 1400832.0,
+        "state": "active",
         "table": "customers",
         "writes": null
       },
@@ -1527,6 +1811,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX wide_pkey ON archive.wide USING btree (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1535,6 +1820,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "wide_pkey",
         "opclasses": null,
         "partition_of": null,
@@ -1543,6 +1829,7 @@
         "schema": "archive",
         "seeks": null,
         "size_bytes": 6750208.0,
+        "state": "active",
         "table": "wide",
         "writes": null
       },
@@ -1555,6 +1842,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX wide_touched ON archive.wide USING btree (touched)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1563,6 +1851,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "wide_touched",
         "opclasses": null,
         "partition_of": null,
@@ -1571,12 +1860,22 @@
         "schema": "archive",
         "seeks": null,
         "size_bytes": 1122304.0,
+        "state": "active",
         "table": "wide",
         "writes": null
       }
     ],
     "missing_indexes": [],
     "notes": [],
+    "operations": {
+      "cluster": null,
+      "counters": [],
+      "log_failures": [],
+      "multixacts": [],
+      "sequences": [],
+      "spaces": [],
+      "sqlite": null
+    },
     "options": {
       "plans": 25,
       "top_queries": 60,
@@ -1615,6 +1914,7 @@
       "grants": [],
       "numa_nodes": null,
       "oldest_transaction": {
+        "catalog_only": false,
         "database": null,
         "held_bytes": null,
         "held_versions": null,
@@ -2206,7 +2506,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -2321,6 +2621,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 52768740.0,
           "rows_affected": null,
@@ -2407,7 +2708,7 @@
                   "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
                 }
               ],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -2551,6 +2852,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 8638.0,
           "rows_affected": null,
@@ -2621,7 +2923,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -2665,6 +2967,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -2735,7 +3038,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -2816,6 +3119,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -2902,7 +3206,7 @@
                   "verify": "Obtain a newly compiled plan and compare reads and execution time with equivalent parameters and load. Check index usage and write cost; a retained scan or old stored suggestion alone does not establish success or failure."
                 }
               ],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -3050,6 +3354,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 397.0,
           "rows_affected": null,
@@ -3120,7 +3425,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -3304,6 +3609,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1020.0,
           "rows_affected": null,
@@ -3374,7 +3680,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -3488,6 +3794,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 2996.0,
           "rows_affected": null,
@@ -3558,7 +3865,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -3606,6 +3913,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 8193.0,
           "rows_affected": null,
@@ -3675,6 +3983,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -3730,7 +4039,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -3811,6 +4120,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -3859,7 +4169,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -3903,6 +4213,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -3951,7 +4262,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -4033,6 +4344,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -4081,7 +4393,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -4125,6 +4437,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 1.0,
           "rows_affected": null,
@@ -4172,6 +4485,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -4219,6 +4533,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -4266,6 +4581,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 0.0,
           "rows_affected": null,
@@ -4336,7 +4652,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values. This statement ran once or stopped running in the selected workload. These are observations about its captured plan, not a current incident. Recheck if the workload returns."
             },
             "kind": "generic",
             "props": {
@@ -4415,6 +4731,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 21428.0,
           "rows_affected": null,
@@ -4473,7 +4790,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -5257,6 +5574,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 300.0,
           "rows_affected": null,
@@ -5315,7 +5633,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead."
+              "note": "This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values."
             },
             "kind": "generic",
             "props": {
@@ -5395,6 +5713,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": 120.0,
           "rows_affected": null,

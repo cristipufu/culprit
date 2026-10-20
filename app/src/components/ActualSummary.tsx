@@ -34,7 +34,7 @@ function Stat({ icon, value, label, title }: { icon: ReactNode; value: string; l
 export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: number) => void }) {
   const f = actualFacts(plan);
   if (!f) return null;
-  const memory = f.grantedKb != null && f.grantedKb > 0 ? { granted: f.grantedKb, used: f.usedKb ?? 0 } : null;
+  const memory = f.grantedKb != null && f.grantedKb > 0 && f.usedKb != null ? { granted: f.grantedKb, used: f.usedKb } : null;
   const idle = memory ? 1 - memory.used / memory.granted : 0;
   const callouts: { key: string; tone: "hot" | "warn" | "info"; icon: ReactNode; text: ReactNode; node?: number; title: string }[] = [];
   if (f.slowest && f.slowest.share >= 0.2) {
@@ -44,7 +44,7 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
       icon: <Gauge size={13} />,
       text: (
         <>
-          Most time: <b>{where(f.slowest.node)}</b> · {duration(f.slowest.ms)} ({percent(f.slowest.share)})
+          Most operator time: <b>{where(f.slowest.node)}</b> · {duration(f.slowest.ms)} ({percent(f.slowest.share)} of timed operators)
         </>
       ),
       node: f.slowest.node.id,
@@ -132,6 +132,12 @@ export function ActualSummary({ plan, onPick }: { plan: Plan; onPick?: (id: numb
           </span>
         </div>
       )}
+      {f.grantedKb != null && f.grantedKb > 0 && f.usedKb == null && <p className="as-note">Memory granted: {kb(f.grantedKb)}. Memory used was not recorded.</p>}
+      {f.triggers.length > 0 && <section className="actual-triggers" aria-label="Measured trigger work">
+        <h4>Trigger work</h4>
+        <p className="muted">AFTER trigger time is outside the operator tree. BEFORE trigger time also appears in its modifying operator; these totals must not be added together.</p>
+        <ul>{f.triggers.map((trigger, i) => <li key={`${trigger.name}-${i}`}><span><b>{trigger.name}</b>{trigger.relation && <> on {trigger.relation}</>}</span><span>{duration(trigger.ms)} · {trigger.calls == null ? "call count not recorded" : `${count(trigger.calls)} calls`}</span></li>)}</ul>
+      </section>}
       {!f.timed && (
         <div className="as-note">
           <TriangleAlert size={12} /> Actual row counts only: {f.lastRunAt ? "SQL Server keeps rows, not time, for past runs" : "this run reported no per-step time"}. Shares are of the estimated cost.

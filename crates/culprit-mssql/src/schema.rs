@@ -398,6 +398,9 @@ fn index_of(r: &Rec, with_usage: bool) -> IndexStat {
         // 1 = clustered rowstore, 5 = clustered columnstore
         is_clustered: index_type == 1 || index_type == 5,
         is_disabled: r.bool("is_disabled"),
+        state: None,
+        maintained: None,
+        has_statistics: None,
         size_bytes: r.f64("size_bytes"),
         reads,
         writes: usage("user_updates"),

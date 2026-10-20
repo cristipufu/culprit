@@ -593,7 +593,7 @@
         "title": "Failing queries"
       },
       {
-        "detail": null,
+        "detail": "1 check is locked: Repeated statements within logged requests needs Application query log.",
         "fix_sql": null,
         "items": [],
         "key": "statistics",
@@ -619,8 +619,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit doctor mariadb-demo",
@@ -1369,7 +1369,7 @@
         "title": "Failing queries"
       },
       {
-        "detail": null,
+        "detail": "1 check is locked: Repeated statements within logged requests needs Application query log.",
         "fix_sql": "ALTER DATABASE [culprit_demo] SET QUERY_STORE (QUERY_CAPTURE_MODE = AUTO);",
         "items": [
           {
@@ -1407,8 +1407,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit doctor mssql-demo",
@@ -1867,8 +1867,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "5",
-            "value": 5.0
+            "text": "6",
+            "value": 6.0
           }
         ],
         "next": "culprit doctor mssql-demo-staging",
@@ -2526,7 +2526,7 @@
         "title": "Failing queries"
       },
       {
-        "detail": null,
+        "detail": "1 check is locked: Repeated statements within logged requests needs Application query log.",
         "fix_sql": null,
         "items": [],
         "key": "statistics",
@@ -2552,8 +2552,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit doctor mysql-demo",
@@ -3059,7 +3059,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "8 current application queries have plans; 12 application queries have plans in all. 4 historical or once-only queries are excluded from the current assessment. Without EXPLAIN ANALYZE there are no actual rows, spills or timings to check. PostgreSQL plans never carry index suggestions; Culprit reads filters instead.",
+        "detail": "8 current application queries have plans; 12 application queries have plans in all. 4 historical or once-only queries are excluded from the current assessment. This generic plan was obtained without the application's parameter values. Its estimates and connection settings may differ from an application's run, and partitions listed here may be skipped at runtime. It does not identify the plan used by historical executions. Actual rows and timing require a measured plan with representative values.",
         "fix_sql": null,
         "items": [
           {
@@ -3211,7 +3211,7 @@
         "title": "Failing queries"
       },
       {
-        "detail": null,
+        "detail": "1 check is locked: Repeated statements within logged requests needs Application query log.",
         "fix_sql": null,
         "items": [],
         "key": "statistics",
@@ -3237,8 +3237,8 @@
           {
             "key": "locked",
             "label": "Locked checks",
-            "text": "0",
-            "value": 0.0
+            "text": "1",
+            "value": 1.0
           }
         ],
         "next": "culprit doctor pg-demo",
@@ -3558,7 +3558,7 @@
         "title": "Indexes"
       },
       {
-        "detail": "5 current application queries have plans; 5 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings.",
+        "detail": "5 current application queries have plans; 5 application queries have plans in all. 0 historical or once-only queries are excluded from the current assessment. Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values.",
         "fix_sql": null,
         "items": [],
         "key": "plans",

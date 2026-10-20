@@ -7,6 +7,7 @@ mod advice;
 mod conn;
 pub mod deadlocks;
 mod live;
+mod operations;
 mod periods;
 pub mod plan_xml;
 mod pressure;
@@ -375,10 +376,12 @@ impl Provider for MssqlProvider {
             contention_before: None,
             evictions_before: None,
             sizes_before: None,
+            operations: Default::default(),
         };
         match self.pool.get().await {
             Ok(mut client) => {
                 signals::collect(&mut client, &probe, options, &mut snapshot).await;
+                operations::collect(&mut client, &probe, &mut snapshot).await;
                 self.pool.put(client);
             }
             Err(err) => snapshot.notes.push(CollectorNote { collector: "signals".into(), message: err.message }),

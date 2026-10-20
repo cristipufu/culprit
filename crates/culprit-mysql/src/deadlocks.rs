@@ -31,6 +31,46 @@ const INNODB_LOCK_WAITS_SQL: &str = "SELECT r.trx_mysql_thread_id AS session, b.
   JOIN information_schema.INNODB_TRX b ON b.trx_id = w.blocking_trx_id AND w.blocking_trx_id <> 0
   LEFT JOIN information_schema.INNODB_LOCKS l ON l.lock_id = w.requested_lock_id";
 
+/// sys reports candidate metadata-lock pairs. Keep only exclusive conflicts: compatible readers can appear in the
+/// view too. Other lock modes and queue-priority effects remain unresolved rather than naming a false blocker.
+const METADATA_LOCK_WAITS_SQL: &str = "SELECT CAST(waiting_pid AS CHAR) AS session,
+       CAST(blocking_pid AS CHAR) AS blocking, waiting_lock_type AS mode, 'METADATA' AS resource,
+       CONCAT(object_schema, '.', object_name) AS object, NULL AS index_name
+  FROM sys.schema_table_lock_waits WHERE waiting_pid <> blocking_pid
+   AND (waiting_lock_type = 'EXCLUSIVE' OR blocking_lock_type = 'EXCLUSIVE')";
+
+pub(crate) async fn blocking_evidence(
+    conn: &mut Conn,
+    flavor: Flavor,
+) -> (HashMap<String, String>, Vec<LockWait>, Vec<String>) {
+    let mut coverage = culprit_core::Coverage::default();
+    let mut rows = coverage.read(&crate::sources::LIVE_LOCKS, wait_pairs(conn, flavor).await).unwrap_or_default();
+    rows.extend(
+        coverage.read(&crate::sources::METADATA_LOCKS, query(conn, METADATA_LOCK_WAITS_SQL).await).unwrap_or_default(),
+    );
+    if let Some(Some(instrument)) = coverage.read(&crate::sources::METADATA_LOCKS, query_one(conn, "SELECT ENABLED AS enabled FROM performance_schema.setup_instruments WHERE NAME = 'wait/lock/metadata/sql/mdl'").await)
+        && instrument.text("enabled").as_deref() != Some("YES")
+    {
+        coverage.note("metadata_locks", "Metadata-lock instrumentation is disabled; absence of a chain does not establish absence of metadata blocking.");
+    }
+    let pairs = rows.iter().map(|r| (r.string("session"), r.string("blocking"))).collect::<Vec<_>>();
+    let locks = rows
+        .iter()
+        .map(|r| LockWait {
+            session: r.string("session"),
+            mode: r.text("mode"),
+            resource: r.text("resource"),
+            object: r.text("object"),
+            index: r.text("index_name"),
+        })
+        .collect();
+    (
+        direct_blockers(&pairs),
+        locks,
+        coverage.finish().2.into_iter().map(|n| format!("{}: {}", n.collector, n.message)).collect(),
+    )
+}
+
 /// Every (waiting, blocking) pair with what the waiter asked for, from whichever lock views this server has.
 async fn wait_pairs(conn: &mut Conn, flavor: Flavor) -> Result<Vec<Rec>> {
     match flavor {
@@ -61,33 +101,9 @@ fn direct_blockers(pairs: &[(String, String)]) -> HashMap<String, String> {
     out
 }
 
-/// Which session blocks which. Empty when the login can't see InnoDB's locks.
-pub(crate) async fn blockers(conn: &mut Conn, flavor: Flavor) -> HashMap<String, String> {
-    let pairs: Vec<(String, String)> = wait_pairs(conn, flavor)
-        .await
-        .unwrap_or_default()
-        .iter()
-        .map(|r| (r.string("session"), r.string("blocking")))
-        .collect();
-    direct_blockers(&pairs)
-}
-
 pub(crate) async fn lock_waits(conn: &mut Conn, flavor: Flavor) -> Result<Vec<LockWait>> {
-    let mut out: Vec<LockWait> = Vec::new();
-    for r in wait_pairs(conn, flavor).await? {
-        let session = r.string("session");
-        if out.iter().any(|l| l.session == session) {
-            continue;
-        }
-        out.push(LockWait {
-            session,
-            mode: r.text("mode"),
-            resource: r.text("resource"),
-            object: r.text("object"),
-            index: r.text("index_name"),
-        });
-    }
-    Ok(out)
+    let (_, locks, _) = blocking_evidence(conn, flavor).await;
+    Ok(locks)
 }
 
 /// The most recent statement of each sleeping connection (performance_schema keeps it after it finished). MariaDB

@@ -38,7 +38,7 @@ impl Format for Ecto {
         if let Some((ms, at)) = self.pending.take()
             && starts_like_sql(text)
         {
-            out.push(Entry { sql: without_parameters(text).to_string(), ms, at });
+            out.push(Entry { sql: without_parameters(text).to_string(), ms, at, ..Default::default() });
         }
     }
 }

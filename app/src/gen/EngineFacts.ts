@@ -7,7 +7,7 @@ import type { SessionAction } from "./SessionAction";
 /**
  * Everything the app needs to know about an engine without a connection: written to `app/src/gen/engines.json`.
  */
-export type EngineFacts = { label: string, abilities: EngineAbilities, session_actions: Array<SessionAction>, waiting_state: string, connect: Connect, 
+export type EngineFacts = { label: string, abilities: EngineAbilities, session_actions: Array<SessionAction>, waiting_state: string, connect: Connect, limitations: Array<string>, 
 /**
  * The reason for every ability it lacks, by ability.
  */

@@ -758,6 +758,9 @@ impl Workspace {
         });
         // How big each table was a day or more ago tells how fast it grows.
         snapshot.sizes_before = history::growth_baseline(&dir, &snapshot);
+        if let Some(previous) = previous.as_ref().filter(|p| history::same_database(p, &snapshot)) {
+            culprit_core::operations::compare(previous, &mut snapshot);
+        }
         let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
         reports::save(&dir, &report)?;
         history::keep(&dir, &report.snapshot.id, &changes);
@@ -1103,8 +1106,14 @@ impl Workspace {
         let provider = self.provider(name).await?;
         let mut live = self.forget_rejected(name, provider.live().await)?;
         // Lock details are read only when someone waits, so a quiet server costs one query per refresh.
-        if live.sessions.iter().any(|s| s.blocked_by.is_some()) {
-            let locks = provider.lock_waits().await.unwrap_or_default();
+        if live.blocking.is_none() && live.sessions.iter().any(|s| s.blocked_by.is_some()) {
+            let locks = match provider.lock_waits().await {
+                Ok(locks) => locks,
+                Err(error) => {
+                    live.notes.push(format!("Lock details were unavailable: {}", error.message));
+                    Vec::new()
+                }
+            };
             live.blocking = culprit_core::blocking::analyze(info.engine, &live.sessions, &locks);
         }
         if info.environment.is_production() {
@@ -1776,6 +1785,7 @@ mod tests {
         }
         async fn live(&self) -> Result<LiveState> {
             Ok(LiveState {
+                notes: Vec::new(),
                 taken_at: String::new(),
                 sessions: Vec::new(),
                 waits: Vec::new(),

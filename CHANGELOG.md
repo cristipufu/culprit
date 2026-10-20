@@ -2,6 +2,24 @@
 
 Each release's notes are its section below: the release workflow publishes them on GitHub, and the desktop app shows them when it offers the update. A release without a section here isn't drafted.
 
+## 0.3.9
+
+### Added
+
+- Check coverage explains which checks had enough evidence, which were limited or unavailable, and what each provider cannot establish. Missing evidence no longer looks like a clean health result.
+- SQL Server reports current database log and filegroup capacity, log reuse reasons, shared tempdb allocation, and identity and sequence limits. Growth settings remain distinct from actual filesystem headroom.
+- PostgreSQL detects MultiXact age risks and near-limit sequences, and records archive failures, subscription errors and standby recovery cancellations with their own scope and reset dates.
+- MySQL and MariaDB report auto-increment limits and shared redo buffer waits. MariaDB also reports Galera node readiness; metadata blocking and replication-channel visibility are clearer.
+- SQLite reports per-index planner-statistics coverage, WAL file allocation, recognized structured SQL errors even without durations, and repeated statements within explicitly identified request groups. File allocation and repetition alone do not imply a fault.
+- Plan insights explain deep pagination and measured broad partition access. PostgreSQL trigger timings appear separately from operator timing.
+
+### Fixes
+
+- Findings, health, dashboards, CLI and agent output keep historical counters, shared measurements and selected-window comparisons distinct. Recent untimed application errors retain their own dates even when a linked successful execution is old.
+- Index advice respects unavailable schema evidence and distinguishes index visibility from write maintenance. Small or currently inexpensive queries retain structural scaling guidance.
+- Query rewrites preserve NULL behavior, filtering and result semantics. Generic plans state their parameter and runtime limits; unknown memory usage stays unknown.
+- Restricted PostgreSQL settings no longer abort a scan. Cleanup advice distinguishes catalog retention, application-row retention and ordinary recent writes; unresolved lock visibility is explicit rather than showing zero blocking.
+
 ## 0.3.8
 
 ### Fixes

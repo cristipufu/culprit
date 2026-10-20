@@ -39,6 +39,16 @@ const USER_SETTINGS: &[&str] = &[
 ];
 
 impl EngineSpec for Postgres {
+    fn inactive_index_state(&self, _server: &ServerInfo) -> crate::IndexState {
+        crate::IndexState::Invalid
+    }
+    fn limitations(&self) -> Vec<String> {
+        vec![
+        "pg_stat_statements keeps aggregate totals, not per-request traces, historical parameter values or the plan used by each execution. Culprit's scans provide comparisons only over their recorded intervals.".into(),
+        "A newly obtained generic plan uses this connection's role, settings and search path; it may differ from the application's custom plan. Actual rows, spills and timing require a measured plan.".into(),
+        "Deadlock graphs, statement errors and auto_explain output live in server logs. SQL counters alone cannot reconstruct them; import the relevant logs or correlate application telemetry.".into(),
+    ]
+    }
     fn label(&self) -> &'static str {
         "PostgreSQL"
     }

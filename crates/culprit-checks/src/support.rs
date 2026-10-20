@@ -1431,6 +1431,7 @@ pub(crate) mod tests {
     pub(crate) fn sample() -> QueryStat {
         QueryStat {
             resolved_write_target: None,
+            requests: None,
             id: "1".into(),
             query_hash: None,
             text: String::new(),

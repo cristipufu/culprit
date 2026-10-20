@@ -23,6 +23,11 @@
       "example": "Server=tcp:shop.database.windows.net;Database=shop;User ID=app",
       "accepts": "An ADO.NET connection string, an mssql:// or JDBC URL, or host,port/database. Azure SQL without a user name signs in with your az login (Entra ID)."
     },
+    "limitations": [
+      "Query Store records aggregate executions and plan history, not an application's request trace or every parameter value. Caller identity and transaction boundaries need application telemetry.",
+      "An estimated or stored compilation plan does not measure the rows, timing or waits of the run you are investigating. Runtime-only problems require recorded runtime evidence or an explicitly measured run.",
+      "Host CPU and filesystem capacity need their own measurements, such as connected cloud telemetry. Backup recoverability and database corruption are not checked by the statistics scan; they need backup/recovery validation and an appropriate integrity investigation."
+    ],
     "refusals": {}
   },
   "postgres": {
@@ -50,6 +55,11 @@
       "example": "postgres://app@db.example.com:5432/shop",
       "accepts": "A postgres:// or JDBC URL, libpq's key=value pairs, an Npgsql connection string, or host:port/database."
     },
+    "limitations": [
+      "pg_stat_statements keeps aggregate totals, not per-request traces, historical parameter values or the plan used by each execution. Culprit's scans provide comparisons only over their recorded intervals.",
+      "A newly obtained generic plan uses this connection's role, settings and search path; it may differ from the application's custom plan. Actual rows, spills and timing require a measured plan.",
+      "Deadlock graphs, statement errors and auto_explain output live in server logs. SQL counters alone cannot reconstruct them; import the relevant logs or correlate application telemetry."
+    ],
     "refusals": {
       "last_actual_plan": {
         "message": "PostgreSQL doesn't keep the actual plan of past runs",
@@ -86,6 +96,11 @@
       "example": "mysql://app@db.example.com:3306/shop",
       "accepts": "A mysql://, mariadb:// or JDBC URL, a .NET connection string (Server=…;Uid=…), or host:port/database."
     },
+    "limitations": [
+      "Statement digests keep aggregate totals, not an application's request trace, transaction boundaries or the plan of every historical execution. Culprit compares only intervals its scans or the slow log record.",
+      "InnoDB status keeps only the latest deadlock. A complete incident history requires the error log; an empty or old latest report does not prove that no other deadlocks happened.",
+      "MySQL and MariaDB differ in plan details, instrumentation and syntax. Runtime measurements, metadata-lock visibility and replication diagnostics depend on the product, version and permissions."
+    ],
     "refusals": {
       "last_actual_plan": {
         "message": "MySQL and MariaDB don't keep the actual plan of past runs",
@@ -119,6 +134,12 @@
       "example": "~/code/shop/db/production.sqlite3",
       "accepts": "The database file. Culprit opens it read-only and needs nothing from your app."
     },
+    "limitations": [
+      "SQLite file inspection cannot see the application's connections, transaction owners, foreign_keys, busy_timeout or synchronous settings. Configure and inspect those on the application's own connections.",
+      "Plans are obtained with Culprit's SQLite library, which may differ from the application's version, modules or build options. Logged placeholders are planned with NULL values, so value-dependent access paths may differ.",
+      "EXPLAIN QUERY PLAN records access paths, not estimated or measured rows, costs or timing. Query durations and errors require a supported application log; request traces need request identifiers in that telemetry.",
+      "A WAL file can retain allocated space after checkpointing. Its size or growth alone does not establish checkpoint starvation or identify a reader holding a snapshot."
+    ],
     "refusals": {
       "deadlocks": {
         "message": "SQLite records no deadlocks: one writer at a time holds the file",

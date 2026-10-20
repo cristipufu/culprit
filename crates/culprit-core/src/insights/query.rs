@@ -125,10 +125,12 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
         ) || lower == "::date"
         {
             format!(
-                "Compare {col} itself with a range instead, e.g. `{col} >= '2026-03-01' AND {col} < '2026-04-01'`; then an index on {col} is used."
+                "Where it preserves the original date, time-zone and NULL rules, compare {col} itself with a range, e.g. `{col} >= '2026-03-01' AND {col} < '2026-04-01'`. Test representative values: an index can then narrow that range when the optimizer finds it cheaper."
             )
         } else if matches!(lower.as_str(), "isnull" | "ifnull" | "coalesce" | "nvl") {
-            format!("Write the condition on {col} directly, e.g. `({col} = @value OR {col} IS NULL)`.")
+            format!(
+                "Preserve the replacement value and NULL behavior when rewriting this condition. For example, `COALESCE({col}, fallback) = wanted` includes NULL rows only when `fallback = wanted`; adding `OR {col} IS NULL` unconditionally changes the result. Compare the original and rewritten results, including NULLs and parameter types, before measuring performance."
+            )
         } else if cast {
             format!("Compare {col} with a value of its own type, so nothing has to be converted per row.")
         } else {
@@ -137,6 +139,9 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
                     "Store {col} in the form you search for, or index the expression itself, e.g. `CREATE INDEX ON {} (({}({col})))`.",
                     table_leaf(&table),
                     lower
+                ),
+                Engine::Mysql if is_mariadb(cx.plan) => format!(
+                    "Store {col} in the form you search for, or define a generated column for {func}({col}) and index that column. MariaDB uses indexed generated columns rather than MySQL's direct expression-index syntax; whether the original expression can use that index depends on the server version. Test the query against the generated column and preserve its collation and NULL behavior."
                 ),
                 Engine::Mysql => format!(
                     "Store {col} in the form you search for, or add a functional index, e.g. `CREATE INDEX ... ON {} (({}({col})))` (MySQL 8.0.13+).",
@@ -153,7 +158,10 @@ pub(super) fn non_sargable(cx: &Cx) -> Vec<Draft> {
                 ),
             }
         };
-        d.verify = format!("Explain again: {} is read with a seek or index condition on {col}.", table_leaf(&table));
+        d.verify = format!(
+            "Compare identical results, including NULLs and boundary values, then obtain a fresh plan for {} with representative parameters. Compare rows read and execution time; an index condition on {col} can help, but the optimizer may correctly retain a scan.",
+            table_leaf(&table)
+        );
         out.push(d);
     }
     out
@@ -297,32 +305,21 @@ pub(super) fn not_in(cx: &Cx) -> Vec<Draft> {
         nodes.extend(work.iter().map(|w| w.id));
         let mut d = Draft::new("not-in", InsightArea::Query, impact, nodes);
         d.title = match cx.engine() {
-            Engine::Mssql => {
-                "NOT IN against a column that can be NULL makes SQL Server check for NULLs row by row".into()
-            }
-            Engine::Postgres => {
-                "NOT IN (subquery) can't run as an anti-join, so PostgreSQL tests every row against the subquery".into()
-            }
+            Engine::Mssql => "NOT IN adds repeated subquery work; preserve NULL behavior when testing a rewrite".into(),
+            Engine::Postgres => "NOT IN tests rows against a repeatedly searched subquery".into(),
             Engine::Sqlite => {
                 "NOT IN against a subquery whose column can be NULL returns no rows once it meets a NULL".into()
             }
             Engine::Mysql => "NOT IN (subquery) makes MySQL run the subquery once per row".into(),
         };
         d.detail = match cx.engine() {
-            Engine::Mssql => format!("Because the subquery's column allows NULL, NOT IN must prove no NULL exists before it can return anything, which adds the Row Count Spool under {}.", n.op),
-            Engine::Postgres => "If the subquery ever returns NULL, NOT IN returns nothing at all; that rule stops PostgreSQL from using a Hash Anti Join, and it expected the subquery's rows too many to hash in work_mem, so it searches them again for each row.".into(),
+            Engine::Mssql => format!("The plan includes repeated work and a Row Count Spool under {}. NULL handling can require extra checks for NOT IN, but this shape alone does not establish which constraints or values apply. A rewrite must preserve the query's NULL semantics.", n.op),
+            Engine::Postgres => "The plan searches the subquery repeatedly instead of using a hashed membership test. Cost, correlation and NULL semantics can affect that choice; the plan alone does not establish that a larger work_mem or a rewrite would improve it. A NULL in a nonempty subquery prevents a nonmatching value from passing NOT IN.".into(),
             Engine::Sqlite => "If the subquery ever returns NULL, NOT IN returns nothing at all.".into(),
             Engine::Mysql => "NOT IN has to treat a NULL from the subquery specially, and here MySQL could neither turn it into an antijoin nor materialize the subquery once, so it runs the subquery for each row.".into(),
         };
-        d.fix = "Rewrite as NOT EXISTS, which means what you almost certainly intend and runs as an anti-join: `WHERE NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id)`. Declaring the column NOT NULL also helps.".into();
-        d.verify = match cx.engine() {
-            Engine::Mssql => "Explain again: an Anti Semi Join without a Row Count Spool.".into(),
-            Engine::Postgres => {
-                "Explain again: a Hash Anti Join (or Nested Loop Anti Join) instead of a SubPlan filter.".into()
-            }
-            Engine::Sqlite => "Explain again: the subquery runs as a correlated NOT EXISTS.".into(),
-            Engine::Mysql => "Explain again: an antijoin (Not exists) instead of a dependent subquery.".into(),
-        };
+        d.fix = "First establish the intended NULL behavior: NOT IN and NOT EXISTS are not interchangeable when either comparison value can be NULL (an empty subquery is another boundary case). If both compared expressions are guaranteed NOT NULL and the subquery's conditions and correlations stay the same, test an equivalent NOT EXISTS rewrite. Otherwise preserve the original three-valued logic explicitly; do not remove NULL handling or add a NOT NULL constraint merely to change the plan.".into();
+        d.verify = "Compare original and rewritten results with NULLs on either side, an empty subquery, duplicates and representative values. Then compare repeated subquery executions, reads and execution time in a fresh measured plan. An anti-join is one possible improvement, not a required operator.".into();
         out.push(d);
     }
     out

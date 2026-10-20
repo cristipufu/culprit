@@ -221,6 +221,7 @@ pub fn workload(
             let trend = timeline.as_ref().map(|(t, _)| query_trend(runs, &prints, &g.key, t));
             QueryStat {
                 resolved_write_target: None,
+                requests: None,
                 id: id.clone(),
                 query_hash: Some(id),
                 text: g.display,

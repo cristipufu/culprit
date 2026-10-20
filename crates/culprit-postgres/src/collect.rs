@@ -28,7 +28,7 @@ pub struct Probe {
     pub statements: StatementsAccess,
     /// The server already loads pg_stat_statements (shared_preload_libraries), so it has been recording all along and
     /// only the extension's view is missing.
-    pub preloaded: bool,
+    pub preloaded: Option<bool>,
     /// This login can create the extension (superuser, a cloud admin role, or CREATE on the database).
     pub can_create_extension: bool,
     /// The server is a standby replaying another's WAL (`pg_is_in_recovery()`): its usage counters count only the reads
@@ -140,7 +140,7 @@ impl Probe {
     }
 
     fn statements_fix(&self) -> String {
-        if self.preloaded {
+        if self.preloaded == Some(true) {
             let who = if self.can_create_extension {
                 String::new()
             } else {
@@ -150,6 +150,9 @@ impl Probe {
                 "Run CREATE EXTENSION pg_stat_statements; in this database{who}. The server already loads it, so no restart is \
                  needed and the statistics it has been recording since the last restart appear right away."
             );
+        }
+        if self.preloaded.is_none() {
+            return "This login cannot read shared_preload_libraries. Ask an administrator to verify whether pg_stat_statements is already loaded. If loaded, creating its extension in this database exposes its statistics without a restart; otherwise configure the preload and restart first.".into();
         }
         self.platform
             .and_then(|p| p.preload_library("pg_stat_statements"))
@@ -173,7 +176,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
                 (SELECT string_agg(DISTINCT split_part(name, '.', 1), ',') FROM pg_settings
                   WHERE name ~ '^(rds|azure|cloudsql|alloydb|neon)\\.') AS cloud_settings,
                 EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'aurora_version') AS aurora,
-                'pg_stat_statements' = ANY (string_to_array(replace(current_setting('shared_preload_libraries'), ' ', ''), ',')) AS preloaded,
+                'pg_stat_statements' = ANY (string_to_array(replace((SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries'), ' ', ''), ',')) AS preloaded,
                 (SELECT rolsuper FROM pg_roles WHERE rolname = current_user)
                   OR EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN ('rds_superuser', 'azure_pg_admin', 'cloudsqlsuperuser')
                                AND pg_has_role(current_user, r.oid, 'MEMBER'))
@@ -198,7 +201,7 @@ pub async fn probe(client: &Client, spec_host: &str) -> Result<Probe> {
         privileged: row.flag("privileged"),
         platform,
         statements: StatementsAccess::NotInstalled,
-        preloaded: row.flag("preloaded"),
+        preloaded: row.text("preloaded").map(|_| row.flag("preloaded")),
         can_create_extension: row.flag("can_create_extension"),
         standby: row.flag("in_recovery"),
         elevated: row.flag("elevated"),
@@ -430,6 +433,7 @@ pub async fn snapshot(
         contention_before: None,
         evictions_before: None,
         sizes_before: None,
+        operations: Default::default(),
     };
     crate::signals::collect(&primary, &probe, &mut snapshot).await;
     snapshot.duration_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -510,6 +514,7 @@ async fn collect_with_base(
         .iter()
         .map(|r| QueryStat {
             resolved_write_target: None,
+            requests: None,
             id: r.string("id"),
             query_hash: None,
             text: r.string("query"),
@@ -1039,7 +1044,7 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
     let last_read = if probe.version_num >= 160_000 { iso("s.last_idx_scan") } else { "NULL::text".to_string() };
     let sql = format!(
         "SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name, am.amname AS kind,
-                x.indisunique, x.indisprimary, x.indisvalid AND x.indisready AS usable,
+                x.indisunique, x.indisprimary, x.indisready, x.indisvalid AND x.indisready AS usable,
                 (SELECT string_agg(
                     CASE WHEN x.indkey[k - 1] <> 0
                          THEN (SELECT a.attname FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[k - 1])
@@ -1094,6 +1099,9 @@ async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
             is_primary_key: r.flag("indisprimary"),
             is_clustered: false,
             is_disabled: !r.flag("usable"),
+            state: None,
+            maintained: Some(r.flag("indisready")),
+            has_statistics: None,
             size_bytes: r.number("estimated_bytes"),
             reads: r.number("idx_scan"),
             writes: None,
@@ -1211,6 +1219,9 @@ const SETTINGS: &[&str] = &[
     "autovacuum_vacuum_scale_factor",
     "autovacuum_analyze_scale_factor",
     "autovacuum_vacuum_threshold",
+    "autovacuum_vacuum_max_threshold",
+    "autovacuum_analyze_threshold",
+    "autovacuum_multixact_freeze_max_age",
     "autovacuum_freeze_max_age",
     "jit",
     "jit_above_cost",
@@ -1229,6 +1240,7 @@ async fn settings(client: &Client) -> Result<Vec<Setting>> {
     .await?;
     let mut out: Vec<Setting> = rows
         .iter()
+        .filter(|r| r.text("setting").is_some())
         .map(|r| {
             let unit = r.text("unit");
             Setting {

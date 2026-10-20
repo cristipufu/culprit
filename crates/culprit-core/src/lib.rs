@@ -19,6 +19,7 @@ pub mod fingerprint;
 pub mod format;
 pub mod insights;
 pub mod model;
+pub mod operations;
 pub mod plan;
 pub mod plan_compare;
 pub mod plan_diff;
@@ -35,7 +36,7 @@ pub use actual::{ActualSummary, NodeProgress, NodeRuntime, NodeState, QueryProgr
 pub use advice::*;
 pub use blocking::{BlockNode, Blocking, BlockingChain, HeadKind, LockWait};
 pub use changes::{ChangeStatus, Changes, Period, PeriodStats, PlanSwitch, QueryChange};
-pub use check::Check;
+pub use check::{Check, CheckAssessment, CheckEvidence, CheckStatus};
 pub use cloud::{CloudPoint, CloudProvider, CloudSeries, CloudSignals, CloudUnit, ThrottleEpisode, ThrottleKind};
 pub use connection::{AuthKind, ConnectionSpec, aws_iam_host_allowed, entra_host_allowed, expand_home, is_local_host};
 pub use coverage::{Coverage, Source};

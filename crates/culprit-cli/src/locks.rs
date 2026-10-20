@@ -49,6 +49,13 @@ pub async fn blocking(ws: &Workspace, connection: &str, out: &Out) -> Result<u8>
         return Ok(0);
     }
     let Some(blocking) = live.blocking.as_ref().filter(|b| !b.chains.is_empty()) else {
+        if live.blocking_incomplete() {
+            println!("No blocking chain was established; lock visibility is incomplete.");
+            for note in &live.notes {
+                println!("Collection limitation: {note}");
+            }
+            return Ok(0);
+        }
         println!(
             "Nothing is blocked: {} active sessions, none waiting on another.",
             live.sessions.iter().filter(|s| s.state != "idle").count()
@@ -102,7 +109,7 @@ fn print_node(live: &LiveState, node: &BlockNode, out: &Out, depth: usize) {
 
 fn blocking_json(live: &LiveState) -> Value {
     let Some(b) = live.blocking.as_ref() else {
-        return json!({ "taken_at": live.taken_at, "waiting": 0, "chains": [] });
+        return json!({ "taken_at": live.taken_at, "waiting": 0, "chains": [], "incomplete": live.blocking_incomplete(), "notes": live.notes });
     };
     let mut ids = Vec::new();
     fn walk(node: &BlockNode, ids: &mut Vec<String>) {
@@ -115,7 +122,7 @@ fn blocking_json(live: &LiveState) -> Value {
         walk(&c.tree, &mut ids);
     }
     let sessions: Vec<&Session> = live.sessions.iter().filter(|s| ids.contains(&s.id)).collect();
-    json!({ "taken_at": live.taken_at, "waiting": b.waiting, "chains": b.chains, "sessions": sessions })
+    json!({ "taken_at": live.taken_at, "waiting": b.waiting, "chains": b.chains, "sessions": sessions, "incomplete": live.blocking_incomplete(), "notes": live.notes })
 }
 
 pub async fn deadlocks(ws: &Workspace, args: DeadlocksArgs, out: &Out) -> Result<u8> {

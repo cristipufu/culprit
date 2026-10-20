@@ -5,6 +5,23 @@ use super::*;
 pub(super) fn health(report: &Report) -> Tile {
     let s = &report.snapshot;
     let Some(p) = &s.pressure else {
+        let o = &s.operations;
+        if !o.spaces.is_empty()
+            || !o.counters.is_empty()
+            || !o.sequences.is_empty()
+            || !o.multixacts.is_empty()
+            || o.sqlite.is_some()
+            || o.cluster.is_some()
+        {
+            return operational(
+                report,
+                Tile::new(
+                    TileKey::Health,
+                    TileStatus::Info,
+                    "Operational measurements were recorded; each retains its source scope and period.",
+                ),
+            );
+        }
         let headline = if s.server.engine.has_server() {
             "This scan recorded no health counters.".to_string()
         } else {
@@ -95,5 +112,35 @@ pub(super) fn health(report: &Report) -> Tile {
         TileMetric::new("healthy", "Healthy", Some((graded - bad - watch) as f64), (graded - bad - watch).to_string()),
     ];
     tile.items = items;
+    operational(report, tile)
+}
+
+fn operational(report: &Report, mut tile: Tile) -> Tile {
+    let findings: Vec<_> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            matches!(
+                f.check.as_str(),
+                "storage-capacity"
+                    | "sequence-capacity"
+                    | "multixact-age"
+                    | "operational-errors"
+                    | "cluster-health"
+                    | "sqlite-wal"
+            )
+        })
+        .collect();
+    for f in findings.iter().take(3) {
+        let status = if f.is_actionable() { severity_status(f.severity) } else { TileStatus::Info };
+        if status >= TileStatus::Watch && status > tile.status {
+            tile.status = status;
+            tile.takeaway = f.title.clone();
+        }
+        let mut item = TileItem::new(ItemKind::Finding, f.id.clone(), f.title.clone());
+        item.finding_id = Some(f.id.clone());
+        item.status = Some(status);
+        tile.items.push(item);
+    }
     tile
 }

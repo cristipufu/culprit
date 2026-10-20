@@ -11,6 +11,7 @@ import type { EscalationBaseline } from "./EscalationBaseline";
 import type { ForeignKey } from "./ForeignKey";
 import type { IndexStat } from "./IndexStat";
 import type { MissingIndex } from "./MissingIndex";
+import type { OperationalStats } from "./OperationalStats";
 import type { PlanCacheUse } from "./PlanCacheUse";
 import type { Pressure } from "./Pressure";
 import type { QueryFamily } from "./QueryFamily";
@@ -25,7 +26,7 @@ import type { TuningAdvice } from "./TuningAdvice";
 import type { WaitStat } from "./WaitStat";
 import type { Workload } from "./Workload";
 
-export type Snapshot = { format: number, id: string, connection: string, environment: Environment, taken_at: string, duration_ms: number, server: ServerInfo, workload: Workload | null, tables: Array<TableStat>, indexes: Array<IndexStat>, columns: Array<ColumnInfo>, foreign_keys: Array<ForeignKey>, missing_indexes: Array<MissingIndex>, statistics: Array<StatisticsInfo>, waits: Array<WaitStat>, resources: Array<ResourceSample>, settings: Array<Setting>, notes: Array<CollectorNote>, 
+export type Snapshot = { operations: OperationalStats, format: number, id: string, connection: string, environment: Environment, taken_at: string, duration_ms: number, server: ServerInfo, workload: Workload | null, tables: Array<TableStat>, indexes: Array<IndexStat>, columns: Array<ColumnInfo>, foreign_keys: Array<ForeignKey>, missing_indexes: Array<MissingIndex>, statistics: Array<StatisticsInfo>, waits: Array<WaitStat>, resources: Array<ResourceSample>, settings: Array<Setting>, notes: Array<CollectorNote>, 
 /**
  * Pressure signals from cheap counters (compiles, memory grants, cache hits, open transactions).
  */

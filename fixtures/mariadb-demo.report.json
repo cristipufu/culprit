@@ -1,4 +1,192 @@
 {
+  "assessments": [
+    {
+      "check": "filtered-scan",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Scans an index would avoid"
+    },
+    {
+      "check": "unused-index",
+      "reason": "At least a week of comparable index-usage counters is needed to assess absence of reads.",
+      "status": "insufficient-evidence",
+      "title": "Unused indexes"
+    },
+    {
+      "check": "duplicate-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Duplicate and redundant indexes"
+    },
+    {
+      "check": "unindexed-fk",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Foreign keys without an index"
+    },
+    {
+      "check": "overlapping-index",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Overlapping indexes"
+    },
+    {
+      "check": "over-indexed",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Many indexes on write-heavy tables"
+    },
+    {
+      "check": "scan-heavy",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Tables read in full over and over"
+    },
+    {
+      "check": "repeated-request",
+      "reason": "QueryLog was not collected",
+      "status": "unavailable",
+      "title": "Repeated statements within logged requests"
+    },
+    {
+      "check": "heavy-query",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries that dominate database time"
+    },
+    {
+      "check": "chatty-query",
+      "reason": null,
+      "status": "findings",
+      "title": "Chatty queries"
+    },
+    {
+      "check": "plan-warnings",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "insufficient-evidence",
+      "title": "Plan warnings"
+    },
+    {
+      "check": "plan-insights",
+      "reason": "Only some statements have captured plans; unmeasured runs and uncaptured statements remain unassessed.",
+      "status": "insufficient-evidence",
+      "title": "Plan insights"
+    },
+    {
+      "check": "regression",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that got slower"
+    },
+    {
+      "check": "unstable-query",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Unstable queries"
+    },
+    {
+      "check": "parameter-sensitive",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that are fast for most calls and slow for some"
+    },
+    {
+      "check": "temp-spill",
+      "reason": null,
+      "status": "findings",
+      "title": "Queries writing temp files"
+    },
+    {
+      "check": "config",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Configuration"
+    },
+    {
+      "check": "deadlocks",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Deadlocks"
+    },
+    {
+      "check": "worker-pressure",
+      "reason": null,
+      "status": "assessed",
+      "title": "Running out of workers or connections"
+    },
+    {
+      "check": "held-cleanup",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "insufficient-evidence",
+      "title": "A long open transaction holds cleanup back"
+    },
+    {
+      "check": "row-lock-waits",
+      "reason": null,
+      "status": "findings",
+      "title": "Transactions waiting for row locks"
+    },
+    {
+      "check": "sequence-capacity",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Identity and sequence allocation limits"
+    },
+    {
+      "check": "operational-errors",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Archive, replication and redo failures"
+    },
+    {
+      "check": "cluster-health",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Galera node readiness and flow control"
+    },
+    {
+      "check": "failing-query",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Queries that fail or time out"
+    },
+    {
+      "check": "lock-time",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that spend their time waiting for locks"
+    },
+    {
+      "check": "big-result",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that return huge results"
+    },
+    {
+      "check": "missing-histogram",
+      "reason": "This scan did not record the measurements this check needs.",
+      "status": "insufficient-evidence",
+      "title": "Filter columns the optimizer has to guess about"
+    },
+    {
+      "check": "slow-storage",
+      "reason": null,
+      "status": "assessed",
+      "title": "Storage that's slow to read or write"
+    },
+    {
+      "check": "connection-churn",
+      "reason": "The available evidence does not establish complete coverage of this check.",
+      "status": "insufficient-evidence",
+      "title": "Applications that connect for every request"
+    },
+    {
+      "check": "replica-lag",
+      "reason": "Visibility of cleanup holders or replication depends on the collected sources and this login's permissions; these sources do not establish complete coverage.",
+      "status": "insufficient-evidence",
+      "title": "Replicas that fall behind"
+    }
+  ],
   "findings": [
     {
       "actionability": "optional-improvement",
@@ -433,7 +621,28 @@
       ]
     }
   ],
-  "locked": [],
+  "locked": [
+    {
+      "check": {
+        "category": "queries",
+        "description": "Repeated SQL shapes correlated by explicit request_id in structured logs. Repetition identifies a caller to inspect; it does not prove an N+1 bug or removable work.",
+        "engines": [
+          "mssql",
+          "postgres",
+          "mysql",
+          "sqlite"
+        ],
+        "id": "repeated-request",
+        "requires": [
+          "query-log"
+        ],
+        "title": "Repeated statements within logged requests"
+      },
+      "missing": [
+        "query-log"
+      ]
+    }
+  ],
   "snapshot": {
     "columns": [
       {
@@ -837,6 +1046,7 @@
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`customers` ADD PRIMARY KEY (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -845,6 +1055,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "PRIMARY",
         "opclasses": null,
         "partition_of": null,
@@ -853,6 +1064,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 17317888.0,
+        "state": "active",
         "table": "customers",
         "writes": 0.0
       },
@@ -865,6 +1077,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_customers_region` ON `shop`.`customers` (region)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -873,6 +1086,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_customers_region",
         "opclasses": null,
         "partition_of": null,
@@ -881,6 +1095,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 4734976.0,
+        "state": "active",
         "table": "customers",
         "writes": 0.0
       },
@@ -893,6 +1108,7 @@
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`order_items` ADD PRIMARY KEY (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -901,6 +1117,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "PRIMARY",
         "opclasses": null,
         "partition_of": null,
@@ -909,6 +1126,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 34144256.0,
+        "state": "active",
         "table": "order_items",
         "writes": 0.0
       },
@@ -921,6 +1139,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_items_order` ON `shop`.`order_items` (order_id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -929,6 +1148,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "fk_items_order",
         "opclasses": null,
         "partition_of": null,
@@ -937,6 +1157,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 22593536.0,
+        "state": "active",
         "table": "order_items",
         "writes": 0.0
       },
@@ -949,6 +1170,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_items_product` ON `shop`.`order_items` (product_id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -957,6 +1179,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "fk_items_product",
         "opclasses": null,
         "partition_of": null,
@@ -965,6 +1188,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 19447808.0,
+        "state": "active",
         "table": "order_items",
         "writes": 0.0
       },
@@ -977,6 +1201,7 @@
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`orders` ADD PRIMARY KEY (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -985,6 +1210,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "PRIMARY",
         "opclasses": null,
         "partition_of": null,
@@ -993,6 +1219,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 28901376.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -1005,6 +1232,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `fk_orders_customer` ON `shop`.`orders` (customer_id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1013,6 +1241,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "fk_orders_customer",
         "opclasses": null,
         "partition_of": null,
@@ -1021,6 +1250,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 9977856.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -1033,6 +1263,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_orders_status` ON `shop`.`orders` (status)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1041,6 +1272,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_orders_status",
         "opclasses": null,
         "partition_of": null,
@@ -1049,6 +1281,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 9977856.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -1062,6 +1295,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_orders_status_created` ON `shop`.`orders` (status, created_at)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1070,6 +1304,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_orders_status_created",
         "opclasses": null,
         "partition_of": null,
@@ -1078,6 +1313,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 19447808.0,
+        "state": "active",
         "table": "orders",
         "writes": 0.0
       },
@@ -1090,6 +1326,7 @@
         "created_at_latest": null,
         "definition": "ALTER TABLE `shop`.`products` ADD PRIMARY KEY (id)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -1098,6 +1335,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "PRIMARY",
         "opclasses": null,
         "partition_of": null,
@@ -1106,6 +1344,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 1589248.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       },
@@ -1118,6 +1357,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX `ix_products_sku` ON `shop`.`products` (sku)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1126,6 +1366,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_products_sku",
         "opclasses": null,
         "partition_of": null,
@@ -1134,6 +1375,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 442368.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       },
@@ -1146,6 +1388,7 @@
         "created_at_latest": null,
         "definition": "CREATE UNIQUE INDEX `uq_products_sku` ON `shop`.`products` (sku)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -1154,6 +1397,7 @@
         "kind": "btree",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "uq_products_sku",
         "opclasses": null,
         "partition_of": null,
@@ -1162,6 +1406,7 @@
         "schema": "shop",
         "seeks": null,
         "size_bytes": 442368.0,
+        "state": "active",
         "table": "products",
         "writes": 0.0
       }
@@ -1177,6 +1422,15 @@
         "message": "MariaDB counts the whole run of a statement the slow query log writes to its table as lock time, so the lock time of 2 statements is left out as unknown rather than read as waiting."
       }
     ],
+    "operations": {
+      "cluster": null,
+      "counters": [],
+      "log_failures": [],
+      "multixacts": [],
+      "sequences": [],
+      "spaces": [],
+      "sqlite": null
+    },
     "options": {
       "plans": 25,
       "top_queries": 60,
@@ -2062,6 +2316,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "375c64398248650e848f6c600d7e2143",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 400.0,
           "rows_affected": null,
@@ -2185,6 +2440,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "decf59629e790076bee034e582b5053a",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 2000.0,
           "rows_affected": null,
@@ -2336,6 +2592,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "258e3c9b580f1ecccd48f76c4f83acb1",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 300.0,
           "rows_affected": null,
@@ -2384,6 +2641,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "a92bb0be330ac53ad0b54014b3f02efa",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 30000.0,
           "rows_affected": null,
@@ -2540,6 +2798,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "46db559fdff712fd13e0107d6e1cd6f2",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 9991.0,
           "rows_affected": null,
@@ -2728,6 +2987,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": "d1f45c9664edccf9dc77a3076d1ad0b7",
+          "requests": null,
           "resolved_write_target": null,
           "rows": 6398.0,
           "rows_affected": null,

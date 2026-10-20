@@ -1,4 +1,60 @@
 {
+  "assessments": [
+    {
+      "check": "duplicate-index",
+      "reason": "This scan does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Duplicate and redundant indexes"
+    },
+    {
+      "check": "unindexed-fk",
+      "reason": "This scan does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Foreign keys without an index"
+    },
+    {
+      "check": "logged-errors",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "SQL errors recorded by the application"
+    },
+    {
+      "check": "repeated-request",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "Repeated statements within logged requests"
+    },
+    {
+      "check": "heavy-query",
+      "reason": null,
+      "status": "assessed",
+      "title": "Queries that dominate database time"
+    },
+    {
+      "check": "plan-insights",
+      "reason": "Captured plans were inspected. Actual rows, timing and runtime-only problems are assessed only where that plan records them.",
+      "status": "insufficient-evidence",
+      "title": "Plan insights"
+    },
+    {
+      "check": "unstable-query",
+      "reason": null,
+      "status": "assessed",
+      "title": "Unstable queries"
+    },
+    {
+      "check": "config",
+      "reason": "This scan does not establish complete coverage of this check.",
+      "status": "findings",
+      "title": "Configuration"
+    },
+    {
+      "check": "sqlite-wal",
+      "reason": "This source was not recorded, was not applicable, or did not expose visible objects. No clean result can be established from its absence.",
+      "status": "insufficient-evidence",
+      "title": "SQLite WAL file size and growth"
+    }
+  ],
   "findings": [
     {
       "actionability": "needs-attention",
@@ -192,7 +248,7 @@
         "kind": "database",
         "name": "demo.db"
       },
-      "summary": "The file has never been analyzed (it has no sqlite_stat1), so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.",
+      "summary": "The file has no current sqlite_stat1 statistics, so SQLite falls back on fixed guesses about how big each table is and how well each index narrows a search. With 3 secondary indexes to choose from, a guess can pick the wrong one, or a full scan.",
       "title": "SQLite has no statistics to choose between this file's indexes",
       "verification_basis": "rescan",
       "verify": [
@@ -483,6 +539,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -491,6 +548,7 @@
         "kind": "BTREE",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "sqlite_autoindex_customers_1",
         "opclasses": null,
         "partition_of": null,
@@ -499,6 +557,7 @@
         "schema": "main",
         "seeks": null,
         "size_bytes": 180224.0,
+        "state": "active",
         "table": "customers",
         "writes": null
       },
@@ -512,6 +571,7 @@
         "created_at_latest": null,
         "definition": null,
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": true,
         "is_disabled": false,
@@ -520,6 +580,7 @@
         "kind": "BTREE",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "sqlite_autoindex_order_items_1",
         "opclasses": null,
         "partition_of": null,
@@ -528,6 +589,7 @@
         "schema": "main",
         "seeks": null,
         "size_bytes": null,
+        "state": "active",
         "table": "order_items",
         "writes": null
       },
@@ -540,6 +602,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX ix_orders_status_again ON orders (status)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -548,6 +611,7 @@
         "kind": "BTREE",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_orders_status_again",
         "opclasses": null,
         "partition_of": null,
@@ -556,6 +620,7 @@
         "schema": "main",
         "seeks": null,
         "size_bytes": 3649536.0,
+        "state": "active",
         "table": "orders",
         "writes": null
       },
@@ -568,6 +633,7 @@
         "created_at_latest": null,
         "definition": "CREATE INDEX ix_orders_status ON orders (status)",
         "filter": null,
+        "has_statistics": null,
         "include": [],
         "is_clustered": false,
         "is_disabled": false,
@@ -576,6 +642,7 @@
         "kind": "BTREE",
         "last_read": null,
         "lookups": null,
+        "maintained": true,
         "name": "ix_orders_status",
         "opclasses": null,
         "partition_of": null,
@@ -584,6 +651,7 @@
         "schema": "main",
         "seeks": null,
         "size_bytes": 3649536.0,
+        "state": "active",
         "table": "orders",
         "writes": null
       }
@@ -595,6 +663,15 @@
         "message": "Read 3.5K statements from development.log (Rails): 7 shapes, the 5 heaviest kept, 5 planned."
       }
     ],
+    "operations": {
+      "cluster": null,
+      "counters": [],
+      "log_failures": [],
+      "multixacts": [],
+      "sequences": [],
+      "spaces": [],
+      "sqlite": null
+    },
     "options": {
       "plans": 25,
       "top_queries": 60,
@@ -858,7 +935,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+              "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
             },
             "kind": "estimated",
             "props": {
@@ -946,6 +1023,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
@@ -975,7 +1053,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+              "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
             },
             "kind": "estimated",
             "props": {
@@ -1063,6 +1141,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
@@ -1108,7 +1187,7 @@
                   "verify": "Explain again: no AUTOMATIC INDEX, and a SEARCH using the new index."
                 }
               ],
-              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+              "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
             },
             "kind": "estimated",
             "props": {
@@ -1220,6 +1299,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
@@ -1249,7 +1329,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+              "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
             },
             "kind": "estimated",
             "props": {
@@ -1310,6 +1390,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,
@@ -1339,7 +1420,7 @@
             "index_hints": [],
             "insights": {
               "items": [],
-              "note": "SQLite's EXPLAIN QUERY PLAN shows the access path only: no estimated or actual rows, costs or timings."
+              "note": "Planned with Culprit's SQLite library and unknown parameter values. The application's version, modules and build options may differ. This plan shows access paths, without row counts, costs or timings. Compare application-log durations and a plan from the application's connection with representative values."
             },
             "kind": "estimated",
             "props": {
@@ -1400,6 +1481,7 @@
           "plan_id": null,
           "plans": [],
           "query_hash": null,
+          "requests": null,
           "resolved_write_target": null,
           "rows": null,
           "rows_affected": null,

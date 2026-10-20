@@ -27,6 +27,7 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
         return;
     };
     let mariadb = probe.version.to_ascii_lowercase().contains("mariadb");
+    crate::operations::collect(&mut conn, probe, snapshot).await;
     if probe.performance_schema
         && let Some(workload) = snapshot.workload.as_mut()
     {
@@ -47,10 +48,17 @@ pub async fn collect(connector: &Connector, probe: &Probe, snapshot: &mut Snapsh
     let variables =
         coverage.read(&sources::SERVER_VARIABLES, server_variables(&mut conn).await).unwrap_or_else(HashMap::new);
     let writable = variables.get("read_only").map(|v| !is_on(v));
-    // Replica status needs REPLICATION CLIENT, which only matters on a replica: the note says so.
-    let replicas = replica_status(&mut conn, writable).await.map_err(|mut e| {
+    // Product/version-specific monitoring privilege; only relevant when replication is configured.
+    let replicas = replica_status(&mut conn, writable, mariadb).await.map_err(|mut e| {
+        let permission = if mariadb && culprit_core::version_at_least(&probe.version, [10, 5, 9]) {
+            "REPLICA MONITOR"
+        } else if mariadb && culprit_core::version_at_least(&probe.version, [10, 5, 2]) {
+            "REPLICATION SLAVE ADMIN"
+        } else {
+            "REPLICATION CLIENT"
+        };
         e.message = format!(
-            "{} Reading replica status needs the REPLICATION CLIENT privilege; it only matters if this server is a replica.",
+            "{} Reading replica status needs the {permission} privilege; it only matters if this server is a replica.",
             e.message
         );
         e
@@ -298,11 +306,11 @@ async fn server_variables(conn: &mut Conn) -> culprit_core::Result<HashMap<Strin
 
 /// This server's replication channels when it is a replica: lag beyond any configured delay, thread state and the
 /// last error code. `writable` is whether it takes writes (read_only off), when known.
-async fn replica_status(conn: &mut Conn, writable: Option<bool>) -> culprit_core::Result<Vec<Replica>> {
-    let rows = match query(conn, "SHOW REPLICA STATUS").await {
+async fn replica_status(conn: &mut Conn, writable: Option<bool>, mariadb: bool) -> culprit_core::Result<Vec<Replica>> {
+    let rows = match query(conn, if mariadb { "SHOW ALL REPLICAS STATUS" } else { "SHOW REPLICA STATUS" }).await {
         Ok(rows) => rows,
         // Before MySQL 8.0.22 and MariaDB 10.5.1.
-        Err(_) => query(conn, "SHOW SLAVE STATUS").await?,
+        Err(_) => query(conn, if mariadb { "SHOW ALL SLAVES STATUS" } else { "SHOW SLAVE STATUS" }).await?,
     };
     Ok(rows.iter().filter_map(|r| replica(ChannelRow::from(r), writable)).collect())
 }

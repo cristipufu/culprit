@@ -68,6 +68,7 @@ pub(crate) async fn collect(client: &mut MsClient) -> tiberius::Result<LiveState
     };
     let sessions: Vec<Session> = rows.iter().map(session_of).collect();
     Ok(LiveState {
+        notes: Vec::new(),
         taken_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         waits: current_waits(&sessions),
         sessions,

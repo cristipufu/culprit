@@ -540,6 +540,7 @@ export async function demoApi(): Promise<Api> {
       // Ending the head blocker releases everyone behind it, as on a real server.
       const chains = (captured?.blocking?.chains ?? []).filter((chain) => !ended.has(chain.head));
       const state: LiveState = {
+        notes: captured?.notes ?? [],
         taken_at: new Date().toISOString(),
         sessions: (captured?.sessions ?? [])
           .filter((s) => !ended.has(s.id))

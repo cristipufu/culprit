@@ -66,6 +66,22 @@ impl Refine for Step<fn(&Snapshot, &mut Vec<Finding>)> {
 fn preparation() -> Vec<Arc<dyn Prepare>> {
     let step = |name: &'static str, run: fn(&mut Snapshot)| Arc::new(Step { name, run }) as Arc<dyn Prepare>;
     vec![
+        step("index availability and maintenance follow the engine", |s| {
+            for i in &mut s.indexes {
+                i.state = Some(if i.is_disabled {
+                    s.server.engine.spec().inactive_index_state(&s.server)
+                } else {
+                    culprit_core::IndexState::Active
+                });
+                if i.maintained.is_none() {
+                    i.maintained = match i.state {
+                        Some(culprit_core::IndexState::Disabled) => Some(false),
+                        Some(culprit_core::IndexState::Invalid) => None,
+                        _ => Some(true),
+                    };
+                }
+            }
+        }),
         step("CTE writes named for their base table", culprit_core::sql::resolve_write_targets),
         step("plans captured before a column changed type", culprit_core::insights::mark_snapshot),
         step("MySQL's possible keys named with their columns", culprit_core::insights::mark_snapshot_keys),
@@ -237,14 +253,59 @@ impl Pipeline {
         }
         let mut findings = Vec::new();
         let mut locked = Vec::new();
+        let mut assessments = Vec::new();
         for check in &self.checks {
             let info = check.info();
             if !info.engines.contains(&snapshot.server.engine) {
                 continue;
             }
             let missing = crate::missing_for(&info, &snapshot.server);
+            let mut assessment = culprit_core::CheckAssessment {
+                check: info.id.clone(),
+                title: info.title.clone(),
+                status: culprit_core::CheckStatus::Assessed,
+                reason: None,
+            };
             if !missing.is_empty() {
+                assessment.status = culprit_core::CheckStatus::Unavailable;
+                assessment.reason = Some(
+                    missing
+                        .iter()
+                        .map(|c| {
+                            snapshot
+                                .server
+                                .missing
+                                .iter()
+                                .find(|m| m.capability == *c)
+                                .map(|m| m.reason.clone())
+                                .unwrap_or_else(|| format!("{c:?} was not collected"))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                assessments.push(assessment);
                 locked.push(LockedCheck { check: info, missing });
+                continue;
+            }
+            use culprit_core::{CheckEvidence, CheckStatus};
+            match check.evidence(&snapshot) {
+                CheckEvidence::Available => {}
+                CheckEvidence::Unavailable(reason) => {
+                    assessment.status = CheckStatus::Unavailable;
+                    assessment.reason = Some(reason);
+                }
+                CheckEvidence::Insufficient(reason) => {
+                    assessment.status = CheckStatus::InsufficientEvidence;
+                    assessment.reason = Some(reason);
+                }
+                CheckEvidence::NotApplicable(reason) => {
+                    assessment.status = CheckStatus::NotApplicable;
+                    assessment.reason = Some(reason);
+                }
+            }
+            let run = !matches!(assessment.status, CheckStatus::Unavailable | CheckStatus::NotApplicable);
+            assessments.push(assessment);
+            if !run {
                 continue;
             }
             findings.extend(check.run(&snapshot));
@@ -269,7 +330,12 @@ impl Pipeline {
         crate::pressure::grade_findings(&mut snapshot, &findings);
         let summary = crate::summarize(&snapshot, &findings);
         crate::annotate_plans(&mut snapshot);
-        Report { snapshot, findings, locked, summary }
+        for assessment in &mut assessments {
+            if findings.iter().any(|f| f.check == assessment.check) {
+                assessment.status = culprit_core::CheckStatus::Findings;
+            }
+        }
+        Report { snapshot, findings, locked, summary, assessments }
     }
 }
 

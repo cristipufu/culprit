@@ -32,6 +32,8 @@ pub struct SettingChange {
 
 /// One engine, as checks and every surface see it.
 pub trait EngineSpec: Send + Sync {
+    fn inactive_index_state(&self, server: &ServerInfo) -> crate::IndexState;
+    fn limitations(&self) -> Vec<String>;
     /// "SQL Server": the engine's name in sentences (a server's product can say more: MariaDB).
     fn label(&self) -> &'static str;
 
@@ -129,6 +131,7 @@ pub struct EngineFacts {
     pub session_actions: Vec<SessionAction>,
     pub waiting_state: String,
     pub connect: Connect,
+    pub limitations: Vec<String>,
     /// The reason for every ability it lacks, by ability.
     pub refusals: BTreeMap<String, Refusal>,
 }
@@ -179,6 +182,7 @@ impl Engine {
             session_actions: spec.session_actions(),
             waiting_state: spec.waiting_state().into(),
             connect: spec.connect(),
+            limitations: spec.limitations(),
             refusals: Ability::ALL
                 .into_iter()
                 .filter(|a| !abilities.has(*a))

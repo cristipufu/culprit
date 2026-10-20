@@ -7,6 +7,16 @@ use crate::model::Capability;
 pub(super) struct Mssql;
 
 impl EngineSpec for Mssql {
+    fn inactive_index_state(&self, _server: &ServerInfo) -> crate::IndexState {
+        crate::IndexState::Disabled
+    }
+    fn limitations(&self) -> Vec<String> {
+        vec![
+        "Query Store records aggregate executions and plan history, not an application's request trace or every parameter value. Caller identity and transaction boundaries need application telemetry.".into(),
+        "An estimated or stored compilation plan does not measure the rows, timing or waits of the run you are investigating. Runtime-only problems require recorded runtime evidence or an explicitly measured run.".into(),
+        "Host CPU and filesystem capacity need their own measurements, such as connected cloud telemetry. Backup recoverability and database corruption are not checked by the statistics scan; they need backup/recovery validation and an appropriate integrity investigation.".into(),
+    ]
+    }
     fn label(&self) -> &'static str {
         "SQL Server"
     }

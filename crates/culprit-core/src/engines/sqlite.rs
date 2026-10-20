@@ -7,6 +7,17 @@ use crate::dialect::{NewIndex, keys, unique};
 pub(super) struct Sqlite;
 
 impl EngineSpec for Sqlite {
+    fn inactive_index_state(&self, _server: &ServerInfo) -> crate::IndexState {
+        crate::IndexState::Active
+    }
+    fn limitations(&self) -> Vec<String> {
+        vec![
+        "SQLite file inspection cannot see the application's connections, transaction owners, foreign_keys, busy_timeout or synchronous settings. Configure and inspect those on the application's own connections.".into(),
+        "Plans are obtained with Culprit's SQLite library, which may differ from the application's version, modules or build options. Logged placeholders are planned with NULL values, so value-dependent access paths may differ.".into(),
+        "EXPLAIN QUERY PLAN records access paths, not estimated or measured rows, costs or timing. Query durations and errors require a supported application log; request traces need request identifiers in that telemetry.".into(),
+        "A WAL file can retain allocated space after checkpointing. Its size or growth alone does not establish checkpoint starvation or identify a reader holding a snapshot.".into(),
+    ]
+    }
     fn label(&self) -> &'static str {
         "SQLite"
     }

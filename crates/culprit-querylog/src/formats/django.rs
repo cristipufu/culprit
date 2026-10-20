@@ -22,7 +22,7 @@ impl Format for Django {
 
     fn line(&mut self, line: &str, out: &mut Vec<Entry>) {
         if let Some((ms, sql)) = statement(line) {
-            out.push(Entry { sql, ms, at: leading_timestamp(line).map(|(m, _)| m) });
+            out.push(Entry { sql, ms, at: leading_timestamp(line).map(|(m, _)| m), ..Default::default() });
         }
     }
 }

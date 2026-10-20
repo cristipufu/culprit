@@ -743,7 +743,9 @@ fn longest_return(q: &QueryStat, workload: &culprit_core::Workload) -> Option<f6
 /// reads plans: what it says rests on how those statements ran.
 fn about_queries(f: &Finding) -> bool {
     // A family's statements are literal copies of one: each runs once and is gone by construction, the family runs on.
-    if f.check == "query-family" {
+    // Structured error events retain their own dates, including untimed failures after the last timed execution.
+    // Linking that old execution for context must not make a newly logged failure history.
+    if matches!(f.check.as_str(), "query-family" | "logged-errors") {
         return false;
     }
     const QUERY_DRIVEN: [&str; 11] = [

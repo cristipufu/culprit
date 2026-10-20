@@ -6965,6 +6965,15 @@ table.rg {
   font-weight: 500;
 }
 
+.checked-head { text-align: left; }
+.checked-head > svg { flex: none; }
+.checked-head > span { min-width: 0; }
+.checked-head .n { display: inline-block; margin-left: 4px; }
+.checked-fine details { margin-top: 12px; }
+.checked-fine summary { cursor: pointer; }
+.checked-fine li > svg { flex: none; margin-top: 2px; }
+.checked-fine li > span { min-width: 0; overflow-wrap: anywhere; }
+
 .checked-head svg {
   transition: transform 120ms ease;
 }
@@ -12945,3 +12954,22 @@ li code,
 .pc-rows .pc-mark {
   margin-left: auto;
 }
+/* Separately recorded trigger work stays readable without competing with the plan operator grid. */
+.actual-triggers { width: 100%; min-width: 0; padding: 12px 0; }
+.actual-triggers h4 { margin: 0 0 6px; }
+.actual-triggers p { margin: 0 0 8px; line-height: 1.5; }
+.actual-triggers ul { padding: 0; margin: 0; list-style: none; }
+.actual-triggers li { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: space-between; padding: 6px 0; }
+.actual-triggers li > span { min-width: 0; overflow-wrap: anywhere; }
+
+.operational-health { margin-top: 24px; min-width: 0; }
+.operational-health > details { margin-top: 16px; }
+.operational-health summary { cursor: pointer; }
+.operational-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; margin-top: 12px; }
+.operational-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow-wrap: anywhere; }
+.operational-card h4 { margin: 0 0 8px; font-size: var(--fs-ui); }
+.operational-card p { font-size: var(--fs-ui-sm); line-height: 1.6; margin: 6px 0; }
+.operational-card dl { margin: 8px 0; font-size: var(--fs-ui-sm); }
+.operational-card dl > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; padding: 4px 0; }
+.operational-card dt { color: var(--text-3); }
+.operational-card dd { margin: 0; font-variant-numeric: tabular-nums; }

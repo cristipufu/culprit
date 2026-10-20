@@ -112,6 +112,7 @@ export function planShares(plan: Plan, query?: QueryStat | null): Shares {
 }
 
 export type ActualFacts = {
+  triggers: { name: string; relation: string | null; ms: number; calls: number | null }[];
   elapsedMs: number | null;
   cpuMs: number | null;
   logicalReads: number | null;
@@ -178,6 +179,7 @@ export function actualFacts(plan: Plan): ActualFacts | null {
   // Plans that kept row counts only (SQL Server's last actual plan) report zero time: that means unknown, not instant.
   const known = (v: number | null | undefined) => (v == null || (v === 0 && shares.basis !== "time") ? null : v);
   return {
+    triggers: triggerTimings(plan),
     elapsedMs: known(num(plan.props.ElapsedMs) ?? plan.root.act_time_ms),
     cpuMs: known(num(plan.props.CpuMs) ?? sum((n) => n.runtime?.cpu_ms)),
     logicalReads: sum((n) => n.runtime?.logical_reads),
@@ -194,4 +196,19 @@ export function actualFacts(plan: Plan): ActualFacts | null {
     lastRunAt: plan.props.LastRunAt ?? null,
     workers: num(plan.props.UsedThreads),
   };
+}
+
+/** PostgreSQL reports trigger totals separately. BEFORE trigger time also occurs inside the modifying operator. */
+export function triggerTimings(plan: Plan): ActualFacts["triggers"] {
+  if (plan.engine !== "postgres" || !plan.props.Triggers) return [];
+  try {
+    const values: unknown = JSON.parse(plan.props.Triggers);
+    if (!Array.isArray(values)) return [];
+    return values.flatMap((v: unknown) => {
+      if (!v || typeof v !== "object") return [];
+      const row = v as Record<string, unknown>;
+      if (typeof row.Time !== "number" || !Number.isFinite(row.Time) || row.Time < 0) return [];
+      return [{ name: typeof row["Trigger Name"] === "string" ? row["Trigger Name"] : "Trigger", relation: typeof row.Relation === "string" ? row.Relation : null, ms: row.Time, calls: typeof row.Calls === "number" && Number.isFinite(row.Calls) && row.Calls >= 0 ? row.Calls : null }];
+    });
+  } catch { return []; }
 }

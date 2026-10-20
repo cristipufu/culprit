@@ -66,7 +66,7 @@ pub(crate) fn map_error(e: &rusqlite::Error) -> Error {
     let error = Error::new(code, message);
     match code {
         ErrorCode::Timeout => {
-            error.with_hint("Another process held the file's write lock for more than two seconds; try again.")
+            error.with_hint("SQLite reported a busy or locked file. Another connection or a conflicting transaction can cause this; the error does not measure how long it held the lock. Culprit's read waits at most two seconds where SQLite permits waiting.")
         }
         ErrorCode::PermissionDenied => {
             error.with_hint("Culprit opens SQLite files read-only and never writes to them.")

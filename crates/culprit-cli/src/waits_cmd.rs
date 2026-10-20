@@ -72,7 +72,7 @@ pub async fn run(ws: &Workspace, args: WaitsArgs, out: &Out) -> Result<u8> {
     match out.format() {
         Format::Json => println!(
             "{}",
-            serde_json::to_string_pretty(&json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure }))
+            serde_json::to_string_pretty(&json!({ "connection": name, "waits": waits, "pressure": snapshot.pressure, "operations": snapshot.operations }))
                 .unwrap_or_default()
         ),
         _ => print_report(&name, &snapshot, waits.as_ref()),
@@ -126,6 +126,75 @@ fn print_report(name: &str, snapshot: &Snapshot, waits: Option<&WaitsReport>) {
         print_signals("Health", p, &p.signals);
         print_storage(&p.files);
         print_replicas(&p.replicas);
+    }
+    let o = &snapshot.operations;
+    for space in &o.spaces {
+        println!(
+            "{}: {} used of {} allocated ({}, when scanned); growth {}. Filesystem headroom not measured.",
+            space.name,
+            format::bytes(space.used_bytes),
+            format::bytes(space.total_bytes),
+            scope_label(space.scope),
+            space.growth_enabled.map_or("unknown", |g| if g { "configured" } else { "unavailable" })
+        );
+        if let Some(reason) = &space.reuse_wait {
+            println!("  Log reuse reason: {reason}");
+        }
+        for part in &space.parts {
+            println!("  {}: {}", part.name, format::bytes(part.bytes));
+        }
+    }
+    for c in &o.counters {
+        println!(
+            "{} · {}: {} recorded ({}, since {}). This total does not establish a current incident.",
+            culprit_core::wire_name(&c.kind).replace('-', " "),
+            c.subject,
+            format::count(c.count),
+            scope_label(c.scope),
+            c.since.as_deref().unwrap_or("unknown reset")
+        );
+    }
+    if let Some(wal) = &o.sqlite {
+        println!(
+            "SQLite WAL allocation when scanned: {}. Allocation does not measure uncheckpointed work.",
+            wal.wal_bytes.map_or_else(|| "unknown".into(), format::bytes)
+        );
+    }
+    for seq in &o.sequences {
+        println!(
+            "{}: allocation {}, bounds {} to {}, increment {}, cycling {}. Cached/skipped values prevent a remaining-request forecast.",
+            seq.name, seq.current, seq.minimum, seq.maximum, seq.increment, seq.cycles
+        );
+    }
+    for age in &o.multixacts {
+        println!(
+            "{}: {} MultiXact IDs old when scanned (independent of ordinary XID age).",
+            age.subject,
+            format::count(age.age)
+        );
+    }
+    if let Some(cluster) = &o.cluster {
+        println!(
+            "Galera node when scanned: ready {}, connected {}, primary component {}; {}.",
+            flag_label(cluster.ready),
+            flag_label(cluster.connected),
+            flag_label(cluster.primary_component),
+            cluster.local_state.as_deref().unwrap_or("state unknown")
+        );
+    }
+}
+
+fn scope_label(scope: culprit_core::FileScope) -> &'static str {
+    match scope {
+        culprit_core::FileScope::Database => "current database",
+        culprit_core::FileScope::Server => "whole server",
+    }
+}
+fn flag_label(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
     }
 }
 

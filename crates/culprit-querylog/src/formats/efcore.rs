@@ -31,7 +31,7 @@ impl EfCore {
         if let Some(p) = self.pending.take() {
             let sql = p.sql.join("\n");
             if starts_like_sql(&sql) {
-                out.push(Entry { sql, ms: p.ms, at: p.at });
+                out.push(Entry { sql, ms: p.ms, at: p.at, ..Default::default() });
             }
         }
     }

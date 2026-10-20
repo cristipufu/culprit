@@ -15,11 +15,13 @@ use crate::support::*;
 
 mod chatty_query;
 mod heavy_query;
+mod logged_errors;
 mod parameter_sensitive;
 mod plan_insights;
 mod plan_regression;
 mod plan_warnings;
 mod regression;
+mod repeated_request;
 mod temp_spill;
 mod unstable_query;
 
@@ -35,6 +37,8 @@ pub use unstable_query::*;
 
 /// The checks this area registers (`crate::all()` runs every area's), in the order their findings tie.
 pub(crate) const CHECKS: &[&dyn Check] = &[
+    &logged_errors::LoggedErrorsCheck,
+    &repeated_request::RepeatedRequestCheck,
     &HeavyQueryCheck,
     &ChattyQueryCheck,
     &PlanWarningsCheck,

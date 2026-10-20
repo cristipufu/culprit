@@ -214,7 +214,7 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
         );
     }
     if probe.privileged
-        && let Some(Some(t)) = coverage.read(&sources::OPEN_TRANSACTIONS, cleanup_holder(client).await)
+        && let Some(t) = cleanup_holder(client, &mut coverage).await
     {
         if t.holder != Some(CleanupHolder::ReplicationSlot) {
             p.signals.push(
@@ -249,8 +249,10 @@ SELECT pid::text AS session, extract(epoch FROM now() - coalesce(xact_start, bac
 
 /// A replication slot's xmin (a standby with hot_standby_feedback) holds the horizon for every database, active or not.
 const HOLDING_SLOT_SQL: &str = "
-SELECT slot_name AS session, active, age(xmin)::float8 AS xid_age
-  FROM pg_replication_slots WHERE xmin IS NOT NULL ORDER BY age(xmin) DESC LIMIT 1";
+SELECT slot_name AS session, active, greatest(age(xmin), age(catalog_xmin))::float8 AS xid_age,
+       (xmin IS NULL OR (catalog_xmin IS NOT NULL AND age(catalog_xmin) > age(xmin))) AS catalog_only
+  FROM pg_replication_slots WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL
+ ORDER BY greatest(age(xmin), age(catalog_xmin)) DESC LIMIT 1";
 
 /// A prepared transaction in this database holds the horizon until someone commits or rolls it back.
 const HOLDING_PREPARED_SQL: &str = "
@@ -259,9 +261,9 @@ SELECT gid AS session, extract(epoch FROM now() - prepared) AS seconds, owner, a
 
 /// Whatever holds this database's VACUUM horizon furthest back: a session, a replication slot or a prepared
 /// transaction, by how many transactions it is behind.
-async fn cleanup_holder(client: &Client) -> Result<Option<OpenTransaction>> {
+async fn cleanup_holder(client: &Client, coverage: &mut Coverage) -> Option<OpenTransaction> {
     let mut found: Vec<OpenTransaction> = Vec::new();
-    if let Some(r) = query_one(client, HOLDING_SESSION_SQL).await? {
+    if let Some(Some(r)) = coverage.read(&sources::OPEN_TRANSACTIONS, query_one(client, HOLDING_SESSION_SQL).await) {
         found.push(OpenTransaction {
             session: r.string("session"),
             seconds: r.number("seconds").unwrap_or(0.0),
@@ -272,9 +274,9 @@ async fn cleanup_holder(client: &Client) -> Result<Option<OpenTransaction>> {
             ..OpenTransaction::default()
         });
     }
-    // Slots and prepared transactions are rarer; a view this login can't read leaves them out.
-    if let Ok(Some(r)) = query_one(client, HOLDING_SLOT_SQL).await {
+    if let Some(Some(r)) = coverage.read(&sources::CLEANUP_SLOTS, query_one(client, HOLDING_SLOT_SQL).await) {
         found.push(OpenTransaction {
+            catalog_only: r.flag("catalog_only"),
             session: r.string("session"),
             state: Some(if r.flag("active") { "active slot" } else { "inactive slot" }.into()),
             holder: Some(CleanupHolder::ReplicationSlot),
@@ -282,7 +284,7 @@ async fn cleanup_holder(client: &Client) -> Result<Option<OpenTransaction>> {
             ..OpenTransaction::default()
         });
     }
-    if let Ok(Some(r)) = query_one(client, HOLDING_PREPARED_SQL).await {
+    if let Some(Some(r)) = coverage.read(&sources::CLEANUP_PREPARED, query_one(client, HOLDING_PREPARED_SQL).await) {
         found.push(OpenTransaction {
             session: r.string("session"),
             seconds: r.number("seconds").unwrap_or(0.0),
@@ -293,7 +295,7 @@ async fn cleanup_holder(client: &Client) -> Result<Option<OpenTransaction>> {
             ..OpenTransaction::default()
         });
     }
-    Ok(oldest_holder(found))
+    oldest_holder(found)
 }
 
 /// The holder furthest behind; on a tie the first found (a session before a slot before a prepared transaction).

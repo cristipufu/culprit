@@ -115,12 +115,8 @@ export function PlanInsights({ plan, selectedNode, onSelectNode }: { plan: Plan;
         >
           <Copy size={12} /> Copy
         </button>
-        {note && (
-          <span className="ins-note-icon" title={note}>
-            <Info size={13} />
-          </span>
-        )}
       </header>
+      {note && <p className="ins-note"><Info size={13} /> {note}</p>}
       <div className="ins-list" ref={list} role="listbox" aria-label="Insights, most important first">
         {shown.map((i, index) => {
           const area = AREA[i.area];

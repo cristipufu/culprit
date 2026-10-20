@@ -303,6 +303,11 @@ function QueryDetail({ report, query }: { report: Report; query: QueryStat }) {
             )}
             {w.timeline && query.trend && <QueryTrend query={query} timeline={w.timeline} onSince={compareSince} />}
             <RuntimeSpread query={query} engine={report.snapshot.server.engine} windowed={w.windowed} product={report.snapshot.server.product} kind={workloadKind(w)} />
+            {query.requests && <section>
+              <h3>Calls within logged requests</h3>
+              <p>This statement shape appeared in {count(query.requests.requests)} identified request groups; {count(query.requests.repeated_requests)} groups logged it at least 10 times. The largest group logged {count(query.requests.most_calls)} calls.</p>
+              <p className="muted">Only records with explicit request IDs contribute. Repetition can come from loops, retries or intended batches; it does not establish an N+1 bug or network overhead.{query.requests.sample_truncated ? " The request sample reached its limit, so these are partial counts." : ""}</p>
+            </section>}
             <QueryCostsPanel report={report} query={query} />
             {related.length > 0 && (
               <section>
