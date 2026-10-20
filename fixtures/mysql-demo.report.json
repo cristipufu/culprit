@@ -263,6 +263,22 @@
       ],
       "check": "lock-time",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [],
+        "large_rows": null,
+        "lock_wait": {
+          "ms": 115298.819,
+          "share": 0.9999855691410966,
+          "versioning_spares_read": false
+        },
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": null,
         "sql": null,
@@ -746,6 +762,208 @@
       "missing": [
         "query-log"
       ]
+    }
+  ],
+  "refinement": [
+    {
+      "finding": "lock-time:fc709554a9248878",
+      "outcome": {
+        "into": "lock-time:4167fe7f2c20deb7",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "fc709554a9248878"
+      ],
+      "rule": "one-lock-episode",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:4167fe7f2c20deb7",
+      "outcome": {
+        "by": [
+          "lock-time:4167fe7f2c20deb7"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "4167fe7f2c20deb7"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:fc709554a9248878",
+      "outcome": {
+        "by": [
+          "lock-time:4167fe7f2c20deb7"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "fc709554a9248878"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:04cd7be9c366fadc",
+      "outcome": {
+        "by": [
+          "temp-spill:04cd7be9c366fadc"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "04cd7be9c366fadc"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "scan-heavy:shop.orders",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:07:17Z"
+      },
+      "queries": [
+        "19bd4ff468839ea3"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:9b30e6ad79d940fe",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:07:18Z"
+      },
+      "queries": [
+        "9b30e6ad79d940fe"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:04cd7be9c366fadc",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:07:48Z"
+      },
+      "queries": [
+        "04cd7be9c366fadc"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:4515abd524a46f37",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:00:50Z"
+      },
+      "queries": [
+        "4515abd524a46f37"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "lock-time:4167fe7f2c20deb7",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:00:37Z"
+      },
+      "queries": [
+        "4167fe7f2c20deb7",
+        "fc709554a9248878"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "big-result:7f47c8550af0c644",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:00:35Z"
+      },
+      "queries": [
+        "7f47c8550af0c644"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "scan-heavy:shop.orders",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "19bd4ff468839ea3"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:9b30e6ad79d940fe",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "9b30e6ad79d940fe"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:04cd7be9c366fadc",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "04cd7be9c366fadc"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:4515abd524a46f37",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "4515abd524a46f37"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "lock-time:4167fe7f2c20deb7",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "4167fe7f2c20deb7",
+        "fc709554a9248878"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "big-result:7f47c8550af0c644",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "7f47c8550af0c644"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
     }
   ],
   "snapshot": {

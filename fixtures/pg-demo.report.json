@@ -302,6 +302,20 @@
       "caveats": [],
       "check": "filtered-scan",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "customer_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "public.orders had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_orders_customer_id\n    ON public.orders (customer_id);",
@@ -597,6 +611,20 @@
       "caveats": [],
       "check": "filtered-scan",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "product_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_product_id\n    ON public.order_items (product_id);",
@@ -777,6 +805,20 @@
       "caveats": [],
       "check": "unindexed-fk",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "order_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "public.order_items had no writes in the 6 h 59 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE INDEX CONCURRENTLY ix_order_items_order_id\n    ON public.order_items (order_id);",
@@ -1136,6 +1178,372 @@
       "missing": [
         "query-log"
       ]
+    }
+  ],
+  "refinement": [
+    {
+      "finding": "big-result:9065391607317686058",
+      "outcome": {
+        "into": "temp-spill:9065391607317686058",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "9065391607317686058"
+      ],
+      "rule": "spill-carries-result",
+      "tables": []
+    },
+    {
+      "finding": "unindexed-fk:public.orders(customer_id)",
+      "outcome": {
+        "by": [
+          "filtered-scan:public.orders(customer_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "5308963031944094559"
+      ],
+      "rule": "index-covers-foreign-key",
+      "tables": [
+        "public.orders"
+      ]
+    },
+    {
+      "finding": "unindexed-fk:public.order_items(product_id)",
+      "outcome": {
+        "by": [
+          "filtered-scan:public.order_items(product_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "-3722457391793582113"
+      ],
+      "rule": "index-covers-foreign-key",
+      "tables": [
+        "public.order_items"
+      ]
+    },
+    {
+      "finding": "table-bloat:archive.wide",
+      "outcome": {
+        "into": "dead-rows:archive.wide",
+        "kind": "absorbed"
+      },
+      "queries": [],
+      "rule": "dead-rows-explain-bloat",
+      "tables": [
+        "archive.wide"
+      ]
+    },
+    {
+      "finding": "log-volume:-463560455567765064",
+      "outcome": {
+        "into": "hot-updates:archive.wide",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "-463560455567765064"
+      ],
+      "rule": "cold-updates-explain-log",
+      "tables": []
+    },
+    {
+      "finding": "stale-stats:archive.wide",
+      "outcome": {
+        "into": "dead-rows:archive.wide",
+        "kind": "absorbed"
+      },
+      "queries": [],
+      "rule": "dead-rows-carry-statistics",
+      "tables": [
+        "archive.wide"
+      ]
+    },
+    {
+      "finding": "heavy-query:9065391607317686058",
+      "outcome": {
+        "by": [
+          "temp-spill:9065391607317686058"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "9065391607317686058"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:5308963031944094559",
+      "outcome": {
+        "by": [
+          "filtered-scan:public.orders(customer_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "5308963031944094559"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "filtered-scan:public.orders(customer_id)",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "5308963031944094559"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "filtered-scan:public.order_items(product_id)",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "-3722457391793582113"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:-8886085649470066503",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "-8886085649470066503"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:4911431806993420100",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "4911431806993420100"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:3432126458605143571",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "3432126458605143571"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:9065391607317686058",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "9065391607317686058"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "planning-time:-967240904657798800",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "-967240904657798800"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "jit-overhead:6425265648074738764",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": null
+      },
+      "queries": [
+        "6425265648074738764"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:-8886085649470066503",
+      "outcome": {
+        "basis": "single-execution",
+        "kind": "historical",
+        "last_seen": null,
+        "quiet_seconds": null
+      },
+      "queries": [
+        "-8886085649470066503"
+      ],
+      "rule": "ran-once",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:4911431806993420100",
+      "outcome": {
+        "basis": "single-execution",
+        "kind": "historical",
+        "last_seen": null,
+        "quiet_seconds": null
+      },
+      "queries": [
+        "4911431806993420100"
+      ],
+      "rule": "ran-once",
+      "tables": []
+    },
+    {
+      "finding": "filtered-scan:public.orders(customer_id)",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "5308963031944094559"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "filtered-scan:public.order_items(product_id)",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "-3722457391793582113"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:-8886085649470066503",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "-8886085649470066503"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:4911431806993420100",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "4911431806993420100"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:3432126458605143571",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "3432126458605143571"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:3432126458605143571",
+      "outcome": {
+        "aspect": "observed-activity",
+        "kind": "presentation"
+      },
+      "queries": [
+        "3432126458605143571"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:9065391607317686058",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "9065391607317686058"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:9065391607317686058",
+      "outcome": {
+        "aspect": "observed-activity",
+        "kind": "presentation"
+      },
+      "queries": [
+        "9065391607317686058"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "planning-time:-967240904657798800",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "-967240904657798800"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "jit-overhead:6425265648074738764",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "6425265648074738764"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "hot-updates:archive.wide",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "-463560455567765064"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
     }
   ],
   "snapshot": {

@@ -189,6 +189,8 @@ pub struct Finding {
     /// The affected queries stopped running well before the end of the window: a deploy may have fixed or replaced them.
     #[serde(default)]
     pub inactive: bool,
+    #[serde(default, skip_serializing_if = "crate::FindingFacts::is_empty")]
+    pub facts: crate::FindingFacts,
 }
 
 impl Finding {
@@ -281,4 +283,6 @@ pub struct Report {
     pub summary: Summary,
     #[serde(default)]
     pub assessments: Vec<crate::check::CheckAssessment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refinement: Vec<crate::RefinementDecision>,
 }

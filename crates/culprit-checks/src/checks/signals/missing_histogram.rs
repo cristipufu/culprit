@@ -19,16 +19,6 @@ check!(
     &[Evidence::Query(QueryMeasure::Histograms)]
 );
 
-/// The columns a missing-histogram finding names, for de-duplication against index findings.
-pub(crate) fn histogram_columns(f: &Finding) -> Vec<String> {
-    f.metrics
-        .iter()
-        .find(|m| m.label == "Columns")
-        .and_then(|m| m.text.as_deref())
-        .map(|t| t.split(", ").map(str::to_string).collect())
-        .unwrap_or_default()
-}
-
 /// The table name a plan node reads, without schema or quotes.
 pub(super) fn node_table(object: &str) -> String {
     object.rsplit('.').next().unwrap_or(object).trim_matches(|c| matches!(c, '`' | '"' | '[' | ']')).to_string()
@@ -176,6 +166,7 @@ pub fn missing_histogram(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics =
                 vec![Metric::text("Columns", columns.join(", ")), Metric::new("EXPLAIN filtered", guess / 100.0, Unit::Ratio)];
             let target = qualified(Engine::Mysql, &schema, &table);
+            f.facts.histogram_columns = columns.clone();
             let quoted = columns.iter().map(|c| quote(Engine::Mysql, c)).collect::<Vec<_>>().join(", ");
             f.fix = Some(if mariadb {
                 Fix {

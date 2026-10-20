@@ -57,6 +57,7 @@ pub fn network_wait(snapshot: &Snapshot) -> Vec<Finding> {
             f.confidence = Confidence::High;
             f.queries = query_refs(&[q]);
             f.metrics.push(Metric::new("Waiting on the app", share, Unit::Ratio));
+            f.facts.network_wait_share = Some(share);
             if let Some(r) = rows {
                 f.metrics.push(Metric::new("Rows per call", r, Unit::Rows));
             }

@@ -761,6 +761,20 @@
       ],
       "check": "missing-index",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "order_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "shop.order_items had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_order_items_order_id]\n    ON [shop].[order_items] ([order_id])\n    WITH (ONLINE = ON);",
@@ -875,6 +889,21 @@
       "caveats": [],
       "check": "regression",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": {
+          "from": "8",
+          "to": "47"
+        },
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": null,
         "sql": "EXEC sp_query_store_force_plan @query_id = 8, @plan_id = 8;",
@@ -946,6 +975,20 @@
       "caveats": [],
       "check": "unindexed-fk",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "ticket_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "shop.ticket_events had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_ticket_events_ticket_id]\n    ON [shop].[ticket_events] ([ticket_id])\n    WITH (ONLINE = ON);",
@@ -995,6 +1038,20 @@
       ],
       "check": "missing-index",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "shipped_at"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": "shop.orders had no writes in the 1 h 7 min its counters cover, too short to say it gets none (a weekly job may not have run yet); each write it gets will also update this index.",
         "sql": "CREATE NONCLUSTERED INDEX [IX_orders_shipped_at]\n    ON [shop].[orders] ([shipped_at])\n    INCLUDE ([total])\n    WITH (ONLINE = ON);",
@@ -1449,6 +1506,21 @@
       ],
       "check": "log-volume",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": {
+          "bytes": 242946788.0,
+          "per_row": 8098.226266666667
+        },
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": null,
         "sql": null,
@@ -1523,6 +1595,488 @@
       "missing": [
         "query-log"
       ]
+    }
+  ],
+  "refinement": [
+    {
+      "finding": "filtered-scan:shop.order_items(order_id)",
+      "outcome": {
+        "into": "missing-index:shop.order_items(order_id)",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "9",
+        "249"
+      ],
+      "rule": "missing-index-carries-scan",
+      "tables": [
+        "shop.order_items"
+      ]
+    },
+    {
+      "finding": "filtered-scan:shop.orders(shipped_at)",
+      "outcome": {
+        "into": "missing-index:shop.orders(shipped_at)",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "missing-index-carries-scan",
+      "tables": [
+        "shop.orders"
+      ]
+    },
+    {
+      "finding": "plan-insights:missing-index-hint:shop.order_items",
+      "outcome": {
+        "into": "missing-index:shop.order_items(order_id)",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "9",
+        "249"
+      ],
+      "rule": "index-carries-plan-request",
+      "tables": [
+        "shop.order_items"
+      ]
+    },
+    {
+      "finding": "plan-insights:missing-index-hint:shop.orders",
+      "outcome": {
+        "into": "missing-index:shop.orders(shipped_at)",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "index-carries-plan-request",
+      "tables": [
+        "shop.orders"
+      ]
+    },
+    {
+      "finding": "unindexed-fk:shop.order_items(order_id)",
+      "outcome": {
+        "by": [
+          "missing-index:shop.order_items(order_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "9",
+        "249"
+      ],
+      "rule": "index-covers-foreign-key",
+      "tables": [
+        "shop.order_items"
+      ]
+    },
+    {
+      "finding": "lock-time:143",
+      "outcome": {
+        "into": "lock-time:138",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "143"
+      ],
+      "rule": "one-lock-episode",
+      "tables": []
+    },
+    {
+      "finding": "lock-time:138",
+      "outcome": {
+        "into": "hot-rows:shop.orders",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "138",
+        "143"
+      ],
+      "rule": "one-blocking-chain",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:138",
+      "outcome": {
+        "by": [
+          "hot-rows:shop.orders"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "138"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:263",
+      "outcome": {
+        "by": [
+          "plan-insights:nested-loops:query-263",
+          "plan-insights:parallelism-blocked:query-263",
+          "failing-query:263"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:143",
+      "outcome": {
+        "by": [
+          "hot-rows:shop.orders"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "143"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:7",
+      "outcome": {
+        "by": [
+          "plan-warnings:implicit-conversion:customers.email"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "7"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "missing-index:shop.order_items(order_id)",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:21Z"
+      },
+      "queries": [
+        "9",
+        "249"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "missing-index:shop.orders(shipped_at)",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:13:40Z"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:6",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:13:25Z"
+      },
+      "queries": [
+        "6"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "plan-warnings:implicit-conversion:customers.email",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:13:36Z"
+      },
+      "queries": [
+        "7"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "plan-insights:nested-loops:query-263",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:55Z"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "plan-insights:parallelism-blocked:query-263",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:55Z"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "regression:8",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T12:13:40Z"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:263",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:55Z"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:246",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:54:55Z"
+      },
+      "queries": [
+        "246"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "log-volume:255",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:31Z"
+      },
+      "queries": [
+        "255"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "big-result:264",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T15:55:40Z"
+      },
+      "queries": [
+        "264"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "log-volume:255",
+      "outcome": {
+        "basis": "single-execution",
+        "kind": "historical",
+        "last_seen": "2026-10-11T15:55:31Z",
+        "quiet_seconds": null
+      },
+      "queries": [
+        "255"
+      ],
+      "rule": "ran-once",
+      "tables": []
+    },
+    {
+      "finding": "log-volume:255",
+      "outcome": {
+        "basis": "tables-absent",
+        "kind": "historical",
+        "last_seen": "2026-10-11T15:55:31Z",
+        "quiet_seconds": null
+      },
+      "queries": [
+        "255"
+      ],
+      "rule": "tables-absent",
+      "tables": [
+        "archive.wide"
+      ]
+    },
+    {
+      "finding": "missing-index:shop.order_items(order_id)",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "9",
+        "249"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "missing-index:shop.orders(shipped_at)",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:6",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "6"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "plan-warnings:implicit-conversion:customers.email",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "7"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "plan-insights:nested-loops:query-263",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "plan-insights:parallelism-blocked:query-263",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "regression:8",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "8"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:263",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "263"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "failing-query:246",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "246"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "log-volume:255",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "255"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "big-result:264",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "264"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "hot-rows:shop.orders",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "138",
+        "143",
+        "161"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "plan-warnings:implicit-conversion:customers.email",
+      "outcome": {
+        "aspect": "database-naming",
+        "kind": "presentation"
+      },
+      "queries": [
+        "7"
+      ],
+      "rule": "database-naming",
+      "tables": []
     }
   ],
   "snapshot": {

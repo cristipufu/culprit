@@ -38,6 +38,7 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
             let name = t.qualified();
             let mut f = finding("table-bloat", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
             f.title = format!("{} is about {} empty space (≈ {})", t.name, format::percent(share), format::bytes(bloat));
+            f.facts.bloat = Some(culprit_core::FindingBloat {bytes:bloat,share});
             // The estimate counts every byte beyond the live rows, dead rows VACUUM hasn't cleared yet included. When
             // they account for it, VACUUM is the fix, not a rewrite.
             let dead = dead_share(t).filter(|d| *d >= share * DEAD_EXPLAINS_BLOAT);

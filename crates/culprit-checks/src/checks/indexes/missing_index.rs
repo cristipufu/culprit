@@ -322,6 +322,7 @@ pub(super) fn missing_index_finding(snapshot: &Snapshot, queries: &[QueryStat], 
         Category::Indexes,
         subject(SubjectKind::Table, &table_name),
     );
+    f.facts.index_keys = keys.clone();
     let linked = asking_queries(queries, &c);
     if let Some(miss) = parameterized_filter(snapshot, &c, &linked) {
         return parameterized_filter_finding(snapshot, f, &c, &linked, &miss);

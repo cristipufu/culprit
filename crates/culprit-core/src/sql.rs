@@ -1030,34 +1030,76 @@ pub fn mssql_statistics_target(text: &str) -> Option<String> {
 
 /// Whether suggested SQL creates an index. Identifiers, literals and comments cannot supply the operation.
 pub fn creates_index(text: &str, engine: Engine) -> bool {
-    readings(text, engine).is_ok_and(|readings| {
-        readings.iter().all(|tokens| {
-            tokens.iter().enumerate().any(|(i, t)| {
-                if !matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("create")) {
-                    return false;
-                }
-                for t in &tokens[i + 1..] {
-                    match t {
-                        Token::Word(w) if w.eq_ignore_ascii_case("index") => return true,
-                        Token::Word(w)
-                            if [
-                                "unique",
-                                "clustered",
-                                "nonclustered",
-                                "columnstore",
-                                "spatial",
-                                "fulltext",
-                                "bitmap",
-                            ]
-                            .iter()
-                            .any(|k| w.eq_ignore_ascii_case(k)) => {}
-                        _ => return false,
-                    }
-                }
-                false
-            })
+    readings(text, engine)
+        .is_ok_and(|readings| readings.iter().all(|tokens| (0..tokens.len()).any(|at| index_creation(&tokens[at..]))))
+}
+
+fn index_creation(tokens: &[Token<'_>]) -> bool {
+    if !matches!(tokens.first(),Some(Token::Word(w)) if w.eq_ignore_ascii_case("create")) {
+        return false;
+    }
+    for token in &tokens[1..] {
+        match token {
+            Token::Word(w) if w.eq_ignore_ascii_case("index") => return true,
+            Token::Word(w)
+                if ["unique", "clustered", "nonclustered", "columnstore", "spatial", "fulltext", "bitmap"]
+                    .iter()
+                    .any(|kind| w.eq_ignore_ascii_case(kind)) => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// A creation script whose indexes include every row. Whitespace, comments and quoted identifiers do not turn a
+/// filtered index into one that can enforce a foreign-key lookup for every parent row.
+pub fn creates_unfiltered_index(text: &str, engine: Engine) -> bool {
+    creates_index(text, engine)
+        && readings(text, engine).is_ok_and(|readings| {
+            !readings.is_empty()
+                && readings.iter().all(|tokens| {
+                    tokens.split(|t| matches!(t, Token::Semicolon(_))).filter(|statement| !statement.is_empty()).all(
+                        |statement| {
+                            index_creation(statement)
+                                && (engine != Engine::Mssql || mssql_second_statement(statement).is_none())
+                                && !statement
+                                    .iter()
+                                    .any(|t| matches!(t,Token::Word(w) if w.eq_ignore_ascii_case("where")))
+                        },
+                    )
+                })
         })
-    })
+}
+
+#[cfg(test)]
+mod index_creation_tests {
+    use super::*;
+
+    #[test]
+    fn foreign_key_coverage_cannot_come_from_a_filtered_or_mixed_script() {
+        for engine in [Engine::Mssql, Engine::Postgres, Engine::Mysql, Engine::Sqlite] {
+            for sql in [
+                "CREATE INDEX ix_orders ON shop.orders (state)",
+                "/* WHERE state = 1 */ CREATE INDEX ix_orders ON shop.orders (state)",
+            ] {
+                assert!(creates_unfiltered_index(sql, engine), "{engine:?}: {sql}");
+            }
+            for sql in [
+                "",
+                "-- CREATE INDEX ix_orders ON shop.orders (state)",
+                "CREATE INDEX ix_orders ON shop.orders (state)\nWHERE state = 1",
+                "CREATE INDEX ix_orders ON shop.orders (state) /* filter */ WHERE state IS NOT NULL",
+                "CREATE INDEX ix_orders ON shop.orders (state); CREATE INDEX ix_other ON shop.orders (region) WHERE region IS NOT NULL",
+                "CREATE INDEX ix_orders ON shop.orders (state); SELECT 1",
+                "CREATE INDEX ix_orders ON shop.orders (state); CREATE TABLE other (id int)",
+            ] {
+                assert!(!creates_unfiltered_index(sql, engine), "{engine:?}: {sql}");
+            }
+        }
+        assert!(creates_unfiltered_index("CREATE INDEX [where] ON [shop].[orders] ([where])", Engine::Mssql));
+        assert!(creates_unfiltered_index("CREATE INDEX \"where\" ON shop.orders (\"where\")", Engine::Postgres));
+        assert!(creates_unfiltered_index("CREATE INDEX `where` ON shop.orders (`where`)", Engine::Mysql));
+    }
 }
 
 /// Whether an UPDATE's only assignment and returned value are this counter. This establishes only its SQL shape;

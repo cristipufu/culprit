@@ -160,6 +160,22 @@ steps but not their tree. A PostgreSQL plan saved without a table's size takes i
 .with_prepare(..)` adds an embedder's own; they run, rank and summarize exactly like the built-in ones, and a plug-in
 check can't take over a built-in id.
 
+### Refinement decisions
+
+The thirty built-in policies live in focused modules under `culprit-checks/src/refine/`. Each selects a structured
+decision from the evidence before applying semantic state and composing its explanation. Detectors attach the
+cross-finding facts they establish to `Finding::facts`: column lists, a recorded plan transition, lock waits and
+write measurements. Human titles, metric labels and sentences do not identify those facts. Wording-only rules have
+mutable access to display fields, never rank, actionability, query references or executable SQL.
+
+`Report::refinement` records the rule, affected finding and evidence references, with typed outcomes for history,
+withheld fixes, absorption and coverage. Transferring only some queries records a partial transfer and recalculates
+the source finding from its remaining evidence. Every removed detector finding must lead to a retained cause;
+fixture invariants check this chain. Missing linked queries cannot prove a whole group stopped or redistribute its
+measurements to the known subset. Older reports default to empty facts and trace and acquire current decisions when
+re-analyzed. An external `Refine` implementation can keep its original interface; the default `refine_traced`
+records invocation only. An extension providing its decisions overrides `refine_traced`.
+
 ### Checks
 
 A check looks for one kind of problem: `<name>_info()` (id, title, category, the engines it applies to, the
@@ -222,7 +238,7 @@ Every check and insight follows these. Each has one implementation; use it rathe
 | No index, statistics or rewrite advice on the engine's own objects (`sys.*`, `pg_catalog`, `information_schema`, `performance_schema`, `sqlite_*`): nothing an application changes. | `insights::on_system_objects` |
 | A statement's share is graded as the source allows: where entries count from different moments (the plan cache counts each plan from its compile), a statement claims at most its share of the time an hour, so a plan cached for a month doesn't outweigh one compiled an hour ago by its age. | `Workload::share_of`, `share_weight`, `hourly_time_ms`; `support::query_impact` |
 | One cause, one finding. | refine rules |
-| A finding's share of database time counts every statement it lists, also once refine folds another finding into it (the share of all of them, not the larger of the two). | `refine::absorb`, `share_of_listed` |
+| A finding's share of database time counts every statement it lists, also once refine folds another finding into it (the share of all of them, not the larger of the two). Recalculation requires complete linked evidence and compatible measurement semantics. | `refine::merge::Absorption`, `share_of_listed` |
 | A caveat adds to the finding: no sentence of it repeats the summary or the fix. | refine rule `a caveat repeats nothing the summary or the fix says` |
 | An index finding lists a statement only where its fix serves it: one whose captured plan reads the table some other way (a hash join's side, a filter on another column) isn't listed. On MySQL, the rows a statement examined against the table's rows say whether it reads it whole (half or more a run) or through an index (under a tenth). A fix's cost says "this index" only beside the SQL that creates one. | `indexes::through_foreign_key`, `plan_reads_whole`; `scan_heavy::examined_reads_whole`; `indexes::write_cost`, `write_cost_of` |
 | An event session a fix starts is one session for every finding that asks for it: created only where it isn't defined, started only where it isn't running, and the SQL says how to drop it. | `signals::event_session_sql`, `event_session_drop` |
@@ -285,8 +301,9 @@ zero blocked sessions. MCP returns the original numeric signal values, leaving d
 - **A check**: write `<name>_info()` and `<name>(&Snapshot)` in a file of its own in the area's directory under
   `checks/` (declared in the area's `mod.rs`), declare its type with `check!`, add it to the area's `CHECKS` list, give each finding a stable id, follow the evidence rules, and test it on a fixture (`fixtures/*-demo.json`)
   for the case it should flag and the cases it must not.
-- **A refine rule**: a function `fn(&Snapshot, &mut Vec<Finding>)` in `refine.rs`, named for the duplicate or false flag
-  it removes, listed in `rules()`.
+- **A refine rule**: a `Refine` implementation in the appropriate `refine/` module, listed in `rules()`. Select its
+  evidence and outcome first, apply state, then render prose; return the decisions from `refine_traced`. Test both
+  the relationship and the incomplete evidence that must leave separate findings.
 - **A prepare step**: a function `fn(&mut Snapshot)` listed in `pipeline.rs::preparation()`. It corrects only what the
   data contradicts (a plan older than its table), never to hide a problem.
 - **A source**: declare it in the provider's `src/sources.rs` (and its `ALL` list), read it through `Coverage::read`

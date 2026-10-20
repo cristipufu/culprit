@@ -354,6 +354,7 @@ pub(super) fn filtered_scan_finding(snapshot: &Snapshot, g: ScanGroup) -> Findin
         Category::Indexes,
         subject(SubjectKind::Table, &table_name),
     );
+    f.facts.index_keys = g.keys.clone();
     apply_query_impact(&mut f, &impact);
     // Graded on the scan's part of each statement, by its share of the plan's cost: a 12K-row lookup table scanned by
     // a heavy star join is a sliver of that join's time. A plan without costs (SQLite) gives the statement's.

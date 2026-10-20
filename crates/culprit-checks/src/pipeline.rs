@@ -34,9 +34,22 @@ pub trait Refine: Send + Sync {
     /// What it fixes, in a few words.
     fn name(&self) -> &str;
     fn refine(&self, snapshot: &Snapshot, findings: &mut Vec<Finding>);
+
+    /// Apply the rule and expose its decisions. Existing extensions keep their original implementation; the default
+    /// records invocation without pretending to know their policy. A structured rule decides before rendering prose.
+    fn refine_traced(&self, snapshot: &Snapshot, findings: &mut Vec<Finding>) -> Vec<culprit_core::RefinementDecision> {
+        self.refine(snapshot, findings);
+        vec![culprit_core::RefinementDecision {
+            rule: self.name().into(),
+            finding: None,
+            outcome: culprit_core::RefinementOutcome::RuleApplied,
+            queries: Vec::new(),
+            tables: Vec::new(),
+        }]
+    }
 }
 
-/// A built-in step or rule: a name and a function.
+/// A built-in preparation step: a name and a function.
 pub(crate) struct Step<F> {
     pub name: &'static str,
     pub run: F,
@@ -49,16 +62,6 @@ impl Prepare for Step<fn(&mut Snapshot)> {
 
     fn prepare(&self, snapshot: &mut Snapshot) {
         (self.run)(snapshot)
-    }
-}
-
-impl Refine for Step<fn(&Snapshot, &mut Vec<Finding>)> {
-    fn name(&self) -> &str {
-        self.name
-    }
-
-    fn refine(&self, snapshot: &Snapshot, findings: &mut Vec<Finding>) {
-        (self.run)(snapshot, findings)
     }
 }
 
@@ -342,8 +345,9 @@ impl Pipeline {
             }
             findings.extend(check.run(&snapshot));
         }
+        let mut refinement = Vec::new();
         for rule in &self.refine {
-            rule.refine(&snapshot, &mut findings);
+            refinement.extend(rule.refine_traced(&snapshot, &mut findings));
         }
         for f in &mut findings {
             f.actionability = if f.inactive {
@@ -367,7 +371,7 @@ impl Pipeline {
                 assessment.status = culprit_core::CheckStatus::Findings;
             }
         }
-        Report { snapshot, findings, locked, summary, assessments }
+        Report { snapshot, findings, locked, summary, assessments, refinement }
     }
 }
 

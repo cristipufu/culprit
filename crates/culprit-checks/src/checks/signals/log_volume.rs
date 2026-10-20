@@ -85,6 +85,7 @@ pub fn log_volume(snapshot: &Snapshot) -> Vec<Finding> {
             f.impact.label = format!("{} of {log}", format::bytes(bytes));
             f.confidence = Confidence::High;
             f.metrics = vec![Metric::new("Log written", bytes, Unit::Bytes), Metric::new("Share of log", share, Unit::Ratio)];
+            f.facts.log_write = Some(culprit_core::FindingLogWrite {bytes,per_row});
             if let Some(b) = per_row {
                 f.metrics.push(Metric::new("Per row", b, Unit::Bytes));
             }

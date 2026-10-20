@@ -643,6 +643,154 @@
       ]
     }
   ],
+  "refinement": [
+    {
+      "finding": "heavy-query:375c64398248650e",
+      "outcome": {
+        "by": [
+          "temp-spill:375c64398248650e"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "375c64398248650e"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "scan-heavy:shop.orders",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:04:49Z"
+      },
+      "queries": [
+        "258e3c9b580f1ecc"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:decf59629e790076",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:04:51Z"
+      },
+      "queries": [
+        "decf59629e790076"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:a92bb0be330ac53a",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:04:50Z"
+      },
+      "queries": [
+        "a92bb0be330ac53a"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:375c64398248650e",
+      "outcome": {
+        "kind": "last-execution",
+        "last_seen": "2026-10-11T16:05:36Z"
+      },
+      "queries": [
+        "375c64398248650e"
+      ],
+      "rule": "stopped-running",
+      "tables": []
+    },
+    {
+      "finding": "scan-heavy:shop.orders",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "258e3c9b580f1ecc"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:decf59629e790076",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "decf59629e790076"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:decf59629e790076",
+      "outcome": {
+        "aspect": "observed-activity",
+        "kind": "presentation"
+      },
+      "queries": [
+        "decf59629e790076"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:a92bb0be330ac53a",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "a92bb0be330ac53a"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "chatty-query:a92bb0be330ac53a",
+      "outcome": {
+        "aspect": "observed-activity",
+        "kind": "presentation"
+      },
+      "queries": [
+        "a92bb0be330ac53a"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:375c64398248650e",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "375c64398248650e"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    },
+    {
+      "finding": "temp-spill:375c64398248650e",
+      "outcome": {
+        "aspect": "observed-activity",
+        "kind": "presentation"
+      },
+      "queries": [
+        "375c64398248650e"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    }
+  ],
   "snapshot": {
     "columns": [
       {

@@ -2,6 +2,7 @@
 import type { Actionability } from "./Actionability";
 import type { Category } from "./Category";
 import type { Confidence } from "./Confidence";
+import type { FindingFacts } from "./FindingFacts";
 import type { Fix } from "./Fix";
 import type { Impact } from "./Impact";
 import type { Metric } from "./Metric";
@@ -18,4 +19,4 @@ last_seen: string | null,
 /**
  * The affected queries stopped running well before the end of the window: a deploy may have fixed or replaced them.
  */
-inactive: boolean, };
+inactive: boolean, facts?: FindingFacts, };

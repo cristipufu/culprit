@@ -273,6 +273,7 @@ fn finding_for(snapshot: &Snapshot, q: &QueryStat, shape: &Shape, share: f64) ->
             let most_calls = (fast.executions >= q.executions * MOST_CALLS).then_some(*fast);
             if let Some(p) = most_calls {
                 f.metrics.push(Metric::text(PLAN_MOST_CALLS_USE, p.id.clone()));
+                f.facts.usual_fast_plan = Some(p.id.clone());
             }
             f.confidence = Confidence::High;
             f.fix = Some(mssql_fix(snapshot, q, most_calls, extra));

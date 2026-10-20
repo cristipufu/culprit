@@ -45,6 +45,7 @@ impl Check for BigTables {
                 caveats: Vec::new(),
                 last_seen: None,
                 inactive: false,
+                facts: Default::default(),
             })
             .collect()
     }
@@ -109,4 +110,35 @@ fn a_plugged_in_check_cannot_replace_a_built_in_id() {
     let report = culprit_checks::analyze_with(demo_snapshot(), &extra);
     assert!(report.findings.iter().all(|f| f.title != "Impostor"));
     assert_eq!(culprit_checks::infos_with(&extra).iter().filter(|i| i.id == "unused-index").count(), 1);
+}
+
+#[test]
+fn existing_refinement_extensions_keep_their_behavior_and_record_their_boundary() {
+    use culprit_checks::pipeline::{Pipeline, Refine};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct TeamRule(Arc<AtomicUsize>);
+    impl Refine for TeamRule {
+        fn name(&self) -> &str {
+            "acme.team-policy"
+        }
+        fn refine(&self, _: &Snapshot, findings: &mut Vec<Finding>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            for finding in findings {
+                finding.caveats.push("Team policy was applied.".into());
+            }
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let report = Pipeline::builtin().with_refine(Arc::new(TeamRule(calls.clone()))).run(demo_snapshot());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(report.findings.iter().all(|f| f.caveats.last().map(String::as_str) == Some("Team policy was applied.")));
+    let entry = report.refinement.iter().find(|d| d.rule == "acme.team-policy").unwrap();
+    assert!(matches!(entry.outcome, culprit_core::RefinementOutcome::RuleApplied));
+    assert!(entry.finding.is_none(), "an uninstrumented extension must not acquire an invented policy explanation");
+
+    let mut saved = serde_json::to_value(&report).unwrap();
+    saved.as_object_mut().unwrap().remove("refinement");
+    let earlier: culprit_core::Report = serde_json::from_value(saved).unwrap();
+    assert!(earlier.refinement.is_empty(), "older reports load without a decision trace");
+    assert_eq!(earlier.findings.len(), report.findings.len());
 }

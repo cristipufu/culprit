@@ -217,6 +217,8 @@ fn regression_finding(snapshot: &Snapshot, timeline: &Timeline, q: &QueryStat, s
     f.metrics.push(Metric::text("Started", short_when(since)));
     if let Some(change) = &plan {
         f.metrics.push(Metric::text(PLAN_CHANGE, format!("{} → {}", change.old.id, change.new.id)));
+        f.facts.plan_change =
+            Some(culprit_core::FindingPlanChange { from: change.old.id.clone(), to: change.new.id.clone() });
     }
     f.fix = Some(match (&plan, snapshot.server.engine) {
         (Some(change), Engine::Mssql) if numeric(&q.id) && numeric(&change.old.id) => Fix {

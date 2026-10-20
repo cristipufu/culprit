@@ -64,6 +64,20 @@
       ],
       "check": "unindexed-fk",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "customer_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": null,
         "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_orders_customer_id\"\n    ON \"orders\" (\"customer_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
@@ -131,6 +145,20 @@
       ],
       "check": "unindexed-fk",
       "confidence": "high",
+      "facts": {
+        "bloat": null,
+        "histogram_columns": [],
+        "index_keys": [
+          "product_id"
+        ],
+        "large_rows": null,
+        "lock_wait": null,
+        "log_write": null,
+        "network_wait_share": null,
+        "plan_change": null,
+        "recommended_plan": null,
+        "usual_fast_plan": null
+      },
       "fix": {
         "cost": null,
         "sql": "CREATE INDEX IF NOT EXISTS \"main\".\"ix_order_items_product_id\"\n    ON \"order_items\" (\"product_id\");\n-- SQLite builds an index under the database's write lock: writers wait until it finishes.",
@@ -304,6 +332,78 @@
     }
   ],
   "locked": [],
+  "refinement": [
+    {
+      "finding": "plan-insights:automatic-index:orders",
+      "outcome": {
+        "into": "unindexed-fk:main.orders(customer_id)",
+        "kind": "absorbed"
+      },
+      "queries": [
+        "500217f7b40055be"
+      ],
+      "rule": "foreign-key-carries-automatic-index",
+      "tables": [
+        "orders"
+      ]
+    },
+    {
+      "finding": "heavy-query:c1b0de997fac4faa",
+      "outcome": {
+        "by": [
+          "unindexed-fk:main.orders(customer_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "c1b0de997fac4faa"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:3c81e035bd6f73fa",
+      "outcome": {
+        "by": [
+          "unindexed-fk:main.orders(customer_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "3c81e035bd6f73fa"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "heavy-query:500217f7b40055be",
+      "outcome": {
+        "by": [
+          "unindexed-fk:main.orders(customer_id)"
+        ],
+        "kind": "covered"
+      },
+      "queries": [
+        "500217f7b40055be"
+      ],
+      "rule": "cause-covers-heavy-query",
+      "tables": []
+    },
+    {
+      "finding": "unindexed-fk:main.orders(customer_id)",
+      "outcome": {
+        "aspect": "absolute-cost",
+        "kind": "presentation"
+      },
+      "queries": [
+        "c1b0de997fac4faa",
+        "3c81e035bd6f73fa",
+        "500217f7b40055be"
+      ],
+      "rule": "absolute-query-cost",
+      "tables": []
+    }
+  ],
   "snapshot": {
     "columns": [
       {

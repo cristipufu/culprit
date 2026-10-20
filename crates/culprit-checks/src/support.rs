@@ -23,6 +23,7 @@ pub fn finding(check: &str, key: &str, category: Category, subject: Subject) -> 
         caveats: Vec::new(),
         last_seen: None,
         inactive: false,
+        facts: Default::default(),
     }
 }
 

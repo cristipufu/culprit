@@ -34,6 +34,73 @@ fn every_demo_finding_explains_how_to_verify_its_advice() {
     }
 }
 
+/// Every discarded detector result has an explicit route to a cause still shown to the user. A disappearing cause
+/// must itself name its replacement, and no cycle or invocation-only trace counts as an explanation.
+#[test]
+fn removed_findings_have_a_trace_to_a_retained_cause() {
+    use culprit_core::{CheckStatus, RefinementOutcome};
+    use std::collections::{BTreeMap, BTreeSet};
+    fn reaches_retained(
+        id: &str,
+        edges: &BTreeMap<String, Vec<String>>,
+        retained: &BTreeSet<String>,
+        path: &mut BTreeSet<String>,
+    ) -> bool {
+        if retained.contains(id) {
+            return true;
+        }
+        if !path.insert(id.into()) {
+            return false;
+        }
+        let reached = edges
+            .get(id)
+            .is_some_and(|next| !next.is_empty() && next.iter().all(|id| reaches_retained(id, edges, retained, path)));
+        path.remove(id);
+        reached
+    }
+    let mut removed = 0;
+    for (name, report) in demo_reports() {
+        let retained: BTreeSet<_> = report.findings.iter().map(|f| f.id.clone()).collect();
+        let mut edges = BTreeMap::new();
+        for decision in &report.refinement {
+            assert!(
+                !matches!(decision.outcome, RefinementOutcome::RuleApplied),
+                "{name}: builtin {} supplied no decision",
+                decision.rule
+            );
+            let targets = match &decision.outcome {
+                RefinementOutcome::Absorbed { into } => Some(vec![into.clone()]),
+                RefinementOutcome::Covered { by } => Some(by.clone()),
+                _ => None,
+            };
+            if let Some(targets) = targets {
+                edges.insert(decision.finding.clone().expect("a removed finding"), targets);
+            }
+        }
+        for check in culprit_checks::all() {
+            let info = check.info();
+            let ran = report.assessments.iter().any(|a| {
+                a.check == info.id && !matches!(a.status, CheckStatus::Unavailable | CheckStatus::NotApplicable)
+            });
+            if !ran {
+                continue;
+            }
+            for finding in check.run(&report.snapshot) {
+                if retained.contains(&finding.id) {
+                    continue;
+                }
+                removed += 1;
+                assert!(
+                    reaches_retained(&finding.id, &edges, &retained, &mut BTreeSet::new()),
+                    "{name}: {} disappeared without an explained retained cause",
+                    finding.id
+                );
+            }
+        }
+    }
+    assert!(removed >= 10, "exercise real cross-check removals, not an empty trace");
+}
+
 /// The browser loads these files directly; golden readings re-analyze them, which alone cannot catch stale UI data.
 #[test]
 fn browser_demo_outputs_match_current_analysis() {
@@ -51,8 +118,14 @@ fn browser_demo_outputs_match_current_analysis() {
         let connection = &current.snapshot.connection;
         let context = format!("{name}: {refresh}");
         assert_browser_json(
-            &serde_json::json!([saved.findings, saved.summary, saved.locked, saved.assessments]),
-            &serde_json::json!([current.findings, current.summary, current.locked, current.assessments]),
+            &serde_json::json!([saved.findings, saved.summary, saved.locked, saved.assessments, saved.refinement]),
+            &serde_json::json!([
+                current.findings,
+                current.summary,
+                current.locked,
+                current.assessments,
+                current.refinement
+            ]),
             &context,
         );
         // CLI navigation commands are added by the CLI, while the desktop uses tile keys.

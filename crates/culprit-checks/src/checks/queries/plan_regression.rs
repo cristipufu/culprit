@@ -89,6 +89,7 @@ pub fn plan_regression(snapshot: &Snapshot) -> Vec<Finding> {
                 return None;
             }
             let mut f = finding("plan-regression", &q.id, Category::Queries, subject(SubjectKind::Query, &q.id));
+            f.facts.plan_change=Some(culprit_core::FindingPlanChange {from:best.id.clone(),to:latest.id.clone()});
             apply_impact(snapshot, &mut f, &impact);
             // Its time a day since it took over, so a regression that began this morning isn't diluted by the week.
             let since = latest.first_seen.as_deref().and_then(parse_epoch_seconds);

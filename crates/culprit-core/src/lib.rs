@@ -15,6 +15,7 @@ pub mod engines;
 pub mod error;
 pub mod events;
 pub mod finding;
+pub mod finding_facts;
 pub mod fingerprint;
 pub mod format;
 pub mod insights;
@@ -28,6 +29,7 @@ pub mod plan_view;
 pub mod platform;
 pub mod provider;
 pub mod redact;
+pub mod refinement;
 pub mod signals;
 pub mod sql;
 pub mod verification;
@@ -56,6 +58,7 @@ pub use engines::{EngineSpec, SettingChange};
 pub use error::{Error, ErrorCode, Result};
 pub use events::{ChangeEvent, EventAction, EventKind, EventLink, EventSource};
 pub use finding::*;
+pub use finding_facts::*;
 pub use measurement::*;
 pub use model::*;
 pub use plan::*;
@@ -66,6 +69,7 @@ pub use plan_diff::{
 pub use plan_view::{PlanInsightShare, PlanOperatorView, PlanView};
 pub use platform::Platform;
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
+pub use refinement::{FixWithholdingBasis, HistoryBasis, PresentationAspect, RefinementDecision, RefinementOutcome};
 pub use signals::{
     ColumnHistogram, ConstraintIssue, ConstraintKind, ContentionBaseline, CountBaseline, EscalationBaseline, FileIo,
     FileKind, FileScope, FileWriteOperation, IndexContention, IndexLockCounts, QueryCosts, Replica, ReplicaRole,

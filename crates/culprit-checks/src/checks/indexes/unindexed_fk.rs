@@ -221,6 +221,7 @@ pub(super) fn unindexed_fk_finding(snapshot: &Snapshot, fk: &culprit_core::Forei
         Category::Indexes,
         subject(SubjectKind::Table, &child),
     );
+    f.facts.index_keys = fk.columns.clone();
     f.title = format!("{} has no index on {}, its foreign key to {}", fk.table, cols, fk.ref_table);
     f.summary = format!(
         "Deleting a row from {parent}, or changing its key, makes the database look for matching rows in {child} ({} rows) without an index, which means reading the whole table. Queries that load {} rows for one {} row can't seek either.",

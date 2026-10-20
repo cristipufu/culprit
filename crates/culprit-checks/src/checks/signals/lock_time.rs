@@ -127,6 +127,7 @@ pub fn lock_time(snapshot: &Snapshot) -> Vec<Finding> {
             // A read that waits for writers' locks because reads don't use row versions here: that setting is the
             // change that removes the wait, as config:read-committed-snapshot says.
             let versioning = crate::config::read_committed_snapshot_off(snapshot) && crate::config::versioning_spares_read(q);
+            f.facts.lock_wait = Some(culprit_core::FindingLockWait {ms: lock, share, versioning_spares_read: versioning});
             // How to find the holder, as every check that names a lock wait says it: Live only for waits that come
             // often enough to catch one.
             let LockHolder { lead, sql } = find_lock_holder(snapshot, q, None);

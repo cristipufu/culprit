@@ -180,11 +180,30 @@ pub fn large_rows(snapshot: &Snapshot) -> Vec<Finding> {
 }
 
 pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, size: f64, large: f64) -> Finding {
+    large_rows_with_statements(snapshot, t, rows, size, large, None)
+}
+
+/// Render the original table evidence with the complete list retained after refinement. No sentence matching.
+pub(crate) fn restate_large_rows(snapshot: &Snapshot, f: &Finding, listed: &[&QueryStat]) -> Option<String> {
+    let facts = f.facts.large_rows.as_ref()?;
+    let table = snapshot.tables.iter().find(|t| t.qualified().eq_ignore_ascii_case(&f.subject.name))?;
+    Some(large_rows_with_statements(snapshot, table, facts.rows, facts.size, facts.large, Some(listed)).summary)
+}
+
+fn large_rows_with_statements(
+    snapshot: &Snapshot,
+    t: &TableStat,
+    rows: f64,
+    size: f64,
+    large: f64,
+    listed: Option<&[&QueryStat]>,
+) -> Finding {
     let engine = snapshot.server.engine;
     let name = t.qualified();
     let average = size / rows;
     let share = large / size;
     let mut f = finding("large-rows", &name, Category::Maintenance, subject(SubjectKind::Table, &name));
+    f.facts.large_rows = Some(culprit_core::FindingLargeRows { rows, size, large });
     f.title = format!(
         "{} holds {} in {} rows: {} a row, mostly large values",
         t.name,
@@ -235,7 +254,8 @@ pub(super) fn large_rows_finding(snapshot: &Snapshot, t: &TableStat, rows: f64, 
     }
 
     // Statements reading whole rows: what makes the size cost on every run, not just on disk.
-    let statements = whole_row_statements(snapshot, t, size, large);
+    let statements =
+        listed.map(|queries| queries.to_vec()).unwrap_or_else(|| whole_row_statements(snapshot, t, size, large));
     let runs: f64 = statements.iter().map(|q| q.executions).sum();
     let hot = runs_at_least(snapshot, &statements, WHOLE_ROW_RUNS_PER_DAY);
     // A day's worth only where every statement's runs came that way.

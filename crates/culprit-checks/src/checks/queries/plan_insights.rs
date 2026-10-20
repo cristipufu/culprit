@@ -37,8 +37,17 @@ pub fn plan_insights_info() -> CheckInfo {
 check!(PlanInsightsCheck: plan_insights_info, plan_insights, &[Evidence::Query(QueryMeasure::CapturedPlans)]);
 
 pub fn plan_insights(snapshot: &Snapshot) -> Vec<Finding> {
+    plan_insights_for_queries(snapshot, app_queries(snapshot))
+}
+
+/// Rebuild a grouped observation from selected statements while retaining the snapshot's original workload,
+/// catalog and measurement context. Refinement never clones or narrows the database-time denominator.
+pub(crate) fn plan_insights_for_queries<'a>(
+    snapshot: &Snapshot,
+    queries: impl IntoIterator<Item = &'a QueryStat>,
+) -> Vec<Finding> {
     let mut out: Vec<Finding> = Vec::new();
-    for q in app_queries(snapshot) {
+    for q in queries {
         let Some(plan) = &q.plan else { continue };
         let Some(impact) = query_impact(snapshot, &[q]) else { continue };
         if impact.share < MIN_SHARE {

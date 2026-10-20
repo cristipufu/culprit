@@ -126,6 +126,8 @@ pub fn tuning_advice(snapshot: &Snapshot) -> Vec<Finding> {
             f.metrics.push(Metric::new("Estimated CPU saved per run", g, Unit::Ratio));
         }
         f.metrics.push(Metric::text("Recommended plan", plan_id.clone()));
+        f.facts.recommended_plan =
+            Some(culprit_core::FindingPlanRecommendation { plan: plan_id.clone(), cpu_saved_share: r.estimated_gain });
         if let Some(bad) = &r.regressed_plan_id {
             f.metrics.push(Metric::text("Current plan", bad.clone()));
         }
