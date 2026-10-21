@@ -1950,3 +1950,16 @@ fn a_measured_share_kept_outweighs_a_fixed_guess() {
     scan.props.insert(crate::plan::MEASURED_KEPT.into(), "0.00001".into());
     assert_eq!(scan.kept_share(), Some(0.00001));
 }
+
+#[test]
+fn prefixed_string_literals_and_quoted_conjunctions_do_not_confuse_predicate_columns() {
+    assert_eq!(
+        seekable_columns("[dbo].[orders].[status]=N'open' AND [dbo].[orders].[note]=N'red and blue'"),
+        vec!["status", "note"]
+    );
+    assert_eq!(
+        filter_columns("[dbo].[orders].[status]=N'open' AND [dbo].[orders].[created_at]>='2026-01-01'"),
+        vec!["status", "created_at"]
+    );
+    assert_eq!(condition_count("(orders.note = 'a and b' and orders.status = 'open')"), 2);
+}
