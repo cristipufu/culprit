@@ -189,15 +189,15 @@ fn userstat_since(
         .filter(|id| reports::id_epoch(id).is_some_and(|t| t < now))
         .take(USERSTAT_SCANS)
     {
-        let Ok(r) = reports::load(&dir.join(format!("{id}.json"))) else { continue };
-        if !same_database(&r.snapshot, current) || epoch(&r.snapshot.taken_at).is_none_or(|t| t >= now) {
+        let Ok(s) = reports::load_snapshot(&dir.join(format!("{id}.json"))) else { continue };
+        if !same_database(&s, current) || epoch(&s.taken_at).is_none_or(|t| t >= now) {
             break;
         }
-        inputs.push(culprit_core::ScanReference::of(&r.snapshot));
-        if !usage_from_userstat(&r.snapshot) {
+        inputs.push(culprit_core::ScanReference::of(&s));
+        if !usage_from_userstat(&s) {
             break;
         }
-        since = Some(r.snapshot.taken_at);
+        since = Some(s.taken_at);
     }
     since
 }
@@ -239,8 +239,7 @@ pub fn growth_baseline(dir: &Path, current: &Snapshot) -> Option<SizeBaseline> {
         .rev()
         .filter(|id| reports::id_epoch(id).is_some_and(|t| t <= cutoff))
         .take(GROWTH_CANDIDATES)
-        .filter_map(|id| reports::load(&dir.join(format!("{id}.json"))).ok())
-        .map(|r| r.snapshot)
+        .filter_map(|id| reports::load_snapshot(&dir.join(format!("{id}.json"))).ok())
         .filter(|p| epoch(&p.taken_at).is_some_and(|t| t <= cutoff))
         .find(|p| same_database(p, current) && !p.tables.is_empty())
         .and_then(|p| SizeBaseline::from_scan(&p))
@@ -333,8 +332,11 @@ fn events_traced(
                         continue;
                     }
                     backfilled += 1;
-                    let Ok(report) = reports::load(&dir.join(format!("{id}.json"))) else { continue };
-                    let scan = report.snapshot;
+                    let Ok((scan, report_recorded)) =
+                        reports::load_snapshot_and_recorded_changes(&dir.join(format!("{id}.json")))
+                    else {
+                        continue;
+                    };
                     let before = i
                         .checked_sub(1)
                         .and_then(|i| ids.get(i))
@@ -343,9 +345,7 @@ fn events_traced(
                     // particular parent scan (several ids can share a rounded timestamp).
                     let mut recorded: Vec<_> =
                         record.events.into_iter().filter(|e| e.source == EventSource::Database).collect();
-                    if let Some(evidence) = report.evidence {
-                        recorded.extend(evidence.recorded_changes);
-                    }
+                    recorded.extend(report_recorded);
                     record.events = diff(before.as_ref(), &scan, recorded);
                     record.inputs = event_inputs(&scan, before.as_ref());
                     keep_scan(dir, &scan, before.as_ref(), &record.events);
@@ -365,23 +365,22 @@ fn events_traced(
             continue;
         }
         backfilled += 1;
-        let Ok(report) = reports::load(&dir.join(format!("{id}.json"))) else {
+        let Ok((scan, recorded)) = reports::load_snapshot_and_recorded_changes(&dir.join(format!("{id}.json"))) else {
             previous = None;
             continue;
         };
         let before = previous.take().or_else(|| {
             let prior = ids.get(i.checked_sub(1)?)?;
-            reports::load(&dir.join(format!("{prior}.json"))).ok().map(|r| r.snapshot)
+            reports::load_snapshot(&dir.join(format!("{prior}.json"))).ok()
         });
-        let recorded = report.evidence.map(|e| e.recorded_changes).unwrap_or_default();
-        let events = diff(before.as_ref(), &report.snapshot, recorded);
-        let references = event_inputs(&report.snapshot, before.as_ref());
+        let events = diff(before.as_ref(), &scan, recorded);
+        let references = event_inputs(&scan, before.as_ref());
         if current.is_none_or(|s| references.iter().all(|r| reference_matches(r, s, end))) {
             inputs.extend(references);
             out.extend(events.iter().cloned());
         }
-        keep_scan(dir, &report.snapshot, before.as_ref(), &events);
-        previous = Some(report.snapshot);
+        keep_scan(dir, &scan, before.as_ref(), &events);
+        previous = Some(scan);
     }
     if current.is_some() {
         // An interval ending after this scan cannot date an index yet, even if its beginning is inside the window.

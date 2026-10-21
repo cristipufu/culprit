@@ -164,7 +164,7 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
             continue;
         }
         backfilled += 1;
-        if let Some(c) = load(path).ok().as_ref().and_then(Counters::of) {
+        if let Some(c) = load_snapshot(path).ok().as_ref().and_then(Counters::from_snapshot) {
             if let Ok(json) = serde_json::to_vec(&c) {
                 let _ = write_atomic(&sidecar, &json);
             }
@@ -295,7 +295,7 @@ pub fn evictions_baseline(dir: &Path, snapshot: &culprit_core::Snapshot) -> Opti
         if counters.evictions.is_none() && reads < MAX_EVICTION_READS {
             reads += 1;
             counters.evictions =
-                load(&dir.join(format!("{id}.json"))).ok().and_then(|r| trends::evictions(&r.snapshot));
+                load_snapshot(&dir.join(format!("{id}.json"))).ok().and_then(|s| trends::evictions(&s));
         }
         history.push(counters);
         if let Some(baseline) = trends::evictions_baseline(&history, snapshot) {
@@ -336,15 +336,61 @@ pub fn load(path: &Path) -> Result<Report> {
     })
 }
 
+#[derive(Deserialize)]
+struct WrappedSnapshot {
+    snapshot: culprit_core::Snapshot,
+}
+
+#[derive(Deserialize)]
+struct StoredHistoryScan {
+    snapshot: culprit_core::Snapshot,
+    #[serde(default, rename = "_culprit_store")]
+    stored: Option<StoredRecordedChanges>,
+    #[serde(default)]
+    evidence: Option<StoredRecordedChanges>,
+}
+
+#[derive(Deserialize)]
+struct StoredRecordedChanges {
+    #[serde(default)]
+    recorded_changes: Vec<culprit_core::ChangeEvent>,
+}
+
 /// The prepared picture in a snapshot or report file, used to compare historical measurements.
+/// Deserializes only `snapshot`, skipping findings and retained evidence differences directly in the JSON parser.
 /// Analysis replay separately reads retained original input through `load_analysis_input`.
 pub fn load_snapshot(path: &Path) -> Result<culprit_core::Snapshot> {
     let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
-    let snapshot = if value.get("snapshot").is_some() { value["snapshot"].take() } else { value };
-    serde_json::from_value(snapshot)
+    serde_json::from_slice::<WrappedSnapshot>(&bytes)
+        .map(|w| w.snapshot)
+        .or_else(|e| {
+            if e.to_string().starts_with("missing field `snapshot`") {
+                serde_json::from_slice::<culprit_core::Snapshot>(&bytes)
+            } else {
+                Err(e)
+            }
+        })
         .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))
+}
+
+/// Historical event backfills need only the prepared snapshot and any database-dated `recorded_changes`,
+/// skipping findings and the retained `_culprit_store` snapshot diffs.
+pub(crate) fn load_snapshot_and_recorded_changes(
+    path: &Path,
+) -> Result<(culprit_core::Snapshot, Vec<culprit_core::ChangeEvent>)> {
+    let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
+    match serde_json::from_slice::<StoredHistoryScan>(&bytes) {
+        Ok(scan) => {
+            let recorded = scan.stored.or(scan.evidence).map(|r| r.recorded_changes).unwrap_or_default();
+            Ok((scan.snapshot, recorded))
+        }
+        Err(e) if e.to_string().starts_with("missing field `snapshot`") => {
+            let snapshot = serde_json::from_slice::<culprit_core::Snapshot>(&bytes)
+                .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
+            Ok((snapshot, Vec::new()))
+        }
+        Err(e) => Err(Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display()))),
+    }
 }
 
 /// Analysis reads retained input, while history's `load_snapshot` continues to read the scan's prepared picture.
@@ -544,5 +590,50 @@ mod tests {
                 .expect("old summary");
         assert_eq!(old.window(), Some(7 * MINUTES_PER_DAY));
         assert_eq!(summary_path(Path::new("/r"), old.window()), Path::new("/r/latest-7d.json"));
+    }
+
+    #[test]
+    fn historical_snapshot_loads_skip_findings_and_retained_diffs() {
+        let dir = std::env::temp_dir().join(format!("culprit-snapshot-stream-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut report = fixture_report("20261018T100000", 60);
+        let event = culprit_core::ChangeEvent::new(
+            culprit_core::EventKind::Setting,
+            culprit_core::EventSource::Database,
+            "work_mem",
+            "2026-10-18T09:30:00Z",
+            "Setting work_mem changed",
+        );
+        report
+            .evidence
+            .get_or_insert_with(|| culprit_core::ReportEvidence {
+                input: Box::new(report.snapshot.clone()),
+                collected: None,
+                recorded_changes: Vec::new(),
+            })
+            .recorded_changes = vec![event.clone()];
+        save(&dir, &report).unwrap();
+        let path = dir.join(format!("{}.json", report.snapshot.id));
+        let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        // Corrupt findings and retained input diff: full `load` fails, but `load_snapshot` and
+        // `load_snapshot_and_recorded_changes` skip them in the JSON parser.
+        value["findings"] = serde_json::json!("not-a-finding-array");
+        value["_culprit_store"]["input"] = serde_json::json!("not-a-diff");
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(load(&path).is_err());
+        let loaded = load_snapshot(&path).unwrap();
+        assert_eq!(loaded.id, report.snapshot.id);
+        let (loaded, recorded) = load_snapshot_and_recorded_changes(&path).unwrap();
+        assert_eq!(loaded.id, report.snapshot.id);
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].id, event.id);
+
+        let bare_path = dir.join("bare-snapshot.json");
+        fs::write(&bare_path, serde_json::to_vec(&report.snapshot).unwrap()).unwrap();
+        assert_eq!(load_snapshot(&bare_path).unwrap().id, report.snapshot.id);
+        let (bare, bare_recorded) = load_snapshot_and_recorded_changes(&bare_path).unwrap();
+        assert_eq!(bare.id, report.snapshot.id);
+        assert!(bare_recorded.is_empty());
+        fs::remove_dir_all(dir).unwrap();
     }
 }
