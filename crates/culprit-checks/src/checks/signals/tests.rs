@@ -862,3 +862,32 @@ fn bloated_default_partition_is_flagged() {
     assert!(f.title.contains("DEFAULT partition events_default holds 250K rows"), "{}", f.title);
     assert!(f.summary.contains("ACCESS EXCLUSIVE lock"), "{}", f.summary);
 }
+
+#[test]
+fn expiring_range_partition_is_flagged_unless_default_exists() {
+    let mut s = snapshot_with(Engine::Postgres);
+    s.taken_at = "2026-10-30T12:00:00Z".into();
+    let mut oct = s.tables[0].clone();
+    oct.name = "events_2026_10".into();
+    oct.partition_of = Some("public.events".into());
+    oct.storage = Some(TableStorage {
+        options: vec!["partition_bound=FOR VALUES FROM ('2026-10-01') TO ('2026-11-01')".into()],
+        ..Default::default()
+    });
+    s.tables.push(oct);
+    let out = table_bloat(&s);
+    let f = out
+        .iter()
+        .find(|f| f.id == "table-bloat:expiring-partition:public.events")
+        .expect("expiring range partition finding");
+    assert_eq!(f.severity, Severity::High);
+    assert!(f.title.contains("events's last partition (events_2026_10) ends on 2026-11-01"), "{}", f.title);
+
+    // Adding a DEFAULT partition suppresses the expiring-partition warning.
+    let mut def = s.tables[0].clone();
+    def.name = "events_default".into();
+    def.partition_of = Some("public.events".into());
+    def.storage = Some(TableStorage { options: vec!["partition_bound=DEFAULT".into()], ..Default::default() });
+    s.tables.push(def);
+    assert!(!table_bloat(&s).iter().any(|f| f.id == "table-bloat:expiring-partition:public.events"));
+}

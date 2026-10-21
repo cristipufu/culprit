@@ -158,10 +158,10 @@ fn statement_costs(
 /// plus a bloat estimate for tables over 10 MB.
 async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<HashMap<(String, String), TableStorage>> {
     let new_page = if version_num >= 160_000 { "s.n_tup_newpage_upd" } else { "NULL::float8" };
-    let default_partition = if version_num >= 110_000 {
-        "c.relispartition AND pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'"
+    let partition_bound = if version_num >= 100_000 {
+        "CASE WHEN c.relispartition THEN pg_get_expr(c.relpartbound, c.oid) END"
     } else {
-        "false"
+        "NULL::text"
     };
     // The counters run from the database's last statistics reset. PostgreSQL 15+ leaves stats_reset empty until the
     // first one, and the counters outlive a clean restart: their age is then unknown, never the server's uptime.
@@ -173,7 +173,7 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                 (SELECT extract(epoch FROM now() - d.stats_reset) / 3600 FROM pg_stat_database d
                   WHERE d.datname = current_database()) AS counter_hours,
                 array_to_string(c.reloptions, ',') AS options,
-                {default_partition} AS default_partition
+                {partition_bound} AS partition_bound
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
@@ -185,8 +185,8 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                 .text("options")
                 .map(|o| o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
                 .unwrap_or_default();
-            if r.flag("default_partition") {
-                options.push("partition_bound=DEFAULT".into());
+            if let Some(bound) = r.text("partition_bound").filter(|b| !b.is_empty()) {
+                options.push(format!("partition_bound={bound}"));
             }
             (
                 (r.string("schema_name"), r.string("table_name")),

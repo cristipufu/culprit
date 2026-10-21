@@ -39,6 +39,11 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
         return Vec::new();
     }
     let remaining = (WRAPAROUND - age).max(0.0);
+    let holder = snapshot
+        .pressure
+        .as_ref()
+        .and_then(|p| p.oldest_transaction.as_ref())
+        .filter(|h| !h.catalog_only && h.xid_age.is_some_and(|a| a > 0.0));
     let mut f = finding(
         "xid-age",
         &snapshot.server.database,
@@ -47,7 +52,7 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
     );
     f.title = format!("Transaction IDs are {} of the way to wraparound", format::percent(age / WRAPAROUND));
     f.summary = format!(
-        "The oldest unfrozen transaction ID in this database is {} transactions old.{} At about 2 billion PostgreSQL stops accepting writes until a full vacuum completes. {} transactions remain.",
+        "The oldest unfrozen transaction ID in this database is {} transactions old.{}{} At about 2 billion PostgreSQL stops accepting writes until a full vacuum completes. {} transactions remain.",
         format::count(age),
         freeze_max
             .filter(|m| age >= *m)
@@ -55,6 +60,12 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
                 " Autovacuum starts freezing a table at autovacuum_freeze_max_age ({}), and this is {:.1} times that: freezing isn't keeping up.",
                 format::count(m),
                 age / m.max(1.0)
+            ))
+            .unwrap_or_default(),
+        holder
+            .map(|h| format!(
+                " A cleanup holder was observed in this scan ({}): VACUUM cannot freeze row versions newer than its horizon until it finishes or is removed.",
+                cleanup_holder_phrase(h)
             ))
             .unwrap_or_default(),
         format::count(remaining)
@@ -73,6 +84,9 @@ pub fn xid_age(snapshot: &Snapshot) -> Vec<Finding> {
     f.metrics.push(Metric::new("Remaining before wraparound", remaining, Unit::Count));
     if let Some(t) = oldest {
         f.metrics.push(Metric::text("Oldest table", t.qualified()));
+    }
+    if let Some(h) = holder {
+        f.metrics.push(Metric::text("Oldest cleanup holder", cleanup_holder_phrase(h)));
     }
     f.fix = Some(Fix {
         summary: "Freeze the oldest tables first, and look for what holds vacuum back: long-running or idle-in-transaction sessions, abandoned replication slots, or prepared transactions.".into(),

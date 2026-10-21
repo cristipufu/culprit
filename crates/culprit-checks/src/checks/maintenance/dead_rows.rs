@@ -53,23 +53,30 @@ pub fn dead_rows(snapshot: &Snapshot) -> Vec<Finding> {
             let last = t.last_vacuum.as_deref().and_then(|d| days_between(d, &snapshot.taken_at)).filter(|d| *d >= 0.0);
             // A recent vacuum and a dead-row estimate do not prove a blocked horizon: writes may have followed it.
             let recent_vacuum = last.is_some_and(|d| d * 24.0 < 1.0);
-            let holder = snapshot.pressure.as_ref().and_then(|p| p.oldest_transaction.as_ref());
-            let held = trigger.is_some() && holder.is_some_and(|h| !h.catalog_only && h.xid_age.is_some_and(|age| age > 0.0));
+            let holder = snapshot
+                .pressure
+                .as_ref()
+                .and_then(|p| p.oldest_transaction.as_ref())
+                .filter(|h| !h.catalog_only && h.xid_age.is_some_and(|age| age > 0.0));
+            let held = trigger.is_some() && holder.is_some();
             let mut f = finding("dead-rows", &table_name, Category::Maintenance, subject(SubjectKind::Table, &table_name));
             f.title = format!("{} of {} is dead rows", format::percent(ratio), t.name);
             f.summary = format!(
                 "{table_name} holds {} dead rows next to {} live ones. Every sequential scan still reads them, indexes still point at them, and the table stays larger than it needs to be. {}{}",
                 format::count(dead),
                 format::count(live),
-                match trigger {
-                    Some(_) if held => "A cleanup holder was observed in this scan. It can prevent removal of some dead rows; this count does not establish how many it retains. Check the holder and vacuum progress before changing maintenance.".to_string(),
-                    Some(_) if recent_vacuum => "Vacuum ran within the last hour. These rows may have become dead afterwards, or an older snapshot may prevent removal; the scan does not establish which. Compare write activity and the next vacuum before treating this as failed cleanup.".to_string(),
-                    Some(tr) => format!(
+                match (trigger, holder) {
+                    (Some(_), Some(h)) => format!(
+                        "A cleanup holder was observed in this scan ({}). It can prevent removal of some dead rows; this count does not establish how many it retains. Check the holder and vacuum progress before changing maintenance.",
+                        cleanup_holder_phrase(h)
+                    ),
+                    (Some(_), None) if recent_vacuum => "Vacuum ran within the last hour. These rows may have become dead afterwards, or an older snapshot may prevent removal; the scan does not establish which. Compare write activity and the next vacuum before treating this as failed cleanup.".to_string(),
+                    (Some(tr), None) => format!(
                         "Autovacuum should visit it at about {} dead rows; it has {:.1} times that, so it is behind.",
                         format::count(tr),
                         dead / tr.max(1.0)
                     ),
-                    None => "Autovacuum is off for it, so nothing cleans them up.".into(),
+                    (None, _) => "Autovacuum is off for it, so nothing cleans them up.".into(),
                 },
                 match (t.last_vacuum.as_deref(), last) {
                     (Some(_), Some(days)) => format!(" It was last vacuumed {} ago.", format::duration(days * 86_400_000.0)),

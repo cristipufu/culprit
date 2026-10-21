@@ -84,9 +84,121 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
         })
         .collect();
     findings.extend(default_partitions(snapshot));
+    findings.extend(expiring_range_partitions(snapshot));
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
     findings
+}
+
+fn expiring_range_partitions(snapshot: &Snapshot) -> Vec<Finding> {
+    let Some(now_epoch) = parse_epoch_seconds(&snapshot.taken_at) else {
+        return Vec::new();
+    };
+    let mut by_parent: std::collections::BTreeMap<&str, Vec<&TableStat>> = std::collections::BTreeMap::new();
+    for t in &snapshot.tables {
+        if let Some(parent) = t.partition_of.as_deref() {
+            by_parent.entry(parent).or_default().push(t);
+        }
+    }
+    by_parent
+        .into_iter()
+        .filter_map(|(parent, parts)| {
+            let mut parsed = Vec::with_capacity(parts.len());
+            for part in &parts {
+                let bound = part
+                    .storage
+                    .as_ref()?
+                    .options
+                    .iter()
+                    .find_map(|o| o.strip_prefix("partition_bound="))?;
+                if bound.eq_ignore_ascii_case("default")
+                    || bound.to_ascii_uppercase().contains("MAXVALUE")
+                {
+                    return None;
+                }
+                let (literal, epoch) = parse_range_upper_bound(bound)?;
+                parsed.push((*part, literal, epoch));
+            }
+            let (last_table, bound_literal, max_epoch) = parsed
+                .into_iter()
+                .max_by(|a, b| a.2.total_cmp(&b.2))?;
+            let days_remaining = (max_epoch - now_epoch) / 86_400.0;
+            if !(-7.0..=7.0).contains(&days_remaining) {
+                return None;
+            }
+            let parent_short = parent.rsplit('.').next().unwrap_or(parent);
+            let bound_date = bound_literal.get(..10).unwrap_or(&bound_literal);
+            let mut f = finding(
+                "table-bloat",
+                &format!("expiring-partition:{parent}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, parent),
+            );
+            if days_remaining > 0.0 {
+                f.title = format!(
+                    "{parent_short}'s last partition ({}) ends on {bound_date} (in {})",
+                    last_table.name,
+                    format::days(days_remaining)
+                );
+                f.impact.label = format!("ends in {}", format::days(days_remaining));
+            } else {
+                f.title = format!(
+                    "{parent_short}'s last partition ({}) ended on {bound_date}",
+                    last_table.name
+                );
+                f.impact.label = format!("ended {bound_date}");
+            }
+            f.severity = if days_remaining <= 2.0 { Severity::High } else { Severity::Medium };
+            severity_score(&mut f);
+            f.confidence = Confidence::High;
+            f.summary = format!(
+                "{parent} has {} range {} and no DEFAULT or MAXVALUE partition. Its latest partition ({}) \
+                 covers values up to '{bound_literal}': once timestamps reach '{bound_literal}', INSERTs into \
+                 {parent} will fail with \"no partition of relation found for row\".",
+                parts.len(),
+                if parts.len() == 1 { "partition" } else { "partitions" },
+                last_table.name,
+            );
+            f.metrics = vec![
+                Metric::new("Partitions", parts.len() as f64, Unit::Count),
+                Metric::new("Days until upper bound", days_remaining.max(0.0), Unit::Days),
+            ];
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Create the next range partition(s) on {parent} covering values from '{bound_literal}' onward, \
+                     and check the scheduled job or partition manager (such as pg_partman) that pre-creates future \
+                     partitions."
+                ),
+                sql: None,
+                cost: Some("Creating a new empty partition is fast metadata DDL.".into()),
+            });
+            f.verify = vec![format!(
+                "Re-scan after creating future partitions: {parent}'s highest partition bound should be more than 7 days ahead."
+            )];
+            Some(f)
+        })
+        .collect()
+}
+
+fn parse_range_upper_bound(bound: &str) -> Option<(String, f64)> {
+    let upper = bound.to_ascii_uppercase();
+    if !upper.starts_with("FOR VALUES FROM") {
+        return None;
+    }
+    let to_pos = upper.find(" TO (")?;
+    let after_to = bound.get(to_pos + 5..)?.trim_start();
+    let literal = after_to.strip_prefix('\'')?.split('\'').next()?.trim();
+    if literal.is_empty() {
+        return None;
+    }
+    let epoch = if literal.contains(['T', ' ']) {
+        parse_epoch_seconds(literal)?
+    } else if literal.len() == 10 {
+        parse_epoch_seconds(&format!("{literal}T00:00:00Z"))?
+    } else {
+        return None;
+    };
+    Some((literal.to_string(), epoch))
 }
 
 fn default_partitions(snapshot: &Snapshot) -> Vec<Finding> {

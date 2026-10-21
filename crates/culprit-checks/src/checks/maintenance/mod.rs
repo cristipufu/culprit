@@ -29,6 +29,18 @@ fn short_date(iso: &str) -> String {
     iso.get(..10).unwrap_or(iso).to_string()
 }
 
+pub(super) fn cleanup_holder_phrase(h: &culprit_core::OpenTransaction) -> String {
+    let kind = match h.holder.unwrap_or(culprit_core::CleanupHolder::Session) {
+        culprit_core::CleanupHolder::PreparedTransaction => format!("prepared transaction '{}'", h.session),
+        culprit_core::CleanupHolder::ReplicationSlot => format!("replication slot '{}'", h.session),
+        culprit_core::CleanupHolder::Session => format!("session {}", h.session),
+    };
+    match h.xid_age.filter(|a| *a > 0.0) {
+        Some(age) => format!("{kind}, {} transactions behind", format::count(age)),
+        None => kind,
+    }
+}
+
 /// Dead rows past this many times a table's autovacuum trigger mean autovacuum is behind on it, not about to run.
 const DEAD_MARGIN: f64 = 2.0;
 

@@ -19,6 +19,9 @@ pub fn sequence_capacity(s: &Snapshot) -> Vec<Finding> {
         f.severity = if remaining <= 10_000 { Severity::Medium } else { Severity::Low };
         f.confidence = Confidence::High; f.impact.score=base_score(f.severity);f.impact.label=format!("{} steps to bound",format::count(remaining as f64));
         f.metrics=vec![Metric::text("Recorded value",&seq.current),Metric::text("Minimum",&seq.minimum),Metric::text("Maximum",&seq.maximum),Metric::new("Steps after recorded allocation",remaining as f64,Unit::Count)];
+        if let Some(table) = &seq.table {
+            f.metrics.push(Metric::text("Table", table));
+        }
         f.fix=Some(Fix { summary:"Plan a migration to a larger numeric range, including referencing columns, constraints, indexes and application types. Validate cache/increment behavior and rollout locking first. Do not reseed, restart or enable cycling without proving values cannot collide.".into(),sql:None,cost:Some("Changing column types and dependent keys may rewrite data and require locks; plan and test the migration.".into()) });
         f.verify=vec!["Check the new type and allocation bounds, confirm foreign keys and application values remain compatible, and verify inserts or sequence allocations under representative load.".into()];Some(f)
     }).collect()
