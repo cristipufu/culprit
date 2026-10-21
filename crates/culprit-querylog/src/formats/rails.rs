@@ -65,15 +65,19 @@ fn statement(line: &str) -> Option<(bool, f64, String)> {
     }
     // The bind values Rails appends after two spaces: `  [["id", 3], ["LIMIT", 1]]` (before or after a trailing
     // QueryLogs comment `/*application:Shop*/`).
-    while sql.ends_with("*/")
-        && let Some(at) = sql.rfind("/*")
-    {
-        sql = sql[..at].trim_end();
+    fn strip_trailing_comments(mut s: &str) -> &str {
+        while s.ends_with("*/")
+            && let Some(at) = s.rfind("/*")
+        {
+            s = s[..at].trim_end();
+        }
+        s
     }
+    sql = strip_trailing_comments(sql);
     if sql.ends_with("]]")
         && let Some(at) = sql.rfind("  [[")
     {
-        sql = sql[..at].trim_end();
+        sql = strip_trailing_comments(sql[..at].trim_end());
     }
     Some((name.starts_with("CACHE"), ms, sql.to_string()))
 }

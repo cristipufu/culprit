@@ -667,6 +667,43 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
             finding_id: link(format!("unused-index:{table_name}")),
         });
     }
+    if engine == Engine::Postgres && crate::indexes::watched_long_enough(s) {
+        for i in s.indexes.iter().filter(|i| {
+            i.is_disabled
+                && !i.is_primary_key
+                && !crate::indexes::is_partition_copy(i)
+                && !listed.contains(&(i.schema.clone(), i.table.clone(), i.name.clone()))
+                && !candidates.iter().any(|c| {
+                    same_table(&c.schema, &c.table, &i.schema, &i.table)
+                        && c.widens.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(&i.name))
+                })
+        }) {
+            let table_name = format!("{}.{}", i.schema, i.table);
+            cleanups.push(IndexCleanup {
+                kind: CleanupKind::Unused,
+                schema: i.schema.clone(),
+                table: i.table.clone(),
+                index: i.name.clone(),
+                keys: i.columns.clone(),
+                other: None,
+                other_keys: Vec::new(),
+                size_bytes: i.size_bytes,
+                reads: i.reads,
+                writes: i.writes,
+                reason: format!(
+                    "Marked invalid after an unfinished concurrent build; the planner never reads it{}.",
+                    if i.maintained != Some(false) {
+                        format!(", yet every write to {table_name} still updates it")
+                    } else {
+                        String::new()
+                    }
+                ),
+                sql: Some(drop_index_sql(Engine::Postgres, &i.schema, &i.table, &i.name)),
+                caveats: Vec::new(),
+                finding_id: link(format!("unused-index:invalid:{table_name}.{}", i.name)),
+            });
+        }
+    }
     cleanups.sort_by(|a, b| b.size_bytes.unwrap_or(0.0).total_cmp(&a.size_bytes.unwrap_or(0.0)));
 
     // Tables whose shape costs reads or writes.

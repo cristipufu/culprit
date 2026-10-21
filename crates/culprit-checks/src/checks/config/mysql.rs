@@ -338,11 +338,11 @@ fn health(snapshot: &Snapshot) -> Vec<Finding> {
         out.push(f);
     }
     if let Some(waits) = snapshot.pressure.as_ref().and_then(|p| p.signal("buffer-pool-wait-free")).map(|s| s.value)
-        && counter_rate_per_day(snapshot, waits).is_some_and(|r| r >= 240.0)
+        && let Some(rate) = counter_rate_per_day(snapshot, waits).filter(|r| *r >= 240.0)
     {
         let mut f = setting_finding(
             "innodb_buffer_pool_wait_free",
-            if waits >= 1_000.0 { Severity::Medium } else { Severity::Low },
+            if rate >= 2_400.0 || waits >= 1_000.0 { Severity::Medium } else { Severity::Low },
             format!("Queries waited {} times for a clean buffer-pool page", format::count(waits)),
             format!(
                 "Innodb_buffer_pool_wait_free is {} {}: foreground threads needed a free page in the InnoDB buffer \
