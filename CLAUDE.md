@@ -4,7 +4,7 @@ Read `docs/DESIGN.md` first: it is the source of truth for UX and behaviour. `do
 
 ## Layout and rules
 
-- `crates/culprit-core` owns the model. Every type the UI or CLI shows derives `ts_rs::TS`; regenerate the TypeScript with `cargo test -p culprit-core -p culprit-engine` (writes `app/src/gen/`). Never hand-edit `app/src/gen`.
+- `crates/culprit-core` owns the model. Every type the UI or CLI shows derives `ts_rs::TS`; regenerate the TypeScript with `cargo test --locked -p culprit-core -p culprit-engine --lib` (writes `app/src/gen/`). A final backend test run also regenerates it; do not run a separate generation pass when those tests already covered the latest model. Never hand-edit `app/src/gen`.
 - Checks (`crates/culprit-checks`) are pure functions of a `Snapshot`. They never touch a connection. A new check: add `<name>_info()` + `<name>(&Snapshot)` in a file of its own in the area's directory under `crates/culprit-checks/src/checks/` (`checks/mod.rs` maps the areas) declare its type with `check!(NameCheck: name_info, name)` (the same `culprit_core::Check` an embedding application plugs in), and add `&NameCheck` to that area's `CHECKS` list; `lib.rs::all()` runs every area's (a test fails if a check is written but not listed). Views built on a report (dashboard, advisor, digest, brief, drift) live in `src/views/`. Findings need a human title, a plain-language summary, a fix and a way to verify it. Give each finding a stable id (`<check>:<subject>`).
 - The analysis is a pipeline (`crates/culprit-checks/src/pipeline.rs`): prepare the snapshot, run the checks, refine across all findings (`refine.rs`: one cause → one finding; statements that stopped or ran once are history), rank. A rule that applies to every check belongs in refine or prepare, once, not in each check.
 - Follow the evidence rules in `docs/ARCHITECTURE.md` and use their one implementation: rates through `support::rate_per_day` / `counter_rate_per_day` (≥ 1 h of data; say "a day" only over 20 h; on a source of running totals, over Culprit's own scans: `Workload::over_scans`, `how_often_of`), absence (unused, never scanned) only after a week of counters, the engine's own verdict over inference from a plan's shape, index advice only under `INDEX_KEEPS_AT_MOST`, settings through `support::setting_change`, and fix SQL that never drops what exists.
@@ -15,16 +15,39 @@ Read `docs/DESIGN.md` first: it is the source of truth for UX and behaviour. `do
 - `crates/culprit-engine` is the only place that touches secrets (keychain, `--password-env`, Entra tokens via `az`). Secrets are never serialized, logged or included in errors.
 - The UI (`app/src`) renders database-sourced text as text only. No `dangerouslySetInnerHTML`.
 
-## Commands
+## Validation: choose the scope before compiling
 
-```sh
-cargo test --workspace                          # a crate's tests/*.rs are modules of one binary: list a new file in tests/all.rs
-cargo test -p culprit-checks --test all brief:: # one test file
-CULPRIT_UPDATE_GOLDEN=1 cargo test -p culprit-engine --test all golden::  # accept a change in what users read (fixtures/golden/), after reading the diff
-cargo clippy --workspace --all-targets
-cargo fmt --all
-cd app && bun run typecheck && bun run dev     # browser UI on fixtures/*.report.json
-cd app && bunx tauri dev                        # desktop app
-```
+These rules apply to every coding agent. `AGENTS.md` links to this file; keep one set of instructions.
 
-Demo databases with planted problems: `dev/postgres` (Docker, port 55432) and `dev/mssql` (Docker, port 14333). Regenerate UI fixtures with `culprit analyze <snapshot.json> --connection <name> --json > fixtures/<name>.report.json`.
+1. **Choose checks from the diff.** Before a build, identify the changed areas and the behavior to verify. Documentation, agent instructions and comments need no Rust or UI build. A backend change does not require a desktop bundle, and a website change does not require Cargo.
+2. **Iterate narrowly.** Make a coherent edit, then run the affected test module or crate. A filtered test run must execute the intended tests; zero matching tests is not validation. Use `cargo check` only when compilation feedback before linking is useful, not as a mandatory step before tests. Do not run check → build → test → Clippy after every edit.
+3. **Finish once.** Review the final diff and fix concrete findings before the final gates below; run cheap applicable checks first. Include consumers when a shared type, parser, evidence rule or public API changes. Record commands, scope, exit status and test counts. A passing command remains valid until relevant inputs change; prose-only edits do not invalidate binary tests. Re-run affected checks after a fix, not every previously passing gate. Never repeat a full suite merely for reassurance.
+4. **Generate before checking consumers.** When findings, plans or derived views change, run `python3 dev/refresh-demo.py` once after the Rust edits settle, review the output, then run the final backend and UI checks. That script builds its own CLI and regenerates reports and sidecars; do not prebuild them separately. Review golden diffs before accepting intended wording changes. Do not refresh fixtures for unrelated edits or accept changed output just to turn a test green.
+5. **Separate validation from delivery.** CI covers the OS matrix and desktop packaging. Local release builds, bundles, signing, installed-app updates, smoke runs and releases are separate work, performed only when requested or needed for the specific behavior being changed. Report any required check that could not run; do not silently omit coverage to save time.
+
+### Checks by change
+
+Run commands from the repository root unless a working directory is shown. Use the existing lockfile; when changing dependencies, update it deliberately, then validate with `--locked`.
+
+| Change | During implementation | Final validation |
+|---|---|---|
+| Docs, instructions, comments only | Read the diff; verify paths and commands | `git diff --check`; no compilation |
+| Rust backend (`crates/`) | The affected crate/module, e.g. `cargo test --locked -p culprit-checks --test all brief::` or `cargo test --locked -p culprit-postgres --lib` | `cargo fmt --all --check`; `cargo test --locked --workspace --exclude culprit-app`; `cargo clippy --locked --workspace --exclude culprit-app --all-targets -- -D warnings` |
+| Rust model or generated UI contracts | Core/engine library tests as described above, plus affected behavioral tests | Backend gates and, after generation, `cd app && bun run typecheck` |
+| Provider registration, feature gates or embedding API | Affected engine/plugin tests | Backend gates plus `cargo test --locked -p culprit-engine --no-default-features --test all plugin::` and `cargo clippy --locked -p culprit-engine --no-default-features -- -D warnings` |
+| React, TypeScript or app styles | `cd app && bun run typecheck`; inspect changed interactions/layout in the browser when applicable | The same checks on the final UI; `cd app && bun run build` when bundling, imports, assets or dependencies are affected. No Cargo for UI-only changes |
+| Desktop Rust (`app/src-tauri`) | `cargo test --locked -p culprit-app --lib`, with a test filter when useful | `cargo fmt --all --check`; unfiltered desktop library tests; `cargo clippy --locked -p culprit-app --all-targets -- -D warnings`; UI/backend gates only if those areas also changed |
+| Marketing website (`site/`, `dev/site*`) | `bash dev/site.sh`; inspect the generated site when its behavior/layout changes | Site checks only; no desktop or backend build |
+
+A crate's `tests/*.rs` files are modules of one binary: list a new file in `tests/all.rs`, and use `--test all module::` to select one module. Do not turn each file into a separately linked test binary. Library doc tests are disabled because there are no Rust documentation examples; do not force `cargo test --doc`. If executable Rust examples are added to documentation, enable and run doc tests for that crate.
+
+For an intentional change to what users read, accept the reviewed golden diff with `CULPRIT_UPDATE_GOLDEN=1 cargo test --locked -p culprit-engine --test all golden::`. The final backend suite includes the golden checks, so a separate unchanged golden run is unnecessary.
+
+### Preserve the cache and diagnose idle work
+
+- Keep the existing repository `target/`, toolchain, profile and feature set during iteration. Do not switch to release builds, relocate `CARGO_TARGET_DIR`, change `RUSTFLAGS`, or run `cargo clean` as a speed fix. These invalidate cached work. When an artifact is proven stale, clean only the affected package. Avoid dependency installs when the installed dependencies already match the lockfile.
+- Run one Cargo command at a time per checkout. A second command waiting on Cargo's build lock provides no extra coverage. Inspect the owner before launching another command; never kill another session's work. Binding generation and fixture writes must finish before validating their consumers. Independent read-only checks may run alongside Cargo.
+- Quiet output alone is normal. If output is quiet **and** the compiler/test process uses little CPU for 30–60 seconds, inspect the process and its children before waiting longer. Distinguish a Cargo lock, active compilation/linking, a running test and an OS loader/security wait. On macOS, sample a stalled process and correlate system-policy logs; a process waiting before `main` is not a slow Rust test. Capture evidence privately, explain the cause, and resume the existing run where possible. Do not restart builds blindly or disable security controls.
+- Report progress at least once a minute during long validation: what is running, whether it is working or blocked, and the next step. At handoff, retain completed commands/results and active process/log locations so the next agent does not rebuild just because the session changed.
+
+For interactive work: `cd app && bun run dev` serves the fixture UI; `cd app && bunx tauri dev` launches the desktop app when the task needs it. Demo databases with planted problems: `dev/postgres` (Docker, port 55432) and `dev/mssql` (Docker, port 14333). Tests use saved snapshots unless live collection itself needs validation.
