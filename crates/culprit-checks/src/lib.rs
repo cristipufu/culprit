@@ -18,9 +18,7 @@ pub(crate) mod support;
 mod views;
 
 // Each area by its own name, wherever it lives: `crate::queries`, `culprit_checks::dashboard`.
-pub(crate) use checks::{
-    config, config_health, deadlocks, index_health, indexes, pressure, queries, signals, sqlite, tuning,
-};
+pub(crate) use checks::{config, deadlocks, index_health, indexes, pressure, queries, signals, tuning};
 pub(crate) use views::{advisor, brief, digest};
 pub use views::{dashboard, drift, waits};
 

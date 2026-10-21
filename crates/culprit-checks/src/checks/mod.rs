@@ -11,7 +11,7 @@
 //! | `pressure/` | the server: memory, compiles, workers, cleanup, tier limits, checkpoints |
 //! | `maintenance/` | statistics, heaps, dead rows, transaction ID age |
 //! | `tuning/` | what the engine already recommends, and statements sent with literals |
-//! | `config.rs`, `config_health.rs`, `sqlite.rs` | settings, per engine |
+//! | `config/` | settings, per engine |
 //! | `deadlocks.rs`, `actual.rs` | deadlocks, and whether the engine keeps actual plans |
 
 use culprit_core::Check;
@@ -45,7 +45,6 @@ macro_rules! check {
 
 pub(crate) mod actual;
 pub(crate) mod config;
-pub(crate) mod config_health;
 pub(crate) mod deadlocks;
 pub(crate) mod index_health;
 pub(crate) mod indexes;
@@ -53,7 +52,6 @@ pub(crate) mod maintenance;
 pub(crate) mod pressure;
 pub(crate) mod queries;
 pub(crate) mod signals;
-pub(crate) mod sqlite;
 pub(crate) mod tuning;
 
 /// Every area's checks, in the order they run: each area lists its own (`<area>::CHECKS`), so a new check is its file

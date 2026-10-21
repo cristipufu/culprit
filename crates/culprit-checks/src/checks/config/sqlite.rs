@@ -3,18 +3,14 @@
 //! processes share the file decides if the rollback journal hurts, so the journal mode is shown as a setting, never as
 //! a finding.
 
-use culprit_core::{
-    Capability, Category, Confidence, Finding, Fix, Metric, Severity, Snapshot, SubjectKind, Unit, format,
-};
-
-use crate::support::{base_score, finding, subject};
+use super::*;
 
 /// Free pages worth a finding: this many bytes, and this share of the file.
 const FREE_BYTES_AT_LEAST: f64 = 16.0 * 1024.0 * 1024.0;
 const FREE_SHARE_AT_LEAST: f64 = 0.25;
 
 /// The file's findings, under the `config` check.
-pub fn settings(snapshot: &Snapshot) -> Vec<Finding> {
+pub(super) fn check(snapshot: &Snapshot) -> Vec<Finding> {
     let mut out: Vec<Finding> = [statistics(snapshot), free_space(snapshot)].into_iter().flatten().collect();
     if snapshot.server.has(Capability::Statistics) {
         for t in snapshot.tables.iter().filter(|t| !t.is_virtual()) {
