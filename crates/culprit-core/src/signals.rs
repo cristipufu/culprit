@@ -362,6 +362,9 @@ pub struct IndexLockCounts {
 pub struct ContentionBaseline {
     pub taken_at: String,
     pub indexes: BTreeMap<String, IndexLockCounts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reference: Option<crate::ScanReference>,
 }
 
 impl ContentionBaseline {
@@ -384,7 +387,11 @@ impl ContentionBaseline {
                 Some((Self::key(i), IndexLockCounts { waits: c.lock_waits(), wait_ms: c.lock_wait_ms() }))
             })
             .collect();
-        (!indexes.is_empty()).then(|| Self { taken_at: previous.taken_at.clone(), indexes })
+        (!indexes.is_empty()).then(|| Self {
+            taken_at: previous.taken_at.clone(),
+            indexes,
+            reference: Some(crate::ScanReference::of(previous)),
+        })
     }
 
     pub fn since(&self, index: &crate::IndexStat) -> Option<IndexLockCounts> {
@@ -408,6 +415,9 @@ pub struct EscalationBaseline {
     pub tables: BTreeMap<String, f64>,
     /// The server restarted between the earlier scan and this one, which started the counts again from zero.
     pub restarted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reference: Option<crate::ScanReference>,
 }
 
 /// How big each table's data was at an earlier scan, to tell how fast it grows.
@@ -418,6 +428,9 @@ pub struct SizeBaseline {
     pub taken_at: String,
     /// Bytes of each table's own rows (`schema.table`) then: its heap or clustered index, large values included.
     pub tables: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reference: Option<crate::ScanReference>,
 }
 
 /// A table's own rows in bytes, large values included, measured the one way growth compares: the in-row part plus the
@@ -435,7 +448,11 @@ impl SizeBaseline {
     pub fn from_scan(previous: &Snapshot) -> Option<SizeBaseline> {
         let tables: BTreeMap<String, f64> =
             previous.tables.iter().filter_map(|t| Some((t.qualified().to_ascii_lowercase(), rows_bytes(t)?))).collect();
-        (!tables.is_empty()).then(|| SizeBaseline { taken_at: previous.taken_at.clone(), tables })
+        (!tables.is_empty()).then(|| SizeBaseline {
+            taken_at: previous.taken_at.clone(),
+            tables,
+            reference: Some(crate::ScanReference::of(previous)),
+        })
     }
 
     /// Bytes of `table` (`schema.table`) at the earlier scan.
@@ -455,6 +472,12 @@ pub struct CountBaseline {
     pub count: f64,
     /// The count started over between the earlier scan and this one.
     pub restarted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reference: Option<crate::ScanReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub measurement: Option<crate::MeasurementContext>,
 }
 
 impl CountBaseline {
@@ -469,19 +492,23 @@ impl CountBaseline {
         }
         let read = |s: &Snapshot| s.setting(name).and_then(|s| s.value.trim().parse::<f64>().ok());
         let (then, now) = (read(previous)?, read(current)?);
+        let referenced = |mut baseline: Self| {
+            baseline.reference = Some(crate::ScanReference::of(previous));
+            baseline
+        };
         match (previous.captured_measurement(), current.captured_measurement()) {
-            (Some(a), Some(b)) => return Self::in_context(&previous.taken_at, then, now, &a, &b),
+            (Some(a), Some(b)) => return Self::in_context(&previous.taken_at, then, now, &a, &b).map(referenced),
             (None, None) => {}
             _ => return None,
         }
         let start = |s: &Snapshot| s.workload.as_ref().and_then(|w| w.window_start.clone());
-        Some(CountBaseline::between(
+        Some(referenced(CountBaseline::between(
             &previous.taken_at,
             then,
             now,
             start(previous).as_deref(),
             start(current).as_deref(),
-        ))
+        )))
     }
 
     /// Compare a source counter using its recorded clock. Shrinking totals without a reset remain unknown.
@@ -500,7 +527,13 @@ impl CountBaseline {
             crate::CounterTransition::Continued | crate::CounterTransition::Unmarked if now >= then => false,
             _ => return None,
         };
-        Some(Self { taken_at: taken_at.into(), count: if restarted { 0.0 } else { then }, restarted })
+        Some(Self {
+            taken_at: taken_at.into(),
+            count: if restarted { 0.0 } else { then },
+            restarted,
+            reference: None,
+            measurement: Some(before.clone()),
+        })
     }
 
     /// The count `then` an earlier scan taken at `taken_at` read, against `now`: it started over when it shrank, or
@@ -515,7 +548,13 @@ impl CountBaseline {
     ) -> CountBaseline {
         let reset = start_then.zip(start_now).and_then(|(a, b)| restarted(a, b)).unwrap_or(false);
         let restarted = reset || now < then;
-        CountBaseline { taken_at: taken_at.to_string(), count: if restarted { 0.0 } else { then }, restarted }
+        CountBaseline {
+            taken_at: taken_at.to_string(),
+            count: if restarted { 0.0 } else { then },
+            restarted,
+            reference: None,
+            measurement: None,
+        }
     }
 }
 
@@ -536,6 +575,7 @@ impl EscalationBaseline {
         }
         let restarted = restarted(previous.server.started_at.as_deref()?, current.server.started_at.as_deref()?)?;
         Some(EscalationBaseline {
+            reference: Some(crate::ScanReference::of(previous)),
             taken_at: previous.taken_at.clone(),
             tables: if restarted { BTreeMap::new() } else { escalations_by_table(previous) },
             restarted,
@@ -560,7 +600,16 @@ impl EscalationBaseline {
                 .filter_map(|f| Some((f.id.strip_prefix("lock-escalations:")?.to_string(), f.count?)))
                 .collect()
         };
-        Some(EscalationBaseline { taken_at: previous.taken_at.clone(), tables, restarted })
+        Some(EscalationBaseline {
+            taken_at: previous.taken_at.clone(),
+            tables,
+            restarted,
+            reference: Some(crate::ScanReference {
+                id: None,
+                taken_at: previous.taken_at.clone(),
+                database: previous.identity.clone(),
+            }),
+        })
     }
 
     /// Escalations on `table` (`schema.table`) since the earlier scan, out of `now` counted since the server started.
@@ -698,7 +747,16 @@ mod merge_tests {
         let before = scan("2026-10-15T10:00:00Z", "40", "2023-04-17T10:00:21Z");
         let grew =
             CountBaseline::from_setting(&before, &scan("2026-10-17T10:00:00Z", "52", "2023-04-17T10:00:21Z"), name);
-        assert_eq!(grew, Some(CountBaseline { taken_at: before.taken_at.clone(), count: 40.0, restarted: false }));
+        assert_eq!(
+            grew,
+            Some(CountBaseline {
+                taken_at: before.taken_at.clone(),
+                count: 40.0,
+                restarted: false,
+                reference: Some(crate::ScanReference::of(&before)),
+                measurement: None,
+            })
+        );
         let shrank =
             CountBaseline::from_setting(&before, &scan("2026-10-17T10:00:00Z", "3", "2023-04-17T10:00:21Z"), name);
         assert!(shrank.is_some_and(|b| b.restarted && b.count == 0.0));

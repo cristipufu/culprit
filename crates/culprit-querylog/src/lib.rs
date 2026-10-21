@@ -266,6 +266,7 @@ impl Aggregator {
             })
             .collect();
         Workload {
+            history_inputs: Vec::new(),
             measurement: None,
             source: format!("{format} log"),
             kind: Some(culprit_core::WorkloadKind::QueryLog),

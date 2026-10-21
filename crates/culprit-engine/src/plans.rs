@@ -127,17 +127,44 @@ pub fn parse_plan(input: &str) -> Result<Plan> {
 /// worked out again when it is analyzed. A plan with no text, or text this build can't read, stays as saved; so does
 /// SQLite's, whose text keeps the steps but not their tree.
 pub fn reparse_saved(snapshot: &mut culprit_core::Snapshot) {
+    let _ = reparse_saved_traced(snapshot);
+}
+
+pub(crate) fn reparse_saved_traced(snapshot: &mut culprit_core::Snapshot) -> Vec<culprit_core::PlanParsingProvenance> {
+    use culprit_core::{PlanParsingOutcome, PlanParsingProvenance};
     let database = snapshot.server.database.clone();
-    let Some(workload) = snapshot.workload.as_mut() else { return };
+    let Some(workload) = snapshot.workload.as_mut() else { return Vec::new() };
+    let mut trace = Vec::new();
     let catalog = Catalog { database: &database, tables: &snapshot.tables, indexes: &snapshot.indexes };
     // A pg_stat_statements entry's plan is planned from the text it keeps; a log's statement is the application's.
     let statement_stats = workload.kind() == Some(culprit_core::WorkloadKind::StatementStats);
     for q in workload.queries.iter_mut() {
         let Some(saved) = q.plan.as_ref() else { continue };
         let entry = statement_stats.then_some(q.id.as_str());
-        if let Some(fresh) = reparse(saved, entry, &catalog) {
+        let raw = saved.raw.is_some();
+        let mut outcome = if raw { PlanParsingOutcome::Retained } else { PlanParsingOutcome::NoNativeText };
+        let engine = saved.engine;
+        if let Some((fresh, parsed_native)) = reparse(saved, entry, &catalog) {
+            if parsed_native {
+                outcome = PlanParsingOutcome::Reparsed;
+            }
             q.plan = Some(fresh);
         }
+        trace.push(PlanParsingProvenance { query: q.id.clone(), engine, parser: parser_version(engine), outcome });
+    }
+    trace
+}
+
+fn parser_version(engine: culprit_core::Engine) -> culprit_core::ComponentVersion {
+    match engine {
+        #[cfg(feature = "mssql")]
+        culprit_core::Engine::Mssql => culprit_mssql::component_version(),
+        #[cfg(feature = "postgres")]
+        culprit_core::Engine::Postgres => culprit_postgres::component_version(),
+        #[cfg(feature = "mysql")]
+        culprit_core::Engine::Mysql => culprit_mysql::component_version(),
+        // SQLite's normalized tree is retained rather than reconstructed from its flat native text.
+        _ => culprit_core::ComponentVersion::unknown("no native parser used"),
     }
 }
 
@@ -149,33 +176,35 @@ struct Catalog<'a> {
 }
 
 /// `saved` read again by its engine's parser; `entry` is the pg_stat_statements entry it was planned for.
-fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<Plan> {
+fn reparse(saved: &Plan, entry: Option<&str>, catalog: &Catalog) -> Option<(Plan, bool)> {
     let _ = (entry, catalog.tables, catalog.indexes);
     let database = catalog.database;
-    let mut plan = match saved.engine {
+    let (mut plan, parsed_native) = match saved.engine {
         #[cfg(feature = "mssql")]
-        culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved),
+        culprit_core::Engine::Mssql => culprit_mssql::plan_xml::reparse(saved).map(|p| (p, true)),
         #[cfg(feature = "postgres")]
         // A plan saved without its JSON still takes the table sizes it lacks from the scan's catalog.
         culprit_core::Engine::Postgres => {
-            culprit_postgres::plan_json::reparse(saved, entry, catalog.tables, catalog.indexes).or_else(|| {
-                let mut plan = saved.clone();
-                culprit_postgres::plan_json::refill_from_catalog(&mut plan, catalog.tables, catalog.indexes);
-                Some(plan)
-            })
+            culprit_postgres::plan_json::reparse(saved, entry, catalog.tables, catalog.indexes)
+                .map(|p| (p, true))
+                .or_else(|| {
+                    let mut plan = saved.clone();
+                    culprit_postgres::plan_json::refill_from_catalog(&mut plan, catalog.tables, catalog.indexes);
+                    Some((plan, false))
+                })
         }
         #[cfg(feature = "mysql")]
         culprit_core::Engine::Mysql => {
-            culprit_mysql::plan_json::reparse(saved, Some(database).filter(|d| !d.is_empty()))
+            culprit_mysql::plan_json::reparse(saved, Some(database).filter(|d| !d.is_empty())).map(|p| (p, true))
         }
         _ => None,
     }
-    .filter(|plan| plan.engine == saved.engine)?;
+    .filter(|(plan, _)| plan.engine == saved.engine)?;
     plan.kind = saved.kind;
     plan.statement = saved.statement.clone();
     plan.insights = None;
     plan.view = None;
-    Some(plan)
+    Some((plan, parsed_native))
 }
 
 fn detect_clean(text: &str) -> Option<PlanFormat> {

@@ -137,6 +137,31 @@ steps but not their tree. A PostgreSQL plan saved without a table's size takes i
 (`tables::refill`), and a timeline of Culprit's scans is built again from the counters files the scans before it kept
 (`reports::rebuild_timeline`), so a step a saved scan misread reads as the counters say.
 
+### Retained evidence and provenance
+
+`Report.snapshot` is the prepared view. `Report.evidence.input` retains the snapshot before pure preparation;
+Workspace scans additionally retain the provider's original picture in `evidence.collected`, before history adds
+baselines, dates counters or sets aside replica usage. Database-recorded change events remain separate. Replaying a
+report starts from retained input, reparses its native plans and reruns today's preparation and checks. The original
+collection is preserved, and a reread never rewrites the saved file. Replays do not nest reports or grow a version chain.
+A report without retained evidence uses its prepared picture with the explicit `PreparedReport` origin: it cannot
+recover data an older preparation discarded, and it never claims to hold the original collection.
+
+`Report.provenance` records the analyzer and collector component versions, optional build revisions, actual pipeline
+registration order, and extension versions supplied by their `version()` methods. Unknown extension or external-provider
+versions remain unknown. Plan parsing records the native parser component and whether each saved query plan was
+reparsed, lacked native text, or was retained. Baseline references identify the actual historical scan ids, dates and
+database identities used for workload trends, query activity, inferred windows, index ages, growth and counters. Only
+workload comparisons carry workload measurement context; index and operational counters do not borrow that clock.
+Older baselines with only dates keep only dates, and never acquire today's endpoint or an id guessed from a rounded
+timestamp. Index-age history uses only this database's past scans; older event sidecars recover their source identity
+from their own saved reports within a bounded backfill.
+
+The persisted JSON is a portable replay artifact. The desktop and generated browser demo omit `evidence` from their
+view projection while keeping provenance; MCP returns its focused views. Shared exports and digests reparse before
+redacting, analyze only redacted input and never copy unredacted collection or recorded events into their replay body.
+Saved artifacts and optional metadata remain readable when these additions are absent.
+
 ## 3. The pipeline: from a snapshot to a report
 
 `culprit-checks/src/pipeline.rs` runs four stages, in order, each a list you can read top to bottom:

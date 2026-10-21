@@ -389,6 +389,10 @@ app/
 - Tauri 2, release profile with LTO; window background matches the theme so there is no white flash.
 - React bundle kept small: no UI framework, hand-written CSS with design tokens, the editor and raw plan views code-split.
 - The last snapshot per connection is stored on disk and rendered immediately on open; the fresh scan replaces it in place (stale-while-revalidate).
+- Saved scans retain original evidence separately from the prepared view, with analyzer/collector versions and the
+  historical scans used in comparisons. Reopening applies today's analysis without replacing the original collection;
+  older reports state when only a previously prepared picture is available. The app receives the prepared view and
+  provenance; replay copies stay in the saved artifact. Shared outputs retain only redacted analysis input.
 - Snapshot sections are collected concurrently.
 
 ## CLI (agent-first)

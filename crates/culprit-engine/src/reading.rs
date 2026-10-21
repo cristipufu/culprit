@@ -13,18 +13,17 @@ use std::path::Path;
 
 use culprit_core::{Finding, Plan, Report, Result, format};
 
-use crate::{plans, reports};
+use crate::reports;
 
 /// A saved report or snapshot, read the way the app opens one: its plans parsed again from their text
-/// ([`plans::reparse_saved`]), read against the scans saved beside it ([`reports::rebase_on_scans`]), its checks run
+/// ([`crate::plans::reparse_saved`]), read against the scans saved beside it ([`reports::rebase_on_scans`]), its checks run
 /// again, and each plan marked against the catalog and given its insights.
 pub fn open(path: &Path) -> Result<Report> {
-    let mut snapshot = reports::load_snapshot(path)?;
-    plans::reparse_saved(&mut snapshot);
+    let mut input = reports::load_analysis_input(path)?;
     if let Some(dir) = path.parent() {
-        reports::rebase_on_scans(dir, &mut snapshot);
+        reports::rebase_on_scans(dir, &mut input.snapshot);
     }
-    Ok(for_reading(culprit_checks::analyze(snapshot)))
+    Ok(for_reading(crate::analysis::reread(input, &[])))
 }
 
 /// A report as the app shows it: plans marked against the snapshot's catalog, each with its insights.

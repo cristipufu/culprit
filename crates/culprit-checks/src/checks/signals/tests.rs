@@ -767,7 +767,8 @@ fn large_rows_say_how_fast_they_grow_since_the_previous_scan() {
     let mut s = large_rows_snapshot(Engine::Mssql);
     load_ticket(&mut s, 12_700.0);
     let tables = BTreeMap::from([("shop.support_tickets".to_string(), 2_331.0 * MB)]);
-    s.sizes_before = Some(culprit_core::SizeBaseline { taken_at: "2026-10-12T09:00:00Z".into(), tables });
+    s.sizes_before =
+        Some(culprit_core::SizeBaseline { taken_at: "2026-10-12T09:00:00Z".into(), tables, reference: None });
     let f = large_rows_of(&s).expect("finding");
     // Read whole thousands of times a day and growing by a fifth of its size a day.
     assert_eq!(f.severity, Severity::High);

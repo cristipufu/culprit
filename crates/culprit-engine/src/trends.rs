@@ -29,6 +29,8 @@ const MIN_BUCKET_SECONDS: f64 = 300.0;
 /// A scan's running totals: the workload's and each tracked query's `[time ms, executions]`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Counters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<culprit_core::ScanReference>,
     pub taken_at: String,
     pub source: String,
     pub database: String,
@@ -95,6 +97,42 @@ fn short_object(name: &str) -> String {
 }
 
 impl Counters {
+    /// Older counters omitted the scan id; the sidecar's actual file key can retain it. Never reconstruct an id
+    /// from a rounded timestamp or fill endpoint identity from today's connection.
+    pub(crate) fn bind_artifact(&mut self, id: &str) {
+        if self.reference.is_none()
+            && crate::reports::id_epoch(id).zip(epoch(&self.taken_at)).is_some_and(|(a, b)| (a - b).abs() <= 1.0)
+        {
+            self.reference = Some(culprit_core::ScanReference {
+                id: Some(id.into()),
+                taken_at: self.taken_at.clone(),
+                database: self.measurement.as_ref().map(|m| m.database.clone()),
+            });
+        }
+    }
+
+    pub(crate) fn scan_reference(&self) -> culprit_core::ScanReference {
+        self.reference
+            .as_ref()
+            .filter(|r| {
+                r.taken_at == self.taken_at
+                    && r.database
+                        .as_ref()
+                        .zip(self.measurement.as_ref())
+                        .is_none_or(|(db, m)| db.comparison(&m.database).allows_comparison())
+            })
+            .cloned()
+            .unwrap_or_else(|| culprit_core::ScanReference {
+                id: None,
+                taken_at: self.taken_at.clone(),
+                database: self.measurement.as_ref().map(|m| m.database.clone()),
+            })
+    }
+
+    fn baseline_reference(&self, purpose: culprit_core::BaselinePurpose) -> culprit_core::BaselineReference {
+        culprit_core::BaselineReference { purpose, scan: self.scan_reference(), measurement: self.measurement.clone() }
+    }
+
     /// `None` for windowed sources (Query Store keeps its own history).
     pub fn of(report: &Report) -> Option<Counters> {
         Self::from_snapshot(&report.snapshot)
@@ -107,6 +145,7 @@ impl Counters {
         let workload = snapshot.workload.as_ref().filter(|w| w.is_cumulative())?;
         let mut counters =
             Counters::of_workload(workload, &snapshot.server.database, &snapshot.taken_at, evictions(snapshot));
+        counters.reference = Some(culprit_core::ScanReference::of(snapshot));
         if snapshot.identity.is_some() || workload.measurement.is_some() {
             counters.measurement = snapshot.workload_measurement();
         }
@@ -145,6 +184,7 @@ impl Counters {
 
     fn of_workload(workload: &Workload, database: &str, taken_at: &str, evictions: Option<f64>) -> Counters {
         Counters {
+            reference: None,
             measurement: workload.measurement.clone(),
             taken_at: taken_at.to_string(),
             source: workload.source.clone(),
@@ -197,7 +237,7 @@ pub fn evictions_baseline(
         .filter_map(|c| Some((epoch(&c.taken_at)?, c, c.evictions?)))
         .filter(|(t, _, _)| *t <= at - culprit_core::PER_DAY_MIN_HOURS * 3600.0)
         .filter_map(|(t, c, then)| {
-            let baseline = match (&c.measurement, &current.measurement) {
+            let mut baseline = match (&c.measurement, &current.measurement) {
                 (Some(a), Some(b)) => culprit_core::CountBaseline::in_context(&c.taken_at, then, now, a, b)?,
                 (None, None) => culprit_core::CountBaseline::between(
                     &c.taken_at,
@@ -208,6 +248,7 @@ pub fn evictions_baseline(
                 ),
                 _ => return None,
             };
+            baseline.reference = Some(c.scan_reference());
             Some((t, baseline))
         })
         .filter(|(_, b)| !b.restarted)
@@ -356,6 +397,10 @@ pub fn from_scans(
         return;
     }
     points.sort_by(|a, b| a.0.total_cmp(&b.0));
+    workload.history_inputs.retain(|r| r.purpose != culprit_core::BaselinePurpose::WorkloadTrend);
+    workload
+        .history_inputs
+        .extend(points.iter().map(|(_, c)| c.baseline_reference(culprit_core::BaselinePurpose::WorkloadTrend)));
     points.push((now, &current));
 
     let mut tracked: Vec<&culprit_core::QueryStat> = workload.queries.iter().collect();
@@ -483,28 +528,63 @@ pub fn last_seen_from_scans(workload: &mut Workload, database: &str, taken_at: &
     if points.is_empty() {
         return;
     }
+    let mut visited = std::collections::BTreeSet::new();
     for q in workload.queries.iter_mut().filter(|q| q.last_seen.is_none()) {
-        q.last_seen = last_ran(&points, &current, &q.id, q.executions);
+        q.last_seen = last_ran(&points, &current, &q.id, q.executions, &mut visited);
+    }
+    if !visited.is_empty() {
+        workload.history_inputs.retain(|r| r.purpose != culprit_core::BaselinePurpose::QueryActivity);
+        workload.history_inputs.extend(
+            visited.into_iter().map(|i| points[i].1.baseline_reference(culprit_core::BaselinePurpose::QueryActivity)),
+        );
     }
 }
 
-fn last_ran(points: &[(f64, &Counters)], current: &Counters, id: &str, runs: f64) -> Option<String> {
+fn last_ran(
+    points: &[(f64, &Counters)],
+    current: &Counters,
+    id: &str,
+    runs: f64,
+    visited: &mut std::collections::BTreeSet<usize>,
+) -> Option<String> {
     let taken_at = current.taken_at.as_str();
     let (mut later, mut later_runs) = (current, runs);
-    for (t, c) in points {
-        match (&c.measurement, &later.measurement) {
-            (Some(before), Some(after)) => match before.counter_transition(after) {
-                CounterTransition::Incompatible(_) => return None,
-                CounterTransition::Reset => return (later_runs > 0.0).then(|| later.taken_at.clone()),
-                _ => {}
-            },
-            (None, None) if later.window_start.as_deref().and_then(epoch).is_some_and(|r| r > t + 1.0) => break,
-            _ => {}
+    let mut start = 0;
+    while start < points.len() {
+        // Collection timestamps can be rounded to seconds. Their file ids distinguish the scans, but do not prove
+        // which counter read happened last. Consider every reading at that instant before inferring growth.
+        let end = start + points[start..].partition_point(|(t, _)| *t == points[start].0);
+        let group = &points[start..end];
+        visited.extend(start..end);
+        let mut reset = false;
+        let mut continued = false;
+        for (t, c) in group {
+            match (&c.measurement, &later.measurement) {
+                (Some(before), Some(after)) => match before.counter_transition(after) {
+                    CounterTransition::Incompatible(_) => return None,
+                    CounterTransition::Reset => reset = true,
+                    _ => continued = true,
+                },
+                (None, None) if later.window_start.as_deref().and_then(epoch).is_some_and(|r| r > t + 1.0) => {
+                    return (later.taken_at != taken_at).then(|| later.taken_at.clone());
+                }
+                _ => continued = true,
+            }
         }
-        let Some([_, before]) = c.queries.get(id).copied() else {
-            // Not tracked then: it ran at some point since, unknown when, unless a later scan already said.
-            return (later.taken_at != taken_at).then(|| later.taken_at.clone());
-        };
+        if reset {
+            return (!continued && later_runs > 0.0).then(|| later.taken_at.clone());
+        }
+        let mut maximum: Option<(&Counters, f64)> = None;
+        for (_, c) in group {
+            let Some([_, before]) = c.queries.get(id).copied() else {
+                // Missing in one simultaneous reading leaves its order unknown.
+                return (later.taken_at != taken_at).then(|| later.taken_at.clone());
+            };
+            if maximum.is_none_or(|(_, runs)| before > runs) {
+                maximum = Some((c, before));
+            }
+        }
+        let (c, before) = maximum?;
         if before < later_runs - 0.5 {
             return Some(later.taken_at.clone());
         }
@@ -513,6 +593,7 @@ fn last_ran(points: &[(f64, &Counters)], current: &Counters, id: &str, runs: f64
             return None;
         }
         (later, later_runs) = (c, before);
+        start = end;
     }
     (later.taken_at != taken_at).then(|| later.taken_at.clone())
 }
@@ -522,6 +603,15 @@ fn last_ran(points: &[(f64, &Counters)], current: &Counters, id: &str, runs: f64
 /// counting, these are the same counters and started when it said (still unknown if it didn't know); if they started
 /// over, they did after it, so its time is the earliest they can have started, and the window at most that long.
 pub fn infer_window(workload: &mut Workload, previous: Option<(&Workload, &str)>, taken_at: &str) {
+    infer_window_referenced(workload, previous, taken_at, None);
+}
+
+pub(crate) fn infer_window_referenced(
+    workload: &mut Workload,
+    previous: Option<(&Workload, &str)>,
+    taken_at: &str,
+    reference: Option<culprit_core::ScanReference>,
+) {
     if !workload.is_cumulative() || !workload.window_unknown() {
         return;
     }
@@ -550,6 +640,16 @@ pub fn infer_window(workload: &mut Workload, previous: Option<(&Workload, &str)>
         {
             *hours = Some(workload.window_hours);
         }
+        workload.history_inputs.retain(|r| r.purpose != culprit_core::BaselinePurpose::WindowInference);
+        workload.history_inputs.push(culprit_core::BaselineReference {
+            purpose: culprit_core::BaselinePurpose::WindowInference,
+            scan: reference.unwrap_or_else(|| culprit_core::ScanReference {
+                id: None,
+                taken_at: before_at.into(),
+                database: before.measurement.as_ref().map(|m| m.database.clone()),
+            }),
+            measurement: before.measurement.clone(),
+        });
     }
 }
 
@@ -592,6 +692,7 @@ mod tests {
 
     fn workload(reset: &str, queries: Vec<QueryStat>) -> Workload {
         Workload {
+            history_inputs: Vec::new(),
             measurement: None,
             source: "pg_stat_statements".into(),
             kind: Some(culprit_core::WorkloadKind::StatementStats),

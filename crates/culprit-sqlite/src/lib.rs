@@ -18,6 +18,15 @@ use rusqlite::{Connection, OpenFlags};
 
 pub use plan::plan_from_rows;
 
+/// Identity of this crate's collector and native-plan parser, including a build revision when supplied.
+pub fn component_version() -> culprit_core::ComponentVersion {
+    culprit_core::ComponentVersion::package(
+        "culprit-sqlite",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CULPRIT_BUILD_REVISION").or(option_env!("GITHUB_SHA")),
+    )
+}
+
 pub struct SqliteProvider {
     path: PathBuf,
     spec: ConnectionSpec,
@@ -82,6 +91,10 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
 
 #[async_trait]
 impl Provider for SqliteProvider {
+    fn collector_version(&self) -> culprit_core::ComponentVersion {
+        component_version()
+    }
+
     fn engine(&self) -> Engine {
         Engine::Sqlite
     }

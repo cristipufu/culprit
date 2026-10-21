@@ -314,7 +314,7 @@ fn new_errors_need_a_comparison_within_the_selected_window() {
         count: 100.0,
         since: Some("2026-10-01T00:00:00Z".into()),
         last_event_at: None,
-        before: Some(CounterReading { at: "2026-10-20T10:00:00Z".into(), count: 50.0 }),
+        before: Some(CounterReading { at: "2026-10-20T10:00:00Z".into(), count: 50.0, reference: None }),
     });
     let r = culprit_checks::analyze(s.clone());
     assert_eq!(

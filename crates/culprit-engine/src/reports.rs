@@ -133,7 +133,8 @@ pub fn counters_history(dir: &Path, now: &str) -> Vec<Counters> {
             continue;
         }
         let sidecar = counters_path(dir, &id);
-        if let Some(c) = fs::read(&sidecar).ok().and_then(|b| serde_json::from_slice::<Counters>(&b).ok()) {
+        if let Some(mut c) = fs::read(&sidecar).ok().and_then(|b| serde_json::from_slice::<Counters>(&b).ok()) {
+            c.bind_artifact(&id);
             out.push(c);
             continue;
         }
@@ -214,8 +215,13 @@ pub fn rebuild_timeline(dir: &Path, snapshot: &mut culprit_core::Snapshot) {
     let history: Vec<Counters> = report_ids(dir)
         .into_iter()
         .filter(|id| id_epoch(id).is_some_and(|t| t >= oldest - 1.0 && t < now))
-        .filter_map(|id| fs::read(counters_path(dir, &id)).ok())
-        .filter_map(|bytes| serde_json::from_slice::<Counters>(&bytes).ok())
+        .filter_map(|id| {
+            let mut counters = fs::read(counters_path(dir, &id))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Counters>(&bytes).ok())?;
+            counters.bind_artifact(&id);
+            Some(counters)
+        })
         .collect();
     if history.is_empty() {
         return;
@@ -253,6 +259,7 @@ pub fn evictions_baseline(dir: &Path, snapshot: &culprit_core::Snapshot) -> Opti
         // ([`counters_history`]).
         let saved = fs::read(counters_path(dir, &id)).ok().and_then(|b| serde_json::from_slice::<Counters>(&b).ok());
         let Some(mut counters) = saved else { continue };
+        counters.bind_artifact(&id);
         if counters.evictions.is_none() && reads < MAX_EVICTION_READS {
             reads += 1;
             counters.evictions =
@@ -297,7 +304,8 @@ pub fn load(path: &Path) -> Result<Report> {
     })
 }
 
-/// The snapshot in a snapshot file, or in a report file (its `snapshot`): what a saved scan is read again from.
+/// The prepared picture in a snapshot or report file, used to compare historical measurements.
+/// Analysis replay separately reads retained original input through `load_analysis_input`.
 pub fn load_snapshot(path: &Path) -> Result<culprit_core::Snapshot> {
     let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
     let value: serde_json::Value =
@@ -305,6 +313,28 @@ pub fn load_snapshot(path: &Path) -> Result<culprit_core::Snapshot> {
     let snapshot = value.get("snapshot").cloned().unwrap_or(value);
     serde_json::from_value(snapshot)
         .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))
+}
+
+/// Analysis reads retained input, while history's `load_snapshot` continues to read the scan's prepared picture.
+/// A wrapper containing only `snapshot` remains accepted, as it was before reports retained replay evidence.
+pub(crate) fn load_analysis_input(path: &Path) -> Result<crate::analysis::Input> {
+    let bytes = fs::read(path).map_err(|e| Error::not_found(format!("{}: {e}", path.display())))?;
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| Error::invalid(format!("{}: {e}", path.display())))?;
+    if value.get("snapshot").is_some() && value.get("findings").is_some() && value.get("summary").is_some() {
+        return serde_json::from_value::<Report>(value)
+            .map(crate::analysis::Input::from)
+            .map_err(|e| Error::invalid(format!("{} is not a Culprit report: {e}", path.display())));
+    }
+    let wrapped = value.get("snapshot").is_some();
+    let snapshot = if wrapped { value["snapshot"].take() } else { value };
+    let snapshot: culprit_core::Snapshot = serde_json::from_value(snapshot)
+        .map_err(|e| Error::invalid(format!("{} is not a Culprit snapshot or report: {e}", path.display())))?;
+    let mut input = crate::analysis::Input::from(snapshot);
+    if wrapped {
+        input.origin = culprit_core::AnalysisOrigin::PreparedReport;
+    }
+    Ok(input)
 }
 
 pub fn list(dir: &Path) -> Result<Vec<ReportSummary>> {

@@ -12,6 +12,7 @@ mod measurement;
 mod plan_view;
 mod plans;
 mod plugin;
+mod provenance;
 mod share;
 mod table_growth;
 

@@ -3,6 +3,7 @@
 //! `<snapshot id>.events.json`, together with the changes the database dated itself. Reading a timeline is then a
 //! matter of reading small files; reports saved before this existed are compared once, the first time they are read.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -29,8 +30,45 @@ fn path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}{EVENTS_SUFFIX}"))
 }
 
-fn read(dir: &Path, id: &str) -> Option<Vec<ChangeEvent>> {
-    std::fs::read(path(dir, id)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+#[derive(Serialize, Deserialize)]
+struct EventRecord {
+    inputs: Vec<culprit_core::ScanReference>,
+    events: Vec<ChangeEvent>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SavedEvents {
+    Recorded(EventRecord),
+    Legacy(Vec<ChangeEvent>),
+}
+
+fn reference_for_id(id: &str) -> Option<culprit_core::ScanReference> {
+    let at = chrono::DateTime::from_timestamp_millis((reports::id_epoch(id)? * 1000.0) as i64)?;
+    Some(culprit_core::ScanReference {
+        id: Some(id.into()),
+        taken_at: at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        database: None,
+    })
+}
+
+fn read(dir: &Path, id: &str) -> Option<EventRecord> {
+    let saved: SavedEvents = std::fs::read(path(dir, id)).ok().and_then(|b| serde_json::from_slice(&b).ok())?;
+    Some(match saved {
+        SavedEvents::Recorded(record) => record,
+        SavedEvents::Legacy(events) => {
+            let mut inputs: Vec<_> = reference_for_id(id).into_iter().collect();
+            for event in &events {
+                if let Some(after) = &event.after {
+                    let reference = culprit_core::ScanReference::dated(after);
+                    if !inputs.contains(&reference) {
+                        inputs.push(reference);
+                    }
+                }
+            }
+            EventRecord { inputs, events }
+        }
+    })
 }
 
 fn write(dir: &Path, id: &str, events: &[ChangeEvent]) {
@@ -44,18 +82,59 @@ pub fn keep(dir: &Path, id: &str, events: &[ChangeEvent]) {
     write(dir, id, events);
 }
 
+fn event_inputs(current: &Snapshot, previous: Option<&Snapshot>) -> Vec<culprit_core::ScanReference> {
+    let mut inputs = vec![culprit_core::ScanReference::of(current)];
+    if let Some(previous) = previous.filter(|p| {
+        same_database(p, current) && epoch(&p.taken_at).zip(epoch(&current.taken_at)).is_some_and(|(a, b)| a < b)
+    }) {
+        inputs.push(culprit_core::ScanReference::of(previous));
+    }
+    inputs
+}
+
+pub(crate) fn keep_scan(dir: &Path, current: &Snapshot, previous: Option<&Snapshot>, events: &[ChangeEvent]) {
+    let record = EventRecord { inputs: event_inputs(current, previous), events: events.to_vec() };
+    if let Ok(json) = serde_json::to_vec(&record) {
+        let _ = private_fs::write_atomic(&path(dir, &current.id), &json);
+    }
+}
+
 /// Date the indexes that may be new ([`IndexStat::created_at_latest`]) from this scan's changes (`current`) and the
 /// earlier scans', so a check doesn't call an index unused before it has existed long enough to be read. Usage counters
 /// the scans saw start over date [`IndexStat::counters_since`] and [`culprit_core::TableStat::counters_since`], and
 /// count as a creation: what the counters say covers only the time since.
 pub fn date_new_indexes(dir: &Path, snapshot: &mut Snapshot, current: &[ChangeEvent]) {
-    let Some(now) = epoch(&snapshot.taken_at) else { return };
-    let mut known = events(dir, now - trends::HISTORY_DAYS * 86_400.0, now);
+    let _ = date_new_indexes_traced(dir, snapshot, current);
+}
+
+pub(crate) fn date_new_indexes_traced(
+    dir: &Path,
+    snapshot: &mut Snapshot,
+    current: &[ChangeEvent],
+) -> Vec<culprit_core::BaselineReference> {
+    let Some(now) = epoch(&snapshot.taken_at) else { return Vec::new() };
+    let (mut known, mut inputs) = events_traced(dir, now - trends::HISTORY_DAYS * 86_400.0, now, Some(snapshot));
     known.extend(current.iter().cloned());
-    let first_scan = reports::report_ids(dir).first().and_then(|id| reports::id_epoch(id)).filter(|t| *t < now);
+    let ids = reports::report_ids(dir);
+    // A saved connection can have pointed elsewhere. Only a scan of this database can show that its indexes
+    // already existed. Bound legacy report reads just as event backfill is bounded.
+    let first = ids
+        .iter()
+        .filter(|id| reports::id_epoch(id).is_some_and(|t| t < now))
+        .take(MAX_BACKFILL)
+        .filter_map(|id| reports::load_snapshot(&dir.join(format!("{id}.json"))).ok())
+        .find(|s| same_database(s, snapshot) && epoch(&s.taken_at).is_some_and(|t| t < now));
+    let first_scan = first.as_ref().and_then(|s| epoch(&s.taken_at));
+    if let Some(first) = first {
+        let reference = culprit_core::ScanReference::of(&first);
+        if !inputs.contains(&reference) {
+            inputs.push(reference);
+        }
+    }
     // MariaDB's userstat counts from when it was turned on (or FLUSH INDEX_STATISTICS), which nothing dates: as far as
     // anyone knows, from the first of the scans that saw it counting.
-    let userstat = usage_from_userstat(snapshot).then(|| userstat_since(dir, now).unwrap_or(snapshot.taken_at.clone()));
+    let userstat = usage_from_userstat(snapshot)
+        .then(|| userstat_since(dir, snapshot, now, &mut inputs).unwrap_or(snapshot.taken_at.clone()));
     let later = |a: Option<String>, b: Option<&String>| match (a, b) {
         (Some(a), Some(b)) => Some(if epoch(&a).unwrap_or(0.0) >= epoch(b).unwrap_or(0.0) { a } else { b.clone() }),
         (a, b) => a.or_else(|| b.cloned()),
@@ -72,6 +151,18 @@ pub fn date_new_indexes(dir: &Path, snapshot: &mut Snapshot, current: &[ChangeEv
     for t in &mut snapshot.tables {
         t.counters_since = latest_usage_reset(&t.qualified(), &known);
     }
+    let mut references = Vec::new();
+    for scan in inputs {
+        let reference = culprit_core::BaselineReference {
+            purpose: culprit_core::BaselinePurpose::IndexAge,
+            scan,
+            measurement: None,
+        };
+        if !references.contains(&reference) {
+            references.push(reference);
+        }
+    }
+    references
 }
 
 /// MariaDB counting index reads with userstat (performance_schema off).
@@ -85,7 +176,12 @@ const USERSTAT_SCANS: usize = 10;
 /// When the newest unbroken run of scans counting with userstat began: the counters have counted since at least then.
 /// `None` when no earlier scan did. A scan that counted otherwise, or not at all, ends the run: userstat was turned
 /// off, and its counters started over when it was turned back on.
-fn userstat_since(dir: &Path, now: f64) -> Option<String> {
+fn userstat_since(
+    dir: &Path,
+    current: &Snapshot,
+    now: f64,
+    inputs: &mut Vec<culprit_core::ScanReference>,
+) -> Option<String> {
     let mut since = None;
     for id in reports::report_ids(dir)
         .iter()
@@ -94,6 +190,10 @@ fn userstat_since(dir: &Path, now: f64) -> Option<String> {
         .take(USERSTAT_SCANS)
     {
         let Ok(r) = reports::load(&dir.join(format!("{id}.json"))) else { continue };
+        if !same_database(&r.snapshot, current) || epoch(&r.snapshot.taken_at).is_none_or(|t| t >= now) {
+            break;
+        }
+        inputs.push(culprit_core::ScanReference::of(&r.snapshot));
         if !usage_from_userstat(&r.snapshot) {
             break;
         }
@@ -206,16 +306,56 @@ fn latest_creation(i: &IndexStat, events: &[ChangeEvent], first_scan: Option<f64
 
 /// Everything Culprit's scans noticed in `[start, end]` (epoch seconds), oldest first.
 pub fn events(dir: &Path, start: f64, end: f64) -> Vec<ChangeEvent> {
+    events_traced(dir, start, end, None).0
+}
+
+fn events_traced(
+    dir: &Path,
+    start: f64,
+    end: f64,
+    current: Option<&Snapshot>,
+) -> (Vec<ChangeEvent>, Vec<culprit_core::ScanReference>) {
     let ids = reports::report_ids(dir);
     let mut out = Vec::new();
+    let mut inputs = Vec::new();
     let mut backfilled = 0;
     let mut previous: Option<Snapshot> = None;
     for (i, id) in ids.iter().enumerate() {
         // A scan's file holds what happened since the scan before it (or, for the first, what the database dated).
-        let wanted = reports::id_epoch(id).is_some_and(|t| t >= start - 1.0);
-        if let Some(events) = read(dir, id) {
+        let wanted = reports::id_epoch(id).is_some_and(|t| t >= start - 1.0 && (current.is_none() || t <= end));
+        if let Some(mut record) = read(dir, id) {
             if wanted {
-                out.extend(events);
+                if current.is_some() && record.inputs.iter().any(|r| r.database.is_none()) {
+                    // Old sidecars have dates but no database identity. Recover it from the actual reports, never
+                    // today's connection. Missing or incompatible evidence cannot establish an index's age.
+                    if backfilled >= MAX_BACKFILL {
+                        previous = None;
+                        continue;
+                    }
+                    backfilled += 1;
+                    let Ok(report) = reports::load(&dir.join(format!("{id}.json"))) else { continue };
+                    let scan = report.snapshot;
+                    let before = i
+                        .checked_sub(1)
+                        .and_then(|i| ids.get(i))
+                        .and_then(|id| reports::load_snapshot(&dir.join(format!("{id}.json"))).ok());
+                    // Recompute the comparison we can reproduce. The old interval's date does not identify a
+                    // particular parent scan (several ids can share a rounded timestamp).
+                    let mut recorded: Vec<_> =
+                        record.events.into_iter().filter(|e| e.source == EventSource::Database).collect();
+                    if let Some(evidence) = report.evidence {
+                        recorded.extend(evidence.recorded_changes);
+                    }
+                    record.events = diff(before.as_ref(), &scan, recorded);
+                    record.inputs = event_inputs(&scan, before.as_ref());
+                    keep_scan(dir, &scan, before.as_ref(), &record.events);
+                }
+                if current.is_none_or(|s| {
+                    !record.inputs.is_empty() && record.inputs.iter().all(|r| reference_matches(r, s, end))
+                }) {
+                    out.extend(record.events);
+                    inputs.extend(record.inputs);
+                }
             }
             previous = None;
             continue;
@@ -233,12 +373,26 @@ pub fn events(dir: &Path, start: f64, end: f64) -> Vec<ChangeEvent> {
             let prior = ids.get(i.checked_sub(1)?)?;
             reports::load(&dir.join(format!("{prior}.json"))).ok().map(|r| r.snapshot)
         });
-        let events = diff(before.as_ref(), &report.snapshot, Vec::new());
-        write(dir, id, &events);
-        out.extend(events);
+        let recorded = report.evidence.map(|e| e.recorded_changes).unwrap_or_default();
+        let events = diff(before.as_ref(), &report.snapshot, recorded);
+        let references = event_inputs(&report.snapshot, before.as_ref());
+        if current.is_none_or(|s| references.iter().all(|r| reference_matches(r, s, end))) {
+            inputs.extend(references);
+            out.extend(events.iter().cloned());
+        }
+        keep_scan(dir, &report.snapshot, before.as_ref(), &events);
         previous = Some(report.snapshot);
     }
-    in_range(out, start, end)
+    if current.is_some() {
+        // An interval ending after this scan cannot date an index yet, even if its beginning is inside the window.
+        out.retain(|e| e.end() <= end);
+    }
+    (in_range(out, start, end), inputs)
+}
+
+fn reference_matches(reference: &culprit_core::ScanReference, current: &Snapshot, end: f64) -> bool {
+    epoch(&reference.taken_at).is_some_and(|t| t <= end)
+        && reference.database.as_ref().is_some_and(|db| db.comparison(&current.database_identity()).allows_comparison())
 }
 
 /// What changed from `previous` to `current` (the same database), plus what the database dated itself (`recorded`).
@@ -881,6 +1035,128 @@ mod tests {
         date_new_indexes(&dir, &mut s, &[]);
         assert!(s.indexes.iter().all(|i| i.created_at_latest.as_deref() == Some("2026-10-03T08:00:00Z")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn index_age_uses_its_database_and_past_scans_and_upgrades_old_event_sidecars() {
+        let dir = std::env::temp_dir().join(format!("culprit-history-scoped-age-{}", std::process::id()));
+        let mut current = demo();
+        let bind = |s: &mut Snapshot, host: &str| {
+            s.bind_identity(culprit_core::DatabaseIdentity::server(
+                s.server.engine,
+                &s.server.database.clone(),
+                host,
+                5432,
+                None,
+            ));
+        };
+        bind(&mut current, "current.invalid");
+        current.id = "20261012T080000.000Z".into();
+        current.taken_at = "2026-10-12T08:00:00Z".into();
+        let index = &current.indexes[0];
+        let created = |at: &str| {
+            ChangeEvent::new(EventKind::Index, EventSource::Scans, "created", at, "created")
+                .action(EventAction::Created)
+                .table(index.qualified_table())
+                .object(index.name.clone())
+        };
+        let mut own = current.clone();
+        own.id = "20261010T080000.000Z".into();
+        own.taken_at = "2026-10-10T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(own.clone())).unwrap();
+        // Existing Vec sidecars remain useful, but their identity must come from their saved report.
+        let mut dated_creation = created("2026-10-09T08:00:00Z");
+        dated_creation.source = EventSource::Database;
+        keep(&dir, &own.id, &[dated_creation]);
+        let mut foreign = own.clone();
+        bind(&mut foreign, "foreign.invalid");
+        foreign.id = "20261011T080000.000Z".into();
+        foreign.taken_at = "2026-10-11T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(foreign.clone())).unwrap();
+        keep_scan(&dir, &foreign, None, &[created(&foreign.taken_at)]);
+        let mut future = current.clone();
+        future.id = "20261013T080000.000Z".into();
+        future.taken_at = "2026-10-13T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(future.clone())).unwrap();
+        keep_scan(&dir, &future, Some(&own), &[created(&future.taken_at).between(&own.taken_at)]);
+        let references = date_new_indexes_traced(&dir, &mut current, &[]);
+        assert_eq!(current.indexes[0].created_at_latest.as_deref(), Some("2026-10-09T08:00:00Z"));
+        assert!(!references.is_empty());
+        assert!(references.iter().all(|r| r.scan.id.as_deref() == Some(own.id.as_str())));
+        assert!(read(&dir, &own.id).unwrap().inputs[0].database.is_some());
+        // A database-dated table alteration before this database's first scan may have created its indexes.
+        // A much older scan of another endpoint must not make that evidence disappear.
+        foreign.id = "20261001T080000.000Z".into();
+        foreign.taken_at = "2026-10-01T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(foreign)).unwrap();
+        let alteration =
+            ChangeEvent::new(EventKind::Table, EventSource::Database, "table", "2026-10-09T12:00:00Z", "altered")
+                .table(current.indexes[0].qualified_table())
+                .action(EventAction::Changed);
+        date_new_indexes(&dir, &mut current, &[alteration]);
+        assert_eq!(current.indexes[0].created_at_latest.as_deref(), Some("2026-10-09T12:00:00Z"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_event_sidecar_recovers_database_recorded_changes_from_the_report() {
+        let dir = std::env::temp_dir().join(format!("culprit-history-recorded-recovery-{}", std::process::id()));
+        let mut current = demo();
+        current.id = "20261012T080000.000Z".into();
+        current.taken_at = "2026-10-12T08:00:00Z".into();
+        let mut report = culprit_checks::analyze(current.clone());
+        let event = ChangeEvent::new(
+            EventKind::Table,
+            EventSource::Database,
+            "procedure",
+            "2026-10-11T08:00:00Z",
+            "a dated alteration",
+        )
+        .table("public.procedure")
+        .action(EventAction::Changed);
+        report.evidence.as_mut().unwrap().recorded_changes.push(event.clone());
+        reports::save(&dir, &report).unwrap();
+        let start = epoch("2026-10-10T00:00:00Z").unwrap();
+        let end = epoch(&current.taken_at).unwrap();
+        assert!(events(&dir, start, end).iter().any(|e| e.id == event.id));
+        assert!(read(&dir, &current.id).unwrap().events.iter().any(|e| e.id == event.id));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn userstat_history_stops_at_a_different_database() {
+        let dir = std::env::temp_dir().join(format!("culprit-history-userstat-scope-{}", std::process::id()));
+        let mut current = demo();
+        current.server.engine = Engine::Mysql;
+        current.server.product = "MariaDB 10.11".into();
+        current.server.capabilities.retain(|c| *c != Capability::PerformanceSchema);
+        current.server.capabilities.push(Capability::IndexUsage);
+        current.bind_identity(culprit_core::DatabaseIdentity::server(
+            Engine::Mysql,
+            &current.server.database.clone(),
+            "current.invalid",
+            3306,
+            None,
+        ));
+        current.id = "20261012T080000.000Z".into();
+        current.taken_at = "2026-10-12T08:00:00Z".into();
+        let mut old = current.clone();
+        old.id = "20261010T080000.000Z".into();
+        old.taken_at = "2026-10-10T08:00:00Z".into();
+        reports::save(&dir, &culprit_checks::analyze(old.clone())).unwrap();
+        old.id = "20261011T080000.000Z".into();
+        old.taken_at = "2026-10-11T08:00:00Z".into();
+        old.bind_identity(culprit_core::DatabaseIdentity::server(
+            Engine::Mysql,
+            &old.server.database.clone(),
+            "foreign.invalid",
+            3306,
+            None,
+        ));
+        reports::save(&dir, &culprit_checks::analyze(old)).unwrap();
+        date_new_indexes(&dir, &mut current, &[]);
+        assert!(current.indexes.iter().all(|i| i.counters_since.as_deref() == Some(current.taken_at.as_str())));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn mssql_demo() -> Snapshot {

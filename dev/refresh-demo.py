@@ -32,6 +32,8 @@ def main():
     # Read every input before replacing any report.
     reports = [(path, cli("analyze", path)) for path in paths]
     for path, report in reports:
+        # Match the desktop projection: replay evidence belongs in saved scan artifacts, not the browser bundle.
+        report.pop("evidence", None)
         write(path, report)
     write(FIXTURES / "checks.sample.json", cli("checks"))
     for filename, command in [("dashboard.sample.json", "dashboard"), ("index-advice.sample.json", "indexes")]:

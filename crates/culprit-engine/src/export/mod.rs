@@ -119,7 +119,7 @@ pub(crate) fn prepared<'a>(plan: &'a Plan, options: &ExportOptions) -> Cow<'a, P
 /// The report as it may leave the machine: checked again from its redacted snapshot, so every finding's text quotes
 /// only SQL the lexer has already redacted.
 pub(crate) fn shared_report(report: &Report) -> Report {
-    culprit_checks::analyze(culprit_core::redact::redact_snapshot(&report.snapshot))
+    crate::analysis::shared(report.clone().into(), &[])
 }
 
 /// `finding` as it may leave the machine: the same finding from `shared` (see [`shared_report`]) with its prose

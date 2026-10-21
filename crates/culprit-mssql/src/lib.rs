@@ -37,6 +37,15 @@ pub use ado::parse_ado;
 use conn::{MsClient, Pool, SessionKind, connect};
 use probe::Probe;
 
+/// Identity of this crate's collector and native-plan parser, including a build revision when supplied.
+pub fn component_version() -> culprit_core::ComponentVersion {
+    culprit_core::ComponentVersion::package(
+        "culprit-mssql",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CULPRIT_BUILD_REVISION").or(option_env!("GITHUB_SHA")),
+    )
+}
+
 pub struct MssqlProvider {
     endpoint_host: String,
     endpoint_port: u16,
@@ -306,6 +315,10 @@ impl MssqlProvider {
 
 #[async_trait]
 impl Provider for MssqlProvider {
+    fn collector_version(&self) -> culprit_core::ComponentVersion {
+        component_version()
+    }
+
     fn engine(&self) -> Engine {
         Engine::Mssql
     }

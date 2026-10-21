@@ -764,6 +764,209 @@
       ]
     }
   ],
+  "provenance": {
+    "analyzer": {
+      "component": "culprit-checks",
+      "revision": null,
+      "version": "0.3.9"
+    },
+    "baselines": [],
+    "collection": null,
+    "extensions": [],
+    "origin": "prepared-report",
+    "parsing": [
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "04cd7be9c366fadc"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "19bd4ff468839ea3"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "c7b5ac9bb4bcecfe"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "9b30e6ad79d940fe"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "17f97e6ec7a22e0a"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "reparsed",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "b4c0f3861e32013e"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "no-native-text",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "4167fe7f2c20deb7"
+      },
+      {
+        "engine": "mysql",
+        "outcome": "no-native-text",
+        "parser": {
+          "component": "culprit-mysql",
+          "revision": null,
+          "version": "0.3.9"
+        },
+        "query": "7f47c8550af0c644"
+      }
+    ],
+    "pipeline": {
+      "checks": [
+        "missing-index",
+        "filtered-scan",
+        "unused-index",
+        "duplicate-index",
+        "unindexed-fk",
+        "overlapping-index",
+        "over-indexed",
+        "scan-heavy",
+        "tuning-advice",
+        "query-family",
+        "logged-errors",
+        "repeated-request",
+        "heavy-query",
+        "chatty-query",
+        "plan-warnings",
+        "plan-insights",
+        "plan-regression",
+        "regression",
+        "unstable-query",
+        "parameter-sensitive",
+        "temp-spill",
+        "stale-stats",
+        "heap-table",
+        "dead-rows",
+        "xid-age",
+        "multixact-age",
+        "config",
+        "deadlocks",
+        "memory-grant",
+        "memory-queue",
+        "compile-pressure",
+        "worker-pressure",
+        "held-cleanup",
+        "network-wait",
+        "tier-limit",
+        "checkpoint-pressure",
+        "row-lock-waits",
+        "storage-capacity",
+        "sequence-capacity",
+        "operational-errors",
+        "cluster-health",
+        "sqlite-wal",
+        "failing-query",
+        "planning-time",
+        "jit-overhead",
+        "log-volume",
+        "lock-time",
+        "big-result",
+        "hot-rows",
+        "lock-escalations",
+        "last-page-insert",
+        "untrusted-constraint",
+        "missing-histogram",
+        "hot-updates",
+        "table-bloat",
+        "large-rows",
+        "slow-storage",
+        "connection-churn",
+        "replica-lag",
+        "last-actual-plans"
+      ],
+      "prepare": [
+        "measurement context identifies this database and its clock",
+        "index availability and maintenance follow the engine",
+        "CTE writes named for their base table",
+        "plans captured before a column changed type",
+        "MySQL's possible keys named with their columns",
+        "plan operators marked with their index's kind",
+        "saved storage counters retain their source scope",
+        "health counters graded only on the evidence",
+        "PostgreSQL's WAL time kept out of statement time",
+        "MariaDB's lock time unknown where it counts the whole run",
+        "a scan's filter judged by what its runs measured"
+      ],
+      "refine": [
+        "a missing-index request absorbs the scan behind it",
+        "a plan's index request is the finding for its table and key",
+        "a rewrite, not an index, fixes a scan behind a function or wildcard",
+        "a spill explains the big sort",
+        "a spill carries the result it sorts",
+        "an index to add covers the foreign key",
+        "an index the engine builds for itself is the foreign key's",
+        "an index to add replaces a histogram",
+        "a regression carries its plan change",
+        "one plan story per query",
+        "a scan that came with a plan change carries the regression",
+        "dead rows are the table's empty space",
+        "updates that aren't HOT explain their WAL",
+        "large values explain the log their writes make",
+        "one lock episode on a table",
+        "one blocking chain on a table",
+        "the plan cache finding carries the compile load",
+        "dead rows absorb the table's stale statistics",
+        "a replication slot's finding carries the cleanup it holds back",
+        "waiting on the application explains a heavy query",
+        "a heavy query another finding explains",
+        "statements that stopped running",
+        "nothing is created for statements that stopped",
+        "statements that ran once",
+        "a table that is gone has nothing to change",
+        "a finding whose statements stopped has nothing to check",
+        "query-driven index changes need measured work",
+        "query evidence leads with absolute cost and period",
+        "names without the database",
+        "a caveat repeats nothing the summary or the fix says"
+      ]
+    },
+    "previous_analyzer": null
+  },
   "refinement": [
     {
       "finding": "lock-time:fc709554a9248878",

@@ -423,6 +423,7 @@ mod tests {
 
     fn counters(at: &str, total: [f64; 2], queries: &[(&str, f64, f64, Option<&str>)]) -> Counters {
         Counters {
+            reference: None,
             measurement: None,
             taken_at: at.into(),
             source: "pg_stat_statements".into(),

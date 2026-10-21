@@ -123,6 +123,8 @@ fn add_discovered(ws: Ws, items: Vec<DiscoveredDatabase>) -> Result<Vec<Connecti
 fn for_ui(report: Report) -> Report {
     // Reports saved before plans were checked against the catalog: mark them too.
     let mut report = culprit_engine::reading::for_reading(report);
+    // Replay evidence stays with the saved report; the UI only needs the prepared view and its provenance.
+    report.evidence = None;
     if let Some(workload) = report.snapshot.workload.as_mut() {
         for plan in workload.queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
             plan.raw = None;
@@ -720,5 +722,36 @@ pub fn run() {
     if let Err(e) = run_app() {
         eprintln!("culprit: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod report_projection_tests {
+    #[test]
+    fn ui_omits_replay_copies_and_native_text_while_keeping_provenance_and_views() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/mssql-demo.json");
+        let mut report = culprit_engine::reading::open(&path).unwrap();
+        let collected = report.analysis_input().clone();
+        report.evidence.as_mut().unwrap().collected = Some(Box::new(collected));
+        let provenance = serde_json::to_value(&report.provenance).unwrap();
+        for plan in report.snapshot.workload.as_mut().unwrap().queries.iter_mut().filter_map(|q| q.plan.as_mut()) {
+            plan.raw = Some("PRIVATE_NATIVE_PLAN".into());
+        }
+        let started = std::time::Instant::now();
+        let stored_bytes = serde_json::to_vec(&report).unwrap().len();
+        let stored_serialization = started.elapsed();
+        let ui = super::for_ui(report);
+        assert!(ui.evidence.is_none());
+        assert_eq!(serde_json::to_value(&ui.provenance).unwrap(), provenance);
+        assert!(
+            ui.snapshot.queries().iter().filter_map(|q| q.plan.as_ref()).all(|p| p.raw.is_none() && p.view.is_some())
+        );
+        let projection = serde_json::to_vec(&ui).unwrap();
+        assert!(!String::from_utf8_lossy(&projection).contains("PRIVATE_NATIVE_PLAN"));
+        assert!(projection.len() < stored_bytes);
+        eprintln!(
+            "report projection: {stored_bytes} stored bytes, {} UI bytes; stored serialization {stored_serialization:?}",
+            projection.len()
+        );
     }
 }

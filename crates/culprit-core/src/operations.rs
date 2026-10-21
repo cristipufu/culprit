@@ -77,6 +77,9 @@ pub enum OperationalCounterKind {
 pub struct CounterReading {
     pub at: String,
     pub count: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reference: Option<crate::ScanReference>,
 }
 
 #[derive(Serialize, Deserialize, TS, Clone, Debug)]
@@ -196,14 +199,17 @@ pub fn compare(previous: &Snapshot, current: &mut Snapshot) {
                     && p.since == counter.since
                     && counter.count >= p.count
             })
-            .map(|p| CounterReading { at: previous.taken_at.clone(), count: p.count });
+            .map(|p| CounterReading {
+                at: previous.taken_at.clone(),
+                count: p.count,
+                reference: Some(crate::ScanReference::of(previous)),
+            });
     }
     if let Some(sqlite) = &mut current.operations.sqlite {
-        sqlite.before = previous
-            .operations
-            .sqlite
-            .as_ref()
-            .and_then(|p| p.wal_bytes)
-            .map(|count| CounterReading { at: previous.taken_at.clone(), count });
+        sqlite.before = previous.operations.sqlite.as_ref().and_then(|p| p.wal_bytes).map(|count| CounterReading {
+            at: previous.taken_at.clone(),
+            count,
+            reference: Some(crate::ScanReference::of(previous)),
+        });
     }
 }

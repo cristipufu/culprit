@@ -197,3 +197,30 @@ fn text_metrics_keep_their_label_and_full_escaped_evidence() {
         assert!(!html.contains("<img src=x") && !html.contains("Evidence <label>"));
     }
 }
+
+#[test]
+fn sharing_uses_retained_input_and_never_copies_private_archived_evidence() {
+    let mut report = report_with_planted_values();
+    let tables = report.analysis_input().tables.len();
+    let mut collected = report.analysis_input().clone();
+    collected.workload.as_mut().unwrap().queries[0].text = "SELECT 'ARCHIVED_PRIVATE_VALUE'".into();
+    let evidence = report.evidence.as_mut().unwrap();
+    evidence.collected = Some(Box::new(collected));
+    evidence.recorded_changes.push(culprit_core::ChangeEvent::new(
+        culprit_core::EventKind::Table,
+        culprit_core::EventSource::Database,
+        "private",
+        "2026-10-10T00:00:00Z",
+        "ARCHIVED_PRIVATE_CHANGE",
+    ));
+    report.snapshot.tables.clear();
+    let shared = shared_report(&report);
+    assert_eq!(shared.snapshot.tables.len(), tables);
+    let evidence = shared.evidence.as_ref().unwrap();
+    assert!(evidence.collected.is_none());
+    assert!(evidence.recorded_changes.is_empty());
+    let json = serde_json::to_string(&shared).unwrap();
+    for private in ["ARCHIVED_PRIVATE_VALUE", "ARCHIVED_PRIVATE_CHANGE", "PLANTED-1", "PLANTED-2", "PLANTED-3"] {
+        assert!(!json.contains(private), "{private} escaped through shared replay evidence");
+    }
+}

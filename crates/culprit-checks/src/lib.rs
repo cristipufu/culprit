@@ -10,6 +10,8 @@
 mod checks;
 pub mod evidence;
 pub mod pipeline;
+#[cfg(test)]
+mod provenance_tests;
 mod refine;
 mod summary;
 pub(crate) mod support;

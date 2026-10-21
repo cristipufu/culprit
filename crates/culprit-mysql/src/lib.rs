@@ -35,6 +35,15 @@ use serde_json::Value as Json;
 use connect::{Connector, Flavor, Scope, map_error};
 use rows::{explain_one, query, query_one, tagged, value_text};
 
+/// Identity of this crate's collector and native-plan parser, including a build revision when supplied.
+pub fn component_version() -> culprit_core::ComponentVersion {
+    culprit_core::ComponentVersion::package(
+        "culprit-mysql",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CULPRIT_BUILD_REVISION").or(option_env!("GITHUB_SHA")),
+    )
+}
+
 pub struct MysqlProvider {
     connector: Connector,
     spec: ConnectionSpec,
@@ -163,6 +172,10 @@ fn parameter_error(e: Error) -> Error {
 
 #[async_trait]
 impl Provider for MysqlProvider {
+    fn collector_version(&self) -> culprit_core::ComponentVersion {
+        component_version()
+    }
+
     fn engine(&self) -> Engine {
         Engine::Mysql
     }

@@ -285,4 +285,17 @@ pub struct Report {
     pub assessments: Vec<crate::check::CheckAssessment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refinement: Vec<crate::RefinementDecision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provenance: Option<crate::AnalysisProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub evidence: Option<crate::ReportEvidence>,
+}
+
+impl Report {
+    /// Older reports retain their prepared snapshot as the only available input, without claiming it is original.
+    pub fn analysis_input(&self) -> &Snapshot {
+        self.evidence.as_ref().map_or(&self.snapshot, |e| e.input.as_ref())
+    }
 }

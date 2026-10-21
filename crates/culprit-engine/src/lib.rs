@@ -1,4 +1,5 @@
 pub mod agent;
+mod analysis;
 pub mod aws;
 pub mod catalog;
 pub mod changes;
@@ -282,19 +283,18 @@ impl Workspace {
 
     /// Re-run the checks on a snapshot or report file, so improved checks apply to old scans and shared snapshots.
     pub fn analyze_file(&self, path: &std::path::Path) -> Result<Report> {
-        let mut snapshot = reports::load_snapshot(path)?;
+        let mut input = reports::load_analysis_input(path)?;
         if let Some(dir) = path.parent() {
-            reports::rebase_on_scans(dir, &mut snapshot);
+            reports::rebase_on_scans(dir, &mut input.snapshot);
         }
-        Ok(self.reread(snapshot))
+        Ok(self.reread(input))
     }
 
     /// A saved scan as this version of Culprit reads it: its plans parsed again from the text they were captured as
     /// ([`plans::reparse_saved`]) and its checks run again, so a fix to a parser or a check reaches the scans saved
     /// before it, and what a person reads in an old scan is what a scan taken now would say about the same data.
-    fn reread(&self, mut snapshot: culprit_core::Snapshot) -> Report {
-        plans::reparse_saved(&mut snapshot);
-        culprit_checks::analyze_with(snapshot, &self.extra_checks)
+    fn reread(&self, input: analysis::Input) -> Report {
+        analysis::reread(input, &self.extra_checks)
     }
 
     pub fn paths(&self) -> &Paths {
@@ -720,6 +720,14 @@ impl Workspace {
                 Vec::new()
             }
         };
+        // Retain the provider's observations before history dates counters, fills periods or sets aside replica use.
+        let collected = snapshot.clone();
+        let collection = culprit_core::CollectionProvenance {
+            collector: provider.collector_version(),
+            started_at: snapshot.taken_at.clone(),
+            completed_at: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        };
+        let recorded_evidence = recorded.clone();
         let previous = previous
             .filter(|p| p.id != snapshot.id)
             .and_then(|p| reports::load(&dir.join(format!("{}.json", p.id))).ok())
@@ -732,7 +740,12 @@ impl Workspace {
             // A source that can't say when it started counting (pg_stat_statements before 14) gets its window from the
             // scan before.
             let before = same_database.and_then(|p| Some((p.workload.as_ref()?, p.taken_at.as_str())));
-            trends::infer_window(workload, before, &snapshot.taken_at);
+            trends::infer_window_referenced(
+                workload,
+                before,
+                &snapshot.taken_at,
+                same_database.map(culprit_core::ScanReference::of),
+            );
             let history = reports::counters_history(&dir, &snapshot.taken_at);
             if workload.timeline.is_none() {
                 trends::from_scans(workload, &snapshot.server.database, &snapshot.taken_at, evictions, &history);
@@ -743,7 +756,7 @@ impl Workspace {
         // This scan's changes come before the checks: an index the scans saw appear this week isn't unused yet, nor
         // one whose usage counters started over.
         let changes = history::diff(previous.as_ref(), &snapshot, recorded);
-        history::date_new_indexes(&dir, &mut snapshot, &changes);
+        let age_inputs = history::date_new_indexes_traced(&dir, &mut snapshot, &changes);
         // Lock escalations are counted since startup with no time for each: the previous scan's counts tell new ones.
         snapshot.escalations_before =
             previous.as_ref().and_then(|p| culprit_core::EscalationBaseline::from_scan(p, &snapshot));
@@ -762,9 +775,10 @@ impl Workspace {
         if let Some(previous) = previous.as_ref().filter(|p| history::same_database(p, &snapshot)) {
             culprit_core::operations::compare(previous, &mut snapshot);
         }
-        let report = culprit_checks::analyze_with(snapshot, &self.extra_checks);
+        let report =
+            analysis::collected(snapshot, collected, collection, recorded_evidence, age_inputs, &self.extra_checks);
         reports::save(&dir, &report)?;
-        history::keep(&dir, &report.snapshot.id, &changes);
+        history::keep_scan(&dir, &report.snapshot, previous.as_ref(), &changes);
         Ok(report)
     }
 
@@ -773,9 +787,9 @@ impl Workspace {
     pub fn latest_report(&self, name: &str, window_minutes: Option<u32>) -> Result<Option<Report>> {
         let dir = self.paths.reports_dir(name);
         Ok(reports::latest(&dir, window_minutes)?.map(|r| {
-            let mut snapshot = r.snapshot;
-            reports::rebase_on_scans(&dir, &mut snapshot);
-            self.reread(snapshot)
+            let mut input = analysis::Input::from(r);
+            reports::rebase_on_scans(&dir, &mut input.snapshot);
+            self.reread(input)
         }))
     }
 
@@ -796,20 +810,25 @@ impl Workspace {
     ) -> Result<culprit_core::Digest> {
         // A digest is posted where the database's data must not go: every report it reads is checked again from its
         // redacted snapshot, so titles, headlines and details can only quote SQL the lexer has already redacted.
-        let recheck = |r: Report| {
-            culprit_checks::analyze_with(culprit_core::redact::redact_snapshot(&r.snapshot), &self.extra_checks)
-        };
+        let recheck = |input: analysis::Input| analysis::shared(input, &self.extra_checks);
         // Plans are read again from their text before the redaction drops it.
         let load = |name: &str, id: &str| {
             let dir = self.paths.reports_dir(name);
-            reports::load(&dir.join(format!("{id}.json"))).map(|mut r| {
-                plans::reparse_saved(&mut r.snapshot);
-                reports::rebase_on_scans(&dir, &mut r.snapshot);
-                r
+            reports::load(&dir.join(format!("{id}.json"))).map(|r| {
+                let mut input = analysis::Input::from(r);
+                reports::rebase_on_scans(&dir, &mut input.snapshot);
+                input
             })
         };
+        let load_file = |path: &std::path::Path| -> Result<analysis::Input> {
+            let mut input = reports::load_analysis_input(path)?;
+            if let Some(dir) = path.parent() {
+                reports::rebase_on_scans(dir, &mut input.snapshot);
+            }
+            Ok(input)
+        };
         let mut current = match (report, name) {
-            (Some(path), _) => self.analyze_file(path)?,
+            (Some(path), _) => load_file(path)?,
             (None, Some(name)) => {
                 let latest = reports::list(&self.paths.reports_dir(name))?.into_iter().next().ok_or_else(|| {
                     Error::not_found(format!("No saved report for '{name}'"))
@@ -839,7 +858,7 @@ impl Workspace {
         // The scan before, over the same window: a 7-day scan next to a 24-hour one would show findings coming and
         // going that only the window explains.
         let previous = match (since, name, report) {
-            (Some(path), _, _) => Some(recheck(self.analyze_file(path)?)),
+            (Some(path), _, _) => Some(recheck(load_file(path)?)),
             (None, Some(name), None) => {
                 let history = reports::list(&self.paths.reports_dir(name))?;
                 let window = history.first().and_then(|r| r.window());
@@ -879,7 +898,7 @@ impl Workspace {
 
     /// The index advisor's plan for a report already in hand (a saved file, a fixture).
     pub fn index_advice_for(&self, report: Report) -> culprit_core::IndexAdvice {
-        culprit_checks::index_advice(&self.reread(report.snapshot))
+        culprit_checks::index_advice(&self.reread(report.into()))
     }
 
     /// Advice for the exact scan displayed by a client, including its workload window. Never falls back to a

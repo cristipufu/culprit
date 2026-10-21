@@ -354,6 +354,8 @@ pub struct Workload {
     // Typed measurement context; legacy fields remain readable in older reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement: Option<crate::measurement::MeasurementContext>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history_inputs: Vec<crate::BaselineReference>,
 }
 
 /// "7 days", "10 hours", "35 minutes": a window's length in words.
@@ -1879,6 +1881,7 @@ mod tests {
     #[test]
     fn how_often_never_extrapolates_a_short_window() {
         let w = |hours: f64, windowed: bool| Workload {
+            history_inputs: Vec::new(),
             measurement: None,
             source: "Query Store".into(),
             kind: Some(WorkloadKind::QueryStore),

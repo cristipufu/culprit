@@ -26,6 +26,9 @@ pub trait Prepare: Send + Sync {
     /// What it corrects, in a few words.
     fn name(&self) -> &str;
     fn prepare(&self, snapshot: &mut Snapshot);
+    fn version(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A rule over all the findings, after every check ran: merge two findings about one cause, or say that a finding
@@ -34,6 +37,9 @@ pub trait Refine: Send + Sync {
     /// What it fixes, in a few words.
     fn name(&self) -> &str;
     fn refine(&self, snapshot: &Snapshot, findings: &mut Vec<Finding>);
+    fn version(&self) -> Option<&str> {
+        None
+    }
 
     /// Apply the rule and expose its decisions. Existing extensions keep their original implementation; the default
     /// records invocation without pretending to know their policy. A structured rule decides before rendering prose.
@@ -242,6 +248,7 @@ pub struct Pipeline {
     prepare: Vec<Arc<dyn Prepare>>,
     checks: Vec<Arc<dyn Check>>,
     refine: Vec<Arc<dyn Refine>>,
+    extensions: Vec<culprit_core::AnalysisExtension>,
 }
 
 impl Pipeline {
@@ -251,6 +258,7 @@ impl Pipeline {
             prepare: preparation(),
             checks: crate::all().into_iter().map(Arc::from).collect(),
             refine: crate::refine::rules(),
+            extensions: Vec::new(),
         }
     }
 
@@ -259,6 +267,11 @@ impl Pipeline {
     pub fn with_check(mut self, check: Arc<dyn Check>) -> Self {
         let id = check.info().id;
         if !self.checks.iter().any(|c| c.info().id == id) {
+            self.extensions.push(culprit_core::AnalysisExtension {
+                stage: culprit_core::AnalysisStage::Check,
+                id,
+                version: check.version().map(str::to_string),
+            });
             self.checks.push(check);
         }
         self
@@ -266,12 +279,22 @@ impl Pipeline {
 
     /// Adds a preparation step after the built-in ones.
     pub fn with_prepare(mut self, step: Arc<dyn Prepare>) -> Self {
+        self.extensions.push(culprit_core::AnalysisExtension {
+            stage: culprit_core::AnalysisStage::Prepare,
+            id: step.name().into(),
+            version: step.version().map(str::to_string),
+        });
         self.prepare.push(step);
         self
     }
 
     /// Adds a rule after the built-in ones, before ranking.
     pub fn with_refine(mut self, rule: Arc<dyn Refine>) -> Self {
+        self.extensions.push(culprit_core::AnalysisExtension {
+            stage: culprit_core::AnalysisStage::Refine,
+            id: rule.name().into(),
+            version: rule.version().map(str::to_string),
+        });
         self.refine.push(rule);
         self
     }
@@ -283,6 +306,29 @@ impl Pipeline {
 
     /// Prepare, detect, refine, rank and summarize.
     pub fn run(&self, mut snapshot: Snapshot) -> Report {
+        let evidence = Some(culprit_core::ReportEvidence {
+            input: Box::new(snapshot.clone()),
+            collected: None,
+            recorded_changes: Vec::new(),
+        });
+        let provenance = Some(culprit_core::AnalysisProvenance {
+            analyzer: culprit_core::ComponentVersion::package(
+                "culprit-checks",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("CULPRIT_BUILD_REVISION").or(option_env!("GITHUB_SHA")),
+            ),
+            pipeline: culprit_core::PipelineProvenance {
+                prepare: self.prepare.iter().map(|s| s.name().into()).collect(),
+                checks: self.checks.iter().map(|c| c.info().id).collect(),
+                refine: self.refine.iter().map(|r| r.name().into()).collect(),
+            },
+            extensions: self.extensions.clone(),
+            origin: culprit_core::AnalysisOrigin::Snapshot,
+            collection: None,
+            previous_analyzer: None,
+            parsing: Vec::new(),
+            baselines: snapshot.baseline_references(),
+        });
         for step in &self.prepare {
             step.prepare(&mut snapshot);
         }
@@ -371,7 +417,7 @@ impl Pipeline {
                 assessment.status = culprit_core::CheckStatus::Findings;
             }
         }
-        Report { snapshot, findings, locked, summary, assessments, refinement }
+        Report { snapshot, findings, locked, summary, assessments, refinement, provenance, evidence }
     }
 }
 

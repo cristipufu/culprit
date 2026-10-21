@@ -33,6 +33,15 @@ use rows::{iso, parse_array, query, query_one, rows_of, tagged};
 
 const CURSOR: &str = "culprit_cursor";
 
+/// Identity of this crate's collector and native-plan parser, including a build revision when supplied.
+pub fn component_version() -> culprit_core::ComponentVersion {
+    culprit_core::ComponentVersion::package(
+        "culprit-postgres",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("CULPRIT_BUILD_REVISION").or(option_env!("GITHUB_SHA")),
+    )
+}
+
 pub struct PostgresProvider {
     connector: Connector,
     spec: ConnectionSpec,
@@ -55,6 +64,10 @@ impl PostgresProvider {
 
 #[async_trait]
 impl Provider for PostgresProvider {
+    fn collector_version(&self) -> culprit_core::ComponentVersion {
+        component_version()
+    }
+
     fn engine(&self) -> Engine {
         Engine::Postgres
     }

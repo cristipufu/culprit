@@ -60,6 +60,11 @@ pub enum ExplainMode {
 pub trait Provider: Send + Sync {
     fn engine(&self) -> Engine;
 
+    /// The collector that actually supplied this snapshot. Runtime wrappers need not claim a builtin's version.
+    fn collector_version(&self) -> crate::ComponentVersion {
+        crate::ComponentVersion::unknown("external provider")
+    }
+
     /// Connect, identify the server and report which capabilities this login can use. Cheap; used by `conn test` and `doctor`.
     async fn probe(&self) -> Result<ServerInfo>;
 

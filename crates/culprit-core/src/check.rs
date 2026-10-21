@@ -36,6 +36,10 @@ pub struct CheckAssessment {
 pub trait Check: Send + Sync {
     fn info(&self) -> CheckInfo;
     fn run(&self, snapshot: &Snapshot) -> Vec<Finding>;
+    /// The extension's version, when its author records one. It never inherits Culprit's own package version.
+    fn version(&self) -> Option<&str> {
+        None
+    }
     /// Embedders can declare positive evidence too. Existing plugins still run, without claiming a negative result.
     fn evidence(&self, _snapshot: &Snapshot) -> CheckEvidence {
         CheckEvidence::Insufficient(

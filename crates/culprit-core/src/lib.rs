@@ -30,6 +30,7 @@ pub mod plan_facts;
 mod plan_facts_tests;
 pub mod plan_view;
 pub mod platform;
+pub mod provenance;
 pub mod provider;
 pub mod redact;
 pub mod refinement;
@@ -75,6 +76,11 @@ pub use plan_facts::{
 };
 pub use plan_view::{PlanInsightShare, PlanOperatorView, PlanView};
 pub use platform::Platform;
+pub use provenance::{
+    AnalysisExtension, AnalysisOrigin, AnalysisProvenance, AnalysisStage, BaselinePurpose, BaselineReference,
+    CollectionProvenance, ComponentVersion, PipelineProvenance, PlanParsingOutcome, PlanParsingProvenance,
+    ReportEvidence, ScanReference,
+};
 pub use provider::{ExplainMode, Provider, SnapshotOptions};
 pub use refinement::{FixWithholdingBasis, HistoryBasis, PresentationAspect, RefinementDecision, RefinementOutcome};
 pub use signals::{
