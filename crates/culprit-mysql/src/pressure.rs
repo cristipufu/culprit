@@ -95,6 +95,7 @@ async fn status(conn: &mut Conn) -> Result<HashMap<String, f64>> {
             "Uptime",
             "Innodb_buffer_pool_reads",
             "Innodb_buffer_pool_read_requests",
+            "Innodb_buffer_pool_wait_free",
             "Created_tmp_disk_tables",
             "Created_tmp_tables",
             "Questions",
@@ -205,6 +206,15 @@ pub async fn collect(conn: &mut Conn) -> (Pressure, Coverage) {
                     SignalScope::SinceStartup,
                 ));
             }
+        }
+        if let Some(waits) = get("Innodb_buffer_pool_wait_free").filter(|w| *w > 0.0) {
+            p.signals.push(Signal::new(
+                "buffer-pool-wait-free",
+                "Buffer pool free-page waits",
+                waits,
+                SignalUnit::Count,
+                SignalScope::SinceStartup,
+            ));
         }
         if let (Some(disk), Some(all)) =
             (get("Created_tmp_disk_tables"), get("Created_tmp_tables").filter(|t| *t > 0.0))

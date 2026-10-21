@@ -846,3 +846,19 @@ fn replicas_lagging_stopped_and_slots() {
     assert_eq!(f[0].title, "Replication to this server has stopped (applying stopped (SQL thread))");
     assert!(f[0].summary.contains("1062 duplicate key"));
 }
+
+#[test]
+fn bloated_default_partition_is_flagged() {
+    let mut s = snapshot_with(Engine::Postgres);
+    let mut part = s.tables[0].clone();
+    part.name = "events_default".into();
+    part.partition_of = Some("public.events".into());
+    part.rows = Some(250_000.0);
+    part.data_bytes = Some(120.0 * MB);
+    part.storage = Some(TableStorage { options: vec!["partition_bound=DEFAULT".into()], ..Default::default() });
+    s.tables.push(part);
+    let out = table_bloat(&s);
+    let f = out.iter().find(|f| f.id.starts_with("table-bloat:default-partition:")).expect("default partition finding");
+    assert!(f.title.contains("DEFAULT partition events_default holds 250K rows"), "{}", f.title);
+    assert!(f.summary.contains("ACCESS EXCLUSIVE lock"), "{}", f.summary);
+}

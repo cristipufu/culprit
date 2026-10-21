@@ -211,6 +211,38 @@ fn health(snapshot: &Snapshot) -> Vec<Finding> {
         after_restart(&mut f);
         out.push(f);
     }
+
+    if let Some(full) = snapshot.pressure.as_ref().and_then(|p| p.signal("wal-buffers-full")).map(|s| s.value)
+        && counter_rate_per_day(snapshot, full).is_some_and(|r| r >= 24_000.0)
+        && value(snapshot, &["wal_buffers"]).and_then(bytes).is_none_or(|b| b < 64.0 * 1024.0 * 1024.0)
+    {
+        let current = value(snapshot, &["wal_buffers"]).unwrap_or("-1 (auto-sized, up to 16 MB)");
+        let change = setting_change(&snapshot.server, "wal_buffers", "64MB");
+        let mut f = setting_finding(
+            "wal_buffers",
+            Severity::Low,
+            format!("WAL buffers filled {} times {}", format::count(full), since_phrase(snapshot)),
+            format!(
+                "wal_buffers is {current}, and backends had to flush WAL buffer pages themselves {} times {} \
+                 (pg_stat_wal.wal_buffers_full) because the buffers filled before walwriter wrote them out. \
+                 Each full-buffer write makes the backend wait on WAL I/O during bursts of writes.",
+                format::count(full),
+                since_phrase(snapshot)
+            ),
+            Fix {
+                summary: format!(
+                    "Give walwriter more buffer room (64 MB is four WAL segments). {} It takes effect after a restart.",
+                    change.how
+                ),
+                sql: change.sql,
+                cost: Some("64 MB of shared memory.".into()),
+            },
+        );
+        f.confidence = Confidence::Medium;
+        f.metrics.push(Metric::new("WAL buffer full writes", full, Unit::Count));
+        after_restart(&mut f);
+        out.push(f);
+    }
     out
 }
 

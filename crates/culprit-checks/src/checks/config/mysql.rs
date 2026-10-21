@@ -337,5 +337,36 @@ fn health(snapshot: &Snapshot) -> Vec<Finding> {
         ];
         out.push(f);
     }
+    if let Some(waits) = snapshot.pressure.as_ref().and_then(|p| p.signal("buffer-pool-wait-free")).map(|s| s.value)
+        && counter_rate_per_day(snapshot, waits).is_some_and(|r| r >= 240.0)
+    {
+        let mut f = setting_finding(
+            "innodb_buffer_pool_wait_free",
+            if waits >= 1_000.0 { Severity::Medium } else { Severity::Low },
+            format!("Queries waited {} times for a clean buffer-pool page", format::count(waits)),
+            format!(
+                "Innodb_buffer_pool_wait_free is {} {}: foreground threads needed a free page in the InnoDB buffer \
+                 pool when none was clean, and had to wait for dirty pages to be flushed first.",
+                format::count(waits),
+                since_phrase(snapshot)
+            ),
+            Fix {
+                summary:
+                    "If the buffer pool is undersized for the working set, grow innodb_buffer_pool_size; if write \
+                          bursts dirty pages faster than background flushing cleans them, raise innodb_io_capacity \
+                          (and innodb_io_capacity_max) to match the storage's IOPS."
+                        .into(),
+                sql: None,
+                cost: None,
+            },
+        );
+        f.confidence = Confidence::Medium;
+        f.metrics.push(Metric::new("Buffer pool free-page waits", waits, Unit::Count));
+        f.verify = vec![
+            "Compare Innodb_buffer_pool_wait_free between two scans under normal write load: it should stop growing."
+                .into(),
+        ];
+        out.push(f);
+    }
     out
 }

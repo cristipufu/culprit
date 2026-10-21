@@ -272,6 +272,7 @@ const SETTINGS: &[&str] = &[
     "pg_stat_statements.track",
     "pg_stat_statements.track_planning",
     "shared_buffers",
+    "wal_buffers",
     "work_mem",
     "maintenance_work_mem",
     "effective_cache_size",

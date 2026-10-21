@@ -158,6 +158,11 @@ fn statement_costs(
 /// plus a bloat estimate for tables over 10 MB.
 async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<HashMap<(String, String), TableStorage>> {
     let new_page = if version_num >= 160_000 { "s.n_tup_newpage_upd" } else { "NULL::float8" };
+    let default_partition = if version_num >= 110_000 {
+        "c.relispartition AND pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT'"
+    } else {
+        "false"
+    };
     // The counters run from the database's last statistics reset. PostgreSQL 15+ leaves stats_reset empty until the
     // first one, and the counters outlive a clean restart: their age is then unknown, never the server's uptime.
     let sql = format!(
@@ -167,13 +172,22 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                 CASE WHEN c.reltuples >= 0 THEN c.reltuples::float8 END AS planner_rows,
                 (SELECT extract(epoch FROM now() - d.stats_reset) / 3600 FROM pg_stat_database d
                   WHERE d.datname = current_database()) AS counter_hours,
-                array_to_string(c.reloptions, ',') AS options
+                array_to_string(c.reloptions, ',') AS options,
+                {default_partition} AS default_partition
            FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid"
     );
     let mut out: HashMap<(String, String), TableStorage> = query(client, &sql)
         .await?
         .iter()
         .map(|r| {
+            // Storage parameters hold no commas; their values are numbers and booleans.
+            let mut options: Vec<String> = r
+                .text("options")
+                .map(|o| o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default();
+            if r.flag("default_partition") {
+                options.push("partition_bound=DEFAULT".into());
+            }
             (
                 (r.string("schema_name"), r.string("table_name")),
                 TableStorage {
@@ -183,11 +197,7 @@ async fn storage(client: &Client, version_num: u32) -> culprit_core::Result<Hash
                     bloat_bytes: None,
                     counter_hours: r.number("counter_hours").filter(|h| *h > 0.0),
                     planner_rows: r.number("planner_rows"),
-                    // Storage parameters hold no commas; their values are numbers and booleans.
-                    options: r
-                        .text("options")
-                        .map(|o| o.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
-                        .unwrap_or_default(),
+                    options,
                 },
             )
         })

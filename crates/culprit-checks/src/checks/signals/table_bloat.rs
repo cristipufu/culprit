@@ -83,7 +83,73 @@ pub fn table_bloat(snapshot: &Snapshot) -> Vec<Finding> {
             f
         })
         .collect();
+    findings.extend(default_partitions(snapshot));
     findings.sort_by(|a, b| b.impact.score.total_cmp(&a.impact.score));
     findings.truncate(5);
     findings
+}
+
+fn default_partitions(snapshot: &Snapshot) -> Vec<Finding> {
+    snapshot
+        .tables
+        .iter()
+        .filter_map(|t| {
+            let parent = t.partition_of.as_deref()?;
+            let is_default = t
+                .storage
+                .as_ref()
+                .is_some_and(|s| s.options.iter().any(|o| o.eq_ignore_ascii_case("partition_bound=default")));
+            if !is_default {
+                return None;
+            }
+            let rows = t.rows.or_else(|| t.storage.as_ref().and_then(|s| s.planner_rows)).unwrap_or(0.0);
+            let size = table_heap_bytes(t).unwrap_or(0.0);
+            if rows < 100_000.0 && size < 100.0 * MB {
+                return None;
+            }
+            let name = t.qualified();
+            let mut f = finding(
+                "table-bloat",
+                &format!("default-partition:{name}"),
+                Category::Maintenance,
+                subject(SubjectKind::Table, &name),
+            );
+            let size_note = (size > 0.0).then(|| format!(" ({})", format::bytes(size))).unwrap_or_default();
+            f.title = format!("DEFAULT partition {} holds {} rows{size_note}", t.name, format::count(rows));
+            f.severity = if rows >= 1_000_000.0 || size >= GB { Severity::Medium } else { Severity::Low };
+            severity_score(&mut f);
+            f.impact.label = if size > 0.0 {
+                format!("{} in DEFAULT", format::bytes(size))
+            } else {
+                format!("{} rows in DEFAULT", format::count(rows))
+            };
+            f.confidence = Confidence::High;
+            f.summary = format!(
+                "{} is the DEFAULT partition of {parent}, and holds {} rows{size_note}. Rows whose partition key has \
+                 no matching partition land here — often when scheduled partition creation falls behind. In PostgreSQL, \
+                 adding or attaching a new partition on {parent} scans the DEFAULT partition under an ACCESS EXCLUSIVE \
+                 lock and fails if any rows in {} belong in the new partition's range.",
+                t.name,
+                format::count(rows),
+                t.name
+            );
+            if rows > 0.0 {
+                f.metrics.push(Metric::new("Rows in DEFAULT partition", rows, Unit::Rows));
+            }
+            if size > 0.0 {
+                f.metrics.push(Metric::new("Size", size, Unit::Bytes));
+            }
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Create the missing partitions on {parent}, move the matching rows out of {} into them (or detach \
+                     {}, split its rows, and re-attach), and check the job that creates future partitions ahead of time.",
+                    t.name, t.name
+                ),
+                sql: None,
+                cost: Some("Moving rows or attaching partitions locks the affected partitions.".into()),
+            });
+            f.verify = vec![format!("Re-scan after moving the rows out: {} should be empty or small.", t.name)];
+            Some(f)
+        })
+        .collect()
 }

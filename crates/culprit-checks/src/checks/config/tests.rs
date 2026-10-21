@@ -310,3 +310,36 @@ fn sqlite_foreign_keys_off_when_declared_and_recorded() {
     set(&mut s, "foreign_keys", "1");
     assert!(found(&sqlite::check(&s), "config:sqlite-foreign-keys").is_none());
 }
+
+#[test]
+fn postgres_wal_buffers_full_and_mysql_buffer_pool_wait_free() {
+    let mut pg = snapshot_with(Engine::Postgres);
+    pg.pressure.get_or_insert_with(Default::default).uptime_hours = Some(24.0);
+    pg.pressure.as_mut().unwrap().signals.push(culprit_core::Signal::new(
+        "wal-buffers-full",
+        "WAL buffer full writes",
+        30_000.0,
+        culprit_core::SignalUnit::Count,
+        culprit_core::SignalScope::SinceStartup,
+    ));
+    set(&mut pg, "wal_buffers", "16MB");
+    let out = postgres::check(&pg);
+    let f = found(&out, "config:wal_buffers").expect("wal_buffers finding");
+    assert!(f.title.contains("WAL buffers filled 30K times"), "{}", f.title);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("wal_buffers = '64MB'"));
+    set(&mut pg, "wal_buffers", "64MB");
+    assert!(found(&postgres::check(&pg), "config:wal_buffers").is_none());
+
+    let mut my = snapshot_with(Engine::Mysql);
+    my.pressure.get_or_insert_with(Default::default).uptime_hours = Some(24.0);
+    my.pressure.as_mut().unwrap().signals.push(culprit_core::Signal::new(
+        "buffer-pool-wait-free",
+        "Buffer pool free-page waits",
+        500.0,
+        culprit_core::SignalUnit::Count,
+        culprit_core::SignalScope::SinceStartup,
+    ));
+    let out = mysql::check(&my);
+    let f = found(&out, "config:innodb_buffer_pool_wait_free").expect("innodb_buffer_pool_wait_free finding");
+    assert!(f.title.contains("Queries waited 500 times for a clean buffer-pool page"), "{}", f.title);
+}

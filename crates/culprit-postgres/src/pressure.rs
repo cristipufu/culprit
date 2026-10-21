@@ -199,6 +199,18 @@ pub async fn collect(client: &Client, probe: &Probe) -> (Pressure, Coverage) {
             );
         }
     }
+    if probe.version_num >= 140_000
+        && let Ok(Some(r)) = query_one(client, "SELECT wal_buffers_full FROM pg_stat_wal").await
+        && let Some(full) = r.number("wal_buffers_full").filter(|n| *n > 0.0)
+    {
+        p.signals.push(Signal::new(
+            "wal-buffers-full",
+            "WAL buffer full writes",
+            full,
+            SignalUnit::Count,
+            SignalScope::SinceStartup,
+        ));
+    }
     if let Ok(Some(r)) = query_one(
         client,
         "SELECT count(*) FILTER (WHERE backend_type = 'client backend' AND application_name IS DISTINCT FROM 'culprit') AS used,
