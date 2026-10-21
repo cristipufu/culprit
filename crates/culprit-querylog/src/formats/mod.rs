@@ -80,10 +80,10 @@ fn is_zone(word: &str) -> bool {
             && word[1..].chars().all(|c| c.is_ascii_digit() || c == ':'))
 }
 
-/// A duration with its unit (`12.4ms`, `0.012s`, `1.2µs`) in milliseconds.
+/// A duration with its unit (`12.4ms`, `0.012s`, `1.2µs`, `500ns`) in milliseconds.
 pub(crate) fn duration_ms(text: &str) -> Option<f64> {
     let t = text.trim();
-    for (suffix, scale) in [("ms", 1.0), ("µs", 0.001), ("us", 0.001), ("s", 1000.0)] {
+    for (suffix, scale) in [("ms", 1.0), ("µs", 0.001), ("us", 0.001), ("ns", 0.000_001), ("s", 1000.0)] {
         if let Some(n) = t.strip_suffix(suffix) {
             return n.trim().parse::<f64>().ok().map(|v| v * scale);
         }
