@@ -107,3 +107,66 @@ fn a_column_qualified_by_another_table_is_that_tables() {
     ));
     assert!(deleted("select id from dispatch_intents where is_deleted = 0"));
 }
+
+#[test]
+fn orphaned_invalid_postgres_index_is_reported_and_redundant_invalid_index_is_duplicate() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../../fixtures/postgres-demo.json")).unwrap();
+    s.pressure.get_or_insert_with(Default::default).uptime_hours = Some(10.0 * 24.0);
+    for i in &mut s.indexes {
+        i.counters_since = None;
+    }
+    let mut invalid = s.indexes.iter().find(|i| i.table == "orders" && !i.is_primary_key).unwrap().clone();
+    invalid.name = "orders_abandoned_ccnew".into();
+    invalid.columns = vec!["shipping_cents".into()];
+    invalid.is_disabled = true;
+    invalid.maintained = Some(true);
+    invalid.size_bytes = Some(8.0 * 1024.0 * 1024.0);
+    s.indexes.push(invalid);
+    let out = unused_index(&s);
+    let f = out
+        .iter()
+        .find(|f| f.id == "unused-index:invalid:public.orders.orders_abandoned_ccnew")
+        .expect("orphaned invalid index");
+    assert!(f.summary.contains("indisvalid = false"), "{}", f.summary);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("DROP INDEX CONCURRENTLY"));
+
+    // When a valid index already covers the same keys, duplicate-index flags the leftover invalid index immediately.
+    let valid_col =
+        s.indexes.iter().find(|i| i.table == "orders" && !i.is_primary_key && !i.is_disabled).unwrap().columns.clone();
+    s.indexes.last_mut().unwrap().columns = valid_col;
+    let dup = duplicate_index(&s);
+    assert!(
+        dup.iter().any(|f| f.id == "duplicate-index:public.orders.orders_abandoned_ccnew"),
+        "{:?}",
+        dup.iter().map(|f| &f.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn foreign_key_column_type_mismatch_is_flagged_without_false_positives_on_aliases_or_lengths() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../../fixtures/postgres-demo.json")).unwrap();
+    // Standard demo fixture has matching types (and aliases like int4 vs integer or varchar(50) vs text must not fire).
+    assert!(!unindexed_fk(&s).iter().any(|f| f.id.contains("type-mismatch")));
+
+    let fk = s.foreign_keys[0].clone();
+    let child_col =
+        s.columns.iter_mut().find(|c| c.schema == fk.schema && c.table == fk.table && c.name == fk.columns[0]).unwrap();
+    child_col.data_type = "integer".into();
+    let parent_col = s
+        .columns
+        .iter_mut()
+        .find(|c| c.schema == fk.ref_schema && c.table == fk.ref_table && c.name == fk.ref_columns[0])
+        .unwrap();
+    parent_col.data_type = "int4".into();
+    assert!(!unindexed_fk(&s).iter().any(|f| f.id.contains("type-mismatch")), "int4 and integer are the same type");
+
+    let parent_col = s
+        .columns
+        .iter_mut()
+        .find(|c| c.schema == fk.ref_schema && c.table == fk.ref_table && c.name == fk.ref_columns[0])
+        .unwrap();
+    parent_col.data_type = "bigint".into();
+    let findings = unindexed_fk(&s);
+    let mismatch = findings.iter().find(|f| f.id.starts_with("unindexed-fk:type-mismatch:")).expect("int vs bigint");
+    assert!(mismatch.title.contains("(integer)") && mismatch.title.contains("(bigint)"), "{}", mismatch.title);
+}

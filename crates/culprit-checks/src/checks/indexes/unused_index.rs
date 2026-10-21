@@ -173,6 +173,91 @@ pub fn unused_index(snapshot: &Snapshot) -> Vec<Finding> {
             }
             f
         })
+        .chain(invalid_postgres_indexes(snapshot, &redundant))
+        .collect()
+}
+
+/// Orphaned PostgreSQL `INVALID` indexes left behind by an unfinished `CREATE INDEX CONCURRENTLY` or
+/// `REINDEX CONCURRENTLY` that neither duplicate an active index (`redundant_indexes`) nor serve a scan that
+/// recommends rebuilding them (`disabled_leading_index`).
+fn invalid_postgres_indexes(snapshot: &Snapshot, redundant: &[(&str, &str, &str)]) -> Vec<Finding> {
+    if snapshot.server.engine != Engine::Postgres || !watched_long_enough(snapshot) {
+        return Vec::new();
+    }
+    let scans = scan_groups(snapshot);
+    let rebuilt_by_scan = |i: &IndexStat| {
+        scans.iter().any(|g| {
+            disabled_leading_index(snapshot, g).is_some_and(|d| {
+                d.schema.eq_ignore_ascii_case(&i.schema)
+                    && d.table.eq_ignore_ascii_case(&i.table)
+                    && d.name.eq_ignore_ascii_case(&i.name)
+            })
+        })
+    };
+    snapshot
+        .indexes
+        .iter()
+        .filter(|i| {
+            i.is_disabled
+                && !i.is_primary_key
+                && !is_partition_copy(i)
+                && !redundant.contains(&(i.schema.as_str(), i.table.as_str(), i.name.as_str()))
+                && !rebuilt_by_scan(i)
+        })
+        .map(|i| {
+            let table_name = format!("{}.{}", i.schema, i.table);
+            let index_name = format!("{table_name}.{}", i.name);
+            let size = i.size_bytes.unwrap_or(0.0);
+            let writes = table_writes(snapshot, &i.schema, &i.table, &[i]);
+            let writes_a_day = writes.and_then(|w| counter_rate_per_day(snapshot, w));
+            let maintained = i.maintained != Some(false);
+            let mut f = finding(
+                "unused-index",
+                &format!("invalid:{index_name}"),
+                Category::Indexes,
+                subject(SubjectKind::Index, &index_name),
+            );
+            f.title = format!("{} on {} is invalid after an unfinished index build", i.name, i.table);
+            f.summary = format!(
+                "PostgreSQL marks {} invalid (indisvalid = false), which happens when CREATE INDEX CONCURRENTLY or \
+                 REINDEX CONCURRENTLY stops before finishing. The planner never reads an invalid index{}{}.",
+                i.name,
+                if maintained { format!(", yet every write to {table_name} still updates it") } else { String::new() },
+                if size > 0.0 { format!(" and it takes {} on disk", format::bytes(size)) } else { String::new() }
+            );
+            f.severity = if maintained
+                && (size >= 1024.0 * 1024.0 * 1024.0 || writes_a_day.is_some_and(|w| w >= UPKEEP_A_DAY))
+            {
+                Severity::Medium
+            } else {
+                Severity::Low
+            };
+            f.impact.score = base_score(f.severity) + (size / (1024.0 * 1024.0 * 1024.0)).min(10.0);
+            f.impact.label =
+                if size > 0.0 { format!("{} invalid", format::bytes(size)) } else { "Invalid index".into() };
+            f.confidence = Confidence::High;
+            if size > 0.0 {
+                f.metrics.push(Metric::new("Size", size, Unit::Bytes));
+            }
+            if let Some(w) = writes {
+                f.metrics.push(Metric::new("Writes to the table", w, Unit::Count));
+            }
+            let drop_sql = drop_index_sql(Engine::Postgres, &i.schema, &i.table, &i.name);
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Drop the failed index concurrently so writes to {table_name} stop maintaining it, or rebuild it \
+                     with REINDEX INDEX CONCURRENTLY if queries still need it."
+                ),
+                sql: Some(drop_sql),
+                cost: (size > 0.0)
+                    .then(|| format!("Frees {} and makes writes to {table_name} cheaper.", format::bytes(size))),
+            });
+            f.verify = vec![format!("Re-scan: {} is no longer listed as an invalid index on {table_name}.", i.name)];
+            if let Some(defs) = definitions(&[i]) {
+                f.caveats.push(format!("Definition, to recreate if needed:\n{defs}"));
+            }
+            f
+        })
         .collect()
 }
 

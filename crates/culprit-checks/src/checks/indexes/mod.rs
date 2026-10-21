@@ -411,12 +411,13 @@ fn prefer_drop(a: &IndexStat, b: &IndexStat) -> bool {
 /// The keeper is never a clustered index (InnoDB's PRIMARY included, which MySQL reports with the same kind as any
 /// other): seeking it reads whole rows, so a narrow index on its leading columns serves reads it can't serve as cheaply.
 pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
+    let postgres = snapshot.server.engine == Engine::Postgres;
     let mut out = Vec::new();
     for a in &snapshot.indexes {
         if a.is_primary_key
-            || a.is_unique
+            || (a.is_unique && !(postgres && a.is_disabled))
             || a.is_clustered
-            || a.is_disabled
+            || (a.is_disabled && !postgres)
             || a.columns.is_empty()
             || is_partition_copy(a)
         {
@@ -425,9 +426,10 @@ pub fn redundant_indexes(snapshot: &Snapshot) -> Vec<(&IndexStat, &IndexStat)> {
         let keeper = snapshot
             .indexes_on(&a.schema, &a.table)
             .filter(|b| b.name != a.name && !b.is_disabled && !b.is_clustered && b.same_filter(a) && b.kind == a.kind)
-            .find(|b| makes_redundant(b, a) && (!same_keys(a, b) || prefer_drop(a, b)))
+            .filter(|b| !a.is_unique || (b.is_unique && same_keys(a, b)))
+            .find(|b| makes_redundant(b, a) && (a.is_disabled || !same_keys(a, b) || prefer_drop(a, b)))
             // A read index isn't redundant to one nothing reads: drop the unread one instead (the unused check says so).
-            .filter(|b| !(is_unused(snapshot, b) && a.reads.is_some_and(|r| r > 0.0)));
+            .filter(|b| a.is_disabled || !(is_unused(snapshot, b) && a.reads.is_some_and(|r| r > 0.0)));
         if let Some(b) = keeper {
             out.push((a, b));
         }

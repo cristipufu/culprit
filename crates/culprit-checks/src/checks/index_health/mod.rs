@@ -25,9 +25,12 @@ pub use scan_heavy::*;
 pub(crate) const CHECKS: &[&dyn Check] = &[&OverlappingIndexCheck, &OverIndexedCheck, &ScanHeavyCheck];
 
 /// Reversible first step: SQL Server disables, MySQL makes invisible, MariaDB ignores (10.6+), Postgres can only drop
-/// (keep the definition).
+/// (keep the definition). An index that is already disabled, hidden or invalid is ready to drop.
 pub(crate) fn hide_index_sql(server: &ServerInfo, i: &IndexStat) -> String {
     let engine = server.engine;
+    if i.is_disabled {
+        return drop_index_sql(engine, &i.schema, &i.table, &i.name);
+    }
     if server.is_mariadb() {
         return match mariadb_can_ignore(server) {
             true => format!(

@@ -98,9 +98,16 @@ fn partition_parent(alias: &str) -> String {
 
 pub(crate) async fn indexes(client: &Client, probe: &Probe) -> Result<Vec<IndexStat>> {
     let last_read = if probe.version_num >= 160_000 { iso("s.last_idx_scan") } else { "NULL::text".to_string() };
+    // An index being built or rebuilt by CREATE/REINDEX CONCURRENTLY has indisvalid = false until the build finishes;
+    // pg_stat_progress_create_index (PostgreSQL 12+) distinguishes a live build from a failed leftover.
+    let usable = if probe.version_num >= 120_000 {
+        "(x.indisvalid AND x.indisready) OR EXISTS (SELECT 1 FROM pg_stat_progress_create_index p WHERE p.index_relid = x.indexrelid OR p.relid = x.indrelid)"
+    } else {
+        "x.indisvalid AND x.indisready"
+    };
     let sql = format!(
         "SELECT n.nspname AS schema_name, t.relname AS table_name, i.relname AS index_name, am.amname AS kind,
-                x.indisunique, x.indisprimary, x.indisready, x.indisvalid AND x.indisready AS usable,
+                x.indisunique, x.indisprimary, x.indisready, {usable} AS usable,
                 (SELECT string_agg(
                     CASE WHEN x.indkey[k - 1] <> 0
                          THEN (SELECT a.attname FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = x.indkey[k - 1])

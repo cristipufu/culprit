@@ -11,7 +11,8 @@ const FREE_SHARE_AT_LEAST: f64 = 0.25;
 
 /// The file's findings, under the `config` check.
 pub(super) fn check(snapshot: &Snapshot) -> Vec<Finding> {
-    let mut out: Vec<Finding> = [statistics(snapshot), free_space(snapshot)].into_iter().flatten().collect();
+    let mut out: Vec<Finding> =
+        [statistics(snapshot), free_space(snapshot), foreign_keys_off(snapshot)].into_iter().flatten().collect();
     if snapshot.server.has(Capability::Statistics) {
         for t in snapshot.tables.iter().filter(|t| !t.is_virtual()) {
             let missing: Vec<_> = snapshot
@@ -134,5 +135,46 @@ fn free_space(s: &Snapshot) -> Option<Finding> {
         }
     });
     f.verify = vec!["Scan again: free pages are a small part of the file.".into()];
+    Some(f)
+}
+
+/// Foreign key constraints exist in the schema, while the connection's `foreign_keys` pragma was recorded as OFF.
+fn foreign_keys_off(s: &Snapshot) -> Option<Finding> {
+    if s.foreign_keys.is_empty() {
+        return None;
+    }
+    let setting = s.setting("foreign_keys")?;
+    if is_on(&setting.value) {
+        return None;
+    }
+    let count = s.foreign_keys.len();
+    let mut f = finding(
+        "config",
+        "sqlite-foreign-keys",
+        Category::Maintenance,
+        subject(SubjectKind::Database, &s.server.database),
+    );
+    f.title = "Foreign key constraints are declared, but PRAGMA foreign_keys is OFF".into();
+    f.summary = format!(
+        "This database declares {count} foreign key {}, but PRAGMA foreign_keys is off, so SQLite ignores them on \
+         every insert, update and delete. Enable PRAGMA foreign_keys = ON on each application connection if \
+         referential integrity should be enforced.",
+        if count == 1 { "constraint" } else { "constraints" }
+    );
+    f.severity = Severity::Low;
+    f.impact.score = base_score(Severity::Low);
+    f.impact.label = format!("{count} foreign {} unenforced", if count == 1 { "key" } else { "keys" });
+    f.confidence = Confidence::High;
+    f.metrics.push(Metric::new("Foreign keys", count as f64, Unit::Count));
+    f.fix = Some(Fix {
+        summary: "Run PRAGMA foreign_keys = ON when opening each connection in the application (SQLite resets this \
+                  setting per connection). Check existing rows with PRAGMA foreign_key_check before enabling it."
+            .into(),
+        sql: Some("PRAGMA foreign_key_check;\nPRAGMA foreign_keys = ON;".into()),
+        cost: None,
+    });
+    f.verify = vec![
+        "Check that every application connection sets PRAGMA foreign_keys = ON after opening the database.".into(),
+    ];
     Some(f)
 }

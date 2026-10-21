@@ -296,3 +296,17 @@ fn mysql_restart_settings_on_a_managed_server() {
     assert!(fix.summary.contains("in the instance's DB parameter group"), "{}", fix.summary);
     assert!(fix.summary.contains("after a reboot"));
 }
+
+#[test]
+fn sqlite_foreign_keys_off_when_declared_and_recorded() {
+    let mut s: Snapshot = serde_json::from_str(include_str!("../../../../../fixtures/sqlite-demo.json")).unwrap();
+    assert!(!s.foreign_keys.is_empty());
+    assert!(found(&sqlite::check(&s), "config:sqlite-foreign-keys").is_none());
+    set(&mut s, "foreign_keys", "0");
+    let out = sqlite::check(&s);
+    let f = found(&out, "config:sqlite-foreign-keys").expect("foreign_keys off");
+    assert!(f.title.contains("PRAGMA foreign_keys is OFF"), "{}", f.title);
+    assert!(f.fix.as_ref().unwrap().sql.as_deref().unwrap().contains("PRAGMA foreign_keys = ON;"));
+    set(&mut s, "foreign_keys", "1");
+    assert!(found(&sqlite::check(&s), "config:sqlite-foreign-keys").is_none());
+}

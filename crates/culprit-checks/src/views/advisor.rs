@@ -735,8 +735,10 @@ pub fn index_advice(report: &Report) -> IndexAdvice {
                 finding_id: link(format!("heap-table:{table_name}")),
             });
         }
-        let secondary =
-            s.indexes_on(&t.schema, &t.name).filter(|i| !i.is_primary_key && !i.is_clustered && !i.is_disabled).count();
+        let secondary = s
+            .indexes_on(&t.schema, &t.name)
+            .filter(|i| !i.is_primary_key && !i.is_clustered && i.maintained.unwrap_or(!i.is_disabled))
+            .count();
         // As the over-indexed finding judges it: writes that maintain indexes (PostgreSQL's HOT updates write none), in
         // the engine's unit, a day.
         if secondary >= crate::index_health::MANY_INDEXES

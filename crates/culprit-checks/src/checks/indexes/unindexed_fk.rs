@@ -208,6 +208,162 @@ pub fn unindexed_fk(snapshot: &Snapshot) -> Vec<Finding> {
         })
         .collect();
     out.extend(unindexed_fk_pattern(snapshot, &unindexed));
+    out.extend(fk_type_mismatches(snapshot));
+    out
+}
+
+/// Canonical type family for comparing a foreign key's child column against its referenced parent column.
+/// Width-only string differences (`varchar(50)` vs `varchar(100)`) and engine aliases (`int4` vs `integer` vs
+/// `serial`, `int(11)` vs `int`) map to the same canonical family so only genuine cross-type mismatches (`int` vs
+/// `bigint`, `int unsigned` vs `int`, `varchar` vs `nvarchar`, `text` vs `integer`) are reported.
+fn canonical_fk_type(engine: Engine, raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if engine == Engine::Sqlite {
+        let affinity = if lower.contains("int") {
+            "integer"
+        } else if lower.contains("char") || lower.contains("clob") || lower.contains("text") {
+            "text"
+        } else if lower.contains("blob") {
+            "blob"
+        } else if lower.contains("real") || lower.contains("floa") || lower.contains("doub") {
+            "real"
+        } else {
+            "numeric"
+        };
+        return Some(affinity.into());
+    }
+    let mut stripped = String::with_capacity(lower.len());
+    let mut depth = 0usize;
+    for ch in lower.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => stripped.push(ch),
+            _ => {}
+        }
+    }
+    let mut unsigned = false;
+    let words: Vec<&str> = stripped
+        .split_whitespace()
+        .filter(|w| match *w {
+            "unsigned" => {
+                unsigned = true;
+                false
+            }
+            "signed" | "zerofill" => false,
+            _ => true,
+        })
+        .collect();
+    let base = words.join(" ");
+    if base.is_empty() {
+        return None;
+    }
+    let family = match base.as_str() {
+        "int1" | "tinyint" => "tinyint",
+        "int2" | "smallint" | "smallserial" | "serial2" => "smallint",
+        "int3" | "mediumint" => "mediumint",
+        "int" | "integer" | "int4" | "serial" | "serial4" => "int",
+        "int8" | "bigint" | "bigserial" | "serial8" => "bigint",
+        "dec" | "decimal" | "numeric" => "numeric",
+        "float4" | "real" => "real",
+        "float8" | "double precision" | "double" | "float" => "float",
+        "bool" | "boolean" => "boolean",
+        "character varying" | "varchar" | "character" | "char" | "bpchar" | "text" | "citext"
+            if engine == Engine::Postgres =>
+        {
+            "text"
+        }
+        "varchar" | "char" | "text" => "varchar",
+        "nvarchar" | "nchar" | "ntext" | "national character varying" | "national character" => "nvarchar",
+        "varbinary" | "binary" | "image" => "varbinary",
+        "timestamp with time zone" | "timestamptz" => "timestamptz",
+        "timestamp without time zone" | "timestamp" => "timestamp",
+        other => other,
+    };
+    Some(if unsigned { format!("{family} unsigned") } else { family.to_string() })
+}
+
+/// Foreign keys whose child and parent columns have incompatible data types (`int` vs `bigint`, `int unsigned` vs
+/// `int`, `varchar` vs `nvarchar`).
+fn fk_type_mismatches(snapshot: &Snapshot) -> Vec<Finding> {
+    if crate::evidence::index_catalog(snapshot).is_some() || snapshot.columns.is_empty() {
+        return Vec::new();
+    }
+    let engine = snapshot.server.engine;
+    let is_partition =
+        |fk: &culprit_core::ForeignKey| snapshot.table(&fk.schema, &fk.table).is_some_and(|t| t.partition_of.is_some());
+    let find_col = |schema: &str, table: &str, col: &str| {
+        snapshot.columns.iter().find(|c| {
+            c.schema.eq_ignore_ascii_case(schema)
+                && c.table.eq_ignore_ascii_case(table)
+                && c.name.eq_ignore_ascii_case(col)
+        })
+    };
+    let mut out = Vec::new();
+    for fk in enforced_foreign_keys(snapshot).filter(|fk| !is_partition(fk)) {
+        for (c_name, p_name) in fk.columns.iter().zip(&fk.ref_columns) {
+            let (Some(c_col), Some(p_col)) =
+                (find_col(&fk.schema, &fk.table, c_name), find_col(&fk.ref_schema, &fk.ref_table, p_name))
+            else {
+                continue;
+            };
+            let (Some(c_canon), Some(p_canon)) =
+                (canonical_fk_type(engine, &c_col.data_type), canonical_fk_type(engine, &p_col.data_type))
+            else {
+                continue;
+            };
+            if c_canon == p_canon {
+                continue;
+            }
+            let child = format!("{}.{}", fk.schema, fk.table);
+            let parent = format!("{}.{}", fk.ref_schema, fk.ref_table);
+            let id_key = format!("type-mismatch:{child}({})", fk.columns.join(","));
+            if out.iter().any(|f: &Finding| f.id == format!("unindexed-fk:{id_key}")) {
+                continue;
+            }
+            let mut f = finding("unindexed-fk", &id_key, Category::Indexes, subject(SubjectKind::Table, &child));
+            f.title = format!(
+                "{}.{} ({}) has a different type from {}.{} ({}) on foreign key {}",
+                fk.table, c_col.name, c_col.data_type, fk.ref_table, p_col.name, p_col.data_type, fk.name
+            );
+            f.summary = format!(
+                "Foreign key {} links {child}.{} ({}) to {parent}.{} ({}). Joining or checking rows across different \
+                 types can force an implicit conversion that bypasses an index on the converted side, and narrower or \
+                 differently signed child columns fail once parent keys exceed their range.",
+                fk.name, c_col.name, c_col.data_type, p_col.name, p_col.data_type
+            );
+            f.severity = Severity::Low;
+            f.impact.score = base_score(Severity::Low);
+            f.impact.label = format!("{} ≠ {}", c_col.data_type, p_col.data_type);
+            f.confidence = Confidence::High;
+            f.metrics.push(Metric::text("Child column", format!("{}.{} ({})", fk.table, c_col.name, c_col.data_type)));
+            f.metrics
+                .push(Metric::text("Parent column", format!("{}.{} ({})", fk.ref_table, p_col.name, p_col.data_type)));
+            f.metrics.push(Metric::text("Foreign key", fk.name.clone()));
+            f.fix = Some(Fix {
+                summary: format!(
+                    "Align the column types on {child}.{} and {parent}.{} so joins and foreign-key checks compare \
+                     identical types without conversion.",
+                    c_col.name, p_col.name
+                ),
+                sql: None,
+                cost: Some(
+                    "Changing a column's type rewrites the table or its indexes and requires dropping and recreating \
+                     the foreign key constraint during a maintenance window."
+                        .into(),
+                ),
+            });
+            f.verify = vec![format!(
+                "Re-scan after aligning the types: {}.{} and {}.{} have the same type and this finding is gone.",
+                fk.table, c_col.name, fk.ref_table, p_col.name
+            )];
+            out.push(f);
+        }
+    }
     out
 }
 

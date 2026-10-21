@@ -79,7 +79,13 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
             .iter()
             .copied()
             .filter(|i| {
-                is_unused(snapshot, i) || redundant.contains(&(i.schema.as_str(), i.table.as_str(), i.name.as_str()))
+                is_unused(snapshot, i)
+                    || redundant.contains(&(i.schema.as_str(), i.table.as_str(), i.name.as_str()))
+                    || (i.is_disabled
+                        && i.maintained == Some(true)
+                        && !i.is_unique
+                        && !too_new(snapshot, i)
+                        && (snapshot.server.engine == Engine::Postgres || i.reads == Some(0.0)))
             })
             .collect();
         let table_name = t.qualified();
@@ -141,6 +147,8 @@ pub fn over_indexed(snapshot: &Snapshot) -> Vec<Finding> {
         f.fix = Some(Fix {
             summary: if idle.is_empty() {
                 "Review which queries need each index; fold indexes that share a leading column into one.".into()
+            } else if idle.iter().all(|i| i.is_disabled) {
+                "Drop the hidden or invalid indexes that writes still maintain.".into()
             } else {
                 "Hide the indexes nothing reads first (reversible), then drop them after a business cycle.".into()
             },
