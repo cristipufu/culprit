@@ -31,8 +31,8 @@ ring = "0.17.14"
 mysql_async = { version = "0.37.1", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
 roxmltree = "0.21.1"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-serde = { version = "1.0.229", features = ["derive", "rc"] }
-serde_json = "1.0.152"
+serde = { version = "1.0.229", features = ["alloc", "derive", "rc"] }
+serde_json = { version = "1.0.152", features = ["alloc"] }
 sha2 = "0.11.0"
 thiserror = "2.0.21"
 tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
@@ -54,10 +54,12 @@ strip = true
 panic = "abort"
 opt-level = 3
 
-# Line numbers for backtraces, without full debug info: on macOS every linked binary keeps its object files next to it
-# for debug info, so full debug info makes each link slower and each test binary bigger to scan. Dependencies need none.
+# Line numbers for backtraces, without full debug info: on macOS unpacked split-debuginfo copies every incremental
+# .rcgu.o file into target/debug/deps/ and never garbage-collects old ones across rebuilds, accumulating hundreds of
+# thousands of .o files that slow every Cargo directory scan. Keep split-debuginfo off in dev/test.
 [profile.dev]
 debug = "line-tables-only"
+split-debuginfo = "off"
 
 [profile.dev.package."*"]
 debug = false
