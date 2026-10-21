@@ -15,6 +15,9 @@ use crate::finding::Severity;
 use crate::format;
 use crate::model::{ColumnInfo, Engine, IndexStat, Snapshot};
 use crate::plan::{INDEX_KEEPS_AT_MOST, MISESTIMATE_FACTOR, NodeKind, Plan, PlanKind, PlanNode, PlanWarning};
+use crate::sql::{
+    balanced_parens as balanced, clean_identifier, identifier_parts, split_top_level_and as top_level_and,
+};
 
 mod growth;
 mod index;
@@ -790,20 +793,6 @@ fn conditions(n: &PlanNode) -> String {
     [n.seek_predicate.as_deref(), n.predicate.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" AND ")
 }
 
-/// One name part as written in a plan, without its delimiters: `[a]]b]` → `a]b`, `` `a``b` `` → ``a`b``, `"a""b"` → `a"b`.
-fn clean_identifier(raw: &str) -> String {
-    let raw = raw.trim();
-    let inner = |open: char, close: char| {
-        raw.strip_prefix(open)
-            .and_then(|r| r.strip_suffix(close))
-            .map(|r| r.replace(&format!("{close}{close}"), &close.to_string()))
-    };
-    inner('[', ']')
-        .or_else(|| inner('`', '`'))
-        .or_else(|| inner('"', '"'))
-        .unwrap_or_else(|| raw.trim_matches(|c| c == '[' || c == ']' || c == '`' || c == '"').to_string())
-}
-
 /// The last name in `[db].[shop].[orders].[created_at]`, `` `shop`.`orders`.`created_at` `` or `o.created_at`.
 fn column_leaf(raw: &str) -> String {
     let leaf = raw.rsplit('.').next().unwrap_or(raw);
@@ -1049,48 +1038,6 @@ fn push_unique(list: &mut Vec<String>, column: &str) {
     if !list.iter().any(|c| c.eq_ignore_ascii_case(column)) {
         list.push(column.to_string());
     }
-}
-
-/// The parts of a condition ANDed at its top level, outer parentheses removed: `((a = 1) AND (b > 2 OR c < 3))` →
-/// `a = 1`, `b > 2 OR c < 3`.
-fn top_level_and(text: &str) -> Vec<&str> {
-    fn strip(mut t: &str) -> &str {
-        loop {
-            let s = t.trim();
-            if s.starts_with('(') && s.ends_with(')') && balanced(&s[1..]).len() == s.len() - 2 {
-                t = &s[1..s.len() - 1];
-            } else {
-                return s;
-            }
-        }
-    }
-    let text = strip(text);
-    let lower = text.to_ascii_lowercase();
-    let (mut parts, mut depth, mut start, mut quote) = (Vec::new(), 0i32, 0usize, false);
-    let bytes = lower.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\'' => quote = !quote,
-            b'(' if !quote => depth += 1,
-            b')' if !quote => depth -= 1,
-            // BETWEEN's own AND belongs to it.
-            b' ' if !quote
-                && depth == 0
-                && lower[i..].starts_with(" and ")
-                && (!lower[start..i].contains(" between ") || lower[start..i].matches(" and ").count() > 0) =>
-            {
-                parts.push(strip(&text[start..i]));
-                start = i + 5;
-                i += 5;
-                continue;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    parts.push(strip(&text[start..]));
-    parts.into_iter().filter(|p| !p.is_empty()).collect()
 }
 
 /// Columns compared in a condition, suitable as index keys: equality columns first, then ranges.
@@ -1631,41 +1578,6 @@ pub fn catalog_table_matches(object: &str, schema: &str, table: &str) -> bool {
         _ => false,
     }
 }
-fn identifier_parts(value: &str) -> Option<Vec<String>> {
-    let mut parts = Vec::new();
-    let mut part = String::new();
-    let mut quoted = None;
-    let mut chars = value.chars().peekable();
-    while let Some(c) = chars.next() {
-        part.push(c);
-        if let Some(close) = quoted {
-            if c == close {
-                if chars.peek() == Some(&close) {
-                    part.push(chars.next()?);
-                } else {
-                    quoted = None;
-                }
-            }
-        } else {
-            match c {
-                '[' => quoted = Some(']'),
-                '"' => quoted = Some('"'),
-                '`' => quoted = Some('`'),
-                '.' => {
-                    part.pop();
-                    parts.push(clean_identifier(&part));
-                    part.clear();
-                }
-                _ => {}
-            }
-        }
-    }
-    if quoted.is_some() {
-        return None;
-    }
-    parts.push(clean_identifier(&part));
-    (!parts.iter().any(String::is_empty)).then_some(parts)
-}
 
 /// Where [`mark_table_indexes`] marks an operator whose table the catalog no longer lists in any schema: it was dropped
 /// or renamed since the plan was captured, so there is nothing to index.
@@ -1946,24 +1858,6 @@ fn wrapped_column(text: &str, engine: Engine) -> Option<(String, String)> {
         }
     }
     None
-}
-
-/// The text up to the parenthesis that closes the one just opened.
-fn balanced(text: &str) -> &str {
-    let mut depth = 1;
-    for (i, c) in text.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &text[..i];
-                }
-            }
-            _ => {}
-        }
-    }
-    text
 }
 
 /// Where a LIKE with a leading wildcard starts in a condition.
