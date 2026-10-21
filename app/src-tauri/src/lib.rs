@@ -493,7 +493,7 @@ async fn choose_query_log(app: AppHandle, ws: Ws<'_>, name: String) -> Result<Op
         .dialog()
         .file()
         .set_title("Choose the log your framework writes")
-        .add_filter("Logs", &["log", "jsonl", "txt"]);
+        .add_filter("Logs", &["log", "jsonl", "ndjson", "txt"]);
     if let Some(dir) = start {
         dialog = dialog.set_directory(dir);
     }

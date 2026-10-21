@@ -30,10 +30,10 @@ hook, a driver wrapper or a code change to get that. What it offers is what the 
 - **From the file:** schema checks, planner statistics, free space and settings (below).
 - **From the planner:** the plan of any statement a person pastes or a check names, with `EXPLAIN QUERY PLAN`, read-only.
 - **From logs that already exist (optional):** when the application's framework already writes each statement with its
-  duration, Culprit reads that log on every scan. It finds it by itself where frameworks put it: `.log` files beside
-  the database, in a `log` folder beside it, or in the parent folder's `log` (Rails keeps `db/production.sqlite3` and
-  logs to `log/production.log`), one named like the database first, and only a file whose first lines hold statements
-  in a format Culprit reads. A database named for an environment is never paired with another environment's log
+  duration, Culprit reads that log on every scan. It finds it by itself where frameworks put it: `.log`, `.jsonl` and
+  `.ndjson` files beside the database, in a `log` or `logs` folder beside it, or in the parent folder's `log` or `logs`
+  (Rails keeps `db/production.sqlite3` and logs to `log/production.log`), one named like the database first, and only a
+  file whose first lines hold statements and their durations in a format Culprit reads. A database named for an environment is never paired with another environment's log
   (development timings aren't production's), and statements on tables the database doesn't have are left out, with a
   note (one Rails log serves the app's primary, cache and queue files). A found log is saved on the connection, where
   it can be changed or removed (removing it stops the search); otherwise add it: **Add query log** opens the system's

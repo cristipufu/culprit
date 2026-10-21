@@ -1,7 +1,9 @@
-//! JSON lines, one statement each, for anything that already logs that way: `{"sql": …, "ms": …, "at": …}`. The
-//! statement may also be under `query` or `statement`, the time under `duration_ms` or `elapsed_ms`; `at` is an ISO
-//! 8601 timestamp.
+//! JSON lines (`.jsonl`, `.ndjson`, `.log`), one statement each, for anything that already logs that way:
+//! `{"sql": …, "ms": …, "at": …}`. The statement may also be under `query` or `statement`, the time under
+//! `duration_ms`, `elapsed_ms`, `time_ms`, `query_time_ms` (or `duration` / `elapsed` with a unit such as `"12.4ms"`),
+//! and the timestamp under `at`, `ts`, `timestamp` or `time`.
 
+use super::{duration_ms, starts_like_sql};
 use crate::{Entry, Format, Moment};
 
 pub struct JsonLines;
@@ -12,7 +14,7 @@ impl Format for JsonLines {
     }
 
     fn recognizes(&self, line: &str) -> bool {
-        entry(line).is_some()
+        entry(line).is_some_and(|e| e.ms.is_finite() && e.ms >= 0.0)
     }
 
     fn line(&mut self, line: &str, out: &mut Vec<Entry>) {
@@ -29,6 +31,9 @@ fn entry(line: &str) -> Option<Entry> {
     }
     let v: serde_json::Value = serde_json::from_str(t).ok()?;
     let sql = ["sql", "query", "statement"].iter().find_map(|k| v.get(*k)?.as_str())?.to_string();
+    if !starts_like_sql(&sql) {
+        return None;
+    }
     let raw_error = v.get("error_code").or_else(|| v.pointer("/error/code")).or_else(|| v.get("error"));
     let error_code = raw_error
         .filter(|v| {
@@ -70,11 +75,19 @@ fn entry(line: &str) -> Option<Entry> {
                 _ => "Logged SQL error",
             }
         });
-    let ms = ["ms", "duration_ms", "elapsed_ms"]
+    let timed_ms = ["ms", "duration_ms", "elapsed_ms", "time_ms", "query_time_ms"]
         .iter()
-        .find_map(|k| v.get(*k)?.as_f64())
-        .or_else(|| error_code.map(|_| f64::NAN))?;
-    let at = v.get("at").and_then(|a| a.as_str()).and_then(|s| {
+        .find_map(|k| {
+            let val = v.get(*k)?;
+            val.as_f64().or_else(|| {
+                let s = val.as_str()?;
+                duration_ms(s).or_else(|| s.trim().parse::<f64>().ok())
+            })
+        })
+        .or_else(|| ["duration", "elapsed"].iter().find_map(|k| duration_ms(v.get(*k)?.as_str()?)))
+        .filter(|ms| ms.is_finite() && *ms >= 0.0);
+    let ms = timed_ms.or_else(|| error_code.map(|_| f64::NAN))?;
+    let at = ["at", "ts", "timestamp", "time"].iter().find_map(|k| v.get(*k)?.as_str()).and_then(|s| {
         let epoch = culprit_core::format::epoch_seconds(s)?;
         let zoned = s.ends_with('Z') || s.rfind(['+', '-']).is_some_and(|p| p > 10);
         Some(Moment { epoch, zoned })
@@ -98,6 +111,18 @@ mod tests {
         assert_eq!((e.sql.as_str(), e.ms), ("SELECT 1", 8.5));
         assert!(e.at.is_some_and(|m| m.zoned));
         assert!(entry(r#"{"query": "SELECT 1", "duration_ms": 2}"#).is_some());
+        assert!(
+            entry(r#"{"statement": "/*app='shop'*/ SELECT * FROM orders WHERE id = ?", "duration": "4.2ms", "ts": "2026-10-15T12:00:00Z"}"#)
+                .is_some_and(|e| (e.ms - 4.2).abs() < 1e-9 && e.at.is_some_and(|m| m.zoned))
+        );
         assert!(entry(r#"{"level": "info", "msg": "started"}"#).is_none());
+        // Non-SQL search/event records that happen to use `query` or `statement` keys are rejected.
+        assert!(entry(r#"{"query": "red running shoes", "duration_ms": 12.0}"#).is_none());
+        assert!(entry(r#"{"query": "select red shoes", "duration_ms": 12.0}"#).is_none());
+        assert!(entry(r#"{"statement": "update profile settings", "ms": 5.0}"#).is_none());
+        // Recognition requires both a SQL statement and a non-negative duration.
+        assert!(JsonLines.recognizes(r#"{"sql": "SELECT * FROM orders", "ms": 1.2}"#));
+        assert!(!JsonLines.recognizes(r#"{"sql": "SELECT * FROM orders"}"#));
+        assert!(!JsonLines.recognizes(r#"{"sql": "INSERT INTO orders(id) VALUES (1)", "error_code": 5}"#));
     }
 }

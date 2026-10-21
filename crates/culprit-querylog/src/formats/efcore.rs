@@ -56,9 +56,11 @@ impl Format for EfCore {
             self.pending = Some(Pending { ms, at: leading_timestamp(line).map(|(m, _)| m), sql });
             return;
         }
-        // The statement continues on indented lines; anything else (a new entry, a blank line) ends it.
+        // The statement continues on indented lines; a blank line after a `.TagWith()` comment precedes the SQL, while
+        // any other unindented or blank line ends a statement that has already started.
         match &mut self.pending {
             Some(p) if line.starts_with([' ', '\t']) && !line.trim().is_empty() => p.sql.push(line.trim().to_string()),
+            Some(p) if line.trim().is_empty() && !starts_like_sql(&p.sql.join("\n")) => {}
             Some(_) => self.flush(out),
             None => {}
         }
@@ -100,13 +102,20 @@ mod tests {
             "      WHERE \"p\".\"CategoryId\" = @__p_0",
             "info: Microsoft.EntityFrameworkCore.Database.Command[20101]",
             "      Executed DbCommand (3ms) [Parameters=[], CommandType='Text', CommandTimeout='30'] SELECT 1",
+            "info: Microsoft.EntityFrameworkCore.Database.Command[20101]",
+            "      Executed DbCommand (5ms) [Parameters=[], CommandType='Text', CommandTimeout='30']",
+            "      -- GetfeaturedProducts",
+            "",
+            "      SELECT \"p\".\"Id\" FROM \"Products\" AS \"p\"",
         ] {
             f.line(line, &mut out);
         }
         f.finish(&mut out);
-        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out.len(), 3, "{out:?}");
         assert_eq!(out[0].ms, 12.0);
         assert!(out[0].sql.starts_with("SELECT \"p\".\"Id\"") && out[0].sql.ends_with("= @__p_0"));
         assert_eq!(out[1].sql, "SELECT 1");
+        assert_eq!(out[2].ms, 5.0);
+        assert!(out[2].sql.contains("SELECT \"p\".\"Id\" FROM \"Products\""));
     }
 }

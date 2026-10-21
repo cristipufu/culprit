@@ -140,3 +140,28 @@ async fn a_chosen_query_log_is_checked_kept_and_read_by_the_scan() {
     assert!(report.snapshot.workload.is_none(), "a removed log isn't found again beside the file");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn jsonl_and_ndjson_query_logs_are_auto_discovered_for_sqlite() {
+    let dir = app_folder("jsonl-auto");
+    std::fs::remove_file(dir.join("development.log")).unwrap();
+    // An unrelated .jsonl file in the same folder is ignored because its records lack SQL statements and durations.
+    std::fs::write(dir.join("app.jsonl"), "{\"query\":\"search term\",\"duration_ms\":5.0}\n").unwrap();
+    std::fs::write(
+        dir.join("queries.ndjson"),
+        "{\"query\":\"SELECT id, status FROM orders WHERE customer_id = 7\",\"duration_ms\":8.5,\"at\":\"2026-10-15T09:00:00Z\"}\n\
+         {\"query\":\"SELECT id, status FROM orders WHERE customer_id = 9\",\"duration_ms\":11.5,\"at\":\"2026-10-15T09:30:00Z\"}\n",
+    )
+    .unwrap();
+
+    let ws = Workspace::open_in(dir.join("home"));
+    let info = add_file(&ws, "app", &dir.join("app.db")).expect("added");
+    assert!(info.query_log.as_deref().is_some_and(|p| p.ends_with("queries.ndjson")), "{:?}", info.query_log);
+
+    let report = ws.scan("app", &SnapshotOptions::default()).await.expect("scanned");
+    let workload = report.snapshot.workload.as_ref().expect("auto-discovered ndjson workload");
+    assert_eq!(workload.kind(), Some(WorkloadKind::QueryLog));
+    assert_eq!(workload.total_executions, 2.0);
+    assert_eq!(workload.total_time_ms, 20.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -56,18 +56,28 @@ pub trait Format {
 /// Lines read to tell the format.
 const DETECT_LINES: usize = 5_000;
 
-/// The format whose lines `sample` holds most of, if any line is one of them.
+/// The format whose lines `sample` holds most of, if `sample` yields at least one SQL statement with a duration.
 pub fn detect<'a>(sample: impl IntoIterator<Item = &'a str>) -> Option<Box<dyn Format>> {
     let lines: Vec<&str> = sample.into_iter().take(DETECT_LINES).collect();
-    formats()
+    let winner = formats()
         .into_iter()
-        .map(|f| {
+        .enumerate()
+        .filter_map(|(index, mut f)| {
             let hits = lines.iter().filter(|l| f.recognizes(l)).count();
-            (hits, f)
+            if hits == 0 {
+                return None;
+            }
+            let mut out = Vec::new();
+            for line in &lines {
+                f.line(line, &mut out);
+            }
+            f.finish(&mut out);
+            let has_timed_sql = out.iter().any(|e| formats::starts_like_sql(&e.sql) && e.ms.is_finite() && e.ms >= 0.0);
+            has_timed_sql.then_some((hits, index))
         })
-        .filter(|(hits, _)| *hits > 0)
         .max_by_key(|(hits, _)| *hits)
-        .map(|(_, f)| f)
+        .map(|(_, index)| index)?;
+    formats().into_iter().nth(winner)
 }
 
 /// Statements grouped by shape as they arrive.

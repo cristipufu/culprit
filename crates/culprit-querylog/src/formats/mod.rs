@@ -91,33 +91,154 @@ pub(crate) fn duration_ms(text: &str) -> Option<f64> {
     None
 }
 
-/// Whether text starts like a statement, so a log line that merely contains "(1.2ms)" isn't taken for one.
+/// Skip leading whitespace, `-- …` line comments and `/* … */` block comments (`sqlcommenter`, Rails `QueryLogs`,
+/// Entity Framework Core `.TagWith()`).
+pub(crate) fn skip_leading_comments(mut text: &str) -> &str {
+    loop {
+        text = text.trim_start();
+        if let Some(after) = text.strip_prefix("/*") {
+            let Some((_, rest)) = after.split_once("*/") else { return "" };
+            text = rest;
+        } else if let Some(after) = text.strip_prefix("--") {
+            let Some((_, rest)) = after.split_once(['\n', '\r']) else { return "" };
+            text = rest;
+        } else {
+            return text;
+        }
+    }
+}
+
+/// Whether text starts like a SQL statement, so neither a log line that merely contains "(1.2ms)" nor a structured
+/// log record whose `query` field is a search term ("select red shoes", "update profile") is mistaken for SQL.
 pub(crate) fn starts_like_sql(text: &str) -> bool {
-    let word: String =
-        text.trim_start().chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_uppercase();
-    matches!(
-        word.as_str(),
-        "SELECT"
-            | "INSERT"
-            | "UPDATE"
-            | "DELETE"
-            | "WITH"
-            | "REPLACE"
-            | "UPSERT"
-            | "MERGE"
-            | "VALUES"
-            | "PRAGMA"
-            | "BEGIN"
-            | "COMMIT"
-            | "ROLLBACK"
-            | "SAVEPOINT"
-            | "RELEASE"
-            | "CREATE"
-            | "ALTER"
-            | "DROP"
-            | "EXPLAIN"
-            | "SET"
-    )
+    let sql = skip_leading_comments(text);
+    let word: String = sql.chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_uppercase();
+    if word.is_empty() {
+        return false;
+    }
+    let after_word = &sql[word.len()..];
+    if !after_word.is_empty()
+        && !after_word.starts_with(|c: char| {
+            c.is_whitespace() || matches!(c, ';' | '(' | '/' | '-' | '*' | '"' | '\'' | '`' | '[')
+        })
+    {
+        return false;
+    }
+    let rest = skip_leading_comments(after_word);
+    let has_word = |needle: &str| {
+        rest.split(|c: char| !c.is_ascii_alphabetic() && c != '_').any(|w| w.eq_ignore_ascii_case(needle))
+    };
+    let rest_no_semi = rest.trim_end_matches(';').trim();
+    match word.as_str() {
+        "SELECT" => {
+            !rest_no_semi.is_empty()
+                && (has_word("FROM")
+                    || has_word("WHERE")
+                    || has_word("UNION")
+                    || has_word("NULL")
+                    || has_word("TRUE")
+                    || has_word("FALSE")
+                    || has_word("CURRENT_TIMESTAMP")
+                    || has_word("CURRENT_DATE")
+                    || has_word("CURRENT_TIME")
+                    || rest_no_semi.chars().any(|c| {
+                        c.is_ascii_digit()
+                            || matches!(c, '*' | '(' | ',' | '"' | '\'' | '`' | '[' | '?' | '$' | ':' | '@' | '=')
+                    }))
+        }
+        "INSERT" | "REPLACE" | "UPSERT" => has_word("INTO") || has_word("VALUES") || has_word("DEFAULT"),
+        "MERGE" => has_word("INTO") || has_word("USING"),
+        "UPDATE" => has_word("SET"),
+        "DELETE" => has_word("FROM"),
+        "WITH" => has_word("AS") && rest.contains('('),
+        "VALUES" => rest.starts_with('('),
+        "PRAGMA" => {
+            !rest_no_semi.is_empty()
+                && (rest_no_semi.contains(['=', '('])
+                    || rest_no_semi.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.')))
+        }
+        "BEGIN" => {
+            rest_no_semi.is_empty()
+                || ["TRANSACTION", "DEFERRED", "IMMEDIATE", "EXCLUSIVE", "WORK", "TRY", "CATCH", "ATOMIC"]
+                    .iter()
+                    .any(|w| has_word(w))
+        }
+        "COMMIT" | "END" => rest_no_semi.is_empty() || has_word("TRANSACTION") || has_word("WORK"),
+        "ROLLBACK" => rest_no_semi.is_empty() || has_word("TRANSACTION") || has_word("WORK") || has_word("TO"),
+        "SAVEPOINT" | "RELEASE" => {
+            !rest_no_semi.is_empty()
+                && rest_no_semi
+                    .split_whitespace()
+                    .all(|w| w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '"' | '`' | '[' | ']')))
+        }
+        "CREATE" | "ALTER" | "DROP" | "TRUNCATE" => [
+            "TABLE",
+            "INDEX",
+            "VIEW",
+            "TRIGGER",
+            "VIRTUAL",
+            "SCHEMA",
+            "DATABASE",
+            "SEQUENCE",
+            "TYPE",
+            "DOMAIN",
+            "EXTENSION",
+            "FUNCTION",
+            "PROCEDURE",
+            "PROC",
+            "ROLE",
+            "USER",
+            "POLICY",
+            "PUBLICATION",
+            "SUBSCRIPTION",
+            "SERVER",
+            "STATISTICS",
+            "PARTITION",
+            "COLUMN",
+            "CONSTRAINT",
+        ]
+        .iter()
+        .any(|w| has_word(w)),
+        "EXPLAIN" => {
+            has_word("QUERY")
+                || has_word("PLAN")
+                || has_word("ANALYZE")
+                || ["SELECT", "INSERT", "UPDATE", "DELETE", "WITH", "REPLACE", "VALUES"].iter().any(|w| has_word(w))
+        }
+        "SET" => {
+            rest_no_semi.contains('=')
+                || [
+                    "TO",
+                    "TRANSACTION",
+                    "TIME",
+                    "NAMES",
+                    "CHARACTER",
+                    "NOCOUNT",
+                    "LOCAL",
+                    "SESSION",
+                    "GLOBAL",
+                    "ROLE",
+                    "CONSTRAINTS",
+                    "SEARCH_PATH",
+                    "LOCK_TIMEOUT",
+                    "STATEMENT_TIMEOUT",
+                    "DEADLOCK_PRIORITY",
+                    "IDENTITY_INSERT",
+                    "QUOTED_IDENTIFIER",
+                ]
+                .iter()
+                .any(|w| has_word(w))
+        }
+        "VACUUM" | "ANALYZE" | "ANALYSE" | "REINDEX" => {
+            rest_no_semi.is_empty()
+                || has_word("INTO")
+                || rest_no_semi.split_whitespace().all(|w| {
+                    w.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '"' | '`' | '[' | ']'))
+                })
+        }
+        "ATTACH" | "DETACH" => has_word("DATABASE") || has_word("AS") || !rest_no_semi.is_empty(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

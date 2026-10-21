@@ -23,7 +23,7 @@ impl Format for Rails {
 
     fn recognizes(&self, line: &str) -> bool {
         let line = strip_ansi(line);
-        statement(&line).is_some() || started_at(&line).is_some()
+        statement(&line).is_some()
     }
 
     fn line(&mut self, line: &str, out: &mut Vec<Entry>) {
@@ -63,7 +63,13 @@ fn statement(line: &str) -> Option<(bool, f64, String)> {
     if !starts_like_sql(sql) {
         return None;
     }
-    // The bind values Rails appends after two spaces: `  [["id", 3], ["LIMIT", 1]]`.
+    // The bind values Rails appends after two spaces: `  [["id", 3], ["LIMIT", 1]]` (before or after a trailing
+    // QueryLogs comment `/*application:Shop*/`).
+    while sql.ends_with("*/")
+        && let Some(at) = sql.rfind("/*")
+    {
+        sql = sql[..at].trim_end();
+    }
     if sql.ends_with("]]")
         && let Some(at) = sql.rfind("  [[")
     {
@@ -95,7 +101,23 @@ mod tests {
             "SELECT \"products\".* FROM \"products\" WHERE \"products\".\"category_id\" = ? LIMIT ?"
         );
         assert!(out[0].at.is_some_and(|m| m.zoned));
-        // "Completed … in 31ms (Views: 15.2ms …" is no statement.
+        // "Completed … in 31ms (Views: 15.2ms …" and "Started GET …" alone are no SQL statements.
         assert!(!f.recognizes("Completed 200 OK in 31ms (Views: 15.2ms | ActiveRecord: 12.7ms)"));
+        assert!(!f.recognizes("Started GET \"/\" for 127.0.0.1 at 2026-10-15 12:00:01 +0000"));
+    }
+
+    #[test]
+    fn query_log_tags_before_or_after_statements_are_accepted() {
+        let mut f = Rails::default();
+        let mut out = Vec::new();
+        for line in [
+            "  Product Load (3.2ms)  /*application='Shop'*/ SELECT \"products\".* FROM \"products\" WHERE \"products\".\"id\" = ?  [[\"id\", 1]]",
+            "  Product Load (1.8ms)  SELECT \"products\".* FROM \"products\" WHERE \"products\".\"id\" = ?  [[\"id\", 2]] /*application:Shop*/",
+        ] {
+            assert!(f.recognizes(line), "{line}");
+            f.line(line, &mut out);
+        }
+        assert_eq!(out.len(), 2);
+        assert!(!out[0].sql.contains("[[") && !out[1].sql.contains("[["));
     }
 }

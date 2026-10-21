@@ -45,10 +45,13 @@ fn no_statements(path: &Path) -> Error {
     )
 }
 
-/// The log an application writes beside its SQLite file, if one holds statements Culprit reads: `.log` files in the
-/// database's folder, a `log` folder beside it, and the parent folder's `log` (Rails: `db/` and `storage/` beside
-/// `log/`). One named like the database (`production.sqlite3` → `production.log`) comes first, then the most recently
-/// written.
+/// File extensions Culprit checks when looking for an application's query log beside a SQLite database.
+pub const DISCOVERED_LOG_EXTENSIONS: [&str; 3] = ["log", "jsonl", "ndjson"];
+
+/// The log an application writes beside its SQLite file, if one holds statements Culprit reads: `.log`, `.jsonl` and
+/// `.ndjson` files in the database's folder, a `log` or `logs` folder beside it, and the parent folder's `log` or
+/// `logs` (Rails: `db/` and `storage/` beside `log/`). One named like the database (`production.sqlite3` →
+/// `production.log` or `production.jsonl`) comes first, then the most recently written.
 pub fn discover(database: &Path) -> Option<std::path::PathBuf> {
     let folder = database.parent()?;
     let stem = database.file_stem()?.to_string_lossy().to_ascii_lowercase();
@@ -56,16 +59,22 @@ pub fn discover(database: &Path) -> Option<std::path::PathBuf> {
     // environment's log: development timings aren't production's.
     let environment = |name: &str| ENVIRONMENTS.iter().find(|e| name.starts_with(*e)).copied();
     let ours = environment(&stem);
-    let mut places = vec![folder.to_path_buf(), folder.join("log")];
+    let mut places = vec![folder.to_path_buf(), folder.join("log"), folder.join("logs")];
     if let Some(app) = folder.parent() {
         places.push(app.join("log"));
+        places.push(app.join("logs"));
     }
     let mut logs: Vec<(bool, std::time::SystemTime, std::path::PathBuf)> = places
         .iter()
         .filter_map(|dir| std::fs::read_dir(dir).ok())
         .flat_map(|entries| entries.filter_map(std::result::Result::ok))
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("log")) && p.is_file())
+        .filter(|p| {
+            p.extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| DISCOVERED_LOG_EXTENSIONS.iter().any(|ext| x.eq_ignore_ascii_case(ext)))
+                && p.is_file()
+        })
         .filter(|p| {
             let theirs = p.file_stem().and_then(|s| environment(&s.to_string_lossy().to_ascii_lowercase()));
             !matches!((ours, theirs), (Some(a), Some(b)) if a != b)
@@ -76,7 +85,7 @@ pub fn discover(database: &Path) -> Option<std::path::PathBuf> {
             (named, written, p)
         })
         .collect();
-    logs.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    logs.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
     logs.into_iter().take(DISCOVER_FILES).map(|(_, _, p)| p).find(|p| recognize(p).is_ok())
 }
 
@@ -235,6 +244,41 @@ mod tests {
         // Rails 8 keeps the cache and queue beside the primary, all writing production.log.
         std::fs::write(root.join("db/production_cache.sqlite3"), b"").unwrap();
         assert_eq!(discover(&root.join("db/production_cache.sqlite3")), Some(root.join("log/production.log")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn jsonl_and_ndjson_logs_with_sql_and_durations_are_discovered_while_non_sql_jsonl_is_skipped() {
+        let root = app("jsonl");
+        // Structured event/search logs without SQL statements or without durations are never mistaken for query logs.
+        std::fs::write(
+            root.join("db/production.jsonl"),
+            "{\"query\":\"select red shoes\",\"duration_ms\":4.2}\n{\"sql\":\"SELECT * FROM orders\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("log/events.ndjson"),
+            "{\"statement\":\"update profile settings\",\"ms\":1.5}\n{\"level\":\"info\",\"msg\":\"ready\"}\n",
+        )
+        .unwrap();
+        assert_eq!(discover(&root.join("db/production.sqlite3")), None);
+
+        // A .ndjson or .jsonl file whose records contain SQL statements and durations is discovered automatically.
+        std::fs::create_dir_all(root.join("logs")).unwrap();
+        std::fs::write(
+            root.join("logs/queries.ndjson"),
+            "{\"sql\":\"SELECT id FROM orders WHERE customer_id = ?\",\"duration_ms\":6.4,\"ts\":\"2026-10-15T12:00:00Z\"}\n",
+        )
+        .unwrap();
+        assert_eq!(discover(&root.join("db/production.sqlite3")), Some(root.join("logs/queries.ndjson")));
+
+        // A valid .jsonl file named after the database takes priority over other logs.
+        std::fs::write(
+            root.join("db/production.jsonl"),
+            "{\"query\":\"SELECT id FROM orders WHERE customer_id = 1\",\"ms\":3.1,\"at\":\"2026-10-15T12:00:01Z\"}\n",
+        )
+        .unwrap();
+        assert_eq!(discover(&root.join("db/production.sqlite3")), Some(root.join("db/production.jsonl")));
         let _ = std::fs::remove_dir_all(&root);
     }
 
